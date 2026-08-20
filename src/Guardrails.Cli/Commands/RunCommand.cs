@@ -1267,6 +1267,7 @@ public static class RunCommand
             WaveHaltKind.ExitGateFailed => "WAVE EXIT GATE FAILED",
             WaveHaltKind.BreakdownComplete => "WAVE BREAKDOWN COMPLETE",
             WaveHaltKind.BreakdownFailed => "WAVE BREAKDOWN FAILED",
+            WaveHaltKind.BreakdownIncomplete => "WAVE BREAKDOWN INCOMPLETE",
             _ => "WAVE HALT"
         };
         o.WriteLine($"{label}: {halt.Headline}");
@@ -1292,6 +1293,7 @@ public static class RunCommand
         // #360 Phase 1: on BreakdownComplete the wave is now AUTHORED, so the focused diagram shows the
         // freshly-broken-down DAG the human is about to review.
         if (halt.Kind is WaveHaltKind.NextWaveUnauthored or WaveHaltKind.BreakdownComplete
+                or WaveHaltKind.BreakdownIncomplete
             && halt.WaveDirectory is { } waveAbsDir)
         {
             if (GraphCommand.RenderWaveScoped(waveAbsDir, TextWriter.Null))

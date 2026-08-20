@@ -87,6 +87,7 @@ public sealed class PlanValidator
         ValidateTierServability(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
+        ValidateWaveBreakdownIntent(plan, diagnostics);
 
         return diagnostics;
     }
@@ -2841,6 +2842,40 @@ public sealed class PlanValidator
 
     private static IEnumerable<string> ScriptGuardrailPaths(IReadOnlyList<GuardrailDefinition> guardrails) =>
         guardrails.Where(g => g.Kind == ActionKind.Script).Select(g => g.Path);
+
+    /// <summary>
+    /// GR2063 (issue #402, SSOT §14.11) — a wave whose breakdown DECLARED more tasks than it AUTHORED. A
+    /// truncated breakdown leaves a valid PREFIX whose debt is not computable from the prefix, so the
+    /// breakdown declares its decomposition first, in <c>&lt;wave&gt;/state/breakdown-intent.json</c>, and
+    /// this is the set-compare against it.
+    /// <para>Absent / unparseable / satisfied manifest ⇒ SILENT (the GR2062 rule). A WARNING, because the
+    /// enforcement that matters is the harness routing on the CODE — a human hand-finishing a wave with
+    /// fewer tasks than declared is nudged, not blocked.</para>
+    /// </summary>
+    private static void ValidateWaveBreakdownIntent(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (WaveNode wave in plan.Waves)
+        {
+            if (BreakdownIntent.TryRead(wave.Directory) is not { } intent)
+            {
+                continue;
+            }
+
+            IReadOnlyList<string> missing = intent.MissingFolders(wave.Directory);
+            if (missing.Count == 0)
+            {
+                continue;
+            }
+
+            int declared = intent.DeclaredFolders().Count;
+            diagnostics.Add(Warning(DiagnosticCodes.WaveBreakdownIncomplete, wave.Directory,
+                $"Wave '{wave.Dir}' declared {declared} task(s) in '{BreakdownIntent.FileName}' but "
+                + $"{missing.Count} have no complete task folder: {string.Join(", ", missing)}. The breakdown "
+                + "was cut off before finishing; the valid prefix is preserved and the JIT checkpoint resumes "
+                + $"it on the next 'guardrails run'. If the wave is finished as-is, correct or delete "
+                + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' to record the intent that actually holds."));
+        }
+    }
 
     private static Diagnostic Error(string code, string path, string message) => new()
     {

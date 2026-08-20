@@ -353,7 +353,19 @@ public enum WaveHaltKind
     /// rejected/</c>) so the plan stays loadable and the JIT checkpoint cleanly re-fires on resume; the run
     /// halts carrying the full validation errors (in <see cref="WaveHalt.Detail"/>) for manual repair.
     /// </summary>
-    BreakdownFailed
+    BreakdownFailed,
+
+    /// <summary>
+    /// The breakdown session was CUT OFF (timeout / turn cap / output cap / cancellation) but left a VALID
+    /// PREFIX, and the wave's <c>state/breakdown-intent.json</c> says how much is still owed (SSOT §14.11,
+    /// issues #385/#402). The prefix is PRESERVED — not quarantined — and the JIT checkpoint re-fires to
+    /// RESUME the remainder rather than re-paying for the tasks already on disk.
+    /// <para>Distinct from <see cref="BreakdownComplete"/> and never collapsible into it: a cut-off session
+    /// can never be reported complete whatever <c>validate</c> says, because a valid prefix that reads as a
+    /// finished wave is strictly worse than a loud quarantine — it sends a human to review 11 tasks with no
+    /// signal that 3 are missing.</para>
+    /// </summary>
+    BreakdownIncomplete
 }
 
 /// <summary>

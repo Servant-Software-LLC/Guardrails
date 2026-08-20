@@ -460,11 +460,28 @@ and it costs far less than the drift risk of a fourth hash differing from a ship
 
 ## 10. Schema changes — exact `02-schemas-and-contracts.md` edits
 
-> **Status: E2 + the E5 review-marker line are APPLIED** (milestones 6+7, the attestation fix — #471(2),
-> #472, #488). E1, E3, E4 and E5's `breakdown-intent.json` line belong to the durability milestones (1–5)
-> and are **NOT APPLIED**. These are the verbatim deltas to land in the same change as the code that
+> **Status: E1–E5 are all APPLIED.** E2 + the E5 review-marker line landed with milestones 6+7 (the
+> attestation fix — #471(2), #472, #488); **E1, E3, E4 and E5's `breakdown-intent.json` line landed with
+> milestones 1–5 + #489.** These were the verbatim deltas to land in the same change as the code that
 > motivates them (invariant 4). **Coordination note:** `19-producer-coverage.md` claims a new **§4.8**;
 > this design claims a new **§14.11** and does not contend for §4.8.
+>
+> **Three things the shipped §14.11 states that this draft did not**, each forced by making the design
+> executable rather than by a change of mind:
+> 1. **The inventory snapshots BYTES, not only `(size, sha256)`.** Hashes CLASSIFY a file; they cannot
+>    RESTORE one the attempt overwrote. Without the bytes, §5.4's "PlanDefinitionHash is byte-identical
+>    after a quarantine" invariant fails in exactly the hand-authored-gate case §5.1 added the inventory
+>    to protect — a moved-away overwritten gate is a missing file, and the hash moves.
+> 2. **A prefix is preserved ONLY when the manifest is present and unsatisfied.** §4.2's rule is an
+>    IN-RUN rule; across a run boundary the JIT checkpoint fires on `wave.Tasks.Count == 0`, so a
+>    preserved manifest-less prefix would simply be RUN on the next invocation — the same "reads as a
+>    finished wave" hazard one rung later, which §4.2 itself calls worse than a loud quarantine. The
+>    manifest is therefore load-bearing twice over: it names the debt, and it is the only durable signal
+>    that re-opens the checkpoint. §14.4 gained that second trigger; a cut-off session with no manifest is
+>    quarantined, and the halt says why. (§4.5's "resume degrades to today's behaviour" is thus exact.)
+> 3. **`--fresh` really does clear it now.** §4.4 asserted this as an existing property; it was not one —
+>    `RunReset.Fresh` never walked the wave folders. It does now, file-by-file (the review marker beside
+>    it stays), and the plan-root `.gitignore` transient set gained the same one line.
 
 **E1 — §9.2, replace the "Turn budget (issue #385)" sentence** (currently at ~line 3807):
 
@@ -618,9 +635,22 @@ stopping after them leaves a strictly better system than today.
 
 **Landed:** milestones **6 + 7** — per-wave `ReviewMarker` keyed on `WaveDefinitionHash`, per-wave GR2025
 with the fresh-plan-marker fallback, wave-target resolution for `plan-hash` / `mark-reviewed`, and the
-`GR1010` validate-on-a-wave diagnostic (closing #471(2), #472, #488). Milestone **8** is now the only thing
-keeping the documented reviewer flow out of step with what ships: the skill's §7 still describes the wave
-marker as `PlanDefinitionHash`-keyed, and it is `WaveDefinitionHash`-keyed.
+`GR1010` validate-on-a-wave diagnostic (closing #471(2), #472, #488).
+
+**Landed:** milestones **1 + 2 + 3 + 4**, the harness half of **5**, and **#489** — `WaveBreakdownOutcome`
+now carries `FailureKind`/`NumTurns`/`MaxTurns` and the halt names the bound that was hit; a cut-off session
+can never be `BreakdownComplete` (`WaveHaltKind.BreakdownIncomplete` is the new terminal);
+`BreakdownInventory` captures the pre-invocation inventory + byte snapshot, sweeps incomplete trailing task
+folders, and scopes the revert so a hand-authored gate is never moved and `PlanDefinitionHash` returns
+byte-identical; `GR2063` + `BreakdownIntent`; the bounded 3-segment resume with a no-progress halt and a
+resume prompt naming only what is owed; and the structural `finally`-guarantee that a cancellation leaves the
+plan folder loadable. **What remains of 5 is the SKILL half** — `plan-breakdown` must write
+`<wave>/state/breakdown-intent.json` as its first act on a waved invocation. Until it does, the harness
+mechanism is inert on real runs: a truncation with no manifest is quarantined exactly as before (by design —
+see the numbered note in §10), so the salvage lights up only when the skill delta lands. Milestone **9**
+(halt rendering for `BreakdownIncomplete`, with #469) and milestone **8** are the other two open items; the
+`guardrails-review` skill's §7 still describes the wave marker as `PlanDefinitionHash`-keyed, and it is
+`WaveDefinitionHash`-keyed.
 
 **Sequencing.** 1 → 2 → 3 are strictly ordered (3 needs 2's classification, 2 needs 1's signal). 4 → 5
 follow. **6 → 7 → 8 are independent of 1–5** and can run in parallel; 8 must land with 6+7 or the skill

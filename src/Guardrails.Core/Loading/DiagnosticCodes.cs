@@ -753,13 +753,40 @@ public static class DiagnosticCodes
     /// </summary>
     public const string WaveIntegrationScopeInert = "GR2059";
 
-    // CURRENT next-free code: GR2063. GR2059 (WaveIntegrationScopeInert) is the last taken code above.
-    // Three later codes are RESERVED BY NAME in design documents and must not be re-used:
+    /// <summary>
+    /// <b>GR2063 — a wave's breakdown DECLARED more tasks than it AUTHORED (issue #402, SSOT §14.11).</b>
+    /// The wave carries a <c>state/breakdown-intent.json</c> manifest and a declared <c>folder</c> has no
+    /// complete task folder under that wave's <c>tasks/</c>. The message names the missing folders.
+    /// <para><b>Silent when</b> the manifest is absent, unparseable, or satisfied. Absent ⇒ skipped
+    /// entirely — the same rule GR2062 uses for <c>intendedWaves</c>, and the same "silence is not proof of
+    /// validity" discipline GR2056 set.</para>
+    /// <para><b>WARNING, and the split is the point.</b> The HARNESS routes on the code (GR2063 present ⇒
+    /// the wave is incomplete ⇒ it can never be reported <c>BreakdownComplete</c>, and the JIT checkpoint
+    /// re-fires to resume it), so the automated path — where the risk actually lives — is fully gated. The
+    /// human path gets a nudge, because a human who deliberately finishes a wave with 11 of 14 declared
+    /// tasks has done nothing wrong; they have merely not updated the manifest. GR2025 is the shipped
+    /// precedent for warn-at-validate / load-bearing-where-the-harness-reads-it.</para>
+    /// <para><b>The false-positive claim is STRUCTURAL, not measured</b>, and is stated as the weaker claim
+    /// it is: the manifest's lifetime is one breakdown attempt (the harness removes it when the wave
+    /// settles), so no committed plan folder in the corpus can carry one — the zero rate is by
+    /// construction, unlike GR2055/GR2056/GR2057's measured zero. The remedy named in the message is to
+    /// correct or DELETE the manifest, i.e. to record the intent that actually holds.</para>
+    /// </summary>
+    public const string WaveBreakdownIncomplete = "GR2063";
+
+    // CURRENT next-free code: GR2064. GR2063 (WaveBreakdownIncomplete) is the last taken code above —
+    // GR2059 is the last CONTIGUOUS one; GR2060/GR2061/GR2062 remain reserved-by-name gaps.
+    // THREE later codes are RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2062 — docs/plans/19-producer-coverage.md §1 (the one-ahead `intendedWaves` shortfall)
     // GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2063 and update this line rather than colliding with either block (issue #320).
+    // GR2064 and update this line rather than colliding with either block (issue #320).
+    //
+    // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
+    // review-marker change (#472). The GR10xx and GR20xx ladders advance independently; a doc that
+    // states only one of them is half a fact, which is how the domain-knowledge skill came to claim
+    // "GR1010 / GR2055" long after both were taken.
 }

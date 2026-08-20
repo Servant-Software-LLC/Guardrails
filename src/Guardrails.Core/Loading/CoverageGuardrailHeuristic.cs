@@ -71,9 +71,19 @@ public static class CoverageGuardrailHeuristic
     /// The <c>op</c> group captures the optional <c>not</c> so polarity can be classified. The text
     /// BETWEEN one match and the next (its enclosing <c>if</c>-block body, single- or multi-line) is
     /// inspected separately for the <c>exit</c>/<c>$hits++</c> decision that fixes polarity.
+    ///
+    /// <para><b>The <c>[ci]</c> prefix is not optional polish.</b> PowerShell spells the
+    /// case-SENSITIVE and explicitly case-INsensitive forms of every comparison operator with a
+    /// leading <c>c</c>/<c>i</c> (<c>-cmatch</c>, <c>-cnotmatch</c>, <c>-imatch</c>,
+    /// <c>-inotmatch</c>), and the authoring doctrine now MANDATES <c>-cmatch</c>/<c>-cnotmatch</c>
+    /// for a required-present identifier clause — a case-insensitive required clause false-GREENs.
+    /// Without <c>-[ci]?</c> here, every coverage guardrail written to the corrected doctrine would
+    /// be INVISIBLE to this heuristic and the GR2026 stale-coverage warning would silently stop
+    /// firing: two shipped rules in direct collision. <see cref="PlanValidator"/>'s GR2057
+    /// presence-clause regex admits the same prefix; keep the two in step.</para>
     /// </summary>
     private static readonly Regex MatchLine = new(
-        """\$(?:content|tn|code|text|file)\s+-(?<op>(?:not)?)match\s+(?:'(?<lit>[^']*)'|"(?<lit>[^"]*)")""",
+        """\$(?:content|tn|code|text|file)\s+-[ci]?(?<op>(?:not)?)match\s+(?:'(?<lit>[^']*)'|"(?<lit>[^"]*)")""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>
@@ -102,9 +112,16 @@ public static class CoverageGuardrailHeuristic
         @"\bif\s*\(",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
-    /// <summary>The high-confidence archetype signal: a final <c>$hits -lt &lt;N&gt;</c> threshold.</summary>
+    /// <summary>
+    /// The high-confidence archetype signal: a final <c>$hits -lt &lt;N&gt;</c> threshold. The
+    /// <c>[ci]</c> prefix is admitted here for the same reason as on <see cref="MatchLine"/> — every
+    /// PowerShell comparison operator has legal <c>-c</c>/<c>-i</c> spellings, and this one is the
+    /// gate that decides whether the counting form is recognised as the archetype AT ALL, so a blind
+    /// spot here costs the whole guardrail rather than one token. (Case is meaningless for a numeric
+    /// compare, so this is defensive rather than incident-driven, but it cannot false-fire.)
+    /// </summary>
     private static readonly Regex HitsThreshold = new(
-        @"\$hits\s+-lt\s+\d+",
+        @"\$hits\s+-[ci]?lt\s+\d+",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>A clear literal keyword: alphanumerics plus <c>. _ -</c>, no regex metacharacters.</summary>

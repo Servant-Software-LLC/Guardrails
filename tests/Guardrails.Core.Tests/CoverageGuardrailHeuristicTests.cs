@@ -181,6 +181,77 @@ public sealed class CoverageGuardrailHeuristicTests
             CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
     }
 
+    // --- case-sensitivity operator prefixes: PowerShell spells every comparison operator with an
+    // optional leading `c` (case-SENSITIVE) or `i` (explicitly case-INsensitive). The authoring
+    // doctrine now MANDATES `-cmatch`/`-cnotmatch` for a required-present identifier clause, so a
+    // heuristic blind to the prefix would silently stop recognising EVERY correctly-authored
+    // coverage guardrail — GR2026 would go quiet exactly where the doctrine is being followed. ----
+
+    [Fact]
+    public void CaseSensitivePrefix_CNotMatchPerTermForm_ExtractsTokens_ExactlyAsNotMatch()
+    {
+        // Byte-for-byte the CanonicalNamedPerTermForm body with the doctrine-mandated -cnotmatch.
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -cnotmatch 'ProcessId') { Write-Output 'no ProcessId'; exit 1 }\n" +
+            "if ($content -cnotmatch 'RollupCount') { Write-Output 'no RollupCount'; exit 1 }\n" +
+            "exit 0\n";
+
+        IReadOnlyList<string> tokens =
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors");
+
+        Assert.Equal(new[] { "ProcessId", "RollupCount" }, tokens);
+    }
+
+    [Fact]
+    public void ExplicitlyCaseInsensitivePrefix_INotMatch_IsAdmitted()
+    {
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -inotmatch 'ProcessId') { exit 1 }\n" +
+            "if ($content -imatch 'RollupCount') { exit 1 }\n" + // -imatch … exit 1 ⇒ negative assertion
+            "exit 0\n";
+
+        // The -i prefix is admitted on BOTH spellings, and polarity is still read from the operator:
+        // -inotmatch is require-present (kept), -imatch … exit 1 is a negative assertion (excluded).
+        Assert.Equal(new[] { "ProcessId" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
+    [Fact]
+    public void CaseSensitivePrefix_CMatchCountingForm_AndCltThreshold_AreRecognised()
+    {
+        // The counting form under a fully case-sensitive spelling: -cmatch … $hits++ with a -clt floor.
+        // The threshold regex is the gate that decides the counting form IS the archetype, so a blind
+        // spot there costs every token in the guardrail, not one.
+        string body =
+            "$hits = 0\n" +
+            "if ($content -cmatch 'XtcFileOnly') { $hits++ }\n" +
+            "if ($content -cmatch 'TcApiLocal') { $hits++ }\n" +
+            "if ($hits -clt 2) { Write-Output 'missing a scenario'; exit 1 }\n" +
+            "exit 0\n";
+
+        Assert.Equal(new[] { "XtcFileOnly", "TcApiLocal" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "01-not-canonically-named"));
+    }
+
+    [Fact]
+    public void CaseSensitivePrefix_CMatchThenFailExit_IsStillANegativeAssertion()
+    {
+        // Polarity must not be lost when the prefix is admitted: -cmatch … exit 1 fails on PRESENCE,
+        // so the token is intentionally absent from the prompt and must NOT become a coverage token.
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -cmatch 'CommanderRest') {\n" +
+            "    Write-Output 'contains a CommanderRest reference'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        Assert.Empty(
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
     [Fact]
     public void MatchWithoutHitsOrExit_IsNotConfidentlyRequirePresent_Excluded()
     {

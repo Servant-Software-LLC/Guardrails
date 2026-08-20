@@ -469,7 +469,12 @@ public sealed class Scheduler
             //    halts BreakdownComplete (for review) / BreakdownFailed (quarantining the partial). Otherwise
             //    (brief absent, halt policy, non-interactive prompt, or no invoker) it honest-halts exactly as
             //    before. Either way it records a boundary:"wave" decisions[] entry.
-            if (wave.Tasks.Count == 0)
+            //    #402/SSOT §14.11: the checkpoint ALSO fires for a wave that already has tasks but carries an
+            //    UNSATISFIED breakdown-intent manifest — a valid PREFIX from a cut-off session. That manifest
+            //    is the only durable signal separating "11 of 14, resume me" from "authored, run me"; without
+            //    consulting it here, preserving a prefix would simply move the "a truncated wave reads as
+            //    finished" hazard one run boundary later, which is worse than today's loud quarantine.
+            if (wave.Tasks.Count == 0 || HasUnsatisfiedBreakdownIntent(wave))
             {
                 JitCheckpointOutcome jit = await RunJitCheckpointAsync(plan, wave, integ, settled, cancellationToken)
                     .ConfigureAwait(false);
@@ -1246,11 +1251,30 @@ public sealed class Scheduler
               + "auto-breakdown here (on by default, 'autoBreakdown'), or author the wave manually, then re-run "
               + "'guardrails run' to continue.";
 
+        // SSOT §14.11: the checkpoint also re-fires on a wave that HAS tasks but carries an unsatisfied
+        // breakdown-intent manifest. Saying "has no authored tasks" there would be false in the direction that
+        // misleads (#471's lesson about halt text), so the headline states which of the two situations it is
+        // and the detail names the remedy that actually applies to a stalled RESUME.
+        IReadOnlyList<string> owed =
+            BreakdownIntent.TryRead(wave.Directory)?.MissingFolders(wave.Directory) ?? [];
+        bool resuming = wave.Tasks.Count > 0 && owed.Count > 0;
+        if (resuming)
+        {
+            detail = $"Wave '{wave.Dir}' carries a valid PREFIX of {wave.Tasks.Count} task(s) from a cut-off "
+                     + $"breakdown, and its 'state/{BreakdownIntent.FileName}' still owes {owed.Count}: "
+                     + $"{string.Join(", ", owed)}.\n{detail}\n"
+                     + $"To accept the wave as authored instead, delete "
+                     + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' (which also clears GR2063).";
+        }
+
         return new WaveHalt
         {
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.NextWaveUnauthored,
-            Headline = $"Wave '{wave.Dir}' has no authored tasks — halting for JIT breakdown (SSOT §14.4).",
+            Headline = resuming
+                ? $"Wave '{wave.Dir}' breakdown is INCOMPLETE ({owed.Count} declared task(s) still owed) — "
+                  + "halting for JIT breakdown (SSOT §14.11)."
+                : $"Wave '{wave.Dir}' has no authored tasks — halting for JIT breakdown (SSOT §14.4).",
             Detail = detail,
             IntegrationWorktreePath = worktree,
             WaveDirectory = wave.Directory
@@ -1372,56 +1396,195 @@ public sealed class Scheduler
     {
         // Transcript location (SSOT §8): logs/<runId>/<wave-dir>/breakdown/ — NOT a per-task attempt dir.
         string breakdownLogDir = Path.Combine(plan.PlanDirectory, "logs", integ.RunId, wave.Dir, "breakdown");
+        string rejectedRoot = Path.Combine(breakdownLogDir, "rejected");
+        try { Directory.CreateDirectory(breakdownLogDir); } catch (IOException) { /* the invoker retries */ }
 
-        WaveBreakdownOutcome outcome = await _breakdownInvoker!
-            .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal, cancellationToken)
-            .ConfigureAwait(false);
+        // The pre-invocation inventory (SSOT §14.11, #471): the harness's OWN record of what pre-dated the
+        // attempt, taken before a single file is written. It is what makes the revert exact instead of a
+        // guess about provenance — and specifically what stops a blind revert from moving a human's
+        // hand-authored wave gate into rejected/ while calling it a revert.
+        BreakdownInventory? inventory = BreakdownInventory.Capture(wave.Directory, breakdownLogDir);
 
-        (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
-            ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
-
-        if (valid && authoredTaskCount > 0)
+        bool waveSettled = false;
+        try
         {
-            // The wave was authored + passed 'guardrails validate' — it is now UNREVIEWED. Resolve the
-            // review-gate FLOOR (doc 12 §5.2, issue #361 Phase 4) by consulting the configured threshold.
-            // NEITHER branch writes a review marker — the harness never self-attests a review at any dial
-            // setting (§5 floor 3, #375).
-            ReviewGateDecision reviewGate =
-                _plan.Config.Autonomy?.GateThresholds?.ReviewGate ?? ReviewGateDecision.Escalate;
-
-            if (reviewGate == ReviewGateDecision.ProceedUnreviewed && authoredWave is not null)
+            JitCheckpointOutcome outcome = await RunBreakdownSegmentsAsync(
+                plan, wave, integ, settled, policy, invocationToken, inventory, rejectedRoot, cancellationToken)
+                .ConfigureAwait(false);
+            waveSettled = true;
+            return outcome;
+        }
+        finally
+        {
+            // #489 — Ctrl+C during a breakdown used to propagate PAST the quarantine entirely, leaving the
+            // partially-authored wave on disk: the operator's own escape hatch manufacturing the #385
+            // artifact, on tracked content, with no message. The guarantee wanted is a PROPERTY — "the plan
+            // folder is never left in a state the loader rejects" — and enumerating the exception types that
+            // could violate it is precisely how this one was missed, so this is structural: whatever leaves
+            // this method other than a settled classification runs the same cleanup. It cannot itself be
+            // token-bound (the token is already signalled by the time we get here), and it is pure
+            // synchronous file IO, so it is not.
+            if (!waveSettled)
             {
-                // Option P — proceed-with-recorded-unreviewed-risk: record the indelible proceeded-unreviewed
-                // decision, then hand the authored wave back to the loop to RUN (skip the review halt). The
-                // run can never be reported fully-reviewed-green; the recorded decision is the durable teeth.
-                RecordProceededUnreviewed(policy, wave.Dir, authoredTaskCount);
-                return JitCheckpointOutcome.Proceed(authoredWave);
+                LeaveWaveLoadable(plan, wave, inventory, rejectedRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drive up to <see cref="MaxBreakdownSegments"/> breakdown segments for one wave in one run, gating each
+    /// on the deterministic in-process <c>guardrails validate</c> and classifying on DIAGNOSTIC CODES plus
+    /// the runner's own termination classification — never on the breakdown's opinion of its own completeness
+    /// (invariant 1, design 20 §C6).
+    /// </summary>
+    private async Task<JitCheckpointOutcome> RunBreakdownSegmentsAsync(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle integ,
+        Dictionary<string, TaskResult> settled, AutonomyPolicy policy, string invocationToken,
+        BreakdownInventory? inventory, string rejectedRoot, CancellationToken cancellationToken)
+    {
+        string breakdownLogDir = Path.GetDirectoryName(rejectedRoot)!;
+
+        for (int segment = 1; segment <= MaxBreakdownSegments; segment++)
+        {
+            int completeBefore = CountSatisfiedDeclaredFolders(wave);
+            BreakdownResumeContext? resume = segment == 1 ? null : BuildResumeContext(wave, segment);
+
+            WaveBreakdownOutcome outcome = await _breakdownInvoker!
+                .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal,
+                    cancellationToken, resume)
+                .ConfigureAwait(false);
+
+            // Sweep the half-written TRAILING task folder(s) this attempt created before the gate runs, so an
+            // "11 complete + 1 with a task.json and no action file" truncation is judged as the 11-task valid
+            // prefix it is — rather than discarding 79% of the work because of one missing file (§4.3).
+            inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
+
+            (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
+                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
+
+            BreakdownIntent? intent = BreakdownIntent.TryRead(wave.Directory);
+            IReadOnlyList<string> missing = intent?.MissingFolders(wave.Directory) ?? [];
+            int declared = intent?.DeclaredFolders().Count ?? 0;
+
+            if (!valid || authoredTaskCount == 0)
+            {
+                return FailBreakdown(plan, wave, settled, policy, invocationToken, inventory, rejectedRoot,
+                    outcome, report, authoredTaskCount, reason: null);
             }
 
-            // Option E (default) — escalate to a human review pass: record the breakdown-complete audit, raise
-            // a review-gate escalation through the shipped IEscalationSink (a human must run /guardrails-review
-            // before the wave runs), and keep the shipped BreakdownComplete halt so later waves stay blocked
-            // behind the barrier.
-            DecisionEntry done = DriftDecisions.WaveBreakdownComplete(policy, wave.Dir, invocationToken, authoredTaskCount);
-            _journal.RecordDecision(done);
-            _observer.DecisionRecorded(done);
-            if (_escalationSink is not null)
+            if (outcome.TerminatedCleanly && missing.Count == 0)
             {
-                EscalateReviewGate(authoredWave ?? wave);
+                RemoveIntentManifest(wave); // its lifetime is one breakdown attempt
+                return CompleteBreakdown(plan, wave, settled, policy, invocationToken, authoredWave, authoredTaskCount);
             }
 
-            return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
-                with { WaveHalt = BuildBreakdownCompleteHalt(wave, authoredTaskCount) });
+            // From here the session was CUT OFF, or the wave is short of its own declaration — either way it
+            // can NEVER be reported BreakdownComplete (§4.2), whatever validate says.
+            if (intent is null)
+            {
+                // No manifest, so nothing durable distinguishes this prefix from a finished wave on the NEXT
+                // run — and a valid prefix that reads as finished is strictly worse than a loud quarantine.
+                // Salvage is exactly what the manifest buys; without it we keep today's behaviour.
+                return FailBreakdown(plan, wave, settled, policy, invocationToken, inventory, rejectedRoot,
+                    outcome, report, authoredTaskCount,
+                    reason: $"The session {outcome.CutOffCause}, and the wave carries no "
+                            + $"'state/{BreakdownIntent.FileName}' declaring what it intended to author, so "
+                            + "the harness cannot tell a finished wave from a truncated prefix. The partial "
+                            + "output is quarantined rather than silently read as complete.");
+            }
+
+            int completeAfter = declared - missing.Count;
+            bool noProgress = completeAfter <= completeBefore;
+            bool costCapHit = _plan.Config.MaxCostUsd is { } cap && _journal.CurrentCostUsd() >= cap;
+            bool lastSegment = segment == MaxBreakdownSegments;
+
+            if (missing.Count == 0 || noProgress || costCapHit || lastSegment)
+            {
+                return IncompleteBreakdown(plan, wave, settled, policy, invocationToken, outcome,
+                    declared, completeAfter, missing, segment,
+                    stopReason: StopReasonFor(missing.Count == 0, noProgress, costCapHit, lastSegment));
+            }
+
+            // Otherwise: resume. The next segment is told what is already on disk and what is still owed, so
+            // the 232 KB brief is not re-paid for work already done (§4.5).
         }
 
-        // BreakdownFailed — quarantine the partial output (or the no-op empty wave) and keep the plan loadable.
-        string quarantineDir = QuarantinePartialWave(wave, breakdownLogDir);
-        string detail = ComposeBreakdownFailedDetail(report, outcome, quarantineDir, authoredTaskCount);
+        // Unreachable: the loop's last iteration always returns (lastSegment is true there).
+        throw new InvalidOperationException("breakdown segment loop exited without settling the wave");
+    }
+
+    /// <summary>The BreakdownComplete path, unchanged in behaviour (doc 12 §5.2, #361 Phase 4).</summary>
+    private JitCheckpointOutcome CompleteBreakdown(
+        PlanDefinition plan, WaveNode wave, Dictionary<string, TaskResult> settled, AutonomyPolicy policy,
+        string invocationToken, WaveNode? authoredWave, int authoredTaskCount)
+    {
+        // The wave was authored + passed 'guardrails validate' — it is now UNREVIEWED. Resolve the
+        // review-gate FLOOR (doc 12 §5.2, issue #361 Phase 4) by consulting the configured threshold.
+        // NEITHER branch writes a review marker — the harness never self-attests a review at any dial
+        // setting (§5 floor 3, #375).
+        ReviewGateDecision reviewGate =
+            _plan.Config.Autonomy?.GateThresholds?.ReviewGate ?? ReviewGateDecision.Escalate;
+
+        if (reviewGate == ReviewGateDecision.ProceedUnreviewed && authoredWave is not null)
+        {
+            // Option P — proceed-with-recorded-unreviewed-risk: record the indelible proceeded-unreviewed
+            // decision, then hand the authored wave back to the loop to RUN (skip the review halt). The
+            // run can never be reported fully-reviewed-green; the recorded decision is the durable teeth.
+            RecordProceededUnreviewed(policy, wave.Dir, authoredTaskCount);
+            return JitCheckpointOutcome.Proceed(authoredWave);
+        }
+
+        // Option E (default) — escalate to a human review pass: record the breakdown-complete audit, raise
+        // a review-gate escalation through the shipped IEscalationSink (a human must run /guardrails-review
+        // before the wave runs), and keep the shipped BreakdownComplete halt so later waves stay blocked
+        // behind the barrier.
+        DecisionEntry done = DriftDecisions.WaveBreakdownComplete(policy, wave.Dir, invocationToken, authoredTaskCount);
+        _journal.RecordDecision(done);
+        _observer.DecisionRecorded(done);
+        if (_escalationSink is not null)
+        {
+            EscalateReviewGate(authoredWave ?? wave);
+        }
+
+        return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildBreakdownCompleteHalt(wave, authoredTaskCount) });
+    }
+
+    /// <summary>
+    /// The BreakdownFailed path: revert exactly what the attempt wrote (§14.11), record the decision, and halt
+    /// with a detail that now NAMES the bound the session hit and states what moved and what was kept.
+    /// </summary>
+    private JitCheckpointOutcome FailBreakdown(
+        PlanDefinition plan, WaveNode wave, Dictionary<string, TaskResult> settled, AutonomyPolicy policy,
+        string invocationToken, BreakdownInventory? inventory, string rejectedRoot,
+        WaveBreakdownOutcome outcome, string validateReport, int authoredTaskCount, string? reason)
+    {
+        RevertSummary revert = RevertScoped(wave, inventory, rejectedRoot);
+        string detail = ComposeBreakdownFailedDetail(
+            validateReport, outcome, rejectedRoot, authoredTaskCount, revert, reason);
         DecisionEntry failed = DriftDecisions.WaveBreakdownFailed(policy, wave.Dir, invocationToken, detail);
         _journal.RecordDecision(failed);
         _observer.DecisionRecorded(failed);
         return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
             with { WaveHalt = BuildBreakdownFailedHalt(wave, detail) });
+    }
+
+    /// <summary>
+    /// The BreakdownIncomplete path (SSOT §14.11): a VALID prefix from a cut-off session, PRESERVED rather
+    /// than quarantined, with the manifest left in place as the resume ticket the JIT checkpoint reads.
+    /// </summary>
+    private JitCheckpointOutcome IncompleteBreakdown(
+        PlanDefinition plan, WaveNode wave, Dictionary<string, TaskResult> settled, AutonomyPolicy policy,
+        string invocationToken, WaveBreakdownOutcome outcome,
+        int declared, int complete, IReadOnlyList<string> missing, int segments, string stopReason)
+    {
+        string detail = ComposeBreakdownIncompleteDetail(wave, outcome, declared, complete, missing, segments, stopReason);
+        DecisionEntry entry = DriftDecisions.WaveBreakdownIncomplete(
+            policy, wave.Dir, invocationToken, complete, declared, detail);
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+        return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildBreakdownIncompleteHalt(wave, declared, complete, detail) });
     }
 
     /// <summary>
@@ -1531,17 +1694,29 @@ public sealed class Scheduler
         return (valid, report, authoredTaskCount, authoredWave);
     }
 
+    /// <summary>The hard cap on breakdown segments for ONE wave in ONE run (SSOT §14.11, design 20 §4.5).</summary>
+    private const int MaxBreakdownSegments = 3;
+
     /// <summary>
-    /// Quarantine a <see cref="WaveHaltKind.BreakdownFailed"/> wave's partial invalid <c>tasks/</c> to
-    /// <c>logs/&lt;runId&gt;/&lt;wave-dir&gt;/breakdown/rejected/tasks/</c> and RESTORE an empty stub
-    /// <c>tasks/</c> — so a partial invalid wave never wedges the next resume's plan LOAD (§14.4/doc 11 §9.4),
-    /// the checkpoint cleanly re-fires, and the rejected output is preserved for a human. Best-effort with a
-    /// revert (empty the stub) fallback if the move fails. Returns the quarantine root for the halt detail.
+    /// Revert exactly what the breakdown attempt wrote and nothing it did not (SSOT §14.11, #471). With an
+    /// inventory this is precise: attempt-written files move to <c>rejected/</c> preserving relative paths,
+    /// pre-existing files are restored byte-for-byte, and untouched pre-existing files — a human's
+    /// hand-authored wave gate among them — are left where they are. Without one (the capture itself failed)
+    /// it degrades to the pre-#471 whole-<c>tasks/</c> move, because a guess about provenance is worse than
+    /// a coarse but honest fallback.
     /// </summary>
-    private static string QuarantinePartialWave(WaveNode wave, string breakdownLogDir)
+    private static RevertSummary RevertScoped(WaveNode wave, BreakdownInventory? inventory, string rejectedRoot) =>
+        inventory?.Revert(rejectedRoot) ?? QuarantineWholeTasksFolder(wave, rejectedRoot);
+
+    /// <summary>
+    /// The pre-#471 fallback: move the whole <c>tasks/</c> to <c>rejected/tasks/</c> and RESTORE an empty stub
+    /// — so a partial invalid wave never wedges the next resume's plan LOAD (§14.4/doc 11 §9.4), the
+    /// checkpoint cleanly re-fires, and the rejected output is preserved for a human. Best-effort with a
+    /// revert (empty the stub) fallback if the move fails. Reached only when the inventory capture failed.
+    /// </summary>
+    private static RevertSummary QuarantineWholeTasksFolder(WaveNode wave, string rejectedRoot)
     {
         string tasksDir = Path.Combine(wave.Directory, "tasks");
-        string rejectedRoot = Path.Combine(breakdownLogDir, "rejected");
         string rejectedTasks = Path.Combine(rejectedRoot, "tasks");
         try
         {
@@ -1577,20 +1752,127 @@ public sealed class Scheduler
             }
         }
 
-        return rejectedRoot;
+        return new RevertSummary { MovedPaths = ["tasks/"] };
     }
 
+    /// <summary>
+    /// The #489 structural cleanup: whatever leaves the breakdown other than a settled classification —
+    /// a Ctrl+C, an unexpected fault — must still leave the plan folder in a state the loader ACCEPTS. Sweep
+    /// the half-written trailing folders, then decide: a valid prefix that a manifest makes RESUMABLE is
+    /// kept (the checkpoint re-fires on it); anything else is reverted to the pre-invocation state. Never
+    /// throws — a cleanup fault must not mask the cancellation it is cleaning up after.
+    /// </summary>
+    private static void LeaveWaveLoadable(
+        PlanDefinition plan, WaveNode wave, BreakdownInventory? inventory, string rejectedRoot)
+    {
+        try
+        {
+            inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
+
+            (bool valid, _, int authoredTaskCount, _) =
+                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
+            bool resumable = BreakdownIntent.TryRead(wave.Directory) is { } intent
+                             && intent.MissingFolders(wave.Directory).Count > 0;
+
+            if (valid && authoredTaskCount > 0 && resumable)
+            {
+                return; // a preserved, resumable prefix — loadable, and the manifest keeps it honest
+            }
+
+            RevertScoped(wave, inventory, rejectedRoot);
+        }
+        catch
+        {
+            // Best-effort by construction: this runs in a finally, often with the token already signalled.
+        }
+    }
+
+    /// <summary>Delete a wave's breakdown-intent manifest unconditionally — the wave has settled, so the attempt is over.</summary>
+    private static void RemoveIntentManifest(WaveNode wave)
+    {
+        try
+        {
+            string path = BreakdownIntent.PathFor(wave.Directory);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // best-effort; a stale satisfied manifest is silent at validate anyway
+        }
+    }
+
+    /// <summary>
+    /// True when the wave carries an UNSATISFIED <c>state/breakdown-intent.json</c> — the durable signal that
+    /// a cut-off breakdown left a valid PREFIX rather than a finished wave (SSOT §14.11, GR2063). It is what
+    /// re-opens the JIT checkpoint on a wave that already has tasks, so the remainder is RESUMED instead of
+    /// the partial wave being run as though it were whole. Absent or satisfied manifest ⇒ false (the wave is
+    /// authored, and the checkpoint stays closed exactly as before).
+    /// </summary>
+    private static bool HasUnsatisfiedBreakdownIntent(WaveNode wave) =>
+        BreakdownIntent.TryRead(wave.Directory) is { } intent
+        && intent.MissingFolders(wave.Directory).Count > 0;
+
+    /// <summary>How many of the manifest's declared folders exist COMPLETE on disk right now (0 with no manifest).</summary>
+    private static int CountSatisfiedDeclaredFolders(WaveNode wave) =>
+        BreakdownIntent.TryRead(wave.Directory) is { } intent
+            ? intent.DeclaredFolders().Count - intent.MissingFolders(wave.Directory).Count
+            : 0;
+
+    /// <summary>Build the resume context for segment <paramref name="segment"/> from the manifest + what is on disk.</summary>
+    private static BreakdownResumeContext? BuildResumeContext(WaveNode wave, int segment)
+    {
+        if (BreakdownIntent.TryRead(wave.Directory) is not { } intent)
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> declared = intent.DeclaredFolders();
+        IReadOnlyList<string> owed = intent.MissingFolders(wave.Directory);
+        var owedSet = new HashSet<string>(owed, StringComparer.Ordinal);
+        return new BreakdownResumeContext
+        {
+            Segment = segment,
+            MaxSegments = MaxBreakdownSegments,
+            DeclaredCount = declared.Count,
+            CompleteFolders = [.. declared.Where(f => !owedSet.Contains(f))],
+            OwedFolders = owed
+        };
+    }
+
+    /// <summary>Why the segment loop stopped, in one clause the halt detail can carry verbatim.</summary>
+    private static string StopReasonFor(bool nothingOwed, bool noProgress, bool costCapHit, bool lastSegment) =>
+        nothingOwed
+            ? "every declared task folder is present and the wave validates, but the session never reported "
+              + "completion, so the harness will not call it complete"
+            : noProgress
+                ? "the last segment added no complete task folder, so resuming again would repeat it"
+                : costCapHit
+                    ? "the run's 'maxCostUsd' cap is reached, so no further segment was spent"
+                    : lastSegment
+                        ? $"the {MaxBreakdownSegments}-segment cap for one wave in one run is reached"
+                        : "the segment loop stopped";
+
     private static string ComposeBreakdownFailedDetail(
-        string validateReport, WaveBreakdownOutcome outcome, string quarantineDir, int authoredTaskCount)
+        string validateReport, WaveBreakdownOutcome outcome, string quarantineDir, int authoredTaskCount,
+        RevertSummary revert, string? reason)
     {
         var sb = new StringBuilder();
-        if (outcome.Error is { Length: > 0 } err)
+        if (reason is { Length: > 0 })
+        {
+            sb.Append(reason).Append('\n');
+        }
+        else if (outcome.Error is { Length: > 0 } err)
         {
             sb.Append($"The breakdown invocation faulted: {err}\n");
         }
-        else if (!outcome.ProcessCompleted)
+        else if (!outcome.TerminatedCleanly)
         {
-            sb.Append("The breakdown invocation did not complete cleanly.\n");
+            // Milestone 1 (#385): NAME the bound. "Timeout" and "MaxTurns" are two different remedies and
+            // only the second one is a budget — the halt used to say neither.
+            sb.Append($"The breakdown session {outcome.CutOffCause}{TurnEvidence(outcome)}.\n");
         }
 
         if (authoredTaskCount == 0 && string.IsNullOrWhiteSpace(validateReport))
@@ -1604,10 +1886,74 @@ public sealed class Scheduler
             sb.Append('\n');
         }
 
-        sb.Append($"The partial output was quarantined (the wave reverted to its empty stub) to:\n  {quarantineDir}\n");
+        AppendRevertSummary(sb, quarantineDir, revert);
         sb.Append("The plan stays loadable and this checkpoint re-fires on the next 'guardrails run'. Fix the "
                   + "brief or author the wave manually, then re-run.");
         return sb.ToString();
+    }
+
+    private static string ComposeBreakdownIncompleteDetail(
+        WaveNode wave, WaveBreakdownOutcome outcome, int declared, int complete,
+        IReadOnlyList<string> missing, int segments, string stopReason)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"The breakdown session {outcome.CutOffCause}{TurnEvidence(outcome)} after authoring ")
+          .Append($"{complete} of {declared} declared task(s) across {segments} segment(s); {stopReason}.\n");
+        sb.Append("The valid prefix was PRESERVED — nothing was quarantined, and nothing that pre-dated the "
+                  + "attempt was touched.\n");
+        if (missing.Count > 0)
+        {
+            sb.Append($"Still owed ({missing.Count}): {string.Join(", ", missing)}\n");
+            sb.Append($"Re-run 'guardrails run' to RESUME '{wave.Dir}' from the manifest — the harness authors "
+                      + "only the folders still owed, and does not re-pay for the tasks already on disk.\n");
+        }
+        else
+        {
+            sb.Append($"Nothing is owed. Review '{wave.Dir}/tasks/', then delete "
+                      + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' to accept the wave as authored.\n");
+        }
+
+        sb.Append("'guardrails validate' reports GR2063 for this wave until the manifest is satisfied or "
+                  + "removed; that warning is the record of the shortfall, not a defect in the prefix.");
+        return sb.ToString();
+    }
+
+    /// <summary>The turn evidence beside the cut-off cause — the number that told us the turn cap was never binding.</summary>
+    private static string TurnEvidence(WaveBreakdownOutcome outcome) =>
+        outcome.NumTurns is { } turns
+            ? outcome.MaxTurns is { } cap ? $" (used {turns} of {cap} turns)" : $" (used {turns} turns)"
+            : "";
+
+    /// <summary>
+    /// State plainly what the quarantine moved and what it kept (#471 §5.3). The old text — "the wave
+    /// reverted to its empty stub" — was false in the direction that misleads: eight files stayed behind.
+    /// </summary>
+    private static void AppendRevertSummary(StringBuilder sb, string quarantineDir, RevertSummary revert)
+    {
+        sb.Append("Everything this attempt wrote was reverted; nothing that pre-dated it was touched.\n");
+        sb.Append($"  moved to      : {quarantineDir}\n");
+        sb.Append($"  files moved   : {DescribePaths(revert.MovedPaths)}\n");
+        if (revert.RestoredPaths.Count > 0)
+        {
+            sb.Append($"  restored      : {DescribePaths(revert.RestoredPaths)}\n");
+        }
+
+        sb.Append($"  left in place : {DescribePaths(revert.KeptPaths)} (pre-existing)\n");
+        sb.Append("The wave folder is byte-identical to its pre-breakdown state; PlanDefinitionHash is unchanged.\n");
+    }
+
+    /// <summary>A short, bounded rendering of a path list for a halt detail (never an unbounded wall of paths).</summary>
+    private static string DescribePaths(IReadOnlyList<string> paths)
+    {
+        const int max = 8;
+        if (paths.Count == 0)
+        {
+            return "(none)";
+        }
+
+        return paths.Count <= max
+            ? string.Join(", ", paths)
+            : $"{string.Join(", ", paths.Take(max))} … (+{paths.Count - max} more)";
     }
 
     private static WaveHalt BuildBreakdownCompleteHalt(WaveNode wave, int taskCount)
@@ -1635,6 +1981,17 @@ public sealed class Scheduler
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.BreakdownFailed,
             Headline = $"Wave '{wave.Dir}' breakdown FAILED validation — partial output quarantined (SSOT §14.4).",
+            Detail = detail,
+            WaveDirectory = wave.Directory
+        };
+
+    private static WaveHalt BuildBreakdownIncompleteHalt(WaveNode wave, int declared, int complete, string detail) =>
+        new()
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.BreakdownIncomplete,
+            Headline = $"Wave '{wave.Dir}' breakdown INCOMPLETE — {complete} of {declared} declared task(s) "
+                       + "authored; the valid prefix is preserved for resume (SSOT §14.11).",
             Detail = detail,
             WaveDirectory = wave.Directory
         };

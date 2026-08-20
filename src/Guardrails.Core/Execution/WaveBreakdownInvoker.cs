@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 
@@ -84,16 +85,18 @@ public sealed class WaveBreakdownInvoker
         string integrationWorktreePath,
         string breakdownLogDir,
         ISchedulerJournal journal,
-        CancellationToken ct)
+        CancellationToken ct,
+        BreakdownResumeContext? resume = null)
     {
         try
         {
             Directory.CreateDirectory(breakdownLogDir);
-            string composedPromptPath = Path.Combine(breakdownLogDir, "composed-prompt.md");
-            string streamLogPath = Path.Combine(breakdownLogDir, "claude-stream.jsonl");
-            string transcriptLogPath = Path.Combine(breakdownLogDir, "transcript.md");
+            string suffix = resume is null ? "" : $"-segment-{resume.Segment}";
+            string composedPromptPath = Path.Combine(breakdownLogDir, $"composed-prompt{suffix}.md");
+            string streamLogPath = Path.Combine(breakdownLogDir, $"claude-stream{suffix}.jsonl");
+            string transcriptLogPath = Path.Combine(breakdownLogDir, $"transcript{suffix}.md");
 
-            string prompt = ComposePrompt(wave, plan, integrationWorktreePath);
+            string prompt = ComposePrompt(wave, plan, integrationWorktreePath, resume);
             try { File.WriteAllText(composedPromptPath, prompt); } catch { /* best-effort log tee */ }
 
             // Scale the turn budget to the wave's size (issue #385): a generous base that covers a large wave
@@ -134,6 +137,12 @@ public sealed class WaveBreakdownInvoker
             return new WaveBreakdownOutcome
             {
                 ProcessCompleted = result.Completed && !result.IsError,
+                // Issue #385 milestone 1: the runner ALREADY classifies why it stopped; discarding it is why
+                // the two measured truncations were reconstructible only from file mtimes and why the halt
+                // said "did not complete cleanly", leaving the operator to guess between skill bug and budget.
+                FailureKind = result.FailureKind,
+                NumTurns = result.NumTurns,
+                MaxTurns = maxTurns,
                 Summary = result.Summary
             };
         }
@@ -141,7 +150,12 @@ public sealed class WaveBreakdownInvoker
         {
             // A runner fault (e.g. the runner binary off PATH) must never crash the run — the caller's
             // deterministic validate gate then reports BreakdownFailed with this error carried in the detail.
-            return new WaveBreakdownOutcome { ProcessCompleted = false, Error = ex.Message };
+            return new WaveBreakdownOutcome
+            {
+                ProcessCompleted = false,
+                FailureKind = PromptFailureKind.Error,
+                Error = ex.Message
+            };
         }
     }
 
@@ -187,10 +201,16 @@ public sealed class WaveBreakdownInvoker
     /// (a stub runner in tests ignores it); the load-bearing parts are the target, the integration path, and
     /// the "write into &lt;wave&gt;/tasks/, self-validate, present as a draft" instruction.
     /// </summary>
-    private static string ComposePrompt(WaveNode wave, PlanDefinition plan, string integrationWorktreePath)
+    private static string ComposePrompt(
+        WaveNode wave, PlanDefinition plan, string integrationWorktreePath, BreakdownResumeContext? resume)
     {
         var sb = new StringBuilder();
         sb.Append("# Between-wave breakdown invocation (Guardrails harness, #360)\n\n");
+        if (resume is not null)
+        {
+            AppendResumeSection(sb, wave, resume);
+        }
+
         sb.Append($"Break down the JIT wave `{wave.Dir}` of the plan at `{plan.PlanDirectory}` into its ")
           .Append("`tasks/` folder — a dependency DAG of tasks, each with an action and deterministic-first ")
           .Append("guardrails — using the `plan-breakdown` skill.\n\n");
@@ -225,6 +245,32 @@ public sealed class WaveBreakdownInvoker
     }
 
     /// <summary>
+    /// Prepend the RESUME instruction (SSOT §14.11, design 20 §4.5) for a segment after the first: the wave
+    /// already carries a valid PREFIX from a cut-off segment, so the remaining work is the manifest's
+    /// unsatisfied tail — not the whole wave. Naming the complete folders as DONE is what stops the 232 KB
+    /// brief being re-paid for work already on disk, and naming the owed folders is what stops the segment
+    /// re-deciding the decomposition (the harness, not the judge, owns completeness — invariant 1).
+    /// </summary>
+    private static void AppendResumeSection(StringBuilder sb, WaveNode wave, BreakdownResumeContext resume)
+    {
+        sb.Append($"## RESUME — segment {resume.Segment} of at most {resume.MaxSegments}\n\n");
+        sb.Append($"A previous breakdown segment for `{wave.Dir}` was CUT OFF before it finished. Its output ")
+          .Append("is VALID and has been KEPT: do NOT re-author it, do NOT delete it, and do NOT re-plan the ")
+          .Append("decomposition. Author ONLY the folders still owed, exactly as declared.\n\n");
+        sb.Append($"- Declared decomposition: `{wave.Dir}/state/{BreakdownIntent.FileName}` ")
+          .Append($"({resume.DeclaredCount} task(s))\n");
+        sb.Append($"- Already complete ({resume.CompleteFolders.Count}): ")
+          .Append(resume.CompleteFolders.Count == 0 ? "(none)" : string.Join(", ", resume.CompleteFolders))
+          .Append('\n');
+        sb.Append($"- Still owed ({resume.OwedFolders.Count}): ")
+          .Append(resume.OwedFolders.Count == 0 ? "(none)" : string.Join(", ", resume.OwedFolders))
+          .Append("\n\n");
+        sb.Append("Write each owed task folder COMPLETELY (its `task.json` AND its action file AND its ")
+          .Append("guardrails) before starting the next one, so a further cut-off still leaves a valid ")
+          .Append("prefix. Leave the manifest in place; the harness removes it when the wave is finished.\n\n");
+    }
+
+    /// <summary>
     /// Best-effort locate + read the bundled <c>plan-breakdown</c> SKILL.md so it can be inlined. The tool
     /// bundles skills beside the entry assembly under <c>skills/</c> (dev-knowledge: the packer sweeps
     /// copy-to-output content into the nupkg next to <see cref="AppContext.BaseDirectory"/>); a test host has
@@ -252,9 +298,72 @@ public sealed record WaveBreakdownOutcome
     /// <summary>True when the runner produced a terminal result without error (the authoring session itself completed).</summary>
     public required bool ProcessCompleted { get; init; }
 
+    /// <summary>
+    /// WHY the session stopped, as the runner already classified it (SSOT §9, issue #385 milestone 1).
+    /// The invoker used to discard this, which is why the halt could only say "the breakdown invocation did
+    /// not complete cleanly" and the operator was left guessing between a skill bug and a budget — and why
+    /// the two measured truncations had to be diagnosed from file mtimes. Two of these values point at two
+    /// DIFFERENT remedies, and only one of them is a budget.
+    /// </summary>
+    public PromptFailureKind FailureKind { get; init; } = PromptFailureKind.None;
+
+    /// <summary>Turns the runner reported for the session; null when unknown. The evidence for §3.2's verdict that the turn cap was never the binding constraint.</summary>
+    public int? NumTurns { get; init; }
+
+    /// <summary>The turn CEILING this invocation was given, so <see cref="NumTurns"/> can be read against it.</summary>
+    public int? MaxTurns { get; init; }
+
     /// <summary>A short human-readable summary of the runner outcome, for the breakdown log / halt detail.</summary>
     public string? Summary { get; init; }
 
     /// <summary>Set only when the invocation FAULTED (the runner threw) — carried into a <c>BreakdownFailed</c> halt's detail.</summary>
     public string? Error { get; init; }
+
+    /// <summary>
+    /// True only when the authoring session reached a clean terminal result. A session that was CUT OFF —
+    /// timeout, turn cap, output cap, a fault, or simply no terminal result — is never clean, and per
+    /// SSOT §14.4 such a session can NEVER be reported <c>BreakdownComplete</c> whatever <c>validate</c> says:
+    /// a valid prefix that reads as a finished wave is strictly worse than today's loud quarantine.
+    /// </summary>
+    public bool TerminatedCleanly =>
+        ProcessCompleted && Error is null && FailureKind == PromptFailureKind.None;
+
+    /// <summary>The bound the session hit, in the operator's words — the halt-detail sentence for milestone 1.</summary>
+    public string CutOffCause => FailureKind switch
+    {
+        PromptFailureKind.Timeout => "was CUT OFF by the breakdown timeout",
+        PromptFailureKind.MaxTurns => MaxTurns is { } cap
+            ? $"ran out of TURNS (cap {cap})"
+            : "ran out of TURNS",
+        PromptFailureKind.OutputCap => "hit the runner's OUTPUT-TOKEN cap",
+        PromptFailureKind.Transient => "stopped on a transient runner condition (rate limit / overload)",
+        PromptFailureKind.Error => Error is { Length: > 0 } err
+            ? $"FAULTED: {err}"
+            : "reported an error",
+        _ => "did not reach a terminal result"
+    };
+}
+
+/// <summary>
+/// The bounded RESUME context for a breakdown segment after the first (SSOT §14.11, design 20 §4.5): what the
+/// manifest declared, what is already complete on disk, and what is still owed. Computed by the harness from
+/// the declared list plus the loader's completeness predicate — never from the breakdown's own opinion of
+/// whether it finished (invariant 1).
+/// </summary>
+public sealed record BreakdownResumeContext
+{
+    /// <summary>This segment's 1-based number (the first invocation is segment 1 and carries no resume context).</summary>
+    public required int Segment { get; init; }
+
+    /// <summary>The hard segment cap for one wave in one run.</summary>
+    public required int MaxSegments { get; init; }
+
+    /// <summary>How many task folders the manifest declared.</summary>
+    public required int DeclaredCount { get; init; }
+
+    /// <summary>Declared folders that already exist COMPLETE on disk.</summary>
+    public required IReadOnlyList<string> CompleteFolders { get; init; }
+
+    /// <summary>Declared folders with no complete task folder yet — this segment's whole job.</summary>
+    public required IReadOnlyList<string> OwedFolders { get; init; }
 }

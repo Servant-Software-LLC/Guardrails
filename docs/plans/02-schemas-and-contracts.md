@@ -111,7 +111,9 @@ runtime state (`run.json` in particular rewrites every run and would churn the r
 harness therefore scaffolds a **plan-root `.gitignore`** (`StateManager.Initialize` →
 `PlanGitignore`), listing **exactly the `RunReset.Fresh` transient set** — the plan-root `/logs/` tree
 and the `state/` runtime files `/state/run.json`, `/state/state.json`, `/state/merge-conflicts.log`,
-`/state/captured/`. The set spans BOTH scopes (plan root + `state/`), so a single `state/.gitignore`
+`/state/captured/`, plus `/wave-*/state/breakdown-intent.json` (§14.11 — named file-by-file, because
+`state/guardrails-review.json` sitting beside it in the same wave folder IS committed).
+The set spans BOTH scopes (plan root + `state/`), so a single `state/.gitignore`
 could not cover `logs/`; hence one plan-root file with leading-slash-anchored patterns. It is a
 **denylist** (not an allow-nothing-then-whitelist), so every committed artifact — `guardrails.json`,
 `tasks/**`, `preflights/**`, `guardrails/**`, `guardrails.baseline`, `state/seed.json`,
@@ -1870,8 +1872,9 @@ analysis — the default remains that the harness does not mutate the user's che
 - `state/state.json` (runtime, gitignored): the merged state. Created at run start
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
-  `merge-conflicts.log`, `state/captured/`, and the plan-root `logs/` tree (all runs'
-  attempt artifacts and any static log site, on-the-fly or exported, §8/§12.3). It **also tears down
+  `merge-conflicts.log`, `state/captured/`, every wave's `state/breakdown-intent.json` (§14.11 — one
+  breakdown attempt's lifetime; leaving it would resume a half-authored wave), and the plan-root `logs/`
+  tree (all runs' attempt artifacts and any static log site, on-the-fly or exported, §8/§12.3). It **also tears down
   the plan branch `guardrails/<plan-name>` and its worktrees** (issue #274, part B): the plan branch is
   the durable cross-run resume record — its `Guardrails-Task:` trailers drive the "already succeeded,
   skip it" pre-pass (§7) — so, unlike the stale segment/fork branch prune which deliberately *preserves*
@@ -3169,14 +3172,20 @@ logs/<runId>/<wave-dir>/breakdown/
 ├── composed-prompt.md      # the composed plan-breakdown invocation (target brief + integration-worktree path)
 ├── claude-stream.jsonl     # the raw runner output stream (canonical debug artifact)
 ├── transcript.md           # the deterministic transcript projection of the stream (#27)
-└── rejected/               # BreakdownFailed ONLY: the quarantined partial invalid output (§14.4/doc 11 §9.4)
-    └── tasks/              #   the partial `tasks/` moved out of the plan tree so the plan stays loadable
+├── *-segment-N.*           # the same three artifacts for RESUME segment N (§14.11); segment 1 is unsuffixed
+├── pre-invocation.json     # the pre-invocation inventory: path → (size, sha256) of the wave's hashed subtrees
+├── pre-invocation/         #   their BYTES, so an overwritten pre-existing file is restorable (§14.11)
+└── rejected/               # what a revert moved out of the plan tree (§14.11), preserving relative paths
+    ├── tasks/              #   swept incomplete trailing task folders, and (on a revert) attempt-written tasks
+    ├── guardrails/         #   attempt-written wave EXIT-gate files — never a pre-existing hand-authored one
+    └── preflights/         #   attempt-written wave ENTRY-gate files
 ```
 
-On `BreakdownFailed`, the partial invalid `tasks/` the invocation authored is MOVED to
-`logs/<runId>/<wave-dir>/breakdown/rejected/tasks/` (the wave reverts to its empty stub) so a partial invalid
-wave never wedges the next resume's plan LOAD and the JIT checkpoint cleanly re-fires — the most useful
-debugging artifact for a breakdown-skill bug, preserved outside the loadable plan tree.
+`rejected/` is written on a `BreakdownFailed` revert, by the incomplete-trailing-folder **sweep** that precedes
+every gate, and by the #489 cancellation cleanup — so a partial invalid wave never wedges the next resume's
+plan LOAD and the JIT checkpoint cleanly re-fires. It holds **exactly what the attempt wrote** (§14.11): the
+most useful debugging artifact for a breakdown-skill bug, preserved outside the loadable plan tree, with every
+pre-existing file left in place.
 
 At the **run** level (`logs/<runId>/`, spanning tasks AND waves — unlike the per-task `overwatch.jsonl`),
 **autonomous mode** (`docs/plans/12-autonomous-mode.md`, issue #361 Phase 3) writes two additive artifacts:
@@ -3820,14 +3829,17 @@ materialized upstream (SSOT §14.4 Decision D / the #197 flow — NOT the read-o
 prompt spend is charged to the shared `overheadCostUsd` sink (§7, #314), folded into `maxCostUsd` and the
 reported total. There is no `guardrailOverrides` (a skill invocation has no verifier sub-path); the
 deterministic gate on its output is the harness re-running `guardrails validate` (§14.4/doc 11 §9.4), never
-the judge that produced the wave. **Turn budget (issue #385):** authoring a whole wave is a long session, so
-the invocation's `--max-turns` is a **generous base that also SCALES with the wave's brief size** — a fixed
-floor (well above the per-task action default, enough on its own to author a large ~11-task wave) plus per-
-work-item headroom counted from the wave's `brief.md`, hard-capped. `--max-turns` is a ceiling not a target
-(the agent stops when the wave is authored + self-validated), so the headroom is free for a small wave and
-only ever protects a wave large enough to otherwise truncate mid-authoring into an invalid partial (the #385
-GR1001-quarantine incident). The exact numbers are an internal `WaveBreakdownInvoker` constant, not a wire
-contract.
+the judge that produced the wave. **Session bounds (issues #385/#402).** Authoring a whole wave is a long
+session bounded by turns (`--max-turns`) and wall clock (a 30-minute timeout). **Neither bound can be sized
+from the invocation.** The only signal available is `brief.md`'s work-item count, which under-declares the
+eventual task count by 3–5×; the task count is a *result* of the breakdown, not an input to it. Two measured
+truncations (2026-07-23 pre-fix, 2026-08-17 post-fix) both stopped at exactly the 30-minute timeout, and a
+cleanly-completed session of the same shape reported `num_turns: 35` — the turn cap was never the binding
+constraint, before or after it was raised. The turn budget therefore remains a generous internal ceiling
+(a fixed base plus per-work-item headroom from the brief, hard-capped; a `WaveBreakdownInvoker` constant,
+not a wire contract), **not a fix**: durability comes from §14.11 (declared intent, prefix preservation, and
+bounded resume), and the runner's `FailureKind` is carried into the halt so the operator is told which bound
+was hit.
 
 **Triggers — deterministic, EAGER, at most once per attempt (#305 Decision C).** The harness (never the
 judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager `attempt ≥ 2`** trigger:
@@ -5562,6 +5574,7 @@ plan-name/
     ├── guardrails.baseline          #   OPTIONAL, per-wave (§11)
     ├── diagram.md / diagram.html
     ├── state/guardrails-review.json  #  OPTIONAL, per-wave review marker (§13), keyed on WaveDefinitionHash
+    ├── state/breakdown-intent.json   #  TRANSIENT, one breakdown attempt (§14.11) — hash-excluded
     └── tasks/<NN-verb-object>/…      #  the wave's task DAG
     wave-02-<slug>/ …
 ```
@@ -5662,10 +5675,17 @@ resume pre-pass, integration/settle — are unchanged). Per wave, in strict orde
    passing `wave-NN-slug/brief.md` as the target and injecting the integration worktree via a second
    `--add-dir` so the sub-process reads the **materialized** upstream (not the read-only user checkout). Its
    spend is charged to `overheadCostUsd` (§7). The output is gated by the **deterministic** re-run of
-   `guardrails validate` in-process (invariant 1, never the judge that produced it): **PASS →
-   `WaveHaltKind.BreakdownComplete`** (halt for the human review gate); **FAIL → `WaveHaltKind.BreakdownFailed`**,
-   which **QUARANTINES** the partial invalid `tasks/` to `logs/<runId>/<wave-dir>/breakdown/rejected/` and
-   reverts the wave to its empty stub so the plan stays loadable and the checkpoint re-fires on resume (§9.4).
+   `guardrails validate` in-process (invariant 1, never the judge that produced it), classified on
+   **diagnostic codes**: **clean validate after a cleanly-terminated session → `WaveHaltKind.BreakdownComplete`**
+   (halt for the human review gate); **any error other than `GR2063` → `WaveHaltKind.BreakdownFailed`**, which
+   quarantines to `logs/<runId>/<wave-dir>/breakdown/rejected/` and reverts the wave (§14.11);
+   **otherwise → `WaveHaltKind.BreakdownIncomplete`** — a valid but short prefix, which is **preserved, not
+   quarantined**, and resumed (§14.11). **A session that did not terminate cleanly (`FailureKind ∈ {Timeout,
+   MaxTurns, OutputCap}`, a fault, a cancellation, or no terminal result) can NEVER be reported
+   `BreakdownComplete`, whatever `validate` says** — a valid prefix that reads as a finished wave is worse
+   than a loud quarantine (invariant 5). The checkpoint **also re-fires for a wave that already HAS tasks but
+   carries an unsatisfied `state/breakdown-intent.json`** (§14.11): that manifest is the only durable signal
+   separating "11 of 14, resume me" from "authored, run me".
    The checkpoint records a **`boundary:"wave"` `decisions[]` entry** for every outcome
    (`halted`/`prompted-approved`/`prompted-declined`/`auto-applied`). **The review gate is NEVER
    auto-satisfied** at any policy: after `BreakdownComplete` the run HALTS for the human to run
@@ -5798,9 +5818,9 @@ convention — #360 Phase 0/1 (LANDED):** the between-wave checkpoint recognizes
 ACTOR (`WaveBreakdownInvoker`) now INVOKES `plan-breakdown` at the checkpoint through the reserved
 `breakdown` prompt-runner profile (§9, full authoring tool set + the integration-worktree `--add-dir`),
 charges its spend to `overheadCostUsd`, gates the output on the DETERMINISTIC in-process `guardrails validate`
-(`BreakdownComplete` → halt for review / `BreakdownFailed` → quarantine the partial to
-`logs/<runId>/<wave-dir>/breakdown/rejected/` so the plan stays loadable), and NEVER auto-satisfies the review
-gate. **Invocation is gated by `autoBreakdown` (§2, DEFAULT `true`), decoupled from `autonomyPolicy`:** a
+(`BreakdownComplete` → halt for review / `BreakdownIncomplete` → preserve the valid prefix and resume (§14.11)
+/ `BreakdownFailed` → quarantine the partial to `logs/<runId>/<wave-dir>/breakdown/rejected/` so the plan stays
+loadable), and NEVER auto-satisfies the review gate. **Invocation is gated by `autoBreakdown` (§2, DEFAULT `true`), decoupled from `autonomyPolicy`:** a
 present `brief.md` auto-fires the breakdown with no prompt at any policy (§14.4 table); `autoBreakdown:false`
 falls back to the #368 `autonomyPolicy`-gated path (`auto`, or a `prompt` approval the CLI captures before the
 live region). The criticality dial (`autonomy` block, best-guess, escalation sink) is **Phase 2+**, designed
@@ -5883,3 +5903,61 @@ standing instruction, **the file wins**: re-verify against it immediately before
 **What a `brief.md` should contain** (guidance, not schema): 1–3 paragraphs on what the wave must accomplish;
 the upstream artifacts it builds on (file paths / shapes produced by prior waves); any known intra-wave
 ordering or constraints.
+
+### 14.11 Breakdown durability — declared intent, prefix preservation, resume
+
+*Design of record `20-jit-breakdown-durability.md`; issues #385, #402, #471, #489.* Neither session bound can
+be sized from the invocation (§9.2), so **any** bound is eventually hit by a large enough wave. The answer is
+not a bigger budget — it is making the work **restartable at a boundary**, so hitting a bound costs one task
+rather than the wave.
+
+**Pre-invocation inventory.** Before invoking the breakdown the harness records the wave folder's
+`path → (size, sha256)` to `logs/<runId>/<wave>/breakdown/pre-invocation.json`, and snapshots the bytes of the
+files it found beside it under `logs/<runId>/<wave>/breakdown/pre-invocation/`. It is the harness's own record
+of what pre-dated the attempt (invariant 2), and it makes the revert exact rather than heuristic. Its scope is
+the three subtrees a wave contributes to `PlanDefinitionHash` — `tasks/`, `guardrails/`, `preflights/` — which
+is what makes the hash property below provable rather than hopeful. (The hashes alone would only CLASSIFY a
+file; restoring one the attempt overwrote needs its bytes.)
+
+**Intent manifest.** `plan-breakdown`'s first act on a waved invocation is to write
+`<wave>/state/breakdown-intent.json` — `{ version, declaredAt, tasks: [{ folder, purpose }] }` — the ordered
+decomposition it intends to author. It lives under the hash-excluded `state/` tree, is cleared by `--fresh`,
+and is **removed when the wave settles complete**: its lifetime is one attempt. Reconstructing the debt from
+forward references in the already-authored gates instead is **rejected** — that is the fuzzy-text inference
+GR2055/GR2057 spent their whole conservatism budget avoiding. A declared list is decidable; prose is not.
+
+**Sweep.** After the invocation the harness moves to `rejected/` any task folder that the inventory shows the
+attempt **created** *and* that fails the loader's completeness predicate (`task.json` present and an action
+resolved). All conditions must hold; nothing is deleted. This is what turns "11 complete + 1 half-written"
+into an 11-task valid prefix instead of a discarded wave.
+
+**`GR2063` `WaveBreakdownIncomplete` (WARNING).** A declared `folder` in the manifest has no complete task
+folder under the wave's `tasks/`; the message names the missing folders. **Absent or unparseable manifest ⇒
+skipped entirely** (the `GR2062` rule). Severity is a warning so a human hand-finishing a wave is nudged, not
+blocked; the **harness routes on the code**, so the automated path is fully gated. Remedy: correct or delete
+the manifest.
+
+**Classification and resume.** A cut-off session is never `BreakdownComplete` (§14.4). A valid prefix is
+preserved as `WaveHaltKind.BreakdownIncomplete` **only when the manifest is present and unsatisfied** — that
+manifest is the sole durable signal that re-opens the JIT checkpoint on the next run, so without it a
+preserved prefix would read as an authored wave one run boundary later, which is strictly worse than a loud
+quarantine. A cut-off session with **no** manifest is therefore quarantined, and the halt says so. On
+`BreakdownIncomplete` the invoker composes a **resume** prompt naming the manifest, the complete folders, and
+the folders still owed. Bounded: at most **3** segments per wave per run; a segment adding **zero** complete
+task folders halts rather than retries; a reached `maxCostUsd` stops further segments. Spend accrues to
+`overheadCostUsd` unchanged.
+
+**Quarantine scope (#471).** A quarantine moves **exactly what the attempt wrote** — every path the inventory
+shows created or modified, `tasks/`, `guardrails/`, and `preflights/` alike — preserving relative paths under
+`rejected/`, restores any pre-existing file the attempt overwrote or deleted byte-for-byte from the snapshot,
+and leaves untouched pre-existing files exactly where they are. Only the empty `tasks/` stub is restored. A
+human's hand-authored wave gate written **before** the breakdown is therefore never moved. The halt message
+states what moved and what was kept. **Invariant: `PlanDefinitionHash` after a quarantine equals its value
+before the invocation** — a quarantine never spends a review attestation.
+
+**Cancellation is not a special case (#489).** The guarantee is a PROPERTY — *the plan folder is never left in
+a state the loader rejects* — not an enumeration of exception types, which is how the cancellation hole was
+missed. Any exit from the breakdown other than a settled classification (a Ctrl+C, an unexpected fault) runs
+the same sweep-then-decide cleanup: a valid, manifest-backed prefix is kept; anything else is reverted to the
+pre-invocation state. The cleanup must complete with the cancellation token already signalled, so it is never
+token-bound.

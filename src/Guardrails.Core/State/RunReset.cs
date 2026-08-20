@@ -25,7 +25,9 @@ public static class RunReset
     /// committed <c>seed.json</c>, the task folders, and the committed review marker
     /// <c>state/guardrails-review.json</c> (§13) are untouched — the marker is a committed plan artifact
     /// (planHash-keyed, self-invalidating on any edit), NOT per-run runtime state, so a fresh slate keeps
-    /// the prior review attestation.
+    /// the prior review attestation. Each wave's <c>state/breakdown-intent.json</c> (§14.11) IS cleared —
+    /// its lifetime is one breakdown attempt, and leaving it would make a fresh run resume a half-authored
+    /// wave from a previous run's declaration.
     /// </summary>
     /// <remarks>
     /// <c>captured/</c> (issue #51, the restore-on-retry baselines) MUST be wiped: a stale baseline
@@ -53,6 +55,7 @@ public static class RunReset
         // committed plan artifact, planHash-keyed so it self-invalidates on any task/guardrail edit
         // (the nudge returns) — a fresh run must keep the prior review attestation, not erase it.
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
+        ClearWaveBreakdownIntents(planDirectory);
 
         // F3 + issue #274: prune stale guardrails/<runId>/* segment+fork branches and their worktrees
         // left behind by a crashed worktree-mode run, AND tear down the plan branch guardrails/<plan-name>
@@ -64,6 +67,31 @@ public static class RunReset
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();
+    }
+
+    /// <summary>
+    /// Delete every wave's <c>state/breakdown-intent.json</c> (SSOT §14.11). Its lifetime is ONE breakdown
+    /// attempt, and it is the signal that re-opens the JIT checkpoint on a wave carrying a valid PREFIX — so
+    /// a genuine fresh slate must clear it, or a <c>--fresh</c> run would resume a half-authored wave from a
+    /// previous run's declaration. Unlike the review marker beside it, this is per-run runtime state, never a
+    /// committed plan artifact. Best-effort; a non-waved plan is a no-op.
+    /// </summary>
+    private static void ClearWaveBreakdownIntents(string planDirectory)
+    {
+        try
+        {
+            foreach (string waveDir in Directory.EnumerateDirectories(planDirectory))
+            {
+                if (WaveFolder.DirectoryPattern.IsMatch(Path.GetFileName(waveDir)))
+                {
+                    DeleteFileIfExists(BreakdownIntent.PathFor(waveDir));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // best-effort, exactly like the rest of the reset's file work
+        }
     }
 
     /// <summary>

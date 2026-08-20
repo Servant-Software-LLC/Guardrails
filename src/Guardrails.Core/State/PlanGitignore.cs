@@ -48,7 +48,11 @@ public static class PlanGitignore
         "/state/state.json\n" +
         "/state/merge-conflicts.log\n" +
         "/state/rewind-intent.json\n" +
-        "/state/captured/\n";
+        "/state/captured/\n" +
+        // SSOT §14.11: a wave's breakdown-intent manifest is per-attempt runtime state, NOT a committed plan
+        // artifact — unlike state/guardrails-review.json sitting beside it, which stays tracked. Named
+        // file-by-file rather than as /wave-*/state/ for exactly that reason.
+        "/wave-*/state/breakdown-intent.json\n";
 
     /// <summary>
     /// Write the plan-root <c>.gitignore</c> when absent. NON-CLOBBERING: an existing file (e.g. one

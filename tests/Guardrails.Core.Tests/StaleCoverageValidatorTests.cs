@@ -196,6 +196,65 @@ public sealed class StaleCoverageValidatorTests : IDisposable
         Assert.Contains("RollupCount", diagnostic.Message);
     }
 
+    [Fact]
+    public void CaseSensitiveOperator_CNotMatch_StaleToken_WarnsGr2026_ExactlyAsNotMatch()
+    {
+        // The authoring doctrine MANDATES -cnotmatch for a required-present identifier clause (a
+        // case-insensitive required clause false-GREENs). GR2026 must fire on the doctrine-correct
+        // spelling exactly as it does on the legacy -notmatch, or the two shipped rules collide and
+        // the stale-coverage warning silently stops firing for every correctly-authored guardrail.
+        string actionPrompt = "Encode a test asserting ProcessID keying.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -cnotmatch 'ProcessId') { Write-Output 'no ProcessId'; exit 1 }\n" +
+            "if ($content -cnotmatch 'RollupCount') { Write-Output 'no RollupCount'; exit 1 }\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Diagnostic diagnostic = Assert.Single(Validate(dir), d => d.Code == Gr2026);
+        Assert.Contains("RollupCount", diagnostic.Message);
+        Assert.Contains("01-author-tests", diagnostic.Message);
+        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+    }
+
+    [Fact]
+    public void ExplicitlyCaseInsensitiveOperator_INotMatch_StaleToken_WarnsGr2026()
+    {
+        // The other legal prefix: PowerShell's explicit case-INsensitive spelling. Admitted too, so
+        // the character class covers the operator family rather than one doctrine-favoured spelling.
+        string actionPrompt = "Encode a test asserting ProcessID keying.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -inotmatch 'ProcessId') { Write-Output 'no ProcessId'; exit 1 }\n" +
+            "if ($content -inotmatch 'RollupCount') { Write-Output 'no RollupCount'; exit 1 }\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Diagnostic diagnostic = Assert.Single(Validate(dir), d => d.Code == Gr2026);
+        Assert.Contains("RollupCount", diagnostic.Message);
+    }
+
+    [Fact]
+    public void CaseSensitiveOperator_CMatchNegativeAssertion_StillDoesNotWarn()
+    {
+        // #177 conservatism survives the prefix: -cmatch … exit 1 fails on PRESENCE, so the token is
+        // meant to be absent from the prompt and GR2026 must stay silent.
+        string actionPrompt = "Write dispatch tests. Mode C is wizard-blocked, so do not exercise it.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -cmatch 'CommanderRest') {\n" +
+            "    Write-Output 'MigrateDispatchTests.cs contains a CommanderRest reference'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Assert.DoesNotContain(Validate(dir), d => d.Code == Gr2026);
+    }
+
     // --- on-disk plan builder ---------------------------------------------------------------
 
     private IReadOnlyList<Diagnostic> Validate(string dir)

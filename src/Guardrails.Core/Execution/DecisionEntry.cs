@@ -274,6 +274,26 @@ public static class DriftDecisions
             Detail = errorSummary
         };
 
+    /// <summary>
+    /// The between-wave breakdown was CUT OFF but left a VALID PREFIX the harness is preserving (SSOT §14.11,
+    /// issues #385/#402): <paramref name="completeCount"/> of <paramref name="declaredCount"/> declared task
+    /// folders exist and validate, and the JIT checkpoint resumes the remainder. A <c>wave</c>-boundary
+    /// entry; the run still HALTS — a cut-off session is never reported complete.
+    /// </summary>
+    public static DecisionEntry WaveBreakdownIncomplete(
+        AutonomyPolicy policy, string waveDir, string invocationDecision,
+        int completeCount, int declaredCount, string detail) =>
+        new()
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(policy),
+            Decision = invocationDecision,
+            Subject = waveDir,
+            Headline = $"Wave '{waveDir}' breakdown INCOMPLETE ({completeCount} of {declaredCount} declared "
+                       + "task(s)) — valid prefix preserved for resume",
+            Detail = detail
+        };
+
     private static DecisionEntry BuildWave(
         string policyToken, string decision, string waveDir, string? rewindTarget,
         string? oldHash, string? newHash, IReadOnlyList<string> affectedWaves, bool manualReset)
