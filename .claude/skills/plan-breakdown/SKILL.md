@@ -439,6 +439,25 @@ optional:
   document for every literal token you demand; accept both forms where both are legitimate). A CODE
   guardrail gets no such hatch: if you cannot write its invalid sample you do not yet know what it
   catches. (Catalogue → the two-sided sample pair + its documentation escape hatch.)
+- **MEASURE every required-present clause's baseline count and RECORD it in the script (#478).** The sample
+  pair cannot catch this — both halves are synthetic files, and the defect lives in the **real tree**. Before
+  pinning a token, run it against **the exact subject that clause scans**, with the clause's own case
+  sensitivity, and write the number in a comment beside it. **Zero is the expected answer; a nonzero means
+  you change the CLAUSE, not the comment.** Measured, three shipped in one wave: a required `.prompt.md`
+  already appeared **twice in that same file** (appending one unused const then passed the whole task with
+  zero capability), a required `Judge` already appeared 5× as `CriticalityJudge`, and a proximity window
+  matched a pre-existing line. **A red exit code does not clear you** — a guardrail has many clauses and one
+  exit code, so a clause green on arrival hides behind its siblings and the script still exits 1. Only
+  **required-present** and **numeric-floor** clauses are measured this way: a **forbidden-present** clause is
+  *supposed* to be green before its task. Nonzero is allowed **only with a named reason on the same line**
+  (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe
+  conditional, a ratcheting behaviour manifest). And a **multi-clause** guardrail **accumulates** — one
+  distinguishable `$failures += …` per clause, dumped once at the end — never an `exit 1` chain that reports
+  one gap per attempt; the only legitimate early exits are a **precondition** (the subject is missing or
+  unparseable, so every clause below would crash — `Test-Path`, a failed `ConvertFrom-Json`, an empty
+  state key) and an expensive
+  behavioural stage placed after the dump. (Catalogue → "Every required-present clause records its MEASURED
+  baseline count".)
 - **Never assert an executed-test COUNT as an adequacy floor (#468).** `dotnet test` counts **theory data
   rows, not behaviours** — one `[Theory]` with six `[InlineData]` rows clears an "at least 6 executed"
   floor while proving one behaviour, and raising the number does not fix it. Use a **behaviour manifest
@@ -2949,6 +2968,7 @@ authority for every path/signature the new wave references.
 - [ ] Every emitted task passed the Step 2 over-size split-trigger (no task bundles multiple deliverables, has a wide blast radius, maps 1:1 to a design milestone, or has an expensive retry); any feasibility/self-critique "over-packed"/"~N test refs" signal was carried into sizing and split, not sized 1:1 (#111). Re-checked in the Step 7.0a task-size self-review; any unsplittable over-scoped task is flagged in the report.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] **Every guardrail passed the SOURCE-SHAPE demotion order (#468)**: a claim about runtime behaviour is carried by a test (or an AGREEMENT property test for "X must USE Y"), and a source-shape regex survives ONLY for a structural fact with no runtime proxy — with a Step 7.4 report line saying why no test could carry it. No executed-test COUNT is used as an adequacy floor (the #455 zero-match guard is not one). Every surviving source-shape check over CODE ships its committed `.valid`/`.invalid` sample pair in `tasks/<id>/samples/` (a sibling — NEVER inside `guardrails/`, where the loader would load the fixture as a guardrail and execute it), and the WHOLE pair was re-run after every edit to the script; a DOCUMENTATION target is exempt from the pair but not from the PRECEDENT check, and the exemption is named in the report.
+- [ ] **Every required-present clause records its MEASURED baseline count (#478)**: the token was run against the exact subject that clause scans, with the clause's own case sensitivity, and the number is written beside it — **0**, or a nonzero with a named reason (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, a ratcheting behaviour manifest). No unmeasured "appears nowhere else" claim survives; a nonzero count fixes the CLAUSE, not the comment. Forbidden-present clauses are exempt (a ban green on arrival is a correct ban). Every **multi-clause** guardrail ACCUMULATES — one distinguishable message per clause, dumped once — with early exits only for a PRECONDITION (subject missing or unparseable, so every clause below would crash) or a post-dump behavioural cost stage, both named in the header comment.
 - [ ] **No forbidden token collides with what the task REQUIRES (#470)**: for every fail-on-present clause, its literal was reconciled against the same file's required-present clauses (a collision is unsatisfiable-by-construction and dead-ends every attempt) and against the task's own `action.prompt.md`; every forbidden scan runs over STRIPPED source (comments AND string literals) and is anchored on a USE, not a mention.
 - [ ] Every guardrail file opens with its `catches:` line.
 - [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).

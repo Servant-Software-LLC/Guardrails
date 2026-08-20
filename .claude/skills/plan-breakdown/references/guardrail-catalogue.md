@@ -251,6 +251,142 @@ So the rule for a **prose/document target** is:
 A **code** deliverable does not get this hatch: if you cannot write an invalid sample for a code
 guardrail, you do not yet know what the guardrail catches, which is the `# catches:` rule failing.
 
+## Every required-present clause records its MEASURED baseline count (#478)
+
+**The sample pair above cannot see this one.** Both halves of the pair are *synthetic files you wrote*;
+neither says anything about **the real tree the task will run against**. A clause can fail its `.invalid`
+sample, pass its `.valid` sample, and read perfectly on the page — while being **already satisfied by
+the target file as it stands today**, for a reason that has nothing to do with the capability. The task
+then only has to satisfy that clause's siblings, and the clause certifies nothing for the life of the
+plan.
+
+**Three shipped in one authored wave, and every one survived a full `/guardrails-review` pass:**
+
+| the clause | why it was already green before its task started |
+|---|---|
+| the harness must write a `.prompt.md` | `action.prompt.md` **already appeared twice in that exact file**. Measured: appending `internal static class Marker { public const string k = "prompt"; }` — one unused constant, zero capability — took the whole task to **exit 0** |
+| `Scheduler.cs` must contain `Judge` | it already contained `CriticalityJudge` **5×** |
+| the replacement for row 1 — a dotall `guardrails` … `prompt.md` proximity window | it matched `CreateDirectory(…"guardrails"))` against the pre-existing `"action.prompt.md"` two lines below |
+
+Row 1's guardrail carried the comment **"appears nowhere else."** That was not a measurement, it was an
+impression formed while reading that region of the file — and **the comment was the defect**, because it
+put a claim exactly where a reviewer would look for evidence.
+
+**A red exit code does not clear you.** Run as authored against the real tree, *every* pure-script
+guardrail of that wave exited **1** — including the two carrying a pre-satisfied clause. **A guardrail
+has many clauses and one exit code**, so a clause that is green on arrival hides behind its siblings'
+failures and **no amount of executing the script can see it**. The measurement has to be per clause.
+
+### The rule
+
+**For every required-present clause you author, run that clause's own pattern against that clause's own
+subject on the tree as it stands, and record the count in the script.**
+
+```powershell
+# baseline counts on the untouched tree - MEASURED, not assumed:
+#   \bStage2GuardrailSpec\b  0     \bJudgeGuardrail\b  0     (?<!action\.)prompt\.md  0
+if ($code -cnotmatch '\bStage2GuardrailSpec\b') { $failures += '...' }
+```
+
+- One `Select-String` per clause, over the **exact subject the clause scans** — not the repo, not
+  "roughly that area" — with the **same case sensitivity as the operator** (`-cmatch`/`-cnotmatch` are
+  case-sensitive, `-match`/`-notmatch` are not; taxonomy 3 is what confusing the two costs).
+- **Count the text the clause actually reads.** Under the two-variable rule your required-present clause
+  matches `$code` (comments stripped), while `Select-String` reads the file raw. Hits that are entirely
+  inside comments do not pre-satisfy a `$code` clause — a raw count of 3 that is 3 comment mentions is
+  **0**, and recording 3 invents a defect. Look at where each hit lives before you write the number.
+- **Zero is the expected answer. A nonzero count means you change the CLAUSE, not the comment.** Pin
+  something the outcome implies that the tree does not already carry — row 1's fix was the negative
+  lookbehind `'(?<!action\.)prompt\.md'`, measured at 0 on the untouched harness.
+- **A nonzero count is permitted only with a named reason on the same line** (see the exceptions below).
+  An undeclared nonzero is the finding; a declared one is a fact the reviewer can re-measure.
+- **Measure against the tree the TASK will see, not the tree you are standing in.** A non-root task runs
+  after its ancestors have written, so today's `0` can be tomorrow's pre-satisfaction. You cannot measure a
+  tree that does not exist — so do the cheap textual half: check whether an **ancestor task's prompt or
+  `writeScope`** puts that same token in that same subject. If one does, the clause is measuring the
+  ancestor's work, not this task's. Note the check in the comment (`no ancestor writes this token`) so the
+  reviewer knows it was asked.
+- **Subject does not exist yet?** Write `n/a — file created by this task`. The clause is red on arrival by
+  construction and there is nothing to measure. Say that rather than writing a `0` you did not measure —
+  the honest note and the fake zero look identical to a reviewer, which is how this defect got here. But
+  run taxonomy 9's **ambient-vocabulary** test anyway: a token that will be ambient in the file the task
+  creates (its namespace, its usings, a base type) discriminates nothing the moment the file exists.
+- This **generalises taxonomy 9's ambient-vocabulary test** — from *coverage tokens* to *every
+  required-present clause*, and from *"the namespace, usings and surrounding type names"* to the whole
+  subject the clause actually reads.
+
+**Polarity — only two clause kinds have a defect here. Measuring the other two manufactures false ones.**
+
+| clause kind | expected on the baseline | green on arrival means |
+|---|---|---|
+| **required-present** (`-cnotmatch 'X'` → fail) | **0** matches | **pre-satisfied — the defect this section exists for** |
+| **numeric floor** (`-lt N` → fail) | count **< N** | the floor is already cleared, so it certifies nothing |
+| **forbidden-present** (`-cmatch 'X'` → fail) | 0 matches, and that is **CORRECT** | nothing at all — a ban is *supposed* to be green before its task. A ban **RED** on arrival is the #470 collision, which is a different section |
+| **behavioural** (a suite must PASS) | RED | `tests-fail-on-stubs` failing to be red — the ordinary TDD-red story, not this one |
+
+Roughly **a third** of the `if`-position clauses in the committed corpus are bans. Applying the
+measured-zero rule to them "finds" a defect in every correctly-authored prohibition.
+
+### The exceptions — declared, never inferred
+
+A required-present clause is legitimately nonzero on the baseline when it is:
+
+- a **positive baseline / wave-entry preflight** — assert-PRESENT *by design*, and already documented as
+  such (the preflight and wave-gate sections);
+- a **`tests-untouched` / regression** clause — "this existing thing is still here" is green on arrival
+  by definition;
+- the *"if X is present"* half of a **union-safe conditional** integration guardrail (#125/#165);
+- a **ratcheting behaviour-manifest** clause on a plan regenerated against a partially-landed tree —
+  some named tests already exist, and that is the ratchet working as intended.
+
+Each of these stays. Each carries its measured count **and its one-line reason**. A rule with no hatch
+would reject correct guardrails, which is the anti-pattern at the head of this file wearing a different
+hat.
+
+### ACCUMULATE the clause results; early-exit ONLY for a precondition or a cost stage
+
+A **multi-clause** guardrail appends each clause's finding to an accumulator and dumps the whole list at
+the end. It does **not** `exit 1` on the first clause that fires.
+
+```powershell
+$failures = @()
+if ($code -cnotmatch '...') { $failures += 'clause 1: <what is missing, and why it matters>' }
+if ($code -cnotmatch '...') { $failures += 'clause 2: <...>' }
+if ($failures.Count -gt 0) {
+    $failures | ForEach-Object { Write-Output "  - $_" }
+    exit 1
+}
+```
+
+Give each clause its **own distinguishable message** — two clauses sharing wording make the list
+unreadable as a per-clause verdict, which is the whole value of the shape.
+
+Three reasons, in cost order:
+
+1. **#179, priced per attempt.** An early-exit chain feeds back **one** gap per attempt, so an N-clause
+   guardrail can cost N attempts to converge — N full model invocations to learn what a single run
+   already knew. A committed example carries the author's own comment *"One `if` per token so the failure
+   names the gap"* directly above four chained `exit 1`s: the intent was to name the gaps, and the shape
+   delivers the first one.
+2. **The compounding rule.** Fix clause 1, discover clause 2, fix clause 2 and re-break clause 1. That is
+   how a patch round finds *more* blockers than the round before it.
+3. **It is the only shape a reviewer can read a per-clause verdict out of.** `/guardrails-review` Probe A₂
+   uses the baseline failure LIST as its fast path. With an early-exit chain there is no list, and every
+   clause falls through to a hand-run census.
+
+**Two early exits stay legitimate, and both are visible in the script:**
+
+- a **precondition** — the subject is missing or unparseable, so every clause below would crash or compare
+  against nothing: `if (-not (Test-Path $file))`, a failed `ConvertFrom-Json`, an empty state key. It must
+  short-circuit. (**87 of the 97** committed multi-clause accumulator guardrails carry one.)
+- a **cost stage** — the expensive behavioural clause (`dotnet test`) placed *after* the accumulator dump,
+  so a structurally-wrong tree never pays for a suite run.
+
+Both are blind spots for the fast path: on a greenfield baseline the precondition fires and the clause
+list is never printed, and a staged clause never executes at all. That is a reviewer's problem to work
+around, not a reason to avoid either shape — but note which one you used in the header comment so the
+reviewer is not guessing.
+
 ## Never use an executed-test COUNT as a suite's adequacy floor (#468)
 
 A floor like *"at least 6 tests executed"* over a `dotnet test` run is **gameable and measures the wrong
@@ -2584,6 +2720,24 @@ should fail before an expensive test run or a paid judge ever starts.
   sample of a design doc exists, so the pair is NOT required; the **PRECEDENT check** above is the
   mandatory substitute, and the report names the exemption. A CODE guardrail gets no such hatch: if you
   cannot write its invalid sample, you do not yet know what it catches (the `# catches:` rule failing).
+- **A required-present clause that is PRE-SATISFIED on the baseline tree** (#478): the clause's token
+  already appears in its own subject before the task runs, so the task can satisfy it by doing nothing
+  and it certifies nothing for the life of the plan. **The sample pair cannot reveal this** — both halves
+  are synthetic files — and **neither can the exit code**: a guardrail has many clauses and one exit code,
+  so a green clause hides behind its siblings' failures and the script still exits 1. Three shipped in one
+  wave (`.prompt.md` already twice in the target file; `Judge` already 5× as `CriticalityJudge`; a
+  proximity window matching a pre-existing line), each surviving a full review pass. Fix: **measure the
+  baseline count per required-present clause and record it in the script** — zero, or a named reason it is
+  not. A `# … appears nowhere else` comment with no number behind it is the defect, not the evidence.
+  (Section → "Every required-present clause records its MEASURED baseline count".)
+- **Early-exit clause chain in a MULTI-clause guardrail** (#478/#179): `if (…) { Write-Output …; exit 1 }`
+  repeated per clause instead of an accumulator dumped at the end. It reports **one gap per attempt**, so
+  an N-clause guardrail can burn N model invocations learning what one run already knew; it makes the
+  compounding rule bite (fix clause 1, discover clause 2, re-break clause 1); and it leaves
+  `/guardrails-review` Probe A₂ no per-clause verdict to read, forcing every clause into a hand-run
+  census. Fix: accumulate, one distinguishable message per clause, dump the list once. **Legitimate
+  early exits: a PRECONDITION (the subject is missing or unparseable, so every clause below would crash),
+  and an expensive behavioural stage placed after the dump** — both stay, both named in the header comment.
 - **Executed-test COUNT as an adequacy floor** (#468): a guardrail asserting *"at least N tests
   executed"* as a proxy for coverage. The runner counts **theory data rows, not behaviours** — one
   `[Theory]` with six `[InlineData]` rows clears a 6-test floor while proving one behaviour, and raising

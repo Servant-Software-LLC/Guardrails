@@ -1184,7 +1184,9 @@ found by *running* something, and none by reading.
 
 Run all three probes. They catch different failures and none subsumes another. **A and B execute; C
 reconciles the pairs execution reports as healthy** — it lives here because it is the residual the other
-two provably cannot see, not because it runs anything.
+two provably cannot see, not because it runs anything. **A comes in two resolutions**: A gives one bit per
+SCRIPT, and **A₂** refines it to one bit per CLAUSE, which is the only resolution at which a pre-satisfied
+clause is visible at all (#478).
 
 **Probe A — baseline (cheap, universal, no author effort).** Execute each task's guardrails from the
 plan's starting workspace and record **exit code AND stderr**.
@@ -1202,10 +1204,79 @@ plan's starting workspace and record **exit code AND stderr**.
   and **name the ones you skipped in the Step 6 report** so the gap is visible rather than assumed
   covered.
 
-> **Probe A does NOT catch a pre-satisfied CLAUSE.** A script has many clauses and one exit code, so a
-> clause that is green on arrival hides behind its siblings' failures. Measured: a wave whose task-05
-> guardrail contained a clause satisfied on arrival reported RED for the whole script and looked clean.
-> That is what Probe B is for — do not treat a red baseline as a pass.
+**Probe A₂ — the baseline CLAUSE census (#478). Resolution, not a second opinion.** Probe A yields one
+bit per SCRIPT; the defect is per CLAUSE. **Measured:** run as authored against the real tree, *every*
+pure-script guardrail of the motivating wave exited **1** — and two of them each carried a clause that was
+**already satisfied on arrival**, hidden behind its siblings' failures. Probe A reported that wave clean.
+**Never treat a red baseline as a pass.**
+
+**Census only the clause kinds that have a defect here.** A **required-present** clause (`-cnotmatch 'X'`
+→ fail) must be **0 matches** on the baseline; a **numeric floor** (`-lt N`) must be **below N**. A
+**forbidden-present** clause is *supposed* to be green before its task — **do not flag a ban for being
+green on arrival**; a ban that is RED on arrival is Probe C's #470 collision. Roughly a third of the
+corpus's clauses are bans, so inverting this cries wolf on every correctly-authored prohibition. Decide
+polarity **by what the failure branch DOES, not by the operator alone** — GR2057's rule, because
+`if ($c -match 'x') { $ok = $true }` is a REQUIREMENT wearing `-match`.
+
+Two ways to get a clause's baseline verdict. Take the fast path where the shape allows; census the rest.
+
+1. **Fast path — read Probe A's own stdout.** Where the guardrail uses the house accumulator
+   (`$failures += …`) *and* the baseline run REACHED the dump, A already printed the list of clauses that
+   fired. **Every required-present clause of that script must appear in that list; one missing is
+   pre-satisfied.** Free, but partial — on the committed corpus the accumulator is present in **97 of the
+   237** multi-clause guardrails (the other **140** are early-exit chains), and even there three shapes
+   fall through to the census:
+   - a **precondition early-exit** fired before the clause block — **87 of those 97** carry one, and on a
+     greenfield baseline it is exactly what fires;
+   - the clause sits in a **cost stage gated behind the dump** (the house pattern runs `dotnet test` only
+     after the structural clauses pass, so on a baseline it never executes);
+   - the clause is inside a **loop**, where no message means *"the loop found nothing to complain about"* —
+     not the same as pre-satisfied.
+2. **Census — one grep per clause, universal.** Lift the clause's pattern and its subject out of the script
+   TEXT and run them against the baseline tree: `Select-String -Path <subject> -Pattern <pattern>`, with
+   `-CaseSensitive` iff the operator was `-cmatch`/`-cnotmatch`. Record the **count**. Shape-independent —
+   it works on early-exit chains, on staged scripts, on clauses that never execute, and on a script that
+   does not parse (#473).
+   **Census the SAME text the clause reads, or you will manufacture a false finding.** Under the
+   two-variable rule a required-present clause matches `$code` (comments stripped) and a forbidden one
+   matches `$scan` (comments *and* string literals stripped) — but `Select-String` reads the file raw. So
+   for each hit, check where it lives: hits that are **entirely inside comments** do not pre-satisfy a
+   `$code` clause. A raw count of 3 that is 3 comment mentions is **zero**. (Neither of the motivating
+   instances was excused this way — `action.prompt.md` and `CriticalityJudge` were both live code.)
+
+**Re-MEASURE every declared count; never read one.** The catalogue requires each required-present clause to
+record its measured baseline count. That number came from the same mental model that wrote the clause — the
+motivating instance carried `# … appears nowhere else` above a token appearing **twice in that exact file**.
+A declared count that disagrees with your census is a **BLOCKER on the guardrail**, whichever number is more
+convenient. A *missing* declaration is not a finding on its own; it just means you census that clause.
+
+**Verdict — a pre-satisfied required-present clause is a BLOCKER**, even beside strong siblings: clause
+strength does not compose, because the task only has to satisfy the clauses that are red. The legitimate
+exceptions are real — a positive-baseline / wave-entry preflight, a `tests-untouched` regression clause, the
+*"if X is present"* half of a union-safe conditional (#125/#165), a ratcheting behaviour-manifest clause on a
+partially-landed tree — but **an exception counts only if the script DECLARES it.** You are grading the
+declaration, not inferring the intent.
+
+**What A₂ still does not see.** Report these; never let "census applied" absorb them.
+- A **runtime-composed** pattern — built from a variable, an interpolation, or `[char]` codes (the corpus has
+  one assembled from `[char]92`) — cannot be lifted out of the text. Execute that clause in isolation, or
+  record it **NOT RUN** with the reason. Never as passed.
+- A clause **red on arrival that goes green as a SIDE EFFECT of satisfying a sibling** — the census sees red
+  and is content. That is taxonomy 10 at the clause-set level; **Probe B op 18** is the check.
+- A clause whose **subject does not exist on the baseline** — trivially red, so the census is vacuous. The
+  ambient-vocabulary test (taxonomy 9), applied to the file the task will create, is all you have.
+- A **non-pattern** clause (`Test-Path`, a JSON-shape assertion, a sub-tool's exit code). Ask the same
+  question by hand; there is no mechanical form, and the verdict is still declare-or-flag.
+- **The tree you census is the PLAN's baseline, not the TASK's.** A task with ancestors runs against a tree
+  those ancestors already wrote into, so a clause measured 0 today can be pre-satisfied by the time its own
+  task starts — and that tree does not exist at review time. This is the deepest hole left, and it is
+  unclosable by measurement here. The cheap partial: for each required-present clause on a **non-root**
+  task, grep the **ancestor tasks' prompts and `writeScope`s** for the same token. An ancestor instructed to
+  write it is a WEAK finding naming both tasks; an ancestor whose deliverable makes it near-certain is a
+  BLOCKER. Report the residual for every task where you did not do this.
+- **Red on arrival and red forever** → Probe C. **Red on arrival and cheaply gameable** → Probe B. **A₂ and B
+  are independent, and neither implies the other**: the motivating clause was *both* pre-satisfied *and*
+  gameable by a one-const append, and each probe is blind to the other's half.
 
 **Probe B — the minimal-gaming mutation (the one with teeth).** For each task, apply *the cheapest edit
 that satisfies the guardrail's literal text without delivering the capability*, then re-run. **Expect
@@ -1394,6 +1465,14 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
 - **the classes no probe can see** (#470 require-and-forbid, #474 unreachable-outcome, #484 arithmetic
   dead-ends). These are red before AND red forever, so a baseline cannot distinguish them from a
   correct red. If you hand-checked them, say so; if you did not, say that.
+- **how far the A₂ clause census got, per task** (#478) — for each guardrail, whether its required-present
+  clauses were resolved by the **fast path** (an accumulator list Probe A actually printed) or by a **hand
+  census**, and **name every clause left unmeasured** with its reason: a runtime-composed pattern, a subject
+  absent from the baseline, a non-pattern clause, a cost stage that never executed. A red Probe A plus an
+  unmeasured clause set is **not** a clean task, and must not be reported as one — that conflation is the
+  whole of #478. State separately that **the censused tree is the PLAN's baseline, not each task's** — a
+  non-root task's clause can be pre-satisfied by an ancestor's output, and no review-time measurement can
+  see that tree; say whether the ancestor-prompt/`writeScope` textual check was run in its place.
 - **whether Probe B operator 20 ran, or was INAPPLICABLE** (#382) — on a greenfield first review the
   real-seam test does not exist yet, so the operator is reported **not run**, with that reason, and is
   never folded into a blanket "Probe B applied". Reporting it as passed would be the false green the
@@ -1573,5 +1652,6 @@ finding remains unaddressed.
 - [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest over discovered test NAMES); the #455 zero-match guard is not that and is not flagged.
 - [ ] (#470) Probe C ran: every required-present literal was reconciled against every forbid-present pattern IN THE SAME FILE (a hit is unsatisfiable-by-construction → BLOCKER), and every banned token against the task's own `action.prompt.md` (a hit invites the agent to write what reds it → WEAK). Every forbidden scan runs over STRIPPED source — comments AND string literals — and is anchored on a USE, not a mention. Not confused with GR2026/#177, which is the opposite polarity (REQUIRES a token the prompt never mentions).
 <!-- END ADDED CHECKS #468/#470 -->
+- [ ] (#478) Probe **A₂** ran: every **required-present** clause and every **numeric floor** of every guardrail has a BASELINE verdict — resolved by the fast path (an accumulator failure list Probe A actually printed) or by a hand census (`Select-String` of the clause's own pattern against the clause's own subject, case-sensitive iff the operator was `-cmatch`/`-cnotmatch`). A clause already satisfied on the baseline is a **BLOCKER** (the task is passable without delivering it, and it certifies nothing for the life of the plan) unless the script DECLARES its exception — positive-baseline/wave-entry preflight, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, or a ratcheting behaviour manifest. **Forbidden-present clauses are NOT censused** — a ban green on arrival is a correct ban, and a ban RED on arrival is Probe C's #470 collision. Every count a script DECLARES was re-measured, never read (a `# … appears nowhere else` comment sat over a token appearing twice in that exact file); a declared count disagreeing with the census is a BLOCKER. Clauses left unmeasured (runtime-composed pattern, subject absent from the baseline, non-pattern clause, ungated cost stage) are NAMED in the report as NOT RUN, never absorbed into a red Probe A. A₂ does not subsume Probe B and B does not subsume A₂ — the motivating clause was both pre-satisfied AND gameable by a one-const append.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
 - [ ] The review left durable evidence (#366): the plan hash was obtained via `guardrails plan-hash <folder>` (the skill can't compute it), a review report — the Step 6 findings table + verdict + an embedded `Plan-Definition-Hash: sha256:…` line (F2a) — was written under the hash-EXCLUDED `<plan>/state/reviews/`, and the marker was stamped with `guardrails mark-reviewed <folder> --evidence <report>` (recording `attestation.source: review-artifact`, or a downgrade to `bare` on an F2 failure) — clearing the GR2025 nudge (#79/#131), NOT run while a BLOCKER remained open. The recorded evidence class (`review-artifact` / `bare` / `machine`, read-time `legacy`) is for AUDIT, not a gate — the marker is only as strong as write-access to the plan folder, and the harness never writes it on a human's behalf. For a waved plan, run the flow per-wave against `<folder>/wave-NN-<slug>` (its own `state/reviews/` + hash) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).

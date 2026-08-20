@@ -187,7 +187,13 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   guardrails across the plan -- from **BOTH** the per-task `tasks/<id>/guardrails/` folders **and**
   the plan-root `<plan>/guardrails/` folder (#451: the plan root was excluded by construction, so a
   union-invariant check authored exactly where the four-folder model says it belongs never ran at any
-  union) -- typically the whole-repo build + full test suite. At **every** union
+  union) -- typically the whole-repo build + full test suite. **NOT the WAVE root**: a
+  `<plan>/<wave>/guardrails/` entry tagged `scope:"integration"` is **INERT** -- wave gates are
+  evaluated on the wave-exit boundary (section 14.3), a different contract, so the tag buys nothing
+  there and the plan merely *looks* protected. `validate` now says so (**GR2059**, #459); whether such
+  guardrails should instead run at intra-wave unions is an open contract question, because they would
+  then have to be union-safe (#125) and wave gates were authored assuming a single evaluation point.
+  Put a union-invariant check at the **plan root**. At **every** union
   point (a fan-in or a non-FF plan-branch integration) the harness re-runs, on the merged bytes,
   **the integration set ONLY** -- one set, run uniformly at every union and again on the final merged
   HEAD by the terminal `<plan>/guardrails/` folder (the Terminal Gate, SSOT section 3.3). There is
@@ -235,6 +241,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   check the script's OWN correctness -- the motivating bug had no tool-output assumption, so #248's
   probe did not cover it. Homed here; enforced by `plan-breakdown` (Step 7.0d self-validate) and probed
   by `guardrails-review`.
+- **The child env is HERMETIC in the `GUARDRAILS_*` namespace (SSOT section 5.1, #442).** Every
+  inherited `GUARDRAILS_`-prefixed key the harness does not itself declare for a child is **CLEARED**
+  before the overlay is applied -- so the "Set for" table is a **prohibition as well as a promise**.
+  This matters because the old shape looked right and was not: removing a key from the supplied
+  dictionary never *unset* an inherited one (`ProcessRunner` overlays onto the parent block), so a
+  guardrail could read the action's `GUARDRAILS_STATE_OUT` and a triage child could inherit an OUTER
+  run's `GUARDRAILS_WORKSPACE` and write into a foreign worktree (#253). Removal, not blanking -- an
+  empty-but-present variable is still SET to a shell. Non-prefixed vars (`PATH`, toolchain config,
+  a task's own `action.env`) are untouched.
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment (`GUARDRAILS_STATE_OUT`);
   harness (single writer) deep-merges fragments into `state/state.json` in completion order after
