@@ -71,7 +71,7 @@ is missing.
 
 **Waved plan? Review wave-by-wave (#254).** A plan is *waved* when it has no root `tasks/` and ≥1
 `wave-NN-<slug>/` subdir (SSOT §14; plan-breakdown Step 9). Each wave is a **mini-plan** — its own
-`preflights/`/`guardrails/`/`tasks/` and its own `PlanDefinitionHash`-keyed review marker. `guardrails
+`preflights/`/`guardrails/`/`tasks/` and its own **`WaveDefinitionHash`**-keyed review marker. `guardrails
 validate`/`plan`/`graph` are already wave-aware; run them on the whole plan as usual. Then run the
 adversarial pass (§2) **per task WITHIN each wave**, and give **each wave's entry/exit gates the
 four-folder treatment** (§2 "Four-folder gap" probe, applied at wave granularity). Two review modes:
@@ -1828,8 +1828,14 @@ is everyday **evidence hygiene + an audit trail** — telling a real review pass
 deterministically and on the record, and preserving what the review found — and nothing more. (Any older
 "unforgeable" / "raises forge cost" framing of the review floor is withdrawn.)
 
-**Waved plan (#254):** each wave is a mini-plan with its **own** `PlanDefinitionHash`-keyed marker and its
-own review report under `<plan>/<wave>/state/reviews/`. Run the three moves against the wave folder —
+**Waved plan (#254):** each wave is a mini-plan with its **own** **`WaveDefinitionHash`**-keyed marker and
+its own review report under `<plan>/<wave>/state/reviews/`. The key is `WaveDefinitionHash`, **not**
+`PlanDefinitionHash` (#488): it folds that wave's task hashes plus its own `guardrails/**`+`preflights/**`
+and **excludes** the shared plan-root `guardrails.json`, which is what stops authoring a downstream wave
+from re-staling an upstream wave that is reviewed, run, green and unchanged. Two consequences worth
+knowing: editing a wave's `brief.md` DOES re-stale that wave (accepted — a human edit, erring toward
+under-attestation), and a plan-root gate edit re-stales no wave once each wave carries its own marker
+(#492). Run the three moves against the wave folder —
 `guardrails plan-hash <folder>/wave-NN-<slug>`, write the report under that wave's `state/reviews/`, then
 `guardrails mark-reviewed <folder>/wave-NN-<slug> --evidence <report>`. When you reviewed the **whole** plan
 wave-by-wave, do this per wave; when you reviewed a **single freshly-authored wave** (the JIT flow), stamp
