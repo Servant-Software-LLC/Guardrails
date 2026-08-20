@@ -44,22 +44,66 @@ internal sealed class WavePlanBuilder : IDisposable
         return this;
     }
 
-    /// <summary>Add a wave EXIT-gate guardrail file at <c>&lt;waveDir&gt;/guardrails/&lt;name&gt;</c> (auto-prefixed with a <c>catches:</c> comment).</summary>
-    public WavePlanBuilder WaveGuardrail(string waveDir, string name, string body)
+    /// <summary>
+    /// Add a wave EXIT-gate guardrail file at <c>&lt;waveDir&gt;/guardrails/&lt;name&gt;</c> (auto-prefixed
+    /// with a <c>catches:</c> comment), optionally with its §4.1 metadata sidecar (<c>&lt;name&gt;.json</c>).
+    /// </summary>
+    public WavePlanBuilder WaveGuardrail(string waveDir, string name, string body, string? sidecarJson = null)
     {
         string dir = Path.Combine(PlanDir, waveDir, "guardrails");
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, name), "# catches: a wrong implementation\n" + body);
+        WriteSidecar(dir, name, sidecarJson);
         return this;
     }
 
-    /// <summary>Add a wave ENTRY-gate preflight file at <c>&lt;waveDir&gt;/preflights/&lt;name&gt;</c> (auto-prefixed with a <c>catches:</c> comment).</summary>
-    public WavePlanBuilder WavePreflight(string waveDir, string name, string body)
+    /// <summary>
+    /// Add a wave ENTRY-gate preflight file at <c>&lt;waveDir&gt;/preflights/&lt;name&gt;</c> (auto-prefixed
+    /// with a <c>catches:</c> comment), optionally with its §4.1 metadata sidecar.
+    /// </summary>
+    public WavePlanBuilder WavePreflight(string waveDir, string name, string body, string? sidecarJson = null)
     {
         string dir = Path.Combine(PlanDir, waveDir, "preflights");
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, name), "# catches: a missing dependency\n" + body);
+        WriteSidecar(dir, name, sidecarJson);
         return this;
+    }
+
+    /// <summary>
+    /// Add a PLAN-ROOT terminal-gate guardrail at <c>&lt;plan&gt;/guardrails/&lt;name&gt;</c> (SSOT §3.3;
+    /// optional-additive on a waved plan, §14.3), optionally with its §4.1 metadata sidecar. The negative
+    /// control for GR2059: this is the position where <c>scope:"integration"</c> DOES take effect.
+    /// </summary>
+    public WavePlanBuilder PlanGuardrail(string name, string body, string? sidecarJson = null)
+    {
+        string dir = Path.Combine(PlanDir, "guardrails");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, name), "# catches: a wrong implementation\n" + body);
+        WriteSidecar(dir, name, sidecarJson);
+        return this;
+    }
+
+    /// <summary>
+    /// Attach a §4.1 metadata sidecar to a wave TASK's default <c>01-ok.sh</c> guardrail — the other
+    /// position where <c>scope:"integration"</c> takes effect, so GR2059 must stay silent there.
+    /// </summary>
+    public WavePlanBuilder WaveTaskGuardrailSidecar(string waveDir, string folder, string sidecarJson)
+    {
+        WriteSidecar(Path.Combine(PlanDir, waveDir, "tasks", folder, "guardrails"), "01-ok.sh", sidecarJson);
+        return this;
+    }
+
+    private static void WriteSidecar(string dir, string guardrailFileName, string? sidecarJson)
+    {
+        if (sidecarJson is null)
+        {
+            return;
+        }
+
+        File.WriteAllText(
+            Path.Combine(dir, Path.GetFileNameWithoutExtension(guardrailFileName) + ".json"),
+            sidecarJson);
     }
 
     public PlanLoadResult Load() => new PlanLoader().Load(PlanDir);

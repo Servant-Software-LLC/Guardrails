@@ -65,6 +65,7 @@ public sealed class PlanValidator
         ValidateNoLegacyIntegrationGate(plan, diagnostics);
         ValidatePlanGuardrailsIntegrationReRun(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
+        ValidateInertWaveIntegrationScope(plan, diagnostics);
         ValidateGuardrailExpectedDurations(plan, diagnostics);
         ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateBannedGuardrailPatterns(plan, diagnostics);
@@ -1530,6 +1531,68 @@ public sealed class PlanValidator
                     $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
                     "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
                     "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// GR2059 (WARNING, SSOT §4.3/§14.3, issue #459): a WAVE-ROOT guardrail declaring
+    /// <c>scope:"integration"</c> is announcing an intention the harness does not act on.
+    /// <para>
+    /// The per-union re-verify set is <c>Scheduler.UnionIntegrationSet</c> — task
+    /// <c>&lt;task&gt;/guardrails/</c> plus plan-root <c>&lt;plan&gt;/guardrails/</c> (#451). A
+    /// <c>&lt;plan&gt;/&lt;wave&gt;/guardrails/</c> file is never in it: it is the wave's EXIT gate, run
+    /// once on the merged HEAD at wave end (§14.3). So the tag is not honoured and not rejected — it is
+    /// inert, and the author gets no signal, which is the whole complaint. #457 is what that silence
+    /// costs: the natural home for a union-safe invariant on a waved plan IS the wave that owns the
+    /// colliding siblings, and placing it there is exactly what makes it never fire.
+    /// </para>
+    /// <para>
+    /// A WARNING and NOT a behaviour change, on purpose. Adding these files to the union set would change
+    /// the §14.3 exit-gate contract: a check with one evaluation point does not have to be UNION-SAFE, and
+    /// running it at every intra-wave union demands that it pass on a partial merge where downstream tasks
+    /// have not run (#125/#165) — a terminal postcondition tagged <c>integration</c> would start
+    /// red-halting healthy partial merges. #459 names that an architect call. This is the interim answer
+    /// that is right under every destination.
+    /// </para>
+    /// <para>
+    /// CONSERVATIVE by construction, per the "a validator that cries wolf gets ignored" bar: it needs a
+    /// waved plan, the wave-root <c>guardrails/</c> folder, and the exact recognised value
+    /// <c>integration</c> (GR2021 owns unrecognised spellings; the loader lowercases). Every position
+    /// where the tag DOES work — task guardrails, the plan root, any flat plan — is untouched, so the
+    /// warning is emitted only where the author's stated intent and the harness's behaviour genuinely
+    /// disagree.
+    /// </para>
+    /// </summary>
+    private static void ValidateInertWaveIntegrationScope(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (!plan.IsWaved)
+        {
+            return;
+        }
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            foreach (GuardrailDefinition guardrail in wave.Guardrails)
+            {
+                if (guardrail.Scope != "integration")
+                {
+                    continue;
+                }
+
+                diagnostics.Add(Warning(DiagnosticCodes.WaveIntegrationScopeInert, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' ({wave.Dir}/guardrails/) declares scope:\"integration\", " +
+                    "which is INERT in this position. A wave-root guardrail is the wave's EXIT gate " +
+                    $"(SSOT §14.3): it runs exactly once, on the merged HEAD at the end of '{wave.Dir}'. The " +
+                    "per-union re-verify set is built from the task '<task>/guardrails/' folders plus the " +
+                    "plan-root '<plan>/guardrails/' folder (SSOT §4.3), so this check does NOT re-run at " +
+                    "unions inside the wave — including the fan-in it was most likely written for. " +
+                    "To get per-union re-verification, move the check to '<plan>/guardrails/' and keep " +
+                    "scope:\"integration\" there; it must then be UNION-SAFE — able to PASS on a partial " +
+                    "merge where downstream tasks have not run yet (SSOT §4.3, #125). To keep it as the " +
+                    "wave-exit gate it already is, drop the 'scope' key: the file behaves identically " +
+                    "without it. Whether wave-root integration scope should become meaningful is an open " +
+                    "contract question (issue #459); this warning exists so the tag is never silently inert."));
             }
         }
     }

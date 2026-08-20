@@ -1133,6 +1133,23 @@ HEAD by the terminal `<plan>/guardrails/` folder (§3.3). The terminal gate and 
 one mechanism running the **same** set at two scopes. There is no per-task or per-colliding-sibling
 guardrail selection at a union in v1 — the integration set is the whole re-verify.
 
+> **NOT the wave-root folder (issue #459) — `scope:"integration"` is INERT at
+> `<plan>/<wave>/guardrails/`.** On a WAVED plan (§14) the integration set is still exactly "the task
+> `tasks/<id>/guardrails/` folders plus the plan-root `<plan>/guardrails/` folder". A wave-root
+> `<plan>/<wave>/guardrails/` file is the wave's **exit gate**, which lives on a different contract
+> (§14.3): one evaluation point, at wave end, on the merged HEAD-so-far. It is **not** added to the union
+> set. So the tag's author-facing promise — *"this re-runs at every union point"* — is true at the plan
+> root and **false one level down**: tagging a wave-root guardrail `integration` neither adds it to the
+> set nor is rejected; it does nothing.
+>
+> That is a **deliberate open question, not a settled contract** — §14.3 records the state of play.
+> Extending the set downward would change the §14.3 exit-gate contract, because a check with exactly one
+> evaluation point need not be **union-safe**, and running it at every intra-wave union requires it to
+> pass on a partial merge where downstream tasks have not run (#125/#165). Until that is decided the
+> inertness is at least **loud**: **GR2059** (warning) fires at validate time on any wave-root guardrail
+> declaring `scope:"integration"`, names the position as inert, and points at the plan root. An author who
+> wants per-union re-verification today moves the check to `<plan>/guardrails/` and makes it union-safe.
+
 **Residual the v1 integration-set-only contract accepts (the B-3 three-net residual).** Because the
 union re-verify runs only `scope: "integration"` guardrails — not a colliding sibling's full
 `local` set — an AI-merge that drops a colliding sibling's source hunk while leaving the sibling's
@@ -1439,6 +1456,37 @@ human or agent is driving and can accept the cost and the side effects.
 | `GUARDRAILS_MERGE_OURS` | AI-merge worker | Path to the "ours" copy of the conflicted file on disk (§9.1) |
 | `GUARDRAILS_MERGE_THEIRS` | AI-merge worker | Path to the "theirs" copy of the conflicted file on disk (§9.1) |
 | `GUARDRAILS_MERGE_OUT` | AI-merge worker | Path the worker writes its resolved merged bytes to (§9.1); the harness reads this file |
+
+**The child's `GUARDRAILS_*` view is EXACTLY the rows above that apply to it — unlisted keys are
+CLEARED, not merely absent from the harness's overlay (issue #442).** A child process inherits a copy
+of the harness's own environment block and the harness's variables are merged *on top* of it, so
+"the harness did not set it" does not by itself mean "the child cannot see it". Whenever the harness
+process is itself carrying `GUARDRAILS_*` variables — `guardrails run` launched from inside another
+run, a dogfooded plan, a nested harness — every one of them would otherwise reach the child by plain
+inheritance. The harness therefore **removes** every `GUARDRAILS_`-prefixed variable it did not itself
+set for that child, before launching it. Four consequences that are contract, not implementation
+detail:
+
+- **The "Set for" column is a prohibition as well as a promise.** A guardrail cannot see
+  `GUARDRAILS_STATE_OUT` or `GUARDRAILS_STAGING_DIR`; a script action cannot see
+  `GUARDRAILS_VERDICT_OUT`. This is what makes those exclusions real rather than aspirational — the
+  #442 defect was a harness that withheld the key from its dictionary while the OS handed the child
+  an inherited copy anyway, and the same mechanism one call site over is what produced #253's
+  cross-run `GUARDRAILS_WORKSPACE` write-escape.
+- **Removal, not blanking.** An empty-but-present variable is SET as far as a shell is concerned
+  (`[ -n "${V+x}" ]`, `Test-Path env:V`), so anything branching on *presence* — a script deciding
+  whether it is running as an action or as a guardrail, a test fixture picking a role — gets a
+  truthful answer.
+- **The whole namespace, not just the rows above.** A `GUARDRAILS_*` variable added to this contract
+  later is hermetic on the day it is added, with no call site to remember; so is one the harness
+  never defined at all.
+- **Everything outside the `GUARDRAILS_` prefix is inherited untouched** — `PATH`, `HOME`, git and
+  toolchain configuration, and a task's own `action.env` entries (§2). A child action needs its
+  ambient toolchain; hermeticity is scoped to the namespace the harness owns.
+
+Harness-process knobs that the harness reads from its OWN environment rather than passing to a child
+— `GUARDRAILS_WORKTREE_ROOT` (§2) is the only one — are consumed in the parent and are correspondingly
+not visible to a child, since no row above declares them.
 
 **Recorded action outcome — verify, don't replay (issue #62).** `GUARDRAILS_ACTION_RESULT`
 / `_STDOUT` / `_STDERR` hand a guardrail the action's *already-captured* result, so it can
@@ -5515,6 +5563,32 @@ per wave** (a multi-leaf/fan-in wave's exit gate must carry ≥1 real integratio
 exit gate runs on the fully-merged HEAD** and is the whole-plan terminal soundness boundary; a plan-root
 `<plan>/guardrails/` is **optional-additive** (Open Decision B). `catches:`/GR2027 and the one shared
 parser apply to all six folder instances.
+
+**OPEN QUESTION — `scope:"integration"` on a wave-root guardrail is INERT (issue #459), warned by
+GR2059.** The per-union re-verify set (§4.3) is drawn from the task `guardrails/` folders plus the
+plan-root `<plan>/guardrails/` folder. A `<plan>/<wave>/guardrails/` file is **never** in it — the row
+above is its whole contract: one evaluation point, at wave end. The consequence is uncomfortable and worth
+stating plainly: on a waved plan the natural home for a union-safe invariant (a conflict-marker scan, a
+duplicate-definition count, a contribution-present check) is the wave that owns the colliding siblings and
+the fan-in, and placing it there is exactly what stops it firing at the union it was written for. That is
+the shape that produced #457.
+
+*Why it is not simply fixed.* Including wave-root guardrails in intra-wave unions is a **contract change**,
+not a bug fix. These files were authored under "runs once, at wave end", so a terminal postcondition — a
+whole-repo build, a full suite — is legitimate here and is legitimately **not** union-safe. Running them at
+every intra-wave union would require each to pass on a **partial** merge where downstream tasks have not
+run (the #125/#165 constraint the plan-root gate already carries), and a terminal postcondition tagged
+`integration` would begin red-halting healthy partial merges.
+
+*State of play.* Three destinations are on the table (#459): **(1)** include them, so the tag means the
+same thing at every level — simplest mental model, but every existing wave gate carrying the tag must be
+re-verified for union-safety; **(2)** leave the behaviour and make the inertness loud; **(3)** a
+**wave-scoped** union set, where a wave-root integration guardrail runs at unions *within its own wave*
+only — most precise, most machinery. **(2) is IMPLEMENTED**: `GR2059` (warning, §4.3) reports a wave-root
+guardrail declaring `scope:"integration"` at validate time as inert in that position, and names the plan
+root as the position where the tag has effect. It is a strict improvement under every destination and
+prejudges none of them. **(1) and (3) remain open, and are an architect call** — an architect arriving here
+should read this paragraph as the current answer, not re-derive it.
 
 ### 14.4 Execution — wave loop + hard barrier (the scheduler delta)
 

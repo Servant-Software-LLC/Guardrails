@@ -28,20 +28,19 @@ namespace Guardrails.Integration.Tests;
 /// <see cref="PlanDir"/>. So the fake instead proves the INVOCATION is one of THIS plan's, via a
 /// per-instance token in <c>action.env</c> (which the harness also propagates to task guardrails).
 /// <para>
-/// <b>KNOWN RESIDUAL (pre-existing, needs a production change — do not "fix" it here).</b> The token
-/// proves WHO invoked us, but the action-vs-guardrail BRANCH below is still chosen by the presence of
-/// <c>$GUARDRAILS_VERDICT_OUT</c> / <c>$GUARDRAILS_STATE_OUT</c>, and either can be AMBIENT. So if an
-/// enclosing run exports <c>GUARDRAILS_VERDICT_OUT</c> (i.e. the outer step is a PROMPT guardrail
-/// whose agent shells out to <c>dotnet test</c>), even a legitimate action invocation of this plan
-/// takes the verdict branch and writes a passing verdict to the OUTER path. No fixture-side fix
-/// exists: neither prompt frontmatter nor a guardrail sidecar can carry an <c>env</c> the fixture
-/// could use as an ambient-proof role marker, and every <c>GUARDRAILS_*</c> name is inheritable.
-/// The real fix is to make the child's §5.1 env HERMETIC — the harness explicitly clearing the
-/// <c>GUARDRAILS_*</c> keys it does not set — which would also make <c>TaskExecutor</c>'s
-/// <c>BuildGuardrailEnvironment</c> <c>env.Remove("GUARDRAILS_STATE_OUT")</c> actually effective
-/// (removing a key from the overlay dictionary does NOT unset an inherited variable). Reachability
-/// is low here because test-running gates are SCRIPT guardrails by doctrine, and this residual is
-/// strictly narrower than the two vectors above, which fired from an ordinary script preflight.
+/// <b>FORMER RESIDUAL — closed by issue #442.</b> The token proves WHO invoked us, but the
+/// action-vs-guardrail BRANCH below is chosen by the PRESENCE of <c>$GUARDRAILS_VERDICT_OUT</c> /
+/// <c>$GUARDRAILS_STATE_OUT</c>, and either used to be ambient. So if an enclosing run exported
+/// <c>GUARDRAILS_VERDICT_OUT</c> (i.e. the outer step is a PROMPT guardrail whose agent shells out to
+/// <c>dotnet test</c>), even a legitimate action invocation of this plan took the verdict branch and
+/// wrote a passing verdict to the OUTER path. There was no fixture-side fix: neither prompt frontmatter
+/// nor a guardrail sidecar can carry an <c>env</c> the fixture could use as an ambient-proof role
+/// marker, and every <c>GUARDRAILS_*</c> name was inheritable. The fix had to be — and now is —
+/// production-side: <see cref="Core.Execution.ProcessRunner.ApplyEnvironment"/> clears every
+/// <c>GUARDRAILS_*</c> key the harness did not declare for that child (SSOT §5.1), so presence is
+/// truthful again and this branch is sound. The same change is what makes <c>TaskExecutor</c>'s
+/// <c>BuildGuardrailEnvironment</c> <c>env.Remove("GUARDRAILS_STATE_OUT")</c> effective at all —
+/// removing a key from the overlay dictionary never unset an inherited variable.
 /// </para>
 /// </remarks>
 public sealed class FakeClaudePlanBuilder : IDisposable

@@ -91,10 +91,7 @@ public sealed class ProcessRunner
             startInfo.ArgumentList.Add(argument);
         }
 
-        foreach (KeyValuePair<string, string> variable in environment)
-        {
-            startInfo.Environment[variable.Key] = variable.Value;
-        }
+        ApplyEnvironment(startInfo.Environment, environment);
 
         using var process = new Process { StartInfo = startInfo };
 
@@ -145,6 +142,76 @@ public sealed class ProcessRunner
             TimedOut = timedOut,
             Duration = stopwatch.Elapsed
         };
+    }
+
+    /// <summary>
+    /// The env-var namespace the harness owns and fully specifies for a child (SSOT §5.1). Everything
+    /// outside it — <c>PATH</c>, <c>HOME</c>, git and toolchain configuration — is inherited untouched,
+    /// because a child action genuinely needs its ambient toolchain.
+    /// </summary>
+    internal const string HarnessEnvPrefix = "GUARDRAILS_";
+
+    /// <summary>
+    /// Environment-variable NAME semantics, matched to the platform's own: Windows env names are
+    /// case-insensitive, POSIX names are case-sensitive. <see cref="ProcessStartInfo.Environment"/> is
+    /// keyed the same way, so the hermetic sweep below has to agree with it — an ordinal-only match on
+    /// Windows would walk straight past an inherited <c>Guardrails_State_Out</c> that the child would
+    /// nonetheless read back as <c>GUARDRAILS_STATE_OUT</c>.
+    /// </summary>
+    private static readonly StringComparison EnvNameComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary><see cref="EnvNameComparison"/> as a comparer, for the declared-key set.</summary>
+    private static readonly StringComparer EnvNameComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    /// <summary>
+    /// Merge <paramref name="overlay"/> into a child's environment block <b>hermetically</b> for the
+    /// harness-owned <c>GUARDRAILS_*</c> namespace (SSOT §5.1, issue #442): after this call the child's
+    /// view of that namespace is EXACTLY <paramref name="overlay"/> — no more, no less.
+    /// <para>
+    /// The bug this closes is a mismatch between how callers reason and how the OS behaves.
+    /// <see cref="ProcessStartInfo.Environment"/> starts as a COPY of the harness's own environment and
+    /// the overlay is merged ON TOP, so <i>absence from the overlay was never absence in the child</i>.
+    /// A key a caller deliberately withheld —
+    /// <c>TaskExecutor.BuildGuardrailEnvironment</c>'s <c>env.Remove("GUARDRAILS_STATE_OUT")</c>, or
+    /// <c>NeedsHumanTriage</c>'s deliberately empty dictionary — still reached the child by inheritance
+    /// whenever the harness process itself carried that variable (i.e. whenever the harness was launched
+    /// from inside another run). That is not hypothetical: it is precisely how issue #253's triage child
+    /// inherited the OUTER run's <c>GUARDRAILS_WORKSPACE</c>, wrote into a foreign <c>_integration</c>
+    /// worktree, and got an innocent agent blamed for a write-scope violation.
+    /// </para>
+    /// <para>
+    /// Fixed HERE, at the one seam where "a dictionary" becomes "a child environment", rather than at
+    /// the two known call sites — so the guarantee holds for actions, script guardrails, prompt runners,
+    /// triage, the overwatcher, and for every call site not written yet that reasonably assumes its
+    /// dictionary is the whole story. Clearing (rather than blanking to <c>""</c>) is the operative
+    /// detail: an empty value is still a SET variable to a shell, and <c>test -n</c>/<c>-z</c> style
+    /// probes and role-detection branches read it as present.
+    /// </para>
+    /// </summary>
+    /// <param name="childEnvironment">The child's environment block — inherited copy, mutated in place.</param>
+    /// <param name="overlay">The harness's complete, authoritative <c>GUARDRAILS_*</c> declaration (plus any non-harness vars the caller wants set).</param>
+    internal static void ApplyEnvironment(
+        IDictionary<string, string?> childEnvironment,
+        IReadOnlyDictionary<string, string> overlay)
+    {
+        var declared = new HashSet<string>(overlay.Keys, EnvNameComparer);
+
+        // Materialize first: Keys is a live view over the dictionary being mutated.
+        List<string> inheritedButUndeclared = childEnvironment.Keys
+            .Where(name => name.StartsWith(HarnessEnvPrefix, EnvNameComparison) && !declared.Contains(name))
+            .ToList();
+
+        foreach (string name in inheritedButUndeclared)
+        {
+            childEnvironment.Remove(name);
+        }
+
+        foreach (KeyValuePair<string, string> variable in overlay)
+        {
+            childEnvironment[variable.Key] = variable.Value;
+        }
     }
 
     private static void Collect(string? data, StringBuilder buffer, SemaphoreSlim done, Action<string>? lineSink)

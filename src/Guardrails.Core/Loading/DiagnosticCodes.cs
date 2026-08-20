@@ -706,9 +706,41 @@ public static class DiagnosticCodes
     /// </summary>
     public const string BannedPatternScanTimedOut = "GR2058";
 
-    // CURRENT next-free code: GR2059. GR2058 (BannedPatternScanTimedOut) is the last taken code
-    // above — GR2051–GR2054 remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
+    /// <summary>
+    /// <b>GR2059 — a WAVE-ROOT guardrail declares <c>scope:"integration"</c>, where the tag is INERT
+    /// (issue #459).</b> On a waved plan the per-union re-verify set is built from the task
+    /// <c>&lt;task&gt;/guardrails/</c> folders plus the plan-root <c>&lt;plan&gt;/guardrails/</c> folder
+    /// (SSOT §4.3, #451). A wave-root <c>&lt;plan&gt;/&lt;wave&gt;/guardrails/</c> file is the wave's EXIT
+    /// gate and is evaluated on a different contract (SSOT §14.3): exactly once, on the merged HEAD at
+    /// wave end. Tagging it <c>integration</c> neither adds it to the union set nor is rejected — it
+    /// simply does nothing.
+    /// <para>Silence is the defect, not the behaviour. The author-facing promise of the tag is "this
+    /// re-runs at every union point"; at the wave root that promise is false and nothing says so, so the
+    /// plan LOOKS protected at the fan-in the check was most likely written for. That is the shape that
+    /// produced #457 — a union-safe invariant (conflict-marker scan, duplicate-definition count) whose
+    /// natural home is the wave that owns the colliding siblings, placed exactly there, never firing.</para>
+    /// <para>A WARNING, deliberately, and deliberately not a fix. Making wave-root integration scope
+    /// MEAN something changes the §14.3 wave-exit-gate contract — those files today have one evaluation
+    /// point, and running them at every intra-wave union requires them to be UNION-SAFE (#125/#165): able
+    /// to pass on a partial merge where downstream tasks have not run. A terminal postcondition tagged
+    /// <c>integration</c> would start red-halting healthy partial merges. That is an architect call
+    /// (#459 options 1 and 3), and this warning is the interim answer that is correct under every
+    /// destination: whichever way the contract lands, telling the author today beats silence.</para>
+    /// <para>Deliberately CONSERVATIVE: waved plans only, the wave-root <c>guardrails/</c> folder only,
+    /// and only the exact recognised value <c>integration</c> — GR2021 already owns unrecognised spellings.
+    /// It cannot fire on a flat plan, on a task guardrail, or on the plan root, all of which honour the tag.
+    /// The adjacent question of whether <c>scope</c> means anything in ANY <c>preflights/</c> folder is a
+    /// separate, unfiled one, left alone on purpose rather than folded in here.</para>
+    /// </summary>
+    public const string WaveIntegrationScopeInert = "GR2059";
+
+    // CURRENT next-free code: GR2063. GR2059 (WaveIntegrationScopeInert) is the last taken code above.
+    // Three later codes are RESERVED BY NAME in design documents and must not be re-used:
+    //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
+    //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
+    //   GR2062 — docs/plans/19-producer-coverage.md §1 (the one-ahead `intendedWaves` shortfall)
+    // GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2059 and update this line rather than colliding with that block (issue #320).
+    // GR2063 and update this line rather than colliding with either block (issue #320).
 }

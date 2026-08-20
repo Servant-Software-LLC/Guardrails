@@ -93,6 +93,11 @@ public sealed class NeedsHumanTriage
             ComposedPrompt = prompt,
             WorkingDirectory = workspace,
             PlanDirectory = planDirectory,
+            // Empty ON PURPOSE: triage is an advisory READER, so it gets no state channel and no
+            // workspace pointer. That intent is only enforceable because
+            // ProcessRunner.ApplyEnvironment treats this dictionary as the child's COMPLETE
+            // GUARDRAILS_* view (#442) — previously an empty overlay meant "inherit the outer run's",
+            // which is exactly how #253's triage child wrote into a foreign _integration worktree.
             Environment = new Dictionary<string, string>(StringComparer.Ordinal),
 
             // #452: state the profile EXPLICITLY. The turn cap is unchanged at 10 — the fix here is that

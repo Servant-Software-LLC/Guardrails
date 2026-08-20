@@ -1889,6 +1889,13 @@ public sealed class TaskExecutor : ITaskExecutor
     /// <summary>
     /// The §5.1 env-var contract for a GUARDRAIL process: the action env minus
     /// <c>GUARDRAILS_STATE_OUT</c>, plus the action-output pointers.
+    /// <para>
+    /// The <c>Remove</c> calls below are only meaningful because
+    /// <see cref="ProcessRunner.ApplyEnvironment"/> makes the returned dictionary the child's COMPLETE
+    /// view of the <c>GUARDRAILS_*</c> namespace (issue #442). Before that, they merely withheld a key
+    /// from the overlay, which a harness process carrying its own <c>GUARDRAILS_STATE_OUT</c> then
+    /// handed to the guardrail child by plain inheritance anyway.
+    /// </para>
     /// </summary>
     private static IReadOnlyDictionary<string, string> BuildGuardrailEnvironment(
         IReadOnlyDictionary<string, string> actionEnv,
