@@ -35,7 +35,7 @@ the project:
 ```powershell
 # catches: project created on disk but never registered in the solution file
 $slnPath = "PoC/ConformedSources/WorksoftMigrator.slnx"
-if ((Get-Content $slnPath -Raw) -notmatch 'WorksoftMigrator\.Desktop') {
+if ((Get-Content $slnPath -Raw) -cnotmatch 'WorksoftMigrator\.Desktop') {
     Write-Output "WorksoftMigrator.Desktop not registered in $slnPath"
     exit 1
 }
@@ -64,7 +64,7 @@ guardrail on the consuming task):
 ```powershell
 # catches: abstraction project created but the consumer never references it
 $consumerCsproj = "PoC/ConformedSources/WorksoftMigrator.Desktop/WorksoftMigrator.Desktop.csproj"
-if ((Get-Content $consumerCsproj -Raw) -notmatch '<ProjectReference[^>]*MigrationAbstractions') {
+if ((Get-Content $consumerCsproj -Raw) -cnotmatch '<ProjectReference[^>]*MigrationAbstractions') {
     Write-Output "WorksoftMigrator.Desktop.csproj missing <ProjectReference> to MigrationAbstractions"
     exit 1
 }
@@ -89,7 +89,7 @@ interface `IFoo`":
 ```powershell
 # catches: an "implements IDestinationWriter" claim satisfied by a comment, a using, or a local copy
 $impl = "PoC/ConformedSources/WorksoftMigrator.Desktop/CloudDestinationWriter.cs"
-if ((Get-Content $impl -Raw) -notmatch 'class\s+\w+\s*:\s*(\w+,\s*)*IDestinationWriter') {
+if ((Get-Content $impl -Raw) -cnotmatch 'class\s+\w+\s*:\s*(\w+,\s*)*IDestinationWriter') {
     Write-Output "CloudDestinationWriter.cs does not declare a class implementing IDestinationWriter"
     exit 1
 }
@@ -239,7 +239,7 @@ not the token" rule.
       exit 1
   }
   if ($content -match 'ImportMode') {             # dispatch contribution landed — require the real construct
-      if ($content -notmatch 'ImportMode\.\w+|switch.*ImportMode|case ImportMode') {
+      if ($content -cnotmatch 'ImportMode\.\w+|switch.*ImportMode|case ImportMode') {
           Write-Output "ImportMode present only as comment — dispatch construct missing after union"
           exit 1
       }
@@ -911,7 +911,7 @@ an unused field. Require the type used in a `new`/method-call position:
 #          (the "implemented but never called" gap unit tests cannot see)
 $entry = "src/Wizard.Cli/Program.cs"
 $code  = Get-Content $entry -Raw
-if ($code -notmatch '(?m)new\s+Launcher\b|Launcher\s*\.\s*\w') {
+if ($code -cnotmatch '(?m)new\s+Launcher\b|Launcher\s*\.\s*\w') {
     Write-Output "$entry does not instantiate or call Launcher - the entry point is not wired to it"
     exit 1
 }
@@ -1055,7 +1055,10 @@ the file exists at author time but ships inside the DLL:
 ```powershell
 # catches: the UI page exists in source but is not embedded, so it is absent at runtime
 $csproj = "src/Wizard.Cli/Wizard.Cli.csproj"
-if ((Get-Content $csproj -Raw) -notmatch '<EmbeddedResource[^>]*wizard\.html') {
+# -cnotmatch: MSBuild ELEMENT names are case-sensitive, so `<embeddedresource …>` must not pass.
+# The FILE-NAME half is scoped case-insensitive — Windows paths are, and a `Wizard.html` spelling in
+# the csproj embeds the same file (taxonomy 3 governs the identifier, not the path).
+if ((Get-Content $csproj -Raw) -cnotmatch '<EmbeddedResource[^>]*(?i:wizard\.html)') {
     Write-Output "Wizard.Cli.csproj does not embed wizard.html as a resource - it will be absent at runtime"
     exit 1
 }
@@ -1200,7 +1203,7 @@ impl, scoped to the one assembler file (grep-scope rule, §5):
 # catches: the factory file never constructs FooImpl (weakest wiring check - proves the text
 #          exists, NOT that the constructed object is reached; prefer 10a/10b)
 $factory = "src/Guardrails.Core/Execution/SchedulerFactory.cs"
-if ((Get-Content $factory -Raw) -notmatch 'new\s+FooImpl\b') {
+if ((Get-Content $factory -Raw) -cnotmatch 'new\s+FooImpl\b') {
     Write-Output "$factory does not construct FooImpl - the component is not wired into the factory"
     exit 1
 }
@@ -1235,7 +1238,7 @@ which stops at the first newline):
 #          keyword check ALL pass on the inverted wiring; only this per-pairing proximity check fails.
 $file = "src/Commander/ImporterDispatch.cs"
 $content = Get-Content $file -Raw
-if ($content -notmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImporter[\s\S]{0,300}TcApiLocal") {
+if ($content -cnotmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImporter[\s\S]{0,300}TcApiLocal") {
     Write-Output "$file does not pair ImportMode.TcApiLocal with TcApiLocalImporter within one block - verify the correct importer is wired to the correct ImportMode branch"
     exit 1
 }
@@ -1384,9 +1387,13 @@ blank the comment spans **in place** (preserve newlines) so reported line number
 rather than collapsing the file:
 
 ```powershell
-# blank block-comment spans but KEEP newlines, so a per-line scan reports correct line numbers
-$raw = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
-$lines = $raw -split '\r?\n'
+# blank block-comment spans but KEEP newlines, so a per-line scan reports correct line numbers.
+# NOTE the variable discipline: $raw is never REASSIGNED and never MATCHED against — the blanked text
+# lands in $code (taxonomy 4/5; catalogue -> "The two-variable rule"). Reassigning $raw in place
+# destroys the one variable that proves no clause read unstripped source.
+$raw   = Get-Content $sql -Raw
+$code  = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
+$lines = $code -split '\r?\n'
 for ($i = 0; $i -lt $lines.Count; $i++) {
     $line = $lines[$i] -replace '--[^\r\n]*', ' '        # SQL line comment ('//' for C#)
     if ($line -match '(?i)\bxp_cmdshell\b') {
@@ -1397,14 +1404,60 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
 exit 0
 ```
 
-Caveat (state it if it matters for the artifact): regex comment-stripping does not understand a
-banned keyword sitting **inside a string literal** (`'-- not a comment'`, `"/* still a string */"`).
-For most read-only-survey and banned-call checks this is acceptable (a survey rarely embeds the
-banned keyword in a string); when string-literal false positives are a real risk, note it in the
-breakdown report — full fidelity needs a parser, which is out of scope for a guardrail. And per the
-catalogue's action-prompt discipline: do **not** pair a header-documenting prompt with a
+Per the catalogue's action-prompt discipline: do **not** pair a header-documenting prompt with a
 comment-blind grep — strip comments in the guardrail, and keep the banned-keyword list in the
 guardrail's `# catches:` line rather than the action prompt unless the guardrail is comment-safe.
+
+### 11a. String literals are NOT an acceptable residual — the `$raw` / `$code` / `$scan` triple (#470)
+
+Comment-stripping alone does not understand a banned keyword sitting **inside a string literal**
+(`'-- not a comment'`, `"/* still a string */"`). **This is not "acceptable for most checks."** The
+catalogue's two-variable rule (catalogue → *"The two-variable rule — one strip, two levels, no raw
+matching"*) mandates the wider strip **non-optionally**, and the measured #470 incident was precisely
+this case: the banned token lived in the string literal of a required `[Trait("Category",
+"TierResolution")]` attribute. Each clause was individually correct — which is why reading the script
+top-to-bottom did not find it — the guardrail was unsatisfiable by construction, every attempt failed
+identically with coherent-and-wrong feedback, and the task dead-ended at `needs-human` with a blast
+radius of **three downstream tasks**.
+
+**Derive three variables once, at the top of any guardrail carrying BOTH polarities:**
+
+```powershell
+# catches: <the wrong implementation>. Variable discipline (catalogue -> the two-variable rule):
+#          $raw is NEVER matched against; REQUIRED clauses read $code; FORBIDDEN clauses read $scan.
+$f    = "src/Tool/Runner.cs"
+$raw  = Get-Content $f -Raw                                  # NEVER matched against
+$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', '')        # /* */ block comments  -> REQUIRED read $code
+$code = [regex]::Replace($code, '(?m)//.*$', '')             # // line comments
+$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')      # C# 11 raw strings     -> FORBIDDEN read $scan
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')     # verbatim strings
+$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')     # ordinary strings
+```
+
+For **SQL** the comment pair is `/* */` then `--`, and the literal form is single-quoted with `''`
+doubling:
+
+```powershell
+$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', ' ')
+$code = [regex]::Replace($code, '--[^\r\n]*', ' ')
+$scan = [regex]::Replace($code, "'(?:[^']|'')*'", "''")      # T-SQL string literals
+```
+
+Then, without exception:
+
+- **Every required-present clause reads `$code`** — comments gone, string literals **intact**, so a
+  required attribute value / message string / `[Trait]` can still satisfy it. Stripping literals here
+  is the mirror dead-end: it makes the required clause unsatisfiable, the same BLOCKER wearing the
+  other polarity.
+- **Every forbidden-present clause reads `$scan`** — literals gone too, and anchored on a **USE**
+  (`Foo\s*\.`, a type position, an enum member), never the bare word (#75/#76).
+- **`$raw` is matched by nothing, and never reassigned.** A clause reading `$raw` is taxonomy 4/5.
+
+Worked C#-with-both-polarities instance: catalogue → *"A forbidden token must not collide with what the
+task REQUIRES (#470)"*. `GR2057` backstops only the narrowest provable slice (ONE subject variable
+carrying both polarities) and — by design — must **not** fire on the triple above, so a green
+`validate` is not evidence the pair agrees. Full fidelity needs a parser, which is out of scope for a
+guardrail; the triple is the ceiling a guardrail is required to reach, not an optional extra.
 <!-- BEGIN ADDED SECTION #116 — Windows-safe TempGitRepo fixture (auto-merge friendly; do not merge into prose above) -->
 ## 12. Windows-safe `TempGitRepo` test fixture — author-tests that build a real git repo (#116)
 
@@ -1527,7 +1580,7 @@ passing test. The seam adds `Launcher(TextWriter, IWorksoftConnectionFactory, ID
 $src = "src/Worksoft.Migrator/Launcher.cs"
 $code = Get-Content $src -Raw
 # the constructor named `Launcher(` whose parameter list includes the injected interface
-if ($code -notmatch '(?s)\bLauncher\s*\([^)]*\bIDestinationWriter\b[^)]*\)') {
+if ($code -cnotmatch '(?s)\bLauncher\s*\([^)]*\bIDestinationWriter\b[^)]*\)') {
     Write-Output "$src has no Launcher(...) constructor overload taking IDestinationWriter - the injection seam is missing"
     exit 1
 }
@@ -1546,7 +1599,7 @@ field/parameter is the **factory type**, declared on the owning type:
 # catches: the production type does not accept a factory delegate for the dependency, so a test
 #          cannot substitute a fake-producing factory (the seam is missing)
 $src = "src/Worksoft.Migrator/Launcher.cs"
-if ((Get-Content $src -Raw) -notmatch 'Func\s*<\s*[^>]*IDestinationWriter\s*>') {
+if ((Get-Content $src -Raw) -cnotmatch 'Func\s*<\s*[^>]*IDestinationWriter\s*>') {
     Write-Output "$src does not accept a Func<...IDestinationWriter> factory - the factory seam is missing"
     exit 1
 }
@@ -1563,12 +1616,12 @@ registers it — otherwise the abstraction is dead and tests still cannot inject
 # catches: an injectable-interface seam where the interface exists but is never registered in the
 #          container, so a test cannot override the registration with a fake
 $iface = "src/Worksoft.Migrator/Abstractions/IDestinationWriter.cs"
-if ((Get-Content $iface -Raw) -notmatch 'interface\s+IDestinationWriter\b') {
+if ((Get-Content $iface -Raw) -cnotmatch 'interface\s+IDestinationWriter\b') {
     Write-Output "$iface does not declare interface IDestinationWriter - the seam interface is missing"
     exit 1
 }
 $startup = "src/Worksoft.Migrator/Program.cs"
-if ((Get-Content $startup -Raw) -notmatch '(AddScoped|AddSingleton|AddTransient)\s*<\s*IDestinationWriter\b') {
+if ((Get-Content $startup -Raw) -cnotmatch '(AddScoped|AddSingleton|AddTransient)\s*<\s*IDestinationWriter\b') {
     Write-Output "$startup never registers IDestinationWriter in the container - the seam is not injectable at runtime"
     exit 1
 }
@@ -1658,7 +1711,7 @@ boundary in the DAG: 14a → 14b → 14c.
 
 The .NET realization of the catalogue's method-call-anchoring rule (catalogue → "Method-call
 anchoring"). A "the CLI calls `MigrationRunner.RunAsync(...)`" wiring guardrail written as a **bare
-method-name** grep — `(Get-Content $prog -Raw) -notmatch 'RunAsync\s*\('` — false-passes on a comment
+method-name** grep — `(Get-Content $prog -Raw) -cnotmatch 'RunAsync\s*\('` — false-passes on a comment
 (`// RunAsync(scope)`), a **local** `private void RunAsync(...)` wrapper, or any unrelated same-named
 method. None invoke the real runner. Require **two sequential checks**: the **type** is referenced (no
 local stub can fake the type name) AND the call carries a **dot prefix** (`\.RunAsync\s*\(` — a method
@@ -1670,11 +1723,11 @@ local stub can fake the type name) AND the call carries a **dot prefix** (`\.Run
 #          library method. Require BOTH the type reference and the dotted call construct.
 $prog = "src/Migration.Cli/Program.cs"
 $content = Get-Content $prog -Raw
-if ($content -notmatch 'MigrationRunner') {
+if ($content -cnotmatch 'MigrationRunner') {
     Write-Output "$prog does not reference MigrationRunner - the runner type is never named (a local RunAsync stub would not wire it)"
     exit 1
 }
-if ($content -notmatch '\.RunAsync\s*\(') {
+if ($content -cnotmatch '\.RunAsync\s*\(') {
     Write-Output "$prog does not call .RunAsync(...) on an instance - only a bare/commented/locally-defined RunAsync would match without the dot"
     exit 1
 }
@@ -1751,11 +1804,14 @@ behavior). Pick a **domain type name, an enum value, or a method name** — neve
 #          both pass on ONE trivially-failing stub test.
 $f = "tests/Migration.Engine.Tests/SubProcessRollupTests.cs"
 $content = Get-Content $f -Raw
-if ($content -notmatch 'ProcessId') {
+# -cnotmatch on every required-present clause: these are C# IDENTIFIERS, and a case-insensitive
+# require-present clause false-GREENS on `processid`/`rollupcount` text C# would never compile
+# (catalogue taxonomy entry 3). Never `-notmatch` for an identifier in a case-sensitive language.
+if ($content -cnotmatch 'ProcessId') {
     Write-Output "$f does not test ProcessID keying - add a test asserting entities are keyed by ProcessId (behavior 2)"
     exit 1
 }
-if ($content -notmatch 'RollupCount') {
+if ($content -cnotmatch 'RollupCount') {
     Write-Output "$f does not test rollup counts - add a test asserting the parent's RollupCount aggregates its sub-processes (behavior 3)"
     exit 1
 }
@@ -1777,6 +1833,17 @@ test invokes the subject and asserts the wrong invariant), never for the vacuous
 report must still **list which enumerated behaviors went unchecked** so the reviewer can decide whether
 to add more terms.
 
+**Operator: `-cnotmatch`, always, for an identifier token.** A require-present clause written
+`-notmatch` is case-INSENSITIVE, so `processid` in prose or a lowercase local satisfies a clause that
+was supposed to prove the C# member is exercised — taxonomy entry 3, whose measured cost was certifying
+an entire unbuilt wave as landed. Use `-cnotmatch` here and in every required-present clause over C#
+source. **Measured caveat, current harness:** `CoverageGuardrailHeuristic.MatchLine` — the extractor
+behind the **GR2026** stale-coverage warning — recognises only the plain `-match`/`-notmatch` spellings,
+so a correctly case-sensitive coverage check reads to it as "not the archetype" and GR2026 stays
+**silent**. That is a validator gap, not a reason to weaken the operator: a false-GREEN guardrail is a
+worse defect than a quiet advisory lint. Keep doing the prompt↔token cross-check by hand (§4.4's
+"read the two side by side" rule applies here too).
+
 ### 17.1 Structural [Fact]/[Theory] check — strengthen the data-model TDD-split coverage (#155)
 
 When a **data-model** test-author task keeps the TDD split (catalogue → "Stub-based TDD" → data-model
@@ -1791,11 +1858,11 @@ not just the domain tokens. A comment naming `TcApiLocal` does not carry a `[Fac
 #          [Fact]/[Theory] attribute is present, the structural construct a comment cannot fake (#155).
 $f = "tests/Importer.Tests/ImportModeTests.cs"
 $content = Get-Content $f -Raw
-if ($content -notmatch '(?m)^\s*\[(Fact|Theory)\]') {
+if ($content -cnotmatch '(?m)^\s*\[(Fact|Theory)\]') {
     Write-Output "$f declares no [Fact]/[Theory] test - the enum-value tokens appear only as text (a comment cannot satisfy this)"
     exit 1
 }
-if ($content -notmatch 'TcApiLocal') {
+if ($content -cnotmatch 'TcApiLocal') {
     Write-Output "$f does not reference ImportMode.TcApiLocal - add a test asserting that enum value"
     exit 1
 }
@@ -1870,7 +1937,7 @@ try {
             Write-Output "seam: GET $url failed ($($_.Exception.Message)) - the producer never emitted the fragment the shell derives for step '$id' (name-convention drift)"
             exit 1
         }
-        if ($resp.StatusCode -ne 200 -or $resp.Content -notmatch [regex]::Escape($id)) {
+        if ($resp.StatusCode -ne 200 -or $resp.Content -cnotmatch [regex]::Escape($id)) {
             Write-Output "seam: GET $url returned HTTP $($resp.StatusCode) without marker '$id' - resolved to a fallback/404 body, not the real fragment (name-convention drift)"
             exit 1
         }
@@ -2067,6 +2134,137 @@ Notes on the scope and the edges:
   the #174/#182 no-op-deadlock short-circuit for this fast halt; the preflight folder gets it for free —
   the short-circuit remains a general §7 rule for any REAL task that no-ops elsewhere, untouched.)
 
+<!-- BEGIN ADDED SECTION #468/#302 — committed sample pair (auto-merge friendly; do not merge into prose above) -->
+## 22. The committed `.valid` / `.invalid` sample pair — .NET layout and how to run it (#468 / #302)
+
+The .NET realization of the catalogue's *"A source-shape guardrail ships with its two-sided sample pair
+COMMITTED"* rule. #302 requires the two-sided smoke test **at author time**; #468 makes it **durable** by
+committing the two samples beside the script, so the next edit — a later wave, a regeneration, or the
+agent the guardrail grades — can re-run them instead of trusting a pass nobody repeated.
+
+**Layout.** The samples go in a `samples/` **sibling** of the guardrail folder, never inside it:
+
+```
+tasks/07-implement-resolver/guardrails/03-uses-shared-predicate.ps1
+tasks/07-implement-resolver/samples/03-uses-shared-predicate.valid.cs     # correct   -> must exit 0
+tasks/07-implement-resolver/samples/03-uses-shared-predicate.invalid.cs   # the ONE defect -> must exit non-zero
+```
+
+> **Never `tasks/<id>/guardrails/03-….valid.cs`.** The loader enumerates **every** non-`.json` file in
+> `guardrails/`/`preflights/` as a guardrail — there is no extension allowlist — so a `.cs` fixture
+> dropped there loads as a **script guardrail**, counts toward GR2003 ("task has ≥1 guardrail", i.e. a
+> fixture would satisfy the task-is-verifiable check), and is **executed** at run time; in the
+> catches-enforced folders it is a **GR2027** load error instead. `tasks/<id>/samples/` is not
+> enumerated and is excluded from the task definition hash, so editing a sample cannot silently stale a
+> review marker.
+
+**Parameterise the subject so the pair is runnable.** A guardrail that hard-codes its target path cannot
+be pointed at a sample. Take the path from an env override with the real file as the default:
+
+```powershell
+# catches: <the wrong implementation>.
+# Author-time smoke test (#302), re-runnable (#468):
+#   $env:GR_SUBJECT='tasks/07-implement-resolver/samples/03-uses-shared-predicate.valid.cs';   ./03-….ps1  # expect 0
+#   $env:GR_SUBJECT='tasks/07-implement-resolver/samples/03-uses-shared-predicate.invalid.cs'; ./03-….ps1  # expect 1
+$f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { "src/Tiering/TierResolver.cs" }
+```
+
+**Run BOTH halves, and re-run BOTH after every edit to the script.** The **valid** half is the one
+authors skip and the one that pays: it is the only half that can expose a clause that can never match
+(taxonomy 13 — a control character from the authoring transport), a false-RED on legitimate brace or
+accessor style (taxonomy 2), and a **case mismatch** (taxonomy 3 — the whole of §11a and the
+`-cmatch`/`-cnotmatch` rule). Under the invalid half everything is failing anyway, so it reveals none of
+them.
+
+**Keep the valid sample COMPLETE**, not a minimal fragment: a `.cs` file with its usings, namespace, type
+declaration and the real construct — an incomplete valid sample fails for a *different* reason and masks
+the real one (measured: it nearly hid a #470 collision).
+
+**Exemptions, named in the report — never taken silently.** A **DOCUMENTATION** deliverable (a design
+doc, a README section) has no meaningful invalid sample; state the exemption and apply the **PRECEDENT**
+check instead (every demanded token has a precedent in the target artifact). A guardrail that is
+**not runnable at author time** (needs the built binary, a live service, or the merged HEAD) gets the
+syntax pass plus an explicit report deferral — an honest deferral, never a silent one (#302).
+
+<!-- END ADDED SECTION #468/#302 -->
+
+<!-- BEGIN ADDED SECTION #478 — measured baseline comments (auto-merge friendly; do not merge into prose above) -->
+## 23. The measured-baseline comment — census every required-present clause (#478)
+
+The .NET realization of the catalogue's *"Every required-present clause records its MEASURED baseline
+count"* rule. A clause already satisfied on the untouched tree certifies nothing for the life of the
+plan: the task is passable **without delivering the thing**. And **a red exit code does not clear you** —
+a guardrail has many clauses and one exit code, so a pre-satisfied clause hides behind its siblings'
+failures and no amount of executing the script can see it. The measurement is **per clause**.
+
+**Write the counts into the script, above the clauses they describe:**
+
+```powershell
+# baseline counts on the untouched tree - MEASURED with Select-String, not assumed:
+#   \bStage2GuardrailSpec\b            0
+#   \bJudgeGuardrail\b                 0
+#   (?<!action\.)prompt\.md            0   (bare 'prompt.md' was 3 - all 'action.prompt.md'; lookbehind added)
+#   [Trait("Category","TierResolution")]  n/a - file created by this task
+#   no ancestor task's prompt or writeScope writes these tokens into this subject
+if ($code -cnotmatch '\bStage2GuardrailSpec\b') { $failures += 'no Stage2GuardrailSpec type' }
+```
+
+**The .NET census command — one per clause, over that clause's own subject:**
+
+```powershell
+# Same case sensitivity as the operator: -cmatch/-cnotmatch -> -CaseSensitive; -match/-notmatch -> omit it.
+Select-String -Path 'src/Tiering/TierResolver.cs' -Pattern '\bStage2GuardrailSpec\b' -CaseSensitive |
+    Measure-Object | Select-Object -ExpandProperty Count
+```
+
+Rules that bite in a .NET tree specifically:
+
+- **Count the text the clause actually READS.** Under the §11a triple your required clause matches
+  `$code` (comments stripped) while `Select-String` reads the file **raw**. Three hits that are three
+  `///` doc-comment mentions do not pre-satisfy a `$code` clause — that count is **0**, and recording 3
+  invents a defect. Look at where each hit lives before writing the number.
+- **Same case sensitivity as the operator.** `-cnotmatch` ⇒ `-CaseSensitive`. Confusing the two is
+  taxonomy 3 again, now in the measurement rather than the clause.
+- **Zero is the expected answer. A nonzero count fixes the CLAUSE, not the comment.** The measured fix
+  for the `prompt.md` row was the negative lookbehind `'(?<!action\.)prompt\.md'`, re-measured at 0.
+- **Never write an unmeasured claim.** The motivating guardrail carried the comment *"appears nowhere
+  else"* over a token appearing **twice in that exact file**. The comment was the defect, because it sat
+  exactly where a reviewer looks for evidence.
+- **Measure against the tree the TASK will see.** A non-root task runs after its ancestors have written,
+  so today's 0 can be tomorrow's pre-satisfaction. Do the cheap textual half: check whether an
+  **ancestor's prompt or `writeScope`** puts that token in that subject, and record that you asked.
+- **Subject not created yet?** Write `n/a — file created by this task`, never a `0` you did not measure
+  (the honest note and the fake zero look identical to a reviewer). Still apply the ambient-vocabulary
+  test: a namespace, a `using`, or a base type name discriminates nothing once the file exists.
+- **Polarity — only two clause kinds have a defect here.** Census **required-present** (`-cnotmatch 'X'`
+  → fail; expect **0**) and **numeric floors** (`-lt N` → fail; expect **< N**). Do NOT census
+  **forbidden-present** clauses (`-cmatch 'X'` → fail): green on arrival is a *correct* ban, and a ban
+  RED on arrival is the §11a/#470 collision, a different defect. A behavioural `tests-fail-on-stubs` is
+  expected RED — the ordinary TDD story, not this one.
+- **A nonzero count is permitted only with a named reason on the same line:** positive-baseline / wave-
+  entry preflight, a `tests-untouched` regression clause, the *"if X is present"* half of a union-safe
+  conditional, or a ratcheting behaviour manifest **on a plan regenerated against a partially-landed
+  tree**. Undeclared nonzero is the finding; a declared one is a fact the reviewer can re-measure.
+
+**ACCUMULATE, do not `exit 1` per clause.** A multi-clause guardrail appends one distinguishable
+`$failures += …` per clause and dumps them once at the end, so one attempt reports every gap instead of
+one gap per attempt. The only legitimate early exits are a **precondition** (`Test-Path` fails, a failed
+`ConvertFrom-Json`, an empty state key — every clause below would crash) and an expensive **behavioural
+stage** placed after the dump; name both in the header comment.
+
+```powershell
+$failures = @()
+if (-not (Test-Path $f)) { Write-Output "$f does not exist"; exit 1 }   # PRECONDITION - the only early exit
+$raw  = Get-Content $f -Raw
+$code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ''); $code = [regex]::Replace($code, '(?m)//.*$', '')
+if ($code -cnotmatch '\bStage2GuardrailSpec\b') { $failures += "no Stage2GuardrailSpec type in $f" }
+if ($code -cnotmatch '\bJudgeGuardrail\b')      { $failures += "no JudgeGuardrail type in $f" }
+if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Output $_ }; exit 1 }
+exit 0
+```
+
+<!-- END ADDED SECTION #478 -->
+
 ## WPF structural checks (#11 F5/F6)
 
 WPF idioms are verified the same way — match the structural attribute/property, scoped to
@@ -2074,7 +2272,7 @@ the XAML or code-behind file the task produces, never a broad grep:
 
 ```powershell
 # catches: a three-state checkbox claim where IsThreeState was never set
-if ((Get-Content "src/Desktop/Views/FilterView.xaml" -Raw) -notmatch 'IsThreeState\s*=\s*"True"') {
+if ((Get-Content "src/Desktop/Views/FilterView.xaml" -Raw) -cnotmatch 'IsThreeState\s*=\s*"True"') {
     Write-Output "FilterView.xaml CheckBox is missing IsThreeState=\"True\""
     exit 1
 }

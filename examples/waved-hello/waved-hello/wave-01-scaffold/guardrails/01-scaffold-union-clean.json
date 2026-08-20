@@ -1,4 +1,3 @@
 {
-  "description": "Wave-01 exit gate: the scaffold union is non-empty and conflict-marker-free (union-safe integration re-run, GR2028)",
-  "scope": "integration"
+  "description": "Wave-01 EXIT gate: runs exactly ONCE, on the merged HEAD at the end of wave-01 (SSOT 14.3). Asserts the scaffold union is non-empty and conflict-marker-free -- the GR2028 integration re-run for this wave. Deliberately LOCAL (no 'scope' key): a wave-root scope:\"integration\" tag is INERT (GR2059, #459) because the per-union set is the task guardrails/ folders plus the PLAN-root guardrails/ folder only."
 }

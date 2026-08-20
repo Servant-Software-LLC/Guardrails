@@ -35,8 +35,8 @@ waved-hello/
 ├── state/seed.json                       # { "recipientName": "World" } — ONE continuous state
 ├── wave-01-scaffold/
 │   ├── preflights/01-fresh-scaffold-start.ps1     # ENTRY gate (wave 1): negative fresh-start baseline
-│   ├── guardrails/01-scaffold-union-clean.ps1     # EXIT gate: union-safe, scope:"integration" (GR2028)
-│   │   └── 01-scaffold-union-clean.json           #   { "scope": "integration" }
+│   ├── guardrails/01-scaffold-union-clean.ps1     # EXIT gate: conflict-marker union invariant (GR2028)
+│   │   └── 01-scaffold-union-clean.json           #   description only — LOCAL, NO "scope" key (GR2059)
 │   └── tasks/
 │       ├── 01-write-greet-script/  (writeScope out/greet.ps1)   → 01-greet-script-runs.ps1
 │       └── 02-write-config/        (writeScope out/config.json) → 01-config-valid.ps1
@@ -62,10 +62,14 @@ integration re-run (GR2028 **per wave**):
   baseline. Here a NEGATIVE fresh-start check ("`out/greeting.txt` is not already present"), which IS the
   `tests-fail-on-current-code`/`tests-fail-on-stubs` family (not a new archetype), correct plan/wave-entry
   only (skip-once).
-- **EXIT gate** `guardrails/01-scaffold-union-clean.ps1` (+ `.json` `{ "scope": "integration" }`) — a
-  **union-safe CONDITIONAL** invariant: *if* `out/greet.ps1` / `out/config.json` is present, verify it is
-  non-empty + conflict-marker-free; never REQUIRE both (a partial merge may not hold both yet). This is
-  the GR2028 integration re-run for the wave — NOT a whole-build/suite terminal postcondition.
+- **EXIT gate** `guardrails/01-scaffold-union-clean.ps1` (+ a `.json` carrying **only a `description`**) —
+  a **CONDITIONAL** invariant: *if* `out/greet.ps1` / `out/config.json` is present, verify it is non-empty
+  + conflict-marker-free. This is the GR2028 integration re-run for the wave — NOT a whole-build/suite
+  terminal postcondition. **It carries NO `scope` key, deliberately.** A wave-root `scope:"integration"`
+  tag is INERT (**GR2059**, #459): the per-union set is the task `<task>/guardrails/` folders plus the
+  PLAN-root `<plan>/guardrails/` folder only (SSOT §4.3), so this gate runs exactly once, on the merged
+  HEAD at wave-01's exit (SSOT §14.3). The conditional shape is kept because the paired **assert-present**
+  check for these same two artifacts is wave-02's ENTRY gate — one boundary, two authored folders.
 - **Tasks** `01-write-greet-script`, `02-write-config` — ordinary script tasks, each with a `writeScope`
   narrowed to its one output and a per-task guardrail (`01-greet-script-runs` actually runs the script;
   `01-config-valid` parses the JSON + asserts a non-empty name).
@@ -87,8 +91,10 @@ load-bearing new artifact:
 - **EXIT gate** `guardrails/01-greeting-complete.ps1` — wave 2 is the LAST wave, so its exit gate runs on
   the fully-merged HEAD and IS the whole-plan terminal soundness boundary (a plan-root `<plan>/guardrails/`
   would be optional-additive). Wave 2 is a single linear chain (one leaf), so this terminal postcondition
-  is **LOCAL** (no `scope` key) — marking it `scope:"integration"` would false-RED at an intermediate
-  union (#125/#165).
+  is **LOCAL** (no `scope` key) — like every wave-root gate. Tagging it `scope:"integration"` would not
+  make it stricter; the tag is INERT at a wave root (**GR2059**, #459) and would only make the plan LOOK
+  union-guarded. A whole-suite terminal postcondition tagged `scope:"integration"` is the #125/#165
+  anti-pattern at the **plan root**, where the tag is live.
 
 ## Wave-qualified identity + the state key (illustrative)
 
@@ -170,7 +176,7 @@ numbering staying contiguous (GR2033), the diagram always showing **one** stub n
 >
 > | Wave | Entry gate | Tasks (guardrails) | Exit gate |
 > |---|---|---|---|
-> | wave-01-scaffold | 01-fresh-scaffold-start (negative fresh-start baseline) | 01-write-greet-script (greet-script-runs), 02-write-config (config-valid) — two parallel leaves | 01-scaffold-union-clean (union-safe, `scope:"integration"`, GR2028) |
+> | wave-01-scaffold | 01-fresh-scaffold-start (negative fresh-start baseline) | 01-write-greet-script (greet-script-runs), 02-write-config (config-valid) — two parallel leaves | 01-scaffold-union-clean (conflict-marker union invariant, LOCAL — no `scope` key, GR2028) |
 > | wave-02-greet | 01-scaffold-materialized (**prior wave materialized**, #181 @ boundary) | 01-generate-greeting (greeting-exists) → 02-write-report (report-quotes-greeting) | 01-greeting-complete (terminal postcondition, **LOCAL** — last wave = whole-plan boundary) |
 >
 > - `dependsOn` is intra-wave only (`02-write-report` → `01-generate-greeting`); the wave barrier orders
@@ -199,10 +205,19 @@ numbering staying contiguous (GR2033), the diagram always showing **one** stub n
   ["wave-01-scaffold/01-write-greet-script"]` (or even a bare `01-write-greet-script` intending wave 1)
   → **GR2034 hard error**. The dependency belongs in wave 2's ENTRY gate ("prior wave materialized"), not
   a task edge.
-- **A whole-suite `tests-pass` marked `scope:"integration"` in an intermediate wave's exit gate.** It
-  re-runs at every union and red-halts a correct partial merge (#125). Keep whole-build/suite LOCAL;
-  make the wave's integration guardrail a union-safe conditional invariant. Only the LAST wave's exit
-  gate is the whole-suite home.
+- **Tagging ANY wave-root exit gate `scope:"integration"`.** The tag is **INERT at a wave root** —
+  `validate` warns **GR2059** (#459). The per-union re-verify set is the task `<task>/guardrails/`
+  folders plus the **PLAN-root** `<plan>/guardrails/` folder only (SSOT §4.3), so a wave-root entry
+  never runs at a union; it runs exactly once, on the merged HEAD at its wave's exit (SSOT §14.3).
+  Note the trap in the failure mode: it is **not** that the tag red-halts a correct partial merge (it
+  cannot — it never fires at a union), it is that the per-union invariant the author thought they wrote
+  **does not exist**. Fix = drop the `scope` key (behaviour-identical), and if a genuine per-union
+  invariant is needed, author it at `<plan>/guardrails/` as a union-safe conditional (#125/#165). Do
+  NOT move the wave-exit gate to the plan root — that changes WHEN it runs.
+- **A whole-suite `tests-pass` marked `scope:"integration"` in the PLAN-ROOT terminal folder.** *There*
+  the tag is live: it re-runs at every union and red-halts a correct partial merge (#125). Keep
+  whole-build/suite checks LOCAL wherever they live; only the LAST wave's exit gate is the whole-suite
+  home.
 - **A negative-polarity wave-2+ entry gate.** Asserting an artifact is "not yet present" at a wave-2
   entry gate flips false the instant an unrelated file lands — a false-RED. Wave-entry-materialized
   checks are positive (assert-present); the negative fresh-start check belongs at wave 1 only.

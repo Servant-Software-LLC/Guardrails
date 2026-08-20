@@ -493,7 +493,9 @@ optional:
   **required-present** and **numeric-floor** clauses are measured this way: a **forbidden-present** clause is
   *supposed* to be green before its task. Nonzero is allowed **only with a named reason on the same line**
   (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe
-  conditional, a ratcheting behaviour manifest). And a **multi-clause** guardrail **accumulates** — one
+  conditional, or a ratcheting behaviour manifest **on a plan regenerated against a partially-landed tree**
+  — the qualifier is load-bearing: on a FRESH plan a nonzero manifest clause is not a ratchet, it is a
+  clause already satisfied). And a **multi-clause** guardrail **accumulates** — one
   distinguishable `$failures += …` per clause, dumped once at the end — never an `exit 1` chain that reports
   one gap per attempt; the only legitimate early exits are a **precondition** (the subject is missing or
   unparseable, so every clause below would crash — `Test-Path`, a failed `ConvertFrom-Json`, an empty
@@ -932,8 +934,14 @@ optional:
   (e), and its verdict is *"this task is too big."* #382 owns the **placement of proof**: it reads which
   seam a test substitutes and where the real-seam proof lives, its mechanism is this ledger plus the
   archetype (audited by `/guardrails-review`), and its verdict is *"this proof is in the wrong task."*
-  Therefore — **#382 NEVER adds a rule keyed on `writeScope`, `action.maxTurns` or `dependsOn`** (those
-  three fields are GR2042's, exclusively), and **#378 NEVER adds a rule about what a guardrail PROVES.**
+  **The boundary is VERDICT-BASED, not field-based.** Therefore — **#382 NEVER derives a SIZE verdict
+  from `writeScope`, `action.maxTurns` or `dependsOn`**, and **#378 NEVER adds a rule about what a
+  guardrail PROVES.** What GR2042 owns is `writeScope`'s **CARDINALITY and SHAPE as evidence about a
+  task's SIZE** — not the field itself. `writeScope` is read all over the system for other purposes
+  (GR2019 workspace escape, GR2020 vacuous/over-broad, GR2041 required-present, and the runtime
+  `WriteScopeCheck` membership test), so **reading `writeScope` as a lookup or a coverage set — "which
+  task owns this file?", "is the carrier of this datum in somebody's scope?" — is NOT a boundary
+  crossing.** Only turning its count or breadth into a "this task is too big" judgement is.
   Where they meet: told *"this task is over-scoped"*, the reflex is to chop the `writeScope` — which for a
   fan-in sink yields N small tasks that still contain the first exercise of every real path, so the
   concentration survives the split. **Relocating the proof to T\* is the fix; narrowing `writeScope` alone
@@ -1028,8 +1036,14 @@ optional:
     and the task dead-ends at `needs-human` having never been achievable. Measured: a required
     `[Trait("Category", "TierResolution")]` whose own **string literal** carries the token a clause 40
     lines later forbids — each clause individually correct, so **reading did not reveal it**. Its blast
-    radius was three downstream tasks. (A mechanical `validate` lint for this is tracked as #470 ask 1;
-    it is not authored here and does not replace this check.)
+    radius was three downstream tasks. A mechanical `validate` lint now backstops the narrowest slice of
+    this — **GR2057** fires when one subject variable carries both a required-present literal and a
+    forbidden-present pattern that the literal trips. **It does not replace this check:** GR2057 is
+    deliberately silent wherever it cannot PROVE the collision — clauses over DIFFERENT subjects (the
+    two-variable `$code`/`$scan` fix below, which it must NOT flag), compound `-and`/`-or` conditions,
+    interpolated or composed patterns, anchored forbidden patterns, `.sh` guardrails, and both the
+    cross-file and prompt↔guardrail axes. A green `validate` means the provable case is clear, not that
+    the pair agrees.
   - **Prompt ↔ guardrail — TRAP-SHAPED, fix it anyway.** Grep the task's **own `action.prompt.md`** for
     every banned token. A hit means the prompt invites the agent to write the very thing that reds it —
     measured: a guardrail banning `(?i)\bUnavailable\b` over raw content while the prompt used that word
@@ -1911,6 +1925,25 @@ Per `references/schemas.md`, exactly:
    (**GR2041**, #389 — required on every task): a task that writes nothing to the repo must still
    declare `"writeScope": []`, and any task missing the field is an error to fix here before proceeding
    (self-validation closure).
+
+   **Exit 0 is NOT the gate — exit 0 *plus every WARNING read and dispositioned* is.** `validate`'s
+   warnings do not affect the exit code, so a breakdown that stops at the exit code is blind to every
+   one of them. **Read the warning list. Treat each warning as a FIRED TRIGGER, not noise to wave
+   through** (the phrasing GR2042 already carries at Step 2(b) — it was always the general rule, and it
+   applies to the whole WARN class). For each warning, do one of exactly two things before moving on:
+   - **FIX it** — the default. A `GR2059` inert wave-root `scope:"integration"` (drop the key, §9.2);
+     a `GR2042` structural over-scope (split the task, Step 2(b)); a `GR2026` stale coverage token
+     (reconcile guardrail and prompt); a `GR2020` vacuous/over-broad `writeScope` (name a real surface
+     or `[]`); a `GR2049` inert tiering tag; a `GR2033` wave-numbering gap; a `GR2058` scan timeout.
+   - **DOCUMENT it in the Step 7.4 report** — code, file, and the one-line reason it is correct here
+     (e.g. a `GR2026` warning sitting on a #176 negative assertion is the #177 false positive, §4.4 —
+     keep the guardrail, name the warning). A warning that is neither fixed nor documented is a
+     self-review failure.
+
+   Never silence a warning by weakening the thing it points at, and never re-run until it disappears by
+   accident. Two of the WARN codes name a defect the exit code can NEVER express — `GR2059` (a
+   protection that is inert) and `GR2042` (a task that will thrash) — and both were shipped green under
+   an exit-0-only reading.
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
    DAG intent.
 3. Once validation passes, run `guardrails graph <folder>` to generate
@@ -2868,14 +2901,21 @@ applies **inside each wave, unchanged**. What's *new* is the two wave-boundary f
   fan-in** wave's exit gate MUST carry **≥1 real integration re-run** — a genuine build/suite invocation
   or a **union-safe** invariant (NOT a tautological `exit 0`). A single-leaf linear wave needs no
   integration guardrail; a plain LOCAL terminal postcondition is fine.
-  - **Carry the #125/#165 union-safe rule into EVERY intermediate wave's exit gate.** A `scope:
-    "integration"` guardrail re-runs at every union; an intermediate wave's exit gate that asserts a
-    **terminal postcondition** ("all tests pass", "the full build is green") as `scope: "integration"`
-    red-halts a correct partial merge. Keep a whole-build / whole-suite check **LOCAL** (no `scope`
-    key — it then runs once, in that wave's exit-gate attempt); make the integration-scoped guardrail a
-    **union-safe CONDITIONAL** invariant ("if contribution X present, verify it"). The LAST wave's exit
-    gate is the one place a whole-suite `tests-pass` LOCAL check belongs (it runs on the fully-merged
-    HEAD) — the exact role the flat plan's terminal `<plan>/guardrails/` folder plays.
+  - **NEVER tag a wave-root gate `scope: "integration"` — it is INERT there (GR2059, #459).** The
+    per-union re-verify set is built from the task `tasks/<id>/guardrails/` folders plus the **PLAN-root**
+    `<plan>/guardrails/` folder, and nothing else (SSOT §4.3). A wave-root guardrail runs **exactly
+    once, on the merged HEAD at the end of its own wave** (SSOT §14.3), tagged or not — so the tag buys
+    nothing and the plan merely *looks* protected. Write every wave-exit gate **LOCAL** (no `scope`
+    key). Do not relocate a wave-exit gate to the plan root to silence the warning (that changes WHEN it
+    runs), and do not pre-empt the open #459 question by tagging one.
+  - **A per-union invariant belongs at the PLAN ROOT — and #125/#165 apply THERE.** If a check must be
+    re-verified on the merged bytes at every union (including the fan-ins *inside* a wave), author it in
+    `<plan>/guardrails/` with `scope: "integration"`, as a **union-safe CONDITIONAL** invariant ("if
+    contribution X is present, verify it"). A **terminal postcondition** ("all tests pass", "the full
+    build is green") tagged `scope: "integration"` there red-halts a correct partial merge — keep
+    whole-build / whole-suite checks **LOCAL** wherever they live. The LAST wave's exit gate is the one
+    place a whole-suite `tests-pass` LOCAL check belongs (it runs on the fully-merged HEAD) — the exact
+    role the flat plan's terminal `<plan>/guardrails/` folder plays.
 
 ### 9.3 Wave-qualified identity, intra-wave `dependsOn`, and the state key
 
@@ -3034,7 +3074,9 @@ authority for every path/signature the new wave references.
   the whole plan wave-by-wave. Record it with `guardrails mark-reviewed` (whole plan or per wave).
 - **Report additions (Step 7.4):** state that the plan is WAVED and why (the ordered-stages signal);
   the wave list with each wave's entry gate (what materialized artifacts it asserts) and exit gate
-  (the terminal check, LOCAL vs union-safe `scope:"integration"`); per wave, the ordinary task
+  (the terminal check — **always LOCAL**: a wave-root `scope:"integration"` tag is INERT, GR2059/#459,
+  because the per-union set is the task folders plus the PLAN root only; state where any genuine
+  union invariant was placed instead, i.e. `<plan>/guardrails/`); per wave, the ordinary task
   table; **which waves were authored up front vs left as JIT stubs**, and for each stub the documented
   JIT workflow (§9.5) so the human knows what happens at that checkpoint. On a JIT
   re-invocation (step 3), also state that the freshly-authored wave's **one-ahead stub `wave-(K+2)` was
@@ -3055,7 +3097,7 @@ authority for every path/signature the new wave references.
 - [ ] **(#474) Every task whose deliverable is *"datum D reaches sink S"* had D's path traced BEFORE its `writeScope` was written**: the nearest sibling datum that already makes the whole trip was grepped end to end, every file on that path is in the scope (or the unreachable hop is its own task with the edge wired), and **every construction site of the sink type** was enumerated — not just the one the plan names. Tracing on TYPE NAMES instead of on what the sink actually READS is the measured defect: it passes `validate`, `graph --check` and a full review, then dead-ends the agent at `needsHuman` with a choice between an honest halt and a false green. Reachability only — the rule widens or relocates a scope, and never grades a task's size.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] **Every guardrail passed the SOURCE-SHAPE demotion order (#468)**: a claim about runtime behaviour is carried by a test (or an AGREEMENT property test for "X must USE Y"), and a source-shape regex survives ONLY for a structural fact with no runtime proxy — with a Step 7.4 report line saying why no test could carry it. No executed-test COUNT is used as an adequacy floor (the #455 zero-match guard is not one). Every surviving source-shape check over CODE ships its committed `.valid`/`.invalid` sample pair in `tasks/<id>/samples/` (a sibling — NEVER inside `guardrails/`, where the loader would load the fixture as a guardrail and execute it), and the WHOLE pair was re-run after every edit to the script; a DOCUMENTATION target is exempt from the pair but not from the PRECEDENT check, and the exemption is named in the report.
-- [ ] **Every required-present clause records its MEASURED baseline count (#478)**: the token was run against the exact subject that clause scans, with the clause's own case sensitivity, and the number is written beside it — **0**, or a nonzero with a named reason (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, a ratcheting behaviour manifest). No unmeasured "appears nowhere else" claim survives; a nonzero count fixes the CLAUSE, not the comment. Forbidden-present clauses are exempt (a ban green on arrival is a correct ban). Every **multi-clause** guardrail ACCUMULATES — one distinguishable message per clause, dumped once — with early exits only for a PRECONDITION (subject missing or unparseable, so every clause below would crash) or a post-dump behavioural cost stage, both named in the header comment.
+- [ ] **Every required-present clause records its MEASURED baseline count (#478)**: the token was run against the exact subject that clause scans, with the clause's own case sensitivity, and the number is written beside it — **0**, or a nonzero with a named reason (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, a ratcheting behaviour manifest **on a plan regenerated against a partially-landed tree**). No unmeasured "appears nowhere else" claim survives; a nonzero count fixes the CLAUSE, not the comment. Forbidden-present clauses are exempt (a ban green on arrival is a correct ban). Every **multi-clause** guardrail ACCUMULATES — one distinguishable message per clause, dumped once — with early exits only for a PRECONDITION (subject missing or unparseable, so every clause below would crash) or a post-dump behavioural cost stage, both named in the header comment.
 - [ ] **No forbidden token collides with what the task REQUIRES (#470)**: for every fail-on-present clause, its literal was reconciled against the same file's required-present clauses (a collision is unsatisfiable-by-construction and dead-ends every attempt) and against the task's own `action.prompt.md`; every forbidden scan runs over STRIPPED source (comments AND string literals) and is anchored on a USE, not a mention.
 - [ ] Every guardrail file opens with its `catches:` line.
 - [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys) — **including every GATE** (#474): `<plan>/guardrails/` swept against the whole plan's producers, each wave exit gate against its own + earlier waves, each wave entry gate against earlier waves only, and `<plan>/preflights/` against **nobody** (it runs before the DAG, so everything it requires must already exist in the starting bytes).
@@ -3079,7 +3121,7 @@ authority for every path/signature the new wave references.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
-- [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
+- [ ] `guardrails validate` exits 0 (or its absence is loudly reported) **AND every WARNING it printed was read and dispositioned — fixed, or documented in the report with a one-line reason it is correct here.** Warnings do not move the exit code, so exit 0 alone is blind to GR2059 (an inert wave-root `scope:"integration"` — a protection that does nothing), GR2042 (structural over-scope), GR2026, GR2020, GR2049, GR2033 and GR2058. Treat each as a fired trigger, never as noise; a warning neither fixed nor documented is a self-review failure.
 - [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
@@ -3091,7 +3133,7 @@ authority for every path/signature the new wave references.
 - [ ] (#87) No emitted task updates ≥2 `.claude/skills/<X>/` directories — multi-skill milestones split into one `NN-update-<skill>-skill` task per directory (each with a directory-narrowed `writeScope`), with golden-example regeneration and round-trip verification as their own downstream tasks `dependsOn` the skill updates (Step 2c).
 - [ ] (#41/#78) `$e2eStack` recorded in Step 0 (playwright | cypress | none); for a UI-producing task, Level A (v1 liveness smoke) is added when a driver exists (else the §9 served-markup guardrail is emitted and the Level-A gap reported), an absent driver is surfaced/honest-halted (never scaffolded), Level B (v2 interaction-flow) is documented and surfaced as a v2 decision (never emitted in v1), and a multi-step-interaction exit criterion covered by only served-markup is flagged under-covered in Step 7 (Step 4b/5c; `references/stacks/ui.md`).
 - [ ] (#254) FLAT vs WAVED decided in Step 0.8: a plan of ordered STAGES whose later stages build on the prior stage's *materialized* artifacts is emitted as the nested `<plan>/<wave-NN-slug>/{preflights,guardrails,tasks}/` layout (wave dirs match `^wave-([0-9]+)-[a-z0-9-]+$`, contiguous NN, no root `tasks/`); a single-stage/flat plan is NOT waved (fine-grained parallelism is a task DAG inside ONE wave). Steps 1–8 ran per wave (Step 9).
-- [ ] (#254) Each wave carries an ENTRY gate (`<plan>/<wave>/preflights/` — a POSITIVE "prior wave's outputs materialized" check, the #181 archetype at the wave boundary, positive-monotone-safe) and, where multi-leaf/fan-in, an EXIT gate (`<plan>/<wave>/guardrails/`) with ≥1 real integration re-run (GR2028 per wave); every intermediate wave's exit gate keeps whole-build/whole-suite checks LOCAL and any `scope:"integration"` guardrail union-safe/conditional (#125/#165 per wave). The last wave's exit gate is the whole-plan terminal boundary (no duplicate plan-root gate).
+- [ ] (#254) Each wave carries an ENTRY gate (`<plan>/<wave>/preflights/` — a POSITIVE "prior wave's outputs materialized" check, the #181 archetype at the wave boundary, positive-monotone-safe) and, where multi-leaf/fan-in, an EXIT gate (`<plan>/<wave>/guardrails/`) with ≥1 real integration re-run — a whole-repo build/suite invocation or a git-conflict-marker union invariant (GR2028 per wave). **Every wave-root gate is LOCAL — no `scope` key on ANY of them:** a wave-root `scope:"integration"` tag is INERT (**GR2059**, #459) because the per-union re-verify set is the task `<task>/guardrails/` folders plus the **PLAN-root** `<plan>/guardrails/` folder only (SSOT §4.3), so the tag buys nothing and the plan merely *looks* protected. A wave-root gate runs exactly once, on the merged HEAD at its wave's exit (SSOT §14.3). A check that must be re-verified at EVERY union — including fan-ins inside a wave — goes at the **plan root** with `scope:"integration"`, and must be union-safe/conditional there (#125/#165). Do NOT relocate a wave-exit gate to the plan root to silence the warning (that changes WHEN it runs) and do NOT pre-empt the open #459 contract question by tagging. The last wave's exit gate is the whole-plan terminal boundary (no duplicate plan-root gate).
 - [ ] (#254) `dependsOn` is INTRA-WAVE only — no cross-wave edge (GR2034); a wave-2 dependency on a wave-1 artifact is expressed as the wave-2 entry gate + the action reading the real path. Every waved-plan prompt action's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (not the bare folder name — a bare key is rejected as foreign every attempt); the harness-contract header, the example, and the state-output guardrail's index all use that wave-qualified id.
 - [ ] (#254/#360) JIT staged breakdown: a downstream wave whose tasks reference not-yet-existing artifacts is left as a declared stub (empty `tasks/` + an **auto-seeded `brief.md`** — never brief-less by default, §14.4/§14.10), and the Step 7 report documents the workflow (run → the seeded stub **auto-breaks-down at its checkpoint** against the MATERIALIZED integration worktree → **halt for review** → `/guardrails-review` that wave → resume; a brief-less/opt-out stub honest-halts for a manual `/plan-breakdown` re-invocation instead). A wave that IS designable up front is authored up front. Every generated waved script guardrail (task-level AND wave entry/exit gates) got the #302 author-time smoke-test (Step 7.0d).
 - [ ] (#365/#360) One-ahead invariant held: the initial JIT breakdown left **only wave `K+1`** stubbed (not `K+1..N`), and every JIT re-invocation (§9.5 step 3) that authored a wave **re-created AND auto-seeded the next `wave-(K+2)` stub** (dir + empty `tasks/` + a `brief.md` populated from that wave's parent-plan section — or a minimal template flagged in the report when no section was identifiable; NEVER brief-less by default, §14.4/§14.10 auto-breakdown-default) whenever a planned wave remained, then **regenerated the diagram** (`guardrails graph`); the FINAL wave got no stub after it. The forward signal is thereby preserved across every JIT step (not just the first), and each seeded stub auto-breaks-down at its checkpoint — still halting for the human review gate.

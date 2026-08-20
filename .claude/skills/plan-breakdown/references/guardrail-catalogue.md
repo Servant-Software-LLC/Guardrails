@@ -1197,21 +1197,38 @@ one level up. `terminal-gate-of-wave-N == preflight-of-wave-(N+1)`: one boundary
 
 - **Wave EXIT gate (`<plan>/<wave>/guardrails/`) = the Terminal-Gate archetype per wave.** **GR2028
   applies PER WAVE**: a multi-leaf/fan-in wave's exit gate needs ≥1 real integration re-run (a
-  build/suite invocation or a union-safe invariant, NOT `exit 0`). **Carry the union-safe rule (#125 /
-  #165) into every INTERMEDIATE wave's exit gate**: a whole-build/whole-suite check stays **LOCAL** (no
-  `scope` key — it runs once in that wave's exit-gate attempt); a `scope:"integration"` guardrail is a
-  union-safe **CONDITIONAL** invariant ("if contribution X present, verify it", conflict-marker-free),
-  because it re-runs at every union and a terminal-postcondition-as-integration red-halts a correct
-  partial merge. The **LAST** wave's exit gate runs on the fully-merged HEAD, so a whole-suite `tests-pass`
-  LOCAL check belongs there — the same role the flat plan's terminal `<plan>/guardrails/` folder plays. A
-  single-leaf linear wave needs no integration guardrail; a plain LOCAL terminal postcondition is fine.
+  build/suite invocation or a git-conflict-marker union invariant, NOT `exit 0`).
+
+  **Every wave-root gate is LOCAL. Never tag one `scope:"integration"` — the tag is INERT there.**
+  `validate` says so: **GR2059** (#459). The per-union re-verify set is built from the task
+  `tasks/<id>/guardrails/` folders plus the **plan-root** `<plan>/guardrails/` folder — and *nothing
+  else* (SSOT §4.3). A wave-root entry is therefore never in it: it runs **exactly once, on the merged
+  HEAD at the end of its own wave** (SSOT §14.3), which is precisely what the folder is for. Dropping
+  the `scope` key is **behaviour-identical** — the file already runs at wave exit, tagged or not.
+  Whether a wave-root tag *should* become meaningful is an open contract question (#459); do not
+  pre-empt it by tagging one today, and do not move a wave-exit gate to the plan root to "fix" the
+  warning — that changes WHEN it runs.
+
+  **A union invariant belongs at the PLAN ROOT.** If you need a check re-verified on the merged bytes
+  at *every* union — including the fan-ins *inside* a wave — author it in `<plan>/guardrails/` and keep
+  `scope:"integration"` **there**. It must then be UNION-SAFE: a **CONDITIONAL** invariant ("if
+  contribution X is present, verify it", conflict-marker-free) able to PASS on a partial merge where
+  downstream tasks have not run yet (#125 / #165) — a terminal postcondition tagged integration
+  red-halts a correct partial merge.
+
+  A whole-build/whole-suite check stays LOCAL in whichever gate folder holds it. The **LAST** wave's
+  exit gate runs on the fully-merged HEAD, so a whole-suite `tests-pass` LOCAL check belongs there —
+  the same role the flat plan's terminal `<plan>/guardrails/` folder plays. A single-leaf linear wave
+  forms no union and needs no integration re-run at all; a plain LOCAL terminal postcondition is fine.
   (Union-safe form: "A `scope:"integration"` guardrail MUST be UNION-SAFE", below.)
 
 `catches:`/GR2027 and the author-time smoke-test (#302) apply to these gate scripts like any other — a
 wave entry gate that renders/executes the not-yet-materialized upstream is exactly the #302 high-value
 render/execute target (hand-synthesize a materialized sample + a missing-artifact sample). The
-`examples/waved-hello` demo carries a worked entry gate (`01-scaffold-materialized`) and exit gates
-(`01-scaffold-union-clean` union-safe, `01-greeting-complete` LOCAL terminal).
+`examples/waved-hello` demo carries a worked entry gate (`01-scaffold-materialized`, assert-present)
+and exit gates (`01-scaffold-union-clean` conflict-marker union invariant, `01-greeting-complete`
+whole-artifact terminal) — **both exit gates LOCAL, neither tagged `scope:"integration"`**, which is
+the correct wave-root form.
 
 ## Composition-root wiring — the component is CONSTRUCTED/INJECTED in production (#120)
 
@@ -1950,6 +1967,12 @@ the merge commit and *before any downstream action* — **not only in the termin
 folder**. The terminal gate and the per-union re-verify are **one mechanism at two scopes** (§4.3). So
 an integration guardrail runs at moments when **downstream tasks have not run yet**.
 
+**Where the tag is LIVE — exactly two folders.** The per-union set is built from the task
+`tasks/<id>/guardrails/` folders **plus the plan-root `<plan>/guardrails/` folder**, and nowhere else. A
+**WAVE root** (`<plan>/<wave>/guardrails/`) is NOT in that set: the tag there is **INERT** and `validate`
+warns **GR2059** (#459). Everything in this section applies to the two live positions; at a wave root
+the correct form is LOCAL, no `scope` key (see the wave entry/exit gate section).
+
 **The full build and whole test suite on the terminal gate are NOT integration-scoped (#165).** It is
 tempting to think "the whole-repo build + full suite ARE the integration set, so mark them
 `scope: "integration"`." That is the **#125 anti-pattern**, not the rule. A full build and a full test
@@ -2427,8 +2450,10 @@ $scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')     # raw strings   -> F
 $scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')    # verbatim
 $scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')    # ordinary — kills the Trait's own value
 
-# REQUIRED reads $code, so the trait's string literal is still there to satisfy it
-if ($code -notmatch '\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]') {
+# REQUIRED reads $code, so the trait's string literal is still there to satisfy it.
+# -cnotmatch (taxonomy 3): a REQUIRED identifier clause must be CASE-SENSITIVE, or `[trait("category",…)]`
+# false-GREENs a file C# would not even compile.
+if ($code -cnotmatch '\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]') {
     Write-Output "$f carries no [Trait(""Category"", ""TierResolution"")] attribute on the suite class"
     exit 1
 }
@@ -2480,8 +2505,16 @@ and both clauses are correct in isolation: #97/#98 is written about comments (th
 **string literal in an attribute**); #176 *asks for* the forbidden clause and says nothing about checking
 it against the file's required content; #302 finds it only if someone executes the script with a
 **complete** valid sample. The mechanical same-file lint (the GR2026 analogue — a required literal that
-trips the same file's forbidden pattern is a **proof** of unsatisfiability, not a heuristic) is tracked
-as **#470 ask 1** and is not doctrine's job; this section is.
+trips the same file's forbidden pattern is a **proof** of unsatisfiability, not a heuristic) **SHIPPED as
+`GR2057`**: `validate` fires it when ONE subject variable carries both a required-present literal and a
+forbidden-present pattern that the literal trips.
+
+**GR2057 does not retire this section.** It is deliberately silent wherever it cannot PROVE the collision,
+and every one of those gaps is doctrine's: clauses over **DIFFERENT subjects** (the two-variable
+`$code`/`$scan` fix this section mandates — which GR2057 must NOT flag, or the prescribed fix would be
+punished), compound `-and`/`-or` conditions, interpolated or composed patterns, anchored forbidden
+patterns, `.sh` guardrails, and both the **cross-file** and **prompt↔guardrail** axes. A green `validate`
+means the provable case is clear, not that the pair agrees — run the two-direction check regardless.
 <!-- END ADDED SECTION #470 -->
 
 <!-- BEGIN ADDED SECTION #96 — producer<->consumer name-convention seam (auto-merge friendly; do not merge into prose above) -->
@@ -2709,8 +2742,30 @@ What is the task's primary deliverable?
 │    construct + inject)          assert observable output (strongest), or reflect on the
 │                                 constructed object for the non-null collaborator with a
 │                                 contrast case (the Factory_Wires* shape). NEVER inject the seam
-│                                 in the guardrail; NEVER trust terminal whole-suite green to
-│                                 cover wiring. See the composition-root section + stacks/dotnet.md §10
+│                                 INTO THE ASSEMBLER'S OWN SLOT here — a guardrail that hands the
+│                                 assembler a FooImpl it was supposed to construct proves nothing
+│                                 about production wiring. Read that prohibition as SLOT-SPECIFIC:
+│                                 it is about the ASSEMBLER's slot only, and the #382 leaf below
+│                                 REQUIRES injecting into the COMPONENT-UNDER-TEST's own constructor
+│                                 (same verb, different slot — D12; see "drive-the-real-seam").
+│                                 NEVER trust terminal whole-suite green to cover wiring.
+│                                 See the composition-root section + stacks/dotnet.md §10
+├── A component whose TESTS    → drive-the-real-seam contract test (#382): the component's OWN
+│    substitute an IN-PROCESS     implement task carries a test that drives the ACTUAL in-process
+│    seam the production run       seam the production run drives, faking ONLY the process/CLI
+│    drives (an IPromptRunner,     boundary underneath — NEVER the in-process seam itself. A TDD
+│    the executor, the             guardrail that injects a FAKE of that seam goes GREEN over a
+│    scheduler, a factory)         component that is broken through the real composition root: a
+│                                  green light over a broken wire (passing-but-blind). Real-path
+│                                  proof is DISTRIBUTED to each component's own task, never
+│                                  concentrated in one terminal wiring sink — that concentration is
+│                                  what the #378 over-scope WARN detects wearing a size costume.
+│                                  Record a SEAM-LEDGER row per substituted in-process seam and put
+│                                  each proof at its recomputed T*. Injecting into the COMPONENT's
+│                                  own constructor here is REQUIRED and is NOT the #120 violation
+│                                  above (D12 — different slot). Process seams (child process, CLI,
+│                                  socket, HTTP, DB, filesystem) need no row.
+│                                  See the drive-the-real-seam section + stacks/dotnet.md §10e
 ├── A derived corpus /         → coverage (every input maps to an output) + per-output substance
 │    aggregate over a set of      floor (anti-stub) + index completeness (produced ⊆ indexed) +
 │    inputs (doc-mine, codegen    ingestion lower bound (#99). LOWER BOUNDS, not faithfulness —

@@ -1021,9 +1021,18 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1010 / GR2055** (GR2051-GR2054 are RESERVED BY NAME for the rest of the
-  model-tiering epic -- `docs/plans/17-model-tiering.md` section 13.2 -- so an UNRELATED new code takes
-  GR2055; `DiagnosticCodes.cs` WINS, re-verify against it before allocating. GR2035 = DuplicateCheckName — two checks in one
+  HEAD-independence). Next-free GR code: **GR1011 / GR2063** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
+  FOUR blocks are RESERVED BY NAME and must not be re-used: GR2051-GR2054 for the rest of the model-tiering
+  epic (`docs/plans/17-model-tiering.md` §13.2 — NonRoutableBlockIsDefault / CostlyBlockRoutingInert /
+  PinAndTierCoexist / RoutingNumericNonPositive); GR2060 + GR2062 for `docs/plans/19-producer-coverage.md` §1;
+  GR2061 for `docs/plans/18-integration-proof-proximity.md` §3.4 (the deferred seam-ledger lint); and
+  GR2063 itself for `docs/plans/20-jit-breakdown-durability.md` (`WaveBreakdownIncomplete`) — so an
+  UNRELATED new code takes the next code `DiagnosticCodes.cs` records as free, which is why
+  **`DiagnosticCodes.cs` WINS — re-verify against its next-free comment before allocating.**
+  GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 = GuardrailScriptDoesNotParse #473; GR2057 =
+  GuardrailRequiresForbiddenToken #470 ask 1; GR2058 = BannedPatternScanTimeout #487; **GR2059** =
+  WaveIntegrationScopeInert #459 (see the wave-root INERT note under Guardrail scope, above).
+  GR2035 = DuplicateCheckName — two checks in one
   folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
   heartbeat; **GR2037 = BannedGuardrailPattern** — a generated guardrail SCRIPT contains a known-bad regex
@@ -1055,11 +1064,18 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2055 -- GR2051-GR2054 reserved by name for model tiering (GR2035 =
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2063**
+  — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
+  TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2051-GR2054**
+  model tiering (`docs/plans/17-model-tiering.md` §13.2), **GR2060 + GR2062** (`docs/plans/19-producer-coverage.md`
+  §1), **GR2061** (`docs/plans/18-integration-proof-proximity.md` §3.4), **GR2063**
+  (`docs/plans/20-jit-breakdown-durability.md`). Taken: GR2035 =
   DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
   GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
   MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378; GR2043-GR2050 = the
-  model-tiering schema codes, SSOT §9.6).
+  model-tiering schema codes, SSOT §9.6; GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 =
+  GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
+  BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are
