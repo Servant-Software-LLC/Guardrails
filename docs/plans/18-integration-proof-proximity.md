@@ -490,6 +490,19 @@ agents inherit:
   fields are GR2042's, exclusively.
 - **#378 never adds a rule about what a guardrail proves.** That is #382's.
 
+> **CORRECTED 2026-08-20 (doc 19, #474/#477).** The first clause as written is **already false**: GR2041
+> `MissingWriteScope` reads `writeScope` and is not GR2042. The boundary was never about which FIELD a lint
+> touches — it is about which VERDICT it derives. Restated, and this is the binding form:
+>
+> **GR2042 owns `writeScope` CARDINALITY and SHAPE as evidence about a TASK'S SIZE.** Another lint may read
+> `writeScope` as a **coverage set** — *"does any task claim this path?"* — exactly as GR2041 already does.
+> A coverage lint never comments on task size, never suggests splitting or narrowing, and never reads
+> `action.maxTurns` or `dependsOn`.
+>
+> Honouring this **improved** doc 19's check rather than constraining it: #474's own proposal wanted "or in
+> any ancestor's output", which needs `dependsOn`. Taking the union of ALL tasks' `writeScope` instead is
+> both strictly more conservative and boundary-clean.
+
 **Where they meet, and it is worth wiring:** GR2042's *detection* is right but its implied *remedy* is
 incomplete. Told "this task is over-scoped", an author's reflex is to chop the `writeScope` — which for a
 fan-in sink produces N small tasks that still contain the first exercise of every real path. The
