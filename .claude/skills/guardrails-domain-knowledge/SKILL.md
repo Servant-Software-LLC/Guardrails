@@ -867,6 +867,23 @@ total order driven by the wave folder's numeric prefix.
   `/guardrails-review` **that single wave** (each wave has its own `PlanDefinitionHash`-keyed review marker);
   resume. The whole-plan "break down everything up front" path still works when the downstream waves ARE
   designable up front.
+- **`guardrails breakdown <plan.md>` -- the INITIAL breakdown, from the CLI (#498).** The same actor
+  through a second door: plain markdown in (a brief, or `charter handoff` output -- a `.charter.md` is
+  **refused**, not interpreted, since Guardrails takes no Charter dependency), plan folder out. Before it,
+  the only way to author a folder was an interactive session with the `plan-breakdown` skill loaded, so the
+  harness could *invoke* a breakdown but could not be *asked* to -- which is what blocks an unattended
+  pipeline (#496) and any other agent equally. **The wave-1-stub workaround does NOT substitute for it:**
+  a plan whose waves are all unauthored stubs fails **GR1009** before the scheduler runs, so the checkpoint
+  never fires (measured, #496). Three things to know: the runner comes from `--runner-config` (borrow an
+  existing plan's `promptRunners`, loaded through the real loader) else a built-in default `claude` runner,
+  because `guardrails.json` does not exist yet; it shares `WaveBreakdownInvoker.InvokeCoreAsync` with the
+  wave path so the timeout, tool grant, stream tee and preserved `FailureKind` cannot drift between the two
+  doors; and it inlines the skill copy **bundled beside the tool**, which is version-matched to the harness
+  by construction (three different `plan-breakdown/SKILL.md` files exist on a typical dev box and only that
+  one is guaranteed to match). **It never marks the plan reviewed** -- the output is a DRAFT and GR2025
+  keeps firing; the review gate is NON-answerable (`AnswerableGates`) regardless of which door authored the
+  folder. Exit `0` authored+validated, `2` authored but not clean (read the folder -- a cut-off session can
+  leave a valid prefix), `1` the tool could not do the job (fix the invocation).
 - **Breakdown durability -- declared intent, prefix preservation, resume segments (#385/#402/#471/#489,
   SSOT §14.11, design of record `docs/plans/20-jit-breakdown-durability.md`).** Neither session bound can be
   sized from the invocation, so ANY bound is eventually hit by a big enough wave; the answer is not a bigger
