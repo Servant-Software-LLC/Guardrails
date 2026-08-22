@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=597a33903da147cda186c01aa240994e57cfa1a50960a32274c207252679004f -->
+<!-- guardrails:graph v1 source-sha256=02c1ecfce5e6815ada68bcb5cb1aca33871abc8032d5de4ea441baac1a962b6a -->
 
 ```mermaid
 flowchart TD
@@ -44,6 +44,7 @@ flowchart TD
   subgraph wave_1_guardrails["Wave 1 Exit Gate"]
     wave_1_guardrails_0["01-solution-builds"]:::guardrail
     wave_1_guardrails_1["02-core-tests-pass"]:::guardrail
+    wave_1_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style wave_1_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_2_preflights["Wave 2 Entry Gate"]
@@ -66,7 +67,6 @@ flowchart TD
   task_wave_01_config_net_01_allocate_diagnostic_codes --> task_wave_01_config_net_04_author_tests_pin_and_tier_coexist
   task_wave_01_config_net_02_author_tests_registry_warnings --> task_wave_01_config_net_03_implement_registry_warnings
   task_wave_01_config_net_03_implement_registry_warnings --> task_wave_01_config_net_05_implement_pin_and_tier_coexist
-  task_wave_01_config_net_03_implement_registry_warnings --> task_wave_01_config_net_06_update_ssot_and_domain_knowledge
   task_wave_01_config_net_04_author_tests_pin_and_tier_coexist --> task_wave_01_config_net_05_implement_pin_and_tier_coexist
   task_wave_01_config_net_05_implement_pin_and_tier_coexist --> task_wave_01_config_net_06_update_ssot_and_domain_knowledge
   task_wave_01_config_net_06_update_ssot_and_domain_knowledge --> wave_1_guardrails

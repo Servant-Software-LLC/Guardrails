@@ -58,11 +58,22 @@ All three are **warnings**, never errors. DoR §12.6 is explicit that the plan s
    surrounding constants in this file: state what it catches, why it is a warning rather than an
    error, and cite the DoR section. Follow the file's existing conventions — read the neighbouring
    GR2047–GR2050 block first and match it.
-2. **Update the reservation block** near the end of the file (the comment that currently reads
-   "GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2"). After
-   this task, **GR2051, GR2052 and GR2053 must no longer be described as reserved-and-free** —
-   they are taken. **GR2054 `RoutingNumericNonPositive` must still be named as reserved**: it is
-   the v2 probes code (#227) and nothing in this plan takes it.
+2. **Retire the three codes from EVERY reservation statement in the file — there are TWO, not one.**
+   - **`~line 848`** — "GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2".
+   - **`~line 573`** — "Deliberately NOT taken by this slice (still reserved in §13.2, still free):
+     GR2051 (NonRoutableBlockIsDefault), GR2052 …, GR2053 …". This one is easy to miss because it
+     reads as historical narration about Stage 1, but it is a live claim and the next allocator will
+     believe it. Grep the whole file for `GR2051` before you finish; both sites must be handled.
+
+   **GR2054 `RoutingNumericNonPositive` must still be named as reserved** — it is the v2 probes code
+   (#227) and nothing in this plan takes it.
+
+   **The exact wording rule, because a machine has to check it.** Do not write GR2051, GR2052 or
+   GR2053 on the same line as the word **"reserved"** or **"free"** — not even in a past-tense note.
+   Say **TAKEN** or **ALLOCATED** instead ("GR2051–GR2053 were ALLOCATED by Stage 3"). Keep any line
+   that still reserves GR2054 **on a line of its own**. This is not stylistic: the guardrail cannot
+   tell a historical note from a live claim, so the rule is stated in terms it can check. Two earlier
+   drafts of that guardrail tried to infer tense and both rejected correct work.
 3. **Leave the `CURRENT next-free code` line alone.** It reads `GR2065` and stays `GR2065` — these
    three were gaps below it, so allocating them does not advance the counter. Advancing it would be
    a silent renumbering of somebody else's next code.

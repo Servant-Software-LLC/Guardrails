@@ -18,14 +18,22 @@ $out | ForEach-Object { Write-Output $_ }                  # full log first
 # misdiagnosis that would point the retry agent at the one artifact it is NOT allowed to edit here.
 if ($testExit -ne 0) {
     $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        # `error CS\d+` is in the alternation because this task has no separate build guardrail and
+        # `dotnet test` builds first: without it a COMPILE failure re-emitted nothing (none of the
+        # assertion tokens match `error CS0101`) and the trailer below confidently misdiagnosed it as
+        # a spec deviation. Same pattern the two build guardrails in this plan already use.
+        Select-String -Pattern 'error [A-Z]{2}\d+|\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
         ForEach-Object { $_.Line } |
         Select-Object -First 40                            # bound the block so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "TieringRegistryWarningTests failing - GR2051/GR2052 are not emitted to spec (see failure details above)"
+    if (($out | Out-String) -match 'error [A-Z]{2}\d+') {
+        Write-Output "the test project did not COMPILE - fix the build error above. This is not a spec deviation; the tests never ran."
+    } else {
+        Write-Output "TieringRegistryWarningTests failing - GR2051/GR2052 are not emitted to spec (see failure details above)"
+    }
     exit 1
 }
 

@@ -9,15 +9,44 @@
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $filter = 'Category=ModelTieringStage3&FullyQualifiedName~TieringRegistryWarningTests'
 
-# THE MANIFEST: each enumerated behaviour -> the method name the ACTION PROMPT PINNED for it.
+# TWO MANIFESTS, NOT ONE - and this split is a BLOCKER fix found by an independent adversarial pass.
+#
+# The first draft demanded EVERY enumerated behaviour be observed `Failed`. Three behaviours in this
+# wave are SILENCE assertions ("the code is absent"), and a negative assertion CANNOT be red before the
+# feature exists: `Assert.DoesNotContain(GR2051, …)` passes today, necessarily. So tasks 02 and 04 had
+# no honest implementation at all.
+#
+# The halt was not the damage. The census MESSAGE was: "'SilentWhenTieringNotConfigured' is Passed on
+# the CURRENT code, not Failed … it asserts a tautology … Drive the real PlanValidator and assert the
+# diagnostic." That is wrong about a correct test, and it instructs the agent to CONVERT the Invariant-7
+# silence test into a positive one. It then goes red, the census goes green, task 03 makes it pass, and
+# the wave ships GREEN with Invariant 7 guarded by a test asserting the opposite of its name. Nothing
+# downstream sees it: the exit gate runs build + suite, and the suite is green.
+#
 # Prompt-to-manifest agreement is NOT mechanically enforced (validate is blind to a hashtable read
-# through Where-Object) - it was checked by hand against action.prompt.md when this was authored.
-$manifest = [ordered]@{
-    'GR2051 fires when the default pointer names a costly block'      = 'WarnsWhenCostlyBlockIsDefault'
+# through Where-Object) - checked by hand against action.prompt.md.
+
+# POSITIVE behaviours: the feature does not exist, so these MUST be observed Failed. This is the real
+# anti-tautology proof and it is unchanged.
+$mustBeRed = [ordered]@{
+    'GR2051 fires when the default pointer names a costly block'       = 'WarnsWhenCostlyBlockIsDefault'
     'GR2051 fires when the default pointer names a routing-less block' = 'WarnsWhenRoutinglessBlockIsDefault'
-    'GR2051 is SILENT when tiering is not configured (Invariant 7)'   = 'SilentWhenTieringNotConfigured'
-    'GR2052 fires when a costly block also declares routing'          = 'WarnsWhenCostlyBlockDeclaresRouting'
-    'GR2052 and GR2048 compose, neither masking the other'            = 'ComposesWithUnservableTier'
+    'GR2052 fires when a costly block also declares routing'           = 'WarnsWhenCostlyBlockDeclaresRouting'
+    'GR2052 and GR2048 compose, neither masking the other'             = 'ComposesWithUnservableTier'
+}
+
+# SILENCE behaviours: correctly GREEN today and green after. The census asserts only that the test
+# EXISTS and RAN - which still catches an absent test and a [Fact(Skip=...)], the two failure modes it
+# can see.
+#
+# HONEST RESIDUAL, stated because a reader will otherwise assume more: this cannot prove a silence test
+# is REAL. A hollow `Assert.True(true)` named SilentWhenTieringNotConfigured passes it exactly as a
+# genuine `Assert.DoesNotContain` does. A red baseline cannot exist for a negative assertion, so the
+# anti-tautology proof for these three would have to come from MUTATION (make the validator over-fire
+# and watch the silence test go red), which is out of scope for this plan. Invariant 7's protection
+# here rests on human review of the test body, and the Step 6 report says so.
+$mustRunGreen = [ordered]@{
+    'GR2051 is SILENT when tiering is not configured (Invariant 7)' = 'SilentWhenTieringNotConfigured'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -47,12 +76,17 @@ if ($recorded.Count -lt 1) {
 
 # ACCUMULATE (#179): one distinguishable message per unbound behaviour, so ONE attempt learns every gap.
 $failures = @()
-foreach ($behaviour in $manifest.Keys) {
-    $name = $manifest[$behaviour]
-    # -cmatch: C# method names are case-SENSITIVE and PowerShell -match is not.
-    # The (\(|$) tail admits a [Theory] row's appended data without admitting a longer sibling name.
+
+# -cmatch: C# method names are case-SENSITIVE and PowerShell -match is not.
+# The (\(|$) tail admits a [Theory] row's appended data without admitting a longer sibling name.
+function Find-Recorded([string]$name) {
     $pattern = '\.' + [regex]::Escape($name) + '(\(|$)'
-    $hits    = @($recorded | Where-Object { $_.testName -cmatch $pattern })
+    return @($recorded | Where-Object { $_.testName -cmatch $pattern })
+}
+
+foreach ($behaviour in $mustBeRed.Keys) {
+    $name = $mustBeRed[$behaviour]
+    $hits = Find-Recorded $name
     if ($hits.Count -lt 1) {
         $failures += "$behaviour -> no test named '$name' ran (absent from the file, or not selected by the filter)"
         continue
@@ -60,13 +94,32 @@ foreach ($behaviour in $manifest.Keys) {
     $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
     if ($notRed.Count -gt 0) {
         $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
-        $failures += "$behaviour -> '$name' is $seen on the CURRENT code, not Failed. The validator does not emit this code yet, so a test that does not fail here never invokes it - it asserts a tautology and certifies nothing. Drive the real PlanValidator and assert the diagnostic. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on the CURRENT code, not Failed. This is a POSITIVE behaviour: the validator does not emit this code yet, so a test that does not fail here never invokes it - it asserts a tautology. Drive the real PlanValidator and assert the diagnostic. ('NotExecuted' = [Fact(Skip=...)].)"
     }
 }
 
+foreach ($behaviour in $mustRunGreen.Keys) {
+    $name = $mustRunGreen[$behaviour]
+    $hits = Find-Recorded $name
+    if ($hits.Count -lt 1) {
+        $failures += "$behaviour -> no test named '$name' ran (absent from the file, or not selected by the filter)"
+        continue
+    }
+    $skipped = @($hits | Where-Object { $_.outcome -eq 'NotExecuted' })
+    if ($skipped.Count -gt 0) {
+        $failures += "$behaviour -> '$name' is NotExecuted ([Fact(Skip=...)]) - a skipped silence test protects nothing. Remove the Skip."
+        continue
+    }
+    $red = @($hits | Where-Object { $_.outcome -eq 'Failed' })
+    if ($red.Count -gt 0) {
+        $failures += "$behaviour -> '$name' FAILED on the current code. This is a SILENCE behaviour and it must be GREEN today: the code it asserts absent is not emitted yet, so a correct Assert.DoesNotContain passes. A red here means the test asserts the code is PRESENT - do not 'fix' it by making it positive; that would delete the only Invariant-7 protection in this plan."
+    }
+}
+
+$total = $mustBeRed.Count + $mustRunGreen.Count
 if ($failures.Count -gt 0) {
     Write-Output ""
-    Write-Output "=== per-test red census: $($failures.Count) of $($manifest.Count) enumerated behaviours are not proven RED ==="
+    Write-Output "=== per-test census: $($failures.Count) of $total enumerated behaviours are not in their expected state ==="
     $failures | ForEach-Object { Write-Output "  - $_" }
     exit 1
 }

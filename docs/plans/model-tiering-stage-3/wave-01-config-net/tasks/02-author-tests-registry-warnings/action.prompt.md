@@ -24,12 +24,12 @@
 Author xUnit tests for two validate-time warnings that **do not exist yet**. The tests must COMPILE
 and FAIL. Failing is the deliverable; not compiling is a mistake to fix.
 
-Write them to `tests/Guardrails.Core.Tests/Loading/TieringRegistryWarningTests.cs`, in a single test
+Write them to `tests/Guardrails.Core.Tests/ModelTiering/TieringRegistryWarningTests.cs`, in a single test
 class named exactly **`TieringRegistryWarningTests`**, every test tagged
 `[Trait("Category", "ModelTieringStage3")]`.
 
 **Scope boundary (harness-enforced):** Write only to
-`tests/Guardrails.Core.Tests/Loading/TieringRegistryWarningTests.cs`. After this task completes, the
+`tests/Guardrails.Core.Tests/ModelTiering/TieringRegistryWarningTests.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside that path — including
 `src/Guardrails.Core/Loading/PlanValidator.cs`, other test files, or the `.csproj`. An out-of-scope
 edit fails the task immediately and consumes a retry. If you hit a compile error caused by a missing
@@ -41,19 +41,22 @@ type already exists and compiles: `PlanValidator` is real, and `DiagnosticCodes.
 / `CostlyBlockRoutingInert` were allocated by task 01. Your tests therefore compile against the real
 API and fail because the validator does not yet *emit* those codes. That is the red.
 
-### The behaviours to encode — and the exact test method name for each
+### The behaviours to encode — the exact test method name, and the state each must be in TODAY
 
-Your guardrail binds each behaviour to the method name below and requires it to be observed **Failed**
-in the runner's own TRX. Use these names verbatim; a behaviour with no matching failing test is
-reported by name.
+Your guardrail binds each behaviour to the method name below and checks it in the runner's own TRX.
+Use these names verbatim.
 
-| Behaviour | Test method name |
-|---|---|
-| GR2051 fires when the registry `default` pointer names a `costly: true` block, in a tiering-configured file | `WarnsWhenCostlyBlockIsDefault` |
-| GR2051 fires when the `default` pointer names a block with **no `routing`** at all, in a tiering-configured file | `WarnsWhenRoutinglessBlockIsDefault` |
-| GR2051 is **silent** when the file does not configure tiering (no `routing` on any block, no `tiering` block) — Invariant 7 | `SilentWhenTieringNotConfigured` |
-| GR2052 fires when a `costly: true` block **also** declares `routing` | `WarnsWhenCostlyBlockDeclaresRouting` |
-| GR2052 and GR2048 **compose** — a plan with both an inert costly-routing block and a genuinely unservable tier reports both, neither masking the other | `ComposesWithUnservableTier` |
+**Read the third column — the five tests are NOT all red, and that is deliberate.** Four assert a
+warning that does not exist yet, so they fail. One asserts a **silence** — that a code is *absent* —
+and a negative assertion cannot fail before the feature exists. It passes today and must keep passing.
+
+| Behaviour | Test method name | State on arrival |
+|---|---|---|
+| GR2051 fires when the registry `default` pointer names a `costly: true` block, in a tiering-configured file | `WarnsWhenCostlyBlockIsDefault` | **Failed** |
+| GR2051 fires when the `default` pointer names a block with **no `routing`** at all, in a tiering-configured file | `WarnsWhenRoutinglessBlockIsDefault` | **Failed** |
+| GR2052 fires when a `costly: true` block **also** declares `routing` | `WarnsWhenCostlyBlockDeclaresRouting` | **Failed** |
+| GR2052 and GR2048 **compose** — a plan with both an inert costly-routing block and a genuinely unservable tier reports both, neither masking the other | `ComposesWithUnservableTier` | **Failed** |
+| GR2051 is **silent** when the file does not configure tiering (no `routing` on any block, no `tiering` block) — Invariant 7 | `SilentWhenTieringNotConfigured` | **Passed** — must exist, must run, must not be `[Skip]`ped |
 
 ### What each test must actually assert
 
@@ -70,7 +73,9 @@ reported by name.
 ### Do not
 
 - Do NOT implement the warnings. Emitting them is task 03, whose `writeScope` owns `PlanValidator.cs`.
-- Do NOT write a test that passes today. Every one of the five must be RED on arrival.
+- Do NOT "fix" the silent test by making it assert the code is PRESENT. It is *supposed* to pass today
+  — see the expected-state table above. Converting it would delete the only Invariant-7 protection in
+  this plan while turning the census green, which is the worst possible outcome and looks like success.
 - Do NOT use `Assert.True(true)`, or assert only that a value the test itself constructed is non-null.
   A test that never invokes the validator is a tautology; the per-test census exists to catch exactly
   that and will report it by name.

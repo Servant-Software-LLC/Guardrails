@@ -1,6 +1,10 @@
 {
-  "description": "Land the SSOT validation-summary delta and the domain-knowledge update for GR2051/GR2052/GR2053",
-  "dependsOn": ["03-implement-registry-warnings", "05-implement-pin-and-tier-coexist"],
+  "description": "Land the SSOT + domain-knowledge documentation for GR2051/GR2052/GR2053 and retire them from every reservation statement, including the design of record",
+  "dependsOn": ["05-implement-pin-and-tier-coexist"],
   "stableId": "s3f8w1",
-  "writeScope": ["docs/plans/02-schemas-and-contracts.md", ".claude/skills/guardrails-domain-knowledge/SKILL.md"]
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md",
+    "docs/plans/17-model-tiering.md"
+  ]
 }

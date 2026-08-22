@@ -61,28 +61,38 @@ foreach ($name in $codes.Keys) {
 # ("GR2051 WAS reserved until Stage 3 took it") is legitimate and must stay legal; only a live claim
 # that the code IS reserved or free is the defect.
 #
-# A LINE WINDOW, sized to how a comment actually WRAPS - not a character window.
+# ONE LINE, ONE WORD-SET. No window, no proximity, and deliberately no tense heuristic.
 #
-# The claim spans lines in the real file (the phrase on one line, GR2052/GR2053 on the next), so a
-# strict same-line scan misses two of the three codes. But a wide CHARACTER window is worse: the
-# author-time smoke-test (#302) caught a 400-char window false-REDDING the VALID sample, because in a
-# compact file the legitimate "GR2054 remains RESERVED" line sits within 400 chars of the three
-# constant declarations. A false red is the expensive direction - it dead-ends every attempt on work
-# that is already correct - so the window is the claim's line plus one line either side, which is what
-# a wrapped comment spans and nothing more.
-$claimPattern = '(?i)\b(remain|remains|still)\s+(reserved|free)\b'
-for ($i = 0; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -notmatch $claimPattern) { continue }
-    $lo     = [Math]::Max(0, $i - 1)
-    $hi     = [Math]::Min($lines.Count - 1, $i + 2)   # the claim line + up to two wrapped continuations
-    $window = ($lines[$lo..$hi] -join "`n")
-    foreach ($taken in @('GR2051', 'GR2052', 'GR2053')) {
-        if ($window -match [regex]::Escape($taken)) {
-            $failures += "$taken is still claimed as reserved-or-free (line $($i + 1): '$($lines[$i].Trim())') - this task TOOK that code, so the next allocator reading that claim will collide with it. Retire the three from the reservation block; a PAST-TENSE historical note is fine, a live claim is not."
+# REWRITTEN AFTER AN INDEPENDENT ADVERSARIAL PASS, and the history IS the justification. Draft 1
+# flagged any line carrying both "RESERVED" and a code - it false-fired on a comment that merely
+# DESCRIBED the rule (#470: anchor on a USE, not a mention). Draft 2 added a +-1 line window and a
+# past-tense carve-out ("a historical note is fine, a live claim is not") - and false-RED a fully
+# correct implementation of the real file, because the note sits next to the line that legitimately
+# keeps GR2054 reserved. Two drafts, two false reds on honest work, each one a dead end for every
+# attempt.
+#
+# The lesson is the catalogue's own: when a source-shape check keeps losing, the finding is the
+# ARCHETYPE, not the clause. Policing English tense with a regex is unwinnable. So this stops trying to
+# tell a live claim from a historical one and states something an author can satisfy without guessing:
+# a retired code and the VOCABULARY of reservation may not share a line. The action prompt carries the
+# matching instruction - say TAKEN or ALLOCATED, never "reserved"/"free".
+#
+# It still catches every real site, because all of them are same-line: DiagnosticCodes.cs:848
+# ("GR2051-GR2054 also remain RESERVED by name") and :573 ("still reserved in 13.2, still free): GR2051").
+foreach ($taken in @('GR2051', 'GR2052', 'GR2053')) {
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch [regex]::Escape($taken)) { continue }
+        # (?<!-) is load-bearing, and the re-run of the sample pair is what found it: a bare \bfree\b
+        # matches inside "next-FREE", so the "CURRENT next-free code: GR2065" marker line - which this
+        # very guardrail requires the task to PRESERVE - would false-red the moment it also mentioned
+        # one of the three codes. Clause (d) demanding a line that clause (b) then rejects is the same
+        # self-contradiction the +-1 window produced, one layer down.
+        if ($lines[$i] -imatch '(?<!-)\b(reserved|free)\b') {
+            $failures += "line $($i + 1) puts $taken on the same line as the word 'reserved'/'free' - the next allocator reads that as available and collides with a code this task just took. Retire it in words that cannot be misread: say TAKEN or ALLOCATED, and keep any line that still reserves GR2054 on a line of its own. Offending line: $($lines[$i].Trim())"
+            break   # one message per code, not one per matching line
         }
     }
 }
-$failures = @($failures | Select-Object -Unique)   # one message per code, not one per overlapping window
 
 # GR2054 must SURVIVE as reserved - it is the v2 probes code (#227) and nothing in this plan takes it.
 # Baseline 2026-08-22: 4 occurrences of GR2054, at least one on a RESERVED line.

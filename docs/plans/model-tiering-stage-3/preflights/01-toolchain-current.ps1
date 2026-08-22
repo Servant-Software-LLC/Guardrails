@@ -26,42 +26,33 @@ if (-not [version]::TryParse($core, [ref]$toolVersion)) {
     $failures += "the harness is $raw, older than the required $required. Waves 2-3 are JIT-authored and depend on the v1.8.0 breakdown-durability work (#385/#402 checkpointed authoring, #489 Ctrl+C quarantine, #469 run rendering, #471 inventory-scoped revert, #472/#488 the per-wave review marker). Run 'dotnet tool update -g ServantSoftware.Guardrails'."
 }
 
-# --- 2. the INSTALLED skills, stamped at install time (#169) -----------------------------------
-# The two-line `metadata: guardrails-version` block is injected by `guardrails skills install`, so a
-# stamp that is absent or behind the tool means the skills on disk are not the ones this tool shipped.
-foreach ($skill in @('plan-breakdown', 'guardrails-review', 'guardrails-domain-knowledge')) {
-    $path = Join-Path $HOME ".claude/skills/$skill/SKILL.md"
-    if (-not (Test-Path $path)) {
-        $failures += "installed skill '$skill' not found at $path - run 'guardrails skills install --force', then RESTART the session"
-        continue
-    }
-    $stampLine = Select-String -Path $path -Pattern 'guardrails-version:\s*(\S+)' | Select-Object -First 1
-    if (-not $stampLine) {
-        $failures += "installed skill '$skill' carries NO 'guardrails-version' stamp - it predates the #169 install-time stamping, so nothing can tell whether it matches the tool. Run 'guardrails skills install --force', then RESTART the session"
-        continue
-    }
-    $stamped = $null
-    $stampCore = (($stampLine.Matches[0].Groups[1].Value) -split '-')[0].Trim()
-    if (-not [version]::TryParse($stampCore, [ref]$stamped)) {
-        $failures += "installed skill '$skill' has an unparseable stamp '$($stampLine.Matches[0].Groups[1].Value)'"
-    } elseif ($stamped -lt $required) {
-        $failures += "installed skill '$skill' is stamped $stamped, older than the required $required - run 'guardrails skills install --force', then RESTART the session (re-installing without restarting changes the files on disk but NOT the copy a running session already loaded)"
-    }
-}
+# --- 2. the skill copy the JIT BREAKDOWN ACTUALLY INLINES ---------------------------------------
+# REWRITTEN after an independent adversarial pass. The first draft checked TWO copies -
+# ~/.claude/skills/ and the repo's tracked .claude/skills/ - and the JIT breakdown loads NEITHER.
+# WaveBreakdownInvoker.TryLoadPlanBreakdownSkill reads
+#     Path.Combine(AppContext.BaseDirectory, "skills", "plan-breakdown", "SKILL.md")
+# i.e. the copy bundled BESIDE THE INSTALLED TOOL. Three copies exist on a dev box and they differ.
+# A preflight whose stated purpose is "catch a plan-breakdown too old to write breakdown-intent.json"
+# while checking neither load-bearing copy is decoration with false-red surface attached, so the two
+# old clauses are GONE rather than kept alongside this one.
+$store = Join-Path $HOME '.dotnet/tools/.store/servantsoftware.guardrails'
+$bundled = @(Get-ChildItem -Path $store -Filter 'SKILL.md' -Recurse -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -match '[\\/]skills[\\/]plan-breakdown[\\/]SKILL\.md$' })
 
-# --- 3. the repo's TRACKED skill source knows about the salvage manifest ------------------------
-# Whichever copy a JIT breakdown ends up loading, it must know to write state/breakdown-intent.json.
-# The tracked source is not install-stamped (stamping happens at install), so assert the CAPABILITY
-# rather than a version. Measured baseline 2026-08-22: 4 occurrences in the tracked copy, 4 in the
-# installed copy - a pre-1.8.0 copy has 0, which is the state this clause exists to catch.
-$tracked = '.claude/skills/plan-breakdown/SKILL.md'
-if (Test-Path $tracked) {
-    $hits = @(Select-String -Path $tracked -Pattern 'breakdown-intent' -SimpleMatch)
-    if ($hits.Count -lt 1) {
-        $failures += "the repo's tracked $tracked never mentions 'breakdown-intent' - it predates the #385/#402 declare-the-decomposition-first rule. A JIT wave breakdown that loads THIS copy will not write the salvage manifest, so a truncated wave is quarantined wholesale instead of resuming from its valid prefix."
-    }
+if ($bundled.Count -lt 1) {
+    # Not fatal on its own: a source-built or differently-installed harness has no tool store. Say so
+    # rather than failing a run for a layout this clause simply cannot see.
+    Write-Output "NOTE: no bundled plan-breakdown skill found under $store - this harness was not installed as a dotnet global tool, so the JIT-breakdown skill copy could not be verified. Clause 1 (tool version) still applies."
 } else {
-    $failures += "$tracked not found - this preflight expects to run against the Guardrails repo itself"
+    # Assert the CAPABILITY, not a version: the bundled copy carries no install-time stamp (stamping
+    # happens when `skills install` writes to ~/.claude). Measured baseline 2026-08-22: 4 occurrences
+    # in the 1.8.0 bundle; a pre-1.8.0 copy has 0, which is exactly the state this exists to catch.
+    foreach ($copy in $bundled) {
+        $hits = @(Select-String -Path $copy.FullName -Pattern 'breakdown-intent' -SimpleMatch)
+        if ($hits.Count -lt 1) {
+            $failures += "the bundled plan-breakdown skill at $($copy.FullName) never mentions 'breakdown-intent' - it predates the #385/#402 declare-the-decomposition-first rule. THIS is the copy WaveBreakdownInvoker inlines, so a JIT wave breakdown will not write the salvage manifest and a truncated wave is quarantined wholesale instead of resuming from its valid prefix."
+        }
+    }
 }
 
 if ($failures.Count -gt 0) {

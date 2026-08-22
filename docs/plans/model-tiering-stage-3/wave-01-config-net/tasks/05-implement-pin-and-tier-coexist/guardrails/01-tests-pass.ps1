@@ -4,7 +4,7 @@
 #          that DEPENDS on it has run (a deadlock validate and graph --check cannot see, #455).
 #          Re-emits the assertion/exception lines at the END so they reach the retry-feedback tail (#179).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
-# The SAME $filter string as this pair's inverse half (task 04's census), copied verbatim so the two
+# The SAME $filter string as this pair's inverse half (task 02's census), copied verbatim so the two
 # halves of the TDD pair can never drift apart.
 $filter = 'Category=ModelTieringStage3&FullyQualifiedName~PinAndTierCoexistTests'
 # NO -v q on the TEST command: it suppresses the Error Message / Expected / Actual / Stack Trace block,
@@ -18,14 +18,22 @@ $out | ForEach-Object { Write-Output $_ }                  # full log first
 # misdiagnosis that would point the retry agent at the one artifact it is NOT allowed to edit here.
 if ($testExit -ne 0) {
     $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        # `error CS\d+` is in the alternation because this task has no separate build guardrail and
+        # `dotnet test` builds first: without it a COMPILE failure re-emitted nothing (none of the
+        # assertion tokens match `error CS0101`) and the trailer below confidently misdiagnosed it as
+        # a spec deviation. Same pattern the two build guardrails in this plan already use.
+        Select-String -Pattern 'error [A-Z]{2}\d+|\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
         ForEach-Object { $_.Line } |
         Select-Object -First 40                            # bound the block so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "PinAndTierCoexistTests failing - GR2053 is not emitted to spec (see failure details above)"
+    if (($out | Out-String) -match 'error [A-Z]{2}\d+') {
+        Write-Output "the test project did not COMPILE - fix the build error above. This is not a spec deviation; the tests never ran."
+    } else {
+        Write-Output "PinAndTierCoexistTests failing - GR2053 is not emitted to spec (see failure details above)"
+    }
     exit 1
 }
 

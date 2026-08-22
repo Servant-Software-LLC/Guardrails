@@ -24,12 +24,12 @@
 Author xUnit tests for **GR2053 `PinAndTierCoexist`**, a validate-time warning that does not exist
 yet. The tests must COMPILE and FAIL. Failing is the deliverable; not compiling is a mistake to fix.
 
-Write them to `tests/Guardrails.Core.Tests/Loading/PinAndTierCoexistTests.cs`, in a single test class
+Write them to `tests/Guardrails.Core.Tests/ModelTiering/PinAndTierCoexistTests.cs`, in a single test class
 named exactly **`PinAndTierCoexistTests`**, every test tagged
 `[Trait("Category", "ModelTieringStage3")]`.
 
 **Scope boundary (harness-enforced):** Write only to
-`tests/Guardrails.Core.Tests/Loading/PinAndTierCoexistTests.cs`. After this task completes, the
+`tests/Guardrails.Core.Tests/ModelTiering/PinAndTierCoexistTests.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside that path — including
 `PlanValidator.cs`, other test files, or the `.csproj`. An out-of-scope edit fails the task
 immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another
@@ -58,12 +58,16 @@ changed, halt with `needsHuman` rather than guessing.
 
 ### The behaviours to encode — and the exact test method name for each
 
-| Behaviour | Test method name |
-|---|---|
-| GR2053 fires when `action.runner` and `action.tier` are both set | `WarnsWhenRunnerPinAndTierCoexist` |
-| GR2053 fires when `action.model` and `action.tier` are both set, with **no** `action.runner` — either pin alone bypasses resolution | `WarnsWhenModelPinAndTierCoexist` |
-| GR2053 is **silent** on a pin with no tier — nothing is dead weight | `SilentWhenPinWithoutTier` |
-| GR2053 is **silent** on a tier with no pin — the ordinary tiered task | `SilentWhenTierWithoutPin` |
+**Read the third column — the four tests are NOT all red, and that is deliberate.** Two assert a
+warning that does not exist yet, so they fail. Two assert a **silence** — that a code is *absent* —
+and a negative assertion cannot fail before the feature exists. They pass today and must keep passing.
+
+| Behaviour | Test method name | State on arrival |
+|---|---|---|
+| GR2053 fires when `action.runner` and `action.tier` are both set | `WarnsWhenRunnerPinAndTierCoexist` | **Failed** |
+| GR2053 fires when `action.model` and `action.tier` are both set, with **no** `action.runner` — either pin alone bypasses resolution | `WarnsWhenModelPinAndTierCoexist` | **Failed** |
+| GR2053 is **silent** on a pin with no tier — nothing is dead weight | `SilentWhenPinWithoutTier` | **Passed** — must exist, must run, must not be `[Skip]`ped |
+| GR2053 is **silent** on a tier with no pin — the ordinary tiered task | `SilentWhenTierWithoutPin` | **Passed** — same |
 
 ### What each test must actually assert
 
@@ -78,6 +82,8 @@ changed, halt with `needsHuman` rather than guessing.
 ### Do not
 
 - Do NOT implement the warning. That is task 05, whose `writeScope` owns `PlanValidator.cs`.
-- Do NOT write a test that passes today. All four must be RED on arrival.
+- Do NOT "fix" either silent test by making it assert the code is PRESENT. Both are *supposed* to pass
+  today — see the expected-state table above. Converting them would turn the census green while
+  deleting the very behaviour they exist to pin.
 - Do NOT use `Assert.True(true)` or assert only on a value the test itself constructed. A test that
   never invokes the validator is a tautology, and the per-test census will report it by name.
