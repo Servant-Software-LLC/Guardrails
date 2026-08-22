@@ -4598,10 +4598,22 @@ rather than by rule.)*
 | `GR2048` | error | a **used** tier (task tag, judge frontmatter tag, or `defaultTier`) in a **tiering-configured** plan has no **candidate** at or above it |
 | `GR2049` | warning | tier tags present but **no** block declares `routing` — the tags are inert and the plan runs by legacy resolution |
 | `GR2050` | error | a present `effort` (block or `action.effort`) fails the GR2030-style shape check |
+| `GR2051` | warning | `NonRoutableBlockIsDefault` — a `costly: true` or `routing`-less block is the registry `default` pointer in a tiering-configured file, so untagged work falls to legacy resolution and lands on the block held out of routing |
+| `GR2052` | warning | `CostlyBlockRoutingInert` — a `costly: true` block also declares `routing`, which can never apply: the §9.6 candidacy predicate excludes costly blocks at every rung |
+| `GR2053` | warning | `PinAndTierCoexist` — a pin (`action.runner` **or** `action.model`) and `action.tier` coexist on one action, so the tier is dead weight the pin overrides |
 
 **GR2048 and GR2049 are mutually exclusive by construction** — GR2049 fires only when tiering is
 unconfigured, GR2048 only when it is configured. That gating is what stops an unconfigured plan from
 emitting one "unservable" error per tag when the honest report is a single "your tags do nothing".
+
+**The three Stage 3 warnings differ in SCOPE, and that is the half a reader drops.** `GR2051`
+(`NonRoutableBlockIsDefault`) and `GR2052` (`CostlyBlockRoutingInert`) are facts about the REGISTRY:
+reported once per plan at the plan directory, and gated on tiering being configured (Invariant 7).
+`GR2053` (`PinAndTierCoexist`) is a fact about ONE ACTION: reported at that task's directory, with no
+tiering gate — a tier tag beside a pin misleads its author just as much in a plan that cannot route at
+all. A **pin** is `action.runner` **or** `action.model`, either alone, because either alone bypasses tier
+resolution; `action.effort` is NOT a pin and never raises `GR2053`, and neither does a rung supplied
+plan-wide by `tiering.defaultTier` — only one the action itself carries.
 
 **GR2048's message MUST distinguish its two causes, because they have different fixes:** (a) *nothing
 declares the rung* — widen a block's `routing.tiers` or register one; or (b) *the only blocks that declare
@@ -5976,14 +5988,15 @@ in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since ta
 #225's `InvalidTierValue` (§3), **`GR2044`–`GR2046` by #224's provider registry**
 (`InvalidPromptRunnerKind` / `InvalidRunnerAxis` / `RetiredRoutingRank`, §9), and **`GR2047`–`GR2050` by
 #201's model-tiering Stage 1.5** (`MalformedRoutingGuidance` / `UnservableTier` / `TieringInert` /
-`EffortInvalid`, §9.6), `GR2055`–`GR2059` by the unsatisfiable-guardrail family and #459
+`EffortInvalid`, §9.6), **`GR2051`–`GR2053` by #201's model-tiering Stage 3** (`NonRoutableBlockIsDefault` /
+`CostlyBlockRoutingInert` / `PinAndTierCoexist`, all three **warnings**, §9.6), `GR2055`–`GR2059` by the
+unsatisfiable-guardrail family and #459
 (`UnsatisfiableGuardrailFloor` / `GuardrailScriptDoesNotParse` / `GuardrailRequiresForbiddenToken` /
 `BannedPatternScanTimedOut` / `WaveIntegrationScopeInert`, §4.6/§4.7), **`GR2062` by #477's
 `IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), so an unrelated new code should take
-**`GR2065`**. Still RESERVED BY NAME and not to be re-used: `GR2051`–`GR2054` for the rest of the
-model-tiering epic (`NonRoutableBlockIsDefault` / `CostlyBlockRoutingInert` / `PinAndTierCoexist` /
-`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2060`
+**`GR2065`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+(`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2060`
 (`docs/plans/19-producer-coverage.md` §3.1) and `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
