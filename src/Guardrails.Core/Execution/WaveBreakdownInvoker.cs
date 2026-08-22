@@ -100,52 +100,16 @@ public sealed class WaveBreakdownInvoker
             // 30-minute session begins. A caller that does not care passes null and nothing changes.
             BreakdownInvocationPlan p =
                 prepared ?? PrepareInvocation(wave, plan, integrationWorktreePath, breakdownLogDir, resume);
-            string prompt = p.Prompt;
-            string streamLogPath = p.StreamLogPath;
-            string transcriptLogPath = p.TranscriptLogPath;
-            int maxTurns = p.MaxTurns;
 
-            var invocation = new PromptInvocation
-            {
-                ComposedPrompt = prompt,
+            return await InvokeCoreAsync(
+                p,
                 // Author into the plan folder (the wave's tasks/ live here); the integration worktree is
-                // granted read access via the second --add-dir below (materialized upstream).
-                WorkingDirectory = plan.PlanDirectory,
-                PlanDirectory = plan.PlanDirectory,
-                Environment = new Dictionary<string, string>(StringComparer.Ordinal),
-                Settings = new PromptRunnerSettings
-                {
-                    PermissionMode = "acceptEdits",
-                    AllowedTools = AuthoringTools,
-                    MaxTurns = maxTurns,
-                    // Doc 11 §9.3 step 4: grant the sub-process access to the materialized upstream on the
-                    // plan branch (a SECOND --add-dir on top of the plan dir) so the skill reads real prior-wave
-                    // outputs from the integration worktree, NOT the read-only user checkout.
-                    ExtraArgs = ["--add-dir", integrationWorktreePath]
-                },
-                Timeout = BreakdownTimeout,
-                StreamLogPath = streamLogPath,
-                TranscriptLogPath = transcriptLogPath
-            };
-
-            PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
-
-            // Charge the spend to the shared overhead sink BEFORE any gate — the spend is real whether or not
-            // the output validates, and it must both count toward maxCostUsd and appear in the reported total
-            // (the exact discipline the diagnose / AI-merge / triage spend uses, SSOT §9/#314). Null = no-op.
-            journal.AddOverheadCost(result.CostUsd);
-
-            return new WaveBreakdownOutcome
-            {
-                ProcessCompleted = result.Completed && !result.IsError,
-                // Issue #385 milestone 1: the runner ALREADY classifies why it stopped; discarding it is why
-                // the two measured truncations were reconstructible only from file mtimes and why the halt
-                // said "did not complete cleanly", leaving the operator to guess between skill bug and budget.
-                FailureKind = result.FailureKind,
-                NumTurns = result.NumTurns,
-                MaxTurns = maxTurns,
-                Summary = result.Summary
-            };
+                // granted read access via a second --add-dir (materialized upstream).
+                workingDirectory: plan.PlanDirectory,
+                planDirectory: plan.PlanDirectory,
+                additionalReadDirectory: integrationWorktreePath,
+                chargeCost: journal.AddOverheadCost,
+                ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -158,6 +122,74 @@ public sealed class WaveBreakdownInvoker
                 Error = ex.Message
             };
         }
+    }
+
+    /// <summary>
+    /// Run one already-composed breakdown invocation and classify how it stopped — the part that is
+    /// IDENTICAL for a between-wave JIT breakdown and an initial <c>guardrails breakdown</c> (#498).
+    /// <para><b>Extracted rather than copied, deliberately.</b> Everything it carries is scar tissue:
+    /// the 30-minute <see cref="BreakdownTimeout"/>, the <c>acceptEdits</c> + authoring-tools grant, the
+    /// stream/transcript tee, and — load-bearing — preserving <see cref="PromptResult.FailureKind"/>
+    /// instead of collapsing it to "did not complete cleanly" (#385 milestone 1, the fix that made two
+    /// measured truncations diagnosable). A second entry point re-implementing any of that would
+    /// silently drift from the path those issues were fixed on.</para>
+    /// </summary>
+    /// <param name="workingDirectory">Where the sub-process runs. The plan folder for a wave; the
+    /// workspace for an initial breakdown, which has no plan folder to run in yet.</param>
+    /// <param name="additionalReadDirectory">An extra <c>--add-dir</c> read grant, or null. The
+    /// materialized integration worktree for a wave; null for an initial breakdown, where there is no
+    /// upstream to read.</param>
+    /// <param name="chargeCost">Sink for the attempt's spend, or null when no journal exists. The spend is
+    /// charged BEFORE any gate — it is real whether or not the output validates, and it must count toward
+    /// <c>maxCostUsd</c> and appear in the reported total (SSOT §9/#314).</param>
+    internal async Task<WaveBreakdownOutcome> InvokeCoreAsync(
+        BreakdownInvocationPlan p,
+        string workingDirectory,
+        string planDirectory,
+        string? additionalReadDirectory,
+        Action<decimal?>? chargeCost,
+        CancellationToken ct)
+    {
+        var invocation = new PromptInvocation
+        {
+            ComposedPrompt = p.Prompt,
+            WorkingDirectory = workingDirectory,
+            PlanDirectory = planDirectory,
+            Environment = new Dictionary<string, string>(StringComparer.Ordinal),
+            Settings = new PromptRunnerSettings
+            {
+                PermissionMode = "acceptEdits",
+                AllowedTools = AuthoringTools,
+                MaxTurns = p.MaxTurns,
+                // Doc 11 §9.3 step 4: grant the sub-process access to the materialized upstream on the plan
+                // branch (a SECOND --add-dir on top of the working dir) so the skill reads real prior-wave
+                // outputs from the integration worktree, NOT the read-only user checkout. An initial
+                // breakdown has no upstream, so it grants nothing extra.
+                ExtraArgs = additionalReadDirectory is null
+                    ? []
+                    : ["--add-dir", additionalReadDirectory]
+            },
+            Timeout = BreakdownTimeout,
+            StreamLogPath = p.StreamLogPath,
+            TranscriptLogPath = p.TranscriptLogPath
+        };
+
+        PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
+
+        chargeCost?.Invoke(result.CostUsd);
+
+        return new WaveBreakdownOutcome
+        {
+            ProcessCompleted = result.Completed && !result.IsError,
+            // Issue #385 milestone 1: the runner ALREADY classifies why it stopped; discarding it is why
+            // the two measured truncations were reconstructible only from file mtimes and why the halt
+            // said "did not complete cleanly", leaving the operator to guess between skill bug and budget.
+            FailureKind = result.FailureKind,
+            NumTurns = result.NumTurns,
+            MaxTurns = p.MaxTurns,
+            Summary = result.Summary,
+            CostUsd = result.CostUsd
+        };
     }
 
     /// <summary>
@@ -314,7 +346,15 @@ public sealed class WaveBreakdownInvoker
     /// copy-to-output content into the nupkg next to <see cref="AppContext.BaseDirectory"/>); a test host has
     /// no such folder, so this returns null and the composer falls back to naming the installed skill.
     /// </summary>
-    private static string? TryLoadPlanBreakdownSkill()
+    /// <summary>
+    /// Load the <c>plan-breakdown</c> skill bundled BESIDE THE INSTALLED TOOL, for inlining into a
+    /// breakdown prompt. Internal rather than private since #498: the initial-breakdown path needs the
+    /// same copy, and the copy is the point — three different <c>plan-breakdown/SKILL.md</c> files exist
+    /// on a developer box (<c>~/.claude/skills</c>, a repo's tracked <c>.claude/skills</c>, and this one),
+    /// and only this one is version-matched to the harness by construction. Both entry points must inline
+    /// the SAME one or they can author to different doctrine from the same tool.
+    /// </summary>
+    internal static string? TryLoadPlanBreakdownSkill()
     {
         try
         {
@@ -335,8 +375,13 @@ public sealed class WaveBreakdownInvoker
 /// <see cref="WaveBreakdownInvoker.InvokeAsync"/>. It exists so the caller can announce the phase (design 23
 /// §5.1) with the REAL stream path before the session starts, rather than reconstructing it from a naming
 /// convention the invoker owns.
+/// <para>PUBLIC since #498, when <see cref="InitialBreakdownInvoker"/> gave the CLI a second producer of
+/// one. <c>Guardrails.Cli</c> deliberately has NO <c>InternalsVisibleTo</c> into this assembly, so a public
+/// DTO is the sanctioned way across that boundary — the same route <see cref="WaveBreakdownOutcome"/>
+/// already takes. Widening this record is a smaller change than a wrapper type whose only purpose would be
+/// to dodge the accessibility, and far smaller than opening the internals.</para>
 /// </summary>
-internal sealed record BreakdownInvocationPlan
+public sealed record BreakdownInvocationPlan
 {
     /// <summary>The composed invocation prompt (already teed to <see cref="ComposedPromptPath"/>).</summary>
     public required string Prompt { get; init; }
@@ -384,6 +429,14 @@ public sealed record WaveBreakdownOutcome
 
     /// <summary>Set only when the invocation FAULTED (the runner threw) — carried into a <c>BreakdownFailed</c> halt's detail.</summary>
     public string? Error { get; init; }
+
+    /// <summary>
+    /// What the session cost, or null when the runner reported nothing. On the WAVE path this is already
+    /// charged to the journal's overhead sink and the field is informational; on the initial-breakdown path
+    /// (#498) there IS no journal, so this is the only place the spend is reported at all — a
+    /// <c>guardrails breakdown</c> that silently spent money would be the worst kind of quiet.
+    /// </summary>
+    public decimal? CostUsd { get; init; }
 
     /// <summary>
     /// True only when the authoring session reached a clean terminal result. A session that was CUT OFF —
