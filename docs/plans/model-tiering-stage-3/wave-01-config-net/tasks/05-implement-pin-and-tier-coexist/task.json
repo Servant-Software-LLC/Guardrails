@@ -1,0 +1,6 @@
+{
+  "description": "Emit GR2053 from PlanValidator so the pin-and-tier tests pass",
+  "dependsOn": ["03-implement-registry-warnings", "04-author-tests-pin-and-tier-coexist"],
+  "stableId": "s3e6t3",
+  "writeScope": ["src/Guardrails.Core/Loading/PlanValidator.cs"]
+}

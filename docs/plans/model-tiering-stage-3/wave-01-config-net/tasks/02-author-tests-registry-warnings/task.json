@@ -1,0 +1,6 @@
+{
+  "description": "Author failing tests for GR2051 NonRoutableBlockIsDefault and GR2052 CostlyBlockRoutingInert",
+  "dependsOn": ["01-allocate-diagnostic-codes"],
+  "stableId": "s3b4m2",
+  "writeScope": ["tests/Guardrails.Core.Tests/Loading/TieringRegistryWarningTests.cs"]
+}

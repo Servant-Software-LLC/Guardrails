@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "maxParallelism": 2,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "intendedWaves": 3,
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ],
+      "maxTurns": 80,
+      "model": null,
+      "extraArgs": [],
+      "maxOutputTokens": 64000,
+      "env": {},
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
+    }
+  }
+}

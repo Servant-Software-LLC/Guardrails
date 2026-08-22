@@ -1,0 +1,6 @@
+{
+  "description": "Author failing tests for GR2053 PinAndTierCoexist",
+  "dependsOn": ["01-allocate-diagnostic-codes"],
+  "stableId": "s3d2r8",
+  "writeScope": ["tests/Guardrails.Core.Tests/Loading/PinAndTierCoexistTests.cs"]
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Allocate GR2051/GR2052/GR2053 in DiagnosticCodes.cs and retire them from the reservation block — the SOLE task permitted to touch that file",
+  "dependsOn": [],
+  "stableId": "s3a1k7",
+  "writeScope": ["src/Guardrails.Core/Loading/DiagnosticCodes.cs"]
+}

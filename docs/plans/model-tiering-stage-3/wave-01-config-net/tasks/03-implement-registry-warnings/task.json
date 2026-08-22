@@ -1,0 +1,6 @@
+{
+  "description": "Emit GR2051 and GR2052 from PlanValidator so the registry-warning tests pass",
+  "dependsOn": ["02-author-tests-registry-warnings"],
+  "stableId": "s3c9p5",
+  "writeScope": ["src/Guardrails.Core/Loading/PlanValidator.cs"]
+}
