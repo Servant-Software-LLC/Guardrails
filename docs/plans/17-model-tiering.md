@@ -1651,6 +1651,25 @@ Re-verify against the file before landing.
 
 ### 13.3 The coverage gap this renumbering exposed — recorded, not silently fixed
 
+> **STATUS UPDATE 2026-08-22 — most of this section is now HISTORY, re-verified against the file
+> during the Stage 3 charter review.** Recorded here rather than by rewriting the text below, per
+> this section's own discipline. **Stage 2 closed both gaps it named:**
+>
+> - **GR2047–GR2050 shipped** (`DiagnosticCodes.cs:591–651`) — `MalformedRoutingGuidance`,
+>   `UnservableTier`, `TieringInert`, `EffortInvalid`. Of the seven listed below, only **GR2051
+>   `NonRoutableBlockIsDefault`, GR2052 `CostlyBlockRoutingInert` and GR2053 `PinAndTierCoexist`**
+>   remain unallocated; they are scoped into Stage 3
+>   (`model-tiering-stage-3.charter.md`) at exactly those numbers.
+> - **GR2043 now covers all FOUR tier-bearing sites**, not two —
+>   `PlanValidator.cs:465` (plan default), **`:473` (`tiering.verifier.minTier`)**, `:487`
+>   (`action.tier`), **`:498` (a judge guardrail's frontmatter `tier`)**. The last paragraph's claim
+>   that the latter two are "not parsed at all" was true when written and is **false now**: §6.5.1's
+>   floor is parsed at `PlanLoader.cs:222`.
+>
+> The schema-blocked argument below is likewise spent — `routing.tiers`, `effort` at both sites and
+> `tiering.verifier.minTier` all landed. **Read the rest of this section as the record of a gap that
+> has since closed**, kept because how the reservation rotted is still the useful lesson.
+
 Re-verifying against the file surfaced something the numbers alone would have hidden: **Stage 1
 shipped four of the ten v1 validation codes this DoR assigned to it** (§10's Stage 1 row, §17's
 handoff). Still unimplemented: `MalformedRoutingGuidance`, `UnservableTier`, `TieringInert`,
