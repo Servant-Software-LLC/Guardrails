@@ -75,6 +75,12 @@ foreach ($subject in ($documentSubjects + $retireOnlySubjects)) {
     foreach ($code in $taken) {
         foreach ($i in 0..($lines.Count - 1)) {
             if ($lines[$i] -notmatch $code) { continue }
+            # SKIP a line that is itself a DOCUMENTATION entry for this code (clause (a)'s shape: the
+            # code, its constant name, and a severity). Found by re-running Probe C against this fix:
+            # GR2051's meaning is literally "untagged work lands on the RESERVED model", so a correct
+            # severity-table row explaining the code would trip the reservation ban. A row that
+            # documents a code is not a claim that the code is available - it is the opposite.
+            if ($lines[$i] -match $names[$code] -and $lines[$i] -imatch 'warn') { continue }
             if ($lines[$i] -imatch '(?<!-)\b(reserved|free)\b') {
                 $failures += "$subject : line $($i + 1) puts $code on the same line as 'reserved'/'free' - wave 1 TOOK that code, so the next allocator reading this collides with it. Retire it in words that cannot be misread: say TAKEN or ALLOCATED, and keep any sentence that still reserves GR2054 on a line of its own. Offending line: $($lines[$i].Trim())"
                 break

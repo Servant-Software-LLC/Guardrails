@@ -81,6 +81,14 @@ foreach ($name in $codes.Keys) {
 # ("GR2051-GR2054 also remain RESERVED by name") and :573 ("still reserved in 13.2, still free): GR2051").
 foreach ($taken in @('GR2051', 'GR2052', 'GR2053')) {
     for ($i = 0; $i -lt $lines.Count; $i++) {
+        # SKIP XML DOC COMMENTS. Found by re-running Probe C against this very fix: the action prompt's
+        # own meaning table for GR2051 reads "lands on the RESERVED model, so the RESERVATION evaporates",
+        # and the same prompt instructs the agent to write an XML doc comment describing what the code
+        # catches. A faithful doc comment would therefore carry GR2051 next to "reserved" and false-red -
+        # the prompt handing the agent the token that reds the guardrail, which is exactly the collision
+        # class that produced the last BLOCKER here. A /// line DESCRIBES a constant; the reservation
+        # ledger this clause polices is written in // lines (verified: DiagnosticCodes.cs:573, :845, :848).
+        if ($lines[$i] -match '^\s*///') { continue }
         if ($lines[$i] -notmatch [regex]::Escape($taken)) { continue }
         # (?<!-) is load-bearing, and the re-run of the sample pair is what found it: a bare \bfree\b
         # matches inside "next-FREE", so the "CURRENT next-free code: GR2065" marker line - which this
