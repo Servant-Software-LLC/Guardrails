@@ -87,6 +87,7 @@ public sealed class PlanValidator
         ValidateTierServability(plan, diagnostics);
         ValidateNonRoutableDefault(plan, diagnostics);
         ValidateCostlyRoutingInert(plan, diagnostics);
+        ValidatePinAndTierCoexist(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
         ValidateIntendedWaves(plan, diagnostics);
@@ -821,6 +822,78 @@ public sealed class PlanValidator
                 "let the harness route to it. Reported as a WARNING so the real consequence still reaches " +
                 "you: where this inert routing leaves a USED tier with no candidate, GR2048 says so as an " +
                 "ERROR (SSOT §9.6, DoR §4.2/§6.2/§12.6)."));
+        }
+    }
+
+    /// <summary>
+    /// One action carries BOTH a full pin and its own <c>action.tier</c> — GR2053 WARNING (SSOT §2, DoR
+    /// §6.1, devil's-advocate finding F3). §6.1's precedence chain puts the pin FIRST and has it bypass
+    /// tier resolution ENTIRELY, so the tier selects no block and decides nothing: it is dead weight the
+    /// pin overrides, usually a tag left behind when the task was pinned. A WARNING because the action is
+    /// unambiguous and runs correctly (DoR §12.6); not silence, because an author who wrote <c>tier</c>
+    /// believes the task is being ROUTED and has no other way to learn a pin is still deciding for it.
+    ///
+    /// <para><b>A pin is <c>action.runner</c> OR <c>action.model</c> — either ONE alone.</b> §13.2's
+    /// "<c>action.runner</c>/<c>action.model</c>" slash reads like an AND; the shipped resolver settles it,
+    /// and the condition below is written to MATCH it rather than to re-derive it —
+    /// <see cref="Prompts.TierResolver.Resolve"/> branches on
+    /// <c>action.Runner is not null || action.Model is not null</c> and returns there, ABOVE its tier read,
+    /// so a model-only pin kills the tier exactly as completely as a runner pin. There is no shared
+    /// predicate to call: <c>TierResolution.Pinned</c> is that branch's OUTPUT, not a question askable of
+    /// an action, so the one condition is restated here — and ONLY that one condition, so a reader can see
+    /// at a glance that the two still agree.</para>
+    ///
+    /// <para>Deliberately NARROW in two directions. A pin plus <c>action.effort</c> is NOT this code and is
+    /// never flagged (§6.1 item 2, DA F4): effort alone overrides the resolved route's effort and is
+    /// legitimate beside a pin. And the rung must be the ACTION'S OWN — one the plan-wide
+    /// <c>tiering.defaultTier</c> filled in arrives as <see cref="TierOrigin.PlanDefault"/> (DoR §12.4) and
+    /// is not a tag anybody wrote beside this pin; pinning one task out from under a blanket default is
+    /// §6.2's SANCTIONED route to a costly block, so firing there would flag the pattern the DoR itself
+    /// prescribes, on every pinned task in the plan. The test names <c>PlanDefault</c> rather than
+    /// requiring <see cref="TierOrigin.Task"/> because what disqualifies an action is that its rung came
+    /// from ELSEWHERE; on a loaded plan the two spellings select the same set, since a non-null
+    /// <c>Tier</c> carries one of exactly those two origins.</para>
+    ///
+    /// <para>Invariant 7 needs no gate of its own. This is a fact about an ACTION, not about the registry,
+    /// so it holds in a file with no <c>routing</c> block at all — and it is already gated by
+    /// <c>action.tier</c> having been written, which a plan that never tiers anything never does. Adding a
+    /// tiering-configured precondition would silence the warning in precisely the file where the tag
+    /// misleads MOST: one whose author tiered a pinned task believing it would route, in a plan that cannot
+    /// route at all. Reported per offending action at the TASK's directory — the site the fix is made at,
+    /// like the <c>action.tier</c> arm of <see cref="ValidateTierValues"/>.</para>
+    /// </summary>
+    private static void ValidatePinAndTierCoexist(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            ActionDefinition action = task.Action;
+
+            // The pin predicate, matching TierResolver.Resolve's own branch verbatim: EITHER key alone.
+            bool pinned = action.Runner is not null || action.Model is not null;
+
+            if (!pinned || action.Tier is not { } tier || action.TierOrigin is TierOrigin.PlanDefault)
+            {
+                continue;
+            }
+
+            // Name the keys actually present, so the message quotes the reader's file rather than a
+            // canonical shape they must translate — and so the model-only pin is not described as a runner.
+            string pin = string.Join(" and ", new[]
+            {
+                action.Runner is { } runner ? $"\"runner\": \"{runner}\"" : null,
+                action.Model is { } model ? $"\"model\": \"{model}\"" : null
+            }.Where(key => key is not null));
+
+            diagnostics.Add(Warning(DiagnosticCodes.PinAndTierCoexist, task.Directory,
+                $"Task '{task.Id}' PINS its action ({pin}) and ALSO declares \"tier\": \"{tier}\". The pin " +
+                "wins: it is first in the precedence chain and bypasses tier resolution entirely, so the " +
+                $"'{tier}' rung selects no block and decides nothing — it is dead weight, and an author " +
+                "reading this task would reasonably believe the work is being ROUTED when a pin is still " +
+                $"choosing for it. Fix ONE of: drop \"tier\" to say plainly that this task is pinned; or " +
+                "drop the pin to let the rung route it. Either way the task runs exactly as it does now, " +
+                "on the pinned model — this is a redundancy notice, not a refusal. Note that \"effort\" " +
+                "beside a pin is NOT this warning: it legitimately overrides the pinned route's effort " +
+                "(DoR §6.1, §12.6)."));
         }
     }
 
