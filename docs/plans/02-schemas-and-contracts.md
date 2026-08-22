@@ -3842,6 +3842,36 @@ not a wire contract), **not a fix**: durability comes from §14.11 (declared int
 bounded resume), and the runner's `FailureKind` is carried into the halt so the operator is told which bound
 was hit.
 
+**The INITIAL breakdown — `guardrails breakdown <plan.md>` (issue #498).** The same actor, through a second
+door. Until this verb existed the only way to author a plan folder was an interactive Claude Code session
+with the `plan-breakdown` skill loaded, so the harness could *invoke* a breakdown (JIT waves do) but could
+not be *asked* to — which blocks an unattended pipeline (#496) and any other agent equally. The verb takes
+plain markdown (a brief, or `charter handoff` output; a `.charter.md` is **refused**, not interpreted —
+Guardrails takes no Charter dependency) and authors the plan folder beside it, or at `--out`.
+
+Three contract points, each the answer to a question the wave path never had to ask:
+
+- **Runner resolution.** `promptRunners` normally lives in the plan folder's `guardrails.json`, which does
+  not exist yet at initial-breakdown time. Resolution is `--runner-config <path>` (borrow the `promptRunners`
+  of an existing plan, loaded through the real loader so a borrowed config gets the same validation a run
+  would give it) → else a **built-in default `claude` runner**. A borrowed config that yields no usable
+  runner is an error, never a silent fallback to the built-in one.
+- **Shared invocation, not a second copy.** It calls the same `InvokeCoreAsync` the wave path does, so the
+  30-minute timeout, the authoring-tool grant, the stream/transcript tee and the preserved `FailureKind`
+  cannot drift between the two doors. It inlines the skill copy **bundled beside the tool**
+  (`AppContext.BaseDirectory/skills/`), which makes the doctrine version-matched to the harness by
+  construction — three different `plan-breakdown/SKILL.md` files exist on a typical developer box and only
+  that one is guaranteed to match.
+- **It never marks the plan reviewed.** Output is a DRAFT; **GR2025** keeps firing until
+  `/guardrails-review` has run and `mark-reviewed` has stamped it. This is a property of the review gate,
+  which `AnswerableGates` lists as NON-answerable, **not** of which door authored the folder — a CLI entry
+  point must not hand back with one command what that gate exists to withhold.
+
+Exit codes: `0` authored and validated · `2` authored but **not** clean (validate failed, or the session was
+cut off — the folder is on disk and a cut-off session can leave a valid prefix worth keeping) · `1` the tool
+could not do the job (bad input, no resolvable runner, non-empty target without `--force`). The `2`/`1` split
+is deliberate: they need opposite responses — read the folder, versus fix the invocation.
+
 **Phase visibility — the two `IRunObserver` members (issue #469, design of record `docs/plans/23-jit-breakdown-visibility.md`).**
 `WaveStarting` fires only *after* the JIT checkpoint, so until #469 **not one observer event fired during a
 breakdown** — a wave could be authored for 30 minutes with no signal of any kind, while the live table (which
