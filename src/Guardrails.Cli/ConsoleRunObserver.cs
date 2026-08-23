@@ -316,4 +316,19 @@ public sealed class ConsoleRunObserver : IRunObserver
             _output.WriteLine($"[overwatch] no verdict — {taskId}: {reason}");
         }
     }
+
+    public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
+    {
+        lock (_gate)
+        {
+            // Issue #349 — the plain-output twin of the live line, tagged like the other per-event
+            // disclosures rather than banner-wrapped: a model that agrees with the route is not a failure
+            // to triage, and under --no-ui the tailed log IS the record, so it must still be IN it. The
+            // wording is LiveRunObserver's shared formatter, not a second copy: one owner means the two
+            // surfaces cannot report the same attempt differently, and the attempt number is here because
+            // a retry may well have escalated to another model.
+            _output.WriteLine(
+                $"[model] {task.Id} attempt {attempt}: {LiveRunObserver.AttemptModelSummary(model, requestedModel)}");
+        }
+    }
 }
