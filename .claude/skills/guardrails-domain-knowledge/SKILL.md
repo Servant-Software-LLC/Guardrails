@@ -761,6 +761,20 @@ tiering as a working feature.
   legacy resolution. `GR2048` (ERROR) fires only when it IS configured. `GR2048`'s message must distinguish
   its two causes ("nothing declares the rung" vs "the only blocks that do are `costly`") because the fixes
   differ.
+- **`GR2051` `NonRoutableBlockIsDefault` (warning) -- Stage 3.** A `costly: true` or `routing`-less block is
+  the registry `default` pointer in a tiering-configured file, so untagged work falls to legacy resolution
+  and lands on the block held out of routing. CONFIG-level: one message per plan, at the plan directory,
+  gated on tiering being configured (Invariant 7).
+- **`GR2052` `CostlyBlockRoutingInert` (warning) -- Stage 3.** A `costly: true` block also declares
+  `routing`, which can never apply: the ONE candidacy predicate excludes costly blocks at every rung. One
+  message per offending block; `GR2048` reports the CONSEQUENCE when that exclusion leaves a used tier
+  unserved, which is why this one is only a warning.
+- **`GR2053` `PinAndTierCoexist` (warning) -- Stage 3.** A pin and `action.tier` coexist on one action, so
+  the tier is dead weight the pin overrides. A **pin** is `action.runner` OR `action.model` -- either alone
+  bypasses tier resolution. ACTION-level: one message per action, at the TASK directory, and deliberately
+  NOT gated on tiering -- a tier tag beside a pin misleads its author most in a plan that cannot route at
+  all. `action.effort` is not a pin and never raises it; nor does a rung supplied plan-wide by
+  `tiering.defaultTier` -- only one the action itself carries.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
@@ -1111,10 +1125,11 @@ total order driven by the wave folder's numeric prefix.
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
   HEAD-independence). Next-free GR code: **GR1011 / GR2065** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
-  GR2062, GR2063 and GR2064 are all SHIPPED now, so only TWO reserved-by-name blocks remain and must not be
-  re-used: GR2051-GR2054 for the rest of the model-tiering
-  epic (`docs/plans/17-model-tiering.md` §13.2 — NonRoutableBlockIsDefault / CostlyBlockRoutingInert /
-  PinAndTierCoexist / RoutingNumericNonPositive); and GR2060 (`docs/plans/19-producer-coverage.md` §3.1,
+  GR2062, GR2063 and GR2064 are all SHIPPED now, and model-tiering Stage 3 ALLOCATED
+  GR2051-GR2053 (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist — documented
+  under Model tiering, above), so what remains reserved-by-name and must not be re-used is GR2054
+  (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes code); and
+  GR2060 (`docs/plans/19-producer-coverage.md` §3.1,
   `UnproducibleGateRequirement`, designed but NOT built) + GR2061
   (`docs/plans/18-integration-proof-proximity.md` §3.4, the deferred seam-ledger lint) — so an
   UNRELATED new code takes the next code `DiagnosticCodes.cs` records as free, which is why
@@ -1135,7 +1150,8 @@ total order driven by the wave folder's numeric prefix.
   fan-in-sink / composition-root over-scope WARN, #378/SSOT §3.4; **GR2043** = InvalidTierValue #225 (all
   FOUR tier sites); **GR2044-GR2046** = InvalidPromptRunnerKind / InvalidRunnerAxis / RetiredRoutingRank,
   #224 provider registry; **GR2047-GR2050** = MalformedRoutingGuidance / UnservableTier / TieringInert /
-  EffortInvalid, #201 model-tiering Stage 1.5, SSOT §9.6).
+  EffortInvalid, #201 model-tiering Stage 1.5, SSOT §9.6; **GR2051-GR2053** = NonRoutableBlockIsDefault /
+  CostlyBlockRoutingInert / PinAndTierCoexist, #201 model-tiering Stage 3, all three warnings, SSOT §9.6).
 - **M3 the overwatcher v1 (diagnose + propose) -- LANDED** (#269, design of record
   `docs/plans/11-overwatcher.md`, contract SSOT §9.2/§9.2.1/§8, #305 decisions baked in). The `Overwatch`
   component (`Guardrails.Core/Execution/Overwatch.cs`) SUBSUMES `NeedsHumanTriage` (now the §9.2.1
@@ -1158,14 +1174,16 @@ total order driven by the wave folder's numeric prefix.
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
   auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2065**
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
-  TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2051-GR2054**
-  model tiering (`docs/plans/17-model-tiering.md` §13.2), **GR2060** (`docs/plans/19-producer-coverage.md`
+  TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
+  model tiering (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes
+  code; GR2051-GR2053 were ALLOCATED by Stage 3), **GR2060** (`docs/plans/19-producer-coverage.md`
   §3.1 — `UnproducibleGateRequirement`, designed but NOT built), **GR2061**
   (`docs/plans/18-integration-proof-proximity.md` §3.4). Taken: GR2035 =
   DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
   GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
-  MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378; GR2043-GR2050 = the
-  model-tiering schema codes, SSOT §9.6; GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 =
+  MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378; GR2043-GR2053 = the
+  model-tiering schema codes plus the Stage 3 registry/pin warnings, SSOT §9.6; GR2055 =
+  UnsatisfiableGuardrailFloor #484; GR2056 =
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =

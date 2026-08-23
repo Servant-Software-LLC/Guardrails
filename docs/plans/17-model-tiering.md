@@ -1656,10 +1656,12 @@ Re-verify against the file before landing.
 > this section's own discipline. **Stage 2 closed both gaps it named:**
 >
 > - **GR2047–GR2050 shipped** (`DiagnosticCodes.cs:591–651`) — `MalformedRoutingGuidance`,
->   `UnservableTier`, `TieringInert`, `EffortInvalid`. Of the seven listed below, only **GR2051
->   `NonRoutableBlockIsDefault`, GR2052 `CostlyBlockRoutingInert` and GR2053 `PinAndTierCoexist`**
->   remain unallocated; they are scoped into Stage 3
->   (`model-tiering-stage-3.charter.md`) at exactly those numbers.
+>   `UnservableTier`, `TieringInert`, `EffortInvalid`. **Stage 3 then ALLOCATED the three that §13.2
+>   below still lists as pending**, at exactly those numbers and all three warnings, emitted by
+>   `PlanValidator`: **GR2051 `NonRoutableBlockIsDefault`** (warning), **GR2052
+>   `CostlyBlockRoutingInert`** (warning) and **GR2053 `PinAndTierCoexist`** (warning). Of §13.2's
+>   seven, only **GR2054 `RoutingNumericNonPositive`** — the v2 #227 probes code — is still
+>   unallocated.
 > - **GR2043 now covers all FOUR tier-bearing sites**, not two —
 >   `PlanValidator.cs:465` (plan default), **`:473` (`tiering.verifier.minTier`)**, `:487`
 >   (`action.tier`), **`:498` (a judge guardrail's frontmatter `tier`)**. The last paragraph's claim
@@ -1927,7 +1929,8 @@ active for a task only when it resolves through routing (§4) · D17 tier/effort
 `TaskDefinitionHash` (drift applies; KISS) (§9.4) · **D19 tagging is gated on tiering being
 configured** — `/plan-breakdown` writes nothing tiering-specific for a single-model user, so its
 breakdown is byte-identical to today (§5, Invariant 7) · **D20 reserved-model pattern** — a block
-with no `routing` is never a tier target; a reserved block must not be `default` (GR2051);
+with no `routing` is never a tier target; a reserved block must not be `default`
+(GR2051 `NonRoutableBlockIsDefault`, a warning ALLOCATED and emitting since Stage 3);
 `/plan-breakdown`-time model choice is outside the registry (§4).
 
 **RESOLVED and in v1 — added by revision 3 (the charter reconciliation):**

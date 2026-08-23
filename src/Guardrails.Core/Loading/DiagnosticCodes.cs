@@ -570,10 +570,10 @@ public static class DiagnosticCodes
     // file agrees with. The lesson §13 draws is the one this block exists to honour: a code reservation
     // held in an unmerged document is a wish; THE FILE WINS, so re-verify here, not there.
     //
-    // Deliberately NOT taken by this slice (still reserved in §13.2, still free): GR2051
-    // (NonRoutableBlockIsDefault), GR2052 (CostlyBlockRoutingInert), GR2053 (PinAndTierCoexist) — three
-    // v1 WARNINGS — and GR2054 (RoutingNumericNonPositive), the one v2 (#227 probes) code. Do not
-    // re-allocate those numbers to something else.
+    // Deliberately NOT taken by this slice: GR2051 (NonRoutableBlockIsDefault), GR2052
+    // (CostlyBlockRoutingInert) and GR2053 (PinAndTierCoexist) — the three v1 WARNINGS — which
+    // Stage 3 later ALLOCATED at exactly those numbers; they are shipped constants below, not gaps.
+    // GR2054 (RoutingNumericNonPositive), the one v2 (#227 probes) code, is still RESERVED and free.
 
     /// <summary>
     /// A <c>promptRunners.&lt;name&gt;.routing</c> block is malformed (SSOT §9, issue #224 / DoR §4.2):
@@ -649,6 +649,78 @@ public static class DiagnosticCodes
     /// reader — so this stage only proves it parses, validates, and round-trips.</para>
     /// </summary>
     public const string EffortInvalid = "GR2050";
+
+    // --- model tiering Stage 3: the config-net slice (issue #201, docs/plans/17-model-tiering.md
+    //     §13.2, §12.6) -------------------------------------------------------------------------------
+    //
+    // Allocation re-verified against this file at landing time, per §13's standing instruction that a
+    // code reservation held in an unmerged document is a wish and THE FILE WINS. These three are not
+    // drawn from the marker at the foot of this file: they are the GAPS below it that §13.2 held open
+    // for this epic, so that marker stays at GR2065 — filling a gap advances no counter, and advancing
+    // it would silently renumber somebody else's next code.
+    // GR2054 (RoutingNumericNonPositive) stays RESERVED for the v2 probes work (#227).
+    //
+    // All three are WARNINGS, and DoR §12.6 gives the reason once for all of them: the plan still runs.
+    // Each catches a config that LOADS CLEANLY and then does something other than what its author
+    // wrote — the class of defect this repo refuses to leave silent.
+
+    /// <summary>
+    /// A NON-ROUTABLE block is named the registry <c>default</c> in a plan where tiering is CONFIGURED
+    /// (SSOT §9.6, DoR §4.2 — review comment 7's back door). Non-routable spans BOTH reservation forms
+    /// §4.2 declares, because they are not equivalent but have the same effect here: <c>costly: true</c>
+    /// (the DECLARED form — "the harness may never choose this; only a human may assign it") and a block
+    /// carrying no <c>routing</c> at all (the INCIDENTAL form — it simply has no place in the tier
+    /// system). Either way the block sits outside <see cref="UnservableTier"/>'s candidacy predicate,
+    /// and pointing <c>default</c> at it re-opens from behind exactly what the reservation closed in
+    /// front: an UNTAGGED task with no <c>tiering.defaultTier</c> falls to LEGACY resolution — the
+    /// default runner — which is the reserved model. The reservation evaporates through the back door.
+    ///
+    /// <para>A WARNING, not an error, and the boundary is precise. Naming a block <c>default</c> IS a
+    /// user assignment — a plan-wide one — so it does not VIOLATE the costly floor: DoR §6.2's floor has
+    /// no override and no dial, but it governs what the HARNESS chooses, and this is a human choosing
+    /// (§6.2 lists the <c>default</c> pointer as one of the two sanctioned routes to a costly model).
+    /// What earns the flag is that untagged work would then spend that model SILENTLY — this is the §5
+    /// cost disclosure with a flag on it, not a refusal. DoR §12.6 is explicit that the plan still
+    /// runs.</para>
+    /// </summary>
+    public const string NonRoutableBlockIsDefault = "GR2051";
+
+    /// <summary>
+    /// A <c>costly: true</c> block ALSO declares <c>routing</c> (SSOT §9.6, DoR §4.2/§6.2). The two keys
+    /// state opposite things about the same block — <c>routing.tiers</c> says "consider me for these
+    /// rungs", <c>costly</c> says "never choose me" — and <c>costly</c> wins: §6.2's ONE candidacy
+    /// predicate excludes costly blocks at EVERY rung, their own included, and so does every consumer
+    /// built on it (the resolver, the climb to a stronger rung, the §6.5 judge bump, and in v2 the
+    /// ladder). The <c>routing</c> declaration is therefore INERT — its author registered an eligibility
+    /// nothing will ever read.
+    ///
+    /// <para>A WARNING rather than an error, and deliberately so that <see cref="UnservableTier"/> can
+    /// report the real consequence. The two codes divide the case between them: this one names the
+    /// contradiction at the block, while GR2048 — an ERROR — fires only when the inert routing actually
+    /// leaves a USED tier with no candidate, which is the outcome that stops a run. Failing here would
+    /// reject configs that are merely redundant: a block annotated ahead of an un-reservation, or one
+    /// whose <c>routing</c> outlived the day <c>costly</c> was set on it. Both route correctly today, so
+    /// the plan still runs (DoR §12.6). Not silence either — the gap between "I declared these tiers"
+    /// and "the block was never once considered" is precisely the quiet no-op this repo refuses.</para>
+    /// </summary>
+    public const string CostlyBlockRoutingInert = "GR2052";
+
+    /// <summary>
+    /// One action carries BOTH a full pin — <c>action.runner</c> or <c>action.model</c> — and
+    /// <c>action.tier</c> (SSOT §2, DoR §6.1, devil's-advocate finding F3). §6.1's precedence chain puts
+    /// the pin FIRST and has it bypass tier resolution ENTIRELY, so the tier is dead weight the pin
+    /// overrides: it selects no block, it decides nothing, and it is usually an authoring mistake — a
+    /// tag left behind when the task was pinned, or a pin added without the tag being cleared. Note the
+    /// deliberate narrowness: a pin plus <c>action.effort</c> is NOT this code and is never flagged,
+    /// because effort ALONE legitimately overrides the pinned route's effort (§6.1 item 2, DA F4).
+    ///
+    /// <para>A WARNING, not an error: the action is unambiguous — the pin runs, exactly as it does
+    /// today — so refusing to load a plan over a redundant tag would fail work that behaves correctly.
+    /// Not silence either, because the two readings of the same file diverge: an author who wrote
+    /// <c>tier</c> believes the task is being ROUTED, and has no other way to learn that a pin is still
+    /// deciding for it. DoR §12.6 is explicit that the plan still runs.</para>
+    /// </summary>
+    public const string PinAndTierCoexist = "GR2053";
 
     /// <summary>
     /// <b>GR2055 — a guardrail that CANNOT PASS for any input (issue #484).</b> A script guardrail
@@ -842,13 +914,14 @@ public static class DiagnosticCodes
     // CURRENT next-free code: GR2065. GR2064 (BreakdownIntentDeclaresNothing) is the last taken code above —
     // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402).
-    // TWO codes remain RESERVED BY NAME in design documents and must not be re-used:
+    // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
-    // GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
-    // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
-    // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2065 and update this line rather than colliding with either block (issue #320).
+    //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
+    // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
+    // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2065 and update
+    // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
     // review-marker change (#472). The GR10xx and GR20xx ladders advance independently; a doc that

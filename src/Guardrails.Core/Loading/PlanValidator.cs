@@ -85,6 +85,9 @@ public sealed class PlanValidator
         ValidateTierValues(plan, diagnostics);
         ValidateTieringInert(plan, diagnostics);
         ValidateTierServability(plan, diagnostics);
+        ValidateNonRoutableDefault(plan, diagnostics);
+        ValidateCostlyRoutingInert(plan, diagnostics);
+        ValidatePinAndTierCoexist(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
         ValidateIntendedWaves(plan, diagnostics);
@@ -705,6 +708,193 @@ public sealed class PlanValidator
         return sites.Count <= Shown
             ? string.Join(", ", sites)
             : $"{string.Join(", ", sites.Take(Shown))} (+{sites.Count - Shown} more)";
+    }
+
+    /// <summary>
+    /// In a TIERING-CONFIGURED plan, the DEFAULT prompt runner is a block the candidacy predicate never
+    /// counts — GR2051 WARNING (SSOT §9.6, DoR §4.2's back door). "Never counts" is asked of
+    /// <see cref="PromptRunnerConfig.ServesTier"/> across every rung rather than re-derived here, which is
+    /// what makes this check span BOTH reservation forms §4.2 declares without naming either as its
+    /// condition: <c>costly: true</c> (the DECLARED form) and no <c>routing</c> at all (the INCIDENTAL
+    /// form) both fail the one predicate, and a block that passes it at any rung is routable by definition.
+    ///
+    /// <para>The consequence is the back door: an UNTAGGED task with no <c>tiering.defaultTier</c> never
+    /// reaches tier resolution, falls to LEGACY resolution — whose route IS this pointer — and so spends
+    /// the reserved model silently. A WARNING, because naming a block <c>default</c> is a HUMAN assignment
+    /// and §6.2 lists it as one of the two sanctioned routes to a costly block; what earns the flag is the
+    /// silence, not the assignment. DoR §12.6: the plan still runs.</para>
+    ///
+    /// <para>"The default" is <see cref="ResolveDefaultRunner"/> — the same two-level notion
+    /// <see cref="ValidatePromptRunners"/> already validates (<c>promptRunners.default</c>, else the sole
+    /// declared block), because the sole-block fallback is what an untagged prompt actually launches on
+    /// (<c>PromptRunnerRegistry.ResolveDefault</c>). An unresolvable pointer yields no diagnostic here: a
+    /// <c>default</c> naming a block that does not exist is
+    /// <see cref="DiagnosticCodes.UnknownPromptRunner"/>'s error, and a second message about the same typo
+    /// would send the reader looking for a routing problem instead.</para>
+    /// </summary>
+    private static void ValidateNonRoutableDefault(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (!TieringIsConfigured(plan))
+        {
+            return; // Invariant 7 — a file that never asked for tiering has no reservation to leak.
+        }
+
+        if (ResolveDefaultRunner(plan.Config) is not { } name ||
+            !plan.Config.PromptRunners.TryGetValue(name, out PromptRunnerConfig? block))
+        {
+            return;
+        }
+
+        if (ActionTiers.All.Any(block.ServesTier))
+        {
+            return; // Routable by the ONE predicate — tier resolution can reach it, so no back door.
+        }
+
+        // The two reservation forms have DIFFERENT fixes, so the message states the one that applies
+        // rather than offering both and leaving the reader to work out which half is theirs (GR2048's
+        // two-cause message, same reasoning). A costly block that ALSO declares routing needs only the
+        // flag cleared — it already says which rungs it would serve, and GR2052 has named that pairing.
+        (string form, string lift) = block.Costly is true
+            ? ("it is marked \"costly\": true — §4.2's DECLARED reservation, honoured at every rung: the " +
+               "harness may never CHOOSE this block, only you may assign it",
+               $"lift the reservation (clear \"costly\": true on {name}" +
+               (block.Routing is null ? ", and give it a \"routing\".tiers list" : "") + ")")
+            : ("it declares no routing rungs — §4.2's INCIDENTAL reservation, a block simply outside the " +
+               "tier system",
+               $"bring {name} into the tier system (add \"routing\": {{ \"tiers\": [...] }} to it)");
+
+        diagnostics.Add(Warning(DiagnosticCodes.NonRoutableBlockIsDefault, plan.PlanDirectory,
+            $"The default prompt runner '{name}' is NON-ROUTABLE while tiering IS configured: {form}. " +
+            "Naming it the default stays permitted — §6.2 lists the default pointer as one of the two " +
+            "sanctioned routes to a reserved model — but an UNTAGGED task with no tiering.defaultTier " +
+            "never reaches tier resolution at all: it falls to LEGACY resolution, whose route is this very " +
+            $"pointer, so work nobody tiered lands on '{name}' SILENTLY and the reservation evaporates " +
+            $"through the back door (DoR §4.2). Fix ONE of: {lift}; point promptRunners.default at a block " +
+            "that serves a tier; or set tiering.defaultTier so untagged work is ROUTED rather than falling " +
+            "back. The plan still runs either way — this is a cost disclosure, not a refusal (SSOT §9.6, " +
+            "DoR §12.6)."));
+    }
+
+    /// <summary>
+    /// A <c>costly: true</c> block ALSO declares <c>routing</c> rungs — GR2052 WARNING (SSOT §9.6, DoR
+    /// §4.2/§6.2). The two keys state opposite things about one block and <c>costly</c> wins: §6.2's ONE
+    /// candidacy predicate (<see cref="PromptRunnerConfig.ServesTier"/>) excludes a costly block at every
+    /// rung its <see cref="PromptRunnerConfig.DeclaresTier"/> names, so the declaration is INERT — an
+    /// eligibility registered that nothing will ever read. The condition is written as the same
+    /// <c>costly ∧ DeclaresTier</c> pair <see cref="ValidateTierServability"/> uses to name its costly
+    /// blockers, so the two agree by construction about which blocks the floor excludes.
+    ///
+    /// <para><b>A warning precisely so GR2048 can still report the consequence.</b> This code names the
+    /// contradiction AT THE BLOCK; <see cref="DiagnosticCodes.UnservableTier"/> — an ERROR — fires only
+    /// when that inert routing actually leaves a USED tier with no candidate. Both are true at once in the
+    /// config that carries both faults, and neither may mask the other: erroring here would stop the run at
+    /// the redundant key and never state what it costs, and a config that is merely redundant (a block
+    /// annotated ahead of an un-reservation) routes correctly today. DoR §12.6: the plan still runs.</para>
+    ///
+    /// <para>Ordered by block name so a multi-block registry reports deterministically, matching
+    /// <see cref="ValidatePromptRunnerCommands"/>. Invariant 7 is enforced by the loop's OWN condition
+    /// rather than by a separate early return: a block declaring routing is exactly what
+    /// <see cref="TieringIsConfigured"/> means, so a file that configures no tiering has no block that can
+    /// reach the emission below — the gate would be unreachable code, not a safeguard.</para>
+    /// </summary>
+    private static void ValidateCostlyRoutingInert(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig block in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            string[] declared = [.. ActionTiers.All.Where(block.DeclaresTier)];
+            if (block.Costly is not true || declared.Length == 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Warning(DiagnosticCodes.CostlyBlockRoutingInert, plan.PlanDirectory,
+                $"promptRunners.{block.Name} is marked \"costly\": true AND declares " +
+                $"routing.tiers [{string.Join(", ", declared.Select(t => $"'{t}'"))}]. The two keys say " +
+                "opposite things about the same block — routing.tiers says \"consider me for these rungs\", " +
+                "costly says \"never choose me\" — and costly WINS: the one candidacy predicate excludes a " +
+                "costly block at EVERY rung, its own included, and so does everything built on it (the " +
+                "resolver, the climb to a stronger rung, the §6.5 judge bump). The routing is therefore " +
+                $"INERT — '{block.Name}' will never once be considered for a rung it declares. It stays " +
+                $"reachable exactly as before by YOUR assignment (\"action\": {{ \"runner\": " +
+                $"\"{block.Name}\" }}, or the promptRunners.default pointer). Fix ONE of: drop \"routing\" " +
+                $"from {block.Name} to say plainly that it is assignment-only; or clear \"costly\": true to " +
+                "let the harness route to it. Reported as a WARNING so the real consequence still reaches " +
+                "you: where this inert routing leaves a USED tier with no candidate, GR2048 says so as an " +
+                "ERROR (SSOT §9.6, DoR §4.2/§6.2/§12.6)."));
+        }
+    }
+
+    /// <summary>
+    /// One action carries BOTH a full pin and its own <c>action.tier</c> — GR2053 WARNING (SSOT §2, DoR
+    /// §6.1, devil's-advocate finding F3). §6.1's precedence chain puts the pin FIRST and has it bypass
+    /// tier resolution ENTIRELY, so the tier selects no block and decides nothing: it is dead weight the
+    /// pin overrides, usually a tag left behind when the task was pinned. A WARNING because the action is
+    /// unambiguous and runs correctly (DoR §12.6); not silence, because an author who wrote <c>tier</c>
+    /// believes the task is being ROUTED and has no other way to learn a pin is still deciding for it.
+    ///
+    /// <para><b>A pin is <c>action.runner</c> OR <c>action.model</c> — either ONE alone.</b> §13.2's
+    /// "<c>action.runner</c>/<c>action.model</c>" slash reads like an AND; the shipped resolver settles it,
+    /// and the condition below is written to MATCH it rather than to re-derive it —
+    /// <see cref="Prompts.TierResolver.Resolve"/> branches on
+    /// <c>action.Runner is not null || action.Model is not null</c> and returns there, ABOVE its tier read,
+    /// so a model-only pin kills the tier exactly as completely as a runner pin. There is no shared
+    /// predicate to call: <c>TierResolution.Pinned</c> is that branch's OUTPUT, not a question askable of
+    /// an action, so the one condition is restated here — and ONLY that one condition, so a reader can see
+    /// at a glance that the two still agree.</para>
+    ///
+    /// <para>Deliberately NARROW in two directions. A pin plus <c>action.effort</c> is NOT this code and is
+    /// never flagged (§6.1 item 2, DA F4): effort alone overrides the resolved route's effort and is
+    /// legitimate beside a pin. And the rung must be the ACTION'S OWN — one the plan-wide
+    /// <c>tiering.defaultTier</c> filled in arrives as <see cref="TierOrigin.PlanDefault"/> (DoR §12.4) and
+    /// is not a tag anybody wrote beside this pin; pinning one task out from under a blanket default is
+    /// §6.2's SANCTIONED route to a costly block, so firing there would flag the pattern the DoR itself
+    /// prescribes, on every pinned task in the plan. The test names <c>PlanDefault</c> rather than
+    /// requiring <see cref="TierOrigin.Task"/> because what disqualifies an action is that its rung came
+    /// from ELSEWHERE; on a loaded plan the two spellings select the same set, since a non-null
+    /// <c>Tier</c> carries one of exactly those two origins.</para>
+    ///
+    /// <para>Invariant 7 needs no gate of its own. This is a fact about an ACTION, not about the registry,
+    /// so it holds in a file with no <c>routing</c> block at all — and it is already gated by
+    /// <c>action.tier</c> having been written, which a plan that never tiers anything never does. Adding a
+    /// tiering-configured precondition would silence the warning in precisely the file where the tag
+    /// misleads MOST: one whose author tiered a pinned task believing it would route, in a plan that cannot
+    /// route at all. Reported per offending action at the TASK's directory — the site the fix is made at,
+    /// like the <c>action.tier</c> arm of <see cref="ValidateTierValues"/>.</para>
+    /// </summary>
+    private static void ValidatePinAndTierCoexist(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            ActionDefinition action = task.Action;
+
+            // The pin predicate, matching TierResolver.Resolve's own branch verbatim: EITHER key alone.
+            bool pinned = action.Runner is not null || action.Model is not null;
+
+            if (!pinned || action.Tier is not { } tier || action.TierOrigin is TierOrigin.PlanDefault)
+            {
+                continue;
+            }
+
+            // Name the keys actually present, so the message quotes the reader's file rather than a
+            // canonical shape they must translate — and so the model-only pin is not described as a runner.
+            string pin = string.Join(" and ", new[]
+            {
+                action.Runner is { } runner ? $"\"runner\": \"{runner}\"" : null,
+                action.Model is { } model ? $"\"model\": \"{model}\"" : null
+            }.Where(key => key is not null));
+
+            diagnostics.Add(Warning(DiagnosticCodes.PinAndTierCoexist, task.Directory,
+                $"Task '{task.Id}' PINS its action ({pin}) and ALSO declares \"tier\": \"{tier}\". The pin " +
+                "wins: it is first in the precedence chain and bypasses tier resolution entirely, so the " +
+                $"'{tier}' rung selects no block and decides nothing — it is dead weight, and an author " +
+                "reading this task would reasonably believe the work is being ROUTED when a pin is still " +
+                $"choosing for it. Fix ONE of: drop \"tier\" to say plainly that this task is pinned; or " +
+                "drop the pin to let the rung route it. Either way the task runs exactly as it does now, " +
+                "on the pinned model — this is a redundancy notice, not a refusal. Note that \"effort\" " +
+                "beside a pin is NOT this warning: it legitimately overrides the pinned route's effort " +
+                "(DoR §6.1, §12.6)."));
+        }
     }
 
     /// <summary>
