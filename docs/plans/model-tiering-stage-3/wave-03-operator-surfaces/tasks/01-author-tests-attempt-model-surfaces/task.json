@@ -1,0 +1,16 @@
+{
+  "description": "Author failing tests for both operator surfaces (attempt-route.log preamble + the new IRunObserver event), plus the three minimal stubs they compile against",
+  "dependsOn": [],
+  "stableId": "s3w3t1",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelDisclosureTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelRenderingTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs"
+  ],
+  "action": {
+    "maxTurns": 120
+  }
+}
