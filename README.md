@@ -16,6 +16,7 @@ agent output** forever.
 2. BREAK    /plan-breakdown generates <plan>/ — tasks, dependencies, guardrails
             (inserting guardrail-enabling tasks the plan never mentioned, e.g.
             "author the unit tests" before "implement the feature")
+            outside a Claude Code session: guardrails breakdown <plan>.md
 3. REVIEW   the human edits guardrails; /guardrails-review attacks them:
             "what wrong implementation passes these?"
 4. RUN      guardrails run <plan>/ — to green, or to an honest needs-human halt
@@ -119,6 +120,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | Command | Does |
 |---|---|
 | `guardrails validate [folder]` | Schema, DAG (cycles), file refs, interpreter/runner checks |
+| `guardrails breakdown <plan.md> [--out <dir>] [--runner-config <file>] [--force] [--no-validate]` | Author a plan folder from a plan `.md` — the same breakdown the JIT wave checkpoint runs, available as a verb so you do not have to be a Claude Code session to invoke `/plan-breakdown`. Writes beside the plan unless `--out`; refuses a `.charter.md` (flatten it with `charter handoff` first); **never marks the plan reviewed** — `/guardrails-review` still gates the run |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
 | `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness. On a **waved** plan this covers every diagram the plan owns — the plan-level one *and* each `wave-NN-<slug>/diagram.md` |
 | `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
