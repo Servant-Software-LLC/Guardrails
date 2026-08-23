@@ -4,7 +4,7 @@
   "defaultRetries": 2,
   "defaultTimeoutSeconds": 1800,
   "guardrailMode": "failFast",
-  "intendedWaves": 3,
+  "intendedWaves": 5,
   "workspace": "../../..",
   "promptRunners": {
     "default": "claude",

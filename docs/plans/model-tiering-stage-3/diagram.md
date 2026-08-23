@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=02c1ecfce5e6815ada68bcb5cb1aca33871abc8032d5de4ea441baac1a962b6a -->
+<!-- guardrails:graph v1 source-sha256=b0b129a6eca258d3d95ae082e3933f92894613562ef00bba9e028ea280308f43 -->
 
 ```mermaid
 flowchart TD
@@ -50,7 +50,7 @@ flowchart TD
   subgraph wave_2_preflights["Wave 2 Entry Gate"]
   end
   style wave_2_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  subgraph wave_2["Wave 2 — pilot-seat"]
+  subgraph wave_2["Wave 2 — capture-and-persist"]
     wave_2_stub["⏸ JIT stub — run halts here for breakdown"]
     style wave_2_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
   end
@@ -58,6 +58,39 @@ flowchart TD
   subgraph wave_2_guardrails["Wave 2 Exit Gate"]
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3_preflights["Wave 3 Entry Gate"]
+  end
+  style wave_3_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3["Wave 3 — operator-surfaces"]
+    wave_3_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_3_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_3_guardrails["Wave 3 Exit Gate"]
+  end
+  style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_4_preflights["Wave 4 Entry Gate"]
+  end
+  style wave_4_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_4["Wave 4 — report-and-cleanup"]
+    wave_4_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_4_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_4 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_4_guardrails["Wave 4 Exit Gate"]
+  end
+  style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_5_preflights["Wave 5 Entry Gate"]
+  end
+  style wave_5_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_5["Wave 5 — review-net"]
+    wave_5_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_5_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_5 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_5_guardrails["Wave 5 Exit Gate"]
+  end
+  style wave_5_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -72,8 +105,17 @@ flowchart TD
   task_wave_01_config_net_06_update_ssot_and_domain_knowledge --> wave_1_guardrails
   wave_2_preflights --> wave_2_stub
   wave_2_stub --> wave_2_guardrails
+  wave_3_preflights --> wave_3_stub
+  wave_3_stub --> wave_3_guardrails
+  wave_4_preflights --> wave_4_stub
+  wave_4_stub --> wave_4_guardrails
+  wave_5_preflights --> wave_5_stub
+  wave_5_stub --> wave_5_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
-  wave_2_guardrails --> plan_guardrails
+  wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
+  wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
+  wave_4_guardrails -.->|"🔒 wave barrier"| wave_5_preflights
+  wave_5_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

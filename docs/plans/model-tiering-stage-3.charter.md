@@ -168,12 +168,36 @@ indistinguishable from the absence this stage exists to fix.
 ```mermaid
 graph TD
   W1["Wave 1 — the config net<br/>GR2051 · GR2052 · GR2053<br/>DiagnosticCodes.cs + PlanValidator.cs"]
-  W2["Wave 2 — the pilot seat (#349)<br/>capture → persist → surface<br/>stream parser · journal · observers · report"]
-  W3["Wave 3 — the review net (#229)<br/>guardrails-review/SKILL.md"]
-  W1 -->|"codes exist to cite"| W3
-  W2 -->|"provenance shape settled"| W3
+  W2["Wave 2 — pilot seat 1/3: capture + persist<br/>stream parser · PromptResult · provenance"]
+  W3["Wave 3 — pilot seat 2/3: operator surfaces<br/>attempt-route.log · IRunObserver + both decorators"]
+  W4["Wave 4 — pilot seat 3/3: report + cleanup<br/>models-used line · delete superseded folder"]
+  W5["Wave 5 — the review net (#229)<br/>guardrails-review/SKILL.md"]
+  W1 -->|"codes exist to cite"| W5
   W1 -->|"strict order: no two waves<br/>touch the SSOT at once"| W2
+  W2 -->|"the model is a recorded fact"| W3
+  W3 --> W4
+  W4 -->|"provenance shape settled"| W5
 ```
+:::
+
+:::note
+**The pilot seat is three waves, not one — revised 2026-08-23, after the first attempt was truncated.**
+As chartered, wave 2 was the whole of §B. Its JIT breakdown declared **12 task folders** and was killed
+by the 30-minute breakdown wall clock at folder 6, having spent 173 turns of the 800 it was granted.
+
+Two separate faults, and it is worth keeping them apart. The **wave was mis-sized** — 12 folders maps
+1:1 to a design milestone, which is `plan-breakdown`'s own split-trigger (c), and no budget would have
+made that a good artifact. Independently, the **budget is dishonest**: #385 made the turn allowance
+scale with brief size and left the wall clock a fixed constant, so the ceiling that actually binds is
+the one that never adapts (**#504**). Splitting §B along its own dependency seams fixes the first;
+#504 fixes the second.
+
+The seams are the ones §B already names. Capture and persist are the load-bearing pair — everything
+else consumes what they record — so they go first, together, with the expensive `AttemptProvenance`
+orientation and the #474 construction-site trace. The operator surfaces (log preamble, observer event,
+both decorators) only *read* that record. The report line and the cleanup read it too and depend on
+nothing else. Each wave's **last** task remains the sole owner of the SSOT and domain-knowledge sinks,
+so the union hazard below is unchanged by the split — it is enforced three times instead of once.
 :::
 
 Strict-ordered waves are chosen here for a specific, measured reason rather than tidiness.
@@ -268,6 +292,25 @@ choice, which is why it is a question below rather than an assumption.
 verdict should actually appear this time — it produced none at all on the Stage 1 run. And
 `--revalidate-task` still refuses worktree mode (**#456**, open), so a task stranded by a defective
 guardrail costs a full re-attempt rather than a re-check.
+:::
+
+:::note
+**STATUS UPDATE 2026-08-23 — the run above happened, and the paragraph before it is now history.**
+Wave 1 ran 6/6 green, zero `needs-human`, $18.29, and merged as `7d567db`. The JIT breakdown path then
+met its first real exercise at the wave-2 checkpoint and **the exercise paid for itself immediately**:
+
+- **#501 — the salvage did not fire.** #385/#402's manifest half worked perfectly (`breakdown-intent.json`
+  written before authoring, GR2063 read it and named all 7 owed folders), and then the prefix it exists to
+  preserve was discarded anyway, because `gateRejected` short-circuits on a WHOLE-PLAN validate and a
+  truncated wave has no exit gate yet. The halt announced a resume and a from-scratch restart in the same
+  breath. Fixed and merged (`b42aec0`); the gate now tees `gate-decision.txt` on every path.
+- **#504 — the breakdown budget is half-adaptive**, and the fixed half is the binding one.
+- **#502** — no waved fixture in the suite runs in worktree mode, which is why 15 durability tests stayed
+  green throughout #501.
+
+None of the three was reachable by reading. Two full review passes over wave 1 found **zero** of its four
+BLOCKERs — every one came from executing a mutation — and these three came from executing the harness.
+That is the argument for dogfooding, stated as a measurement rather than a hope.
 :::
 
 ## Failing early — how this stage could go green and be wrong

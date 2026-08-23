@@ -1,8 +1,21 @@
-# Wave 2 — the pilot seat (#349): the model that ACTUALLY ran
+# Wave 2 — the pilot seat, part 1: capture and persist (#349)
 
 > **This wave is a JIT stub.** Its tasks are authored at the wave-2 checkpoint, against the
-> **materialized integration worktree** — not now, and not from this brief alone. The whole point is
-> that wave 1's real bytes exist by then. Seeded from `model-tiering-stage-3.charter.md` §B.
+> **materialized integration worktree** — not now, and not from this brief alone. Seeded from
+> `model-tiering-stage-3.charter.md` §B, surfaces 1–2 of 5.
+
+## Budget — read this before you decompose
+
+**Author AT MOST 5 task folders.** The wave-2 breakdown that preceded this one declared 12 and was
+killed by the 30-minute wall clock at folder 6, having used 173 turns of the 800 it was granted (#504:
+the turn budget scales with brief size, the wall clock does not). Measured on that run: **~17 min of
+orientation before the manifest was declared, then ~2.6 min per task folder.** Five folders is the
+ceiling that fits, and this brief deliberately narrows the orientation to buy back some of it.
+
+If your decomposition genuinely needs more than 5, **the wave is mis-scoped — say so in your report**.
+Author the prefix in strict dependency order (#501 keeps a valid prefix, so a truncation costs a resume
+rather than the wave) and do **not** compress two separately-verifiable deliverables into one folder to
+fit the count. A folder that bundles "implement it and document it" is over-sized however well it fits.
 
 ## What this wave must accomplish
 
@@ -15,17 +28,17 @@ throwing the init model away. **That one discard is the entire gap.**
 Parse the echo; never force `--model`. Forcing one would pin the zero-setup user who deliberately
 passes nothing, and would record the model we *requested* — the weaker fact.
 
-## The five surfaces, in dependency order
+Two surfaces, in dependency order:
 
 1. **Capture** — `ClaudeStreamParser` reads `model` from `system`/`init`, falling back to the terminal
    `result` line; surface it on `PromptResult`; populate it in `ClaudePromptRunner`.
-   *The load-bearing change; everything else is downstream of it.*
-2. **Persist** — the provenance record (see the settled contract below), populated in `AttemptJournaler`.
-3. **Log header** — the per-attempt preamble prints the resolved model, and both strings on mismatch.
-4. **Live UI** — a new default-method `IRunObserver` event, rendered by `LiveRunObserver` and
-   forwarded by **both** decorators (`OnTheFlyLogSiteObserver`, `OnTheFlyDiagramObserver`). Assert the
-   forwarding on the decorators themselves, not only on `LiveRunObserver`.
-5. **Run report** — a models-used summary line.
+   *The load-bearing change; every later wave is downstream of it.*
+2. **Persist** — the provenance record (settled contract below), populated in `AttemptJournaler`.
+
+The wave's **last** task owns the SSOT provenance delta and the DoR §9.3 amendment — it is the only
+task in this wave permitted to touch `docs/plans/02-schemas-and-contracts.md` or
+`.claude/skills/guardrails-domain-knowledge/SKILL.md`. Two tasks sharing either file is the union
+hazard that costs a run (charter §"Waves, and the union hazard that decides them").
 
 ## The settled contract — do NOT re-litigate this at the checkpoint
 
@@ -40,7 +53,7 @@ The charter review resolved `s3-provenance-shape`, and it amends DoR §9.3:
 
 `AttemptProvenance.Effort` already shipped with Stage 2 — that half of §9.3 is done. Do not re-add it.
 
-## What the authoring agent must check first, at the checkpoint
+## Orientation — scoped to this wave, and the one trap that has already bitten
 
 - Read the **materialized** `AttemptProvenance` in the integration worktree. Stage 2 restructured it
   (`Runner`/`Kind`/`Tier`/`TierSource`/`Effort`/`Judge`), and wave 1 has landed since this brief was
@@ -51,10 +64,13 @@ The charter review resolved `s3-provenance-shape`, and it amends DoR §9.3:
   datum that already makes the whole trip (`CostUsd`) end to end, and put every file on its path in
   scope. A scope traced on type names passed `validate`, `graph --check` and a full review, then
   dead-ended the agent at `needsHuman`.
-- `docs/plans/pilot-seat-model-provenance/` is a **superseded** 12-task folder from 2026-08-11 that
-  was never run and targets the pre-Stage-2 contract. Wave 1's charter deletes it. Borrow its
-  decomposition if useful; do not execute it.
+- **Both record paths must carry it** — the serial journaller and the worktree settle path. A datum
+  that reaches only one of them is the silent half-failure this stage exists to catch.
 
-## Out of scope for this wave
+## Out of scope for this wave — these are later waves, already scoped
 
-Recording which model **authored** a breakdown is **#495**, sequenced after #349 — not here.
+- The attempt-log preamble, the `IRunObserver` event and the two decorators → **wave 3**.
+- The models-used run-report line, and deleting the superseded
+  `docs/plans/pilot-seat-model-provenance/` folder → **wave 4**.
+- The `/guardrails-review` model-appropriateness net (#229) → **wave 5**.
+- Recording which model **authored** a breakdown is **#495**, sequenced after #349 — not in this stage.
