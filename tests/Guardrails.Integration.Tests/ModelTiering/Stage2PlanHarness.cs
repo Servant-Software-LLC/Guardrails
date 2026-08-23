@@ -166,8 +166,14 @@ public sealed class Stage2PlanHarness : IDisposable
     /// <para>May be called more than once on the same harness: each call REWRITES the plan files and
     /// runs again against the same root and the same <c>run.json</c> (resume semantics), with a fresh
     /// recorder. A fresh <see cref="Stage2PlanHarness"/> is a fresh root.</para>
+    ///
+    /// <para>Pass an <paramref name="observer"/> to watch the REAL attempt loop. It is handed to the
+    /// shipped <see cref="TaskExecutor"/> AND the shipped <see cref="Scheduler"/> — BOTH, because an
+    /// observer wired into only one of them would make a raise from the other look ABSENT, which is the
+    /// shape that certifies a missing surface as green. Optional with a default so no existing call site
+    /// changes: this file is shared with the whole Stage-2 conformance suite.</para>
     /// </summary>
-    public async Task<Stage2RunResult> RunAsync(Stage2PlanSpec spec)
+    public async Task<Stage2RunResult> RunAsync(Stage2PlanSpec spec, IRunObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
         WritePlan(spec);
@@ -203,13 +209,14 @@ public sealed class Stage2PlanHarness : IDisposable
         var interpreterMap = new InterpreterMap(new PathExecutableProbe(), plan.Config.Interpreters);
 
         var executor = new TaskExecutor(
-            plan, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry,
+            plan, new ProcessRunner(), interpreterMap, stateManager, journal,
+            observer ?? IRunObserver.Null, registry,
             overwatch: null,
             // The transient backoff is exercised but never actually sleeps (the same seam the
             // reliability suite injects), so a scripted Transient stays deterministic.
             transientDelay: (_, _) => Task.CompletedTask);
 
-        var scheduler = new Scheduler(plan, executor, journal, observer: IRunObserver.Null);
+        var scheduler = new Scheduler(plan, executor, journal, observer: observer ?? IRunObserver.Null);
         RunReport report = await scheduler.RunAsync(plan, TestContext.Current.CancellationToken);
 
         return new Stage2RunResult

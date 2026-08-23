@@ -666,4 +666,23 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             ? $"[red]needs human ({terse})[/]"
             : "[red]needs human[/]"
     };
+
+    /// <summary>
+    /// The ONE rendering of an attempt's resolved model (#349) — the single formatter BOTH the live table
+    /// and the plain <see cref="ConsoleRunObserver"/> call, so the two surfaces cannot drift into two
+    /// different ways of stating the same fact. <paramref name="model"/> is the attempt's
+    /// best-known-actual model; <paramref name="requestedModel"/> is non-null only when the route asked
+    /// for something else, and its PRESENCE is what makes this a mismatch line rather than an ordinary
+    /// one. The formatter reads the two fields it is handed and re-derives nothing.
+    ///
+    /// <para>Public (not private) for the same reason <see cref="StatusMarkup"/> and
+    /// <see cref="PostMortemPagePath"/> are: no live terminal renders in a non-interactive test and the
+    /// Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure function IS the test seam.</para>
+    ///
+    /// <para>DECLARED, not yet written — it throws. The declaration exists on its own so the tests that
+    /// pin its wording fail on the OUTPUT rather than on a missing symbol (#155), which is a red no test
+    /// author can fix from inside a test file.</para>
+    /// </summary>
+    public static string AttemptModelSummary(string model, string? requestedModel) =>
+        throw new NotImplementedException();
 }
