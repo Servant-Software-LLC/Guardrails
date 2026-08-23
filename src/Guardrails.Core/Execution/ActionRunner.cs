@@ -394,6 +394,19 @@ internal sealed record ActionRun
     /// </summary>
     public Journal.AttemptUsage? Usage { get; init; }
 
+    /// <summary>
+    /// The model the RUNNER reported itself running on (#349) — <see cref="PromptResult.ObservedModel"/>
+    /// carried one hop further — or null for a script action and for a runner that echoed none.
+    /// <para>It rides HERE, beside <see cref="CostUsd"/> and <see cref="Usage"/>, because the three are the
+    /// same kind of datum: facts an attempt learns from the runner AFTER launch, which makes this record
+    /// their only route to <c>run.json</c>.</para>
+    /// <para>The OBSERVED model is a DIFFERENT fact from the requested one. The request is known at attempt
+    /// launch and already recorded as <see cref="Journal.AttemptProvenance.Model"/>; this is what actually
+    /// served the prompt, and the two disagree whenever an alias resolves to a dated snapshot, a provider
+    /// substitutes, or nothing named a model at all and the CLI picked for itself.</para>
+    /// </summary>
+    public string? ObservedModel { get; init; }
+
     public string? NeedsHumanQuestion { get; init; }
 
     /// <summary>
