@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests + the two stub declarations for provenance.model as best-known-actual, proven on BOTH attempt-record paths",
+  "dependsOn": ["01-author-tests-observed-model-capture"],
+  "stableId": "s3w2a3",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs"
+  ],
+  "action": {
+    "maxTurns": 120
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Read the runner-echoed model off the stream and carry it onto PromptResult, so the capture tests pass",
+  "dependsOn": ["01-author-tests-observed-model-capture"],
+  "stableId": "s3w2a2",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/ClaudeStreamParser.cs",
+    "src/Guardrails.Core/Prompts/ClaudePromptRunner.cs"
+  ]
+}

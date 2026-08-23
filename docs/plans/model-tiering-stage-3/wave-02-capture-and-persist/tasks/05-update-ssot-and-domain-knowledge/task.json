@@ -1,0 +1,13 @@
+{
+  "description": "Record the settled provenance contract in the SSOT, amend DoR 9.3, and note it in the domain-knowledge skill",
+  "dependsOn": [
+    "02-implement-observed-model-capture",
+    "04-implement-provenance-model-persist"
+  ],
+  "stableId": "s3w2a5",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    "docs/plans/17-model-tiering.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ]
+}

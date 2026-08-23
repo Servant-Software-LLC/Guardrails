@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + the two stub declarations for capturing the runner-echoed model off the Claude stream",
+  "dependsOn": [],
+  "stableId": "s3w2a1",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/ObservedModelCaptureTests.cs",
+    "src/Guardrails.Core/Prompts/ClaudeStreamParser.cs",
+    "src/Guardrails.Core/Prompts/PromptInvocation.cs"
+  ]
+}

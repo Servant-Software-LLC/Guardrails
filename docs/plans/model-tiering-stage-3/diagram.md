@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=b0b129a6eca258d3d95ae082e3933f92894613562ef00bba9e028ea280308f43 -->
+<!-- guardrails:graph v1 source-sha256=d1e3c62d93d715cfe5ae661f437b4563f3bd0010b44574da0442709dc84eeb43 -->
 
 ```mermaid
 flowchart TD
@@ -48,14 +48,38 @@ flowchart TD
   end
   style wave_1_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_2_preflights["Wave 2 Entry Gate"]
+    wave_2_preflights_0["01-stage2-anchors-materialized"]:::preflight
   end
   style wave_2_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_2["Wave 2 — capture-and-persist"]
-    wave_2_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_2_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_02_capture_and_persist_01_author_tests_observed_model_capture["01-author-tests-observed-model-capture"]
+      task_wave_02_capture_and_persist_01_author_tests_observed_model_capture_gr_0["01-tests-build"]:::guardrail
+      task_wave_02_capture_and_persist_01_author_tests_observed_model_capture_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_02_capture_and_persist_01_author_tests_observed_model_capture fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_02_capture_and_persist_02_implement_observed_model_capture["02-implement-observed-model-capture"]
+      task_wave_02_capture_and_persist_02_implement_observed_model_capture_gr_0["01-capture-tests-pass"]:::guardrail
+    end
+    style task_wave_02_capture_and_persist_02_implement_observed_model_capture fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist["03-author-tests-provenance-model-persist"]
+      task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist_gr_0["01-tests-build"]:::guardrail
+      task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_02_capture_and_persist_04_implement_provenance_model_persist["04-implement-provenance-model-persist"]
+      task_wave_02_capture_and_persist_04_implement_provenance_model_persist_gr_0["01-provenance-tests-pass"]:::guardrail
+    end
+    style task_wave_02_capture_and_persist_04_implement_provenance_model_persist fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge["05-update-ssot-and-domain-knowledge"]
+      task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge_gr_0["01-contract-delta-present"]:::guardrail
+    end
+    style task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_2 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_2_guardrails["Wave 2 Exit Gate"]
+    wave_2_guardrails_0["01-solution-builds"]:::guardrail
+    wave_2_guardrails_1["02-suites-pass"]:::guardrail
+    wave_2_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_3_preflights["Wave 3 Entry Gate"]
@@ -103,8 +127,13 @@ flowchart TD
   task_wave_01_config_net_04_author_tests_pin_and_tier_coexist --> task_wave_01_config_net_05_implement_pin_and_tier_coexist
   task_wave_01_config_net_05_implement_pin_and_tier_coexist --> task_wave_01_config_net_06_update_ssot_and_domain_knowledge
   task_wave_01_config_net_06_update_ssot_and_domain_knowledge --> wave_1_guardrails
-  wave_2_preflights --> wave_2_stub
-  wave_2_stub --> wave_2_guardrails
+  wave_2_preflights --> task_wave_02_capture_and_persist_01_author_tests_observed_model_capture
+  task_wave_02_capture_and_persist_01_author_tests_observed_model_capture --> task_wave_02_capture_and_persist_02_implement_observed_model_capture
+  task_wave_02_capture_and_persist_01_author_tests_observed_model_capture --> task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist
+  task_wave_02_capture_and_persist_02_implement_observed_model_capture --> task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge
+  task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist --> task_wave_02_capture_and_persist_04_implement_provenance_model_persist
+  task_wave_02_capture_and_persist_04_implement_provenance_model_persist --> task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge
+  task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge --> wave_2_guardrails
   wave_3_preflights --> wave_3_stub
   wave_3_stub --> wave_3_guardrails
   wave_4_preflights --> wave_4_stub

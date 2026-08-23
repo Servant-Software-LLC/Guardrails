@@ -1,0 +1,12 @@
+{
+  "description": "Carry the observed model on ActionRun and fold it onto the attempt provenance, so both record paths write best-known-actual",
+  "dependsOn": ["03-author-tests-provenance-model-persist"],
+  "stableId": "s3w2a4",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "maxTurns": 120
+  }
+}
