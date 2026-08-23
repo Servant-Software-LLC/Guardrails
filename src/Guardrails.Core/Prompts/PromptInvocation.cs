@@ -87,6 +87,19 @@ public sealed record PromptResult
     public PromptUsage? Usage { get; init; }
 
     /// <summary>
+    /// The model the runner OBSERVED itself running on (#349) — mined from the runner's own output
+    /// stream, never from the model the harness requested. Null when the runner echoed none.
+    /// <para>Runner-agnostic, so no caller reads a Claude-shaped field: the CLI quarantine
+    /// (<see cref="ClaudePromptRunner"/>, SSOT §9) restates <see cref="ClaudeResult.Model"/> here, where
+    /// the quarantine ends — exactly as <see cref="Usage"/> restates <c>ClaudeUsage</c>.</para>
+    /// <para>The OBSERVED model is a different fact from the REQUESTED one recorded as
+    /// <c>AttemptProvenance.Model</c> (the resolved route, or the <c>"(cli default)"</c> sentinel when
+    /// nothing named a model), and it is the stronger one: the harness never forces <c>--model</c> to
+    /// obtain it, because doing so would pin the zero-setup user who deliberately passes nothing.</para>
+    /// </summary>
+    public string? ObservedModel { get; init; }
+
+    /// <summary>
     /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
     /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
     /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever

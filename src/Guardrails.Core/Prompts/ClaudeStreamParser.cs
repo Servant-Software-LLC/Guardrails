@@ -36,6 +36,24 @@ public sealed record ClaudeResult
     /// record would CLAIM the attempt consumed nothing, and the per-tier spend line degrades on null.
     /// </summary>
     public ClaudeUsage? Usage { get; init; }
+
+    /// <summary>
+    /// The model the runner ECHOED for this stream (#349) — the model that actually ran, as distinct
+    /// from the one the harness asked for (that one is already recorded as
+    /// <c>AttemptProvenance.Model</c>). Read from the stream's opening
+    /// <c>{"type":"system","subtype":"init", … "model": …}</c> event, falling back to a terminal
+    /// <c>result</c> event's own <c>model</c> when the init event carried none.
+    /// <para>
+    /// The init event WINS over a differing <c>result</c> model: the two can only disagree when a
+    /// session switched models mid-run, and the opening echo is the model the session was created on.
+    /// </para>
+    /// <para>
+    /// Null when neither event named one — absent stays absent, never <c>""</c>, which would read as
+    /// "the runner reported a model and it was blank". Nothing is ever inferred from the requested
+    /// <c>--model</c>: this member is only ever what the stream said.
+    /// </para>
+    /// </summary>
+    public string? Model { get; init; }
 }
 
 /// <summary>
