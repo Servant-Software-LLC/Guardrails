@@ -50,6 +50,20 @@ public enum PromptFailureKind
     /// </summary>
     MaxTurns,
 
+    /// <summary>
+    /// The session produced NO OUTPUT for longer than its stall bound and was killed (issue #504).
+    /// Categorically different from <see cref="Timeout"/>, and the distinction is the whole point: a
+    /// timeout bounds how long a session may RUN, a stall bounds how long it may be SILENT. A wall clock
+    /// kills a session that is progressing steadily and lets a wedged one sit idle until the ceiling; a
+    /// stall bound does neither. Measured twice on `model-tiering-stage-3`: both waves were emitting
+    /// output continuously when the 30-minute clock killed them mid-sign-off.
+    ///
+    /// <para>The bound must clear the longest LEGITIMATE quiet tool call — a breakdown agent runs suites,
+    /// and one <c>dotnet test</c> measured 10m44s with the stream silent throughout — so it is minutes,
+    /// not seconds, and is deliberately NOT the 60s freshness threshold design 23 uses for DISPLAY.</para>
+    /// </summary>
+    Stalled,
+
     /// <summary>A genuine, non-special action failure (the agent reported <c>is_error</c> with no recognized signal).</summary>
     Error
 }

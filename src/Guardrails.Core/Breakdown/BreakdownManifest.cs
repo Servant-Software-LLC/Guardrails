@@ -178,11 +178,23 @@ public sealed record BreakdownManifest
         }
 
         // Under state/, only the top-level committed seed.json is authored; everything else
-        // (state.json, run.json, merge-conflicts.log, logs/…) is harness-owned runtime.
+        // (state.json, run.json, merge-conflicts.log) is harness-owned runtime.
         if (string.Equals(segments[0], "state", StringComparison.OrdinalIgnoreCase))
         {
             return segments.Length == 2 &&
                 string.Equals(segments[1], "seed.json", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // logs/ is harness-owned runtime too, and it is a SIBLING of state/ rather than a child — which
+        // is exactly how it went unexcluded while two comments here claimed otherwise (issue #507). The
+        // cost of the gap was not theoretical: BuildFromDirectory hashes whatever this accepts, so `lock`
+        // opened a live `claude-stream.jsonl` mid-breakdown and died on an unhandled IOException, and
+        // every run made `lock --check` report drift it could never clear (measured: 161 of 208 reported
+        // changes were log files). It stayed hidden because a baseline is normally written BEFORE the plan
+        // has ever run, when logs/ does not exist yet.
+        if (string.Equals(segments[0], "logs", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
         }
 
         return true;

@@ -76,11 +76,34 @@ two waves.
 |---|---|---|
 | **working** | the phase clock advances every second **and** the detail reads `stream ok` | **1 second** — the row exists from run start and flips to `authoring 0:01` within one tick |
 | **waiting** | the phase clock advances, the detail reads `stream idle 4m18s` — the process is alive, the agent is producing nothing (a provider stall, a rate limit inside the runner, a very long tool call) | **60 seconds** — the freshness threshold at which the word changes |
-| **dead** | the harness kills it. `BreakdownTimeout` guarantees **no silent state can exceed 30 minutes**; at 30:00 the phase row goes red and a halt prints | **30 minutes, hard bounded, always** |
+| **dead** | the harness kills it. `BreakdownStallBound` guarantees **no silent state can exceed 20 minutes**; on breach the phase row goes red and a `stalled` halt prints | **20 minutes of SILENCE, hard bounded, always** |
 
 The single most important property: **the harness cannot distinguish "waiting" from "dead" and this
 design does not pretend to.** It renders the two observable facts — the clock, and stream freshness — and
 lets the operator judge. The colour never claims a cause.
+
+> **REVISED 2026-08-23 (issue #504).** The paragraph above is right about *rendering* and was wrong about
+> *bounding*. This design already computes stream freshness — it is the second observable in the table —
+> and freshness is precisely the waiting-vs-dead discriminator, so the harness now ACTS on it:
+> `BreakdownStallBound` kills a session that has emitted nothing for 20 minutes, and that failure is its
+> own kind (`stalled`), distinct from `timeout`.
+>
+> The wall clock this section was written around, `BreakdownTimeout = 30 min`, has been demoted to a 4-hour
+> backstop. It was never an incident response — it entered as a guessed default beside a 120-turn cap, and
+> #385 later raised the turn budget ~7x and made it adaptive while leaving the clock alone, so a guess
+> became the binding constraint. **The row above already recorded "two measured runs stopped at exactly
+> 30:00" and read it as a property of the phase rather than as evidence against the ceiling.** It then
+> truncated two more consecutive `model-tiering-stage-3` waves at 30:01 — both had finished authoring and
+> were writing their completion report, and both were emitting output continuously when they died.
+>
+> A wall clock bounds DURATION; this section's stated guarantee is about SILENCE. Those are different
+> properties, and only the second one is what an operator actually needs — a clock kills a session that is
+> progressing and leaves a wedged one alone until the ceiling. Runaway stays bounded by
+> `BreakdownMaxTurnsCeiling` and `maxCostUsd`, which is why the clock was never the guard it looked like.
+>
+> The threshold is minutes, not seconds, and deliberately not the 60s freshness value this section uses for
+> the DISPLAY word: a healthy agent runs suites as tool calls and the stream is silent while a child process
+> runs (measured: one `dotnet test` quiet for 10m44s). Killing on that would destroy correct work.
 
 **Why the second signal is load-bearing and not decoration.** A clock alone proves the *harness* is alive.
 It proves nothing about the *work*. Stream freshness is the only thing on any surface that separates "the

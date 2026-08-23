@@ -1825,7 +1825,13 @@ public sealed class Scheduler
         // veto. A reader could not tell a suppression that fired from one that never ran.
         var header = new List<string>
         {
-            $"gate verdict : {(valid ? "PASS" : "REJECT")}  (blocking={blocking.Length}, excused={excused.Length}, authoredTasks={authoredTaskCount})",
+            // #512: report the COMPOSITE decision, not the validate half. `gateRejected` is
+            // `!valid || authoredTaskCount == 0`, so a session that authored NOTHING is rejected even
+            // though an empty prefix validates trivially — and printing "PASS" there was wrong in exactly
+            // the case a reader most needs this file (a breakdown that produced nothing, e.g. one killed
+            // by a provider 429 at turn 1). Every case #501 was written against had authoredTasks > 0, so
+            // the two verdicts agreed and the gap never showed.
+            $"gate verdict : {(valid && authoredTaskCount > 0 ? "PASS" : "REJECT")}  (blocking={blocking.Length}, excused={excused.Length}, authoredTasks={authoredTaskCount}{(authoredTaskCount == 0 ? " — nothing was authored" : string.Empty)})",
             $"prefix state : {(wavePrefixIsIncomplete ? "KNOWINGLY INCOMPLETE (manifest still owes folders)" : "not flagged incomplete")}"
         };
         if (blocking.Length > 0)
@@ -2123,28 +2129,37 @@ public sealed class Scheduler
         sb.Append("The valid prefix was PRESERVED — nothing was quarantined, and nothing that pre-dated the "
                   + "attempt was touched.\n");
 
-        // Design 20 §4.2's safety floor, made OPERATOR-facing (design 23 §6.2). §4.2 forbids the HARNESS
-        // from reporting a cut-off session as complete — but a prefix of N well-formed task folders reads as
-        // complete to a HUMAN unless the halt says otherwise, so without this line the design would ship
-        // §4.2's exact hazard one layer up.
-        sb.Append("This wave is NOT complete and is NOT ready for review. Do not run /guardrails-review on "
-                  + "it yet.\n");
-
+        // #508: the two cases below are DIFFERENT halts and must not share their wording. Everything that
+        // is only true of a genuine shortfall — "not ready for review", the GR2063 promise — lives inside
+        // the `missing` branch. Emitting them for a declared==authored prefix produced a halt that
+        // contradicted itself twice ("NOT ready for review" beside "nothing is owed, review it") and
+        // promised a GR2063 that CANNOT fire once the manifest is satisfied. Measured on two consecutive
+        // waves, and the operator's read of the first one was "it's stuck".
         if (missing.Count > 0)
         {
+            // Design 20 §4.2's safety floor, made OPERATOR-facing (design 23 §6.2): a prefix of N
+            // well-formed folders reads as complete to a HUMAN unless the halt says otherwise.
+            sb.Append("This wave is NOT complete and is NOT ready for review. Do not run /guardrails-review "
+                      + "on it yet.\n");
             sb.Append($"Still owed ({missing.Count}): {string.Join(", ", missing)}\n");
             sb.Append($"Next: re-run 'guardrails run'. The breakdown RESUMES '{wave.Dir}' from the preserved "
                       + "prefix and authors only the folders still owed; the composed brief is not re-paid "
                       + "for work already on disk.\n");
+            sb.Append("'guardrails validate' reports GR2063 for this wave until the manifest is satisfied or "
+                      + "removed; that warning is the record of the shortfall, not a defect in the prefix.");
         }
         else
         {
-            sb.Append($"Next: nothing is owed. Review '{wave.Dir}/tasks/', then delete "
-                      + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' to accept the wave as authored.\n");
+            sb.Append("NOTHING IS OWED: every declared task folder is present and the wave validates. What "
+                      + "is missing is only the session's own sign-off — it was cut off before reporting "
+                      + "completion, and the harness will not infer completion it was not told about.\n");
+            sb.Append($"Next: read '{wave.Dir}/tasks/' yourself. If it looks right, delete "
+                      + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' to accept the wave as authored, then "
+                      + "run /guardrails-review on it as usual.\n");
+            sb.Append("GR2063 will NOT fire for this wave — the manifest is satisfied, so there is no "
+                      + "shortfall to report. Do not go looking for that warning as confirmation.");
         }
 
-        sb.Append("'guardrails validate' reports GR2063 for this wave until the manifest is satisfied or "
-                  + "removed; that warning is the record of the shortfall, not a defect in the prefix.");
         return sb.ToString();
     }
 
@@ -2215,13 +2230,27 @@ public sealed class Scheduler
             WaveDirectory = wave.Directory
         };
 
+    /// <summary>
+    /// The two headlines a preserved-prefix halt can carry (#508). <b>"INCOMPLETE — 5 of 5" is a
+    /// contradiction</b>, and it shipped on two consecutive barriers: when the declared count IS met, the
+    /// wave is not what fell short — the SESSION is, having been cut off before it reported completion.
+    /// The operator reading the first one concluded the run was stuck.
+    /// <para>Internal so the halt builder and its test read the same function; there is no second copy to
+    /// drift.</para>
+    /// </summary>
+    internal static string ComposeBreakdownIncompleteHeadline(string waveDir, int declared, int complete) =>
+        complete >= declared
+            ? $"Wave '{waveDir}' breakdown UNCONFIRMED — all {declared} declared task(s) were authored and "
+              + "the wave validates, but the session was cut off before reporting completion (SSOT §14.11)."
+            : $"Wave '{waveDir}' breakdown INCOMPLETE — {complete} of {declared} declared task(s) authored; "
+              + "the valid prefix is preserved for resume (SSOT §14.11).";
+
     private static WaveHalt BuildBreakdownIncompleteHalt(WaveNode wave, int declared, int complete, string detail) =>
         new()
         {
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.BreakdownIncomplete,
-            Headline = $"Wave '{wave.Dir}' breakdown INCOMPLETE — {complete} of {declared} declared task(s) "
-                       + "authored; the valid prefix is preserved for resume (SSOT §14.11).",
+            Headline = ComposeBreakdownIncompleteHeadline(wave.Dir, declared, complete),
             Detail = detail,
             WaveDirectory = wave.Directory
         };

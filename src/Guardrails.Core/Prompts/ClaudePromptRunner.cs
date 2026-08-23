@@ -99,10 +99,19 @@ public sealed class ClaudePromptRunner : IPromptRunner
         // returns (its state is final by then), so no cross-thread read of this flag is load-bearing.
         bool denialAbortFired = false;
 
+        // #504 stall watchdog. Bounds SILENCE, not duration: the caller's Timeout stays a backstop while
+        // this kills a session that has stopped producing. Ticks via Volatile so the reader thread's write
+        // is visible to the watchdog without a lock; `stallFired` is the same spawn-guard shape as
+        // denialAbortFired above, and is likewise re-read AFTER the process returns rather than trusted
+        // cross-thread mid-flight.
+        long lastLineTicks = DateTime.UtcNow.Ticks;
+        bool stallFired = false;
+
         try
         {
             void Tee(string line)
             {
+                Volatile.Write(ref lastLineTicks, DateTime.UtcNow.Ticks);
                 parser.Feed(line);
                 permissionScanner.Feed(line);
                 streamWriter?.WriteLine(line);
@@ -129,6 +138,55 @@ public sealed class ClaudePromptRunner : IPromptRunner
                     catch (ObjectDisposedException)
                     {
                         // The run already finished and the source was disposed — nothing left to abort.
+                    }
+                });
+            }
+
+            // The watchdog itself: poll staleness on a cadence well under the bound, and abort through the
+            // SAME linked source the #452 fail-fast uses, so a stall lands as an ordinary ProcessResult
+            // (ProcessRunner treats cancellation as "kill the tree and return") rather than a throw.
+            using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(abortCts.Token);
+            Task? stallWatchdog = null;
+            if (invocation.StallBound is { } stallBound && stallBound > TimeSpan.Zero)
+            {
+                TimeSpan poll = TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, stallBound.Ticks / 20));
+                stallWatchdog = Task.Run(async () =>
+                {
+                    while (!stallCts.Token.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            await Task.Delay(poll, stallCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;   // the run finished; nothing to police
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // The LAUNCH-FAILURE path returns before the shutdown below, so the source can
+                            // be disposed out from under a watchdog still sitting in Delay. Swallow it:
+                            // an unobserved exception on a pool thread is a poor way to report that a
+                            // process never started, and the real fault is already on its way to the caller.
+                            return;
+                        }
+
+                        var silent = TimeSpan.FromTicks(DateTime.UtcNow.Ticks - Volatile.Read(ref lastLineTicks));
+                        if (silent < stallBound)
+                        {
+                            continue;
+                        }
+
+                        stallFired = true;
+                        try
+                        {
+                            abortCts.Cancel();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // The run already finished and the source was disposed.
+                        }
+                        return;
                     }
                 });
             }
@@ -164,11 +222,45 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 return LaunchFailureResult(launchFailure);
             }
 
+            // The run is over, so retire the watchdog before anything below can be blamed on it.
+            stallCts.Cancel();
+            if (stallWatchdog is not null)
+            {
+                try { await stallWatchdog.ConfigureAwait(false); }
+                catch (OperationCanceledException) { /* expected on the normal path */ }
+            }
+
             // Both files are fully written line-by-line above; Complete() finalizes the transcript's
             // trailing newline so it matches a batch render exactly.
             transcript?.Complete();
 
             ClaudeResult result = parser.Build();
+
+            // #504: a stall abort, re-derived AFTER the process returned (the flag's write is final by
+            // now), and reported as its own kind. `!result.HasResult` keeps it from ever DISCARDING a
+            // verdict — if the child raced the kill and produced a terminal result anyway, that result
+            // is the answer, exactly as the #452 fail-fast below treats its own abort.
+            if (stallFired && !result.HasResult)
+            {
+                var silentFor = TimeSpan.FromTicks(DateTime.UtcNow.Ticks - Volatile.Read(ref lastLineTicks));
+                return new PromptResult
+                {
+                    Completed = false,
+                    IsError = true,
+                    ResultText = result.ResultText,
+                    CostUsd = result.CostUsd,
+                    NumTurns = result.NumTurns,
+                    Usage = result.Usage is { } stalledUsage
+                        ? new PromptUsage { InputTokens = stalledUsage.InputTokens, OutputTokens = stalledUsage.OutputTokens }
+                        : null,
+                    FailureKind = PromptFailureKind.Stalled,
+                    Summary =
+                        $"STALLED — no stream output for {silentFor.TotalMinutes:F1}m " +
+                        $"(bound {(invocation.StallBound ?? TimeSpan.Zero).TotalMinutes:F0}m); the session was killed. " +
+                        "The process was alive and producing nothing, which is not the same as slow: a session " +
+                        "that keeps emitting is never stopped by this bound."
+                };
+            }
 
             // #452 fail-fast outcome. Re-derived from the scanner (final now the reader has drained)
             // rather than from the sink's flag, and reported as a DISTINCT summary: "no verdict" is

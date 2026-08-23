@@ -29,6 +29,18 @@ public sealed record PromptInvocation
     /// <summary>The per-attempt timeout for this prompt.</summary>
     public required TimeSpan Timeout { get; init; }
 
+    /// <summary>
+    /// Kill the session when it has produced NO stream output for this long (issue #504). Null disables
+    /// stall detection, which is the default for ordinary task attempts — they already have a meaningful
+    /// wall clock, and their retry semantics differ.
+    ///
+    /// <para>This bounds SILENCE where <see cref="Timeout"/> bounds DURATION, and the two are not
+    /// interchangeable. A caller that sets a stall bound should set <see cref="Timeout"/> to a generous
+    /// BACKSTOP rather than a working ceiling: the point is to let a session that keeps progressing run
+    /// as long as it needs, while still guaranteeing no silent state outlives the bound.</para>
+    /// </summary>
+    public TimeSpan? StallBound { get; init; }
+
     /// <summary>Absolute path the raw runner output stream is teed to (<c>claude-stream.jsonl</c>).</summary>
     public required string StreamLogPath { get; init; }
 

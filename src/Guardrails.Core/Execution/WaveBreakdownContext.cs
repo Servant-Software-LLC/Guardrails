@@ -19,6 +19,14 @@ public static class BreakdownFailureTokens
     /// <summary>The session exhausted its <c>--max-turns</c> budget.</summary>
     public const string MaxTurns = "max-turns";
 
+    /// <summary>
+    /// The session produced NO OUTPUT for longer than its stall bound and was killed (issue #504).
+    /// Distinct from <see cref="Timeout"/> on purpose: "it was silent" and "it ran long" are different
+    /// diagnoses with different fixes, and conflating them is what made a healthy 30-minute session read
+    /// as a runaway.
+    /// </summary>
+    public const string Stalled = "stalled";
+
     /// <summary>The session hit the runner's output-token cap.</summary>
     public const string OutputCap = "output-cap";
 

@@ -3891,9 +3891,9 @@ Both are raised from **inside** the Spectre live region, so an implementation mu
 `authoredTaskCount` is the count the deterministic `guardrails validate` gate found on disk — never the
 session's own claim (invariant 1) — because `Finished` is raised *after* that gate. `failureKind` is `null`
 only when the wave was authored AND accepted; otherwise it is the runner's own stop token (`timeout` /
-`max-turns` / `output-cap` / `transient` / `error`) when the SESSION was cut off, or the harness's own gate
-token (`invalid` when the deterministic gate rejected the wave, `incomplete` when a valid prefix was
-preserved short of the §14.11 manifest). `authoredWave` is non-null **only** where the run will PROCEED with
+`stalled` / `max-turns` / `output-cap` / `transient` / `error`) when the SESSION was cut off, or the
+harness's own gate token (`invalid` when the deterministic gate rejected the wave, `incomplete` when a valid
+prefix was preserved short of the §14.11 manifest). `authoredWave` is non-null **only** where the run will PROCEED with
 the wave (review-gate Option P) — the seam #404 needs — and null on every halting path.
 
 `WaveBreakdownContext` is a **public** record in `Guardrails.Core.Execution` (`Guardrails.Cli` has no
@@ -3901,6 +3901,18 @@ the wave (review-gate Option P) — the seam #404 needs — and null on every ha
 `waveDir`, `index`/`total` (1-based, for "Wave 2/2"), `breakdownLogDir` (the §8 evidence pointer),
 `streamLogPath` (the liveness stat target), `tasksDirectory` (the folder-count target), `composedPromptBytes`,
 `ceiling` (`WaveBreakdownInvoker.BreakdownTimeout`), and `intentManifestPath` (§14.11, null when absent).
+
+**The breakdown is bounded by SILENCE, not by duration (issue #504).** `BreakdownStallBound` (20 min) is
+the bound that governs: the session is killed when it has produced **no stream output** for that long, and
+that failure is its own kind (`stalled`), never `timeout`. `BreakdownTimeout` remains only as a far-off
+BACKSTOP (4 h) so a process that keeps dribbling output cannot run forever; runaway is already bounded by
+`BreakdownMaxTurnsCeiling` and `maxCostUsd`, which is why a wall clock was never the guard it appeared to
+be. The two are not interchangeable: a wall clock kills a session that is progressing and leaves a wedged
+one alone until the ceiling, which is what a 30-minute ceiling did to two consecutive `model-tiering-stage-3`
+waves — both had finished authoring, both were emitting output continuously, both died mid-sign-off. The
+stall bound is deliberately **minutes, not seconds**, because a healthy breakdown agent runs suites as tool
+calls and the stream is silent while a child process runs (measured: one `dotnet test` was quiet for
+10m44s); design 23 §4's 60-second freshness threshold is for the DISPLAY word, never for a kill.
 
 **No surface may invent progress.** The eventual task count is not knowable at invocation time (§14.11 /
 design 20 §3.2), so **no progress bar, no percentage, and no inferred denominator** may be rendered for this

@@ -55,11 +55,36 @@ public sealed class WaveBreakdownInvoker
     private const int BreakdownMaxTurnsCeiling = 1000;
 
     /// <summary>
-    /// A generous timeout — a whole-wave breakdown + self-validate is a long session. PUBLIC because the
-    /// ceiling is now OPERATOR-FACING (design 23 §4): it is the only honest denominator the phase has, and
-    /// every surface renders elapsed against it. It denominates the BUDGET, never the work.
+    /// A BACKSTOP, not a working ceiling (issue #504). The real bound on this phase is
+    /// <see cref="BreakdownStallBound"/>; this exists only so a wedged process that somehow keeps
+    /// dribbling output can never run forever. PUBLIC because the ceiling is OPERATOR-FACING (design 23
+    /// §4) and every surface renders against it.
+    ///
+    /// <para><b>This was 30 minutes and it was killing healthy work.</b> It entered in the original JIT
+    /// commit as a guessed default beside a 120-turn cap; #385 later raised the turn budget ~7x and made
+    /// it adaptive while leaving this untouched, so the guess became the binding constraint. It then
+    /// truncated two consecutive `model-tiering-stage-3` waves at exactly 30:01 — both of which had
+    /// finished authoring and were writing their completion report, and both of which were emitting
+    /// output continuously when they were killed. Runaway is already bounded by
+    /// <see cref="BreakdownMaxTurnsCeiling"/> and <c>maxCostUsd</c>, so a wall clock was never the guard
+    /// it looked like.</para>
     /// </summary>
-    public static readonly TimeSpan BreakdownTimeout = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan BreakdownTimeout = TimeSpan.FromHours(4);
+
+    /// <summary>
+    /// The bound that actually governs this phase (issue #504): kill the session when it has produced NO
+    /// stream output for this long. Bounding SILENCE rather than DURATION is what design 23 §4 always
+    /// wanted — "no silent state can exceed N" — and a wall clock cannot deliver it, because it kills a
+    /// session that is progressing and leaves a wedged one alone until the ceiling.
+    ///
+    /// <para><b>Why twenty minutes and not one.</b> A healthy breakdown agent is legitimately silent for a
+    /// long time: it runs <c>dotnet build</c>, <c>dotnet test</c> and <c>guardrails validate</c> as tool
+    /// calls, and the stream emits nothing while a child process runs. One Integration-suite call measured
+    /// <b>10m44s</b> of continuous silence on a real plan. The bound must clear the longest legitimate
+    /// quiet call with room to spare, so it is deliberately NOT design 23's 60-second freshness threshold
+    /// — that number is for the DISPLAY word ("stream idle 4m18s"), never for a kill.</para>
+    /// </summary>
+    public static readonly TimeSpan BreakdownStallBound = TimeSpan.FromMinutes(20);
 
     /// <summary>
     /// A markdown "work-item" line in a brief: a list item (<c>- </c>/<c>* </c>), a numbered step
@@ -170,6 +195,7 @@ public sealed class WaveBreakdownInvoker
                     : ["--add-dir", additionalReadDirectory]
             },
             Timeout = BreakdownTimeout,
+            StallBound = BreakdownStallBound,
             StreamLogPath = p.StreamLogPath,
             TranscriptLogPath = p.TranscriptLogPath
         };
@@ -459,13 +485,18 @@ public sealed record WaveBreakdownOutcome
         PromptFailureKind.MaxTurns => BreakdownFailureTokens.MaxTurns,
         PromptFailureKind.OutputCap => BreakdownFailureTokens.OutputCap,
         PromptFailureKind.Transient => BreakdownFailureTokens.Transient,
+        PromptFailureKind.Stalled => BreakdownFailureTokens.Stalled,
         _ => BreakdownFailureTokens.Error
     };
 
     /// <summary>The bound the session hit, in the operator's words — the halt-detail sentence for milestone 1.</summary>
     public string CutOffCause => FailureKind switch
     {
-        PromptFailureKind.Timeout => "was CUT OFF by the breakdown timeout",
+        PromptFailureKind.Timeout =>
+            $"was CUT OFF by the breakdown BACKSTOP ({WaveBreakdownInvoker.BreakdownTimeout.TotalHours:F0}h) — "
+            + $"it never fell silent long enough to trip the {WaveBreakdownInvoker.BreakdownStallBound.TotalMinutes:F0}m "
+            + "stall bound, so it was producing output the whole time and still did not finish (#504)",
+        PromptFailureKind.Stalled => $"STALLED — it produced no output for {WaveBreakdownInvoker.BreakdownStallBound.TotalMinutes:F0} minutes and was killed. This bounds SILENCE, not duration: a session that keeps emitting is never stopped by it, however long it takes",
         PromptFailureKind.MaxTurns => MaxTurns is { } cap
             ? $"ran out of TURNS (cap {cap})"
             : "ran out of TURNS",

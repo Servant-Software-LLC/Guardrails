@@ -177,7 +177,10 @@ public sealed class SchedulerBreakdownDurabilityTests
             .RunAsync(plan, Ct);
 
         Assert.Equal(WaveHaltKind.BreakdownFailed, report.WaveHalt!.Kind);
-        Assert.Contains("CUT OFF by the breakdown timeout", report.WaveHalt.Detail);
+        // #504 renamed this bound: the 30-minute ceiling became a 4h BACKSTOP behind the stall bound, so
+        // calling it "the breakdown timeout" would now misdescribe which budget stopped the session. The
+        // property under test is unchanged — the halt must name the bound, not shrug.
+        Assert.Contains("CUT OFF by the breakdown BACKSTOP", report.WaveHalt.Detail);
         Assert.Contains("used 35 of", report.WaveHalt.Detail); // the turn evidence §3.1 had to reconstruct
         Assert.DoesNotContain("did not complete cleanly", report.WaveHalt.Detail);
     }
@@ -695,6 +698,40 @@ public sealed class SchedulerBreakdownDurabilityTests
         Assert.Contains("prefix state :", text, StringComparison.Ordinal);
         Assert.Contains("intent manifest : usable", text, StringComparison.Ordinal);
         Assert.Contains("02-package", text, StringComparison.Ordinal);   // named among what is still owed
+
+        // …and the verdict must be the COMPOSITE one (#512): this prefix is non-empty and valid, so PASS.
+        Assert.Contains("gate verdict : PASS", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #512 — a session that authored NOTHING is REJECTED, and the record must say so. The gate's real
+    /// decision is <c>!valid || authoredTaskCount == 0</c>, but the tee printed only the <c>valid</c> half,
+    /// so an empty prefix — which validates trivially — was recorded as <b>PASS</b>.
+    /// <para>This is the shape a provider outage produces, and it is exactly what shipped: a wave-3
+    /// breakdown killed by a 429 at turn 1 wrote "gate verdict : PASS (blocking=0, excused=0,
+    /// authoredTasks=0)". Every case #501 was written against had authoredTasks &gt; 0, so the two verdicts
+    /// agreed and the gap never showed.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnEmptyBreakdownIsRecordedAsREJECT_NotPassOnAVacuouslyValidPrefix()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlan();
+        using WavePlanBuilder _ = b;
+
+        // Authors nothing at all and dies on a transient — the 429-at-turn-1 shape.
+        var runner = new StubBreakdownRunner((_, _) => { }, PromptFailureKind.Transient);
+
+        await NewScheduler(plan, RunJournal.LoadOrCreate(plan), new RecordingWorktreeProvider(), new WaveBreakdownInvoker(runner))
+            .RunAsync(plan, Ct);
+
+        string decision = Assert.Single(
+            Directory.GetFiles(Path.Combine(b.PlanDir, "logs"), "gate-decision.txt", SearchOption.AllDirectories));
+        string text = File.ReadAllText(decision);
+
+        Assert.Contains("gate verdict : REJECT", text, StringComparison.Ordinal);
+        Assert.Contains("authoredTasks=0", text, StringComparison.Ordinal);
+        Assert.Contains("nothing was authored", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("gate verdict : PASS", text, StringComparison.Ordinal);
     }
 
     /// <summary>
