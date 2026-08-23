@@ -82,8 +82,9 @@ public sealed record ClaudeUsage
 /// Parses Claude Code <c>--output-format stream-json</c> output line by line, TOLERANTLY:
 /// each line is an independent JSON object; unparseable lines are skipped (SSOT §9). The
 /// terminal message is <c>{"type":"result", "is_error":bool, "result":"…",
-/// "total_cost_usd":num, "num_turns":num}</c> — the last such message wins. Lines that are
-/// not the result message (assistant/user/system events) are ignored.
+/// "total_cost_usd":num, "num_turns":num}</c> — the last such message wins. The opening
+/// <c>{"type":"system","subtype":"init", … "model": …}</c> event is read for its <c>model</c>
+/// echo alone (#349). Every other line (assistant/user events, other system events) is ignored.
 /// </summary>
 public sealed class ClaudeStreamParser
 {
@@ -95,7 +96,18 @@ public sealed class ClaudeStreamParser
     private int? _numTurns;
     private ClaudeUsage? _usage;
 
-    /// <summary>Feed one raw output line (newline excluded). Non-JSON or non-result lines are ignored.</summary>
+    // The two model echoes are held APART rather than folded into one field as they arrive, because
+    // the answer is not "whichever came last": the init echo WINS over a differing result-line model
+    // (see ClaudeResult.Model). Merging on the way in would make the precedence depend on stream
+    // order, which is exactly the thing that differs when a session switches models mid-run.
+    private string? _initModel;
+    private string? _resultModel;
+
+    /// <summary>
+    /// Feed one raw output line (newline excluded). Non-JSON lines are ignored, as is every event
+    /// other than the terminal <c>result</c> and the opening <c>system</c>/<c>init</c> (whose only
+    /// contribution is its <c>model</c> echo, #349).
+    /// </summary>
     public void Feed(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
@@ -122,8 +134,27 @@ public sealed class ClaudeStreamParser
             }
 
             if (!root.TryGetProperty("type", out JsonElement typeElement) ||
-                typeElement.ValueKind != JsonValueKind.String ||
-                typeElement.GetString() != "result")
+                typeElement.ValueKind != JsonValueKind.String)
+            {
+                return;
+            }
+
+            string? type = typeElement.GetString();
+
+            // The stream's opening echo (#349): {"type":"system","subtype":"init", … "model": …}. Its
+            // model is the ONLY thing read off a non-result line — everything else about the event is
+            // still ignored, and any other system event still falls through untouched.
+            if (type == "system")
+            {
+                if (TryGetNonEmptyString(root, "subtype") == "init")
+                {
+                    _initModel = TryGetNonEmptyString(root, "model") ?? _initModel;
+                }
+
+                return;
+            }
+
+            if (type != "result")
             {
                 return;
             }
@@ -141,6 +172,7 @@ public sealed class ClaudeStreamParser
             _costUsd = TryGetDecimal(root, "total_cost_usd") ?? _costUsd;
             _numTurns = TryGetInt(root, "num_turns") ?? _numTurns;
             _usage = TryGetUsage(root) ?? _usage;
+            _resultModel = TryGetNonEmptyString(root, "model") ?? _resultModel;
         }
     }
 
@@ -153,7 +185,12 @@ public sealed class ClaudeStreamParser
         Subtype = _subtype,
         CostUsd = _costUsd,
         NumTurns = _numTurns,
-        Usage = _usage
+        Usage = _usage,
+
+        // Init WINS over a differing result-line model (#349) — the two can only disagree when a
+        // session switched models mid-run, and the opening echo is the model the session was created
+        // on. Both null stays null: absent, never "".
+        Model = _initModel ?? _resultModel
     };
 
     /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>
@@ -172,6 +209,18 @@ public sealed class ClaudeStreamParser
         root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.Number &&
         element.TryGetDecimal(out decimal value)
             ? value
+            : null;
+
+    /// <summary>
+    /// A string field, read as tolerantly as every number above: absent, not a string, or blank all
+    /// yield <b>null</b>. Blank collapses to null deliberately — <c>""</c> would read as "the runner
+    /// reported this and it was empty", a claim about the attempt, where null is the truthful "the
+    /// runner reported none". Same absent-not-zero rule <see cref="TryGetUsage"/> follows.
+    /// </summary>
+    private static string? TryGetNonEmptyString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(element.GetString())
+            ? element.GetString()
             : null;
 
     private static int? TryGetInt(JsonElement root, string name) =>
