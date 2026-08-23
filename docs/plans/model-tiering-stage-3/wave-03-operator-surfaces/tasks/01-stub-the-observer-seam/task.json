@@ -1,0 +1,13 @@
+{
+  "description": "Add the three minimal stub declarations this wave's tests compile against - the IRunObserver member, the shared summary formatter, and the harness's optional observer",
+  "dependsOn": [],
+  "stableId": "s3w3t1",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs"
+  ],
+  "action": {
+    "maxTurns": 60
+  }
+}

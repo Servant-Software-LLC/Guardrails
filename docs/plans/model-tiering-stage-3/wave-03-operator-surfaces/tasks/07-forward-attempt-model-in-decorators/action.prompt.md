@@ -73,5 +73,5 @@ write `{"needsHuman": {"question": "<why>", "kind": "blocked-work"}}` rather tha
 ### Done when
 
 `dotnet test tests/Guardrails.Integration.Tests --filter "FullyQualifiedName~AttemptModelForwardingTests"`
-passes — three tests. `AttemptModelDisclosureTests` and `AttemptModelRenderingTests` belong to tasks 02
-and 03, run in parallel with you, and your guardrail does not select them.
+passes — three tests. `AttemptModelDisclosureTests` and `AttemptModelRenderingTests` belong to 02-author-tests-disclosure
+and 03-author-tests-rendering, run in parallel with you, and your guardrail does not select them.

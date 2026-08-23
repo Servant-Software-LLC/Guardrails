@@ -116,4 +116,21 @@ Remove-Item $tree -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Output ''
 if ($fail -eq 0) { Write-Output "RESULT: both halves behave. $($anchors.Count) anchors over $($files.Count) files, each individually live."; exit 0 }
+
+# The wrong-tree case is the LIKELIEST reason to be reading this line, so say so here rather than only in
+# the -Repo comment forty lines up. Measured at review: run from a maintainer checkout the probe reports
+# 3 dead clauses and DEFECTIVE, and the gate is entirely correct — every one of those anchors is a WAVE 2
+# deliverable that exists only on the plan branch. A verdict that cries wolf teaches the next reader to
+# skim it, which costs more than the probe is worth.
+$absent = @($anchors | Where-Object {
+    $seedFile = Join-Path $repo $_[0]
+    (Test-Path $seedFile) -and ((Get-Content -Raw -Path $seedFile) -notmatch $_[1])
+})
+if ($absent.Count -gt 0) {
+    Write-Output "NOTE: $($absent.Count) anchor(s) are absent from the SEED TREE itself, so this is very likely the"
+    Write-Output "      wrong tree rather than a defective gate. This is a wave-3 ENTRY gate: every anchor is a"
+    Write-Output "      WAVE 2 deliverable and exists only on the merged wave-2 HEAD. Re-run against that tree:"
+    Write-Output "        -Repo <worktreeRoot>/<runId>/_integration      (or any checkout of the plan branch)"
+    Write-Output "      Seed tree used: $repo"
+}
 Write-Output "RESULT: $fail half/halves DEFECTIVE."; exit 1

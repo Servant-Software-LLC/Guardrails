@@ -1,11 +1,11 @@
 {
   "description": "Record the attempt-route.log mismatch disclosure and the new IRunObserver member in the SSOT and the domain-knowledge skill",
   "dependsOn": [
-    "02-implement-route-log-and-observer-raise",
-    "03-render-attempt-model-in-live-and-console",
-    "04-forward-attempt-model-in-decorators"
+    "05-implement-route-log-and-observer-raise",
+    "06-render-attempt-model-in-live-and-console",
+    "07-forward-attempt-model-in-decorators"
   ],
-  "stableId": "s3w3t5",
+  "stableId": "s3w3t8",
   "writeScope": [
     "docs/plans/02-schemas-and-contracts.md",
     ".claude/skills/guardrails-domain-knowledge/SKILL.md"

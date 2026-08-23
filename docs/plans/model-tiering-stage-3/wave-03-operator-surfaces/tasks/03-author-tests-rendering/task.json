@@ -1,0 +1,11 @@
+{
+  "description": "Author the failing AttemptModelRenderingTests - this wave's TDD red for one operator surface",
+  "dependsOn": ["01-stub-the-observer-seam"],
+  "stableId": "s3w3t3",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelRenderingTests.cs"
+  ],
+  "action": {
+    "maxTurns": 80
+  }
+}

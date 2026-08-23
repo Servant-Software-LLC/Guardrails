@@ -74,7 +74,7 @@ the live renderer builds its markup from the shared summary; that check exists b
 is not observable from a headless test, so nothing else can see it.
 
 **Do NOT touch the two on-the-fly decorators.** `OnTheFlyLogSiteObserver` and `OnTheFlyDiagramObserver`
-are task 04's deliverable, and they are outside your writeScope.
+are `07-forward-attempt-model-in-decorators`' deliverable, and they are outside your writeScope.
 
 **Scope boundary (harness-enforced):** Write only to `src/Guardrails.Cli/Ui/LiveRunObserver.cs` and
 `src/Guardrails.Cli/ConsoleRunObserver.cs`. The harness runs a `git diff` check after this task and
@@ -87,5 +87,5 @@ state-out path rather than changing it.
 ### Done when
 
 `dotnet test tests/Guardrails.Integration.Tests --filter "FullyQualifiedName~AttemptModelRenderingTests"`
-passes — four tests. `AttemptModelDisclosureTests` and `AttemptModelForwardingTests` belong to tasks 02
-and 04, run in parallel with you, and your guardrail does not select them.
+passes — four tests. `AttemptModelDisclosureTests` and `AttemptModelForwardingTests` belong to 02-author-tests-disclosure
+and 04-author-tests-forwarding, run in parallel with you, and your guardrail does not select them.

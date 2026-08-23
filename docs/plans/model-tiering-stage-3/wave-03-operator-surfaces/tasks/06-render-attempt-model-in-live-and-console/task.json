@@ -1,7 +1,9 @@
 {
   "description": "Implement the shared attempt-model summary and render it from LiveRunObserver and ConsoleRunObserver, so the rendering tests pass",
-  "dependsOn": ["01-author-tests-attempt-model-surfaces"],
-  "stableId": "s3w3t3",
+  "dependsOn": [
+    "03-author-tests-rendering"
+  ],
+  "stableId": "s3w3t6",
   "writeScope": [
     "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
     "src/Guardrails.Cli/ConsoleRunObserver.cs"

@@ -1,7 +1,9 @@
 {
   "description": "Forward AttemptModelResolved explicitly from both on-the-fly decorators, so the forwarding tests pass",
-  "dependsOn": ["01-author-tests-attempt-model-surfaces"],
-  "stableId": "s3w3t4",
+  "dependsOn": [
+    "04-author-tests-forwarding"
+  ],
+  "stableId": "s3w3t7",
   "writeScope": [
     "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs",
     "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs"

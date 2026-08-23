@@ -33,7 +33,7 @@ $failures = @()
 # docs/plans/pilot-seat-model-provenance/ - the SUPERSEDED plan folder wave 4 deletes. Every clause here
 # is therefore scoped to a NAMED file; a tree-wide grep would have been satisfied by that stale folder.
 $required = @(
-    # --- surface 3: the log preamble (task 02) ---
+    # --- surface 3: the log preamble (`05-implement-route-log-and-observer-raise`) ---
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', 'requested model',
       'TaskExecutor never writes a `requested model:` line - the attempt preamble still discloses one string, so an operator cannot see that the runner ran something other than the route asked for. That is the whole of surface 3'),
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', '_observer\.AttemptModelResolved',
@@ -45,7 +45,7 @@ $required = @(
       'LiveRunObserver does not declare the member. A class implementing an interface gets NO member for a default method, so it is silently inheriting the empty body and the live UI renders nothing'),
     @('src/Guardrails.Cli/ConsoleRunObserver.cs', 'AttemptModelSummary\s*\(',
       'ConsoleRunObserver does not call the shared AttemptModelSummary formatter - either it does not render the event at all, or it grew a second inlined copy of the wording that will drift from the live surface'),
-    # --- surface 4: the forwarding, the part the brief says a weak guardrail misses (task 04) ---
+    # --- surface 4: the forwarding, the part the brief says a weak guardrail misses (`07-forward-attempt-model-in-decorators`) ---
     @('src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs', '_inner\.AttemptModelResolved',
       'the log-site decorator does not forward the event. It compiles, it satisfies the interface, and it swallows the event in every mode - the exact failure this wave was written to prevent'),
     @('src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs', '_inner\.AttemptModelResolved',
@@ -57,7 +57,7 @@ $required = @(
       'the rendering test class is not on the merged HEAD'),
     @('tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelForwardingTests.cs', 'class\s+AttemptModelForwardingTests\b',
       'the forwarding test class is not on the merged HEAD - the one proof that both decorators relay the event'),
-    # --- the contract (task 05) ---
+    # --- the contract (`08-update-ssot-and-domain-knowledge`) ---
     @('docs/plans/02-schemas-and-contracts.md', 'AttemptModelResolved',
       'the SSOT does not name the new IRunObserver member'),
     @('.claude/skills/guardrails-domain-knowledge/SKILL.md', 'AttemptModelResolved',

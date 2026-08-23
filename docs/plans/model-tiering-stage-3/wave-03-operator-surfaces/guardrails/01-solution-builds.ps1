@@ -1,6 +1,6 @@
 # catches: a wave whose per-task guardrails all passed but whose MERGED result does not compile - the
 #          classic union defect. This wave's specific exposure is LiveRunObserver.cs, the one file two
-#          tasks write: task 01 adds the throwing `AttemptModelSummary` stub, task 03 replaces its body
+#          tasks write: task 01 adds the throwing `AttemptModelSummary` stub, `06-render-attempt-model-in-live-and-console` replaces its body
 #          and adds `AttemptModelResolved`. The pair is sequential in the DAG (03 depends on 01), so it
 #          is not a true collision - but an AI-merge that keeps BOTH copies of an appended member
 #          produces a duplicate declaration with no conflict marker (#175), which only a build sees.

@@ -1,5 +1,5 @@
 # catches: a wave-3 merge that compiles but REGRESSES an existing test. Every task guardrail in this wave
-#          is --filter-scoped to its own class (#455) - and it has to be, because tasks 02, 03 and 04 run
+#          is --filter-scoped to its own class (#455) - and it has to be, because `05-implement-route-log-and-observer-raise`, 03 and 04 run
 #          in PARALLEL and each leaves the other two classes RED, so no task could safely run an
 #          unfiltered suite. That leaves a real hole, and this wave's version of it is wide: task 01 edits
 #          Stage2PlanHarness.cs, the shared in-process harness the ENTIRE Stage-2 conformance suite drives,

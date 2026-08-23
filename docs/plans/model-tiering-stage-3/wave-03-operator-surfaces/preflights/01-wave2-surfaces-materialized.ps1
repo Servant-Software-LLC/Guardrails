@@ -10,14 +10,14 @@
 #          (1) The FOLD POINT. Wave 3's whole log-header deliverable is "re-disclose attempt-route.log
 #          AFTER the observed model is known". That requires two things wave 2 landed to still be
 #          adjacent in TaskExecutor.cs: the `RequestedModel =` fold, and `WriteRouteDisclosure` itself.
-#          If wave 2's fold moved to another file, task 02's writeScope is wrong and the run discovers it
+#          If wave 2's fold moved to another file, `05-implement-route-log-and-observer-raise`'s writeScope is wrong and the run discovers it
 #          the expensive way.
 #
 #          (2) The DECORATOR-FORWARDS-DEFAULTS PRECEDENT. Both decorators are asserted here to carry
 #          `_inner.VerifierAdvisoryFound` - not because this wave touches that event, but because it is
 #          the PROOF that each of these types is still a forwarding decorator that explicitly relays
 #          default-method members. A decorator refactored into something else (a base class, an event
-#          aggregator) would silently change what task 04's deliverable even means, and its tests would
+#          aggregator) would silently change what `07-forward-attempt-model-in-decorators`'s deliverable even means, and its tests would
 #          be asserting a shape that no longer exists.
 #
 # POSITIVE and MONOTONE-SAFE (SKILL.md 9.2): every clause is assert-PRESENT. Deliberately NO "the
@@ -39,15 +39,15 @@ $failures = @()
 # first CHARACTER - silently disabling that clause. Wave 2's entry gate shipped that bug and its
 # author-time invalid sample caught it.
 $anchors = @(
-    # --- surface 3: the log header (task 02 edits this file, and only this file) ---
+    # --- surface 3: the log header (`05-implement-route-log-and-observer-raise` edits this file, and only this file) ---
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', 'static\s+void\s+WriteRouteDisclosure\s*\(',
-      'TaskExecutor.WriteRouteDisclosure - the preamble writer task 02 must render best-known-actual and re-invoke after the fold'),
+      'TaskExecutor.WriteRouteDisclosure - the preamble writer `05-implement-route-log-and-observer-raise` must render best-known-actual and re-invoke after the fold'),
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', 'RequestedModel\s*=',
-      'wave 2''s observed-model FOLD onto the launch-time provenance - the point task 02 re-discloses immediately after. Without it there is no best-known-actual value for the preamble to print'),
+      'wave 2''s observed-model FOLD onto the launch-time provenance - the point `05-implement-route-log-and-observer-raise` re-discloses immediately after. Without it there is no best-known-actual value for the preamble to print'),
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', 'action\.ObservedModel',
       'the fold''s guard on the runner-reported model - proof the observed value reaches the attempt loop, which is what both of this wave''s surfaces consume'),
     @('src/Guardrails.Core/Execution/TaskExecutor.cs', '_observer\.AttemptStarting',
-      'the attempt loop''s observer field and an existing per-attempt raise - the precedent and the call site for task 02''s new raise'),
+      'the attempt loop''s observer field and an existing per-attempt raise - the precedent and the call site for `05-implement-route-log-and-observer-raise`''s new raise'),
 
     # --- surface 4: the observer event ---
     @('src/Guardrails.Core/Execution/IRunObserver.cs', 'interface\s+IRunObserver',
@@ -55,21 +55,21 @@ $anchors = @(
     @('src/Guardrails.Core/Execution/IRunObserver.cs', 'void\s+VerifierAdvisoryFound\s*\(',
       'VerifierAdvisoryFound - the default-method member whose doc comment states the decorator rule this wave re-applies ("an unforwarded call resolves to this empty body and the advisory is swallowed silently"). Task 01 mirrors its shape'),
     @('src/Guardrails.Cli/Ui/LiveRunObserver.cs', 'class\s+LiveRunObserver',
-      'LiveRunObserver - one of task 03''s two renderers'),
+      'LiveRunObserver - one of `06-render-attempt-model-in-live-and-console`''s two renderers'),
     @('src/Guardrails.Cli/ConsoleRunObserver.cs', 'class\s+ConsoleRunObserver',
-      'ConsoleRunObserver - task 03''s other renderer, and the only one a headless test can read output from'),
+      'ConsoleRunObserver - `06-render-attempt-model-in-live-and-console`''s other renderer, and the only one a headless test can read output from'),
     @('src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs', '_inner\.VerifierAdvisoryFound',
-      'the log-site decorator still EXPLICITLY forwards a default-method member to its inner observer - proof it is still the forwarding decorator task 04 extends'),
+      'the log-site decorator still EXPLICITLY forwards a default-method member to its inner observer - proof it is still the forwarding decorator `07-forward-attempt-model-in-decorators` extends'),
     @('src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs', '_inner\.VerifierAdvisoryFound',
-      'the diagram decorator still EXPLICITLY forwards a default-method member - same proof, for task 04''s second target'),
+      'the diagram decorator still EXPLICITLY forwards a default-method member - same proof, for `07-forward-attempt-model-in-decorators`''s second target'),
 
     # --- the test seam this wave's red is authored against ---
     @('tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs', 'class\s+Stage2PlanHarness',
-      'the public Stage2PlanHarness - the in-process real-seam harness task 01''s disclosure tests drive'),
+      'the public Stage2PlanHarness - the in-process real-seam harness `02-author-tests-disclosure`''s tests drive'),
     @('tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs', 'IRunObserver\.Null',
       'the harness''s hardcoded null observer - the exact site task 01 widens into an optional injection point so a recording observer can prove the raise'),
     @('tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs', 'AttemptLogDir',
-      'Stage2RunResult.AttemptLogDir - how task 01''s tests locate the attempt-route.log they read'),
+      'Stage2RunResult.AttemptLogDir - how `02-author-tests-disclosure`''s tests locate the attempt-route.log they read'),
 
     # --- the datum both surfaces consume (wave 2's deliverable) ---
     @('src/Guardrails.Core/Journal/JournalModel.cs', 'public\s+string\?\s+RequestedModel\s*\{',

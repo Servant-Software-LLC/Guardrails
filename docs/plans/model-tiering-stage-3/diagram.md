@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=d1e3c62d93d715cfe5ae661f437b4563f3bd0010b44574da0442709dc84eeb43 -->
+<!-- guardrails:graph v1 source-sha256=5f1022ca49c598c39c72dff1a5b8548ddaaead68eaed50935bb84eb88d822b4d -->
 
 ```mermaid
 flowchart TD
@@ -83,14 +83,53 @@ flowchart TD
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_3_preflights["Wave 3 Entry Gate"]
+    wave_3_preflights_0["01-wave2-surfaces-materialized"]:::preflight
   end
   style wave_3_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_3["Wave 3 — operator-surfaces"]
-    wave_3_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_3_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_03_operator_surfaces_01_stub_the_observer_seam["01-stub-the-observer-seam"]
+      task_wave_03_operator_surfaces_01_stub_the_observer_seam_gr_0["01-stubs-declared-and-inert"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_01_stub_the_observer_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_02_author_tests_disclosure["02-author-tests-disclosure"]
+      task_wave_03_operator_surfaces_02_author_tests_disclosure_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_operator_surfaces_02_author_tests_disclosure_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_02_author_tests_disclosure fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_03_author_tests_rendering["03-author-tests-rendering"]
+      task_wave_03_operator_surfaces_03_author_tests_rendering_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_operator_surfaces_03_author_tests_rendering_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_03_author_tests_rendering fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_04_author_tests_forwarding["04-author-tests-forwarding"]
+      task_wave_03_operator_surfaces_04_author_tests_forwarding_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_operator_surfaces_04_author_tests_forwarding_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_04_author_tests_forwarding fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise["05-implement-route-log-and-observer-raise"]
+      task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise_gr_0["01-disclosure-tests-pass"]:::guardrail
+      task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise_gr_1["02-consumes-not-rederives"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console["06-render-attempt-model-in-live-and-console"]
+      task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console_gr_0["01-rendering-tests-pass"]:::guardrail
+      task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console_gr_1["02-live-renders-through-the-shared-summary"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators["07-forward-attempt-model-in-decorators"]
+      task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators_gr_0["01-forwarding-tests-pass"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge["08-update-ssot-and-domain-knowledge"]
+      task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge_gr_0["01-contract-delta-present"]:::guardrail
+    end
+    style task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_3_guardrails["Wave 3 Exit Gate"]
+    wave_3_guardrails_0["01-solution-builds"]:::guardrail
+    wave_3_guardrails_1["02-suites-pass"]:::guardrail
+    wave_3_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4_preflights["Wave 4 Entry Gate"]
@@ -134,8 +173,17 @@ flowchart TD
   task_wave_02_capture_and_persist_03_author_tests_provenance_model_persist --> task_wave_02_capture_and_persist_04_implement_provenance_model_persist
   task_wave_02_capture_and_persist_04_implement_provenance_model_persist --> task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge
   task_wave_02_capture_and_persist_05_update_ssot_and_domain_knowledge --> wave_2_guardrails
-  wave_3_preflights --> wave_3_stub
-  wave_3_stub --> wave_3_guardrails
+  wave_3_preflights --> task_wave_03_operator_surfaces_01_stub_the_observer_seam
+  task_wave_03_operator_surfaces_01_stub_the_observer_seam --> task_wave_03_operator_surfaces_02_author_tests_disclosure
+  task_wave_03_operator_surfaces_01_stub_the_observer_seam --> task_wave_03_operator_surfaces_03_author_tests_rendering
+  task_wave_03_operator_surfaces_01_stub_the_observer_seam --> task_wave_03_operator_surfaces_04_author_tests_forwarding
+  task_wave_03_operator_surfaces_02_author_tests_disclosure --> task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise
+  task_wave_03_operator_surfaces_03_author_tests_rendering --> task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console
+  task_wave_03_operator_surfaces_04_author_tests_forwarding --> task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators
+  task_wave_03_operator_surfaces_05_implement_route_log_and_observer_raise --> task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge
+  task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console --> task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge
+  task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators --> task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge
+  task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge --> wave_3_guardrails
   wave_4_preflights --> wave_4_stub
   wave_4_stub --> wave_4_guardrails
   wave_5_preflights --> wave_5_stub

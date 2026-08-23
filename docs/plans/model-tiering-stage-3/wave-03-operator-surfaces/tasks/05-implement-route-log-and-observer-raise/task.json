@@ -1,7 +1,9 @@
 {
   "description": "Re-disclose attempt-route.log after the observed-model fold and raise AttemptModelResolved from the attempt loop, so the disclosure tests pass",
-  "dependsOn": ["01-author-tests-attempt-model-surfaces"],
-  "stableId": "s3w3t2",
+  "dependsOn": [
+    "02-author-tests-disclosure"
+  ],
+  "stableId": "s3w3t5",
   "writeScope": [
     "src/Guardrails.Core/Execution/TaskExecutor.cs"
   ],

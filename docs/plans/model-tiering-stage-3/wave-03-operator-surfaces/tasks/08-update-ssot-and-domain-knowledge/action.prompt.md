@@ -63,7 +63,7 @@ write — use `Edit` on it directly.
 Record the two operator-surface contracts this wave just shipped. You are the **only** task in this wave
 permitted to touch these files; two tasks sharing either of them is the union hazard that costs a run.
 
-**Read what tasks 02, 03 and 04 actually landed before writing.** Your job is to describe the shipped
+**Read what 05-implement-route-log-and-observer-raise, 06-render-attempt-model-in-live-and-console and 07-forward-attempt-model-in-decorators actually landed before writing.** Your job is to describe the shipped
 code, not this prompt's summary of it — in particular, the exact wording of the new log line and of the
 new interface member's doc comment are theirs, not yours.
 
