@@ -661,4 +661,73 @@ public sealed class SchedulerBreakdownDurabilityTests
         Assert.Contains($"/{Wave2}/breakdown/", manifest.Replace('\\', '/'));
         Assert.Contains("00-hand-authored-exit.sh", File.ReadAllText(manifest));
     }
+
+    // --- 8. #501: the gate must judge SOUNDNESS, not COMPLETENESS ----------------------------------
+
+    /// <summary>
+    /// #501 — the gate records its reasoning on EVERY path, not only on rejection. The bug this closes was
+    /// invisible in the logs: a prefix that should have been kept was reverted while GR2063 announced a
+    /// resume, and the successful-salvage path printed no report at all, so there was nothing to read
+    /// afterwards. A defect that resisted unit reproduction has to at least explain itself next time.
+    /// </summary>
+    [Fact]
+    public async Task TheGateTeesItsDecision_OnASalvagePath_SoASilentWrongVerdictIsReadableAfterwards()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlan();
+        using WavePlanBuilder _ = b;
+
+        var runner = new StubBreakdownRunner((inv, call) =>
+        {
+            if (call != 1) { return; }
+            DeclareIntent(inv.WorkingDirectory, "01-compile", "02-package", "03-publish");
+            AuthorTask(inv.WorkingDirectory, "01-compile");
+        }, PromptFailureKind.Timeout);
+
+        await NewScheduler(plan, RunJournal.LoadOrCreate(plan), new RecordingWorktreeProvider(), new WaveBreakdownInvoker(runner))
+            .RunAsync(plan, Ct);
+
+        string decision = Assert.Single(
+            Directory.GetFiles(Path.Combine(b.PlanDir, "logs"), "gate-decision.txt", SearchOption.AllDirectories));
+        string text = File.ReadAllText(decision);
+
+        // The four facts that would have made the original contradiction obvious in one read.
+        Assert.Contains("gate verdict :", text, StringComparison.Ordinal);
+        Assert.Contains("prefix state :", text, StringComparison.Ordinal);
+        Assert.Contains("intent manifest : usable", text, StringComparison.Ordinal);
+        Assert.Contains("02-package", text, StringComparison.Ordinal);   // named among what is still owed
+    }
+
+    /// <summary>
+    /// The other half of #501's contract, and what keeps the fix from becoming a rubber stamp: only errors
+    /// unsatisfiable BECAUSE the wave is unfinished are excused. A malformed task folder says the authored
+    /// CONTENT is wrong, and resuming onto wrong content is worse than re-authoring.
+    /// </summary>
+    [Fact]
+    public async Task APrefixWithAMalformedTask_IsStillRevertedWholesale_TheOverrideIsOneNamedCodeNotABlanketPass()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlan();
+        using WavePlanBuilder _ = b;
+
+        var runner = new StubBreakdownRunner((inv, call) =>
+        {
+            if (call != 1) { return; }
+            DeclareIntent(inv.WorkingDirectory, "01-compile", "02-package", "03-publish");
+            AuthorTask(inv.WorkingDirectory, "01-compile");
+
+            // GR2041: a task.json with NO writeScope. An error about the CONTENT, not about being unfinished.
+            string bad = Path.Combine(inv.WorkingDirectory, Wave2, "tasks", "02-package");
+            Directory.CreateDirectory(Path.Combine(bad, "guardrails"));
+            File.WriteAllText(Path.Combine(bad, "task.json"), """{ "description": "no writeScope" }""");
+            File.WriteAllText(Path.Combine(bad, "action.sh"), "#!/bin/sh\necho hi\n");
+            File.WriteAllText(Path.Combine(bad, "guardrails", "01-ok.sh"), "#!/bin/sh\nexit 0\n");
+        }, PromptFailureKind.Timeout);
+
+        RunReport report = await NewScheduler(plan, RunJournal.LoadOrCreate(plan), new RecordingWorktreeProvider(), new WaveBreakdownInvoker(runner))
+            .RunAsync(plan, Ct);
+
+        string tasks = Path.Combine(b.PlanDir, Wave2, "tasks");
+        Assert.False(Directory.Exists(Path.Combine(tasks, "01-compile")),
+            "a prefix carrying a malformed task must be reverted wholesale, never resumed onto");
+        Assert.Equal(WaveHaltKind.BreakdownFailed, report.WaveHalt!.Kind);
+    }
 }
