@@ -2000,10 +2000,15 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           // Also mirrored to <attempt>/attempt-provenance.json and, for humans, rendered as
           // <attempt>/attempt-route.log on any attempt that resolved a route (§8).
           "provenance": {
-            "model": "claude-…",    // FULLY RESOLVED --model (#200, #201): the RESOLVED ROUTE's model — the
-                                     //   task.json action.model/action.runner pin, else the block tier
-                                     //   resolution selected, else promptRunners.<name>.model, else
+            "model": "claude-…",    // BEST-KNOWN-ACTUAL (#200, #201, #349): the model the RUNNER ECHOED on
+                                     //   its own stream, else the FULLY RESOLVED --model the route asked for
+                                     //   — the task.json action.model/action.runner pin, else the block tier
+                                     //   resolution selected, else promptRunners.<name>.model — else
                                      //   "(cli default)" (§9.6); ABSENT for a script task
+            "requestedModel": "claude-…",
+                                     //   OPTIONAL (#349): what the ROUTE ASKED FOR, written ONLY when it
+                                     //   DIFFERS from `model`. Its PRESENCE is the mismatch signal, so it
+                                     //   is ABSENT on an ordinary attempt; see the prose below
             // The five route fields (#201, DoR §12.4). All ABSENT — never null — on a script attempt and in
             // every journal written before model tiering; see "Per-attempt tier provenance" below.
             "runner": "primary",    // the promptRunners block name the attempt resolved to
@@ -2316,6 +2321,24 @@ record: *"bypasses tier resolution entirely"* governs what is **selected**, not 
 and from which precedence branch the resolver took, never from comparing the task's tier to
 `tiering.defaultTier`. That comparison is wrong in the most ordinary case there is: a task that
 explicitly writes the same token the plan already defaults to would be attributed to the plan.
+
+**`model` — now BEST-KNOWN-ACTUAL, with `requestedModel` beside it only on a disagreement (#349).**
+`provenance.model` is no longer the resolved route's model: it is the model the **runner echoed on its own
+stream**, else the resolved route's model, else the `"(cli default)"` sentinel. It goes on answering the
+question it always answered — *"what did this attempt run on"* — with a better answer wherever one exists, so
+every existing reader improves with **no change on its side**. It is a fallback chain, not a replacement: a
+runner that echoed nothing changes nothing at all, and the sentinel still stands for the operator who
+configured no model anywhere. The observed value is folded onto the `provenance` object the moment the action
+returns, which is the member that already reaches **both** record paths (D32) — so the serial journaller and
+the worktree settle write the identical shape, and the guardrail-FAILED path keeps it in
+`attempt-provenance.json`. What `model` can then no longer carry is the REQUEST, so `provenance` gains
+**`requestedModel`** — what the route asked for — **written ONLY when it differs from `model`**. Its
+*presence* is the mismatch signal: there is no separate flag, and on the ordinary attempt where the two agree
+there is no key at all. That difference is the only evidence separating *"the provider served something
+else"* from *"my routing is misconfigured"*. **There is no `resolvedModel` key.** DoR §9.3 asked for one and
+it is **refused, not deferred** — one field per fact, and a second field earns its place only by carrying the
+DISAGREEMENT. An always-written copy of `model` would destroy the signal and reinstate exactly the drift two
+fields for one fact always produce.
 
 **`usage` — the tokens-only accounting surface, now written on both record paths.** The optional
 `usage { inputTokens, outputTokens }` block above is the accounting surface for a costless
@@ -3075,7 +3098,7 @@ whole-plan hash entirely and the marker kept vouching for a waved plan whose gat
 ```
 logs/<runId>/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
-├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch; absent for a serial script attempt
+├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch, RE-MIRRORED once the action returns when the runner echoed a model of its own (#349, §7); absent for a serial script attempt
 ├── attempt-route.log        # #201: the HUMAN-readable twin of the route half above — resolved runner block /
                              #   model / effort, the rung REQUESTED vs the rung SERVED, the tierSource, and the
                              #   two loud lines §9.6 requires (a climb, and a binding costly ceiling from
