@@ -513,6 +513,12 @@ internal sealed record ActionRun
             Usage = result.Usage is { } usage
                 ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
                 : null,
+            // #349: the model the runner reported itself running on, carried the same way CostUsd is —
+            // a straight member copy, nothing recomputed and nothing defaulted. ABSENT stays absent: a
+            // runner that echoed no model must leave this null, because the fold onto the attempt's
+            // provenance treats null as "learned nothing" and keeps the resolved route (or its
+            // "(cli default)" sentinel) exactly as it stood at launch.
+            ObservedModel = result.ObservedModel,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,

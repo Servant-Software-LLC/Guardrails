@@ -729,6 +729,49 @@ public sealed class TaskExecutor : ITaskExecutor
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
+        // --- #349: fold the OBSERVED model onto this attempt's provenance ----------------
+        // The runner only reports what it actually ran on once it has run, so the observed model cannot
+        // be part of the launch-time provenance built above; it is folded onto that SAME object the
+        // moment the action returns, before any journal call below reads it. The local is REASSIGNED
+        // because records are immutable — a `with` whose result is discarded changes nothing.
+        //
+        // Onto the PROVENANCE for the same mechanical reason the D32 judge fold below gives: it is the
+        // one member that already rides PendingAttempt, so a value folded here reaches BOTH record
+        // construction paths with no further edit — the serial AttemptJournaler AND
+        // Scheduler.RecordSucceededSettle (`Provenance = pending.Provenance`), the DEFAULT worktree mode.
+        //
+        // `model` becomes BEST-KNOWN-ACTUAL — observed, else the resolved route, else the "(cli default)"
+        // sentinel BuildProvenance already put there. It goes on answering the same question ("what did
+        // this attempt run on") with a better answer wherever one exists, so every existing reader
+        // improves with no change on its side.
+        //
+        // `requestedModel` records what the route ASKED for, and ONLY when the two disagree: its PRESENCE
+        // is the mismatch signal, and there is no separate flag beside it. Written on every attempt it
+        // would be a duplicate of `model` — which is exactly what the contract refuses a `resolvedModel`
+        // key for (JournalModel.cs: two fields claiming the same fact is how they drift). A second field
+        // earns its place by carrying the DISAGREEMENT.
+        //
+        // A runner that reported NOTHING changes nothing at all: silence is not a disagreement, and
+        // assigning the observed value unconditionally would erase a real route model — or the sentinel,
+        // which is the only thing per-attempt provenance has to say for the operator who configured no
+        // model anywhere. A SCRIPT attempt ran no model and (in serial mode) has no provenance object to
+        // fold onto, so it is skipped rather than given an object of nulls — the same discipline the
+        // judge fold applies to a null provenance.
+        if (provenance is { } launched && action.ObservedModel is { } observedModel)
+        {
+            provenance = launched with
+            {
+                Model = observedModel,
+                RequestedModel = launched.Model == observedModel ? null : launched.Model
+            };
+
+            // Re-mirror it, for the reason the judge fold re-mirrors below: on the guardrail-FAILED path
+            // attempt-provenance.json is the ONLY surface that records this at all, because
+            // AttemptJournaler.FailedAttempt takes no provenance parameter. An attempt that learned what
+            // actually served it must not lose that the moment it goes red.
+            AttemptArtifacts.WriteProvenance(logDir, provenance);
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             return _journaler.Cancelled(
