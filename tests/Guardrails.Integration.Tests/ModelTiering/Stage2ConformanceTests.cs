@@ -1534,6 +1534,324 @@ public sealed class Stage2ConformanceTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // 18. #349 — the OBSERVED model is the provenance model, and a mismatch names the request
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// A run whose runner reports a model DIFFERENT from the one the route asked for records the OBSERVED
+    /// value as <c>provenance.model</c> — on the serial record path and on the worktree-settle one.
+    ///
+    /// <para><b>The settled shape is best-known-actual:</b> <c>observed ?? route ?? sentinel</c>. Every
+    /// existing reader of <c>provenance.model</c> — the spend report, the log viewer, a human opening
+    /// <c>run.json</c> — improves with no change on its side, because the field goes on answering the same
+    /// question ("what did this attempt run on") with a better answer wherever one exists.</para>
+    ///
+    /// <para><b>Why the observed value is the stronger fact.</b> The route is a REQUEST, and a request is
+    /// not a receipt: an alias resolves to a dated snapshot, a provider substitutes, and the zero-setup
+    /// user passes no <c>--model</c> at all — for whom the harness records the <c>"(cli default)"</c>
+    /// sentinel, a string that names no model whatsoever. What the runner echoes back is the answer.</para>
+    ///
+    /// <para><b>Read back off DISK, never off the harness's own return value.</b> A datum computed,
+    /// assigned to something in memory and never serialized satisfies any assertion made against the
+    /// in-memory result. That is not a hypothetical here: <c>AttemptRecord.Usage</c> shipped declared, READ
+    /// by the per-tier spend aggregation and assigned by none of the record-construction sites (#475), with
+    /// every guardrail in its wave green. The sibling <c>Judge_ProvenanceReachesRunJson_BothPaths</c> reads
+    /// the journal for exactly that reason, and so does this.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ObservedModelProvenance")]
+    public async Task ObservedModel_BecomesProvenanceModel_OnBothRecordPaths()
+    {
+        using var harness = new Stage2PlanHarness();
+        Stage2RunResult serial = await harness.RunAsync(ObservedModelPlan());
+        using Stage2DeferredSettleRun deferred =
+            await Stage2DeferredSettleRun.RunAsync(harness.PlanRoot, ObservedModelPlan());
+
+        AssertBothRecordPaths(serial, deferred, ObservedMismatchTask);
+
+        foreach ((Stage2RunResult run, bool deferredSettle) in new[] { (serial, false), (deferred.Result, true) })
+        {
+            string path = RecordPathLabel(deferredSettle);
+            AssertSettledGreen(run, ObservedMismatchTask, path);
+
+            // Fixture floor, both halves: the route really asked for one model, and the runner really
+            // answered with a different one. Without it, "the observed value wins" would be asserted over a
+            // run where the two never disagreed — which every implementation passes, including no
+            // implementation at all.
+            Stage2RecordedCall call = ActionCall(run, ObservedMismatchTask, 1);
+            Assert.True(
+                call.Model == ObservedRouteModel,
+                $"[{path}] the action RAN on '{Describe(call.Model)}', expected the route's " +
+                $"'{ObservedRouteModel}'. The request half of the disagreement is not in place, so there is " +
+                "nothing here for an observed model to differ FROM.");
+            Assert.True(
+                call.Result.ObservedModel == ObservedActualModel,
+                $"[{path}] the fake runner returned observedModel " +
+                $"'{Describe(call.Result.ObservedModel)}', expected '{ObservedActualModel}'. The scripted " +
+                "PromptResult is the whole setup for this clause — a runner that reported nothing leaves " +
+                "the carry with nothing to carry.");
+
+            AttemptProvenance provenance = ProvenanceOf(run, ObservedMismatchTask, 1);
+
+            Assert.True(
+                provenance.Model == ObservedActualModel,
+                $"[{path}] run.json records provenance.model '{Describe(provenance.Model)}', but the runner " +
+                $"itself reported running on '{ObservedActualModel}' while the route merely ASKED for " +
+                $"'{ObservedRouteModel}'. provenance.model is best-known-actual — observed, else the " +
+                "resolved route, else the sentinel — so the moment an attempt learns what actually served " +
+                "it, that is the fact the field carries. Recording the request here leaves every reader of " +
+                "the journal believing a model ran that may never have.");
+        }
+    }
+
+    /// <summary>
+    /// That same disagreeing run also records <c>provenance.requestedModel</c> — the ROUTE's model, which
+    /// is the one fact <c>provenance.model</c> no longer carries once it became best-known-actual.
+    ///
+    /// <para><b>Nothing is lost by the swap, and that is the point.</b> The requested model is not
+    /// disposable: it is what the operator's <c>promptRunners</c> block and <c>tiering</c> config actually
+    /// selected, so it is the only evidence that answers "did my routing do what I configured it to do"
+    /// when the provider served something else. Moving <c>model</c> to the observed value without this
+    /// field would buy one fact by destroying another.</para>
+    ///
+    /// <para><b>Two keys, two distinct facts.</b> DoR §9.3 asked for a third — a <c>resolvedModel</c>
+    /// alongside — and the shipped Stage 2 contract refused it in <c>JournalModel.cs</c>: two fields
+    /// claiming the same fact is how they drift. A second field earns its place only by carrying the
+    /// DISAGREEMENT, which is what this one does.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ObservedModelProvenance")]
+    public async Task RequestedModel_IsWritten_WhenTheObservedDiffersFromTheRoute()
+    {
+        using var harness = new Stage2PlanHarness();
+        Stage2RunResult serial = await harness.RunAsync(ObservedModelPlan());
+        using Stage2DeferredSettleRun deferred =
+            await Stage2DeferredSettleRun.RunAsync(harness.PlanRoot, ObservedModelPlan());
+
+        AssertBothRecordPaths(serial, deferred, ObservedMismatchTask);
+
+        foreach ((Stage2RunResult run, bool deferredSettle) in new[] { (serial, false), (deferred.Result, true) })
+        {
+            string path = RecordPathLabel(deferredSettle);
+            AssertSettledGreen(run, ObservedMismatchTask, path);
+
+            // Fixture floor: the route this clause expects to see recorded is the one that actually ran.
+            Stage2RecordedCall call = ActionCall(run, ObservedMismatchTask, 1);
+            Assert.True(
+                call.Model == ObservedRouteModel,
+                $"[{path}] the action RAN on '{Describe(call.Model)}', expected the route's " +
+                $"'{ObservedRouteModel}' — requestedModel records the ROUTE, so a fixture whose route is " +
+                "somewhere else would pin the wrong string.");
+
+            AttemptProvenance provenance = ProvenanceOf(run, ObservedMismatchTask, 1);
+
+            Assert.True(
+                provenance.RequestedModel == ObservedRouteModel,
+                $"[{path}] run.json records provenance.requestedModel " +
+                $"'{Describe(provenance.RequestedModel)}', expected the route's '{ObservedRouteModel}' — " +
+                $"the runner answered '{ObservedActualModel}', so the request and the reality disagree and " +
+                "the request needs its own key. Without it the journal cannot answer whether the operator's " +
+                "routing selected what they configured: 'the provider substituted' and 'my tier config is " +
+                "wrong' look identical from a single model field.");
+        }
+    }
+
+    /// <summary>
+    /// A run whose runner echoes back EXACTLY the model the route asked for records NO
+    /// <c>requestedModel</c> key at all. Its PRESENCE is the mismatch signal, so an always-written key
+    /// destroys the signal — there is no separate flag to fall back on.
+    ///
+    /// <para><b>The floor is the whole clause.</b> "The key is absent" is trivially satisfied by an
+    /// implementation that never writes it anywhere — which is precisely the state of the journal before
+    /// this wave. So the sibling task in the SAME run, on the same plan and the same block, must carry the
+    /// key first: only then does absence over here mean "the two agreed" rather than "the mechanism does
+    /// not exist".</para>
+    ///
+    /// <para><b>Absent, never <c>null</c>.</b> <c>JournalJson</c> sets
+    /// <c>DefaultIgnoreCondition = Never</c>, so a member without a <c>WhenWritingNull</c> ignore grows a
+    /// <c>"requestedModel": null</c> key on EVERY attempt — including the script attempts of runs whose
+    /// author opted into none of this. The two shapes deserialize identically and the cost is paid entirely
+    /// by the humans and tooling reading <c>run.json</c>, which is why this is asserted on the RAW JSON
+    /// keys rather than on a deserialized null.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ObservedModelProvenance")]
+    public async Task RequestedModel_IsAbsent_WhenTheObservedMatchesTheRequest()
+    {
+        using var harness = new Stage2PlanHarness();
+        Stage2RunResult serial = await harness.RunAsync(ObservedModelPlan());
+        using Stage2DeferredSettleRun deferred =
+            await Stage2DeferredSettleRun.RunAsync(harness.PlanRoot, ObservedModelPlan());
+
+        AssertBothRecordPaths(serial, deferred, ObservedMatchTask);
+
+        foreach ((Stage2RunResult run, bool deferredSettle) in new[] { (serial, false), (deferred.Result, true) })
+        {
+            string path = RecordPathLabel(deferredSettle);
+            AssertSettledGreen(run, ObservedMatchTask, path);
+            AssertSettledGreen(run, ObservedMismatchTask, path);
+
+            // Fixture floor: the DISAGREEING sibling carries the key, so absence below is a decision this
+            // run made rather than a mechanism that was never built.
+            bool siblingCarriesRequest = ProvenanceJson(run, ObservedMismatchTask, 1).ContainsKey(RequestedModelKey);
+            Assert.True(
+                siblingCarriesRequest,
+                $"[{path}] '{ObservedMismatchTask}' — whose runner answered '{ObservedActualModel}' to a " +
+                $"route asking for '{ObservedRouteModel}' — records no '{RequestedModelKey}' key either, so " +
+                "this run writes it NOWHERE. An absence that is absent everywhere proves nothing about the " +
+                "matching case; wire the mismatch first.");
+
+            Stage2RecordedCall call = ActionCall(run, ObservedMatchTask, 1);
+            Assert.True(
+                call.Model == ObservedRouteModel && call.Result.ObservedModel == ObservedRouteModel,
+                $"[{path}] the action RAN on '{Describe(call.Model)}' and the runner answered " +
+                $"'{Describe(call.Result.ObservedModel)}' — this clause needs both to be " +
+                $"'{ObservedRouteModel}', because it is about the case where request and reality AGREE.");
+
+            AttemptProvenance provenance = ProvenanceOf(run, ObservedMatchTask, 1);
+            Assert.True(
+                provenance.Model == ObservedRouteModel,
+                $"[{path}] run.json records provenance.model '{Describe(provenance.Model)}' for an attempt " +
+                $"whose route and runner both say '{ObservedRouteModel}'. best-known-actual and the request " +
+                "are the same string here; there is no third answer.");
+
+            bool carriesRequestedModel = ProvenanceJson(run, ObservedMatchTask, 1).ContainsKey(RequestedModelKey);
+            Assert.False(
+                carriesRequestedModel,
+                $"[{path}] '{ObservedMatchTask}' records a '{RequestedModelKey}' key on an attempt where the " +
+                "runner echoed exactly what the route asked for. The key is written ONLY on a disagreement " +
+                "— its presence IS the mismatch signal, and there is no separate flag beside it. Writing it " +
+                "on every attempt makes the signal indistinguishable from the ordinary case, which is the " +
+                "one thing it exists to distinguish.");
+        }
+    }
+
+    /// <summary>
+    /// A runner that reports NO model leaves <c>provenance.model</c> exactly as it is today — the resolved
+    /// route, or the <c>"(cli default)"</c> sentinel when nothing named a model at all — and writes no
+    /// <c>requestedModel</c> key.
+    ///
+    /// <para><b>Deliberately GREEN from the first commit.</b> This is the regression half: the new fact is
+    /// bought at no cost to the old one. <c>observed ?? route ?? sentinel</c> is a fallback CHAIN, not a
+    /// replacement, and the cheapest wrong implementation of the clauses above — assign the observed value
+    /// unconditionally — turns every silent runner's provenance into a null or an empty string and takes
+    /// the sentinel with it. A field that regressed to nothing is worse than the field that shipped,
+    /// because the reader cannot tell "the runner said nothing" from "no model was ever resolved".</para>
+    ///
+    /// <para><b>Both tails of the chain, because they fail differently.</b> The routed task loses a real
+    /// model string; the model-less block's task loses the sentinel — the display stand-in that exists
+    /// precisely so per-attempt provenance is not a silent gap for the zero-setup user who configured no
+    /// model anywhere.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ObservedModelProvenance")]
+    public async Task ProvenanceModel_StaysTheResolvedRoute_WhenTheRunnerReportedNoModel()
+    {
+        using var harness = new Stage2PlanHarness();
+        Stage2RunResult serial = await harness.RunAsync(ObservedModelPlan());
+        using Stage2DeferredSettleRun deferred =
+            await Stage2DeferredSettleRun.RunAsync(harness.PlanRoot, ObservedModelPlan());
+
+        AssertBothRecordPaths(serial, deferred, ObservedSilentTask);
+
+        foreach ((Stage2RunResult run, bool deferredSettle) in new[] { (serial, false), (deferred.Result, true) })
+        {
+            string path = RecordPathLabel(deferredSettle);
+
+            foreach (string taskId in new[] { ObservedSilentTask, ObservedUnnamedModelTask })
+            {
+                AssertSettledGreen(run, taskId, path);
+
+                // Fixture floor: these two runners really did answer with nothing. A scripted result that
+                // quietly carried a model would make the clause green for the wrong reason.
+                Assert.True(
+                    ActionCall(run, taskId, 1).Result.ObservedModel is null,
+                    $"[{path}] '{taskId}': the fake runner reported observedModel " +
+                    $"'{Describe(ActionCall(run, taskId, 1).Result.ObservedModel)}' — this clause is about " +
+                    "the runner that reports NOTHING, so it must report nothing.");
+
+                bool carriesRequestedModel = ProvenanceJson(run, taskId, 1).ContainsKey(RequestedModelKey);
+                Assert.False(
+                    carriesRequestedModel,
+                    $"[{path}] '{taskId}' records a '{RequestedModelKey}' key though its runner named no " +
+                    "model at all. Silence is not a disagreement: there is no second model here to hold " +
+                    "apart from the first, and a key written anyway turns the mismatch signal into noise.");
+            }
+
+            Assert.True(
+                ProvenanceOf(run, ObservedSilentTask, 1).Model == ObservedRouteModel,
+                $"[{path}] '{ObservedSilentTask}' records provenance.model " +
+                $"'{Describe(ProvenanceOf(run, ObservedSilentTask, 1).Model)}', expected the resolved " +
+                $"route's '{ObservedRouteModel}'. The runner volunteered nothing, so the chain falls " +
+                "through to the route — exactly today's behaviour, unchanged. An implementation that " +
+                "assigns the observed value unconditionally erases a real model string here.");
+
+            Assert.True(
+                ProvenanceOf(run, ObservedUnnamedModelTask, 1).Model
+                    == PromptExecutionSupport.CliDefaultModelDisplay,
+                $"[{path}] '{ObservedUnnamedModelTask}' records provenance.model " +
+                $"'{Describe(ProvenanceOf(run, ObservedUnnamedModelTask, 1).Model)}', expected the sentinel " +
+                $"'{PromptExecutionSupport.CliDefaultModelDisplay}'. Its block names no model and its runner " +
+                "reported none, so nothing in the chain has an answer — and the sentinel is what says so out " +
+                "loud. Losing it makes per-attempt provenance a silent gap for the user who configured no " +
+                "model anywhere, which is the gap #200 closed.");
+        }
+    }
+
+    /// <summary>
+    /// No attempt's provenance, anywhere in <c>run.json</c>, carries a <c>resolvedModel</c> key — on either
+    /// record path.
+    ///
+    /// <para><b>Pinning a refusal, not an omission.</b> DoR §9.3 asked for a <c>resolvedModel</c> beside
+    /// <c>model</c>; the shipped Stage 2 contract declined it in <c>JournalModel.cs</c> — <i>two fields
+    /// claiming the same fact is how they drift</i> — and #349 keeps that ruling while adding the one field
+    /// that carries a DIFFERENT fact, the disagreement. Nothing in the harness stops a later well-meaning
+    /// edit from adding the duplicate back "for clarity", and a duplicate is silent when it is right and
+    /// invisible when it is wrong, so the contract is pinned here rather than merely written down.</para>
+    ///
+    /// <para><b>GREEN from the first commit, like the sibling regression clause</b> — and it stays green
+    /// only for as long as the settled shape holds.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ObservedModelProvenance")]
+    public async Task NoResolvedModelKeyIsEverWritten()
+    {
+        using var harness = new Stage2PlanHarness();
+        Stage2RunResult serial = await harness.RunAsync(ObservedModelPlan());
+        using Stage2DeferredSettleRun deferred =
+            await Stage2DeferredSettleRun.RunAsync(harness.PlanRoot, ObservedModelPlan());
+
+        AssertBothRecordPaths(serial, deferred, ObservedMismatchTask);
+
+        int taskCount = ObservedModelPlan().Tasks.Count;
+
+        foreach ((Stage2RunResult run, bool deferredSettle) in new[] { (serial, false), (deferred.Result, true) })
+        {
+            string path = RecordPathLabel(deferredSettle);
+            IReadOnlyList<(string TaskId, int Attempt, JsonObject Provenance)> all = AllProvenanceJson(run);
+
+            // Floor: this clause proves a key is ABSENT, and a sweep that found no provenance objects at
+            // all would report exactly the same green for entirely the wrong reason.
+            Assert.True(
+                all.Count >= taskCount,
+                $"[{path}] run.json carries {all.Count} attempt provenance object(s), expected at least one " +
+                $"per task ({taskCount}). An absence asserted over an empty sweep is not evidence.");
+
+            foreach ((string taskId, int attempt, JsonObject provenance) in all)
+            {
+                bool carriesResolvedModel = provenance.ContainsKey(ResolvedModelKey);
+                Assert.False(
+                    carriesResolvedModel,
+                    $"[{path}] '{taskId}' attempt {attempt} records a '{ResolvedModelKey}' key " +
+                    $"('{Describe(provenance[ResolvedModelKey]?.ToString())}'). There is no such field in " +
+                    "the contract: provenance.model IS the resolved fact, best-known-actual, and " +
+                    $"'{RequestedModelKey}' is the one field allowed beside it — written only on a " +
+                    "disagreement, because a second field earns its place by carrying what the first cannot.");
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
     // Fixtures and observation helpers
     // ═════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -1846,6 +2164,212 @@ public sealed class Stage2ConformanceTests
             $"(the run made {run.ActionCallsFor(taskId).Count} action and " +
             $"{run.JudgeCallsFor(taskId).Count} judge call(s) for this task).");
         return matching[0];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // Observed-model fixtures and RAW-JSON readers (clause 18, #349)
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// The wire key that records the ROUTE's model when the runner reports a different one. Spelled once,
+    /// because three clauses assert on its PRESENCE or ABSENCE and a typo in either direction is a green
+    /// test that measures nothing.
+    /// </summary>
+    private const string RequestedModelKey = "requestedModel";
+
+    /// <summary>
+    /// The key DoR §9.3 asked for and the shipped contract refused. It has no producer — it is spelled here
+    /// only so a clause can assert nobody ever grew one.
+    /// </summary>
+    private const string ResolvedModelKey = "resolvedModel";
+
+    /// <summary>The one routable block of the observed-model fixture, serving the bottom rung.</summary>
+    private const string ObservedRunner = "routed";
+
+    /// <summary>
+    /// The model that block declares — what the ROUTE asks for, and the only model fact the harness knows
+    /// at attempt launch.
+    /// </summary>
+    private const string ObservedRouteModel = "routed-model";
+
+    /// <summary>
+    /// What the fake runner ECHOES back on the mismatch task. Named with no substring in common with
+    /// <see cref="ObservedRouteModel"/>, on the same reasoning as <see cref="PointerModel"/>: a failure
+    /// message must make the wrong answer unmistakable rather than a subtle difference between two
+    /// plausible model names.
+    /// </summary>
+    private const string ObservedActualModel = "observed-model";
+
+    /// <summary>The block that names NO model — where the <c>"(cli default)"</c> sentinel comes from.</summary>
+    private const string ObservedUnnamedRunner = "unnamed";
+
+    /// <summary>The task whose runner answers with a model DIFFERENT from the route's.</summary>
+    private const string ObservedMismatchTask = "01-observed-differs";
+
+    /// <summary>The task whose runner echoes back EXACTLY the model the route asked for.</summary>
+    private const string ObservedMatchTask = "02-observed-echoes";
+
+    /// <summary>The task whose runner answers with nothing, on a route that DOES name a model.</summary>
+    private const string ObservedSilentTask = "03-runner-silent";
+
+    /// <summary>The task whose runner answers with nothing on a route that names no model either — the sentinel case.</summary>
+    private const string ObservedUnnamedModelTask = "04-silent-and-unnamed";
+
+    /// <summary>
+    /// The #349 fixture: one registry, four tasks, and the four combinations of (does the route name a
+    /// model) × (what did the runner answer) that the <c>observed ?? route ?? sentinel</c> chain has to get
+    /// right. Every task is scripted EXPLICITLY, including the two that report nothing, so "the runner
+    /// stayed silent" is a stated fixture rather than a default nobody looked at.
+    ///
+    /// <para>All four run in ONE plan on purpose. The absence clause needs a task that DOES carry
+    /// <c>requestedModel</c> sitting in the same <c>run.json</c> as the task that must not — otherwise
+    /// "the key is absent here" is satisfied by a journal that writes it nowhere, which is the state of
+    /// every journal written before this wave.</para>
+    ///
+    /// <para>The counts are the model strings the shipped carry has to move from
+    /// <see cref="PromptResult.ObservedModel"/> — the object the process boundary hands back — into
+    /// <c>run.json</c>, so every step in between is the shipped code.</para>
+    /// </summary>
+    private static Stage2PlanSpec ObservedModelPlan() => new()
+    {
+        DefaultRunner = Pointer,
+        Runners =
+        [
+            PointerBlock,
+            new Stage2RunnerBlock
+            {
+                Name = ObservedRunner,
+                Model = ObservedRouteModel,
+                Strength = 2,
+                Tiers = [ActionTiers.Easy]
+            },
+            // No Model at all: the route resolves, names nothing, and provenance falls through to the
+            // display sentinel — the zero-setup operator's shape.
+            new Stage2RunnerBlock { Name = ObservedUnnamedRunner, Strength = 3, Tiers = [ActionTiers.Medium] }
+        ],
+        Tasks =
+        [
+            new Stage2TaskSpec
+            {
+                Id = ObservedMismatchTask,
+                Tier = ActionTiers.Easy,
+                Results = [Stage2PlanHarness.Success() with { ObservedModel = ObservedActualModel }]
+            },
+            new Stage2TaskSpec
+            {
+                Id = ObservedMatchTask,
+                Tier = ActionTiers.Easy,
+                Results = [Stage2PlanHarness.Success() with { ObservedModel = ObservedRouteModel }]
+            },
+            new Stage2TaskSpec
+            {
+                Id = ObservedSilentTask,
+                Tier = ActionTiers.Easy,
+                // Stated, not defaulted: this runner reports NO model, which is the whole fixture.
+                Results = [Stage2PlanHarness.Success()]
+            },
+            new Stage2TaskSpec
+            {
+                Id = ObservedUnnamedModelTask,
+                Tier = ActionTiers.Medium,
+                Results = [Stage2PlanHarness.Success()]
+            }
+        ]
+    };
+
+    /// <summary>
+    /// The two receipts every #349 clause takes BEFORE its first content assertion: the serial run really
+    /// settled serially, the deferred run really settled through the Scheduler's B1 settle, and that second
+    /// host really integrated a segment.
+    ///
+    /// <para>Taken up front for the reason the sibling clauses spell out at their own use sites — a failure
+    /// on the serial run would otherwise mask a second host that never took the path it claims, and "both
+    /// paths" would quietly be one path asserted twice. A field threaded through only
+    /// <c>AttemptJournaler</c> and not the Scheduler's deferred settle is not half-delivered: worktree mode
+    /// is what a real run takes, so it is invisible to nearly every user.</para>
+    /// </summary>
+    private static void AssertBothRecordPaths(Stage2RunResult serial, Stage2DeferredSettleRun deferred, string taskId)
+    {
+        AssertRecordPath(serial, taskId, deferredSettle: false);
+        AssertRecordPath(deferred.Result, taskId, deferredSettle: true);
+        Assert.True(
+            deferred.Integrations > 0,
+            $"the deferred-settle run integrated {deferred.Integrations} segment(s) — only the B1 settle " +
+            "integrates, so a zero here means the run took the serial record path after all.");
+    }
+
+    /// <summary>
+    /// The task settled SUCCEEDED — the floor under every provenance assertion, since only the success
+    /// settle paths hand a provenance to the journal. Without it a broken fixture reports "no provenance
+    /// recorded", which names the wrong defect.
+    /// </summary>
+    private static void AssertSettledGreen(Stage2RunResult run, string taskId, string path)
+    {
+        TaskResult result = ResultFor(run, taskId);
+        Assert.True(
+            result.Outcome == TaskOutcome.Succeeded,
+            $"[{path}] '{taskId}' settled '{result.Outcome}', expected '{TaskOutcome.Succeeded}' — a task " +
+            "must reach a SUCCEEDED attempt record for there to be a provenance to read at all. Summary: " +
+            $"{result.Summary}");
+    }
+
+    /// <summary>
+    /// The run's <c>state/run.json</c> as RAW JSON, parsed straight off disk.
+    ///
+    /// <para>Distinct from <see cref="Stage2RunResult.Journal"/>, and the difference is the point: a
+    /// deserialized <c>AttemptProvenance</c> cannot tell an ABSENT key from a <c>"key": null</c> one, and
+    /// <c>JournalJson</c> sets <c>DefaultIgnoreCondition = Never</c> — so a member declared without a
+    /// <c>WhenWritingNull</c> ignore grows a null key on every attempt in the file. The clauses that assert
+    /// on presence and absence read the keys themselves, which is what a human or a downstream tool sees.</para>
+    /// </summary>
+    private static JsonNode RunJsonOf(Stage2RunResult run)
+    {
+        string path = RunJournal.PathFor(run.PlanRoot);
+        Assert.True(File.Exists(path), $"the run wrote no journal at {path}.");
+
+        JsonNode? parsed = JsonNode.Parse(File.ReadAllText(path));
+        Assert.True(parsed is not null, $"{path} did not parse as JSON.");
+        return parsed!;
+    }
+
+    /// <summary>
+    /// EVERY attempt provenance object in this run's <c>run.json</c>, as raw JSON, with the task id and
+    /// attempt number carried along so a failure names the record it found.
+    /// </summary>
+    private static IReadOnlyList<(string TaskId, int Attempt, JsonObject Provenance)> AllProvenanceJson(Stage2RunResult run)
+    {
+        JsonObject? tasks = RunJsonOf(run)["tasks"]?.AsObject();
+        Assert.True(tasks is not null, "run.json carries no 'tasks' object at all.");
+
+        List<(string, int, JsonObject)> found = [];
+        foreach (KeyValuePair<string, JsonNode?> task in tasks!)
+        {
+            foreach (JsonNode? attempt in task.Value?["attempts"]?.AsArray() ?? [])
+            {
+                if (attempt?["provenance"] is JsonObject provenance)
+                {
+                    found.Add((task.Key, attempt["attempt"]?.GetValue<int>() ?? 0, provenance));
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>The one raw provenance object of <paramref name="taskId"/>'s <paramref name="attempt"/>.</summary>
+    private static JsonObject ProvenanceJson(Stage2RunResult run, string taskId, int attempt)
+    {
+        IReadOnlyList<(string TaskId, int Attempt, JsonObject Provenance)> all = AllProvenanceJson(run);
+        IReadOnlyList<(string TaskId, int Attempt, JsonObject Provenance)> matching =
+        [
+            .. all.Where(p => string.Equals(p.TaskId, taskId, StringComparison.Ordinal) && p.Attempt == attempt)
+        ];
+
+        Assert.True(
+            matching.Count == 1,
+            $"run.json carries {matching.Count} provenance object(s) for '{taskId}' attempt {attempt}, " +
+            $"expected exactly 1 (it recorded: {string.Join(", ", all.Select(p => p.TaskId + "#" + p.Attempt))}).");
+        return matching[0].Provenance;
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
