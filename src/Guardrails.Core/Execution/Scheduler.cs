@@ -1474,15 +1474,24 @@ public sealed class Scheduler
             // prefix it is — rather than discarding 79% of the work because of one missing file (§4.3).
             inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
 
-            (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
-                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
-
             // Read at FULL fidelity: the quarantine reason below has to say which of "no manifest" and "a
             // manifest that declares nothing" actually happened, and TryRead collapses them into one null.
+            // Read BEFORE the gate (#501) — whether the wave is a knowingly-incomplete prefix decides which
+            // errors the gate may fairly hold against it, so the gate cannot be the one to find out.
             BreakdownIntentRead intentRead = BreakdownIntent.Read(wave.Directory);
             BreakdownIntent? intent = intentRead.Usable;
             IReadOnlyList<string> missing = intent?.MissingFolders(wave.Directory) ?? [];
             int declared = intent?.DeclaredFolders().Count ?? 0;
+
+            (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
+                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir, wavePrefixIsIncomplete: missing.Count > 0);
+
+            // #501: tee the gate's reasoning beside the session's other artifacts, on EVERY path. The halt
+            // detail carries `report` only when the gate REJECTS, so a successful salvage — the interesting
+            // case, and the one that was silently not happening — previously left no record at all. This is
+            // the post-mortem the missing unit test cannot provide: the bug was found by reading a live run,
+            // so the live run has to be readable.
+            TeeBreakdownGateDecision(breakdownLogDir, wave, report, intentRead, declared, missing, outcome);
 
             // The settlements, decided ONCE and then both reported and acted on — so the phase event and the
             // branch below can never disagree about what happened. `quarantined` is the second FAIL route:
@@ -1776,8 +1785,14 @@ public sealed class Scheduler
     /// subprocess (and never the installed tool — dogfood safety). Returns whether the plan is error-free,
     /// the joined diagnostic report, and how many tasks the target wave now carries.
     /// </summary>
+    /// <param name="wavePrefixIsIncomplete">
+    /// True when a usable <c>breakdown-intent.json</c> still owes folders — i.e. the wave on disk is a
+    /// KNOWINGLY partial prefix rather than a finished wave. It suppresses the completeness errors that
+    /// such a prefix cannot satisfy by construction (see <see cref="UnsatisfiableWhileIncomplete"/>);
+    /// every other error still vetoes, because a prefix that is malformed is not worth resuming.
+    /// </param>
     private static (bool Valid, string Report, int AuthoredTaskCount, WaveNode? AuthoredWave) ValidatePlanAfterBreakdown(
-        string planDirectory, string waveDir)
+        string planDirectory, string waveDir, bool wavePrefixIsIncomplete = false)
     {
         var loader = new PlanLoader();
         PlanLoadResult loadResult = loader.Load(planDirectory);
@@ -1787,13 +1802,111 @@ public sealed class Scheduler
             diagnostics.AddRange(new PlanValidator().Validate(loadResult.Plan));
         }
 
-        bool valid = !diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
+        // #501. The gate asks "is this SOUND as far as it goes", not "is this a finished plan" — those are
+        // different questions and conflating them silently defeated the whole #385/#402 salvage. Measured
+        // on the first real JIT run: a wave cut off after 5 of 12 task folders had, by construction, no
+        // wave-root guardrails/ exit gate yet (breakdowns author tasks first, gates last), so GR2028 fired,
+        // `valid` went false, and the prefix the manifest existed to preserve was reverted wholesale — while
+        // GR2063 printed "the valid prefix is preserved and the JIT checkpoint resumes it" in the SAME halt.
+        // Suppressed errors stay in the report; they simply stop casting a veto they cannot fairly cast.
+        Diagnostic[] errors = diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        Diagnostic[] excused = wavePrefixIsIncomplete
+            ? errors.Where(UnsatisfiableWhileIncomplete).ToArray()
+            : [];
+        Diagnostic[] blocking = errors.Except(excused).ToArray();
+        bool valid = blocking.Length == 0;
         WaveNode? authoredWave = loadResult.Plan?.Waves
             .FirstOrDefault(w => string.Equals(w.Dir, waveDir, StringComparison.Ordinal));
         int authoredTaskCount = authoredWave?.Tasks.Count ?? 0;
-        string report = string.Join("\n", diagnostics.Select(d => d.ToString()));
+
+        // #501: say WHICH errors decided the verdict, and which were excused. Without this the two paths
+        // are indistinguishable from the outside — the original bug printed a full diagnostic report and
+        // a "prefix preserved" warning side by side, and nothing said which error had actually cast the
+        // veto. A reader could not tell a suppression that fired from one that never ran.
+        var header = new List<string>
+        {
+            $"gate verdict : {(valid ? "PASS" : "REJECT")}  (blocking={blocking.Length}, excused={excused.Length}, authoredTasks={authoredTaskCount})",
+            $"prefix state : {(wavePrefixIsIncomplete ? "KNOWINGLY INCOMPLETE (manifest still owes folders)" : "not flagged incomplete")}"
+        };
+        if (blocking.Length > 0)
+        {
+            header.Add($"blocking     : {string.Join(", ", blocking.Select(d => d.Code).Distinct())}");
+        }
+        if (excused.Length > 0)
+        {
+            header.Add($"excused (#501): {string.Join(", ", excused.Select(d => d.Code).Distinct())} — unsatisfiable while the wave is unfinished; NOT a veto");
+        }
+
+        string report = string.Join("\n", header.Concat(["", .. diagnostics.Select(d => d.ToString())]));
         return (valid, report, authoredTaskCount, authoredWave);
     }
+
+    /// <summary>
+    /// Errors a knowingly-INCOMPLETE wave prefix cannot satisfy by construction, and which must therefore
+    /// not veto its preservation (#501).
+    ///
+    /// <para>Deliberately a NAMED ALLOW-LIST of one, not a category. Every entry has to earn its place by
+    /// being unsatisfiable <i>because the wave is unfinished</i> — never merely inconvenient. The temptation
+    /// is to widen this to "completeness-ish" codes; that would turn the gate into a rubber stamp and the
+    /// resumed prefix into something nobody checked.</para>
+    ///
+    /// <para><b>GR2028</b> requires a parallel-topology wave's <c>guardrails/</c> exit gate to carry an
+    /// integration re-run. A breakdown authors task folders first and the wave gates last, so any truncation
+    /// leaves no exit gate at all — the error is a statement that the wave is unfinished, which is precisely
+    /// what the manifest already told us.</para>
+    ///
+    /// <para>Not here, on purpose: a malformed <c>task.json</c>, a bad reference, a cycle, a missing
+    /// <c>writeScope</c> (GR2041). Those say the prefix itself is wrong, and resuming onto a wrong prefix is
+    /// worse than re-authoring. GR2062 and GR2063 need no entry — both are WARNINGS and never vetoed.</para>
+    /// </summary>
+    /// <summary>
+    /// Tee the post-breakdown gate's reasoning to <c>gate-decision.txt</c> beside the session's stream and
+    /// transcript (#501). Best-effort by construction — a log write must never affect a run.
+    ///
+    /// <para><b>Why a file and not just the halt text.</b> The halt carries the validate report only when
+    /// the gate REJECTS. The case that actually went wrong was the opposite one: a prefix that should have
+    /// been kept and was not, with GR2063 announcing a resume that never came. That path printed no report,
+    /// so there was nothing to read afterwards. Recording the verdict, its inputs, and which errors were
+    /// excused makes the decision reconstructible from the logs on every path — which is the substitute
+    /// for the unit test this bug has so far resisted.</para>
+    /// </summary>
+    private static void TeeBreakdownGateDecision(
+        string breakdownLogDir,
+        WaveNode wave,
+        string report,
+        BreakdownIntentRead intentRead,
+        int declared,
+        IReadOnlyList<string> missing,
+        WaveBreakdownOutcome outcome)
+    {
+        try
+        {
+            Directory.CreateDirectory(breakdownLogDir);
+            string manifest = intentRead.Usable is not null
+                ? $"usable — declares {declared}, still owes {missing.Count}"
+                : $"NOT usable ({intentRead.Presence}) — no salvage is possible without one";
+
+            string text = string.Join("\n",
+            [
+                $"wave            : {wave.Dir}",
+                $"session ended   : {(outcome.TerminatedCleanly ? "cleanly" : outcome.FailureKindToken ?? "not cleanly")}"
+                    + $" (turns {outcome.NumTurns?.ToString() ?? "?"} of {outcome.MaxTurns?.ToString() ?? "?"})",
+                $"intent manifest : {manifest}",
+                missing.Count > 0 ? $"still owed      : {string.Join(", ", missing)}" : "still owed      : nothing",
+                "",
+                report,
+                ""
+            ]);
+            File.WriteAllText(Path.Combine(breakdownLogDir, "gate-decision.txt"), text);
+        }
+        catch
+        {
+            // Best-effort: diagnostics must never be able to fail a run.
+        }
+    }
+
+    internal static bool UnsatisfiableWhileIncomplete(Diagnostic diagnostic) =>
+        string.Equals(diagnostic.Code, DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, StringComparison.Ordinal);
 
     /// <summary>The hard cap on breakdown segments for ONE wave in ONE run (SSOT §14.11, design 20 §4.5).</summary>
     private const int MaxBreakdownSegments = 3;
@@ -1870,10 +1983,13 @@ public sealed class Scheduler
         {
             inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
 
-            (bool valid, _, int authoredTaskCount, _) =
-                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
             bool resumable = BreakdownIntent.TryRead(wave.Directory) is { } intent
                              && intent.MissingFolders(wave.Directory).Count > 0;
+
+            // Same #501 ordering as the gate above: `resumable` is exactly the "knowingly incomplete" fact,
+            // so it has to be known BEFORE the validate that decides whether to keep the prefix.
+            (bool valid, _, int authoredTaskCount, _) =
+                ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir, wavePrefixIsIncomplete: resumable);
 
             if (valid && authoredTaskCount > 0 && resumable)
             {
