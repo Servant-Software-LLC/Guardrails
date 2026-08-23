@@ -783,6 +783,13 @@ tiering as a working feature.
   PRESENCE is the mismatch signal, so there is no flag beside it and no key at all when the two agree.
   There is **no `resolvedModel` key** -- refused, not deferred (one field per fact, plus a second field
   only for the disagreement). Wire shape: SSOT section 7.
+- **Both are now IN FRONT OF THE OPERATOR** (#349, Stage 3). The per-attempt `attempt-route.log` preamble
+  names a literal **`requested model:`** key ONLY when the runner echoed something other than the route
+  asked for -- its PRESENCE is the mismatch signal -- which is also why that log is RE-WRITTEN once the
+  action returns: the observed model is not known when the attempt launches. The same pair reaches the live
+  table and the `--no-ui` stream through **`IRunObserver.AttemptModelResolved`**, whose default no-op body
+  means a transparent decorator must forward it EXPLICITLY or the disclosure is swallowed silently. Neither
+  surface re-derives the comparison; both read the folded provenance. Details: SSOT sections 8 and 9.6.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.

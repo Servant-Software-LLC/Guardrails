@@ -3102,7 +3102,11 @@ logs/<runId>/<task-id>/attempt-N/
 ├── attempt-route.log        # #201: the HUMAN-readable twin of the route half above — resolved runner block /
                              #   model / effort, the rung REQUESTED vs the rung SERVED, the tierSource, and the
                              #   two loud lines §9.6 requires (a climb, and a binding costly ceiling from
-                             #   attempt 2). Absent when no route resolved (a script action)
+                             #   attempt 2), plus a `requested model:` line present ONLY when the runner echoed
+                             #   something other than the route asked for (#349, §9.6); RE-WRITTEN once the
+                             #   action returns, exactly like its attempt-provenance.json sibling above, because
+                             #   the observed model is not known when the attempt launches. Absent when no route
+                             #   resolved (a script action)
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
 ├── action-out-fragment.json # the harness-PROMOTED GUARDRAILS_STATE_OUT result (§9.5); a SCRIPT
@@ -4477,6 +4481,33 @@ the `tierSource` — plus two loud lines:
 Both facts are **read off the resolution**, not re-derived — re-testing the `costly` flag at the
 disclosure site would be a second copy of the one candidacy predicate. **This changes what is LOGGED,
 never what is SELECTED:** a warning is not a new path to a costly model.
+
+**The model mismatch, on that same preamble (#349).** `model:` now names the attempt's
+**best-known-actual** model (§7), so what it can no longer carry is the REQUEST. The file therefore also
+names the literal key **`requested model:`** — what the route asked for — **present ONLY when the runner
+echoed something else**. Its *presence* is the mismatch signal: there is no separate flag, and a line
+written on every attempt would be a duplicate of `model:` in the overwhelmingly common agreeing case,
+destroying exactly the signal the `requestedModel` contract refuses to destroy. It is the exact sibling
+of the `requested tier:` / `served tier:` pair already there, in the same one-`key: value`-per-line idiom
+the rest of the file uses — and deliberately **not** a `WARNING:` line: a provider serving something else
+is a disclosure about what RAN, not a route the harness changed. It is also why the log is **re-written
+once the action returns**, like its `attempt-provenance.json` sibling (§8): the observed model is not
+known when the attempt launches, so the launch-time write — which must exist, since an attempt that dies
+before the runner returns still owes a route log — is superseded by a second one made from the folded
+provenance object. Like the climb and the ceiling, **this changes what is LOGGED, never what is
+SELECTED:** the fold decided the pair once, at the attempt, and neither write re-derives either half.
+
+**The live twin — `IRunObserver.AttemptModelResolved`.** The route log is a file an operator opens after
+the fact; the same pair also reaches the live task table and the `--no-ui` plain stream *while the run is
+going*, which is when a substituted model is still worth acting on. The event carries the
+best-known-actual model plus the requested one **only on disagreement** — the two fields the fold
+produced, handed across verbatim, so no surface re-decides *"did the provider serve something else"* and
+none can drift from the `run.json` it is showing. It has a **default no-op body**, so a non-CLI observer
+need not handle it — but a transparent **DECORATOR must forward it EXPLICITLY**, or the call resolves to
+that empty body and the disclosure is swallowed silently, exactly as an unforwarded
+`VerifierAdvisoryFound` would be. That is not a corner case: the on-the-fly log-site and diagram
+decorators are stacked around the real observer in **both** the live and the plain path, so an
+unforwarded event reaches no operator in any mode.
 
 **Provider unavailability — connection failures ride the shipped #115 pause.** A failure to *reach* the
 provider is classified **`Transient`** by the runner quarantine (§9) and routed to the shipped
