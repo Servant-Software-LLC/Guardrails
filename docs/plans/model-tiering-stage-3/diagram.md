@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=57531827097e1f90345ad7d319c9731f7be55184e007a93a30d6cd35354f8c5c -->
+<!-- guardrails:graph v1 source-sha256=b1bd000746520df5691efc8b16ea51c1a868f0d04799d0f9324c3fa954d38b4f -->
 
 ```mermaid
 flowchart TD
@@ -163,14 +163,38 @@ flowchart TD
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5_preflights["Wave 5 Entry Gate"]
+    wave_5_preflights_0["01-tier-vocabulary-materialized"]:::preflight
   end
   style wave_5_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5["Wave 5 — review-net"]
-    wave_5_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_5_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_05_review_net_01_author_tests_tier_classification_audit["01-author-tests-tier-classification-audit"]
+      task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_1["02-tests-red-census"]:::guardrail
+    end
+    style task_wave_05_review_net_01_author_tests_tier_classification_audit fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_review_net_02_implement_tier_classification_audit["02-implement-tier-classification-audit"]
+      task_wave_05_review_net_02_implement_tier_classification_audit_pf_0["01-stub-delivered"]:::preflight
+      task_wave_05_review_net_02_implement_tier_classification_audit_gr_0["01-no-diagnostic-code-no-validator"]:::guardrail
+      task_wave_05_review_net_02_implement_tier_classification_audit_gr_1["02-audit-tests-pass"]:::guardrail
+    end
+    style task_wave_05_review_net_02_implement_tier_classification_audit fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_review_net_03_author_tests_review_net_doctrine["03-author-tests-review-net-doctrine"]
+      task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_1["02-anchors-red-census"]:::guardrail
+    end
+    style task_wave_05_review_net_03_author_tests_review_net_doctrine fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_review_net_04_add_model_appropriateness_probe["04-add-model-appropriateness-probe"]
+      task_wave_05_review_net_04_add_model_appropriateness_probe_pf_0["01-anchors-delivered"]:::preflight
+      task_wave_05_review_net_04_add_model_appropriateness_probe_gr_0["01-review-skill-intact"]:::guardrail
+      task_wave_05_review_net_04_add_model_appropriateness_probe_gr_1["02-anchor-tests-pass"]:::guardrail
+    end
+    style task_wave_05_review_net_04_add_model_appropriateness_probe fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_5 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_5_guardrails["Wave 5 Exit Gate"]
+    wave_5_guardrails_0["01-solution-builds"]:::guardrail
+    wave_5_guardrails_1["02-suites-pass"]:::guardrail
+    wave_5_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style wave_5_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
@@ -209,8 +233,12 @@ flowchart TD
   task_wave_04_report_and_cleanup_02_implement_models_used_report --> task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge
   task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder --> task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge
   task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge --> wave_4_guardrails
-  wave_5_preflights --> wave_5_stub
-  wave_5_stub --> wave_5_guardrails
+  wave_5_preflights --> task_wave_05_review_net_01_author_tests_tier_classification_audit
+  wave_5_preflights --> task_wave_05_review_net_03_author_tests_review_net_doctrine
+  task_wave_05_review_net_01_author_tests_tier_classification_audit --> task_wave_05_review_net_02_implement_tier_classification_audit
+  task_wave_05_review_net_03_author_tests_review_net_doctrine --> task_wave_05_review_net_04_add_model_appropriateness_probe
+  task_wave_05_review_net_02_implement_tier_classification_audit --> wave_5_guardrails
+  task_wave_05_review_net_04_add_model_appropriateness_probe --> wave_5_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
   wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights

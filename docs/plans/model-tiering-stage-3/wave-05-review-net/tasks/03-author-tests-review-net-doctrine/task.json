@@ -1,0 +1,8 @@
+{
+  "description": "Author the failing ModelAppropriatenessDoctrineAnchorTests - the fourteen verbatim clauses and three placements the /guardrails-review model-appropriateness probe must carry, red against the skill as it stands today",
+  "dependsOn": [],
+  "stableId": "s3w5t3",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/ModelAppropriatenessDoctrineAnchorTests.cs"
+  ]
+}

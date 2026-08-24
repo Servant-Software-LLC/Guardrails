@@ -1,0 +1,13 @@
+{
+  "description": "Author the failing TierClassificationAuditTests, the committed tier-tags fixture pair, and the throwing TierClassificationAudit stub - this wave's TDD red for the deterministic missing-classification finding",
+  "dependsOn": [],
+  "stableId": "s3w5t1",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/TierClassificationAudit.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/TierClassificationAuditTests.cs",
+    "tests/Guardrails.Core.Tests/TestData/tier-tags/"
+  ],
+  "action": {
+    "maxTurns": 100
+  }
+}

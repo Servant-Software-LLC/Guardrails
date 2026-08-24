@@ -1,0 +1,13 @@
+{
+  "description": "Implement TierClassificationAudit over the stub so all eleven authored tests pass - including the two graceful-skip silence facts, whose green only means something here",
+  "dependsOn": [
+    "01-author-tests-tier-classification-audit"
+  ],
+  "stableId": "s3w5t2",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/TierClassificationAudit.cs"
+  ],
+  "action": {
+    "maxTurns": 100
+  }
+}

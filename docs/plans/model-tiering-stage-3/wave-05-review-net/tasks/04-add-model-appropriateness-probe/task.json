@@ -1,0 +1,13 @@
+{
+  "description": "Write the model-appropriateness probe into guardrails-review/SKILL.md - the section-2 probe, its section-6 report line and its Quality bar item - so the authored doctrine anchors go green",
+  "dependsOn": [
+    "03-author-tests-review-net-doctrine"
+  ],
+  "stableId": "s3w5t4",
+  "writeScope": [
+    ".claude/skills/guardrails-review/SKILL.md"
+  ],
+  "action": {
+    "maxTurns": 100
+  }
+}

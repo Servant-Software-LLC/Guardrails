@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=a52f92a70d828bd094be220e276b028f0172ab53cc85bd9059ed711c22c086d0 -->
+<!-- guardrails:graph v1 source-sha256=1519636f3f752cf419159640ae650e898f78a55dfd9e939c86b81aa915c219c5 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -92,14 +92,60 @@
 
 <script type="text/plain" id="graph-source">flowchart TD
   subgraph plan_preflights["Full Flight Checks"]
+    plan_preflights_0["01-tier-vocabulary-materialized"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph task_wave_05_review_net_01_author_tests_tier_classification_audit["wave-05-review-net/01-author-tests-tier-classification-audit"]
+    task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_0["01-tests-build"]:::guardrail
+    task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_1["02-tests-red-census"]:::guardrail
+  end
+  style task_wave_05_review_net_01_author_tests_tier_classification_audit fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_05_review_net_02_implement_tier_classification_audit["wave-05-review-net/02-implement-tier-classification-audit"]
+    task_wave_05_review_net_02_implement_tier_classification_audit_pf_0["01-stub-delivered"]:::preflight
+    task_wave_05_review_net_02_implement_tier_classification_audit_gr_0["01-no-diagnostic-code-no-validator"]:::guardrail
+    task_wave_05_review_net_02_implement_tier_classification_audit_gr_1["02-audit-tests-pass"]:::guardrail
+  end
+  style task_wave_05_review_net_02_implement_tier_classification_audit fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_05_review_net_03_author_tests_review_net_doctrine["wave-05-review-net/03-author-tests-review-net-doctrine"]
+    task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_0["01-tests-build"]:::guardrail
+    task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_1["02-anchors-red-census"]:::guardrail
+  end
+  style task_wave_05_review_net_03_author_tests_review_net_doctrine fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_05_review_net_04_add_model_appropriateness_probe["wave-05-review-net/04-add-model-appropriateness-probe"]
+    task_wave_05_review_net_04_add_model_appropriateness_probe_pf_0["01-anchors-delivered"]:::preflight
+    task_wave_05_review_net_04_add_model_appropriateness_probe_gr_0["01-review-skill-intact"]:::guardrail
+    task_wave_05_review_net_04_add_model_appropriateness_probe_gr_1["02-anchor-tests-pass"]:::guardrail
+  end
+  style task_wave_05_review_net_04_add_model_appropriateness_probe fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
+    plan_guardrails_0["01-solution-builds"]:::guardrail
+    plan_guardrails_1["02-suites-pass"]:::guardrail
+    plan_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  plan_preflights --> task_wave_05_review_net_01_author_tests_tier_classification_audit
+  plan_preflights --> task_wave_05_review_net_03_author_tests_review_net_doctrine
+  task_wave_05_review_net_01_author_tests_tier_classification_audit --> task_wave_05_review_net_02_implement_tier_classification_audit
+  task_wave_05_review_net_03_author_tests_review_net_doctrine --> task_wave_05_review_net_04_add_model_appropriateness_probe
+  task_wave_05_review_net_02_implement_tier_classification_audit --> plan_guardrails
+  task_wave_05_review_net_04_add_model_appropriateness_probe --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
-  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;</script>
-<script type="application/json" id="task-folder-targets">{}</script>
+  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
+  click plan_preflights_0 href "preflights/01-tier-vocabulary-materialized.ps1" "01-tier-vocabulary-materialized" _blank
+  click task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_0 href "tasks/01-author-tests-tier-classification-audit/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_05_review_net_01_author_tests_tier_classification_audit_gr_1 href "tasks/01-author-tests-tier-classification-audit/guardrails/02-tests-red-census.ps1" "02-tests-red-census" _blank
+  click task_wave_05_review_net_02_implement_tier_classification_audit_pf_0 href "tasks/02-implement-tier-classification-audit/preflights/01-stub-delivered.ps1" "01-stub-delivered" _blank
+  click task_wave_05_review_net_02_implement_tier_classification_audit_gr_0 href "tasks/02-implement-tier-classification-audit/guardrails/01-no-diagnostic-code-no-validator.ps1" "01-no-diagnostic-code-no-validator" _blank
+  click task_wave_05_review_net_02_implement_tier_classification_audit_gr_1 href "tasks/02-implement-tier-classification-audit/guardrails/02-audit-tests-pass.ps1" "02-audit-tests-pass" _blank
+  click task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_0 href "tasks/03-author-tests-review-net-doctrine/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_05_review_net_03_author_tests_review_net_doctrine_gr_1 href "tasks/03-author-tests-review-net-doctrine/guardrails/02-anchors-red-census.ps1" "02-anchors-red-census" _blank
+  click task_wave_05_review_net_04_add_model_appropriateness_probe_pf_0 href "tasks/04-add-model-appropriateness-probe/preflights/01-anchors-delivered.ps1" "01-anchors-delivered" _blank
+  click task_wave_05_review_net_04_add_model_appropriateness_probe_gr_0 href "tasks/04-add-model-appropriateness-probe/guardrails/01-review-skill-intact.ps1" "01-review-skill-intact" _blank
+  click task_wave_05_review_net_04_add_model_appropriateness_probe_gr_1 href "tasks/04-add-model-appropriateness-probe/guardrails/02-anchor-tests-pass.ps1" "02-anchor-tests-pass" _blank
+  click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
+  click plan_guardrails_1 href "guardrails/02-suites-pass.ps1" "02-suites-pass" _blank
+  click plan_guardrails_2 href "guardrails/03-wave-deliverables-present.ps1" "03-wave-deliverables-present" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_05_review_net_01_author_tests_tier_classification_audit":"tasks/01-author-tests-tier-classification-audit/","task_wave_05_review_net_02_implement_tier_classification_audit":"tasks/02-implement-tier-classification-audit/","task_wave_05_review_net_03_author_tests_review_net_doctrine":"tasks/03-author-tests-review-net-doctrine/","task_wave_05_review_net_04_add_model_appropriateness_probe":"tasks/04-add-model-appropriateness-probe/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
