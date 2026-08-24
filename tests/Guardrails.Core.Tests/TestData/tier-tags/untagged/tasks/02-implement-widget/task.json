@@ -1,0 +1,6 @@
+{
+  "description": "Implement the Widget. Discharged by a MODEL pin, so no tier is owed.",
+  "dependsOn": ["01-author-widget-tests"],
+  "writeScope": ["src/Guardrails.Core/Model/Widget.cs"],
+  "action": { "model": "claude-opus-5" }
+}

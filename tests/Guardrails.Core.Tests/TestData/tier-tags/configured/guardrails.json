@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "routing": { "tiers": ["easy", "medium", "hard"] }
+    }
+  },
+  "tiering": { "defaultTier": "medium" }
+}

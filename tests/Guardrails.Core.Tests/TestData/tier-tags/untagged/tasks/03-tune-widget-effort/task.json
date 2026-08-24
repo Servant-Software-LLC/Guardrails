@@ -1,0 +1,6 @@
+{
+  "description": "Tune the Widget defaults. Discharged by an EFFORT pin, so no tier is owed.",
+  "dependsOn": ["02-implement-widget"],
+  "writeScope": ["src/Guardrails.Core/Model/WidgetDefaults.cs"],
+  "action": { "effort": "xhigh" }
+}
