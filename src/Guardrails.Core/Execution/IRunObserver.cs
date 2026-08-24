@@ -140,6 +140,28 @@ public interface IRunObserver
     void WaveFinished(Model.WaveNode wave, Journal.WaveStatus status, bool skipped) { }
 
     /// <summary>
+    /// A wave's ENTRY gate (<paramref name="isEntryGate"/> true — its <c>preflights/</c>) or EXIT gate
+    /// (false — its <c>guardrails/</c>) finished, carrying every check's result in the wave's own order
+    /// (issue #513). Default no-op.
+    ///
+    /// <para><b>Why this exists.</b> Per-TASK guardrail results reach observers through
+    /// <see cref="GuardrailFinished"/>; wave-level gate results reached them through nothing at all. The
+    /// diagram consequently rendered a gate that ran and passed identically to one that never ran — and an
+    /// operator reading a finished run asked, correctly, whether the wave-2 exit gate had executed. It
+    /// had: a whole-solution build plus both suites unfiltered, 10m44s. The work happened and the record
+    /// could not say so.</para>
+    ///
+    /// <para><b>A transparent DECORATOR must forward this EXPLICITLY.</b> It is a default-method member,
+    /// so a decorator that does not declare it inherits the empty body and swallows the event in every
+    /// mode — the identical trap <c>AttemptModelResolved</c> carries, and the reason both are asserted on
+    /// the decorators themselves rather than only on the renderer.</para>
+    /// </summary>
+    void WaveGateFinished(
+        Model.WaveNode wave,
+        bool isEntryGate,
+        IReadOnlyList<Journal.PlanPreflightCheck> checks) { }
+
+    /// <summary>
     /// The between-wave JIT breakdown (SSOT §14.4, doc 11 §9) is STARTING for an unauthored wave. Raised
     /// from INSIDE the Spectre live region, so an implementation must not write plain lines (#145/#372) —
     /// the shipped renderer drives a synthetic table row and at most one gated <c>MarkupLine</c>.

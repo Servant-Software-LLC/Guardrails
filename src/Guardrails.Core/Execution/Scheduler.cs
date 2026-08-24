@@ -996,6 +996,11 @@ public sealed class Scheduler
             LogDir = relativeLogDir
         });
 
+        // #513: the journal has always recorded this; no observer ever heard it, so no surface could
+        // render it. Raised AFTER the journal write so an observer can never see a result the record does
+        // not already hold.
+        _observer.WaveGateFinished(wave, isEntryGate: true, checks);
+
         return new GateOutcome(result.Passed, result.FailedGuardrails, relativeLogDir);
     }
 
@@ -1040,6 +1045,10 @@ public sealed class Scheduler
             Checks = checks,
             LogDir = relativeLogDir
         });
+
+        // #513, the exit half. This is the widest-blast-radius check in the plan and was the one the
+        // operator noticed missing from the diagram.
+        _observer.WaveGateFinished(wave, isEntryGate: false, checks);
 
         return new GateOutcome(result.Passed, result.FailedGuardrails, relativeLogDir);
     }

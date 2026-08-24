@@ -340,6 +340,26 @@ public static class MermaidRenderer
             planGuardrailLeaves[check.Name] = $"{PlanGuardrailsId}_{ordinal}";
         }
 
+        // Wave entry/exit gate leaves (issue #513). These nodes were always EMITTED — the diagram has
+        // shown a "Wave N Entry Gate" box since waves landed — but they were absent from this index, so
+        // nothing could ever badge them and a gate that ran and passed rendered identically to one that
+        // never ran. The ids mirror what AppendPlanLevelContainer passes to AppendCheckNodes for
+        // `wave_<N>_preflights` / `wave_<N>_guardrails`, so the same ordinal-by-name order applies.
+        var waveEntryLeaves = new Dictionary<(string, string), string>();
+        var waveExitLeaves = new Dictionary<(string, string), string>();
+        foreach (WaveNode wave in plan.Waves)
+        {
+            foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(wave.Preflights))
+            {
+                waveEntryLeaves[(wave.Dir, check.Name)] = $"wave_{wave.Number}_preflights_{ordinal}";
+            }
+
+            foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(wave.Guardrails))
+            {
+                waveExitLeaves[(wave.Dir, check.Name)] = $"wave_{wave.Number}_guardrails_{ordinal}";
+            }
+        }
+
         return new DiagramStatusNodes
         {
             TaskContainers = taskContainers,
@@ -347,6 +367,8 @@ public static class MermaidRenderer
             TaskPreflightLeaves = taskPreflightLeaves,
             PlanPreflightLeaves = planPreflightLeaves,
             PlanGuardrailLeaves = planGuardrailLeaves,
+            WaveEntryGateLeaves = waveEntryLeaves,
+            WaveExitGateLeaves = waveExitLeaves,
         };
     }
 
@@ -983,6 +1005,24 @@ public sealed record DiagramStatusNodes
 
     /// <summary>plan-guardrail Name → the leaf id <c>plan_guardrails_&lt;ordinal&gt;</c>.</summary>
     public required IReadOnlyDictionary<string, string> PlanGuardrailLeaves { get; init; }
+
+    /// <summary>
+    /// <c>(wave.Dir, entry-check Name)</c> → the leaf id <c>wave_&lt;N&gt;_preflights_&lt;ordinal&gt;</c>
+    /// (issue #513). Absent before that issue, which is why a wave ENTRY gate that ran and passed
+    /// rendered identically to one that never ran: the node was emitted, indexed nowhere, and a node
+    /// absent from the status map gets no badge.
+    /// </summary>
+    public IReadOnlyDictionary<(string WaveDir, string CheckName), string> WaveEntryGateLeaves { get; init; } =
+        new Dictionary<(string, string), string>();
+
+    /// <summary>
+    /// <c>(wave.Dir, exit-check Name)</c> → the leaf id <c>wave_&lt;N&gt;_guardrails_&lt;ordinal&gt;</c>
+    /// (issue #513). The wave EXIT gate is the widest-blast-radius check in the plan — on the run that
+    /// surfaced this it ran a whole-solution build and both suites unfiltered for 10m44s — and it was
+    /// exactly as unbadged as the entry gate.
+    /// </summary>
+    public IReadOnlyDictionary<(string WaveDir, string CheckName), string> WaveExitGateLeaves { get; init; } =
+        new Dictionary<(string, string), string>();
 
     /// <summary>The plan-level "Full Flight Checks" bracket container id (for its container-level badge).</summary>
     public string PlanPreflightsContainerId => "plan_preflights";

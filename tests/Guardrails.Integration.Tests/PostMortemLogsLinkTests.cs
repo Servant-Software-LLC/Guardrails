@@ -22,14 +22,30 @@ public sealed class PostMortemLogsLinkTests
         OperatingSystem.IsWindows() ? @"C:\Dev AI\plan\state\logs" : "/tmp/dev ai/plan/state/logs";
 
     [Fact]
-    public void Hyperlink_Disabled_ReturnsPlainPath_WithNoEscapeBytes()
+    public void Hyperlink_Disabled_ReturnsFileUri_WithNoEscapeBytes()
     {
+        // #514 changed the DISABLED spelling from a bare path to a file:// URI. The property this test
+        // has always guarded — no OSC 8 noise in redirected/incapable output — is unchanged and still
+        // asserted below; what moved is only the form, and the URI is the strictly more useful one
+        // (paste-able into a browser, and free of the backslashes that make a Windows path awkward to
+        // copy out of a terminal). The bare-path form now appears only for a value that cannot be made
+        // into a URI at all.
         string rendered = RunCommand.Hyperlink(SamplePath, enabled: false);
 
-        Assert.Equal(SamplePath, rendered);
+        Assert.Equal(new Uri(SamplePath).AbsoluteUri, rendered);
+        Assert.StartsWith("file://", rendered, StringComparison.Ordinal);
         // Char overload = ordinal: the string overload of DoesNotContain is culture-sensitive and
         // ESC (U+001B) is an ignorable char that "matches" at pos 0 of any string — a false positive.
         Assert.DoesNotContain((char)27, rendered); // no OSC 8 noise in redirected/incapable output
+    }
+
+    [Fact]
+    public void Hyperlink_FallsBackToTheRawValue_WhenItCannotBeAUri()
+    {
+        // The third state (#514): a relative or empty value is returned untouched rather than throwing.
+        // This is a convenience line in the middle of a run report and must never be what fails a run.
+        Assert.Equal("not/absolute", RunCommand.Hyperlink("not/absolute", enabled: false));
+        Assert.Equal(string.Empty, RunCommand.Hyperlink(string.Empty, enabled: true));
     }
 
     [Fact]
@@ -58,8 +74,16 @@ public sealed class PostMortemLogsLinkTests
         // The link line carries the ABSOLUTE logs/<runId>/ root (the #59 bug was a relative path);
         // post-plan-08 the per-attempt artifacts live under logs/<runId>/, NOT state/logs/ (SSOT §8).
         string linkLine = output.Split('\n').Single(l => l.Contains("post-mortem any task"));
-        Assert.Contains(Path.Combine(plan.PlanDir, "logs"), linkLine);
-        Assert.DoesNotContain(Path.Combine(plan.PlanDir, "state", "logs"), linkLine);
+
+        // #514 renders this pointer as a file:// URI. Both halves of the #59 guard are therefore compared
+        // in URI form — the point is NOT to make the assertion pass, it is to keep it ABLE TO FAIL: a
+        // Windows path matches nothing inside a percent-encoded forward-slash URI, so leaving these as
+        // Path.Combine would have quietly turned the regression guard into a clause that can never fire
+        // (and a later regression back to state/logs would sail through green).
+        string logsUri = new Uri(Path.Combine(plan.PlanDir, "logs")).AbsoluteUri;
+        string stateLogsUri = new Uri(Path.Combine(plan.PlanDir, "state", "logs")).AbsoluteUri;
+        Assert.Contains(logsUri, linkLine);
+        Assert.DoesNotContain(stateLogsUri, linkLine);
 
         // The <task-id>/attempt-N placeholders moved off the link onto the guidance line.
         Assert.DoesNotContain("<task-id>", linkLine);

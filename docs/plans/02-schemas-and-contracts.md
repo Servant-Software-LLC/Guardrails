@@ -3872,6 +3872,26 @@ cut off — the folder is on disk and a cut-off session can leave a valid prefix
 could not do the job (bad input, no resolvable runner, non-empty target without `--force`). The `2`/`1` split
 is deliberate: they need opposite responses — read the folder, versus fix the invocation.
 
+**Wave GATE visibility — `IRunObserver.WaveGateFinished` (issue #513).** Per-TASK guardrail results reach
+observers through `GuardrailFinished`; wave-level ENTRY/EXIT gate results reached them through **nothing at
+all**, so no surface could render them and the diagram badged a gate that ran and passed identically to one
+that never ran. Measured: an operator reading a finished run asked whether the wave-2 exit gate had
+executed — it had, running a whole-solution build plus both suites unfiltered for 10m44s.
+
+```csharp
+void WaveGateFinished(WaveNode wave, bool isEntryGate, IReadOnlyList<PlanPreflightCheck> checks) { }
+```
+
+Raised from both `RunWaveEntryGateAsync` and `RunWaveExitGateAsync` **after** the journal write, so an
+observer can never see a result the record does not already hold. It carries every check's own verdict
+(unlike the plan-level phases, which settle all leaves from one boolean because they have no per-check
+event), so a gate with one failing check among four badges exactly the one that failed. Default no-op body,
+and — like every default-method member here — **a transparent decorator must declare and forward it
+EXPLICITLY** or the event is swallowed in every mode; that obligation is pinned by a reflection sweep over
+the CLI assembly rather than by naming today's two decorators. `MermaidRenderer.StatusNodes` gained
+`WaveEntryGateLeaves` / `WaveExitGateLeaves` for the same issue: the gate nodes were always *emitted* and
+indexed nowhere, and a node absent from the status map gets no badge.
+
 **Phase visibility — the two `IRunObserver` members (issue #469, design of record `docs/plans/23-jit-breakdown-visibility.md`).**
 `WaveStarting` fires only *after* the JIT checkpoint, so until #469 **not one observer event fired during a
 breakdown** — a wave could be authored for 30 minutes with no signal of any kind, while the live table (which

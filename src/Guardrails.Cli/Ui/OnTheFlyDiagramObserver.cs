@@ -235,6 +235,34 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void WaveFinished(WaveNode wave, WaveStatus status, bool skipped) =>
         _inner.WaveFinished(wave, status, skipped);
 
+    /// <summary>
+    /// Badge a wave's entry/exit gate leaves from their PER-CHECK results (issue #513). Declared
+    /// explicitly rather than inherited, for the reason the interface's own doc gives: a default-method
+    /// member a decorator does not declare is swallowed, and this class is a decorator.
+    ///
+    /// <para>Unlike the plan-level phases — which settle every leaf from one boolean because they have no
+    /// per-check event — this carries each check's own verdict, so a gate with one failing check among
+    /// four badges exactly the one that failed.</para>
+    /// </summary>
+    public void WaveGateFinished(
+        WaveNode wave, bool isEntryGate, IReadOnlyList<Core.Journal.PlanPreflightCheck> checks)
+    {
+        _inner.WaveGateFinished(wave, isEntryGate, checks);
+        IReadOnlyDictionary<(string WaveDir, string CheckName), string> leaves =
+            isEntryGate ? _nodes.WaveEntryGateLeaves : _nodes.WaveExitGateLeaves;
+
+        UpdateAndRenderDuringRun(map =>
+        {
+            foreach (Core.Journal.PlanPreflightCheck check in checks)
+            {
+                if (leaves.TryGetValue((wave.Dir, check.Name), out string? id))
+                {
+                    map[id] = check.Passed ? Passed : Failed;
+                }
+            }
+        });
+    }
+
     // --- projection --------------------------------------------------------------------------------
 
     /// <summary>

@@ -2005,16 +2005,49 @@ public static class RunCommand
     /// stays a pure, testable function. Public (not private) because the Cli assembly ships no
     /// InternalsVisibleTo — same rationale as <see cref="LogsCommand"/>'s test seams.
     /// </summary>
+    /// <summary>
+    /// Render an operator-facing path as the most openable form the terminal supports, in THREE states
+    /// (issue #514): an OSC-8 hyperlink when the terminal advertises links, else a <c>file://</c> URI, and
+    /// a bare path only when the value cannot be made into one.
+    ///
+    /// <para><b>The middle state is the fix.</b> This used to fall straight from OSC-8 to the raw path, so
+    /// on a terminal without link support the wave-review halt printed
+    /// <c>C:\…\wave-04-report-and-cleanup\diagram.html</c> while <c>guardrails graph</c> — which carried a
+    /// URI fallback of its own — printed <c>file:///C:/…/diagram.html</c> in the same run. The bare form is
+    /// the worse one even where nothing makes it clickable: it is not paste-able into a browser unmodified,
+    /// and on Windows its backslashes make it awkward to copy out of a terminal. Every caller of this
+    /// method is printing something the operator is expected to OPEN.</para>
+    /// </summary>
     public static string Hyperlink(string absolutePath, bool enabled)
     {
-        if (!enabled)
+        // A value we cannot turn into a URI (relative, malformed, empty) is returned untouched rather than
+        // throwing: this is a convenience line in the middle of a report and must never be the thing that
+        // fails a run.
+        string? fileUri = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(absolutePath) && Path.IsPathFullyQualified(absolutePath))
+            {
+                fileUri = new Uri(absolutePath).AbsoluteUri;
+            }
+        }
+        catch (UriFormatException)
+        {
+            fileUri = null;
+        }
+
+        if (fileUri is null)
         {
             return absolutePath;
         }
 
+        if (!enabled)
+        {
+            return fileUri;
+        }
+
         const string esc = "\u001b";
-        string uri = new Uri(absolutePath).AbsoluteUri;
-        return $"{esc}]8;;{uri}{esc}\\{absolutePath}{esc}]8;;{esc}\\";
+        return $"{esc}]8;;{fileUri}{esc}\\{absolutePath}{esc}]8;;{esc}\\";
     }
 
     internal static string StatusLabel(TaskOutcome outcome) => outcome switch

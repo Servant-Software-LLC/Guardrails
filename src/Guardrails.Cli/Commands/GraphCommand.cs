@@ -353,11 +353,11 @@ public static partial class GraphCommand
     /// </summary>
     private static void PrintDiagramLink(string diagramHtmlPath, TextWriter output)
     {
+        // The URI fallback that used to live here now lives in Hyperlink itself (#514), so every
+        // operator-facing path in the CLI degrades the same way. Keeping a second copy here is what let
+        // the run's own halt print a bare path while this line printed a file:// URI in the same run.
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
-        string link = linkable
-            ? RunCommand.Hyperlink(diagramHtmlPath, true)
-            : new Uri(diagramHtmlPath).AbsoluteUri;
-        output.WriteLine($"Diagram (interactive): {link}");
+        output.WriteLine($"Diagram (interactive): {RunCommand.Hyperlink(diagramHtmlPath, linkable)}");
     }
 
     /// <summary>

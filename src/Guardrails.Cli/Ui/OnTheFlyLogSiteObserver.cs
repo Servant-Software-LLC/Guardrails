@@ -214,6 +214,12 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void WaveFinished(WaveNode wave, Core.Journal.WaveStatus status, bool skipped) =>
         _inner.WaveFinished(wave, status, skipped);
 
+    // #513: declared EXPLICITLY, not inherited. A default-method member a decorator does not declare is
+    // swallowed here and never reaches the renderer behind it.
+    public void WaveGateFinished(
+        WaveNode wave, bool isEntryGate, IReadOnlyList<Core.Journal.PlanPreflightCheck> checks) =>
+        _inner.WaveGateFinished(wave, isEntryGate, checks);
+
     // --- the JIT breakdown phase (issue #469) -----------------------------------------------
 
     // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these
