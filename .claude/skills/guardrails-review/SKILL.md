@@ -172,6 +172,71 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
     covered** — a review listing only what it verified reads as coverage it does not have. Keep that
     distinct from the ordinary *no model named* case (`model` null at both sites, so the runner is simply
     never passed `--model`): nothing is named, nothing is deferred, and there is nothing to check.
+- **Model-appropriateness — the tag-quality net (#229 · `model-tiering-stage-3` charter §C)**: the third
+  advisory surface of the tiering work, and the only one that fires at ZERO SPEND — the other two (the
+  startup preflight line and the per-attempt JIT re-check) fire during a run, so a mis-tag they surface
+  has already been paid for. Two findings of deliberately different character: one is a fact about the
+  folder, the other is a model's opinion about difficulty, and folding them together would let the
+  opinion borrow the fact's authority. Both are ADVISORY, at this skill's existing severity conventions
+  (§6), and neither is ever a silent auto-fix. **Reports, never rewrites** — like the #224 probe above it
+  names the task or the judge and leaves the fix to the human; it never edits a `task.json` tag, a
+  judge's frontmatter block or a `promptRunners` block to make its own check pass.
+  - **The gate, and the silence behind it.** **Run this probe ONLY when tiering is CONFIGURED** — at
+    least one `promptRunners.<name>.routing` block, or a top-level `tiering` block, in the config that
+    governs this plan. On a plan generated before tiering shipped this probe produces NOTHING AT ALL — no
+    finding, no unchecked-gap line, and no note saying it was skipped. The third of those is the one a
+    careful reviewer breaks by being helpful, and the charter states why it must not be broken. A check
+    that fires on every legacy plan gets muted within a week, and a muted check is indistinguishable from
+    the absence this stage exists to fix. (Invariant 7's review-time counterpart: with nothing routing,
+    every rung is inert, so there is nothing for a tag to be appropriate to.)
+  - **Missing classification** *(deterministic — a fact about the folder)*: a prompt-action task, or a
+    surviving judge guardrail, with neither a difficulty tag nor an explicit `action.model` /
+    `action.effort` pin.
+  - **What to walk, and what discharges it.** Two populations, both readable straight off the folder
+    without running anything. **(1) Tasks** — every task whose action is a PROMPT: its own `action.tier`
+    (`easy`/`medium`/`hard`, SSOT §3) discharges it, and so does an explicit `action.model` or
+    `action.effort` pin, because a task that names its route by hand has classified itself (GR2053
+    already reports the pin-plus-tier overlap — do not re-report that as this finding). **(2) Judges** —
+    every SURVIVING prompt-judge guardrail, i.e. the ones still standing after the demotion gate above,
+    in every folder one can live in: each task's `guardrails/` and `preflights/`, the plan-root
+    `<plan>/guardrails/` + `<plan>/preflights/` pair, and each wave's pair. A **script** action and a
+    **script** guardrail are not subjects at all — they run no model, so there is nothing to classify.
+    Severity **WEAK** (the plan runs, but on a rung nobody chose); **NIT** for one trivial task in an
+    otherwise fully tagged plan; never a BLOCKER, since no wrong implementation passes on account of a
+    rung.
+  - **What does NOT discharge it — the trap that would empty this half.** A plan-wide
+    `tiering.defaultTier` does NOT discharge it: the loader resolves that default into every untagged
+    task, so a probe that read the RESOLVED tier would report every configured plan as fully classified.
+    A plan carrying `tiering.defaultTier: "medium"` has a non-null resolved tier on **every** task,
+    including the one a human hand-added after breakdown that nobody ever classified — which is precisely
+    the case this net exists for, because with the runtime ladder (#228) deferred there is no backstop
+    and a mis-tag is caught here or not at all. Read the task's own declaration — `TierOrigin.Task` is
+    the value that survives the `?? defaultTier` collapse (DoR §12.4).
+  - **The judge half's inheritance rule, which is what keeps it from being noise.** A surviving
+    prompt-judge guardrail carries its own `tier` in FRONTMATTER (SSOT §4.2), and an absent key means its
+    rung FOLLOWS THE ACTOR it guards — so it is unclassified only when that task is unclassified too, or
+    when it guards no task at all (a plan-root or wave-root gate). An untagged judge over a CLASSIFIED
+    task is correct and is not a finding; flag every untagged judge instead and this half fires on nearly
+    every configured plan, which is how a check gets muted.
+  - **Mismatched tier** *(judgment — a model's opinion about difficulty)*: a high-risk task tagged for a
+    weak tier, or a mechanical one tagged frontier-only. Say in the finding what it is — an opinion,
+    which is exactly why it is kept separate from the deterministic half rather than folded into it. Two
+    shapes are worth naming: a HIGH-RISK task (a composition-root wiring, a cross-cutting output shape,
+    an unfamiliar-SDK integration) tagged `easy`, and a MECHANICAL one (a rename, a config edit at a
+    named key, a seeded directory) tagged `hard`. The guard rail on this half: Difficulty maps to a
+    candidate SET, not to a single model strength — a tier names a RUNG and the resolver picks from the
+    set that rung admits, so a finding phrased as *this should run on `<model>`* is arguing with the
+    design rather than applying it. Name the rung and the reason, and leave the model to the resolver.
+    **WEAK** at most, **NIT** where the disagreement is one rung on a task that could defensibly sit
+    either side.
+  - **Two boundaries — no code, and no second opinion on the config.** Neither finding gets a GR code: a
+    GR code is a thing that can fail a build, and the harness does not block on a model-quality opinion
+    (DoR §12.6). Do not propose one, and do not propose a `guardrails validate` check to carry either
+    half; that ruling is settled and this pass does not reopen it. And, as with the #224 probe, **do not
+    re-report what `validate` already says** — a plan with tags and no `routing` block anywhere is
+    GR2049's business, not this probe's, and a used tier with no candidate at or above it is GR2048's.
+    This probe covers precisely what those miss: a CONFIGURED plan whose subjects were never classified
+    at all, or were classified at a rung that does not match the work.
 - **Missing / malformed positive-baseline (preflight) on a brownfield plan (#181)**: does the plan
   build onto **existing code that already has tests in the touched area** (a brownfield plan — it modifies
   project(s) with existing test coverage), yet carry **no `<plan>/preflights/01-baseline-<area>-tests-green`
@@ -1693,6 +1758,11 @@ The report also states what the pass could NOT check — as explicit lines, neve
 unchecked gap that goes unmentioned is indistinguishable from a verified one. At minimum:
 
 - the model-availability probe's JIT-resolved judge models, deferred to #223;
+- **the model-appropriateness probe's classification census (#229) — ON A TIERING-CONFIGURED PLAN ONLY**:
+  name every prompt-action task and every surviving judge this pass found with no classification of its
+  own, and say plainly that the mismatched-tier half is an OPINION about difficulty rather than a checked
+  fact — a plan with no mismatch finding is not a plan whose rungs were verified. On an unconfigured plan
+  this line is ABSENT — the graceful skip is silence, not a line saying it was silent.
 - **which guardrails Step 2b actually EXECUTED, and which it skipped** — name the toolchain-invoking
   ones you did not run, and say whether Probe B (the minimal-gaming mutation) was applied per task or
   only to a sample;
@@ -1912,4 +1982,5 @@ finding remains unaddressed.
 <!-- END ADDED CHECKS #468/#470 -->
 - [ ] (#478) Probe **A₂** ran: every **required-present** clause and every **numeric floor** of every guardrail has a BASELINE verdict — resolved by the fast path (an accumulator failure list Probe A actually printed) or by a hand census (`Select-String` of the clause's own pattern against the clause's own subject, case-sensitive iff the operator was `-cmatch`/`-cnotmatch`). A clause already satisfied on the baseline is a **BLOCKER** (the task is passable without delivering it, and it certifies nothing for the life of the plan) unless the script DECLARES its exception — positive-baseline/wave-entry preflight, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, or a ratcheting behaviour manifest **on a plan regenerated against a partially-landed tree** (the qualifier is part of the exception, not decoration: on a FRESH plan a nonzero manifest clause is not a ratchet, it is a pre-satisfied clause and stays a BLOCKER). **Forbidden-present clauses are NOT censused** — a ban green on arrival is a correct ban, and a ban RED on arrival is Probe C's #470 collision. Every count a script DECLARES was re-measured, never read (a `# … appears nowhere else` comment sat over a token appearing twice in that exact file); a declared count disagreeing with the census is a BLOCKER. Clauses left unmeasured (runtime-composed pattern, subject absent from the baseline, non-pattern clause, ungated cost stage) are NAMED in the report as NOT RUN, never absorbed into a red Probe A. A₂ does not subsume Probe B and B does not subsume A₂ — the motivating clause was both pre-satisfied AND gameable by a one-const append.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
+- [ ] (#229) On a TIERING-CONFIGURED plan — at least one `promptRunners.<name>.routing` block, or a top-level `tiering` block — every prompt-action task and every SURVIVING prompt-judge guardrail (each task's `guardrails/`+`preflights/`, the plan-root pair, each wave's pair) either declares its own rung (`action.tier`, an explicit `action.model`/`action.effort` pin, or a frontmatter `tier`) or inherits one from a CLASSIFIED actor it guards (SSOT §4.2) — and anything left over is named as an advisory MISSING-CLASSIFICATION finding in the Step 6 report, WEAK/NIT, never a GR code and never a silent auto-fix (DoR §12.6). A plan-wide `tiering.defaultTier` does NOT discharge it (read `TierOrigin.Task`, not the resolved tier — DoR §12.4); script actions and script guardrails are not subjects. Any mismatched-tier finding is labelled an opinion about difficulty and phrased as a RUNG, never as a named model (difficulty maps to a candidate set). On an UNCONFIGURED plan this box is vacuously satisfied and the review says nothing about tiering at all — no finding, no gap line, no note that it was skipped.
 - [ ] The review left durable evidence (#366): the plan hash was obtained via `guardrails plan-hash <folder>` (the skill can't compute it), a review report — the Step 6 findings table + verdict + an embedded `Plan-Definition-Hash: sha256:…` line (F2a) — was written under the hash-EXCLUDED `<plan>/state/reviews/`, and the marker was stamped with `guardrails mark-reviewed <folder> --evidence <report>` (recording `attestation.source: review-artifact`, or a downgrade to `bare` on an F2 failure) — clearing the GR2025 nudge (#79/#131), NOT run while a BLOCKER remained open. The recorded evidence class (`review-artifact` / `bare` / `machine`, read-time `legacy`) is for AUDIT, not a gate — the marker is only as strong as write-access to the plan folder, and the harness never writes it on a human's behalf. For a waved plan, run the flow per-wave against `<folder>/wave-NN-<slug>` (its own `state/reviews/` + hash) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).
