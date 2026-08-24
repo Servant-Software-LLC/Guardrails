@@ -1,0 +1,8 @@
+{
+  "description": "Delete the superseded docs/plans/pilot-seat-model-provenance/ task folder, which this charter replaces",
+  "dependsOn": [],
+  "stableId": "s3w4t3",
+  "writeScope": [
+    "docs/plans/pilot-seat-model-provenance/"
+  ]
+}

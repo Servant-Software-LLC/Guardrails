@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=5f1022ca49c598c39c72dff1a5b8548ddaaead68eaed50935bb84eb88d822b4d -->
+<!-- guardrails:graph v1 source-sha256=57531827097e1f90345ad7d319c9731f7be55184e007a93a30d6cd35354f8c5c -->
 
 ```mermaid
 flowchart TD
@@ -133,14 +133,33 @@ flowchart TD
   end
   style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4_preflights["Wave 4 Entry Gate"]
+    wave_4_preflights_0["01-wave3-surfaces-materialized"]:::preflight
   end
   style wave_4_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4["Wave 4 — report-and-cleanup"]
-    wave_4_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_4_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_04_report_and_cleanup_01_author_tests_models_used_report["01-author-tests-models-used-report"]
+      task_wave_04_report_and_cleanup_01_author_tests_models_used_report_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_report_and_cleanup_01_author_tests_models_used_report_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_04_report_and_cleanup_01_author_tests_models_used_report fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_report_and_cleanup_02_implement_models_used_report["02-implement-models-used-report"]
+      task_wave_04_report_and_cleanup_02_implement_models_used_report_gr_0["01-models-used-tests-pass"]:::guardrail
+    end
+    style task_wave_04_report_and_cleanup_02_implement_models_used_report fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder["03-delete-superseded-plan-folder"]
+      task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder_gr_0["01-folder-gone"]:::guardrail
+    end
+    style task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge["04-update-ssot-and-domain-knowledge"]
+      task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge_gr_0["01-contract-delta-present"]:::guardrail
+    end
+    style task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_4 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_4_guardrails["Wave 4 Exit Gate"]
+    wave_4_guardrails_0["01-solution-builds"]:::guardrail
+    wave_4_guardrails_1["02-suites-pass"]:::guardrail
+    wave_4_guardrails_2["03-wave-deliverables-present"]:::guardrail
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5_preflights["Wave 5 Entry Gate"]
@@ -184,8 +203,12 @@ flowchart TD
   task_wave_03_operator_surfaces_06_render_attempt_model_in_live_and_console --> task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge
   task_wave_03_operator_surfaces_07_forward_attempt_model_in_decorators --> task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge
   task_wave_03_operator_surfaces_08_update_ssot_and_domain_knowledge --> wave_3_guardrails
-  wave_4_preflights --> wave_4_stub
-  wave_4_stub --> wave_4_guardrails
+  wave_4_preflights --> task_wave_04_report_and_cleanup_01_author_tests_models_used_report
+  wave_4_preflights --> task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder
+  task_wave_04_report_and_cleanup_01_author_tests_models_used_report --> task_wave_04_report_and_cleanup_02_implement_models_used_report
+  task_wave_04_report_and_cleanup_02_implement_models_used_report --> task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge
+  task_wave_04_report_and_cleanup_03_delete_superseded_plan_folder --> task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge
+  task_wave_04_report_and_cleanup_04_update_ssot_and_domain_knowledge --> wave_4_guardrails
   wave_5_preflights --> wave_5_stub
   wave_5_stub --> wave_5_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights

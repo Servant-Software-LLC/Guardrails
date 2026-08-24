@@ -1,0 +1,12 @@
+{
+  "description": "Record the models-used run-summary line in the SSOT and the domain-knowledge skill - the last task in the wave and the only one permitted to touch either file",
+  "dependsOn": [
+    "02-implement-models-used-report",
+    "03-delete-superseded-plan-folder"
+  ],
+  "stableId": "s3w4t4",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ]
+}

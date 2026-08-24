@@ -1,0 +1,14 @@
+{
+  "description": "Implement JournalModelsUsed and print the models-used line from the run summary, so both authored test classes pass",
+  "dependsOn": [
+    "01-author-tests-models-used-report"
+  ],
+  "stableId": "s3w4t2",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalModelsUsed.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 100
+  }
+}

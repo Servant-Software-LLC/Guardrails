@@ -1,0 +1,13 @@
+{
+  "description": "Author the failing ModelsUsedSummaryTests + ModelsUsedReportTests and the JournalModelsUsed stub - this wave's TDD red for the models-used run-report line",
+  "dependsOn": [],
+  "stableId": "s3w4t1",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalModelsUsed.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/ModelsUsedSummaryTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/ModelsUsedReportTests.cs"
+  ],
+  "action": {
+    "maxTurns": 100
+  }
+}
