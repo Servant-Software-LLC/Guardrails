@@ -790,6 +790,11 @@ tiering as a working feature.
   table and the `--no-ui` stream through **`IRunObserver.AttemptModelResolved`**, whose default no-op body
   means a transparent decorator must forward it EXPLICITLY or the disclosure is swallowed silently. Neither
   surface re-derives the comparison; both read the folded provenance. Details: SSOT sections 8 and 9.6.
+- **The RUN REPORT now names them too** (#349, Stage 3). The `run` summary closes with a **`Models used:`**
+  line aggregating the per-attempt `provenance.model` -- one segment per distinct model, every attempt
+  counted independently -- and naming the REQUESTED id only where `requestedModel` recorded a disagreement.
+  It is ADDITIVE to the total-cost and per-tier lines, and **absent entirely** on a run where no attempt
+  recorded a model, so a deterministic-only plan's report is unchanged. Wire detail: SSOT section 9.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.

@@ -3341,6 +3341,20 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   section, no header, and **no `untiered:` bucket** — a plan that tags nothing prints exactly today's
   cost line and not one character more. (Until #475 lands, no attempt carries `usage`, so every segment
   renders its cost half only.)
+- **Models used (model tiering #349, Stage 3).** The `run` summary adds a
+  `Models used: claude-sonnet-5-20260101 ×7 (substituted for claude-opus-5) · claude-opus-5 ×2` line —
+  pure aggregation over the per-attempt `provenance.model` recorded in §7, one segment per DISTINCT
+  model in descending attempt count, every attempt counted independently (a retry ran a model again).
+  The REQUESTED id is named — the trailing `(substituted for …)` — only where
+  `provenance.requestedModel` was recorded, i.e. only where the runner served something other than the
+  route asked for: its presence *is* the signal, and there is no flag beside it.
+  **Invariant 7 suppression:** on a run where **no** attempt recorded a model the line is omitted
+  entirely — no label, no empty segment list, and **no bucket for the attempts that recorded none** — so
+  a deterministic-only plan prints exactly today's summary and not one character more. It is **additive
+  to** the total and per-tier lines, never a replacement — one rung can be served by several models over
+  a run's lifetime, and a pinned or legacy-fallback attempt names a model while resolving no rung at all.
+  It is printed from the `run` summary only: `guardrails status` prints the `Total prompt cost:` line and
+  deliberately not this one, following its per-tier sibling.
 - `guardrails validate` probes each DECLARED runner's `command` on PATH and emits a
   **warning** (GR2009) if it does not resolve — not an error, since the plan may run on
   another machine where the runner is installed.
