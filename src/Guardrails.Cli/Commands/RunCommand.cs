@@ -1965,10 +1965,11 @@ public static class RunCommand
 
     /// <summary>
     /// Print the run-level cost line (SSOT §7 <c>costUsd</c>) from the freshly-persisted
-    /// journal, plus the #230-lite PER-TIER split of that same spend (DoR §9.3). Each line is
-    /// omitted when there is nothing to report — no attempt recorded a cost, and no attempt
-    /// resolved through routing — so deterministic-only plans stay noise-free and a
-    /// tiering-inactive run prints EXACTLY the cost line it prints today.
+    /// journal, plus the #230-lite PER-TIER split of that same spend (DoR §9.3) and the #349
+    /// MODELS-USED summary of what served the run. Each line is omitted when there is nothing to
+    /// report — no attempt recorded a cost, no attempt resolved through routing, and no attempt
+    /// recorded a model — so deterministic-only plans stay noise-free and a tiering-inactive run
+    /// prints EXACTLY the cost line it prints today.
     /// </summary>
     private static void PrintTotalCost(string planDirectory, TextWriter output)
     {
@@ -1993,6 +1994,15 @@ public static class RunCommand
         if (JournalTierSpend.Render(document) is { } perTier)
         {
             output.WriteLine($"Per-tier spend: {perTier}");
+        }
+
+        // What actually SERVED the run, which the per-tier line above cannot answer: one rung can be
+        // served by several models over a run's lifetime, and a pinned or legacy-fallback attempt names a
+        // model while resolving no rung at all. Same suppression pattern-match as its siblings — a run
+        // where no attempt recorded a model prints no line, not a labelled empty one.
+        if (JournalModelsUsed.Render(document) is { } models)
+        {
+            output.WriteLine($"Models used: {models}");
         }
     }
 
