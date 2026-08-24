@@ -45,7 +45,9 @@ public static class TierClassificationAudit
     /// at all — not a softer finding, not an advisory. A single-model user who never asked for any of this
     /// must never be told their plan is under-classified.</para>
     /// </summary>
-    public static bool IsTieringConfigured(PlanDefinition plan) => throw new NotImplementedException();
+    public static bool IsTieringConfigured(PlanDefinition plan) =>
+        plan.Config.PromptRunners.Values.Any(runner => runner.Routing is not null)
+        || plan.Config.Tiering is not null;
 
     /// <summary>
     /// Will report every unclassified subject in <paramref name="plan"/>, in a deterministic order.
@@ -77,8 +79,60 @@ public static class TierClassificationAudit
     /// finding that says "this is wrong" without saying where it belongs sends the author hunting, which
     /// is how a rule stops being applied.</para>
     /// </summary>
-    public static IReadOnlyList<TierClassificationFinding> Audit(PlanDefinition plan) =>
-        throw new NotImplementedException();
+    public static IReadOnlyList<TierClassificationFinding> Audit(PlanDefinition plan)
+    {
+        // THE GATE, and it is first for a reason: everything below this line assumes the author asked for
+        // tiering. A pre-tiering plan is not "fully classified" and it is not "under-classified" either —
+        // the question does not apply to it, so nothing is reported.
+        if (!IsTieringConfigured(plan))
+        {
+            return [];
+        }
+
+        List<TierClassificationFinding> findings = [];
+
+        foreach (TaskNode task in plan.Tasks.Where(t => t.Action.Kind == ActionKind.Prompt))
+        {
+            if (IsClassified(task.Action))
+            {
+                continue;
+            }
+
+            findings.Add(new TierClassificationFinding(
+                task.Id,
+                TierClassificationSubject.PromptTask,
+                task.Action.Tier,
+                task.Action.TierOrigin,
+                $"'{task.Id}' runs a prompt, but nobody classified it: {DescribeRung(task.Action)}. " +
+                "Add an \"action.tier\" (easy|medium|hard) to this task's task.json — or, if its route was " +
+                "a deliberate task-specific decision rather than a rung, pin it there with \"model\", " +
+                "\"runner\" or \"effort\"."));
+        }
+
+        foreach (JudgeSubject judge in JudgeSubjects(plan))
+        {
+            if (IsClassified(judge))
+            {
+                continue;
+            }
+
+            findings.Add(new TierClassificationFinding(
+                judge.SubjectId,
+                TierClassificationSubject.PromptJudge,
+                judge.Guardrail.Tier,
+                TierOrigin.None,
+                $"The prompt judge '{judge.Guardrail.Name}' declares no rung of its own and " +
+                $"{judge.WhyNothingToFollow}, so SSOT §4.2's \"the judge's rung follows the actor it " +
+                "guards\" has nothing to resolve against. Add a `tier:` key to the frontmatter of " +
+                $"{judge.Guardrail.Name}.prompt.md — frontmatter is a judge's only site, because no " +
+                "plan-wide default stands behind one."));
+        }
+
+        // Subject id, ordinal — the same key ClassifiableSubjects orders by, so a reader can line the two
+        // lists up. LINQ's sort is stable, and the enumerations above are themselves deterministic, so two
+        // subjects sharing an id (a task's preflight and guardrail of the same name) still order stably.
+        return [.. findings.OrderBy(f => f.SubjectId, StringComparer.Ordinal)];
+    }
 
     /// <summary>
     /// Will name every subject this audit RECOGNISES in <paramref name="plan"/>, classified or not, in a
@@ -91,7 +145,119 @@ public static class TierClassificationAudit
     /// Each entry uses the same identity <see cref="TierClassificationFinding.SubjectId"/> does.</para>
     /// </summary>
     public static IReadOnlyList<string> ClassifiableSubjects(PlanDefinition plan) =>
-        throw new NotImplementedException();
+    [
+        .. plan.Tasks.Where(t => t.Action.Kind == ActionKind.Prompt).Select(t => t.Id)
+             .Concat(JudgeSubjects(plan).Select(j => j.SubjectId))
+             .OrderBy(id => id, StringComparer.Ordinal)
+    ];
+
+    /// <summary>The pseudo task-id a judge in <c>&lt;plan&gt;/guardrails|preflights/</c> is named under.</summary>
+    public const string PlanRootOwner = "<plan>";
+
+    // ---- the two predicates ------------------------------------------------------------------------
+
+    /// <summary>
+    /// Whether a prompt task's author CLASSIFIED it — the crux of the whole audit, and the reason
+    /// <see cref="ActionDefinition.Tier"/> is never read here. Only <see cref="TierOrigin.Task"/> means the
+    /// rung came from this task's own <c>task.json</c>; <see cref="TierOrigin.PlanDefault"/> is a non-null
+    /// tier nobody chose, which is precisely the finding. A pin is the other way an author states a
+    /// decision at the action site, so it discharges too.
+    /// </summary>
+    private static bool IsClassified(ActionDefinition action) =>
+        action.TierOrigin == TierOrigin.Task
+        || action.Runner is not null
+        || action.Model is not null
+        || action.Effort is not null;
+
+    /// <summary>
+    /// Whether a prompt judge is answered for — its own frontmatter <c>tier</c>, or a classified actor for
+    /// SSOT §4.2's inheritance to follow. Flagging an untagged judge that DOES have a classified actor
+    /// would fire on almost every configured plan, and a check that fires on almost every plan gets muted.
+    ///
+    /// <para>A judge guarding a SCRIPT task is not discharged: §4.2 has the judge follow <i>the actor's
+    /// rung</i>, and a script actor runs no model, so it has none to lend. That is the same "no actor to
+    /// follow" as a root gate, reached by a different route.</para>
+    /// </summary>
+    private static bool IsClassified(JudgeSubject judge) =>
+        judge.Guardrail.Tier is not null
+        || (judge.Actor is { } actor
+            && actor.Action.Kind == ActionKind.Prompt
+            && IsClassified(actor.Action));
+
+    // ---- the population ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// Every surviving prompt judge in the plan, paired with the actor it guards (null when it guards no
+    /// task at all), in a deterministic order. Sweeps every folder a judge can live in: the plan root, each
+    /// wave's entry and exit gates, and each task's own preflights and guardrails — a judge missed here is
+    /// silently absent from BOTH the findings and the census, which is the blind-but-green shape the census
+    /// exists to expose.
+    /// </summary>
+    private static IEnumerable<JudgeSubject> JudgeSubjects(PlanDefinition plan)
+    {
+        foreach (JudgeSubject judge in RootJudges(plan.PlanPreflights, $"{PlanRootOwner}/preflights")
+                     .Concat(RootJudges(plan.PlanGuardrails, $"{PlanRootOwner}/guardrails")))
+        {
+            yield return judge;
+        }
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            foreach (JudgeSubject judge in RootJudges(wave.Preflights, $"{wave.Dir}/preflights")
+                         .Concat(RootJudges(wave.Guardrails, $"{wave.Dir}/guardrails")))
+            {
+                yield return judge;
+            }
+        }
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (GuardrailDefinition guardrail in task.Preflights.Concat(task.Guardrails)
+                         .Where(g => g.Kind == ActionKind.Prompt))
+            {
+                yield return new JudgeSubject($"{task.Id}/{guardrail.Name}", guardrail, task);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The prompt judges of one ROOT gate folder — a plan-root or wave-root gate, which guards the run or
+    /// the wave rather than any one task. There is no actor to inherit from at all here, which is why these
+    /// are a finding at every classification of everything else.
+    /// </summary>
+    private static IEnumerable<JudgeSubject> RootJudges(
+        IReadOnlyList<GuardrailDefinition> gate, string owner) =>
+        gate.Where(g => g.Kind == ActionKind.Prompt)
+            .Select(g => new JudgeSubject($"{owner}/{g.Name}", g, Actor: null));
+
+    /// <summary>One prompt judge and the actor (if any) whose rung SSOT §4.2 would have it follow.</summary>
+    private sealed record JudgeSubject(string SubjectId, GuardrailDefinition Guardrail, TaskNode? Actor)
+    {
+        /// <summary>Why this judge has no rung to inherit — the middle clause of its finding.</summary>
+        public string WhyNothingToFollow => Actor switch
+        {
+            null => "guards no task at all (it is a plan-root or wave-root gate, where no actor exists)",
+            { Action.Kind: ActionKind.Script } actor =>
+                $"the task it guards ('{actor.Id}') runs a script, so that actor has no rung to lend",
+            { } actor => $"the task it guards ('{actor.Id}') is itself unclassified"
+        };
+    }
+
+    // ---- rendering ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// What the subject's rung actually IS, so the finding can say "resolves to medium, but from the
+    /// plan-wide default" rather than merely "missing". The pairing of a resolved tier with a
+    /// <see cref="TierOrigin.PlanDefault"/> origin is the evidence that a resolved tier is not a
+    /// classification.
+    /// </summary>
+    private static string DescribeRung(ActionDefinition action) => action.TierOrigin switch
+    {
+        TierOrigin.PlanDefault =>
+            $"it resolves to '{action.Tier}', but only from the plan-wide \"tiering.defaultTier\" — a " +
+            "fallback, not a decision",
+        _ => "no rung resolved for it at all"
+    };
 }
 
 /// <summary>Which kind of model-running subject a finding is about.</summary>
@@ -109,8 +275,12 @@ public enum TierClassificationSubject
 /// </summary>
 /// <param name="SubjectId">
 /// The task's <c>Id</c> for a prompt task; <c>&lt;taskId&gt;/&lt;guardrailName&gt;</c> for a task's judge;
-/// <c>&lt;plan&gt;/guardrails/&lt;name&gt;</c> for a plan-root judge and <c>&lt;waveDir&gt;/&lt;name&gt;</c>
-/// for a wave-root one — the two judges that guard no task at all.
+/// <c>&lt;plan&gt;/guardrails/&lt;name&gt;</c> for a plan-root judge and
+/// <c>&lt;waveDir&gt;/guardrails/&lt;name&gt;</c> for a wave-root one — the two judges that guard no task at
+/// all. A root gate's ENTRY half is named the same way under <c>preflights/</c>: the gate folder is part of
+/// a root judge's id precisely because a wave's entry and exit gates may each hold a <c>01-</c> file, and a
+/// bare <c>&lt;waveDir&gt;/&lt;name&gt;</c> could not tell the two apart (nor tell either from a task id,
+/// which is itself <c>&lt;waveDir&gt;/&lt;taskFolder&gt;</c>).
 /// </param>
 /// <param name="Kind">Which site the missing classification belongs at.</param>
 /// <param name="ResolvedTier">
