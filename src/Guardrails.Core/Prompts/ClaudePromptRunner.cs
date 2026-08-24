@@ -150,6 +150,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
             if (invocation.StallBound is { } stallBound && stallBound > TimeSpan.Zero)
             {
                 TimeSpan poll = TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, stallBound.Ticks / 20));
+                DateTime previousPollAt = DateTime.UtcNow;
                 stallWatchdog = Task.Run(async () =>
                 {
                     while (!stallCts.Token.IsCancellationRequested)
@@ -171,10 +172,21 @@ public sealed class ClaudePromptRunner : IPromptRunner
                             return;
                         }
 
-                        var silent = TimeSpan.FromTicks(DateTime.UtcNow.Ticks - Volatile.Read(ref lastLineTicks));
-                        if (silent < stallBound)
+                        DateTime pollAt = DateTime.UtcNow;
+                        TimeSpan sincePreviousPoll = pollAt - previousPollAt;
+                        previousPollAt = pollAt;
+                        var silent = TimeSpan.FromTicks(pollAt.Ticks - Volatile.Read(ref lastLineTicks));
+
+                        switch (ClassifySilence(silent, sincePreviousPoll, poll, stallBound))
                         {
-                            continue;
+                            case StallVerdict.Suspended:
+                                // #517: the MACHINE was asleep, not the session. Give the session a fresh
+                                // full window rather than counting time it had no opportunity to emit in.
+                                Volatile.Write(ref lastLineTicks, pollAt.Ticks);
+                                continue;
+
+                            case StallVerdict.KeepWaiting:
+                                continue;
                         }
 
                         stallFired = true;
@@ -529,10 +541,101 @@ public sealed class ClaudePromptRunner : IPromptRunner
         }
 
         // No usable result text — fall back to the raw streams (stderr first: rejections print there).
+        //
+        // #516: stdout is the ENTIRE accumulated JSONL stream (ProcessRunner accumulates AND tees), so
+        // handing it to the transient classifier whole means pattern-matching everything the agent read
+        // and wrote. That is not hypothetical here: `PromptFailureKind.cs`'s own doc comment names
+        // "429/503/529", "overloaded" and "usage/session/rate limit" — every one a pinned transient
+        // phrase — and it was echoed into 10+ task streams of one Stage 3 run, because agents read that
+        // file while doing observer work. The harness's own source was a false-positive trigger for its
+        // own classifier.
+        //
+        // The fix is structural rather than a size cap: this fallback exists for output that is NOT A
+        // STREAM AT ALL — a rejection printed before any envelope (#115's "instant rejection, no result
+        // line"). So take only stdout lines that are not well-formed stream envelopes, plus the terminal
+        // `result` line. Tool-result content is excluded by construction, and a long rejection still
+        // classifies — which a tail-only or byte-capped heuristic would silently drop.
         return string.Join(
             "\n",
-            new[] { result.ResultText, result.Subtype, process.StandardError, process.StandardOutput }
+            new[] { result.ResultText, result.Subtype, process.StandardError, NonStreamStdout(process.StandardOutput) }
                 .Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    /// <summary>What a single stall-watchdog poll concluded (issue #517).</summary>
+    internal enum StallVerdict
+    {
+        /// <summary>Silence is within the bound; keep polling.</summary>
+        KeepWaiting,
+
+        /// <summary>The MACHINE was not running between polls (sleep / hibernate / a hard freeze).</summary>
+        Suspended,
+
+        /// <summary>The session has genuinely produced nothing for longer than the bound.</summary>
+        Stalled
+    }
+
+    /// <summary>
+    /// A poll that took vastly longer than its own interval means the machine was SUSPENDED, not that the
+    /// session went silent — so the gap must not be counted as silence (issue #517).
+    ///
+    /// <para><b>Why this is not a heuristic about load.</b> The watchdog polls at <c>stallBound / 20</c> —
+    /// about 60 seconds at the shipped bound — so the two cases are separated by orders of magnitude, not
+    /// by a margin: a two-hour gap in a one-minute loop is unambiguous. The factor below only has to be
+    /// larger than the worst scheduling delay a running machine can impose.</para>
+    ///
+    /// <para><b>And the failure direction is the safe one.</b> Misreading a genuine stall as a suspend
+    /// costs one more bound-length window before the kill; misreading a suspend as a stall KILLS HEALTHY
+    /// WORK, which is the whole defect #504 set out to remove. When the two are hard to tell apart, wait.</para>
+    ///
+    /// <para>Pure and <c>internal</c> so the decision is testable: the loop that calls it reads
+    /// <c>DateTime.UtcNow</c> directly, which is exactly why the wall-clock bug shipped untested.</para>
+    /// </summary>
+    internal static StallVerdict ClassifySilence(
+        TimeSpan silent, TimeSpan sincePreviousPoll, TimeSpan poll, TimeSpan stallBound)
+    {
+        const int SuspendFactor = 4;
+
+        if (poll > TimeSpan.Zero && sincePreviousPoll > poll * SuspendFactor)
+        {
+            return StallVerdict.Suspended;
+        }
+
+        return silent >= stallBound ? StallVerdict.Stalled : StallVerdict.KeepWaiting;
+    }
+
+    /// <summary>
+    /// The part of a runner's stdout that is NOT stream content (#516): lines that do not parse as a
+    /// stream envelope, plus the terminal <c>result</c> envelope. Everything an agent read or wrote
+    /// arrives as an <c>assistant</c>/<c>user</c>/<c>system</c> envelope and is dropped here, so a file
+    /// whose text happens to contain "rate limit" can no longer be classified as a rate limit.
+    /// </summary>
+    internal static string? NonStreamStdout(string? stdout)
+    {
+        if (string.IsNullOrWhiteSpace(stdout))
+        {
+            return null;
+        }
+
+        var kept = new List<string>();
+        foreach (string line in stdout.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            // A stream envelope is a JSON object carrying a "type". Keep the terminal result (it names
+            // the stop reason) and everything that is not an envelope at all; drop assistant/user/system
+            // content, which is where an agent's READING of a file would otherwise leak into the verdict.
+            bool isEnvelope = trimmed[0] == '{' && trimmed.Contains("\"type\":", StringComparison.Ordinal);
+            if (!isEnvelope || trimmed.Contains("\"type\":\"result\"", StringComparison.Ordinal))
+            {
+                kept.Add(trimmed);
+            }
+        }
+
+        return kept.Count == 0 ? null : string.Join("\n", kept);
     }
 
     private static string BuildSummary(ProcessResult process, ClaudeResult result)

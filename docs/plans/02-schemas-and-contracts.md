@@ -3934,6 +3934,21 @@ stall bound is deliberately **minutes, not seconds**, because a healthy breakdow
 calls and the stream is silent while a child process runs (measured: one `dotnet test` was quiet for
 10m44s); design 23 §4's 60-second freshness threshold is for the DISPLAY word, never for a kill.
 
+**A SUSPENDED machine is not a silent session (issue #517).** The bound is measured on the wall clock, so
+a laptop asleep longer than the bound would otherwise wake to a watchdog that kills the session for
+"silence" it had no opportunity to fill. The watchdog therefore compares each poll against its own
+interval: a gap vastly exceeding it (the poll runs at `stallBound / 20` — ~60s — so a multi-hour gap is
+unambiguous, not a margin call) means the MACHINE was not running, and the silence window is reset rather
+than counted. The tie deliberately breaks toward waiting: misreading a stall as a suspend costs one more
+window, while misreading a suspend as a stall kills healthy work — the defect #504 exists to remove.
+
+**The transient classifier reads the FAILURE, never the agent's content (issue #516).** Its fallback path
+(no usable terminal result — #115's instant rejection) takes `stderr`, the terminal envelope, and only
+those stdout lines that are NOT well-formed stream envelopes. Handing it the whole teed stdout made the
+harness's own source a false-positive trigger for its own classifier: `PromptFailureKind.cs` and **this
+document** both name `429/503/529`, `overloaded` and `usage/session/rate limit`, and every wave's
+docs-sink task must read this document to do its job.
+
 **No surface may invent progress.** The eventual task count is not knowable at invocation time (§14.11 /
 design 20 §3.2), so **no progress bar, no percentage, and no inferred denominator** may be rendered for this
 phase on any surface. The only denominator permitted is the **ceiling**, which denominates the *budget*, not
