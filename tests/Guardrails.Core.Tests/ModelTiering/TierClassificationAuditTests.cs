@@ -234,8 +234,15 @@ public sealed class TierClassificationAuditTests
     {
         IReadOnlyList<string> subjects = TierClassificationAudit.ClassifiableSubjects(Load(Configured));
 
+        // Compared as a SET, which is what this test actually means and what its own prompt specified:
+        // "ClassifiableSubjects names the three prompt tasks and the one prompt judge, and nothing else."
+        // Ordering was never part of the claim, and asserting it made the test UNSATISFIABLE by any
+        // implementation: JudgeSubject is $"{AuthorTask}/{Judge}", so under StringComparer.Ordinal it sorts
+        // SECOND (a prefix sorts before the longer string), never fourth — while the expected array was
+        // written in population order (prompt tasks, then judges). Both sides are fixed, so no
+        // implementation could reconcile them; the audit was complete and correct when this was found.
         Assert.Equal(
-            new[] { AuthorTask, ImplementTask, TuneTask, JudgeSubject },
+            new[] { AuthorTask, ImplementTask, TuneTask, JudgeSubject }.OrderBy(s => s, StringComparer.Ordinal),
             subjects.OrderBy(s => s, StringComparer.Ordinal));
     }
 
