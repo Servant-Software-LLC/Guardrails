@@ -48,6 +48,14 @@ and only then does `guardrails run` execute it.
 > the preconditions below, then continue with the interpreted content. A plain `.md` (no confirmed `:::`)
 > skips Step 0c (existing path, unchanged). Step 0c needs the Skill tool AND — for its prompts — an attended
 > human; the headless/autonomous path consumes Charter's flattened `handoff` markdown and never triggers it.
+>
+> **That flattened path is Step 0d's (#500).** A plain `.md` — including every headless/autonomous run and
+> every JIT between-wave breakdown — runs **Step 0d**: scan for Charter's delegated-decision markers and,
+> if any are present, SETTLE and RECORD them instead of absorbing them as prose. It needs no Skill tool, no
+> `charter-format` and no attended human. **The two are mutually exclusive: `$charter = true` ⇒ Step 0d
+> does not run** (Step 0c rule 5 owns those decisions); every other input reaches Step 0d. A plan with no
+> markers is untouched — no `decisions.md`, no preflight, no report line, byte-identical to a pre-#500
+> breakdown.
 
 1. Resolve the plan path. If the file doesn't exist, stop and say so. The `<plan-name>/` task
    folder is generated **beside the source `.md`** by default; a repo that prefers one consolidated
@@ -195,6 +203,12 @@ resolved `:::question`'s folded `answer` is a **settled decision** (an input/con
 an open one was already asked (`AskUserQuestion`) or became an agent-needs-human task, and the
 `:::note/warn/comparison/diagram/diff/custom-html` blocks ride along as **context/rationale** for the rows
 they inform. Everything else on this page is unchanged.
+
+**Flattened Charter input (`$delegated`, Step 0d):** if the 0d.1 scan found delegated-decision markers,
+each id you settled in 0d.3 is a **settled decision** — an input/constraint on this table, never a work
+item and never a row of its own. Its blockquote's prose (the question, the options, the author's lean)
+rides along as rationale for the rows it informs, exactly like a folded `:::question` `answer` above. When
+`$delegated` is empty this paragraph does nothing.
 
 Anything with **no observable deliverable** ("think about performance", "consider
 edge cases") is flagged: it either merges into a neighboring task's guardrail or is
@@ -1207,6 +1221,15 @@ upstream task that creates it:
     the touched area) there is nothing to baseline. SKIP the preflight and state the reason in the Step 7
     report. A vacuous baseline (running zero tests, or `dotnet test` over a project with no tests, which
     trivially "passes") is worse than none — it certifies nothing while looking like a gate.
+- **`$delegated` non-empty (Step 0d.1 found Charter delegated-decision markers) → emit
+  `<plan>/preflights/01-delegated-decisions-recorded.ps1` (#500).** The full shape, the embedded-vs-grep
+  design decision and the smoke-test evidence are **Step 0d.6** — do not re-derive them here. Three things
+  matter at this point in the flow: it is a plan-root Full Flight Check FILE (no task, no action, no
+  `dependsOn`, so acyclicity is unaffected); it is emitted from the SAME scan that wrote `decisions.md` and
+  the prompt constraints, never independently of them; and it carries **no worth-it gate** — unlike the
+  #181 baseline, whose false-red risk comes from running someone else's tests, this check reads only
+  artifacts THIS breakdown authored inside the plan folder, so "under-fire when unsure" does not apply.
+  **`$delegated` empty ⇒ emit nothing** (Step 0d's gate).
 - Code task and tests do not yet exist → insert `NN-author-tests-<feature>` BEFORE the
   implementation task (the TDD default in Step 2 means this fires for most code tasks).
   Three things follow automatically:
@@ -1615,6 +1638,13 @@ Per `references/schemas.md`, exactly:
   — the single-model default, no `routing` block — write **neither**, and not even `"tier": null`:
   the folder must be **byte-identical** to what this skill emitted before #225 existed (DoR
   Invariant 7, Step 4c.1).
+- **`decisions.md` + the folded-in prompt constraint — ONLY when `$delegated` is non-empty (#500).** When
+  Step 0d.1 found delegated-decision markers, this step also writes **`<plan>/decisions.md`** (the format
+  contract is Step 0d.4) and adds the `## Delegated decisions (settled at breakdown time — do NOT
+  re-decide)` block, with its `` `<id>` = `<value>` `` lines, to each consuming `action.prompt.md`
+  (Step 0d.5) — alongside, never instead of, the harness-contract header below. The matching
+  `<plan>/preflights/01-delegated-decisions-recorded.ps1` is emitted in Step 5. **When `$delegated` is
+  empty, none of these three bytes exist** and the folder is byte-identical to a pre-#500 breakdown.
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -1911,9 +1941,12 @@ Per `references/schemas.md`, exactly:
     | `--filter` matches nothing | a zero-match pass (#455) | **fix before reporting** |
 
     An exception: a **positive/assert-present** check is *supposed* to be green at the start — a wave
-    ENTRY preflight, or a `<plan>/preflights/` baseline asserting existing tests already pass (#181).
-    Those are the only legitimate green-on-arrival guardrails; everything else that exits 0 here is a
-    finding.
+    ENTRY preflight, a `<plan>/preflights/` baseline asserting existing tests already pass (#181), or the
+    `<plan>/preflights/01-delegated-decisions-recorded.ps1` check (#500), which asserts artifacts THIS
+    breakdown just authored and is therefore green by construction the moment the breakdown did its job —
+    it exists to go red on a found-but-unrecorded delegation and on a later hand-edit that breaks the
+    `decisions.md`↔prompt pair (it cannot see a delegation that was never scanned — 0d.6). Those are the
+    only legitimate green-on-arrival guardrails; everything else that exits 0 here is a finding.
 
     **Do not read a red baseline as a clean bill of health.** A script has many clauses and one exit
     code, so a clause satisfied on arrival hides behind its siblings' failures. That is the review's
@@ -1970,7 +2003,37 @@ Per `references/schemas.md`, exactly:
    substituted by this breakdown's tests._`) when no in-process seam is faked. Add one line for each row
    whose proof landed **later than T\*** (name T\* and why it could not live there) and for each proof that
    **degraded to the #120(b) reflection-plus-contrast form** (name the constructor chain that forced it).
-   An **absent** ledger is a self-review finding — loop back to Step 4 and run the analysis. **Then, for
+   An **absent** ledger is a self-review finding — loop back to Step 4 and run the analysis. **Then — and
+   ONLY when Step 0d.1 set `$delegated` non-empty — the delegated-decision ledger (#500)**, under a bolded
+   line reading `Delegated decisions (#500)`, one row per id, in this exact form:
+
+   | id | question | options | chosen | vs `recommended` | consumed by |
+   |---|---|---|---|---|---|
+   | `cache` | which cache should front it? | `Redis`, `in-memory` | `Redis` | followed | `tasks/04-implement-cache-layer/action.prompt.md` |
+   | `ttl` | what TTL should entries carry? | `5m`, `1h` | `1h` | **DEPARTED** — upstream refreshes hourly | `tasks/04-implement-cache-layer/action.prompt.md` |
+
+   Cell rules: **chosen** is one of the options, verbatim; **vs `recommended`** is `followed`,
+   **`DEPARTED` + the one-clause reason**, or `no lean` when Charter emitted none — a DEPARTED row with no
+   reason is a self-review finding, because departing is allowed and departing silently is the bug;
+   **consumed by** is the plan-folder-relative prompt path (the seam ledger's self-checking proof-column
+   convention), `plan-shape`, or a JIT-deferred `wave-NN-slug/` — and a deferred row is called out as
+   still owed, exactly like a seam ledger `U` row. Beneath the table state the scan result — *"declared N, found N, agree"* —
+   and, if they disagreed, that the mechanical re-scan (0d.2) confirmed it and the Charter issue was
+   filed. Then name the gate and **what it does not prove**:
+   `<plan>/preflights/01-delegated-decisions-recorded.ps1` certifies that every delegated id was recorded
+   and folded in — **never that the choice was good, and never that the scan ran at all** (0d.6: a
+   breakdown that skimmed the plan emits no ids, so nothing exists to go red; that half is #500's
+   `validate`-GR follow-on). State both limits, plus: **how many rows read `followed` on the strength of
+   "nothing in the workspace discriminated"** — one such row is honest, a whole column of them is the
+   silent default with better typography and the human should see it as one glance; **every `plan-shape`
+   row**, which the gate exempts from the fold-in assertion entirely; **every JIT-deferred `wave-NN/`
+   row**, still owed; and **the three-file rule for overriding a choice here** (`decisions.md`, every
+   consuming prompt, and the preflight's `$expected`) — because this review is exactly where an override
+   happens, and missing the third makes the gate red with a remedy that would re-decide it. Judging the
+   choice is the human's job at this draft review, which is precisely why the rows
+   are in the report and not only in `decisions.md`. **When `$delegated` is empty, none of this appears —
+   not even a line saying the plan delegates nothing** (Step 0d's gate; a "no delegated decisions" note is
+   itself Charter-shaped output, the same reasoning as the tiering gate's Step 4c.1). **Then, for
    every task carrying a per-test red census (#375), the census line:** the enumerated behaviours, the
    pinned test method name each is bound to, and — stated, never implied — **what the census does not
    prove**: it proves each test is *coupled to the code path* (it fails when the implementation is
@@ -2837,6 +2900,496 @@ fork that catalog into `references/`**; cite the installed `charter-format` skil
 interpreted content: the resolved/asked decisions are now settled inputs to the work-item table, and the
 `:::` context rides along as rationale. The produced folder must still pass `guardrails validate` (Step 7).
 
+## Step 0d — Charter's FLATTENED handoff: delegated decisions on the UNATTENDED path (#500)
+
+**This runs on the ordinary `.md` path — the one Step 0c disclaims.** Step 0c is triggered by the
+`.charter.md` FILENAME (or an attended `:::` confirm) and says so in its own opening: *"the
+headless/autonomous path consumes Charter's flattened `handoff` markdown and never triggers it."* Step 0c
+rule 5 already carries the contract for a `target: agent` question — *"the breakdown agent resolves it
+within its authoring judgment and RECORDS the choice + rationale as a visible decision. Never synthesize a
+silent default."* — written before Charter ever asked for it. **The semantics were never missing; they
+were unreachable on the one path that matters.** `charter handoff` flattens a `.charter.md` to plain
+CommonMark, this skill reads a delegated question as ordinary prose, whatever the breakdown infers
+silently becomes the decision, and **nothing fails**. That is #500 exactly. **This step is the missing
+TRIGGER, not a new contract.** It needs no Skill tool, no `charter-format`, no attended human and no
+Charter detection — only a grep for two ASCII literals Charter now emits and pins with its own tests
+(Charter PR #220 / Charter#219; the exchange is `docs/asks/2026-08-27-charter-reply-marker-implemented.md`).
+
+**PRECEDENCE — Step 0c and Step 0d can never double-handle one plan.**
+- **`$charter = true`** (Step 0c interpreted a `.charter.md`, or an attended confirm) ⇒ **Step 0d does not
+  run at all.** A `.charter.md` carries its questions as native `:::question` blocks; the marker lines
+  below exist only in `charter handoff` OUTPUT, which by construction has not been through Step 0c's
+  input. Step 0c rule 5 owns those decisions; this step owns the flattened ones. One plan, one owner.
+- **A flattened handoff renamed `.charter.md` cannot slip through as a hybrid** — it carries no
+  `charter-format-version` frontmatter, so Step 0c gate 2 REJECTS it and stops before interpreting
+  anything. No new rule needed; the existing gate already covers the only way the two could collide.
+- **A soft-detected `.md` the human confirmed as Charter but which carries no format marker** takes Step
+  0c gate 2's *"warn and fall through to the plain path"* branch ⇒ `$charter` is NOT set ⇒ **Step 0d
+  runs.** This is the one branch where a `:::`-looking file still reaches this step, and it is correct
+  that it does: whatever those `:::` were, the delegated-decision markers are read on their own literals.
+- Everything else — every plain `.md`, every headless/autonomous run, every JIT between-wave breakdown
+  (Step 9.5) — reaches Step 0d.
+
+**THE GATE — a plan that delegates nothing produces BYTE-IDENTICAL output to a pre-#500 breakdown.** No
+`decisions.md`, no preflight, no ledger line, **and not even a note saying the scan found nothing** — the
+same discipline the tiering gate enforces (Step 4c.1 / DoR Invariant 7), for the same reason: a "this plan
+delegates nothing" line is itself Charter-shaped output on a plan that never met Charter. This departs
+deliberately from the seam ledger (#382), which DOES print a zero-row heading, and the difference is not
+an inconsistency to harmonize: the seam ledger's absence is unfalsifiable (nobody can re-derive whether
+the analysis ran), whereas this step's absence is checkable in one second by anyone re-running the 0d.1
+regex against the plan. Absence is evidence here; there it is not.
+
+### 0d.1 SCAN — run a command, do NOT read for it
+
+The composed breakdown prompt is ~283 KB, almost all inlined skill. **Skim is the real failure mode**, so
+the scan is a regex over the plan file, executed, with its output pasted into your working notes. Two
+literals, verified by Charter over EMITTED BYTES (not over their constants) and re-verified on our side in
+PowerShell:
+
+| Purpose | Pattern | Where |
+|---|---|---|
+| the ids, one pass | `` ^> \*\*DELEGATED DECISION `([^`]+)`\*\* `` | one per OPEN `target: agent` question |
+| the expected total | `` DECISIONS DELEGATED TO YOU: (\d+)\*\* `` | leads the file, **only when non-zero** |
+
+```powershell
+$planPath = '<the plan .md>'      # ONE file, by explicit path - never a directory sweep
+# -CaseSensitive on purpose: Select-String defaults to case-INSENSITIVE while every regex in the emitted
+# gate is .NET-default case-SENSITIVE. Without it a differently-cased marker scans fine here and then
+# never matches its own gate - a mismatch that is silent in the direction that looks fine.
+$ids = Select-String -LiteralPath $planPath -CaseSensitive -AllMatches `
+       -Pattern '^> \*\*DELEGATED DECISION `([^`]+)`\*\*' |
+       ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value }
+$line = Select-String -LiteralPath $planPath -CaseSensitive -Pattern 'DECISIONS DELEGATED TO YOU: (\d+)\*\*' | Select-Object -First 1
+$declared = if ($line) { [int]$line.Matches[0].Groups[1].Value } else { $null }   # $null = no count line
+"ids: $($ids -join ', ') | found: $($ids.Count) | declared: $declared"
+```
+
+POSIX equivalent, portable to BSD `sed`/`grep` (no `grep -P`, which macOS lacks):
+
+```sh
+sed -n 's/^> \*\*DELEGATED DECISION `\([^`]*\)`\*\*.*/\1/p' "$planPath"                     # the ids
+sed -n 's/.*DECISIONS DELEGATED TO YOU: \([0-9]\{1,\}\)\*\*.*/\1/p' "$planPath" | head -1   # the total
+```
+
+Set **`$delegated`** to the captured id list. Empty ⇒ the gate above closes and nothing else in this step
+fires.
+
+**`$planPath` is the PLAN OF RECORD, not this invocation's input — and an existing `<plan>/decisions.md`
+keeps `$delegated` alive on its own.** Load-bearing for waved plans, where getting this wrong makes the
+whole step evaporate. A JIT between-wave breakdown (§9.5) is auto-fired against the wave's seeded
+`brief.md`, which is populated from **that wave's section** of the parent plan — but the count line
+*"leads the file"*, so it is definitionally not in any wave's section, and a marker blockquote usually
+is not either. Scanning the brief therefore returns empty, the gate closes, and a decision the parent
+plan delegated is silently dropped at the very moment its consuming wave is being authored. So:
+- **Resolve `$planPath` to the parent plan the folder was generated from** (the `.md` beside the plan
+  folder), never to a `brief.md`; a brief is a section, not the plan.
+- **If `<plan>/decisions.md` already exists, `$delegated` is at minimum its recorded ids** — the record
+  already made is authority in its own right, even when this invocation cannot see the source.
+- **Only file a Charter bug for a missing count line when you scanned the plan of record.** Markers
+  without a count line in a *brief* is a seeding artifact of ours, not a Charter defect.
+
+**Scan the ONE plan file by explicit path — never a directory sweep, and prefer `Select-String`/`grep`
+over `rg`.** Measured, not theoretical: with the plan under a path a `.gitignore` covers, `rg -c
+"DELEGATED DECISION" .` prints nothing and exits 1 — indistinguishable from "this plan delegates
+nothing", which is the very bug this step exists to close, reproduced by the tool. The same `rg` given the
+file as an explicit argument finds both markers. (`rg --no-ignore --hidden` also works.) This is the
+false-clean that let the "these literals appear zero times in Guardrails" claim circulate between two
+repos' docs unchecked — **several `guardrails-review` probes are greps too.**
+
+**Three semantics the scan encodes, from Charter's own emit contract:**
+- **The count is what is still OWED**, not how many `target: agent` questions the plan has. An ANSWERED
+  agent question emits as `Answered:` and is neither counted nor marked; an OPEN `target: human` question
+  gets `> **Open question (unresolved):**` and is not counted either. Do not hand-count questions.
+- **A plan delegating nothing carries NO count line** — absence is unambiguous because the markers are
+  absent too. But a **missing count line WITH markers present is a Charter bug worth filing**, not "0 or
+  an old Charter": process the markers (0d.2) and name the defect in the report.
+- **Every id you see carries `options` or a lean.** Charter's `--fail-if-needs-human` blocks unconstrained
+  `free-text`/`bool`/`number` delegations on their side, so they never reach us. That carve-out is what
+  makes a recorded one-of-N deterministically checkable — the whole gate in 0d.6 rests on it.
+
+### 0d.2 RECONCILE — assert `declared == count(ids)` yourself, and suspect YOURSELF first
+
+**Assert it explicitly. Do not let the gate depend on Charter's wording holding.** Every plural phrasing
+of "delegated decision" contains the singular as a substring, so a count line reading
+`**DELEGATED DECISIONS: 2**` would make a naive `grep -c "DELEGATED DECISION"` return **3 for two
+decisions** — a gate wrong by exactly one, the hardest kind to notice. Charter reversed the words to
+`DECISIONS DELEGATED TO YOU` precisely to avoid that and has a test whose only job is to fail if someone
+"tidies" it later. Our side still asserts the equality rather than inheriting their care.
+
+On a mismatch, in this order:
+1. **Suspect the scan, not Charter.** Re-run the 0d.1 regex mechanically — not by eye, and not by
+   re-reading the plan. We are the ones reading 283 KB; skim is overwhelmingly the likelier cause, and
+   that is the entire reason Charter was asked for the count line.
+2. **If the mechanical re-scan still disagrees, it is a CHARTER bug** — the count is a byproduct of the
+   same emit pass, recorded downstream of the one merge that decided a question was open, so
+   `declared == count(markers)` is an invariant on their side. File it at
+   `Servant-Software-LLC/Charter`, do not work around it silently.
+3. **Proceed on the MARKERS either way.** They are the authoritative item list — an id you cannot name is
+   an id you cannot record, and a count you cannot resolve to ids certifies nothing. The report says what
+   disagreed.
+
+### 0d.3 SETTLE each id — deliberately, within your authoring judgment
+
+This is Step 0c rule 5's contract, now reachable. For each id: choose **exactly one of the `options` on
+the metadata line**, in the plan's own terms and the workspace's evidence (the same "trace the real
+sibling" discipline as #474 — a decision justified by what the repo already does beats one justified by
+taste). Charter's `recommended` is the plan author's lean, not a rule: **departing from it is allowed;
+departing SILENTLY is not.** Never leave one open, never emit a `{"needsHuman": …}` task for it — the
+author routed it to an agent on purpose, and converting a delegation back into a human halt is a different
+kind of ignoring it. If the options genuinely cannot be told apart from the plan and the workspace, choose
+the `recommended` one and say in the reason that nothing in the workspace discriminated.
+
+**The metadata line's `id` appears twice by design** (marker line + `_Question — id: …_` line). `charter
+verify` cross-checks the manifest against the metadata line, and `charter-format` documents that line as
+the uniform shape under every status lead. Do not propose de-duplicating them; it breaks a consumer that
+is not us.
+
+### 0d.4 RECORD — `<plan>/decisions.md`, one section per id
+
+Write `<plan>/decisions.md` (plan-folder root, sibling of `guardrails.json`). **Its FORMAT IS A CONTRACT:
+the 0d.6 preflight reads it.**
+
+```markdown
+# Delegated decisions
+
+Charter delegated 2 decisions to this breakdown (`target: agent`, #500). Each is settled here and folded
+into the consuming task's prompt as a stated constraint. `## DECISION <id>` headings are RESERVED for
+Charter-delegated ids and are read by `preflights/01-delegated-decisions-recorded.ps1`.
+
+## DECISION `cache` — which cache should front it?
+
+- **Options:** `Redis`, `in-memory`
+- **Chosen:** `Redis`
+- **Reason:** the workspace already runs Redis for the session store (`src/Api/Startup.cs:44`), so this adds no new dependency.
+- **Recommended:** `Redis` — **followed**.
+- **Consumed by:** `tasks/04-implement-cache-layer/action.prompt.md`
+
+## DECISION `ttl` — what TTL should entries carry?
+
+- **Options:** `5m`, `1h`
+- **Chosen:** `1h`
+- **Reason:** the upstream feed refreshes hourly, so a 5m TTL re-fetches identical bytes 12×.
+- **Recommended:** `5m` — **DEPARTED**: see the reason above.
+- **Consumed by:** `tasks/04-implement-cache-layer/action.prompt.md`
+```
+
+Cell rules, so the file is machine-readable and self-checking:
+- **The heading is `` ## DECISION `<id>` `` — one line, one regex, sentinel and id together.** That is the
+  same shape we asked Charter for, applied to our own file, and for the same reason: split across two
+  lines the check becomes two-pass and order-coupled. The `## DECISION ` anchor **plus the backtick** is
+  what keeps prose from matching — an unanchored `DECISION` would match this file's own preamble.
+- **`` ## DECISION `<id>` `` is RESERVED for Charter-delegated ids.** A human recording a decision of their
+  own uses any other heading (`## Decision (human, not delegated) — naming`); the preflight ignores it, so
+  the file stays a useful human surface without turning every human edit into a false red.
+- **Chosen** — one of the `options`, backticked, verbatim. **Reason** — a real sentence; `TBD`/`TODO`/`—`
+  is treated as absent, because a recorded question with no answer is the silent default wearing a
+  heading. **Recommended** — Charter's lean and whether this breakdown **followed** or **DEPARTED**.
+- **Consumed by** — the **plan-folder-relative** path(s) of the prompt(s) the choice was folded into (the
+  seam ledger's self-checking proof-column convention, #382), or the literal token **`plan-shape`** when
+  the decision changed which tasks exist rather than what one prompt says. Prose is not a consumer.
+  **`plan-shape` must be the WHOLE field** (`` - **Consumed by:** `plan-shape` ``) — it exempts the id
+  from the only assertion that reaches outside `decisions.md`, so it may never ride along beside a real
+  path as a parenthetical. Reach for it only when there is genuinely no prompt to fold into; **every
+  `plan-shape` row is called out in the Step 7.4 ledger as unverified by the gate**, because an
+  unfalsifiable token is weaker than the prose it replaced.
+- **Values are emitted into the preflight as single-quoted PowerShell literals** — an id or chosen value
+  containing an apostrophe must have it DOUBLED there (`'don''t cache'`), or the generated script is a
+  parse error, which is a dead-end no retry can fix (#473).
+- **A JIT-deferred consumer names the WAVE FOLDER with a trailing `/`** (`wave-02-implement/`) — the one
+  case where the consuming task does not exist yet, because §9.5 leaves wave `K+1` a stub. This is the
+  seam ledger's `U`-row deferral applied here: the check then asserts only that the wave folder EXISTS,
+  which is deliberately weak, and **the JIT re-invocation that authors that wave MUST fold the constraint
+  into the real prompt, rewrite this row to the prompt path, and re-emit the preflight.** Without this
+  rule a correct waved plan false-reds before its first wave runs — a halt with no available remedy,
+  which is the worst failure a pre-DAG gate can have. Do NOT use the trailing-slash form for a task that
+  DOES exist; that trades a real assertion for a directory-exists one.
+- **NO self-declared count line in this file.** Checking a file's contents against a total the same file
+  declares is vacuous; the expected count lives in the preflight, embedded from the plan (0d.6).
+- `decisions.md` is authored breakdown content: `guardrails lock` includes it in `guardrails.baseline`, so
+  a regeneration merge (Step 8) tracks a human's edits to it like any other authored file. It is inert to
+  the harness — not in `PlanDefinitionHash`, not a `validate` subject. **The file is the record; the
+  preflight is the gate.** (A `guardrails validate` GR code doing this at breakdown time is the documented
+  follow-on under #500, not this step.)
+
+### 0d.5 FOLD IN — the chosen value becomes a stated constraint in the consuming prompt
+
+Recording the decision and then leaving the prompt silent about it just moves the bug one level down: the
+executing agent re-decides it at run time, and the run goes green on a different answer than the one on
+record. So every consuming `action.prompt.md` gets, verbatim in shape:
+
+```markdown
+## Delegated decisions (settled at breakdown time — do NOT re-decide)
+
+`cache` = `Redis`
+`ttl` = `1h`
+
+The reasons are in the plan folder's `decisions.md`. Build against these. If one is wrong, halt with
+`{"needsHuman": …}` — never silently choose differently.
+```
+
+The `` `<id>` = `<value>` `` line is what the 0d.6 check greps for, so it is **anchored on a USE, not a
+mention** (#470): a prompt that merely says the word "Redis" somewhere does not satisfy it. One task may
+consume several ids; one id may be consumed by several tasks — list each path in `Consumed by:`.
+
+**Write those lines at column 0, one per id, exactly as above** — the check anchors on `^`, so bulleting
+them (`` - `cache` = `Redis` ``) or indenting them under the heading makes a correct prompt fail its own
+gate. **The MATCHED token is the constraint line, not the heading** — the heading's em dash is prose and
+free to change, the same split Charter emits (their ASCII sentinel ends before the em dash begins). Apart
+from the id and the value themselves, every byte the check matches on is ASCII, deliberately: this is the
+same encoding-round-trip class we asked Charter to avoid, and asking for it while not doing it ourselves
+would be the easiest way to lose it.
+
+### 0d.6 CERTIFY — the plan-root preflight, and the exact thing it does NOT catch
+
+*"A prompt may propose, only a deterministic gate may certify."* An instruction with no gate behind it is
+this repo's most-repeated defect shape, so 0d.3–0d.5 ship with one: emit
+**`<plan>/preflights/01-delegated-decisions-recorded.ps1`**, a plan-root Full Flight Check (the four-folder
+model, Step 4). It is a guardrail-shaped FILE — no `task.json`, no action, no `dependsOn` — evaluated ONCE
+before the Scheduler builds any wave, so a plan whose delegated decisions were *found but not settled in
+writing* **halts at the boundary** instead of shipping an invented decision into every task downstream. No
+harness change is required; this ships as a skill edit alone.
+
+> **READ THIS BEFORE TRUSTING IT — the gate is authored by the agent it polices, so it cannot catch a
+> breakdown that never RAN 0d.1.** A skimming breakdown leaves `$delegated` empty; the emit-nothing gate
+> then fires, no `decisions.md` and no preflight exist, and the run goes green on an invented decision —
+> **which is #500, undetected.** What this check actually certifies is narrower and still worth having: a
+> breakdown that FOUND the ids cannot then fail to record them, fold them in, or keep the three artifacts
+> in agreement, and no later hand-edit can break that pair silently. The scan itself is enforced only by
+> prose and the Quality-bar checkbox — i.e. by self-attestation, which is the mechanism #500 already
+> proved insufficient. **Closing that needs a check outside the breakdown's own pass: the `guardrails
+> validate` GR code that reads the PLAN (0d.4's documented #500 follow-on).** Until it exists, say so in
+> the Step 7.4 report rather than letting a green preflight read as "nothing was skimmed."
+
+**DESIGN DECISION — the expected ids and values are EMBEDDED in the check, which asserts only against
+`decisions.md` and the prompts. It does NOT grep the source plan. Do not "fix" this back.**
+1. **The flattened `plan.md` is a SIBLING of the plan folder, outside it.** A check reaching `..` past its
+   own plan folder breaks the folder's self-containment, and the sibling relationship is not even
+   invariant — Step 0.1 explicitly allows a repo to keep plan folders under a `.guardrails/` home (#275).
+2. **The source plan is INPUT, not a run artifact, and nothing pins its bytes.** It can be re-flattened,
+   edited or (on the unattended path, where it is often flattened into a temp dir) simply gone by run
+   time. A gate grepping it either false-reds a folder that was correct when authored, or cannot read its
+   subject at all — both are run-time halts whose only remedy is a re-breakdown.
+3. **Both values are known at breakdown time** (0d.1 captured them), which turns a two-source comparison
+   into a one-source assertion.
+4. **A plan-root preflight's cwd is the integration WORKTREE, not the plan folder** — so a path-relative
+   read of the source plan would resolve somewhere else again. The check resolves `decisions.md` from
+   **`$PSScriptRoot`** (the script runs from its real plan-folder location, whatever the cwd), which is
+   why it stays correct in serial mode, worktree mode and a `revalidate`.
+5. **The acknowledged cost:** an embedded expectation cannot notice that the SOURCE plan changed after the
+   breakdown (a re-flatten adding a third delegated decision). That is plan-DRIFT, a different surface —
+   #496's plan-hash work — and out of scope here. Widening this check into a drift detector re-imports
+   every problem in 1–4.
+
+```powershell
+# catches: a decision Charter DELEGATED to this breakdown that the breakdown FOUND and then failed to
+#          settle in writing - the recordable half of #500. The flattened plan marked 2 ids
+#          `target: agent`; each must appear in <plan>/decisions.md with a CHOSEN value, a REASON, and a
+#          consuming prompt that carries the choice as a stated constraint. A missing id, an empty
+#          Chosen/Reason, a drifted value or a consumer whose prompt never states it means an invented
+#          default is about to be built by every task downstream.
+#          NOT caught: a breakdown that never scanned the plan at all - it emits no ids, so this file
+#          would not exist. That half needs a check outside the breakdown's own pass (SKILL.md 0d.6).
+# The expected ids and chosen values are EMBEDDED here at breakdown time (the 0d.1 scan) and deliberately
+# NOT re-grepped from the source plan: plan.md is a SIBLING of this folder, outside it, unpinned and
+# possibly absent at run time. Read SKILL.md Step 0d.6 before "fixing" this to read the plan.
+# Required-present baseline (#478): every clause below measures 1 against the artifact it scans at author
+# time - EXPECTED, because this is a positive/assert-present preflight over breakdown-authored artifacts
+# (the green-on-arrival class Step 7.0a exempts, same as the #181 baseline).
+$ErrorActionPreference = 'Stop'
+
+$expected = @(
+    @{ Id = 'cache'; Chosen = 'Redis' },
+    @{ Id = 'ttl';   Chosen = '1h'    }
+)
+
+# <plan>/decisions.md resolved from THIS SCRIPT'S OWN location, never from cwd: a plan-root preflight
+# runs with cwd = the integration WORKTREE, not the plan folder.
+$planRoot  = Split-Path -Parent $PSScriptRoot
+$decisions = Join-Path $planRoot 'decisions.md'
+
+if (-not (Test-Path -LiteralPath $decisions)) {
+    Write-Output "PRECONDITION: $decisions is missing, but this plan carries $($expected.Count) delegated decision(s): $(($expected | ForEach-Object { $_.Id }) -join ', ')."
+    Write-Output "Re-run /plan-breakdown (Step 0d) and record them - never run a plan whose delegated decisions were never settled (#500)."
+    exit 1
+}
+
+$text     = Get-Content -LiteralPath $decisions -Raw
+$problems = New-Object System.Collections.Generic.List[string]
+
+foreach ($d in $expected) {
+    $id  = $d.Id
+    $esc = [regex]::Escape($id)
+
+    # One line, one regex, sentinel + id together - the shape we asked Charter for, applied to our own
+    # file. The '## DECISION ' anchor AND the backtick are what keep prose from matching.
+    $head = [regex]::Match($text, '(?m)^## DECISION `' + $esc + '`')
+    if (-not $head.Success) {
+        $problems.Add("[$id] NOT RECORDED - no '## DECISION ``$id``' section in decisions.md. Charter delegated this decision to the breakdown; it was never settled in writing, so whatever a task infers at run time becomes the decision (#500).")
+        continue
+    }
+
+    # Section body = this heading to the next '## ' (or EOF).
+    $rest = $text.Substring($head.Index + $head.Length)
+    $next = [regex]::Match($rest, '(?m)^## ')
+    $body = if ($next.Success) { $rest.Substring(0, $next.Index) } else { $rest }
+
+    $chosen = [regex]::Match($body, '(?m)^- \*\*Chosen:\*\* `([^`]+)`\s*$')
+    if (-not $chosen.Success) {
+        $problems.Add("[$id] NO CHOSEN VALUE - the section exists but carries no '- **Chosen:** ``<value>``' line. A recorded question with no answer is the silent default wearing a heading (#500).")
+    }
+    elseif ($chosen.Groups[1].Value -ne $d.Chosen) {
+        $problems.Add("[$id] CHOSEN VALUE DRIFTED - decisions.md says ``$($chosen.Groups[1].Value)`` but this preflight was generated for ``$($d.Chosen)``. Re-run /plan-breakdown so the record, the prompts and this check agree.")
+    }
+
+    $reason = [regex]::Match($body, '(?m)^- \*\*Reason:\*\* (\S.*)$')
+    if (-not $reason.Success -or $reason.Groups[1].Value.Trim() -match '^(TBD|TODO|N/?A|-{1,2}|\?+)\.?$') {
+        $problems.Add("[$id] NO REASON - '- **Reason:** <why>' is missing or a placeholder. Departing from the plan author's recommendation is allowed; departing silently is not (#500).")
+    }
+
+    $consumed = [regex]::Match($body, '(?m)^- \*\*Consumed by:\*\* (\S.*)$')
+    if (-not $consumed.Success) {
+        $problems.Add("[$id] NO CONSUMER - '- **Consumed by:** ``<plan-relative path>``' is missing (or the literal 'plan-shape'). An unfolded decision is re-decided by the executing agent, which is the same bug one level down.")
+        continue
+    }
+
+    # The WHOLE field must BE the sentinel - backticked or bare - not merely contain the word. A field
+    # reading '`tasks/x/action.prompt.md` (also a plan-shape change)' names a real consumer and must still
+    # be checked; matching the word anywhere would skip it, which is the #470 mention-vs-use bug inside the
+    # clause that cites #470. Both spellings are accepted because 0d.4 renders the sentinel backticked.
+    $consumers = $consumed.Groups[1].Value.Trim()
+    if ($consumers -match '^`?plan-shape`?$') { continue }
+
+    $paths = [regex]::Matches($consumers, '`([^`]+)`') | ForEach-Object { $_.Groups[1].Value }
+    if (-not $paths) {
+        $problems.Add("[$id] CONSUMER NOT A PATH - '- **Consumed by:**' names no ``plan-relative/path`` and is not 'plan-shape'. The check cannot verify a prose consumer.")
+        continue
+    }
+
+    # Anchored on a USE, not a mention (#470): the prompt must carry the constraint LINE, not the word.
+    $constraint = '(?m)^`' + $esc + '` = `' + [regex]::Escape($d.Chosen) + '`'
+    foreach ($rel in $paths) {
+        $full = Join-Path $planRoot $rel
+        if ($rel.EndsWith('/')) {
+            # A JIT-deferred consumer: the wave exists but its tasks are not authored yet (SKILL.md
+            # 0d.4 / Step 9.5). Assert only that the wave folder is there - deliberately weak, and the
+            # wave's own breakdown rewrites this row to the real prompt path and re-emits this check.
+            # RESTRICTED to a wave directory (Step 9.1's ^wave-NN-slug$ shape) on purpose: without this,
+            # 'tasks/' - or the consuming task's own folder with ONE extra character - silently downgrades
+            # "the prompt states the constraint" to "a directory exists", and the doc's "do not use the
+            # trailing-slash form for a task that exists" would be an instruction with no gate behind it.
+            if ($rel -notmatch '^wave-[0-9]+-[a-z0-9-]+/$') {
+                $problems.Add("[$id] DEFERRED CONSUMER NOT A WAVE - '$rel' ends in '/' but is not a 'wave-NN-slug/' directory. Only a not-yet-authored WAVE may defer the fold-in; every other consumer names the consuming action.prompt.md.")
+            }
+            elseif (-not (Test-Path -LiteralPath $full -PathType Container)) {
+                $problems.Add("[$id] DEFERRED CONSUMER MISSING - decisions.md defers this decision to wave '$rel', which is not a folder in this plan.")
+            }
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+            $problems.Add("[$id] CONSUMER MISSING - decisions.md names '$rel' but that file does not exist in the plan folder.")
+            continue
+        }
+        if (-not [regex]::IsMatch((Get-Content -LiteralPath $full -Raw), $constraint)) {
+            $problems.Add("[$id] CONSTRAINT NOT FOLDED IN - '$rel' does not carry the line '``$id`` = ``$($d.Chosen)``'. The executing agent will re-decide it (#500).")
+        }
+    }
+}
+
+# Extra sections are DRIFT, not a human's notes: '## DECISION `<id>`' is RESERVED for Charter ids (a human
+# recording their own decision uses any other heading, which this check ignores - see 0d.4).
+$recorded = @([regex]::Matches($text, '(?m)^## DECISION `([^`]+)`') | ForEach-Object { $_.Groups[1].Value })
+foreach ($r in ($recorded | Select-Object -Unique)) {
+    if ($expected.Id -notcontains $r) {
+        $problems.Add("[$r] RECORDED BUT NOT EXPECTED - decisions.md carries a '## DECISION' section this preflight was not generated for. Either the plan was re-flattened with a new delegated decision (re-run /plan-breakdown) or the heading is a human note that should not use the reserved '## DECISION ``id``' form.")
+    }
+    elseif (@($recorded | Where-Object { $_ -eq $r }).Count -gt 1) {
+        # Only the FIRST section is read above, so a second, contradicting record would be silently
+        # ignored - and a Step 8 regeneration merge or a hand-resolved conflict produces exactly that.
+        $problems.Add("[$r] RECORDED TWICE - decisions.md carries more than one '## DECISION ``$r``' section. Only the first is read, so the others are invisible; merge them into one before running.")
+    }
+}
+
+if ($problems.Count -gt 0) {
+    Write-Output "=== Delegated decisions NOT settled in writing ($($problems.Count) problem(s)) ==="
+    $problems | ForEach-Object { Write-Output $_ }
+    Write-Output ""
+    Write-Output "Charter handed $($expected.Count) decision(s) to the breakdown agent ($(($expected | ForEach-Object { $_.Id }) -join ', ')). Fix <plan>/decisions.md and the consuming prompt(s), or re-run /plan-breakdown - do not start the DAG with a delegated decision unrecorded (#500)."
+    exit 1
+}
+
+Write-Output "All $($expected.Count) delegated decision(s) recorded with a choice, a reason and a named consumer: $(($expected | ForEach-Object { $_.Id }) -join ', ')."
+exit 0
+```
+
+Notes that keep the next author from weakening it:
+- **It ACCUMULATES, one distinguishable message per clause, dumped once (#478)** — with a single early
+  exit for the PRECONDITION (`decisions.md` absent, which would make every clause below crash) and a
+  `continue` where a later clause is meaningless without an earlier one. A plan-root gate's failure text
+  is the operator's ONLY signal (no retry, no `feedback.md` tail), so every message names the id and the
+  remedy.
+- **State plainly what it does NOT prove.** It certifies that every delegated id was **recorded and
+  folded in** — never that the CHOICE was good. A breakdown that picks badly and writes an honest reason
+  passes, exactly as it should: judging the choice is the human's job at the draft review, and the same
+  boundary the #375 per-test census draws ("coupled to the code path, not the assertion is correct"). Say
+  this in the report; do not let a green preflight read as "the decisions are right."
+- **Emit it in the language the workspace can actually run — `.ps1` / `.sh` / `.py`, exactly like the
+  #181 baseline.** The `.ps1` above is the realization, not the requirement. `InterpreterMap` maps `.ps1`
+  off-Windows to `pwsh` ONLY, and an unresolvable interpreter is a **GR2005 ERROR**, so a `.ps1`-only
+  emission on a Linux/macOS box with no PowerShell installed fails the breakdown's own Step 7 `validate`
+  and halts the run before task one — a #500-shaped regression on a repo that has never had a delegated
+  decision. Port the logic; keep the clauses, the accumulation and the messages.
+- **It is green on arrival, by construction — and that is the point.** Step 7.0a's "a guardrail that
+  exits 0 at author time certifies nothing" rule has a named exception for positive/assert-present
+  preflights (the wave ENTRY gate, the #181 baseline); **this check joins that list.** It goes red when a
+  breakdown records a found id badly, when a regeneration drops a section, or when a human edits
+  `decisions.md` or a prompt and breaks the pair — **with one timing caveat worth knowing:** the pre-DAG
+  phase SKIPS on resume when the journal's `planPreflights` marker is `passed` and its `planHash` still
+  matches, and `PlanHash` covers only `guardrails.json` + every `task.json`. So on a FLAT plan a mid-run
+  hand-edit to `decisions.md` or a prompt is not re-checked until `--fresh` or a `task.json`-level change.
+  It is a draft-review and pre-run gate, not a live invariant.
+- **Smoke-test it two-sided at author time (#302, Step 7.0d)** — it is fully runnable-at-author-time
+  (idempotent, in-repo input, no live dependency). Run it green against the emitted folder, then against
+  a scratch COPY with one `## DECISION` section deleted and expect non-zero. Measured on the reference
+  implementation, 20 cases. **Exit 1** for: *decisions.md absent*, *id section deleted*, *Chosen line
+  removed*, *Reason placeholder*, *chosen value drifted from the embedded one*, *`Consumed by:` removed*,
+  *constraint line dropped from the prompt*, *constraint present with the wrong value*, *consumer file
+  missing*, *an unexpected `## DECISION` section*, *the same id recorded TWICE*, *a deferred wave folder
+  that does not exist*, *a trailing slash on `tasks/`*, *a trailing slash on the consuming task's OWN
+  folder*, and *`plan-shape` appearing as a parenthetical beside a real path whose prompt lost the
+  constraint*. **Exit 0** for: the valid folder, `plan-shape` as the whole field **backticked AND bare**,
+  a human's non-reserved heading, and a JIT-deferred `wave-NN-slug/` whose folder is present.
+  **Mutate in a scratch copy and assert the mutation actually changed the file**:
+  the first pass here used `-notlike` with a backtick pattern, and because backtick is the ESCAPE
+  character in a PowerShell wildcard the file was never mutated and the clause "passed" its own negative
+  sample. A negative sample that does not bite is a green with no information in it. **Four of the cases
+  above were found by an adversarial pass, not by the author** — the backticked `plan-shape` false red,
+  the two trailing-slash downgrades, and the duplicate section — which is the argument for running that
+  pass with someone who did not write the check.
+- **Ordinal position is cosmetic.** Every file in `<plan>/preflights/` is evaluated — the phase collects
+  failures rather than short-circuiting — so this sitting beside a `01-baseline-<area>-tests-green.ps1`
+  needs no renumbering. Names must stay distinct (duplicate check names are a validation error).
+
+### 0d.7 REPORT and REGENERATE
+
+The Step 7.4 ledger is specified with the rest of the report. Two rules that belong here:
+- **`decisions.md` and its preflight are ONE artifact in two files and must never drift apart.** A
+  regeneration (Step 8) re-runs the 0d.1 scan **against the plan of record** and re-emits BOTH together.
+  The `CHOSEN VALUE DRIFTED` clause exists because that pair is exactly what a partial hand-edit breaks.
+- **The emit-nothing gate is not a licence to DELETE.** It governs a plan that never delegated anything.
+  A regeneration or JIT invocation whose own input happens to yield an empty scan **must leave an existing
+  `decisions.md` and its preflight in place** — read the ids from the file and carry them forward (0d.1).
+  Deleting a recorded decision because this pass could not see its source is the silent-decision bug with
+  extra steps.
+- **A human who OVERRIDES a choice at the draft review must edit THREE things:** `decisions.md`, every
+  consuming `action.prompt.md`, and the preflight's `$expected` block. Miss the third and the gate reds
+  with `CHOSEN VALUE DRIFTED` and points at a remedy — *re-run `/plan-breakdown`* — that would re-decide
+  the very question the human just overrode. Say this in the Step 7.4 report when the ledger is emitted,
+  because the draft review is exactly where that edit happens. (Editing the preflight body moves
+  `PlanDefinitionHash` and so re-arms the review nudge; that is correct, not a bug.)
+- **A settled decision is an INPUT to Step 1, not a work item** — the same status a resolved
+  `:::question`'s folded `answer` has on the Step 0c path. It shapes the work-item table, the DAG, and
+  the guardrails; it never becomes a task of its own.
+
 ## Step 9 — Waved plans: nested layout + JIT staged breakdown (#254)
 
 Fires when Step 0.8 set `$waved = true` (the plan is authored as ordered STAGES, each building on the
@@ -3189,4 +3742,5 @@ authority for every path/signature the new wave references.
 - [ ] (#365/#360) One-ahead invariant held: the initial JIT breakdown left **only wave `K+1`** stubbed (not `K+1..N`), and every JIT re-invocation (§9.5 step 3) that authored a wave **re-created AND auto-seeded the next `wave-(K+2)` stub** (dir + empty `tasks/` + a `brief.md` populated from that wave's parent-plan section — or a minimal template flagged in the report when no section was identifiable; NEVER brief-less by default, §14.4/§14.10 auto-breakdown-default) whenever a planned wave remained, then **regenerated the diagram** (`guardrails graph`); the FINAL wave got no stub after it. The forward signal is thereby preserved across every JIT step (not just the first), and each seeded stub auto-breaks-down at its checkpoint — still halting for the human review gate.
 - [ ] (#225) **The tiering GATE held.** Step 0.9 recorded `$tiering`, and tiering counts as configured ONLY when the governing `guardrails.json` already carries a `routing` block on a prompt runner (or an existing `tiering` block), or the plan EXPLICITLY instructs the breakdown to author per-model routing — never inferred from a plan that merely sounds complex, and `not-configured` when in doubt. When NOT configured, the emitted folder contains **no `action.tier` (not even `"tier": null`), no `tiering` block in `guardrails.json`, and no classification report line — including any "tiering: not configured" note, which is itself one** — so a single-model user's breakdown is **byte-identical** to what this skill emitted before #225 existed (DoR Invariant 7; re-checked in the Step 7.0e self-review and proven externally by the committed no-`routing` golden plus its negative assertions). Sizing, the DAG, guardrail selection and `maxTurns` budgeting are unchanged on both sides of the gate.
 - [ ] (#225) When tiering IS configured: every PROMPT task carries an `action.tier` of exactly `easy` | `medium` | `hard` (matched VERBATIM — a stray space or capital is a GR2043 error) classified by the Step 4c.3 rubric with a one-clause reason recorded; every surviving prompt-judge guardrail is classified and REPORTED (Stage 1 has no field to write it to — no invented `tier:` frontmatter key); script actions and deterministic guardrails are left untagged; the plan-wide `"tiering": { "defaultTier": "medium" }` is emitted ONCE in `guardrails.json` to cover anything left untagged **including a task a human hand-adds after the breakdown** (resolved at load: `action.tier` > `defaultTier` > `null`), without excusing an untagged emitted task; no tier weakened a guardrail, a TDD split or a `writeScope` (4c.5); tier vs `maxTurns` was cross-checked, not derived (4c.4); and the Step 7.4 report carries the `tier` column, the `hard` reasons, the judge tiers, the default and its hand-added-task coverage, and the "nothing routes on a tier yet" statement.
+- [ ] (#500) **The flattened-Charter delegated-decision scan RAN, as a command.** Step 0d.1's two regexes were executed against the plan file **by explicit path** (never a directory sweep, and not `rg` without `--no-ignore --hidden` — a gitignored plan makes a recursive `rg` print nothing and exit 1, which is indistinguishable from "delegates nothing"), `declared == count(markers)` was asserted **explicitly** rather than inherited from Charter's word order, and a mismatch was re-scanned mechanically (suspecting the 283 KB skim first) before being filed as a Charter bug. **`$charter = true` ⇒ Step 0d did not run** (Step 0c rule 5 owns those; the two can never double-handle one plan). **Markers present** ⇒ every id is settled in `<plan>/decisions.md` under its reserved `` ## DECISION `<id>` `` heading with a Chosen value, a real Reason, the followed/DEPARTED verdict against Charter's `recommended`, and a plan-relative `Consumed by:` path (or `plan-shape`); the `` `<id>` = `<value>` `` constraint is folded into each consuming `action.prompt.md`; `<plan>/preflights/01-delegated-decisions-recorded.ps1` embeds the expected ids/values (it does NOT grep the sibling source plan — Step 0d.6's five reasons) and was two-sided smoke-tested (#302) with the mutation asserted to have actually changed the file; and the Step 7.4 ledger carries a row per id plus the statement that the gate proves recorded-and-folded-in, never that the choice was right. **No markers** ⇒ no `decisions.md`, no preflight, no ledger, **no note saying so** — byte-identical to a pre-#500 breakdown. On a JIT/regeneration invocation the scan targeted the **plan of record**, never a `brief.md` (which structurally cannot carry the count line), and an existing `decisions.md` was carried forward rather than deleted — the emit-nothing gate governs a plan that never delegated, and is never a licence to drop a decision already recorded. And the report states the gate's two limits: it does not prove the choice was good, and **it cannot prove the scan ran** (0d.6 — that half is the `validate`-GR follow-on).
 <!-- END ADDED QUALITY-BAR ITEMS -->
