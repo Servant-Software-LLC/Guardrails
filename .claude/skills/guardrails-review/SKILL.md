@@ -1302,6 +1302,53 @@ two provably cannot see, not because it runs anything. **A comes in two resoluti
 SCRIPT, and **A₂** refines it to one bit per CLAUSE, which is the only resolution at which a pre-satisfied
 clause is visible at all (#478).
 
+**Before any of them: a zero-match probe has TWO readings, and only one of them passes (#500).** The
+mechanical checks in this phase report health as **no matches** — A₂'s census (a required-present clause
+is honest only at **0** on the baseline), A₂'s ancestor-token grep, Probe C's de-regexed literal × forbidden
+pattern sweep — and so do most of §2's token probes. But "no matches" means either *the string is absent*
+or *the tool never looked at the file*, and **the output is byte-identical either way**. A search that
+silently skipped its subject returns the same clean as one that read every byte, and you will write it down
+as verified.
+
+**Measured in this repo:** `rg -c "Adversarial second pass over a generated" .` exits **1, no output** —
+while that exact sentence sits in `.claude/skills/guardrails-review/SKILL.md`, **tracked and not
+gitignored**. Default ripgrep skips **dot-prefixed** paths, and every skill this repo ships lives under
+`.claude/`. The same defect shipped **inside #500's own filing**, which asserts a set of Charter literals
+"appear zero times across Guardrails' `src`, `docs`, and skills — verified by grep": they appear in
+`charter/references/handoff.md`, which that grep never opened. The false clean was written in the same
+paragraph faulting Charter for documenting unverified behaviour, and it reached another team; only a second,
+independent grep running beside it caught the disagreement.
+
+**Rule: a probe whose PASS condition is "no matches" is not reported until the search is proven to have
+REACHED its subject.** Two moves, and the first alone is not enough:
+
+1. **Widen the tool** — `rg --no-ignore --hidden` (or `-uuu`), `Get-ChildItem -Force`, `git grep` for
+   tracked files. **Measured: neither `rg` flag alone suffices** — `--no-ignore` alone still misses
+   `.claude/…` (hidden), `--hidden` alone still misses the copies under a gitignored `bin/` (ignored), and
+   several probes here deliberately target generated or ignored trees. Widening only closes the skip list
+   you already knew about.
+2. **Run a POSITIVE CONTROL** — before trusting the zero, search the **same subject with the same
+   invocation** for a literal you have **already read out of that file**, and confirm the expected hit.
+   This is the half that generalises: it also catches a typo'd path, the wrong working directory, a `--glob`
+   that selects nothing, a file the tool judged binary, and the flag you did not know you needed. **A
+   control that returns nothing means the zero you were about to trust was never a measurement.**
+
+Do not reduce this to a flag checklist — **which** flag rescues you is tool-specific, and the assumption is
+what is wrong. Measured on this box, `Get-ChildItem -Recurse` reaches `.claude/` **without** `-Force` (a
+dot prefix is not the Windows hidden ATTRIBUTE), so the rule that saves `rg` is inert for PowerShell and
+vice versa. The control is the part that holds across tools.
+
+**Carry it into the folder as a finding only where it bites.** A guardrail whose PASS is a zero match over a
+tree it walks itself — a forbidden-token scan, an assert-absent preflight — has the same two readings, and
+that green is the plan's rather than yours. Flag it when the asserted-absent subject plausibly sits under a
+path the guardrail's own tool skips by default (**BLOCKER** where it provably does — an `rg`-based `.sh`
+guardrail asserting nothing under `.claude/` matches a banned pattern certifies a directory it cannot see);
+otherwise it is not a finding, and inventing one on every grep teaches the next reviewer to skim. This is
+the **negative-assertion doctrine (#470 / Probe C) at the instrument layer instead of the clause layer**:
+there two individually-correct clauses collided; here one correct clause gets a manufactured reading. And it
+is **#510's shape exactly** — proof that is *100% prompt, 0% gate*: nothing executes the search that
+certifies the absence, so the certification is a claim about a command someone believes ran.
+
 **Probe A — baseline (cheap, universal, no author effort).** Execute each task's guardrails from the
 plan's starting workspace and record **exit code AND stderr**.
 
@@ -1715,6 +1762,11 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
   whole of #478. State separately that **the censused tree is the PLAN's baseline, not each task's** — a
   non-root task's clause can be pre-satisfied by an ancestor's output, and no review-time measurement can
   see that tree; say whether the ancestor-prompt/`writeScope` textual check was run in its place.
+- **which zero-match probes carried a POSITIVE CONTROL** (#500) — every check whose pass was *"no matches"*
+  (an A₂ census count of 0, the ancestor-token grep, Probe C's collision sweep, §2's token greps) either
+  names the control literal that proved the search reached the file, or is listed here as **unproven**. A
+  zero from a search that may never have opened its subject is an unchecked gap, not a clean clause, and the
+  two are indistinguishable in the transcript.
 - **whether Probe B operator 20 ran, or was INAPPLICABLE** (#382) — on a greenfield first review the
   real-seam test does not exist yet, so the operator is reported **not run**, with that reason, and is
   never folded into a blanket "Probe B applied". Reporting it as passed would be the false green the
