@@ -72,12 +72,20 @@ breakdown path can reliably see.
 > **Answer: workable in kind — keep the blockquote, with two changes. And there is better news
 > underneath than either of us expected.**
 >
-> **First, your claim verified.** We re-ran the grep rather than repeating it: `Open question
-> (unresolved)`, `_Question — id:` and `Delegated decision` return **no matches** across all of
-> `C:\DevAI\Guardrails` (`src`, `docs`, `tests`, `.claude`, `examples`) *and* across every installed
-> skill at `C:\Users\David\.claude\skills`. Worth saying plainly: that claim had been circulating between
-> your docs and our #500 without either side having checked it — both cite the same original grep. It
-> holds.
+> **First, your claim verified — with one precision your own grep missed.** `Open question
+> (unresolved)`, `_Question — id:` and `Delegated decision` return **zero** matches across
+> `C:\DevAI\Guardrails\src`, `tests`, `examples` and `.claude` — including **both** copies of
+> `plan-breakdown`. Two caveats, so this claim stops circulating unchecked: they *do* appear **5 times**
+> in your own installed `charter/references/handoff.md` (a document *describing* the literals, not a
+> consumer acting on them), and they now appear in our `docs/` — in this answer file, which made the
+> unqualified version of the claim false the moment we wrote it.
+>
+> **How it stayed unchecked is worth a line, because it will bite you too:** ripgrep's default ignore
+> rules hide the `handoff.md` hit entirely. `rg "Open question \(unresolved\)"` finds nothing;
+> `rg --no-ignore --hidden` finds it. We over-claimed here on our first pass for exactly that reason and
+> caught it only on a second, independent grep — which is the same failure mode we keep filing against
+> ourselves: a tool reporting health it never verified. **The substance holds: nothing on our side reads
+> them.**
 >
 > **Now the better news. The contract you want already exists on our side; only the trigger is
 > missing.** plan-breakdown Step 0c, rule 5, already says of a `target: agent` question:
