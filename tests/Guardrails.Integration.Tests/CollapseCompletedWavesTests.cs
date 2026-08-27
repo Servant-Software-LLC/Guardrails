@@ -1,4 +1,4 @@
-using Guardrails.Cli.Ui;
+﻿using Guardrails.Cli.Ui;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Integration.Tests;
@@ -12,6 +12,7 @@ namespace Guardrails.Integration.Tests;
 /// Covers: (a) a completed wave → one summary row; (b) the active wave → full rows; (c) a flat plan is
 /// byte-identical to before; (d) the <c>--all-tasks</c> opt-out shows every row.
 /// </summary>
+[Collection(LiveDisplayCollection.Name)]
 public sealed class CollapseCompletedWavesTests
 {
     private static GuardrailDefinition FakeGuardrail(string dir) => new()

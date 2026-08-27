@@ -1,4 +1,4 @@
-using Guardrails.Cli;
+﻿using Guardrails.Cli;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -20,6 +20,7 @@ namespace Guardrails.Integration.Tests;
 /// fully-authored waved plan render byte-identically to before) and <b>silence over a lie</b> (a signal that
 /// was not observed is omitted, never fabricated).</para>
 /// </summary>
+[Collection(LiveDisplayCollection.Name)]
 public sealed class JitBreakdownVisibilityTests
 {
     // ─────────────────────────────────────────────────────────────────────────────────────────
