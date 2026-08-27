@@ -1,0 +1,6 @@
+{
+  "description": "Author the Widget tests - the TDD red half, and the task the surviving prompt judge guards.",
+  "dependsOn": [],
+  "writeScope": ["tests/Guardrails.Core.Tests/WidgetTests.cs"],
+  "action": { "tier": "medium" }
+}

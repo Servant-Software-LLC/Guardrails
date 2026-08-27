@@ -1207,6 +1207,30 @@ fires under every `autonomyPolicy` value and even when the overwatcher is absent
 
 ### 9.3 Journal / provenance (#198, #230-lite) — does NOT block on #349  [v1]
 
+> **AMENDED 2026-08-23 — the Stage 3 charter review settled `s3-provenance-shape`, and the
+> `resolvedModel` field named below is REFUSED, not deferred.** Recorded here rather than by rewriting
+> the paragraph beneath, so the sequencing reasoning that kept Stage 2 from blocking on #349 stays
+> readable. #349's capture half shipped in **Stage 3, wave 2** (the runner-echoed model is mined off
+> the Claude stream and folded onto the attempt's provenance), and the settled shape is:
+>
+> - **`model` is BEST-KNOWN-ACTUAL** — the model the RUNNER echoed on its own stream, else the
+>   resolved route's model, else the `"(cli default)"` sentinel. It answers the same question it
+>   always did with a better answer wherever one exists, so every existing reader improves with no
+>   change on its side. A runner that echoed nothing changes nothing.
+> - **`requestedModel` is written ONLY when it DIFFERS from `model`** — what the route asked for, and
+>   the one fact `model` can no longer carry once it is best-known-actual. Its **presence** is the
+>   mismatch signal: there is no separate flag beside it and no always-written key.
+> - **There is NO `resolvedModel` key.** This section asked for one; Stage 2 refused it in the shipped
+>   contract and Stage 3 kept the refusal — one field per fact, and a second field only for the
+>   disagreement, because two fields claiming the same fact is how they drift
+>   (`src/Guardrails.Core/Journal/JournalModel.cs`). Do not re-add it, and do not record it as
+>   deferred.
+> - **`effort` already shipped with Stage 2** as `AttemptProvenance.Effort`; it is not part of this
+>   delta and must not be re-added as new.
+>
+> The wire shape is the SSOT's: `docs/plans/02-schemas-and-contracts.md` §7. **Read the two
+> paragraphs below as the record of how the sequencing was reasoned about**, not as the field list.
+
 **Sequencing with #349 — and the fallback revision 3 had to add.** #349 (pilot-seat model
 provenance — the `resolvedModel` / `effort` journal fields) was expected to land first and carry
 the provenance base. **It is still OPEN** (verified at authoring time; `resolvedModel` does not

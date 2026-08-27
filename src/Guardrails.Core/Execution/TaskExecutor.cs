@@ -729,6 +729,79 @@ public sealed class TaskExecutor : ITaskExecutor
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
+        // --- #349: fold the OBSERVED model onto this attempt's provenance ----------------
+        // The runner only reports what it actually ran on once it has run, so the observed model cannot
+        // be part of the launch-time provenance built above; it is folded onto that SAME object the
+        // moment the action returns, before any journal call below reads it. The local is REASSIGNED
+        // because records are immutable — a `with` whose result is discarded changes nothing.
+        //
+        // Onto the PROVENANCE for the same mechanical reason the D32 judge fold below gives: it is the
+        // one member that already rides PendingAttempt, so a value folded here reaches BOTH record
+        // construction paths with no further edit — the serial AttemptJournaler AND
+        // Scheduler.RecordSucceededSettle (`Provenance = pending.Provenance`), the DEFAULT worktree mode.
+        //
+        // `model` becomes BEST-KNOWN-ACTUAL — observed, else the resolved route, else the "(cli default)"
+        // sentinel BuildProvenance already put there. It goes on answering the same question ("what did
+        // this attempt run on") with a better answer wherever one exists, so every existing reader
+        // improves with no change on its side.
+        //
+        // `requestedModel` records what the route ASKED for, and ONLY when the two disagree: its PRESENCE
+        // is the mismatch signal, and there is no separate flag beside it. Written on every attempt it
+        // would be a duplicate of `model` — which is exactly what the contract refuses a `resolvedModel`
+        // key for (JournalModel.cs: two fields claiming the same fact is how they drift). A second field
+        // earns its place by carrying the DISAGREEMENT.
+        //
+        // A runner that reported NOTHING changes nothing at all: silence is not a disagreement, and
+        // assigning the observed value unconditionally would erase a real route model — or the sentinel,
+        // which is the only thing per-attempt provenance has to say for the operator who configured no
+        // model anywhere. A SCRIPT attempt ran no model and (in serial mode) has no provenance object to
+        // fold onto, so it is skipped rather than given an object of nulls — the same discipline the
+        // judge fold applies to a null provenance.
+        if (provenance is { } launched && action.ObservedModel is { } observedModel)
+        {
+            provenance = launched with
+            {
+                Model = observedModel,
+                RequestedModel = launched.Model == observedModel ? null : launched.Model
+            };
+
+            // Re-mirror it, for the reason the judge fold re-mirrors below: on the guardrail-FAILED path
+            // attempt-provenance.json is the ONLY surface that records this at all, because
+            // AttemptJournaler.FailedAttempt takes no provenance parameter. An attempt that learned what
+            // actually served it must not lose that the moment it goes red.
+            AttemptArtifacts.WriteProvenance(logDir, provenance);
+
+            // #349: and the PROSE twin, which has exactly the same problem. attempt-route.log was written
+            // at launch — necessarily, since an attempt that dies before the runner returns must still
+            // leave a route log — so it names the model the route ASKED for, stated with the confidence of
+            // a fact. Re-written here from the FOLDED object, it names the model that actually ran and
+            // gains its `requested model: ` line; the second write supersedes the first, exactly as the
+            // re-mirror above does. Rewriting it is the cheap half of keeping the two surfaces from
+            // disagreeing about one attempt, and the writer is best-effort, so a rewrite that fails is a
+            // stale disclosure — never a failed attempt.
+            WriteRouteDisclosure(logDir, attemptNumber, route, provenance);
+        }
+
+        // #349: and the LIVE surface. The disclosure above is a file an operator opens after the fact; this
+        // is what reaches the task table and the --no-ui stream WHILE the run is going, which is when a
+        // substituted model is still worth knowing. Raised HERE because this is the first point at which
+        // best-known-actual is settled — the fold above is the ONE place that decides which model this
+        // attempt ran on, so both strings go across VERBATIM off the provenance it produced. Recomputing
+        // the comparison here would make this a second owner of a rule that must have exactly one, and it
+        // would drift from the run.json this event is supposed to be showing.
+        //
+        // OUTSIDE the fold, not inside it: a runner that reported nothing still ran on the resolved route
+        // (or the "(cli default)" sentinel), and that is an ordinary attempt whose model the operator is
+        // owed. Raising only on a disagreement would make the model line appear exactly when something is
+        // odd and vanish the rest of the time — a surface seen only in trouble teaches nothing about the
+        // healthy case it is being compared against. An attempt with no model at all (a script attempt, or
+        // serial mode's null provenance) announces nothing: `model` is non-nullable on this signature
+        // because a null there has no meaning.
+        if (provenance?.Model is { } attemptModel)
+        {
+            _observer.AttemptModelResolved(task, attemptNumber, attemptModel, provenance.RequestedModel);
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             return _journaler.Cancelled(
@@ -1611,6 +1684,13 @@ public sealed class TaskExecutor : ITaskExecutor
     /// LOGGED, never what is SELECTED — the costly floor is untouched, and a warning is not a new path
     /// to a costly model.</para>
     ///
+    /// <para><b>Called TWICE per attempt (#349).</b> Once at LAUNCH, from the requested route — an attempt
+    /// that dies before the runner returns must still leave a route log — and again the moment the observed
+    /// model is folded onto the provenance, from that folded object, so the file on disk names the model
+    /// that actually RAN and carries <c>requested model: </c> when the two disagree. The second write
+    /// supersedes the first, exactly as the provenance re-mirror beside it does; both reads are of the SAME
+    /// <paramref name="provenance"/> the fold produced, never a re-derivation.</para>
+    ///
     /// <para>No-op when there is no resolution to report: a script attempt has no route at all, and an
     /// attempt with no provenance has no model to disclose. Best-effort, exactly like the tool-grant
     /// header — an IO hiccup must never fail an attempt over a disclosure artifact, and the
@@ -1635,6 +1715,18 @@ public sealed class TaskExecutor : ITaskExecutor
         sb.AppendLine("# be loud, not merely recorded in a JSON field nobody reads mid-run.");
         sb.Append("runner block: ").AppendLine(route.RunnerName ?? "(none — no block was selected)");
         sb.Append("model: ").AppendLine(provenance.Model ?? "(none)");
+
+        // #349: the model the ROUTE ASKED FOR, beside the one that actually ran — the exact sibling of the
+        // `requested tier: `/`served tier: ` pair below, in the same `key: value` idiom. Written ONLY when
+        // provenance carries it, which is ONLY on a disagreement: its PRESENCE is the mismatch signal (see
+        // AttemptProvenance.RequestedModel), so an always-written line would be a duplicate of `model: ` on
+        // the overwhelmingly common agreeing attempt and would say nothing on either. Not a WARNING: the
+        // provider serving something else is a disclosure about what ran, not a route the harness changed.
+        if (provenance.RequestedModel is { } requestedModel)
+        {
+            sb.Append("requested model: ").AppendLine(requestedModel);
+        }
+
         sb.Append("effort: ").AppendLine(route.Effort ?? "(none — the runner's own default applies)");
         sb.Append("requested tier: ").AppendLine(RungOrNone(route.RequestedTier));
         sb.Append("served tier: ").AppendLine(RungOrNone(route.Tier));

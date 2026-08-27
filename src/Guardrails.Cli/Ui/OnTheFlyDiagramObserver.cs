@@ -209,6 +209,15 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // in BOTH chains, so the omission would hide it in every mode.
     public void VerifierAdvisoryFound(string taskId, string finding) => _inner.VerifierAdvisoryFound(taskId, finding);
 
+    // #349: forwarded EXPLICITLY, and unchanged — the pair was folded ONCE at the attempt, so re-deriving
+    // or reformatting it here would make this a second owner of the rule. The interface default is an empty
+    // body, so omitting it swallows the attempt-model disclosure in every mode (the VerifierAdvisoryFound
+    // lesson again). `requestedModel` is written only when the two differ, so passing null through AS null
+    // is what keeps its presence meaningful. This observer does not ACT on it: the model an attempt ran on
+    // is not a shape of the DAG, so it forwards and nothing else.
+    public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) =>
+        _inner.AttemptModelResolved(task, attempt, model, requestedModel);
+
     public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
 
     public void CleanupFailed(string owner, Exception error) => _inner.CleanupFailed(owner, error);

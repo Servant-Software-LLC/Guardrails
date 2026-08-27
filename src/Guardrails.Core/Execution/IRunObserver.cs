@@ -19,6 +19,29 @@ public interface IRunObserver
     /// </summary>
     void AttemptStarting(TaskNode task, int attempt, int budget) { }
 
+    /// <summary>
+    /// This attempt's model is now KNOWN (#349). <paramref name="model"/> is the BEST-KNOWN-ACTUAL model —
+    /// the one the runner reported itself running on, else the resolved route's model, else the
+    /// <c>"(cli default)"</c> sentinel. <paramref name="requestedModel"/> is non-null ONLY when the route
+    /// asked for something ELSE, so its PRESENCE is the mismatch signal and there is no separate flag
+    /// beside it.
+    ///
+    /// <para><b>The same two fields <see cref="Journal.AttemptProvenance"/> already carries</b>
+    /// (<see cref="Journal.AttemptProvenance.Model"/> / <see cref="Journal.AttemptProvenance.RequestedModel"/>,
+    /// SSOT §7). The harness folds the observed model over the requested one ONCE, at the attempt, and hands
+    /// both down; no observer re-derives "did the provider serve something else". A surface that recomputed
+    /// it would be a second owner of the rule and would drift from the <c>run.json</c> it is supposed to be
+    /// showing — the <see cref="VerifierAdvisoryFound"/> D22a discipline. Both are primitives beside
+    /// <see cref="TaskNode"/> for that event's other reason too: this interface is public,
+    /// <c>Guardrails.Cli</c> has no <c>InternalsVisibleTo</c> into <c>Guardrails.Core</c>, and a provenance
+    /// TYPE on this signature would be inconsistent accessibility (CS0051) the moment the type is not public.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
+    /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
+    /// swallowed silently, in every mode.</para>
+    /// </summary>
+    void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) { }
+
     /// <summary>A task finished (succeeded, failed, or was blocked).</summary>
     void TaskFinished(TaskResult result);
 

@@ -299,6 +299,10 @@ public sealed class ClaudePromptRunner : IPromptRunner
                     Usage = result.Usage is { } abortedUsage
                         ? new PromptUsage { InputTokens = abortedUsage.InputTokens, OutputTokens = abortedUsage.OutputTokens }
                         : null,
+
+                    // Carried on the abort path too (#349): the stream that got this far still echoed
+                    // which model was refused every route, and that is a fact about the attempt.
+                    ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Error,
                     BlockedWritePaths = permissionScanner.BlockedWritePaths,
                     Summary =
@@ -330,6 +334,13 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 Usage = result.Usage is { } usage
                     ? new PromptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
                     : null,
+
+                // The same straight carry for the model the stream ECHOED (#349) — what actually ran,
+                // as opposed to what the harness asked for (already recorded as AttemptProvenance.Model).
+                // Nothing is substituted from the request when the stream named none: null stays null,
+                // and the Claude-shaped ClaudeResult.Model becomes the runner-agnostic ObservedModel here,
+                // where the quarantine (SSOT §9) ends.
+                ObservedModel = result.Model,
                 FailureKind = failureKind,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner.BlockedWritePaths,

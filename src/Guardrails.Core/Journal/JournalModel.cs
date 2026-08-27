@@ -405,6 +405,25 @@ public sealed record AttemptProvenance
     public string? Model { get; init; }
 
     /// <summary>
+    /// The model the ROUTE ASKED FOR, written ONLY when it DIFFERS from <see cref="Model"/> (#349) — and
+    /// absent entirely, on every ordinary attempt, when the two agree.
+    ///
+    /// <para><b>The one fact <see cref="Model"/> can no longer carry.</b> Once <see cref="Model"/> is
+    /// best-known-actual — the model the runner reported itself running on, else the resolved route, else
+    /// the sentinel — the request stops being derivable from it. It is not disposable: the request is what
+    /// the operator's <c>promptRunners</c> block and <c>tiering</c> config actually selected, so it is the
+    /// only evidence that separates "the provider served something else" from "my routing is misconfigured".</para>
+    ///
+    /// <para><b>Its PRESENCE is the mismatch signal, so there is no separate flag beside it</b> — and no
+    /// key at all in the agreeing case. An always-written copy of <see cref="Model"/> destroys the signal
+    /// (every attempt then looks like a disagreement) and reinstates exactly what the note above rejects:
+    /// two fields claiming the same fact is how they drift. This second field earns its place by carrying
+    /// the DISAGREEMENT rather than a duplicate.</para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RequestedModel { get; init; }
+
+    /// <summary>
     /// The name of the <c>promptRunners</c> block the attempt resolved to (SSOT §7 / DoR §12.4) — the
     /// registry KEY, so a reader can go straight to the block that served this attempt instead of
     /// guessing it back from <see cref="Model"/>. Absent (never <c>null</c> noise) for a script attempt

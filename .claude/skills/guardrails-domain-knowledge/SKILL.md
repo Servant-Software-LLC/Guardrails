@@ -775,6 +775,26 @@ tiering as a working feature.
   NOT gated on tiering -- a tier tag beside a pin misleads its author most in a plan that cannot route at
   all. `action.effort` is not a pin and never raises it; nor does a rung supplied plan-wide by
   `tiering.defaultTier` -- only one the action itself carries.
+- **`provenance.model` is BEST-KNOWN-ACTUAL; `requestedModel` appears ONLY on a disagreement** (#349,
+  Stage 3). Per-attempt `provenance.model` is the model the RUNNER echoed on its own stream, else the
+  resolved route's model, else the `"(cli default)"` sentinel -- the same question it always answered
+  ("what did this attempt run on") with the best answer available, so existing readers improve unchanged.
+  `requestedModel` records what the route ASKED for and is written ONLY when it differs from `model`: its
+  PRESENCE is the mismatch signal, so there is no flag beside it and no key at all when the two agree.
+  There is **no `resolvedModel` key** -- refused, not deferred (one field per fact, plus a second field
+  only for the disagreement). Wire shape: SSOT section 7.
+- **Both are now IN FRONT OF THE OPERATOR** (#349, Stage 3). The per-attempt `attempt-route.log` preamble
+  names a literal **`requested model:`** key ONLY when the runner echoed something other than the route
+  asked for -- its PRESENCE is the mismatch signal -- which is also why that log is RE-WRITTEN once the
+  action returns: the observed model is not known when the attempt launches. The same pair reaches the live
+  table and the `--no-ui` stream through **`IRunObserver.AttemptModelResolved`**, whose default no-op body
+  means a transparent decorator must forward it EXPLICITLY or the disclosure is swallowed silently. Neither
+  surface re-derives the comparison; both read the folded provenance. Details: SSOT sections 8 and 9.6.
+- **The RUN REPORT now names them too** (#349, Stage 3). The `run` summary closes with a **`Models used:`**
+  line aggregating the per-attempt `provenance.model` -- one segment per distinct model, every attempt
+  counted independently -- and naming the REQUESTED id only where `requestedModel` recorded a disagreement.
+  It is ADDITIVE to the total-cost and per-tier lines, and **absent entirely** on a run where no attempt
+  recorded a model, so a deterministic-only plan's report is unchanged. Wire detail: SSOT section 9.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.

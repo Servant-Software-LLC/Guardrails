@@ -1,9 +1,0 @@
-{
-  "description": "Author failing xUnit tests + a minimal ClaudeResult.Model stub proving ClaudeStreamParser captures the CLI-echoed model",
-  "dependsOn": [],
-  "stableId": "psm01a",
-  "writeScope": [
-    "tests/Guardrails.Core.Tests/ClaudeStreamParserModelTests.cs",
-    "src/Guardrails.Core/Prompts/ClaudeStreamParser.cs"
-  ]
-}

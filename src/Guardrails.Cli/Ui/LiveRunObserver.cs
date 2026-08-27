@@ -556,6 +556,27 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
+    {
+        lock (_gate)
+        {
+            // Issue #349. Written ABOVE the live region under _gate, exactly like VerifierAdvisoryFound
+            // and OverwatchNoVerdict: the executor raises this from INSIDE the Spectre live region, and a
+            // raw write there corrupts the task table (#145/#372). The TEXT comes from AttemptModelSummary
+            // — the same formatter the plain surface renders — so the two surfaces cannot state the same
+            // attempt two different ways. Both harness strings ride inside it and the whole thing is
+            // escaped: a model id with a bracket would otherwise be read as markup.
+            //
+            // Grey for the agreeing case (a per-attempt disclosure is not news) and the advisory yellow
+            // when a requested model is present — the same presence signal the formatter keys on, spent
+            // here only on colour. Nothing recomputes the comparison; the fold already decided.
+            string colour = requestedModel is null ? "grey" : "yellow";
+            AnsiConsole.MarkupLine(
+                $"[{colour}]model[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
+                + $"[{colour}]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]");
+        }
+    }
+
     /// <summary>Stop the live region (the final summary prints after disposal).</summary>
     public async ValueTask DisposeAsync()
     {
@@ -666,4 +687,31 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             ? $"[red]needs human ({terse})[/]"
             : "[red]needs human[/]"
     };
+
+    /// <summary>
+    /// The ONE rendering of an attempt's resolved model (#349) — the single formatter BOTH the live table
+    /// and the plain <see cref="ConsoleRunObserver"/> call, so the two surfaces cannot drift into two
+    /// different ways of stating the same fact. <paramref name="model"/> is the attempt's
+    /// best-known-actual model; <paramref name="requestedModel"/> is non-null only when the route asked
+    /// for something else, and its PRESENCE is what makes this a mismatch line rather than an ordinary
+    /// one. The formatter reads the two fields it is handed and re-derives nothing.
+    ///
+    /// <para>Public (not private) for the same reason <see cref="StatusMarkup"/> and
+    /// <see cref="PostMortemPagePath"/> are: no live terminal renders in a non-interactive test and the
+    /// Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure function IS the test seam.</para>
+    ///
+    /// <para>The two forms are deliberately DIFFERENT, not one shape with an optional field: a formatter
+    /// that always named one model would render every mismatch as an ordinary attempt, and one that always
+    /// named two would make the two-string form carry no information at all. The mismatch form leads with
+    /// the model that ACTUALLY ran — the fact the operator needs first — and names the requested one after
+    /// the word MISMATCH, so a line scrolled past at 3am reads as a disagreement without being decoded by
+    /// someone who never asked for a second model.</para>
+    ///
+    /// <para>Plain text, no Spectre markup: the live renderer escapes this whole string before writing it,
+    /// so a bracket here would be shown rather than interpreted.</para>
+    /// </summary>
+    public static string AttemptModelSummary(string model, string? requestedModel) =>
+        requestedModel is null
+            ? model
+            : $"{model} — MISMATCH: the route requested {requestedModel}";
 }

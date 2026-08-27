@@ -1,0 +1,5 @@
+{
+  "description": "Seed the widgets output directory. A SCRIPT task: it runs no model at all.",
+  "dependsOn": ["03-tune-widget-effort"],
+  "writeScope": ["src/Guardrails.Core/Model/widgets/.gitkeep"]
+}
