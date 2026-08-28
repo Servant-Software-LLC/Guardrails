@@ -1,0 +1,7 @@
+{
+  "description": "Implement PlanSourceRecord so its tests pass — byte-exact and LF-normalized hashes, an open stamps map, the declared delegated-decision count",
+  "dependsOn": ["01-author-tests-plan-source-record"],
+  "stableId": "p2s4im",
+  "writeScope": ["src/Guardrails.Core/Breakdown/PlanSourceRecord.cs"],
+  "action": { "tier": "medium" }
+}

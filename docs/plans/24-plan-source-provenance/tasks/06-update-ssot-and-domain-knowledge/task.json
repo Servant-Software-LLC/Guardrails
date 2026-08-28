@@ -1,0 +1,10 @@
+{
+  "description": "Record the state/plan-source.json artifact and the declared-count gate in the SSOT and the domain-knowledge skill (invariant 4: the contract lands in the same change)",
+  "dependsOn": ["05-wire-recorder-into-breakdown"],
+  "stableId": "s6dkup",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": { "tier": "easy" }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Implement DeclaredCountGate so its tests pass — fail when the plan declares >=1 delegated decision and the folder records a different number",
+  "dependsOn": ["03-author-tests-declared-count-gate"],
+  "stableId": "d4cgim",
+  "writeScope": ["src/Guardrails.Core/Breakdown/DeclaredCountGate.cs"],
+  "action": { "tier": "medium" }
+}

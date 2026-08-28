@@ -1,0 +1,11 @@
+{
+  "description": "Wire the recorder and the gate into the real breakdown path: PrepareInvocation writes state/plan-source.json, and BreakdownCommand enforces the declared-count gate on the produced folder",
+  "dependsOn": ["02-implement-plan-source-record", "04-implement-declared-count-gate"],
+  "stableId": "w5irbd",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/InitialBreakdownInvoker.cs",
+    "src/Guardrails.Cli/Commands/BreakdownCommand.cs",
+    "tests/Guardrails.Core.Tests/PlanSource/PlanSourceWiringTests.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}
