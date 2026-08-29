@@ -928,6 +928,7 @@ total order driven by the wave folder's numeric prefix.
     `PlanDefinitionHash` (`tasks/`, `guardrails/`, `preflights/`). That scope is what makes the property
     *"`PlanDefinitionHash` after a quarantine equals its value before the invocation"* provable rather than
     hopeful -- **a quarantine never spends a review attestation**.
+  - **Plan-source record.** `state/plan-source.json` -- `{ version, capturedAt, sourcePath, sourceBytes, sourceSha256, sourceSha256Lf, declaredDelegatedDecisions, stamps }`, written by the harness at breakdown time from the single read chokepoint (`InitialBreakdownInvoker.PrepareInvocation`). Carries both hashes (byte-exact and LF-normalized), the open stamps map keyed by `<!-- charter: key=value -->` comments, and the declared delegated-decision count from Charter's count line; hash-excluded `state/` placement so it cannot de-attest the plan's review; survives `--fresh`; it is what the declared-count gate reads.
   - **Intent manifest.** `plan-breakdown`'s FIRST act on a waved invocation is
     `<wave>/state/breakdown-intent.json` -- `{ version, declaredAt, tasks: [{ folder, purpose }] }`, the
     ordered decomposition it INTENDS to author. It exists because **a truncated prefix's DEBT is not

@@ -32,6 +32,7 @@ plan-name/
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
 │   ├── run.json                 # run journal — harness-owned, gitignored (§7)
 │   ├── guardrails-review.json   # OPTIONAL review marker — COMMITTED, PlanDefinitionHash-keyed (§7.3, §13)
+│   ├── plan-source.json         # breakdown-time provenance record (§6.4)
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
@@ -1958,6 +1959,52 @@ task's own namespace** (a task overwriting a value it previously wrote under its
 against committed **`seed.json`** content under that namespace — **never cross-task at the
 root**. A conflict row's `jsonPath` therefore always begins with the writing task's own id
 (e.g. `01-author.fileHashes."Tests.cs"`).
+
+### 6.4 `state/plan-source.json` — breakdown-time provenance
+
+The harness records the source markdown it read at breakdown time, written at exactly one
+chokepoint (`InitialBreakdownInvoker.PrepareInvocation`) before invoking `plan-breakdown`:
+
+```json
+{
+  "version": 1,
+  "capturedAt": "2026-08-27T18:00:00Z",
+  "sourcePath": "docs/plans/foo.md",
+  "sourceBytes": 18422,
+  "sourceSha256": "sha256:<hex>",
+  "sourceSha256Lf": "sha256:<hex>",
+  "declaredDelegatedDecisions": 2,
+  "stamps": { "plan-sha256": "<hex>", "answers-sha256": "none" }
+}
+```
+
+**Field rules:**
+- **`sourceSha256`** hashes the bytes as read (byte-exact). Use this to join Charter's
+  `handoffSha256` of the same file.
+- **`sourceSha256Lf`** normalizes CRLF/CR to LF before hashing. **Both are required** — a raw
+  mismatch is usually `core.autocrlf`, not tampering, and a check whose first alarm is false
+  trains everyone to ignore it.
+- **`stamps` is an open map**, keyed by whatever `<!-- charter: <key>=<value> -->` comments are
+  found. Charter can add stamp lines over time; an open map absorbs them with no schema change.
+  Duplicate keys: first wins, and the duplicate is reported.
+- **`declaredDelegatedDecisions`** is the integer from `DECISIONS DELEGATED TO YOU: (\d+)\*\*`,
+  or **0** when absent.
+
+**Why under `state/` and not `guardrails.json`:** a field on `guardrails.json` folds into
+`PlanDefinitionHash`, which keys the review attestation — recording provenance there would
+de-attest the plan's review and re-fire GR2025. `state/` is excluded from all four hashes and
+from `BreakdownManifest.ShouldInclude` (only committed `state/seed.json` is authored), and
+`RunReset` deletes named files rather than the folder, so this survives `--fresh`.
+
+**The declared-count gate:** after breakdown returns, the harness compares `declaredDelegatedDecisions`
+(what it read) against the count in the produced folder's `decisions.md` (if any); when
+`declaredDelegatedDecisions >= 1` and the folder's recorded count differs, the breakdown fails.
+**Two limits** (stated in the failure message): it proves the **count**, never that a decision was
+made **well**; and it depends on Charter's count-line guarantee, so markers present with no count
+line is a Charter bug to file there, not a plan defect.
+
+**Known limitation:** the interactive `/plan-breakdown` door runs no harness code, so neither the
+record nor the gate happens — deliberate deferral (plan-source provenance design section 5).
 
 ---
 
