@@ -1,4 +1,5 @@
 using System.Text;
+using Guardrails.Core.Breakdown;
 using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Execution;
@@ -29,10 +30,19 @@ public sealed class InitialBreakdownInvoker
     public InitialBreakdownInvoker(IPromptRunner runner) => _core = new WaveBreakdownInvoker(runner);
 
     /// <summary>
-    /// Compose the prompt, tee it beside the other breakdown logs, and resolve the paths and turn budget
-    /// this invocation will use — WITHOUT running anything, mirroring
+    /// Compose the prompt, tee it beside the other breakdown logs, record the source plan's provenance to
+    /// <c>&lt;outputFolder&gt;/state/plan-source.json</c>, and resolve the paths and turn budget this
+    /// invocation will use — WITHOUT running the AGENT, mirroring
     /// <see cref="WaveBreakdownInvoker.PrepareInvocation"/> so a caller can report what it is about to
     /// start before a session that may run for half an hour.
+    ///
+    /// <para><b>Why the provenance write lives here</b> (#505, plan of record
+    /// <c>docs/plans/24-plan-source-provenance.md</c> §2). This is the ONE place harness code reads a
+    /// source <c>plan.md</c>, so it provably HAS the bytes; and it runs OUTSIDE the agent it polices — it
+    /// is the thing that invokes that agent. A later reader has neither property. The artifact goes under
+    /// <c>state/</c> deliberately: a field on <c>guardrails.json</c> would fold into
+    /// <c>PlanDefinitionHash</c>, which keys the review attestation, so recording provenance would
+    /// de-attest the plan's review and re-fire GR2025.</para>
     /// </summary>
     /// <param name="planMarkdownPath">The plain-markdown plan to break down.</param>
     /// <param name="outputFolder">The plan folder to author.</param>
@@ -49,6 +59,11 @@ public sealed class InitialBreakdownInvoker
         try { Directory.CreateDirectory(logDir); } catch { /* the invoker retries */ }
 
         string planText = TryReadPlan(planMarkdownPath);
+
+        // Provenance is captured from the RAW BYTES by PlanSourceRecord — never from planText above.
+        // ReadAllText DECODES, and a hash over decoded text is not byte-exact against Charter's stamp
+        // (design 24 §3): the decoded text is exactly right for the prompt and exactly wrong for the hash.
+        TryRecordPlanSource(planMarkdownPath, outputFolder);
 
         // The SAME budget rule the wave path uses (#94/#385): a base plus headroom scaled by how many
         // work-item signals the source declares. A bigger plan gets more turns; the ceiling still binds.
@@ -93,6 +108,22 @@ public sealed class InitialBreakdownInvoker
     {
         try { return File.ReadAllText(planMarkdownPath); }
         catch { return string.Empty; }
+    }
+
+    /// <summary>
+    /// Capture <paramref name="planMarkdownPath"/>'s provenance and write it to
+    /// <c>&lt;outputFolder&gt;/state/plan-source.json</c>, creating <c>state/</c> — the caller has already
+    /// created <paramref name="outputFolder"/> itself, but not that subdirectory.
+    /// <para>Swallows every failure, keeping <see cref="TryReadPlan"/>'s posture: a breakdown that cannot
+    /// read its plan should fail on the BREAKDOWN, not on the helper that records what it read. Recording
+    /// provenance must never become a new way for <see cref="PrepareInvocation"/> to throw.</para>
+    /// <para>It records what it FOUND. It does not validate the stamps against Charter, and it cannot
+    /// detect that the source changed after the breakdown — both are out of scope by design (§6).</para>
+    /// </summary>
+    private static void TryRecordPlanSource(string planMarkdownPath, string outputFolder)
+    {
+        try { PlanSourceRecord.Capture(planMarkdownPath).WriteTo(outputFolder); }
+        catch { /* best-effort provenance — the breakdown is not this helper's to fail */ }
     }
 
     private static string ComposePrompt(string planMarkdownPath, string outputFolder, string planText)

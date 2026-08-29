@@ -1,4 +1,6 @@
 using System.CommandLine;
+using System.Text.Json;
+using Guardrails.Core.Breakdown;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
@@ -194,12 +196,88 @@ public static class BreakdownCommand
             return NotCleanExitCode;
         }
 
+        // The declared-count gate (#500, design 24 §4), on the same post-return path as validate: compare
+        // what the HARNESS read from the plan source against what the AGENT produced. A breakdown that
+        // never ran the delegated-decision scan authors no decisions.md at all, so M = 0 — the one case
+        // the plan-root preflight structurally cannot catch, because that preflight is authored by the
+        // very agent it polices. This ADDS a reason to fail; it removes none.
+        if (TryReadDeclaredDelegatedDecisions(outputFolder, io, out int declaredDelegatedDecisions))
+        {
+            DeclaredCountGateResult gate = DeclaredCountGate.Evaluate(declaredDelegatedDecisions, outputFolder);
+            if (!gate.Passed)
+            {
+                // The gate's own message already names N, M and both limits of the check — print it
+                // rather than paraphrasing it, so the operator reads the same words the tests pin.
+                io.Out.WriteLine(
+                    $"\nAuthored {outputFolder}, but the DELEGATED-DECISION COUNT GATE failed:\n" +
+                    $"  {gate.FailureMessage}\n" +
+                    "  The folder is on disk. Fix it by hand, or re-run with --force to re-author.");
+                return NotCleanExitCode;
+            }
+        }
+
         io.Out.WriteLine(
             $"\nOK: authored and validated {outputFolder}\n" +
             "This is a DRAFT. Review the folder — especially the guardrails — then run\n" +
             $"  /guardrails-review {outputFolder}\n" +
             "before executing it with `guardrails run`. This command does NOT mark the plan reviewed.");
         return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// Read N — the declared delegated-decision count — back out of the <c>state/plan-source.json</c> that
+    /// <see cref="InitialBreakdownInvoker.PrepareInvocation"/> wrote before the session started. That
+    /// artifact is the HARNESS's own reading of the plan; re-parsing the markdown here would be a second
+    /// reading that could disagree with it, and then the gate would be arguing with the record instead of
+    /// with the folder.
+    /// <para>Returns <see langword="false"/> — and SAYS SO — when the artifact is absent, unreadable, or
+    /// carries no count. The provenance write is best-effort by design, and a missing record is no
+    /// evidence that the folder under-records; but a gate that silently stops running is exactly the
+    /// shape of failure this gate exists to catch, so its absence is reported rather than swallowed.</para>
+    /// </summary>
+    private static bool TryReadDeclaredDelegatedDecisions(string outputFolder, IConsoleIo io, out int declared)
+    {
+        declared = 0;
+        string recordPath = Path.Combine(outputFolder, "state", "plan-source.json");
+
+        if (!File.Exists(recordPath))
+        {
+            io.Out.WriteLine(
+                $"\nNOTE: {recordPath} is missing, so the delegated-decision count gate did NOT run.");
+            return false;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(recordPath));
+            foreach (JsonProperty property in document.RootElement.EnumerateObject())
+            {
+                // Matched case-insensitively against the property itself: PlanSourceRecord owns the
+                // camelCase naming policy that produced this file, and `nameof` plus an insensitive
+                // compare means a rename there fails the BUILD rather than turning this gate inert.
+                if (string.Equals(
+                        property.Name,
+                        nameof(PlanSourceRecord.DeclaredDelegatedDecisions),
+                        StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == JsonValueKind.Number
+                    && property.Value.TryGetInt32(out declared))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            io.Out.WriteLine(
+                $"\nNOTE: {recordPath} could not be read ({ex.Message}), so the delegated-decision count " +
+                "gate did NOT run.");
+            return false;
+        }
+
+        io.Out.WriteLine(
+            $"\nNOTE: {recordPath} records no {nameof(PlanSourceRecord.DeclaredDelegatedDecisions)}, so " +
+            "the delegated-decision count gate did NOT run.");
+        return false;
     }
 
     /// <summary>
