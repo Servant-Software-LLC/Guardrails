@@ -1,0 +1,10 @@
+{
+  "description": "Implement the telemetry corpus store so its authored tests pass (fill logic over the stubs)",
+  "dependsOn": ["01-author-tests-corpus-store"],
+  "stableId": "q7m2zd",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryRow.cs",
+    "src/Guardrails.Core/Telemetry/TelemetryCorpusStore.cs"
+  ],
+  "action": { "tier": "medium" }
+}

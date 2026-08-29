@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + stubs for the telemetry CLI verb: its own behaviour tests AND a separate composition-root wiring test",
+  "dependsOn": ["08-implement-corpus-report"],
+  "stableId": "h1x6ub",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Commands/TelemetryCommandTests.cs",
+    "tests/Guardrails.Integration.Tests/Commands/TelemetryCommandWiringTests.cs",
+    "src/Guardrails.Cli/Commands/TelemetryCommand.cs"
+  ],
+  "action": { "tier": "medium", "maxTurns": 75 }
+}

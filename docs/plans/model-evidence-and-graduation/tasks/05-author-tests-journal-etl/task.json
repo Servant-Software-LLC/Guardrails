@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + minimal stubs for the journal-to-corpus ETL (task grain + attempt grain)",
+  "dependsOn": ["04-implement-failure-classifier"],
+  "stableId": "v2n5hq",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Telemetry/TelemetryIngestTests.cs",
+    "src/Guardrails.Core/Telemetry/TelemetryIngest.cs"
+  ],
+  "action": { "tier": "medium" }
+}

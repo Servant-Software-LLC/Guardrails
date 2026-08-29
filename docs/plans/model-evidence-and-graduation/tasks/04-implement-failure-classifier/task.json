@@ -1,0 +1,9 @@
+{
+  "description": "Implement the guardrail-failed classifier against real historical log sites (fill logic over the stubs)",
+  "dependsOn": ["03-author-tests-failure-classifier"],
+  "stableId": "b6r1ws",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryFailureClassifier.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

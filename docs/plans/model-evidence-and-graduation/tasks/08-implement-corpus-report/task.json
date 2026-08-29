@@ -1,0 +1,9 @@
+{
+  "description": "Implement the stratified corpus report so its authored tests pass (fill logic over the stubs)",
+  "dependsOn": ["07-author-tests-corpus-report"],
+  "stableId": "t5c7ad",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryReport.cs"
+  ],
+  "action": { "tier": "medium" }
+}

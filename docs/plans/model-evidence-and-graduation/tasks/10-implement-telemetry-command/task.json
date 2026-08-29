@@ -1,0 +1,9 @@
+{
+  "description": "Implement the telemetry CLI verb (ingest, report, purge) over the real Core collaborators - registration is the NEXT task",
+  "dependsOn": ["09-author-tests-telemetry-command"],
+  "stableId": "z3q8ln",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/TelemetryCommand.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

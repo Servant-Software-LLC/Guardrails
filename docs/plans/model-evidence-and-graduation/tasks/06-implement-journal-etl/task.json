@@ -1,0 +1,9 @@
+{
+  "description": "Implement the journal-to-corpus ETL so its authored tests pass (fill logic over the stubs)",
+  "dependsOn": ["05-author-tests-journal-etl"],
+  "stableId": "d8k3zx",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryIngest.cs"
+  ],
+  "action": { "tier": "medium" }
+}

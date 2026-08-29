@@ -1,0 +1,9 @@
+{
+  "description": "Register the telemetry verb in the CLI composition root so the shipped binary actually has it",
+  "dependsOn": ["10-implement-telemetry-command"],
+  "stableId": "p7g2ry",
+  "writeScope": [
+    "src/Guardrails.Cli/CommandFactory.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}
