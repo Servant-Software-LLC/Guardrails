@@ -36,6 +36,51 @@ public static class DeclaredCountGate
     /// </summary>
     public static DeclaredCountGateResult Evaluate(int declaredDelegatedDecisions, string planFolder)
     {
-        throw new NotImplementedException();
+        int recordedCount = CountDecisionSections(planFolder);
+
+        if (declaredDelegatedDecisions < 1 || recordedCount == declaredDelegatedDecisions)
+        {
+            return new DeclaredCountGateResult
+            {
+                Passed = true,
+                DeclaredCount = declaredDelegatedDecisions,
+                RecordedCount = recordedCount,
+            };
+        }
+
+        string message =
+            $"Plan source declared {declaredDelegatedDecisions} delegated decision(s), but " +
+            $"{planFolder}\\decisions.md recorded {recordedCount}. This gate proves only that the " +
+            "counts agree, not that any decision was made well. It relies on Charter emitting a " +
+            "count line whenever the count is at least 1; markers present with no count line is a " +
+            "bug to file against Charter, not a defect in this plan.";
+
+        return new DeclaredCountGateResult
+        {
+            Passed = false,
+            DeclaredCount = declaredDelegatedDecisions,
+            RecordedCount = recordedCount,
+            FailureMessage = message,
+        };
+    }
+
+    private static int CountDecisionSections(string planFolder)
+    {
+        string decisionsPath = Path.Combine(planFolder, "decisions.md");
+        if (!File.Exists(decisionsPath))
+        {
+            return 0;
+        }
+
+        int count = 0;
+        foreach (string line in File.ReadLines(decisionsPath))
+        {
+            if (line.StartsWith("## DECISION", StringComparison.Ordinal))
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 }
