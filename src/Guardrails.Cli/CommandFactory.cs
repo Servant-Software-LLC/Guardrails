@@ -32,6 +32,7 @@ public static class CommandFactory
         rootCommand.Add(ProvidersCommand.Create(io));
         rootCommand.Add(SkillsCommand.Create(io));
         rootCommand.Add(SkillsCommand.CreateInstallAlias(io));
+        rootCommand.Add(SamplesCommand.Create(io));
 
         WireVersionDriftWarning(rootCommand, io);
         return rootCommand;
