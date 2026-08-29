@@ -36,6 +36,6 @@
     "tasks/06-update-ssot-and-domain-knowledge/action.prompt.md": "28caafb39413140415a4f32aebb5cdde24ac8c6ffde25c7ba5b1ec232a391812",
     "tasks/06-update-ssot-and-domain-knowledge/guardrails/01-ssot-records-the-artifact.ps1": "237a0986723f4479326a0fcd70d2bbbc7e64290f9990e4b1df220fc76fdf5928",
     "tasks/06-update-ssot-and-domain-knowledge/guardrails/02-domain-knowledge-records-the-artifact.ps1": "98f606fbb4e71f9b8aa2ac1bd57ab58dbc5665a6f2b2e3f1a25321b31cdc778b",
-    "tasks/06-update-ssot-and-domain-knowledge/task.json": "6b50daff1da27288cf646cc67f576897fd400d612a83546a2302d8be52cb2eaf"
+    "tasks/06-update-ssot-and-domain-knowledge/task.json": "3e9ccc55c9dac28c1b2855904da90020a76ddbe54cfc24eb685806fe3eef0690"
   }
 }
