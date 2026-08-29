@@ -474,6 +474,71 @@ public sealed class ModelInRowTests
     }
 
     /// <summary>
+    /// GREEN TODAY. The OTHER half of design 29 §4.8 — and, until this test, the half nothing pinned.
+    /// The section has two halves and <c>07-render-model-in-row-and-index</c> states both in prose: the
+    /// EXPORTED site gains the Model column, and the DURING-RUN index does NOT. Only the first was
+    /// asserted (<see cref="RunLevelIndex_HasAModelColumn_BesideStatusAndDescription"/>); this is its
+    /// pair, and the two should be read as one contract.
+    ///
+    /// <para>The second half was protected by nothing but the current ABSENCE of a resolver at the two
+    /// <c>WriteIndex</c> call sites in <c>OnTheFlyLogSiteObserver</c> — a fact about today's wiring, not
+    /// an asserted invariant. Someone passing one in, plausibly while implementing a future "show me the
+    /// model while the run is going" request, flips the behaviour with the whole suite still green. That
+    /// is the passing-but-blind shape, and it is one negative assertion away from closed.</para>
+    ///
+    /// <para>Why the split is deliberate rather than an omission: the during-run index is TRANSIENT — it
+    /// is rewritten every couple of seconds and then replaced wholesale by the export — while #524 was
+    /// raised about a task that had already FINISHED. A model shown only on the page that does not
+    /// survive the run cannot be the PERSISTENT answer the issue asked for, so the column belongs to the
+    /// durable audit surface alone.</para>
+    ///
+    /// <para>Scope, stated so nobody over-reads it: this pins the RENDERER's default — no resolver ⇒ no
+    /// column, header or cell. It drives <see cref="LogSiteRenderer.WriteIndex"/> in exactly the shape
+    /// the observer calls it, but it does not construct the observer, so a resolver wired in THERE would
+    /// still need catching by a test of that call site.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "BacklogSlate")]
+    public void DuringRunIndex_HasNoModelColumn_TheTransientSurfaceIsUnchanged()
+    {
+        string logsRoot = TempRoot();
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            var tasks = new[] { FakeTask("01-task", "Mid-flight") };
+            WriteAttemptFile(logsRoot, "01-task", 1, "action-stdout.log", "ok");
+
+            // The during-run shape OnTheFlyLogSiteObserver writes: refresh on, and NO modelResolver —
+            // the argument is simply not passed, exactly as at OnTheFlyLogSiteObserver.cs:134 and :388.
+            string index = File.ReadAllText(LogSiteRenderer.WriteIndex(
+                logsRoot,
+                "run-during",
+                tasks,
+                statusResolver: _ => "running",
+                linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
+                includeRefresh: true));
+
+            Assert.DoesNotContain("<th>Model</th>", index);
+
+            // A column can leak in as a header, a cell, or both, so the row is counted too: three <td>s
+            // is Task/Status/Description and nothing else. Without this a Model CELL added without its
+            // header would satisfy the assertion above.
+            Assert.Equal(3, CountTdCells(ExtractRow(index, "01-task")));
+
+            // Non-vacuity: prove this really is the index page with the columns it has always had, so
+            // the negative assertion cannot be satisfied by an empty or half-rendered file.
+            string head = ExtractBetween(index, "<thead>", "</thead>");
+            Assert.Contains("<th>Task</th>", head);
+            Assert.Contains("<th>Status</th>", head);
+            Assert.Contains("<th>Description</th>", head);
+        }
+        finally
+        {
+            Cleanup(logsRoot);
+        }
+    }
+
+    /// <summary>
     /// GREEN TODAY. <c>05-raise-attempt-route-resolved</c> already forwards
     /// <see cref="IRunObserver.AttemptRouteResolved"/> from BOTH transparent decorators
     /// (<c>OnTheFlyLogSiteObserver.cs:216-218</c>, <c>OnTheFlyDiagramObserver.cs:228-230</c>). That
