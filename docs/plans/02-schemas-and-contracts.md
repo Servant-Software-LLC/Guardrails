@@ -2478,6 +2478,8 @@ the `reason` is the ONLY operator (and #269 overwatcher) signal and must carry t
 command's terminal-halt block prints a multi-line reason with the continuation lines indented under
 `FAILED: <name> — …`.
 
+**Pre-DAG sample verification (the guardian of guardrail quality).** The first statement of the `planPreflights` phase runs `SampleVerifier` against every task's `samples/` folder, checking that `.valid.<ext>` halves exit 0, `.invalid.<ext>` halves exit non-zero, and every pair carries a matching guardrail. A failed pair halts the run immediately (exit 2, `planPreflights.status = plan-preflight-failed`) BEFORE the Scheduler builds any wave and BEFORE any task spends a token — placing the step before both short-circuits so a reversed polarity cannot hide from any plan that carries pairs. On the empty path (a plan with no pairs), discovery costs one directory probe per task and zero process launches. The step reuses the same `SampleVerifier` the `samples verify` verb invokes (§12.4), guaranteeing that both entry points report findings identically.
+
 **Pre-DAG resume SKIP rule (the B1 fix).** The pre-DAG `planPreflights` phase runs BEFORE the Scheduler
 builds any wave, evaluating `<plan>/preflights/` against the run's STARTING bytes (the integration
 worktree on the plan branch at the user's HEAD in worktree mode; the plan workspace directly in serial
@@ -5647,6 +5649,21 @@ idempotent (regenerates the whole site each call, like `guardrails graph`); the 
 rest of `logs/` by `--fresh` (§6.1). `--port`/`--task` are serve-mode options and are ignored with
 `--export`. A missing/in-flight attempt artifact renders as "no output captured" — a static snapshot
 of an in-flight run is valid and never errors.
+
+### 12.4 Sample pair verification (`samples verify [folder]`)
+
+`guardrails samples verify [folder]` walks every `tasks/<id>/samples/` pair, runs the matching guardrail against each `.valid.<ext>` and `.invalid.<ext>` half, and reports every mismatch with the guardrail path, the sample path, and the observed exit code. Exit code is `0` only when zero findings; otherwise `1`. CI-runnable and read-only apart from its own temp directories.
+
+**The verb drives the same `SampleVerifier` that the pre-DAG preflight phase runs** — not two implementations of one policy — so both surfaces report findings identically. A mismatch classes the report distinguishes:
+- `.valid` sample exits non-zero (a false-red that would dead-end every attempt)
+- `.invalid` sample exits 0 (a toothless check)
+- A missing half (paired `.valid` or `.invalid` file absent)
+- A pair with no matching guardrail
+- A guardrail that fails to parse
+
+**Deliberately NOT in `validate`** (which is static/offline). `validate` runs in editors, in CI, and mid-authoring by the breakdown agent; making it execute arbitrary PowerShell would be a semantic change. Sample verification is harness-executed instead, once by the verb and once by the pre-DAG preflight phase (below).
+
+**Running the `.invalid` half is a can-never-FAIL detector.** The harness already lints guardrails that cannot PASS (`GR2055`, §4.7); running the `.invalid` half catches the opposite and far more dangerous polarity — the guardrail that can never FAIL. An operator who understands that this check exists to catch a guardrail that can *never fail* will not delete it when it is inconvenient.
 
 ---
 
