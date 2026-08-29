@@ -25,6 +25,9 @@ namespace Guardrails.Cli.Ui;
 /// <list type="bullet">
 ///   <item><c>GET /</c> — a small pointer note directing the user to the canonical static index file
 ///     (this server only tails active tasks; it cannot link to <c>file://</c>).</item>
+///   <item><c>GET /diagram.html</c> — the live status diagram <c>logs/&lt;runId&gt;/diagram.html</c>
+///     (issue #522), which <see cref="OnTheFlyDiagramObserver"/> keeps written to that exact path; a
+///     404 when the run has not written one yet.</item>
 ///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
 ///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
 ///     available attempt number, and the files in the selected attempt (default = latest), with a
@@ -35,6 +38,11 @@ namespace Guardrails.Cli.Ui;
 ///     sidecars (each <c>{ name, label, empty }</c>) for the page's "Source" section (#141 item 3).</item>
 ///   <item><c>GET /tasks/{id}/sourcefile?name={f}</c> — the raw text of ONE of the task's known source
 ///     files, resolved only through the precomputed source set (an unknown / traversal name is rejected).</item>
+///   <item><c>GET /tasks/{id}/guardrails/{file}</c> and <c>GET /tasks/{id}/preflights/{file}</c> —
+///     the raw text of ONE of the task's declared check scripts (issue #522): these are exactly the
+///     hrefs <c>MermaidRenderer</c> writes into the diagram's <c>click</c> directives for that task's
+///     check nodes, resolved only through the precomputed per-folder source set (an unknown name, or
+///     a name declared under the OTHER folder, is rejected).</item>
 /// </list>
 ///
 /// The <c>{id}</c> must be a known task id. For <c>file</c>, <c>{name}</c> must be a bare filename
@@ -71,6 +79,14 @@ public sealed class LogServer : IAsyncDisposable
     // Keyed by task id; the inner map is filename → SourceFile (absolute path + label).
     private readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, LogSiteRenderer.SourceFile>> _sourcesByTask;
 
+    // Per-task check scripts (guardrails + preflights), keyed task id → ((folder, filename) → SourceFile)
+    // (issue #522). A SEPARATE map from _sourcesByTask: that one is keyed by bare filename alone (the
+    // existing sourcefile route's contract, unchanged) and never included preflights; this one keys on
+    // the folder too, so a same-named guardrails/x.ps1 and preflights/x.ps1 resolve to their own file
+    // instead of colliding — the diagram's own click hrefs always carry that folder segment
+    // (tasks/{id}/guardrails/{file} or tasks/{id}/preflights/{file}), so the lookup can require it.
+    private readonly IReadOnlyDictionary<string, IReadOnlyDictionary<(string Folder, string Name), LogSiteRenderer.SourceFile>> _checkScriptsByTask;
+
     // Per-file read cache, keyed by absolute path. The accept loop serves requests concurrently,
     // so all access is under _fileCacheLock. A cached entry is reused ONLY when the file's current
     // (Length, LastWriteTimeUtc) exactly match the values captured at the last serve; since these
@@ -94,6 +110,7 @@ public sealed class LogServer : IAsyncDisposable
         _tasks = tasks;
         _taskIds = new HashSet<string>(tasks.Select(t => t.Id), StringComparer.Ordinal);
         _sourcesByTask = BuildSourceMap(tasks);
+        _checkScriptsByTask = BuildCheckScriptMap(tasks);
         _escalationsDir = Path.Combine(logsRoot, "escalations");
         _proceedUnreviewed = proceedUnreviewed;
     }
@@ -132,6 +149,49 @@ public sealed class LogServer : IAsyncDisposable
         foreach (LogSiteRenderer.SourceFile guardrail in LogSiteRenderer.GuardrailSources(task))
         {
             yield return guardrail;
+        }
+    }
+
+    /// <summary>
+    /// Precompute each task's check scripts (issue #522) — its guardrail scripts AND its preflight
+    /// scripts, each with its optional <c>.json</c> sidecar — keyed task id → ((folder, filename) →
+    /// <see cref="LogSiteRenderer.SourceFile"/>). The folder ("guardrails" or "preflights") is part of
+    /// the key because the two lists may legally share a filename (issue #332); keying on the pair is
+    /// what lets <c>tasks/{id}/guardrails/{file}</c> and <c>tasks/{id}/preflights/{file}</c> resolve to
+    /// the right one instead of colliding. A duplicate (folder, filename) keeps the first.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<(string Folder, string Name), LogSiteRenderer.SourceFile>> BuildCheckScriptMap(
+        IReadOnlyList<TaskNode> tasks)
+    {
+        var map = new Dictionary<string, IReadOnlyDictionary<(string, string), LogSiteRenderer.SourceFile>>(StringComparer.Ordinal);
+        foreach (TaskNode task in tasks)
+        {
+            var byFolderAndName = new Dictionary<(string Folder, string Name), LogSiteRenderer.SourceFile>();
+            AddCheckScripts(byFolderAndName, "guardrails", task.Guardrails);
+            AddCheckScripts(byFolderAndName, "preflights", task.Preflights);
+            map[task.Id] = byFolderAndName;
+        }
+
+        return map;
+    }
+
+    /// <summary>Add one folder's check scripts (+ any <c>.json</c> sidecar) into a check-script map under <paramref name="folder"/>.</summary>
+    private static void AddCheckScripts(
+        Dictionary<(string Folder, string Name), LogSiteRenderer.SourceFile> map,
+        string folder,
+        IReadOnlyList<GuardrailDefinition> checks)
+    {
+        foreach (GuardrailDefinition check in checks)
+        {
+            string scriptName = Path.GetFileName(check.Path);
+            map.TryAdd((folder, scriptName), new LogSiteRenderer.SourceFile(scriptName, scriptName, check.Path));
+
+            string sidecar = Path.ChangeExtension(check.Path, ".json");
+            if (File.Exists(sidecar))
+            {
+                string sidecarName = Path.GetFileName(sidecar);
+                map.TryAdd((folder, sidecarName), new LogSiteRenderer.SourceFile(sidecarName, sidecarName, sidecar));
+            }
         }
     }
 
@@ -267,6 +327,18 @@ public sealed class LogServer : IAsyncDisposable
             return;
         }
 
+        // GET /diagram.html (issue #522): the live status diagram OnTheFlyDiagramObserver keeps written
+        // to logs/<runId>/diagram.html. Checked before the "tasks" gate below since it is a top-level
+        // path of its own, not a task route — and it is an explicit single case, not a wildcard static
+        // file server over _logsRoot (ServedDiagram tests pin that nothing else under logs/<runId>/ is
+        // reachable this way).
+        if (segments.Length == 1 && segments[0] == "diagram.html")
+        {
+            if (isPost) { TrySetStatus(context, HttpStatusCode.MethodNotAllowed); return; }
+            WriteDiagramFile(context);
+            return;
+        }
+
         if (segments[0] != "tasks")
         {
             TrySetStatus(context, HttpStatusCode.NotFound);
@@ -306,6 +378,16 @@ public sealed class LogServer : IAsyncDisposable
         if (segments.Length == 2)
         {
             WriteHtml(context, TaskPageHtml(taskId));
+            return;
+        }
+
+        // /tasks/{id}/guardrails/{file} and /tasks/{id}/preflights/{file} (issue #522): the diagram's own
+        // check-node hrefs. Resolved only through _checkScriptsByTask, keyed on (folder, filename) — never
+        // by joining the request onto a directory path — so a name the task does not declare, or a name
+        // declared only under the OTHER folder, is a plain 404.
+        if (segments.Length == 4 && (segments[2] == "guardrails" || segments[2] == "preflights"))
+        {
+            WriteCheckScript(context, taskId, segments[2], Uri.UnescapeDataString(segments[3]));
             return;
         }
 
@@ -607,6 +689,49 @@ public sealed class LogServer : IAsyncDisposable
         if (!File.Exists(source.Path))
         {
             // Declared but absent on disk (e.g. a mid-edit plan) — empty body, not a crash.
+            WriteText(context, string.Empty);
+            return;
+        }
+
+        WriteText(context, ReadFileCached(source.Path));
+    }
+
+    /// <summary>
+    /// Serve <c>GET /diagram.html</c> (issue #522): the live status diagram at
+    /// <c>&lt;logsRoot&gt;/diagram.html</c>, which <see cref="OnTheFlyDiagramObserver"/> keeps written to
+    /// exactly that path. 404 when the run has not written one yet — never an empty 200 or a stub page,
+    /// so "the diagram isn't ready" is never mistaken for "the diagram is empty".
+    /// </summary>
+    private void WriteDiagramFile(HttpListenerContext context)
+    {
+        string path = Path.Combine(_logsRoot, "diagram.html");
+        if (!File.Exists(path))
+        {
+            TrySetStatus(context, HttpStatusCode.NotFound);
+            return;
+        }
+
+        WriteHtml(context, ReadFileCached(path));
+    }
+
+    /// <summary>
+    /// Serve <c>GET /tasks/{id}/guardrails/{file}</c> or <c>GET /tasks/{id}/preflights/{file}</c> (issue
+    /// #522): the raw text of ONE of the task's declared check scripts, resolved ONLY through
+    /// <see cref="_checkScriptsByTask"/>'s (folder, name) key. An unknown name, or a name declared only
+    /// under the other folder, has no entry and is rejected — the path is never built from the request.
+    /// </summary>
+    private void WriteCheckScript(HttpListenerContext context, string taskId, string folder, string name)
+    {
+        if (!_checkScriptsByTask.TryGetValue(taskId, out var scripts) ||
+            !scripts.TryGetValue((folder, name), out LogSiteRenderer.SourceFile source))
+        {
+            TrySetStatus(context, HttpStatusCode.NotFound);
+            return;
+        }
+
+        if (!File.Exists(source.Path))
+        {
+            // Declared but absent on disk — empty body, not a crash (mirrors WriteSourceFile).
             WriteText(context, string.Empty);
             return;
         }
