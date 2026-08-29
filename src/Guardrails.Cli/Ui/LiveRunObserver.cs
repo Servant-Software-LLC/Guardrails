@@ -714,4 +714,25 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         requestedModel is null
             ? model
             : $"{model} — MISMATCH: the route requested {requestedModel}";
+
+    /// <summary>
+    /// The live table's Model column cell (design 29 §4.2) — a pure formatter over the six
+    /// distinguishable cell states, so the seam is testable without touching the live region (no test
+    /// may construct <see cref="LiveRunObserver"/>). Not yet wired to any caller. Stub — the body is
+    /// implemented by the task that renders the Model column (#524).
+    /// </summary>
+    public static string ModelCell(
+        string? runner, string? tier, bool climbed, bool substituted, bool isScript) =>
+        throw new NotImplementedException();
+
+    /// <summary>
+    /// Translates the <see cref="Core.Execution.IRunObserver.AttemptRouteResolved"/> launch event into
+    /// <see cref="ModelCell"/>'s arguments (design 29 §4.2/§4.3): <c>climbed</c> is
+    /// <c>requestedTier is not null</c>, because <c>requestedTier</c> is written ONLY when a §6.2 climb
+    /// moved the rung, so its presence is the signal. MUST delegate to <see cref="ModelCell"/> rather
+    /// than re-implement its formatting. Not yet wired to any caller. Stub — the body is implemented by
+    /// the task that renders the Model column (#524).
+    /// </summary>
+    public static string ModelCellFromRoute(string runner, string? tier, string? requestedTier) =>
+        throw new NotImplementedException();
 }
