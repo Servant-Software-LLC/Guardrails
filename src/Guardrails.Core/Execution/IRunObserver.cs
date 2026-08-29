@@ -42,6 +42,32 @@ public interface IRunObserver
     /// </summary>
     void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) { }
 
+    /// <summary>
+    /// A prompt attempt's ROUTE is resolved and the attempt is about to LAUNCH (#524). Raised BEFORE the
+    /// action runs — unlike <see cref="AttemptModelResolved"/>, which cannot fire until the runner has
+    /// reported what it ran on, so a surface fed only from that one is a placeholder for the whole
+    /// attempt (MEASURED at 14m02s and longer). <paramref name="tier"/> is the rung SERVED (after any
+    /// §6.2 climb), <paramref name="requestedTier"/> is non-null ONLY when the climb moved it — its
+    /// PRESENCE is the climb signal, exactly as <c>AttemptProvenance.RequestedModel</c>'s presence is the
+    /// substitution signal — <paramref name="runner"/> is the <c>promptRunners</c> block key, and
+    /// <paramref name="model"/> is the route's model.
+    ///
+    /// <para>Primitives beside <see cref="TaskNode"/> for the same reason
+    /// <see cref="AttemptModelResolved"/> spells out above: this interface is public,
+    /// <c>Guardrails.Cli</c> has no <c>InternalsVisibleTo</c> into <c>Guardrails.Core</c>, and a
+    /// provenance TYPE on this signature would be inconsistent accessibility (CS0051) the moment the
+    /// type is not public. A script attempt resolves no route and raises nothing.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
+    /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
+    /// swallowed silently, in every mode. Both transparent decorators sit in BOTH the live and the
+    /// <c>--no-ui</c> chain, so one missing forward takes the route away from every operator everywhere,
+    /// and nothing in the build can see it.</para>
+    /// </summary>
+    void AttemptRouteResolved(
+        TaskNode task, int attempt, string runner, string model,
+        string? tier, string? requestedTier) { }
+
     /// <summary>A task finished (succeeded, failed, or was blocked).</summary>
     void TaskFinished(TaskResult result);
 

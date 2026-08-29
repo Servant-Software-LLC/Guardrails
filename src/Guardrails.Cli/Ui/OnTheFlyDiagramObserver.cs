@@ -218,6 +218,17 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) =>
         _inner.AttemptModelResolved(task, attempt, model, requestedModel);
 
+    // #524: forwarded EXPLICITLY, verbatim, for exactly the reason above — the interface default is an
+    // empty body, so omitting this compiles cleanly and drops the LAUNCH-time route disclosure in every
+    // mode. Every argument passes through untouched: `runner` and `model` are both `string`, so a
+    // transposition would compile and name the model id where the promptRunners block belongs, and
+    // `requestedTier` is written only when a §6.2 climb moved the rung, so nulling it here would erase
+    // the climb signal forever. This observer does not ACT on it: the route an attempt took is not a
+    // shape of the DAG, so it forwards and nothing else.
+    public void AttemptRouteResolved(
+        TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier) =>
+        _inner.AttemptRouteResolved(task, attempt, runner, model, tier, requestedTier);
+
     public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
 
     public void CleanupFailed(string owner, Exception error) => _inner.CleanupFailed(owner, error);

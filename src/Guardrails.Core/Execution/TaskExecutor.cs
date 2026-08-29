@@ -680,6 +680,24 @@ public sealed class TaskExecutor : ITaskExecutor
                 task, attemptNumber, startedAt, relativeLogDir, logDir, provenance, NoRouteReason(route));
         }
 
+        // #524: the SAME route, announced to the observers, at LAUNCH. `AttemptModelResolved` below
+        // cannot fire until the runner has reported what it ran on, so a surface fed only from it reads
+        // a placeholder for the whole attempt (MEASURED at 14m02s and longer on plan 24's run.json), and
+        // a §6.2 climb resolved above reaches no console surface at all — only attempt-route.log. Raised
+        // here, after the no-route branch has settled and before the action launches, off the SAME
+        // `route` and `provenance` the disclosure above was written from: nothing is re-derived and no
+        // new plumbing exists. The guard is the precondition, not defensiveness — `RunnerName` is null
+        // for no-route and `provenance.Model` is null for a script attempt (ResolveRoute returns null
+        // outright there, so no second Kind test is needed), and with nothing to name there is no route
+        // to disclose. `route.Climbed` is the ONLY owner of the climb predicate: `requestedTier` is
+        // written only when the climb actually moved the rung, so its presence stays the signal.
+        if (route is { RunnerName: { } runnerName } && provenance?.Model is { } routeModel)
+        {
+            _observer.AttemptRouteResolved(
+                task, attemptNumber, runnerName, routeModel,
+                route.Tier, route.Climbed ? route.RequestedTier : null);
+        }
+
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
 
