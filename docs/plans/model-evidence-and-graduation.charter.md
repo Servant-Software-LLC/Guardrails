@@ -47,6 +47,12 @@ it and *reading* it honestly.
 | **this plan** | **every run, every machine, over time** | **"which model should serve tier X at all"** |
 :::
 
+The deferred row is deliberate: #228 is listed **because** it is unbuilt. Naming its grain now is how the
+two stay complementary if it ever ships — the ladder reacts inside one task's retry loop, this corpus
+accumulates across every task, and §8's single-owner rule is where that accounting is actually enforced. A
+ladder designed later without this row in front of it would re-derive its own record of what each model
+did, and then two mechanisms would disagree about the same history.
+
 Every existing surface is per-run and dies with the run. `state/run.json` is written into the plan's log
 site and is never read across plans, across repos, or across time. #519 gates the entire v2 tiering slate
 on a measurement — *"neither is worth building until #230-lite's measurements say the routing is actually
@@ -96,7 +102,7 @@ actually decide the qwen-versus-opus question:
 | **segmented duration** — prompt wall time vs guardrail wall time vs worktree/harness overhead | gap |
 | **model fingerprint** — kind + model string + resolved version/digest + quantization + context window | gap |
 | **warm or cold** — was the local model already resident | gap |
-| **machine profile + concurrency degree at the time** | gap |
+| **machine profile + concurrency degree at the time** — including **unified memory**, which decides which quantization of a model will even fit, so a 128GB box and a 64GB box are not running the same thing under the same name | gap |
 | **harness and skill versions** | gap |
 | **retry context** — was prior-attempt feedback included, was `maxTurns` multiplied | gap |
 
@@ -136,8 +142,8 @@ and it is the honest v1 answer to the mis-tagged-minority problem that #228's la
   "mode": "single",
   "options": ["Report the raw stratification only; a human reads it", "Compute a realized-difficulty label per task", "Both — raw tables, plus a labelled mis-tag report"],
   "recommended": "Report the raw stratification only; a human reads it",
-  "rationale": "A derived label is a model of a model and it will be wrong in ways that are hard to see, whereas a stratified table is just arithmetic over recorded facts. Shipping the table first tells us whether the label is even wanted, and the mis-tag report can be added once the raw view has been read a few times in anger.",
-  "target": "human" }
+  "rationale": "A derived label is a model of a model and it will be wrong in ways that are hard to see, whereas a stratified table is just arithmetic over recorded facts. Shipping the table first tells us whether the label is even wanted, and the mis-tag report can be added once the raw view has been used on a few real decisions.",
+  "target": "human", "answer": ["Go with your recommended choice, but I\u0027m confused about your \u0022in anger\u0022 remark in the quote"] }
 :::
 
 ---
@@ -186,15 +192,35 @@ Per **(model fingerprint x tier x fingerprint bucket)**, every row carrying `n` 
 - **needs-human rate**, split by kind
 - **wall-clock per attempt** and **per green task** — the number that kills a "cheap" model needing four
   attempts — plus tokens/sec and turn consumption against budget
-- **cost per green task**, degrading honestly to time-only for a costless local provider rather than
-  printing a fabricated `$0` (`JournalTierSpend` already draws exactly this null-versus-zero distinction;
-  reuse it)
-- **failure taxonomy** — compile, test, regex/content, prompt-judge, max-turns, timeout. A model that fails
-  on turns wants a bigger budget, not a demotion.
+- **cost per green task**, degrading honestly to time-only where the runner reported no money
+  (`JournalTierSpend` already draws exactly this null-versus-zero distinction; reuse it). **A local model is
+  not free, though.** The hardware is sunk and unattributable, but the electricity is neither: an estimated
+  energy figure — configured `$/kWh` x machine draw x measured wall time — is available and worth carrying,
+  because "$0" invites a conclusion the physics does not support. It is an **estimate**, labelled as one,
+  and never summed into a reported `costUsd` — the same projection-versus-measurement line #528 has to hold.
+- **failure taxonomy** — compile, test, regex/content, prompt-judge, max-turns, timeout, **and write-scope
+  violation**. A model that fails on turns wants a bigger budget, not a demotion; a model that keeps
+  wandering outside its `writeScope` is failing at instruction-following, which is a different verdict about
+  a different faculty.
+
+:::warn
+**A write-scope violation is journaled as `GuardrailFailed` today.** `TaskExecutor.cs:1092` records
+`AttemptOutcome.GuardrailFailed` with `Summary = "write-scope violation: <paths>"`, and the check runs
+*before* any guardrail does — so the outcome enum cannot tell "wrote outside its scope" from "the tests
+failed". An ETL that trusts the enum silently folds a discipline failure into a capability one, and the
+taxonomy above quietly stops being true. The corpus must split them at ingest (the summary prefix and the
+distinct `GuardrailFailureFingerprint` are enough), and Phase 1 should weigh a first-class outcome value.
+:::
 
 The decision then becomes explicit and auditable: *the cheapest model whose lower confidence bound on
 first-attempt pass rate clears the tier's floor, and whose expected end-to-end time-to-green is within
-tolerance.* The weights belong to the operator, in config, not in code.
+tolerance.*
+
+The default objective is **time-to-green and human interventions, with cost as a tiebreak** — but it is a
+default, not a law. A Claude model registered in **fast mode** wins time-to-green outright while costing
+substantially more, and under a pure time objective the report would recommend it every time on a machine
+whose owner cares about the bill. The `costly` lever does not help there: it gates *selection*, not
+*ranking*. An operator-stated weighting that overrides the default is **#536**.
 
 :::question
 { "id": "default-objective", "title": "What should the default objective be when the report ranks models?",
@@ -202,7 +228,7 @@ tolerance.* The weights belong to the operator, in config, not in code.
   "options": ["Time-to-green and human interventions; cost is a tiebreak", "Cost per green task; time is a tiebreak", "No default — refuse to rank until the operator states a weighting"],
   "recommended": "Time-to-green and human interventions; cost is a tiebreak",
   "rationale": "The standing position in this project is that cost is not the constraint — a Max subscription plus local hardware means the scarce resources are wall-clock and attended human attention. A cost-first default would rank a slow local model above a fast frontier one on a machine where the dollars were already spent.",
-  "target": "human" }
+  "target": "human", "answer": ["It depends.  If you have a Claude model registered in Extra Fast Mode, then he wins in Time-to-green, but his costs are very high.  But maybe that exception falls into our \u0022high costs\u0022 lever. I think that your Recommend is the default, but that we should file an enhancement to allow the operator to state a weighting which overrides the default."] }
 :::
 
 ---
@@ -225,6 +251,16 @@ Local inference is what makes this cheap: no marginal token cost, so a candidate
 recorded tasks overnight. It composes with plan 28's verifier-first stance — the same mechanism benches a
 candidate *judge*.
 
+:::note
+**The bench is replay, and replay is not the only shape.** The alternative is an **obstacle course**: a
+purpose-built suite of tasks every candidate attempts from an identical green field, so fingerprints are
+identical *by construction* and §5's stratification problem disappears rather than being managed. Replay is
+free and contaminated; a course is expensive and clean; a small course anchoring the scale while replay
+supplies volume is a plausible third answer. Which one — and whether it belongs in a `/plan-breakdown`
+training mode, a harness run option, or a `bench` sibling that takes a suite — is **#537**, which carries a
+brief for the agent team to recommend rather than a decision already made.
+:::
+
 :::warn
 Bench runs must be sandboxed: throwaway worktrees, no merge, no push. They must skip tasks whose base
 commit no longer exists. And they must be honest that a **replayed task is easier than a novel one** — any
@@ -238,7 +274,7 @@ for that model.
   "options": ["Never — bench is always a separate view", "Only behind an explicit flag", "Yes, once the contamination rules are enforced"],
   "recommended": "Only behind an explicit flag",
   "rationale": "A replayed task is systematically easier than a novel one, so pooling silently inflates a candidate model. But bench rows are also the only rows that escape selection confounding, so a permanent wall would throw away the better evidence. A flag keeps the default honest and the union reachable.",
-  "target": "human" }
+  "target": "human", "answer": ["Only behind an explicit flag"] }
 :::
 
 ---
@@ -263,12 +299,26 @@ already made, and this plan does not reopen them:
 - **The `costly` floor stands.** Nothing here creates a path for the harness to auto-select a
   `costly: true` model.
 
+:::note
+**A question graduation raises but does not own: what does the stronger model inherit?** When a task
+escalates, the next attempt can start from the weaker model's work plus retry feedback, or from a clean
+base. Inheriting is cheaper and usually right — but a hallucinated premise in the transcript is a strong
+prior, and the stronger model may defend it rather than discard it, failing where it would have succeeded
+alone. That failure is invisible in the outcome. The design decision belongs to #228's ladder and is
+recorded there; what this plan contributes is the datum that settles it empirically — §3.1's **retry
+context** makes "escalated with inherited context" and "escalated clean" two comparable populations over
+identical task fingerprints.
+:::
+
 ---
 
 ## 9. Storage, privacy, ingest
 
 - **Local and machine-scoped**, not in the repo: `~/.guardrails/telemetry/`. In-repo would conflict on every
-  branch, leak absolute paths, and bind machine-specific timings to shared history.
+  branch, leak absolute paths, and bind machine-specific timings to shared history. The deeper reason is
+  that **the answer itself is machine-local**: geography and network quality change how a frontier model
+  performs from one machine to the next, while a local model's speed is a property of the silicon in front
+  of you. A corpus pooled across machines would average away exactly the difference it exists to measure.
 - **Append-only JSONL**, one record per line, month-rotated, `schemaVersion` on every row.
 - **Idempotent ingest** keyed `(runId, taskId, attempt)` — re-ingesting a plan is safe by construction.
 - **Two ingest paths**: live during a run, and `guardrails telemetry ingest <plan>` over existing
@@ -283,7 +333,7 @@ already made, and this plan does not reopen them:
   "options": ["On by default, with an opt-out and a purge verb", "Opt-in — a config key must enable it", "On by default for this repo only; opt-in elsewhere"],
   "recommended": "On by default, with an opt-out and a purge verb",
   "rationale": "The corpus is worthless until it is large, and an opt-in flag guarantees it stays empty on exactly the machines that would benefit. Nothing leaves the machine and nothing sensitive is recorded, so the usual argument for opt-in does not apply here — but shipping a purge verb and an off switch in the same change is what keeps that claim honest.",
-  "target": "human" }
+  "target": "human", "answer": ["On by default, with an opt-out and a purge verb"] }
 :::
 
 :::question
@@ -292,7 +342,7 @@ already made, and this plan does not reopen them:
   "options": ["One corpus per machine; repo is a recorded dimension", "One corpus per machine and repo, never pooled", "One per machine and repo, with opt-in pooling for reports"],
   "recommended": "One corpus per machine; repo is a recorded dimension",
   "rationale": "A definitionHash is repo-local, so cross-repo rows can never be compared task-for-task — but they can be compared by fingerprint bucket, and that pooling is what makes samples big enough to say anything. Keeping the repo as a column preserves the ability to split later; separate stores cannot be rejoined without moving files.",
-  "target": "human" }
+  "target": "human", "answer": ["I think that your recommendation is the correct choice.  The results that we\u0027re trying to tune/be smart with should be local to the machine.  There could be geo location and network factors that cause one machine to rate frontier models much worse that local models, if those factors greatly hinder fontier models response times, etc.."] }
 :::
 
 ---
@@ -309,6 +359,16 @@ already made, and this plan does not reopen them:
 
 ## 11. What we build, in what order
 
+:::note
+**Phases here are not an argument against waves.** A waved plan is right when the whole scope is known and
+merely has to be ordered — and if all four of these were known, one waved plan would be the better shape.
+They are separated for a different reason: **Phase 0's first real report changes what Phases 1-3 should
+be.** Which instrumentation gap matters most, whether a bench is even needed, what a graduation threshold
+should be — all of those are answered by looking at the corpus, and none of them can be authored honestly
+before it exists. Complexity is not the reason; a dependency on evidence that does not exist yet is. Phase
+0 alone is fully known today, which is why it is the only one being cut as an issue now.
+:::
+
 ### Phase 0 — the corpus, from data that already exists
 
 **In:** ETL from `state/run.json` to JSONL; backfill over runs already on disk; a stratified
@@ -317,22 +377,27 @@ structurally. **No new instrumentation.**
 
 **Out:** everything in Phases 1-3 below, each tracked by #533 until sub-issues are cut.
 
-This alone delivers the measurement #519 says gates the whole v2 slate.
+Tracked by **#535**, and it alone delivers the measurement #519 says gates the whole v2 slate.
 
 :::note
-**Phase 0 is worth doing before the hardware arrives.** It makes the current single-provider era the
-baseline every local model is later compared against — and that baseline is only collectable now. Once a
-second provider is in the mix, the clean single-model period is over and cannot be reconstructed.
+**Phase 0 is worth doing before a second provider is registered** — not because hardware is coming, but
+because the single-provider era is the baseline every local model is later compared against, and it is only
+collectable while it is still the only thing happening. Once a second runner is in the mix the clean
+period is over and cannot be reconstructed.
 :::
 
 ### Phase 1 — close the instrumentation gaps
 
 Turns-used first (computed, printed, discarded today), then segmented durations, model fingerprint and
-digest, warm/cold, machine and concurrency profile, harness and skill versions. Tracked by #533.
+digest, warm/cold, machine and concurrency profile including unified memory, harness and skill versions.
+Tracked by #533.
 
 ### Phase 2 — the bench
 
-Lands with the Mac Studio and plan 28's `openai-compat` runner (#223). Tracked by #533 and #223.
+**Not gated on new hardware.** A 128GB work MacBook is available today, so the only real dependency is plan
+28's `openai-compat` runner (#223). The 64GB Mac Studio is a tighter box than the MacBook — which is a
+reason the machine profile in §3.1 records unified memory, since the same model name will run at a
+different quantization on each and must not be pooled as one sample. Tracked by #533 and #223.
 
 ### Phase 3 — graduation
 
@@ -345,7 +410,7 @@ Proposal, ratification, probation, demotion, provenance. Feeds #228 with evidenc
   "options": ["File one sub-issue per phase now", "File only a Phase 0 issue; cut the rest when it lands", "Keep everything under #533 for now"],
   "recommended": "File only a Phase 0 issue; cut the rest when it lands",
   "rationale": "Phases 1 to 3 are shaped by what Phase 0's first real report shows, so issues cut now would be rewritten before anyone worked them. Phase 0 is concrete today and deserves its own trackable scope; the rest stays deferred against #533, which is open and owned.",
-  "target": "human" }
+  "target": "human", "answer": ["File only a Phase 0 issue; cut the rest when it lands"] }
 :::
 
 :::question
@@ -354,7 +419,7 @@ Proposal, ratification, probation, demotion, provenance. Feeds #228 with evidenc
   "options": ["Straight to /plan-breakdown from this charter", "Write a numbered DoR first, like plan 17", "Charter Phase 0 separately in its own detailed plan"],
   "recommended": "Straight to /plan-breakdown from this charter",
   "rationale": "Phase 0 is an ETL plus a report over a schema that already exists, with no contract change to guardrails.json and no new execution semantics — the conditions that made a full DoR necessary for model tiering are absent. Phases 2 and 3 do change contracts and should get one when they are scheduled.",
-  "target": "human" }
+  "target": "human", "answer": ["Straight to /plan-breakdown from this charter"] }
 :::
 
 ---

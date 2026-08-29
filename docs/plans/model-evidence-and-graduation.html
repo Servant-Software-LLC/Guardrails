@@ -517,6 +517,11 @@ it and <em>reading</em> it honestly.</p>
 </table>
 </div>
 </div>
+<p id="b0a4a06e77a2bbedf1f1a">The deferred row is deliberate: #228 is listed <strong>because</strong> it is unbuilt. Naming its grain now is how the<br />
+two stay complementary if it ever ships — the ladder reacts inside one task's retry loop, this corpus<br />
+accumulates across every task, and §8's single-owner rule is where that accounting is actually enforced. A<br />
+ladder designed later without this row in front of it would re-derive its own record of what each model<br />
+did, and then two mechanisms would disagree about the same history.</p>
 <p id="bbd1c502e9b2c73dcaa79">Every existing surface is per-run and dies with the run. <code>state/run.json</code> is written into the plan's log<br />
 site and is never read across plans, across repos, or across time. #519 gates the entire v2 tiering slate<br />
 on a measurement — <em>&quot;neither is worth building until #230-lite's measurements say the routing is actually<br />
@@ -545,7 +550,7 @@ it cost, how long it took, and whether the gate passed.</p>
 <p id="bcd58d0a93f0999678db0"><code>AttemptRecord</code> and <code>AttemptProvenance</code> already carry most of the second. The gaps below are the ones that<br />
 actually decide the qwen-versus-opus question:</p>
 <div class="table-scroll" tabindex="0" role="region" aria-label="Table">
-<table id="bd8ecdfb985b3a9671196">
+<table id="ba9ebc5475b8c46684ec0">
 <thead>
 <tr>
 <th>Datum</th>
@@ -582,7 +587,7 @@ actually decide the qwen-versus-opus question:</p>
 <td>gap</td>
 </tr>
 <tr>
-<td><strong>machine profile + concurrency degree at the time</strong></td>
+<td><strong>machine profile + concurrency degree at the time</strong> — including <strong>unified memory</strong>, which decides which quantization of a model will even fit, so a 128GB box and a 64GB box are not running the same thing under the same name</td>
 <td>gap</td>
 </tr>
 <tr>
@@ -620,18 +625,19 @@ was ever needed.</li>
 and consistently realize as <code>hard</code>&quot; is directly actionable against <code>/plan-breakdown</code>'s tagging heuristics —<br />
 and it is the honest v1 answer to the mis-tagged-minority problem that #228's ladder was deferred over.</p>
 </div>
-<form class="question" id="b9502b6b2e25ee5a65518" data-question-id="realized-difficulty-inference" data-question-mode="single">
+<form class="question answered" id="b3cbfeac74d5975dafcfe" data-question-id="realized-difficulty-inference" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="realized-difficulty-inference" />
-<fieldset><legend>Should Phase 0 infer realized difficulty, or just show the stratification?</legend>
-<p class="question-rationale">A derived label is a model of a model and it will be wrong in ways that are hard to see, whereas a stratified table is just arithmetic over recorded facts. Shipping the table first tells us whether the label is even wanted, and the mis-tag report can be added once the raw view has been read a few times in anger.</p>
+<fieldset><legend>Should Phase 0 infer realized difficulty, or just show the stratification? <span class="question-status">Answered</span></legend>
+<p class="question-rationale">A derived label is a model of a model and it will be wrong in ways that are hard to see, whereas a stratified table is just arithmetic over recorded facts. Shipping the table first tells us whether the label is even wanted, and the mis-tag report can be added once the raw view has been used on a few real decisions.</p>
 <label class="charter-answer-recommended"><input type="radio" name="answer" value="Report the raw stratification only; a human reads it" /> Report the raw stratification only; a human reads it (Recommended)</label>
 <label><input type="radio" name="answer" value="Compute a realized-difficulty label per task" /> Compute a realized-difficulty label per task</label>
 <label><input type="radio" name="answer" value="Both — raw tables, plus a labelled mis-tag report" /> Both — raw tables, plus a labelled mis-tag report</label>
+<label class="write-in"><input type="radio" name="answer" value="Go with your recommended choice, but I'm confused about your &quot;in anger&quot; remark in the quote" checked /> Go with your recommended choice, but I'm confused about your &quot;in anger&quot; remark in the quote (write-in)</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<hr id="bcb3f91d54eee30e53e35-14776e7a5039224e" />
+<hr id="bcb3f91d54eee30e53e35-56bd2b5945986023" />
 <h2 id="bed96b70436d3c3a073e6">5. The honesty rules</h2>
 <p id="bf6ccdeec9cab65eedd44">A model-comparison report is exactly the kind of surface where a rosier-than-justified number is invisible,<br />
 which is this repo's signature defect (#516, #501, #510). These are constraints on the report, not notes.</p>
@@ -663,33 +669,51 @@ one, merge-conflict incidence. A model that games gates looks excellent on pass 
 <hr id="bcb3f91d54eee30e53e35-c3b311b884e61713" />
 <h2 id="bfe62f72000318b91f8a6">6. The metrics, and the decision function</h2>
 <p id="b9a5a786af9aabac481d1">Per <strong>(model fingerprint x tier x fingerprint bucket)</strong>, every row carrying <code>n</code> and a confidence marker:</p>
-<ul id="b509a5d0b5d0253b36b2f">
+<ul id="bff6be24b68bcb5878888">
 <li data-anchor="b439a82e3eebf10a72b93"><strong>first-attempt pass rate</strong> — the headline</li>
 <li data-anchor="bdc1f80ee0f6a8a36cc52"><strong>attempts-to-green</strong>, median and p90, paired with <strong>abandonment rate</strong></li>
 <li data-anchor="b71caf5d6c9ab47fa3450"><strong>needs-human rate</strong>, split by kind</li>
 <li data-anchor="b8e59ecc827873372bb6d"><strong>wall-clock per attempt</strong> and <strong>per green task</strong> — the number that kills a &quot;cheap&quot; model needing four<br />
 attempts — plus tokens/sec and turn consumption against budget</li>
-<li data-anchor="b8e74fc5d01a3612ab256"><strong>cost per green task</strong>, degrading honestly to time-only for a costless local provider rather than<br />
-printing a fabricated <code>$0</code> (<code>JournalTierSpend</code> already draws exactly this null-versus-zero distinction;<br />
-reuse it)</li>
-<li data-anchor="b68160589f76c3d5c2b82"><strong>failure taxonomy</strong> — compile, test, regex/content, prompt-judge, max-turns, timeout. A model that fails<br />
-on turns wants a bigger budget, not a demotion.</li>
+<li data-anchor="ba8e4a01d8feb86bc909f"><strong>cost per green task</strong>, degrading honestly to time-only where the runner reported no money<br />
+(<code>JournalTierSpend</code> already draws exactly this null-versus-zero distinction; reuse it). <strong>A local model is<br />
+not free, though.</strong> The hardware is sunk and unattributable, but the electricity is neither: an estimated<br />
+energy figure — configured <code>$/kWh</code> x machine draw x measured wall time — is available and worth carrying,<br />
+because &quot;$0&quot; invites a conclusion the physics does not support. It is an <strong>estimate</strong>, labelled as one,<br />
+and never summed into a reported <code>costUsd</code> — the same projection-versus-measurement line #528 has to hold.</li>
+<li data-anchor="b1cda614ef7badb506745"><strong>failure taxonomy</strong> — compile, test, regex/content, prompt-judge, max-turns, timeout, <strong>and write-scope<br />
+violation</strong>. A model that fails on turns wants a bigger budget, not a demotion; a model that keeps<br />
+wandering outside its <code>writeScope</code> is failing at instruction-following, which is a different verdict about<br />
+a different faculty.</li>
 </ul>
-<p id="bae5577597df20f4da72f">The decision then becomes explicit and auditable: <em>the cheapest model whose lower confidence bound on<br />
+<div id="b9f1d174d4cc80f218609" class="warn"><p><strong>A write-scope violation is journaled as <code>GuardrailFailed</code> today.</strong> <code>TaskExecutor.cs:1092</code> records<br />
+<code>AttemptOutcome.GuardrailFailed</code> with <code>Summary = &quot;write-scope violation: &lt;paths&gt;&quot;</code>, and the check runs<br />
+<em>before</em> any guardrail does — so the outcome enum cannot tell &quot;wrote outside its scope&quot; from &quot;the tests<br />
+failed&quot;. An ETL that trusts the enum silently folds a discipline failure into a capability one, and the<br />
+taxonomy above quietly stops being true. The corpus must split them at ingest (the summary prefix and the<br />
+distinct <code>GuardrailFailureFingerprint</code> are enough), and Phase 1 should weigh a first-class outcome value.</p>
+</div>
+<p id="bafbb43691b2be130ee75">The decision then becomes explicit and auditable: <em>the cheapest model whose lower confidence bound on<br />
 first-attempt pass rate clears the tier's floor, and whose expected end-to-end time-to-green is within<br />
-tolerance.</em> The weights belong to the operator, in config, not in code.</p>
-<form class="question" id="b9965b67a134222401827" data-question-id="default-objective" data-question-mode="single">
+tolerance.</em></p>
+<p id="b57d6f73a8a878fafc6dc">The default objective is <strong>time-to-green and human interventions, with cost as a tiebreak</strong> — but it is a<br />
+default, not a law. A Claude model registered in <strong>fast mode</strong> wins time-to-green outright while costing<br />
+substantially more, and under a pure time objective the report would recommend it every time on a machine<br />
+whose owner cares about the bill. The <code>costly</code> lever does not help there: it gates <em>selection</em>, not<br />
+<em>ranking</em>. An operator-stated weighting that overrides the default is <strong>#536</strong>.</p>
+<form class="question answered" id="b827b85e075cd5abce26d" data-question-id="default-objective" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="default-objective" />
-<fieldset><legend>What should the default objective be when the report ranks models?</legend>
+<fieldset><legend>What should the default objective be when the report ranks models? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">The standing position in this project is that cost is not the constraint — a Max subscription plus local hardware means the scarce resources are wall-clock and attended human attention. A cost-first default would rank a slow local model above a fast frontier one on a machine where the dollars were already spent.</p>
 <label class="charter-answer-recommended"><input type="radio" name="answer" value="Time-to-green and human interventions; cost is a tiebreak" /> Time-to-green and human interventions; cost is a tiebreak (Recommended)</label>
 <label><input type="radio" name="answer" value="Cost per green task; time is a tiebreak" /> Cost per green task; time is a tiebreak</label>
 <label><input type="radio" name="answer" value="No default — refuse to rank until the operator states a weighting" /> No default — refuse to rank until the operator states a weighting</label>
+<label class="write-in"><input type="radio" name="answer" value="It depends.  If you have a Claude model registered in Extra Fast Mode, then he wins in Time-to-green, but his costs are very high.  But maybe that exception falls into our &quot;high costs&quot; lever. I think that your Recommend is the default, but that we should file an enhancement to allow the operator to state a weighting which overrides the default." checked /> It depends.  If you have a Claude model registered in Extra Fast Mode, then he wins in Time-to-green, but his costs are very high.  But maybe that exception falls into our &quot;high costs&quot; lever. I think that your Recommend is the default, but that we should file an enhancement to allow the operator to state a weighting which overrides the default. (write-in)</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<hr id="bcb3f91d54eee30e53e35-de421853538030f7" />
+<hr id="bcb3f91d54eee30e53e35-e950afdd8caa55ce" />
 <h2 id="b0e2d85fc9011362a5488">7. The bench — deliberate experiment, not just observation</h2>
 <p id="b735ce32e35b41a6b2e83">Observational data cannot escape §5's confounding, and the feedback loop in §3 means exploration will not<br />
 happen by itself. The fix is already in the repo: <strong>a completed task folder is a graded exam.</strong> It has a<br />
@@ -702,23 +726,31 @@ gate, different model — a controlled A/B rather than an observation.</p>
 <p id="b8f77d56b8abe43eaabad">Local inference is what makes this cheap: no marginal token cost, so a candidate can be benched against 200<br />
 recorded tasks overnight. It composes with plan 28's verifier-first stance — the same mechanism benches a<br />
 candidate <em>judge</em>.</p>
+<div id="b15bd18f4d18695f9801c" class="note"><p><strong>The bench is replay, and replay is not the only shape.</strong> The alternative is an <strong>obstacle course</strong>: a<br />
+purpose-built suite of tasks every candidate attempts from an identical green field, so fingerprints are<br />
+identical <em>by construction</em> and §5's stratification problem disappears rather than being managed. Replay is<br />
+free and contaminated; a course is expensive and clean; a small course anchoring the scale while replay<br />
+supplies volume is a plausible third answer. Which one — and whether it belongs in a <code>/plan-breakdown</code><br />
+training mode, a harness run option, or a <code>bench</code> sibling that takes a suite — is <strong>#537</strong>, which carries a<br />
+brief for the agent team to recommend rather than a decision already made.</p>
+</div>
 <div id="b35530f6676c1b304f999" class="warn"><p>Bench runs must be sandboxed: throwaway worktrees, no merge, no push. They must skip tasks whose base<br />
 commit no longer exists. And they must be honest that a <strong>replayed task is easier than a novel one</strong> — any<br />
 task whose guardrails were themselves authored in response to a model's failure is contaminated evidence<br />
 for that model.</p>
 </div>
-<form class="question" id="bfb80ab600393600455d8" data-question-id="bench-pooling" data-question-mode="single">
+<form class="question answered" id="b1600fcce676e3e9584ae" data-question-id="bench-pooling" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="bench-pooling" />
-<fieldset><legend>May bench rows ever be pooled with production rows in the same report?</legend>
+<fieldset><legend>May bench rows ever be pooled with production rows in the same report? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">A replayed task is systematically easier than a novel one, so pooling silently inflates a candidate model. But bench rows are also the only rows that escape selection confounding, so a permanent wall would throw away the better evidence. A flag keeps the default honest and the union reachable.</p>
 <label><input type="radio" name="answer" value="Never — bench is always a separate view" /> Never — bench is always a separate view</label>
-<label class="charter-answer-recommended"><input type="radio" name="answer" value="Only behind an explicit flag" /> Only behind an explicit flag (Recommended)</label>
+<label class="charter-answer-recommended"><input type="radio" name="answer" value="Only behind an explicit flag" checked /> Only behind an explicit flag (Recommended)</label>
 <label><input type="radio" name="answer" value="Yes, once the contamination rules are enforced" /> Yes, once the contamination rules are enforced</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<hr id="bcb3f91d54eee30e53e35-50251fe61bbf3bc7" />
+<hr id="bcb3f91d54eee30e53e35-c710f8d26d34fd9c" />
 <h2 id="bfcf25c1616c3c4599ec3">8. Graduation</h2>
 <p id="bf2a039d61e666f256bd6"><strong>Graduation is a model earning the right to serve a tier</strong> — mechanically,<br />
 <code>promptRunners.&lt;block&gt;.routing.tiers</code> gains a rung. The rules are inherited from decisions this project has<br />
@@ -738,11 +770,23 @@ which one turned.</li>
 <li data-anchor="b56a247e10c943fb9ea60"><strong>The <code>costly</code> floor stands.</strong> Nothing here creates a path for the harness to auto-select a<br />
 <code>costly: true</code> model.</li>
 </ul>
-<hr id="bcb3f91d54eee30e53e35-a32624de5e5aaf36" />
+<div id="b6494640103f554782655" class="note"><p><strong>A question graduation raises but does not own: what does the stronger model inherit?</strong> When a task<br />
+escalates, the next attempt can start from the weaker model's work plus retry feedback, or from a clean<br />
+base. Inheriting is cheaper and usually right — but a hallucinated premise in the transcript is a strong<br />
+prior, and the stronger model may defend it rather than discard it, failing where it would have succeeded<br />
+alone. That failure is invisible in the outcome. The design decision belongs to #228's ladder and is<br />
+recorded there; what this plan contributes is the datum that settles it empirically — §3.1's <strong>retry<br />
+context</strong> makes &quot;escalated with inherited context&quot; and &quot;escalated clean&quot; two comparable populations over<br />
+identical task fingerprints.</p>
+</div>
+<hr id="bcb3f91d54eee30e53e35-e2a9bbbe1ddd9010" />
 <h2 id="b9e8864ce996e10370a2f">9. Storage, privacy, ingest</h2>
-<ul id="ba467df4a003fc78726d0">
+<ul id="b55031bab1c254405e237">
 <li data-anchor="b1c6bed7beb3db3ffd7da"><strong>Local and machine-scoped</strong>, not in the repo: <code>~/.guardrails/telemetry/</code>. In-repo would conflict on every<br />
-branch, leak absolute paths, and bind machine-specific timings to shared history.</li>
+branch, leak absolute paths, and bind machine-specific timings to shared history. The deeper reason is<br />
+that <strong>the answer itself is machine-local</strong>: geography and network quality change how a frontier model<br />
+performs from one machine to the next, while a local model's speed is a property of the silicon in front<br />
+of you. A corpus pooled across machines would average away exactly the difference it exists to measure.</li>
 <li data-anchor="b2451c21baab4e929a3b8"><strong>Append-only JSONL</strong>, one record per line, month-rotated, <code>schemaVersion</code> on every row.</li>
 <li data-anchor="b56725c933278e3d992cf"><strong>Idempotent ingest</strong> keyed <code>(runId, taskId, attempt)</code> — re-ingesting a plan is safe by construction.</li>
 <li data-anchor="bf3c50e6f28020d8352a3"><strong>Two ingest paths</strong>: live during a run, and <code>guardrails telemetry ingest &lt;plan&gt;</code> over existing<br />
@@ -751,29 +795,30 @@ from runs already on disk</strong>, which is exactly the arithmetic #528 quotes 
 <li data-anchor="b9ce276c27125aba62f56"><strong>No prompt text, no file contents, no diffs, no absolute paths</strong> outside the machine profile. Facts and<br />
 identifiers only. <strong>Nothing is transmitted anywhere</strong>, now or later; there is no upload story in this plan.</li>
 </ul>
-<form class="question" id="bea59687033fba47920cd" data-question-id="collection-default" data-question-mode="single">
+<form class="question answered" id="b4178c0ced4f6ec530034" data-question-id="collection-default" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="collection-default" />
-<fieldset><legend>Is local collection on by default, or opt-in?</legend>
+<fieldset><legend>Is local collection on by default, or opt-in? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">The corpus is worthless until it is large, and an opt-in flag guarantees it stays empty on exactly the machines that would benefit. Nothing leaves the machine and nothing sensitive is recorded, so the usual argument for opt-in does not apply here — but shipping a purge verb and an off switch in the same change is what keeps that claim honest.</p>
-<label class="charter-answer-recommended"><input type="radio" name="answer" value="On by default, with an opt-out and a purge verb" /> On by default, with an opt-out and a purge verb (Recommended)</label>
+<label class="charter-answer-recommended"><input type="radio" name="answer" value="On by default, with an opt-out and a purge verb" checked /> On by default, with an opt-out and a purge verb (Recommended)</label>
 <label><input type="radio" name="answer" value="Opt-in — a config key must enable it" /> Opt-in — a config key must enable it</label>
 <label><input type="radio" name="answer" value="On by default for this repo only; opt-in elsewhere" /> On by default for this repo only; opt-in elsewhere</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<form class="question" id="b1ae591f71a94ef553613" data-question-id="corpus-identity" data-question-mode="single">
+<form class="question answered" id="b0d4c61ef76f946f905c5" data-question-id="corpus-identity" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="corpus-identity" />
-<fieldset><legend>Is the corpus scoped per machine, or per machine and repo?</legend>
+<fieldset><legend>Is the corpus scoped per machine, or per machine and repo? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">A definitionHash is repo-local, so cross-repo rows can never be compared task-for-task — but they can be compared by fingerprint bucket, and that pooling is what makes samples big enough to say anything. Keeping the repo as a column preserves the ability to split later; separate stores cannot be rejoined without moving files.</p>
 <label class="charter-answer-recommended"><input type="radio" name="answer" value="One corpus per machine; repo is a recorded dimension" /> One corpus per machine; repo is a recorded dimension (Recommended)</label>
 <label><input type="radio" name="answer" value="One corpus per machine and repo, never pooled" /> One corpus per machine and repo, never pooled</label>
 <label><input type="radio" name="answer" value="One per machine and repo, with opt-in pooling for reports" /> One per machine and repo, with opt-in pooling for reports</label>
+<label class="write-in"><input type="radio" name="answer" value="I think that your recommendation is the correct choice.  The results that we're trying to tune/be smart with should be local to the machine.  There could be geo location and network factors that cause one machine to rate frontier models much worse that local models, if those factors greatly hinder fontier models response times, etc.." checked /> I think that your recommendation is the correct choice.  The results that we're trying to tune/be smart with should be local to the machine.  There could be geo location and network factors that cause one machine to rate frontier models much worse that local models, if those factors greatly hinder fontier models response times, etc.. (write-in)</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<hr id="bcb3f91d54eee30e53e35-b56b788322ac3dee" />
+<hr id="bcb3f91d54eee30e53e35-13167c6f0e8de0b1" />
 <h2 id="b21dfa24724e93e1b5b94">10. Surfaces</h2>
 <ul id="bc0847f0280e4442cb2b1">
 <li data-anchor="bd03ea06a772f0e4420d6"><code>guardrails telemetry ingest | report | export | purge</code></li>
@@ -784,47 +829,60 @@ identifiers only. <strong>Nothing is transmitted anywhere</strong>, now or later
 </ul>
 <hr id="bcb3f91d54eee30e53e35-496ec97dfcdb1fa1" />
 <h2 id="b5be258ab53f6815d260d">11. What we build, in what order</h2>
+<div id="bae05c3428668a3438873" class="note"><p><strong>Phases here are not an argument against waves.</strong> A waved plan is right when the whole scope is known and<br />
+merely has to be ordered — and if all four of these were known, one waved plan would be the better shape.<br />
+They are separated for a different reason: <strong>Phase 0's first real report changes what Phases 1-3 should<br />
+be.</strong> Which instrumentation gap matters most, whether a bench is even needed, what a graduation threshold<br />
+should be — all of those are answered by looking at the corpus, and none of them can be authored honestly<br />
+before it exists. Complexity is not the reason; a dependency on evidence that does not exist yet is. Phase<br />
+0 alone is fully known today, which is why it is the only one being cut as an issue now.</p>
+</div>
 <h3 id="b899e15bdbd66e71fe934">Phase 0 — the corpus, from data that already exists</h3>
 <p id="b801619625b0ac01a5c57"><strong>In:</strong> ETL from <code>state/run.json</code> to JSONL; backfill over runs already on disk; a stratified<br />
 <code>telemetry report</code> that refuses to render a verdict below minimum n; the honesty rules of §5 enforced<br />
 structurally. <strong>No new instrumentation.</strong></p>
 <p id="ba07223da2f33353d40d1"><strong>Out:</strong> everything in Phases 1-3 below, each tracked by #533 until sub-issues are cut.</p>
-<p id="b6317344214efc148b1bb">This alone delivers the measurement #519 says gates the whole v2 slate.</p>
-<div id="b8acf318575304e0158f7" class="note"><p><strong>Phase 0 is worth doing before the hardware arrives.</strong> It makes the current single-provider era the<br />
-baseline every local model is later compared against — and that baseline is only collectable now. Once a<br />
-second provider is in the mix, the clean single-model period is over and cannot be reconstructed.</p>
+<p id="bee0b1b259fb5960fc51d">Tracked by <strong>#535</strong>, and it alone delivers the measurement #519 says gates the whole v2 slate.</p>
+<div id="bc095aa58168c016ca6a5" class="note"><p><strong>Phase 0 is worth doing before a second provider is registered</strong> — not because hardware is coming, but<br />
+because the single-provider era is the baseline every local model is later compared against, and it is only<br />
+collectable while it is still the only thing happening. Once a second runner is in the mix the clean<br />
+period is over and cannot be reconstructed.</p>
 </div>
 <h3 id="be55c0191ca11dabab9c9">Phase 1 — close the instrumentation gaps</h3>
-<p id="bc672e293f413cda43468">Turns-used first (computed, printed, discarded today), then segmented durations, model fingerprint and<br />
-digest, warm/cold, machine and concurrency profile, harness and skill versions. Tracked by #533.</p>
+<p id="bffe4bf7004ebb0423e80">Turns-used first (computed, printed, discarded today), then segmented durations, model fingerprint and<br />
+digest, warm/cold, machine and concurrency profile including unified memory, harness and skill versions.<br />
+Tracked by #533.</p>
 <h3 id="be3a39dc426b69570817b">Phase 2 — the bench</h3>
-<p id="b245fdbe5bda8932c4e08">Lands with the Mac Studio and plan 28's <code>openai-compat</code> runner (#223). Tracked by #533 and #223.</p>
+<p id="b3a454d01db477b5003dd"><strong>Not gated on new hardware.</strong> A 128GB work MacBook is available today, so the only real dependency is plan<br />
+28's <code>openai-compat</code> runner (#223). The 64GB Mac Studio is a tighter box than the MacBook — which is a<br />
+reason the machine profile in §3.1 records unified memory, since the same model name will run at a<br />
+different quantization on each and must not be pooled as one sample. Tracked by #533 and #223.</p>
 <h3 id="be8fca03e3926a0a59d9d">Phase 3 — graduation</h3>
 <p id="bd84cccea3e2795e3afff">Proposal, ratification, probation, demotion, provenance. Feeds #228 with evidence-derived rungs and closes<br />
 #519's gate. Tracked by #533, #228, #519.</p>
-<form class="question" id="bfcf34ca3b973d26dba77" data-question-id="file-phase-issues" data-question-mode="single">
+<form class="question answered" id="bc6535c02ed926ab1019e" data-question-id="file-phase-issues" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="file-phase-issues" />
-<fieldset><legend>File sub-issues per phase now, or keep everything under #533 until Phase 0 lands?</legend>
+<fieldset><legend>File sub-issues per phase now, or keep everything under #533 until Phase 0 lands? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">Phases 1 to 3 are shaped by what Phase 0's first real report shows, so issues cut now would be rewritten before anyone worked them. Phase 0 is concrete today and deserves its own trackable scope; the rest stays deferred against #533, which is open and owned.</p>
 <label><input type="radio" name="answer" value="File one sub-issue per phase now" /> File one sub-issue per phase now</label>
-<label class="charter-answer-recommended"><input type="radio" name="answer" value="File only a Phase 0 issue; cut the rest when it lands" /> File only a Phase 0 issue; cut the rest when it lands (Recommended)</label>
+<label class="charter-answer-recommended"><input type="radio" name="answer" value="File only a Phase 0 issue; cut the rest when it lands" checked /> File only a Phase 0 issue; cut the rest when it lands (Recommended)</label>
 <label><input type="radio" name="answer" value="Keep everything under #533 for now" /> Keep everything under #533 for now</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<form class="question" id="bee615575b6d9dc6e64ba" data-question-id="phase0-route" data-question-mode="single">
+<form class="question answered" id="b0b45041313eb6255f7cf" data-question-id="phase0-route" data-question-mode="single" data-answered="true">
 <input type="hidden" name="question-id" value="phase0-route" />
-<fieldset><legend>How does Phase 0 reach execution?</legend>
+<fieldset><legend>How does Phase 0 reach execution? <span class="question-status">Answered</span></legend>
 <p class="question-rationale">Phase 0 is an ETL plus a report over a schema that already exists, with no contract change to guardrails.json and no new execution semantics — the conditions that made a full DoR necessary for model tiering are absent. Phases 2 and 3 do change contracts and should get one when they are scheduled.</p>
-<label class="charter-answer-recommended"><input type="radio" name="answer" value="Straight to /plan-breakdown from this charter" /> Straight to /plan-breakdown from this charter (Recommended)</label>
+<label class="charter-answer-recommended"><input type="radio" name="answer" value="Straight to /plan-breakdown from this charter" checked /> Straight to /plan-breakdown from this charter (Recommended)</label>
 <label><input type="radio" name="answer" value="Write a numbered DoR first, like plan 17" /> Write a numbered DoR first, like plan 17</label>
 <label><input type="radio" name="answer" value="Charter Phase 0 separately in its own detailed plan" /> Charter Phase 0 separately in its own detailed plan</label>
 <label class="charter-answer-other"><input type="radio" name="answer" value="" data-answer-other="1" /> Something else: <input type="text" class="charter-answer-other-text" data-answer-other-text="1" placeholder="your answer" /></label>
 <div class="question-actions"><button type="submit" class="question-submit" disabled>Save answer</button></div>
 </fieldset>
 </form>
-<hr id="bcb3f91d54eee30e53e35-3b23ffd3ab0862cd" />
+<hr id="bcb3f91d54eee30e53e35-cc32e6c705241d5c" />
 <h2 id="b5f7ad726ba7552464963">12. Not in scope</h2>
 <ul id="bb33216cd9261225b3fea">
 <li data-anchor="b6f89c013f0fdb773943a"><strong>No telemetry leaves the machine.</strong> Ever.</li>
