@@ -465,8 +465,8 @@ with evidence instead of intuition.</p>
 <p><em>&quot;qwen 3.6 was faster and averaged only 1.3 attempts on tasks of difficulty X, so opus is overkill there<br />
 — even though opus averaged 1.1 attempts, its attempts took 4x as long and cost real money.&quot;</em></p>
 </blockquote>
-<p id="bc9f8517c9070f90f8954">Every noun in that sentence is a number the harness already produces and immediately discards. A task's<br />
-difficulty tag is a <strong>judgement call</strong> made once, by <code>/plan-breakdown</code>, and nothing ever checks it against<br />
+<p id="b4614f6e8b44711003d69">Every noun in that sentence is a number the harness already produces and immediately discards. A task's<br />
+difficulty tag is a <strong>judgment call</strong> made once, by <code>/plan-breakdown</code>, and nothing ever checks it against<br />
 what happened. That is tolerable with one provider. It stops being tolerable the moment a Mac Studio puts<br />
 three or four local models next to the frontier ones and someone has to choose between them.</p>
 <div id="b56107c7f70a4515d116c" class="note"><p>The precondition that makes this cheap is already true, and is unusual. <strong>Guardrails are a deterministic<br />
@@ -607,8 +607,8 @@ model.</p>
 </div>
 <hr id="bcb3f91d54eee30e53e35-b6b821c70ac3c701" />
 <h2 id="b630182ebea62791bc4d1">4. &quot;Difficulty&quot; is three different things</h2>
-<p id="bc6a4279090540d402281">The instinct that <code>easy | medium | hard</code> is too coarse is right. The fix is <strong>not</strong> a finer-grained<br />
-judgement — a 1-to-10 guess is a worse guess, not a better number. Split the concept instead:</p>
+<p id="b1bd47a13ca6b886dbc2b">The instinct that <code>easy | medium | hard</code> is too coarse is right. The fix is <strong>not</strong> a finer-grained<br />
+judgment — a 1-to-10 guess is a worse guess, not a better number. Split the concept instead:</p>
 <ol id="b4a076cafebf8127d0bf9">
 <li data-anchor="bb07394547a28db35806f"><strong>Declared tier — the routing dial.</strong> <code>easy | medium | hard</code>, chosen by <code>/plan-breakdown</code> or a human,<br />
 consumed by the resolver. <strong>Unchanged by this plan.</strong></li>
@@ -620,7 +620,7 @@ comparable.</em></li>
 strongest model that ran it, turn consumption against budget, guardrail failure <em>kinds</em>, whether a human<br />
 was ever needed.</li>
 </ol>
-<p id="b0d226bd969b931d4ffee">Only the third is a measurement. The first is a judgement and the second is a fact about the task.</p>
+<p id="b79990deafafc78ba517d">Only the third is a measurement. The first is a judgment and the second is a fact about the task.</p>
 <div id="bc1be879a44f4bfda1b91" class="note"><p>A free by-product falls out of (3) versus (1): <strong>the mis-tag report.</strong> &quot;These 14 tasks were declared <code>easy</code><br />
 and consistently realize as <code>hard</code>&quot; is directly actionable against <code>/plan-breakdown</code>'s tagging heuristics —<br />
 and it is the honest v1 answer to the mis-tagged-minority problem that #228's ladder was deferred over.</p>
@@ -669,7 +669,7 @@ one, merge-conflict incidence. A model that games gates looks excellent on pass 
 <hr id="bcb3f91d54eee30e53e35-c3b311b884e61713" />
 <h2 id="bfe62f72000318b91f8a6">6. The metrics, and the decision function</h2>
 <p id="b9a5a786af9aabac481d1">Per <strong>(model fingerprint x tier x fingerprint bucket)</strong>, every row carrying <code>n</code> and a confidence marker:</p>
-<ul id="bff6be24b68bcb5878888">
+<ul id="b9d802e4e8df95af8714c">
 <li data-anchor="b439a82e3eebf10a72b93"><strong>first-attempt pass rate</strong> — the headline</li>
 <li data-anchor="bdc1f80ee0f6a8a36cc52"><strong>attempts-to-green</strong>, median and p90, paired with <strong>abandonment rate</strong></li>
 <li data-anchor="b71caf5d6c9ab47fa3450"><strong>needs-human rate</strong>, split by kind</li>
@@ -679,20 +679,30 @@ attempts — plus tokens/sec and turn consumption against budget</li>
 (<code>JournalTierSpend</code> already draws exactly this null-versus-zero distinction; reuse it). <strong>A local model is<br />
 not free, though.</strong> The hardware is sunk and unattributable, but the electricity is neither: an estimated<br />
 energy figure — configured <code>$/kWh</code> x machine draw x measured wall time — is available and worth carrying,<br />
-because &quot;$0&quot; invites a conclusion the physics does not support. It is an <strong>estimate</strong>, labelled as one,<br />
+because &quot;$0&quot; invites a conclusion the physics does not support. It is an <strong>estimate</strong>, labeled as one,<br />
 and never summed into a reported <code>costUsd</code> — the same projection-versus-measurement line #528 has to hold.</li>
 <li data-anchor="b1cda614ef7badb506745"><strong>failure taxonomy</strong> — compile, test, regex/content, prompt-judge, max-turns, timeout, <strong>and write-scope<br />
 violation</strong>. A model that fails on turns wants a bigger budget, not a demotion; a model that keeps<br />
 wandering outside its <code>writeScope</code> is failing at instruction-following, which is a different verdict about<br />
 a different faculty.</li>
 </ul>
-<div id="b9f1d174d4cc80f218609" class="warn"><p><strong>A write-scope violation is journaled as <code>GuardrailFailed</code> today.</strong> <code>TaskExecutor.cs:1092</code> records<br />
-<code>AttemptOutcome.GuardrailFailed</code> with <code>Summary = &quot;write-scope violation: &lt;paths&gt;&quot;</code>, and the check runs<br />
-<em>before</em> any guardrail does — so the outcome enum cannot tell &quot;wrote outside its scope&quot; from &quot;the tests<br />
-failed&quot;. An ETL that trusts the enum silently folds a discipline failure into a capability one, and the<br />
-taxonomy above quietly stops being true. The corpus must split them at ingest (the summary prefix and the<br />
-distinct <code>GuardrailFailureFingerprint</code> are enough), and Phase 1 should weigh a first-class outcome value.</p>
+<div id="b8db6502b850f3bb26379" class="warn"><p><strong>Three different failures are journaled as <code>guardrail-failed</code>, and the field that tells them apart never<br />
+reaches disk.</strong> A write-scope violation (<code>TaskExecutor.cs:1093</code>), a staging-move failure (<code>:975</code>) and a<br />
+harness-write out-of-scope (<code>:1040</code>) all record <code>AttemptOutcome.GuardrailFailed</code>. Each sets a<br />
+distinguishing <code>TaskResult.Summary</code> — but <code>AttemptJournaler.FailedAttempt</code> persists only <code>ActionExitCode</code>,<br />
+<code>Outcome</code>, <code>FailedGuardrails</code>, <code>CostUsd</code>, <code>Usage</code> and <code>LogDir</code>, so <strong>the summary is dropped</strong>, and<br />
+<code>GuardrailFailureFingerprint</code> never leaves memory either. In <code>run.json</code> all three look identical, and they<br />
+differ from a real guardrail failure only in that <code>failedGuardrails</code> is empty.</p>
 </div>
+<p id="bf2b438de01fa21024c61"><strong>What the backfill therefore has to do.</strong> The journal alone cannot classify these, so ingest reads the<br />
+attempt's <code>feedback.md</code> — written by <code>RetryPolicy.ForWriteScopeViolation</code> / <code>ForHarnessWriteOutOfScope</code>, and<br />
+reachable because <code>logDir</code> <em>is</em> journaled. The wording of that feedback has changed across harness<br />
+generations, so the honest shape is a <strong>one-time investigative pass</strong> over the historical log sites to<br />
+establish the per-generation patterns, then <strong>deterministic string matching thereafter</strong>. Two limits stated<br />
+up front: an attempt whose log site no longer exists is recorded as <code>guardrail-failed (undifferentiated)</code><br />
+and never guessed at, and matching prose is a recovery technique for history — not an architecture. That is<br />
+precisely what makes Phase 1's first-class outcome value worth having rather than optional: everything<br />
+after it is classified at the source instead of reconstructed.</p>
 <p id="bafbb43691b2be130ee75">The decision then becomes explicit and auditable: <em>the cheapest model whose lower confidence bound on<br />
 first-attempt pass rate clears the tier's floor, and whose expected end-to-end time-to-green is within<br />
 tolerance.</em></p>

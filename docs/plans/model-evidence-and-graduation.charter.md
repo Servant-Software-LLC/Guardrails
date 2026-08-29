@@ -21,7 +21,7 @@ with evidence instead of intuition.
 > — even though opus averaged 1.1 attempts, its attempts took 4x as long and cost real money."*
 
 Every noun in that sentence is a number the harness already produces and immediately discards. A task's
-difficulty tag is a **judgement call** made once, by `/plan-breakdown`, and nothing ever checks it against
+difficulty tag is a **judgment call** made once, by `/plan-breakdown`, and nothing ever checks it against
 what happened. That is tolerable with one provider. It stops being tolerable the moment a Mac Studio puts
 three or four local models next to the frontier ones and someone has to choose between them.
 
@@ -117,7 +117,7 @@ model.
 ## 4. "Difficulty" is three different things
 
 The instinct that `easy | medium | hard` is too coarse is right. The fix is **not** a finer-grained
-judgement — a 1-to-10 guess is a worse guess, not a better number. Split the concept instead:
+judgment — a 1-to-10 guess is a worse guess, not a better number. Split the concept instead:
 
 1. **Declared tier — the routing dial.** `easy | medium | hard`, chosen by `/plan-breakdown` or a human,
    consumed by the resolver. **Unchanged by this plan.**
@@ -129,7 +129,7 @@ judgement — a 1-to-10 guess is a worse guess, not a better number. Split the c
    strongest model that ran it, turn consumption against budget, guardrail failure *kinds*, whether a human
    was ever needed.
 
-Only the third is a measurement. The first is a judgement and the second is a fact about the task.
+Only the third is a measurement. The first is a judgment and the second is a fact about the task.
 
 :::note
 A free by-product falls out of (3) versus (1): **the mis-tag report.** "These 14 tasks were declared `easy`
@@ -196,7 +196,7 @@ Per **(model fingerprint x tier x fingerprint bucket)**, every row carrying `n` 
   (`JournalTierSpend` already draws exactly this null-versus-zero distinction; reuse it). **A local model is
   not free, though.** The hardware is sunk and unattributable, but the electricity is neither: an estimated
   energy figure — configured `$/kWh` x machine draw x measured wall time — is available and worth carrying,
-  because "$0" invites a conclusion the physics does not support. It is an **estimate**, labelled as one,
+  because "$0" invites a conclusion the physics does not support. It is an **estimate**, labeled as one,
   and never summed into a reported `costUsd` — the same projection-versus-measurement line #528 has to hold.
 - **failure taxonomy** — compile, test, regex/content, prompt-judge, max-turns, timeout, **and write-scope
   violation**. A model that fails on turns wants a bigger budget, not a demotion; a model that keeps
@@ -204,13 +204,24 @@ Per **(model fingerprint x tier x fingerprint bucket)**, every row carrying `n` 
   a different faculty.
 
 :::warn
-**A write-scope violation is journaled as `GuardrailFailed` today.** `TaskExecutor.cs:1092` records
-`AttemptOutcome.GuardrailFailed` with `Summary = "write-scope violation: <paths>"`, and the check runs
-*before* any guardrail does — so the outcome enum cannot tell "wrote outside its scope" from "the tests
-failed". An ETL that trusts the enum silently folds a discipline failure into a capability one, and the
-taxonomy above quietly stops being true. The corpus must split them at ingest (the summary prefix and the
-distinct `GuardrailFailureFingerprint` are enough), and Phase 1 should weigh a first-class outcome value.
+**Three different failures are journaled as `guardrail-failed`, and the field that tells them apart never
+reaches disk.** A write-scope violation (`TaskExecutor.cs:1093`), a staging-move failure (`:975`) and a
+harness-write out-of-scope (`:1040`) all record `AttemptOutcome.GuardrailFailed`. Each sets a
+distinguishing `TaskResult.Summary` — but `AttemptJournaler.FailedAttempt` persists only `ActionExitCode`,
+`Outcome`, `FailedGuardrails`, `CostUsd`, `Usage` and `LogDir`, so **the summary is dropped**, and
+`GuardrailFailureFingerprint` never leaves memory either. In `run.json` all three look identical, and they
+differ from a real guardrail failure only in that `failedGuardrails` is empty.
 :::
+
+**What the backfill therefore has to do.** The journal alone cannot classify these, so ingest reads the
+attempt's `feedback.md` — written by `RetryPolicy.ForWriteScopeViolation` / `ForHarnessWriteOutOfScope`, and
+reachable because `logDir` *is* journaled. The wording of that feedback has changed across harness
+generations, so the honest shape is a **one-time investigative pass** over the historical log sites to
+establish the per-generation patterns, then **deterministic string matching thereafter**. Two limits stated
+up front: an attempt whose log site no longer exists is recorded as `guardrail-failed (undifferentiated)`
+and never guessed at, and matching prose is a recovery technique for history — not an architecture. That is
+precisely what makes Phase 1's first-class outcome value worth having rather than optional: everything
+after it is classified at the source instead of reconstructed.
 
 The decision then becomes explicit and auditable: *the cheapest model whose lower confidence bound on
 first-attempt pass rate clears the tier's floor, and whose expected end-to-end time-to-green is within
