@@ -97,3 +97,28 @@ verb, the phase that calls it, and the contract they record.
   carry pairs today).
 - `#511`, `#522`, `#523`, `#524` — the rest of the abandoned bundle. #522/#523/#524 are re-cut as
   `27-operator-visibility`; #511 is two isolated tasks and does not warrant a plan.
+
+## 7. The one risk this plan accepts, and the condition attached to it
+
+**The preflight step adds work before every run of every plan in this repo — forever.** That is the
+cost of moving sample verification from a claim into a gate, and it is accepted. But it is accepted
+**conditionally**, and the condition is load-bearing:
+
+> A plan that carries **no** committed sample pairs must cost **one directory probe per task and zero
+> process launches**. The verifier discovers pairs before it runs anything; a plan with nothing to
+> verify must pay discovery only.
+
+Without that condition the feature is a tax rather than a gate. A verifier that launches the
+interpreter once per guardrail regardless of whether a pair exists would pass every guardrail in this
+plan, slow every future run in the repo, and be attributed to nobody — the cost lands on plans that
+never opted in, long after this one is forgotten.
+
+**The condition is CHECKED, not merely written here.** Task 01's behaviour manifest pins it as
+`Verify_RunsNoGuardrail_WhenNoTaskCarriesASamplePair`: a fixture plan whose guardrail script writes a
+marker file if it is ever executed, asserting the marker is absent and the verified-pair count is zero.
+Deterministic, real-process, no fake seam.
+
+That this section had to exist is itself the point. The condition was stated twice in the task prompts
+as non-negotiable and executed nowhere — an invariant that is 100% prompt and 0% gate, which is
+precisely the shape §1 says this plan exists to end. It would have been the one unverified claim in the
+plan built to stop unverified claims.

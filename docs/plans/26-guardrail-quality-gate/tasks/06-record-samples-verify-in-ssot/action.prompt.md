@@ -4,7 +4,7 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — the name of the directory this task.json lives in, i.e.
-  `{ "05-record-samples-verify-in-ssot": { "someKey": "someValue" } }`. The harness
+  `{ "06-record-samples-verify-in-ssot": { "someKey": "someValue" } }`. The harness
   REJECTS a fragment keyed by anything else (every attempt).
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
@@ -65,7 +65,7 @@ tool. (It is ~521 KB, so `Edit` it in place; never rewrite it whole.)
 
 Record what this plan shipped in the two documents that carry the contract. This is a documentation
 delta, not a design decision: the design is settled in `docs/plans/26-guardrail-quality-gate.md` —
-read it first (sections 1, 2, 3 and 4) and write down what it says.
+read it first (sections 1, 2, 3, 4 and 7) and write down what it says.
 
 **Write exactly two files:**
 
@@ -79,16 +79,17 @@ consumes a retry.
 
 ### Read what actually landed FIRST — and treat this section as authoring-time state
 
-You depend on **task 04**, and through it on tasks 02 and 03: all three ran before you. Everything
+You depend on **task 05**, and through it on tasks 02, 03 and 04: all four ran before you. Everything
 this prompt says about their shapes reflects the state at plan-authoring time, **before any of them
 had run**. `git log --oneline`, `git show` and a read of the changed files are the fastest way to see
 what actually shipped:
 
 - `src/Guardrails.Core/Samples/SampleVerifier.cs` — the shared verifier (task 02).
 - `src/Guardrails.Cli/Commands/SamplesCommand.cs` — the verb (task 03).
-- `src/Guardrails.Cli/PlanPreflightPhase.cs` — the phase step (task 04). **Do not cite a line number
-  in that file**: task 04 rewrote parts of it after this prompt was written, so any line number here
-  would be stale on arrival. Grep for the symbol instead.
+- `src/Guardrails.Cli/PlanPreflightPhase.cs` — the phase step (task 05; its tests are task 04's
+  `tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs`). **Do not cite a line
+  number in that file**: task 05 rewrote parts of it after this prompt was written, so any line number
+  here would be stale on arrival. Grep for the symbol instead.
 
 **Document what landed, not what this prompt predicted.** If the two disagree, the code is right and
 this prompt is stale — say so in your summary.

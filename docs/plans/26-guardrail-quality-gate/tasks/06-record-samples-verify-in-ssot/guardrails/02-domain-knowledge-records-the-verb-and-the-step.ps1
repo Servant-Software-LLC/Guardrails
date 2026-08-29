@@ -41,8 +41,26 @@ if (-not (Test-Path $f)) {
     exit 1
 }
 
-$doc = Get-Content $f -Raw
+$raw = Get-Content $f -Raw
+# STRIP HTML COMMENTS BEFORE MATCHING - identical reasoning to guardrail 01, and identically measured on
+# THIS subject (2026-08-29): appending the single line
+#     <!-- TODO: document `samples verify` and SampleVerifier here -->
+# to the real SKILL.md took this guardrail from exit 1 to exit **0**. A line that renders as nothing
+# cannot tell the next agent that a committed sample pair is now RUN - and this skill is precisely where
+# the author-time smoke-test doctrine lives, so a silently-satisfied clause here leaves every future
+# breakdown/review agent reasoning from advice the harness has already superseded.
+# Strip-only is monotone - it removes text, so a required-present clause can only get stricter.
+# Baseline unaffected - the 2 HTML comments already in this file contain neither demanded token, and both
+# are properly terminated (measured: '<!--' 2x, paired 2x, unpaired 0).
+$doc = [regex]::Replace($raw, '(?s)<!--.*?-->', '')
 $failures = @()
+
+# FENCED CODE BLOCKS ARE DELIBERATELY *NOT* STRIPPED, for the reason given at length in guardrail 01 plus
+# one specific to this subject: MEASURED, this file contains **zero** fenced code blocks (0 backtick
+# fences, 0 tilde fences), so the fenced-hollow-block vector does not exist in this document's own style -
+# stripping would be pure false-red risk here for no coverage at all. Keeping the two scripts identical on
+# this point also stops a later editor copying the stricter half into the subject it would break.
+# The unterminated-`<!--` residual named in guardrail 01 applies here too and is likewise left open.
 
 # PRECEDENT: this skill already names CLI verbs as literal tokens - 'graph --check' (3x) - and, like
 # the SSOT, it spells them BARE rather than 'guardrails'-prefixed. So the clause takes the bare form,

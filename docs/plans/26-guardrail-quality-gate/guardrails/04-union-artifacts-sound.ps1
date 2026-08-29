@@ -53,17 +53,18 @@
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-# EXACTLY the union of this plan's five writeScopes, deduped - nothing else. A path here that no task
+# EXACTLY the union of this plan's six writeScopes, deduped - nothing else. A path here that no task
 # writes is a silent lie in the one file whose entire job is honesty, so each entry names its task:
 $produced = @(
     'tests/Guardrails.Core.Tests/Samples/SampleVerifierTests.cs',              # task 01
     'src/Guardrails.Core/Samples/SampleVerifier.cs',                           # tasks 01 (stub) + 02 (impl)
     'src/Guardrails.Cli/Commands/SamplesCommand.cs',                           # task 03
     'src/Guardrails.Cli/CommandFactory.cs',                                    # task 03
-    'src/Guardrails.Cli/PlanPreflightPhase.cs',                                # task 04
-    'tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs', # task 04
-    'docs/plans/02-schemas-and-contracts.md',                                  # task 05
-    '.claude/skills/guardrails-domain-knowledge/SKILL.md'                      # task 05
+    'tests/Guardrails.Integration.Tests/Commands/SamplesCommandTests.cs',      # task 03 (the agreement test)
+    'tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs', # task 04 (authors it)
+    'src/Guardrails.Cli/PlanPreflightPhase.cs',                                # task 05 (makes it pass)
+    'docs/plans/02-schemas-and-contracts.md',                                  # task 06
+    '.claude/skills/guardrails-domain-knowledge/SKILL.md'                      # task 06
 )
 
 $failures = @()

@@ -1,5 +1,8 @@
+using System.CommandLine;
 using Guardrails.Cli;
+using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
@@ -11,10 +14,16 @@ namespace Guardrails.Integration.Tests.Samples;
 /// test drives the REAL <see cref="PlanPreflightPhase"/> over a temp plan folder and asserts on what
 /// the PHASE returned and journaled — never on a verifier this file ran itself, which would be green
 /// against a phase that was never wired at all (#120).
+///
+/// Four of the five are RED against the unwired phase; <c>EvaluateAsync_ReturnsTrue_…</c> is the
+/// declared exception (the unwired phase returns true at its first line for a plan with no
+/// <c>preflights/</c> folder), and it is what stops task 05 returning false unconditionally.
 /// </summary>
 [Trait("Category", "BacklogSlate")]
 public sealed class SampleVerifierWiringTests : IDisposable
 {
+    private static readonly bool Ps = OperatingSystem.IsWindows();
+
     private readonly string _root;
 
     public SampleVerifierWiringTests()
@@ -36,7 +45,7 @@ public sealed class SampleVerifierWiringTests : IDisposable
     {
         string planDir = CreatePlan("reversed", declarePreflightsFolder: true, soundPair: false);
         PlanDefinition plan = LoadPlan(planDir);
-        RunJournal journal = RunJournal.LoadOrCreate(planDir, plan);
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
 
         // Drive the REAL pre-DAG phase — never construct the verifier by hand here.
         bool proceed = await PlanPreflightPhase.EvaluateAsync(
@@ -56,7 +65,7 @@ public sealed class SampleVerifierWiringTests : IDisposable
         string planDir = CreatePlan("no-preflights", declarePreflightsFolder: false, soundPair: false);
         PlanDefinition plan = LoadPlan(planDir);
         Assert.Empty(plan.PlanPreflights);
-        RunJournal journal = RunJournal.LoadOrCreate(planDir, plan);
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
 
         bool proceed = await PlanPreflightPhase.EvaluateAsync(
             plan, journal, new ProcessRunner(), heartbeatOut: null, CancellationToken.None);
@@ -72,7 +81,7 @@ public sealed class SampleVerifierWiringTests : IDisposable
         // still pass — the mirror of the can-never-fail guardrail this whole feature exists to detect.
         string planDir = CreatePlan("sound", declarePreflightsFolder: false, soundPair: true);
         PlanDefinition plan = LoadPlan(planDir);
-        RunJournal journal = RunJournal.LoadOrCreate(planDir, plan);
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
 
         bool proceed = await PlanPreflightPhase.EvaluateAsync(
             plan, journal, new ProcessRunner(), heartbeatOut: null, CancellationToken.None);
@@ -86,7 +95,7 @@ public sealed class SampleVerifierWiringTests : IDisposable
     {
         string planDir = CreatePlan("journalled", declarePreflightsFolder: false, soundPair: false);
         PlanDefinition plan = LoadPlan(planDir);
-        RunJournal journal = RunJournal.LoadOrCreate(planDir, plan);
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
 
         await PlanPreflightPhase.EvaluateAsync(
             plan, journal, new ProcessRunner(), heartbeatOut: null, CancellationToken.None);
@@ -94,6 +103,20 @@ public sealed class SampleVerifierWiringTests : IDisposable
         // A halt whose only trace is the operator's scrollback is the #432 failure repeating.
         string recorded = File.ReadAllText(RunJournal.PathFor(planDir));
         Assert.Contains("01-subject-check", recorded, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Category", "BacklogSlate")]
+    public async Task Run_HaltsBeforeSchedulingAnyTask_WhenAPlansCommittedSamplePairIsReversed()
+    {
+        // The plan's actual Done-when: the halt lands BEFORE the DAG, so no task spends a token.
+        string planDir = CreatePlan("cli", declarePreflightsFolder: false, soundPair: false);
+
+        int exit = await RunCliAsync(planDir);
+
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.All(journal.Tasks, t => Assert.Empty(t.Value.Attempts));
     }
 
     // ── fixture ─────────────────────────────────────────────────────────────────────────────────────
@@ -107,6 +130,16 @@ public sealed class SampleVerifierWiringTests : IDisposable
         return loaded.Plan!;
     }
 
+    // The house idiom from PlanPreflightPhaseTests: build the REAL RunCommand on a RootCommand and
+    // invoke it, rather than reaching for a Program entry point that is not public.
+    private static async Task<int> RunCliAsync(string planDir)
+    {
+        var io = new StringConsoleIo();
+        var root = new RootCommand("sample-verifier wiring cli test root");
+        root.Add(RunCommand.Create(io));
+        return await root.Parse(new[] { "run", planDir, "--no-ui", "--no-log-server" }).InvokeAsync();
+    }
+
     private string CreatePlan(string name, bool declarePreflightsFolder, bool soundPair)
     {
         string planDir = Path.Combine(_root, name);
@@ -117,20 +150,24 @@ public sealed class SampleVerifierWiringTests : IDisposable
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"), "{ \"version\": 1 }");
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             "{ \"description\": \"only\", \"dependsOn\": [] }");
-        File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "do nothing");
 
-        bool ps = OperatingSystem.IsWindows();
-        string ext = ps ? ".ps1" : ".sh";
-        string body = ps
+        string ext = Ps ? ".ps1" : ".sh";
+        File.WriteAllText(Path.Combine(taskDir, "action" + ext), Ps ? "exit 0\n" : "exit 0\n");
+
+        // Reads its subject BOTH ways the corpus supplies one — the first positional argument and
+        // GR_SUBJECT — so the pair's polarity is a property of the samples, not of this script.
+        string body = Ps
             ? "# catches: a subject carrying the BAD marker\n"
               + "param([string]$SubjectPath = 'nope')\n"
+              + "if ($env:GR_SUBJECT) { $SubjectPath = $env:GR_SUBJECT }\n"
               + "if (-not (Test-Path $SubjectPath)) { exit 1 }\n"
               + "if ((Get-Content $SubjectPath -Raw) -match 'BAD') { Write-Output 'defect present'; exit 1 }\n"
               + "exit 0\n"
             : "# catches: a subject carrying the BAD marker\n"
               + "set -eu\n"
-              + "[ -f \"$1\" ] || exit 1\n"
-              + "grep -q BAD \"$1\" && { echo 'defect present'; exit 1; }\n"
+              + "SUBJECT=\"${GR_SUBJECT:-${1:-nope}}\"\n"
+              + "[ -f \"$SUBJECT\" ] || exit 1\n"
+              + "grep -q BAD \"$SUBJECT\" && { echo 'defect present'; exit 1; }\n"
               + "exit 0\n";
         File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-subject-check" + ext), body);
 
@@ -144,7 +181,7 @@ public sealed class SampleVerifierWiringTests : IDisposable
         {
             Directory.CreateDirectory(Path.Combine(planDir, "preflights"));
             File.WriteAllText(Path.Combine(planDir, "preflights", "01-green" + ext),
-                ps ? "# catches: nothing — always green\nexit 0\n" : "# catches: nothing — always green\nexit 0\n");
+                "# catches: nothing - always green\nexit 0\n");
         }
 
         return planDir;

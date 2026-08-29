@@ -12,6 +12,16 @@
 #          green. The per-test census below binds that one behaviour to an OBSERVED PASSING test by
 #          name, so quietly dropping it is a named finding rather than a silent -1 on a count.
 #
+#          POST-SPLIT: this is the FORWARD half of a real TDD pair. Task 04 authored these five tests
+#          and proved four of them RED against the unwired phase
+#          (tasks/04-.../guardrails/03-tests-fail-on-unwired-phase.ps1); this census requires all five
+#          PASSED after the wiring lands. The `-ne 'Passed'` manifest and task 04's `Expect='Failed'`
+#          manifest name the same five methods and must stay in lockstep - including
+#          EvaluateAsync_ReturnsTrue_WhenEverySamplePairIsSound, which is task 04's declared exemption
+#          from the red bar (the unwired phase returns true at its first line for a plan with no
+#          preflights/ folder) and is NOT exempt here: it is the only test standing between this task
+#          and a phase that returns false unconditionally.
+#
 #          scope: LOCAL (no sidecar) - it asserts "the verifier IS wired", which cannot be true before
 #          this task's own action has run, so it fails the #125 union-safe test and must not be tagged
 #          scope:"integration" (#250).
@@ -24,9 +34,14 @@ $filter = 'Category=BacklogSlate&FullyQualifiedName~SampleVerifierWiringTests'
 # "SampleVerifier".
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block,
 # leaving only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
+# NO --no-build either, deliberately, and it was MEASURED that this matters (2026-08-29): with it, a
+# census reads whatever is in bin/ rather than the SOURCE tree - the task 04 census was observed exiting
+# 0 over five STALE tests still compiled into the assembly after their source file had been deleted.
+# 02-build-passes normally refreshes it first, so the window is narrow, but a single-guardrail
+# `revalidate` re-runs this out of order and a census that can certify a deleted file certifies nothing.
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-wiring-census-$PID"
 Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never read a PREVIOUS attempt's TRX
-$out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --no-build --nologo `
+$out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo `
        --logger 'trx;LogFileName=wiring.trx' --results-directory $resultsDir 2>&1
 $testExit = $LASTEXITCODE                                  # capture BEFORE any other statement
 $out | ForEach-Object { Write-Output $_ }                  # full log first (for the attempt's saved output)
@@ -58,19 +73,31 @@ if (-not $trx) {
 }
 
 # DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
-$xml      = [xml](Get-Content $trx.FullName -Raw)
-$recorded = @($xml.TestRun.Results.UnitTestResult)
+$xml = [xml](Get-Content $trx.FullName -Raw)
+# The `| Where-Object { $_ }` is LOAD-BEARING. Without it this guard is INERT. MEASURED on this box,
+# 2026-08-29 (pwsh 7):
+#     @($null).Count                                      -> 1
+#     @([xml]'<TestRun/>').TestRun.Results.UnitTestResult  -> $null, and @($null) is a ONE-element array
+#     @(...same... | Where-Object { $_ }).Count            -> 0
+#   A TRX with no <Results> element (or an empty one) yields $null, so the bare
+#   `@($xml.TestRun.Results.UnitTestResult).Count -lt 1` form can NEVER fire and a zero-test run would
+#   fall through to the census below, which would then report all five behaviours "unbound" - a
+#   confident wrong message aimed at the one artifact a retry agent is allowed to edit. The filtered
+#   form fires.
+$recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
 if ($recorded.Count -lt 1) {
     Write-Output "exit 0 but the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This guardrail certified nothing. Check the filter against the class this task owns (SampleVerifierWiringTests, trait Category=BacklogSlate)."
     exit 1
 }
 
 # THE FORWARD PER-TEST CENSUS (#375, the `-ne 'Passed'` mirror). The suite exit code cannot tell a
-# behaviour that PASSED from one that was never authored or was [Skip]ped out - and this task authors
-# its own tests with no TDD-red half, so nothing else in the plan would notice a missing one. Each
-# enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it. Cross-checked BY HAND
-# against tasks/04-wire-verifier-into-preflight/action.prompt.md; the prompt<->manifest agreement is NOT
-# mechanically enforced (measured: validate exits 0 either way).
+# behaviour that PASSED from one that was never authored or was [Skip]ped out. Task 04's red census
+# would catch a MISSING test at authoring time, but this task's segment could still merge a tree where
+# one was lost, and a [Skip] added later reads as green to the suite exit code. Each enumerated
+# behaviour -> the test method name the ACTION PROMPT PINNED for it. Cross-checked BY HAND against
+# tasks/04-author-tests-verifier-wiring/action.prompt.md (which pins the names) and
+# tasks/05-wire-verifier-into-preflight/action.prompt.md (which restates them); the prompt<->manifest
+# agreement is NOT mechanically enforced (measured: validate exits 0 either way).
 $manifest = [ordered]@{
     'a reversed committed pair HALTS the pre-DAG phase'              = 'EvaluateAsync_ReturnsFalse_WhenACommittedSamplePairIsReversed'
     'it halts even for a plan with NO preflights/ folder (placement)' = 'EvaluateAsync_HaltsOnABadSamplePair_EvenWhenThePlanDeclaresNoPreflightsFolder'

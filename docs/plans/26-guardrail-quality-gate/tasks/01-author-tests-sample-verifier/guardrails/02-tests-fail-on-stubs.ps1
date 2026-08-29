@@ -30,6 +30,13 @@ $manifest = [ordered]@{
     'every finding names guardrail path + sample path + exit code' = 'Verify_EveryFinding_NamesTheGuardrailPath_TheSamplePath_AndTheObservedExitCode'
     'non-pair files in samples/ are ignored'                       = 'Verify_IgnoresSamplesFolderFilesThatAreNotAValidOrInvalidHalf'
     'a PROMPT guardrail pair is reported unverifiable, not skipped' = 'Verify_ReportsUnverifiablePair_WhenTheMatchedGuardrailIsAPromptJudge'
+    # The condition in section 7 of the plan of record, pinned. A plan with NO committed pairs must cost one directory
+    # probe per task and ZERO process launches - otherwise the preflight step is a permanent tax on every
+    # run of every plan in this repo, passing every other guardrail here and attributed to nobody. The
+    # test asserts the ABSENCE of a side effect (a marker file the fixture guardrail writes if it is ever
+    # executed), because a count alone is gameable: a verifier that launches the process and discards the
+    # result still reports PairsVerified = 0.
+    'a plan with NO sample pairs launches NO process (the section 7 cost condition)' = 'Verify_RunsNoGuardrail_WhenNoTaskCarriesASamplePair'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -50,8 +57,17 @@ if (-not $trx) {
 }
 
 # DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
+# The `| Where-Object { $_ }` is LOAD-BEARING, not tidiness. A TRX from a run that executed zero tests
+# carries NO <Results> element at all, so $xml.TestRun.Results is $null and
+# $xml.TestRun.Results.UnitTestResult is $null - and MEASURED on this box, `@($null).Count` is **1**, so
+# the bare `@(...)` form makes this precondition unable to fire, ever. The filter drops the $null and the
+# count is 0. Measured 2026-08-29 against a REAL trx (dotnet test ... --logger trx) and the same file
+# with its <Results> element stripped:
+#     real   -> Results null? False   @(...).Count = 5   @(... | Where {$_}).Count = 5
+#     zero   -> Results null? True    @(...).Count = 1   @(... | Where {$_}).Count = 0
+# An XmlElement is always truthy, so the filter can never drop a genuine result row.
 $xml      = [xml](Get-Content $trx.FullName -Raw)
-$recorded = @($xml.TestRun.Results.UnitTestResult)
+$recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
 if ($recorded.Count -lt 1) {
     Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This is NOT a finding about the tests: do NOT rewrite them."
     exit 1

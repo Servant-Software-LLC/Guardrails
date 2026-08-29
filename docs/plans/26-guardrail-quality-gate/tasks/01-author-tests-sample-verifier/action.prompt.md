@@ -127,7 +127,7 @@ public static class SampleVerifier
 `TaskNode.Directory` (the task folder), `TaskNode.Guardrails` with each `GuardrailDefinition.Name`
 (the file's basename without extension), `.Path` (absolute) and `.Kind` — so the verifier never
 re-implements guardrail discovery, and both downstream callers (task 03's `guardrails samples verify`
-verb and task 04's preflight step) already hold one. Run each guardrail through `ProcessRunner` with
+verb and task 05's preflight step) already hold one. Run each guardrail through `ProcessRunner` with
 the interpreter resolved by `InterpreterMap` (that is what `ScriptUnitRunner` already does), with the
 **working directory set to `plan.Workspace`** so a guardrail's own default subject path still resolves
 — which is precisely what makes the "ignored the sample" case observable rather than a crash.
@@ -153,6 +153,24 @@ Author exactly these test methods, named verbatim — the red census greps for t
 | `Verify_EveryFinding_NamesTheGuardrailPath_TheSamplePath_AndTheObservedExitCode` | Every finding an operator can act on: assert the `Message` (or the equivalent fields) contains the guardrail path, the sample path, and the observed exit code. A finding that says "a pair is wrong" and not WHICH is an unactionable report. |
 | `Verify_IgnoresSamplesFolderFilesThatAreNotAValidOrInvalidHalf` | A `samples/` folder holding `README.md` and `01-thing.probe.ps1` (both real, in the committed corpus) yields no finding from those files. Only `*.valid.<ext>` / `*.invalid.<ext>` participate. |
 | `Verify_ReportsUnverifiablePair_WhenTheMatchedGuardrailIsAPromptJudge` | A pair whose matched guardrail is `ActionKind.Prompt` cannot be executed deterministically. Report it (`Kind = Unverifiable`) — never skip it silently. A pair we cannot execute is the same "recorded but never run" failure this whole feature exists to end, wearing a different hat. |
+| `Verify_RunsNoGuardrail_WhenNoTaskCarriesASamplePair` | **The permanent-tax condition — read the paragraph below before writing this one.** A fixture plan carrying **no** `samples/` folder anywhere must cost discovery only: the verifier launches **no** process at all. Build the fixture's guardrail script so it **writes a marker file if it is ever executed**, run the verifier, and assert (a) the marker is **ABSENT** and (b) `PairsVerified` is **0**. |
+
+**Why that last one exists, and why the marker file rather than the count.** This is the condition
+§7 of the plan of record attaches to the whole feature. Once the preflight step lands, this code runs
+before **every run of every plan in this repo, forever** — so a verifier that launches the interpreter
+once per guardrail regardless of whether a pair exists would pass every other guardrail in this plan,
+slow every future run, and be attributed to nobody. The cost would land on plans that never opted in,
+long after this plan is forgotten. §7 states the condition in one line: *a plan that carries no
+committed sample pairs must cost one directory probe per task and zero process launches* — the
+verifier discovers pairs **before** it runs anything.
+
+The **absence of a side effect** is the assertion, and the count is not a substitute: a verifier that
+launches the guardrail and then discards the result still reports `PairsVerified = 0`, so a count-only
+test greens the exact defect. Only the marker file distinguishes "never ran it" from "ran it and
+ignored the answer". And the fixture must genuinely carry **no** `samples/` directory anywhere — a
+fixture that accidentally has one makes the whole behaviour vacuous, so **assert that by construction**
+(enumerate the fixture tree and assert no directory named `samples` exists) rather than assuming the
+builder left it out.
 
 ### How to build the fixtures — real folders, real scripts, real processes
 
@@ -176,8 +194,8 @@ loaded `PlanDefinition` to `SampleVerifier`.
 
 `SampleVerifier.cs` needs only enough shape for the tests to compile — the enum, the finding/result
 records, and the entry point whose body is `throw new NotImplementedException();`. Keep it minimal and
-do NOT implement it. The implementation is task 02; the CLI verb is task 03; the preflight wiring is
-task 04. None of those files are yours.
+do NOT implement it. The implementation is task 02; the CLI verb is task 03; the wiring tests are
+task 04 and the preflight wiring itself is task 05. None of those files are yours.
 
 Use the BCL only; add no package reference (the `.csproj` is out of scope). Match the surrounding
 house style — build policy is centralised in `Directory.Build.props`, so nullable and implicit-usings

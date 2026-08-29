@@ -2,6 +2,6 @@
   "description": "Add the `guardrails samples verify [folder]` CLI verb that drives SampleVerifier and reports every mismatch with guardrail path, sample path and observed exit code",
   "dependsOn": ["02-implement-sample-verifier"],
   "stableId": "s3vcmd",
-  "writeScope": ["src/Guardrails.Cli/Commands/SamplesCommand.cs", "src/Guardrails.Cli/CommandFactory.cs"],
+  "writeScope": ["src/Guardrails.Cli/Commands/SamplesCommand.cs", "src/Guardrails.Cli/CommandFactory.cs", "tests/Guardrails.Integration.Tests/Commands/SamplesCommandTests.cs"],
   "action": { "tier": "medium" }
 }

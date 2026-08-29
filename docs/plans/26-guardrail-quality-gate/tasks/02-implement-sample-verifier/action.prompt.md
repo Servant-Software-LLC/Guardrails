@@ -98,10 +98,10 @@ deletes the check.
 - **Read-only apart from its own temp dirs.** The verifier executes guardrail scripts; it must not
   write into the plan folder or the workspace itself. By doctrine the only guardrails that carry a
   sample pair are source-shape checks — they read and grep — so this is cheap and safe in practice,
-  and it is the reason the preflight step in task 04 can afford to run on every run.
+  and it is the reason the preflight step in task 05 can afford to run on every run.
 - **Cheap by construction.** Only guardrails that have a committed sample pair are ever executed. A
   plan with no pairs must cost one directory probe per task and nothing else — no process launches, no
-  `PairsVerified` inflation. This step runs before every run once task 04 wires it, so a tax here is a
+  `PairsVerified` inflation. This step runs before every run once task 05 wires it, so a tax here is a
   tax on every task in every plan (plan of record §7).
 - **A findings list, never a throw.** A malformed samples folder, an unreadable file, a guardrail that
   crashes — each is a FINDING with a message, not an exception out of `VerifyAsync`. The callers are a
@@ -110,10 +110,10 @@ deletes the check.
 ### Two things this task must NOT do
 
 - **Do NOT wire anything.** This task implements the type only. The `guardrails samples verify` verb
-  (task 03) and the preflight-phase step (task 04) are outside your write scope. In particular, do
+  (task 03) and the preflight-phase step (task 05) are outside your write scope. In particular, do
   **not** touch `validate` — validate is static and offline, runs in editors and mid-authoring, and
   making it execute arbitrary PowerShell is a semantic change this plan deliberately does not make
-  (plan of record §1).
+  (plan of record §3).
 - **Do NOT weaken a test to make it pass**, and do not add `[Fact(Skip=…)]` anywhere — the test file
   is out of scope, so any such edit fails the write-scope check immediately.
 

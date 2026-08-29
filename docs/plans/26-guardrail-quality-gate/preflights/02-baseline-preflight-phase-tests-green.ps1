@@ -1,16 +1,16 @@
 # catches: a brownfield plan building on a RED base in its SECOND touched area - the existing
-#          Integration tests that cover src/Guardrails.Cli/PlanPreflightPhase.cs, the file task 04
+#          Integration tests that cover src/Guardrails.Cli/PlanPreflightPhase.cs, the file task 05
 #          modifies, are already failing on the starting code. Task 04 inserts a new step into the
 #          pre-DAG phase that every one of those tests drives; without this baseline, a red there is
-#          ambiguous (broken by task 04 vs broken before the run started), the retry feedback blames
-#          task 04, and the run burns its budget on a fault no work task can fix (#181). Re-emits the
+#          ambiguous (broken by task 05 vs broken before the run started), the retry feedback blames
+#          task 05, and the run burns its budget on a fault no work task can fix (#181). Re-emits the
 #          failure DETAIL at the END so a red baseline's WHY reaches the halt feedback, not just
 #          `[FAIL] <name>` (#179).
 #
 # WHY A SECOND PREFLIGHT AT ALL. The #181 baseline is deduped ONE PER TOUCHED AREA, not one per plan.
 # This plan touches two test projects that already carry coverage:
 #   tests/Guardrails.Core.Tests        - tasks 01/02 (see preflights/01-baseline-core-tests-green.ps1)
-#   tests/Guardrails.Integration.Tests - task 04, which modifies PlanPreflightPhase.cs and writes its
+#   tests/Guardrails.Integration.Tests - task 05, which modifies PlanPreflightPhase.cs, and task 04 which writes its
 #                                        wiring test into Samples/SampleVerifierWiringTests.cs
 # Guardrails.Core.Tests references Guardrails.Core ONLY and cannot see PlanPreflightPhase at all, so
 # preflight 01 says nothing whatsoever about this area. Two areas, two baselines.
@@ -18,7 +18,7 @@
 # THE FILTER, AND WHY THIS ONE. Scope is the whole point of a preflight: the WHOLE Integration suite is
 # 900 cases and SEVEN MINUTES (MEASURED 2026-08-29, --no-build: Failed 0, Passed 896, Skipped 4,
 # Duration 7 m 11 s), and a pre-DAG phase is not the place to spend that. So the filter
-# names the classes that actually cover the file task 04 modifies, derived mechanically rather than by
+# names the classes that actually cover the file task 05 modifies, derived mechanically rather than by
 # taste - MEASURED 2026-08-29:
 #
 #   grep -rl "PlanPreflightPhase" over tests/Guardrails.Integration.Tests/**/*.cs
@@ -56,8 +56,10 @@
 #   - deterministic + cheap RELATIVE TO THE ALTERNATIVE: 32 of 900 cases, 2 m 33 s against 7 m 11 s for
 #     the whole suite. No service boot, no network - these tests drive the real CLI over temp git repos;
 #   - strictly narrower than the terminal gate, which runs this project UNFILTERED (guardrails/03);
-#   - two work tasks reach this area: task 04 writes both halves of its own diff here, and task 03's
-#     CommandFactory edit is compiled by this project (it is the only consumer of Guardrails.Cli).
+#   - three work tasks reach this area: task 04 AUTHORS the wiring tests here and task 05 makes them
+#     pass by editing PlanPreflightPhase.cs (they were one task until the TDD split - a single task
+#     authoring both halves could not tell a wired phase from an unwired one, measured), and task
+#     03's CommandFactory edit is compiled by this project (the only consumer of Guardrails.Cli).
 #
 # This check is POSITIVE / assert-present, so it is GREEN ON ARRIVAL by design (#479's named
 # exception): a red here is a finding about the repo, not about this plan.
@@ -82,7 +84,7 @@ if ($testExit -ne 0) {
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "the existing PlanPreflightPhase coverage in tests/Guardrails.Integration.Tests is already failing on the starting code - fix the pre-existing breakage before task 04 inserts a new step into that phase (#181)"
+    Write-Output "the existing PlanPreflightPhase coverage in tests/Guardrails.Integration.Tests is already failing on the starting code - fix the pre-existing breakage before task 05 inserts a new step into that phase (#181)"
     exit 1
 }
 

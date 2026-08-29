@@ -11,9 +11,9 @@
 #          builds the smallest project that covers its own diff, inside its own segment worktree -
 #            task 01, 02  ->  dotnet build tests/Guardrails.Core.Tests   (Core.Tests + Core)
 #            task 03      ->  dotnet build src/Guardrails.Cli            (Cli + Core)
-#            task 04      ->  dotnet build tests/Guardrails.Integration.Tests (Integration.Tests + Cli + Core)
-#            task 05      ->  nothing at all; it is a documentation task
-#          - so the LAST task to merge compiles nothing, the last task that does compile (04) never
+#            task 04, 05  ->  dotnet build tests/Guardrails.Integration.Tests (Integration.Tests + Cli + Core)
+#            task 06      ->  nothing at all; it is a documentation task
+#          - so the LAST task to merge compiles nothing, the last task that does compile (05) never
 #          touches tests/Guardrails.Core.Tests, and the exact bytes that `mergeOnSuccess` will deliver
 #          to the user's branch have been compiled by no one. This gate is that compile, once, on those
 #          bytes. The one path two tasks both write - src/Guardrails.Core/Samples/SampleVerifier.cs,

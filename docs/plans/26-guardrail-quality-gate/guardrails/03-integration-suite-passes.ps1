@@ -18,8 +18,8 @@
 #              "namespace Guardrails.Integration.Tests" returns 124, so the search reached the tree,
 #              #500). A registration line that throws, shadows a verb name, or changes the root
 #              command's shape fails all of them at once and none of them individually here.
-#          (3) And the shared-assembly hazard this project has already been bitten by: task 04 adds a
-#              new test class to it, and xUnit runs collections in parallel, so a new class reshuffles
+#          (3) And the shared-assembly hazard this project has already been bitten by: tasks 03 and 04
+#              each add a new test class to it, and xUnit runs collections in parallel, so a new class reshuffles
 #              the scheduling of every other class. LiveDisplayCollection.cs in this very project
 #              records the measured instance: the Stage 3 model-tiering merge (#201) "added 15
 #              integration tests elsewhere, which was enough to shift scheduling and make an existing
@@ -28,9 +28,10 @@
 #
 #          The arithmetic that makes this gate necessary rather than decorative: this project holds 900
 #          test cases, 896 of which execute (4 are deliberately skipped). preflights/02 runs 32 of them
-#          - the three classes that cover PlanPreflightPhase - as the green START; task 04's own
-#          guardrail runs only its new SampleVerifierWiringTests class. The remaining 864 executed
-#          cases are run by NOTHING in this plan until here.
+#          - the three classes that cover PlanPreflightPhase - as the green START; tasks 04/05 run only
+#          SampleVerifierWiringTests, task 03 only SamplesCommandTests, and task 05's regression check
+#          only PlanPreflightPhaseTests. The remaining ~860 executed cases are run by NOTHING in this
+#          plan until here.
 #
 #          Re-emits the assertion/exception lines at the END so a red terminal gate's WHY reaches the
 #          operator, not just `[FAIL] <name>` (#179).
@@ -39,9 +40,10 @@
 # "corrected" by a later reader because the project is called Integration.Tests. The word in the
 # sidecar has nothing to do with the word in the project name. A whole-suite run is a TERMINAL
 # POSTCONDITION: scope:"integration" would re-run it at EVERY union point (SSOT 4.3), on partial
-# merges where a downstream task has not run yet - so between task 03's merge and task 04's, a suite
+# merges where a downstream task has not run yet - so between task 03's merge and task 05's, a suite
 # run would compile and execute against a CommandFactory that registers a verb whose preflight wiring
-# does not exist yet. That is the #125 anti-pattern by name. It runs ONCE, at run end, on the merged
+# does not exist yet - and, between task 04's merge and task 05's, against a test class that is
+# DELIBERATELY red (task 04 authors the wiring tests; only task 05 makes them pass). That is the #125 anti-pattern by name. It runs ONCE, at run end, on the merged
 # HEAD. The plan's union-safe integration invariant is guardrails/04-union-artifacts-sound.ps1, which
 # is where the scope:"integration" tag belongs and is the file that credits GR2028.
 #

@@ -50,8 +50,37 @@ if (-not (Test-Path $f)) {
     exit 1
 }
 
-$doc = Get-Content $f -Raw
+$raw = Get-Content $f -Raw
+# STRIP HTML COMMENTS BEFORE MATCHING - the same two-level "never match the raw bytes" discipline this
+# plan's C# guardrails already apply, which these document checks lacked. MEASURED 2026-08-29: appending
+# the single line
+#     <!-- TODO: document `samples verify` and SampleVerifier here -->
+# to the real SSOT took this guardrail from exit 1 to exit **0**. That line renders as NOTHING, so the
+# document the guardrail then certifies as "records the contract" records nothing at all - the exact
+# state (a claim recorded in a file, never actually delivered) this whole plan exists to end.
+# Strip-only can never LOOSEN a required-present clause, so this is monotone: it removes text, so a
+# passing document must now carry the tokens in text a reader can actually see.
+# Baseline unaffected - the 4 HTML comments already in this file contain neither demanded token, and all
+# 4 are properly terminated (measured: '<!--' 4x, paired '<!--...-->' 4x, unpaired 0).
+$doc = [regex]::Replace($raw, '(?s)<!--.*?-->', '')
 $failures = @()
+
+# FENCED CODE BLOCKS ARE DELIBERATELY *NOT* STRIPPED - a decision, not an oversight, and here is the
+# measurement behind it. A fence holding only the two bare tokens would also pass this guardrail, and
+# closing that costs more than it buys: unlike an HTML comment a fenced block RENDERS - a reader sees it -
+# so the defect there is thin prose, which this guardrail already declares out of scope and hands to human
+# review. Against that, stripping fences would FALSE-RED a correct document: this file is 43,387 bytes of
+# fenced content across 26 blocks, and 2 of its 36 `PlanDefinition` occurrences live inside one - so an
+# entry that documents the verb in a usage fence (`guardrails samples verify <folder>`) and calls it "the
+# verb" in the surrounding prose would be rejected for writing in this document's own style. That is the
+# #479 test - "can a correct implementation be written that this rejects?" - and this header already
+# rejected two other candidate clauses on exactly that ground. An unchecked residual beats a clause a
+# correct document can fail.
+# NOT CLOSED, and named so nobody mistakes it for covered: an UNTERMINATED `<!--` is not stripped by the
+# non-greedy pattern above, so tokens after one would still satisfy these clauses. Left alone on purpose -
+# handling it means stripping to end-of-file, which would delete real content from any future entry that
+# documents an HTML comment inside a fence. An unterminated comment also swallows the rest of the page in
+# every renderer, so it is a defect a human meets immediately.
 
 # PRECEDENT: this document already names CLI verbs as literal tokens - 'graph --check' (7x) and the
 # section 12.3 heading 'guardrails logs --export'. Same form asked for.

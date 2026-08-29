@@ -13,7 +13,7 @@
 # whole of this plan's Core-side test surface - there is no second subfolder here and no second Core
 # test file. The per-area dedupe therefore yields exactly this one file for the Core area, and one
 # more for the OTHER touched area with pre-existing coverage (tests/Guardrails.Integration.Tests,
-# where task 04 modifies PlanPreflightPhase.cs) - see preflights/02-baseline-preflight-phase-tests-green.ps1.
+# where task 04 authors the wiring tests and task 05 modifies PlanPreflightPhase.cs) - see preflights/02-baseline-preflight-phase-tests-green.ps1.
 #
 # Worth-it gate (#181), all five held and each MEASURED on 2026-08-29:
 #   - the target pre-exists: 2006 tests execute in this project on the untouched tree;
@@ -26,8 +26,8 @@
 # preflight can say "everything except the tests this plan is about to write": the pre-DAG phase runs
 # against the STARTING bytes, where none of the BacklogSlate tests exist yet, and the filter makes that
 # intent explicit and robust. Bare, this trait is NOT a task-level selector - every task guardrail in
-# this plan conjoins its OWN test class beside it (tasks 01/02 conjoin ~SampleVerifierTests, task 04
-# conjoins ~SampleVerifierWiringTests).
+# this plan conjoins its OWN test class beside it (tasks 01/02 conjoin ~SampleVerifierTests, task 03
+# conjoins ~SamplesCommandTests, tasks 04/05 conjoin ~SampleVerifierWiringTests).
 #
 # MEASURED, not recalled (#248) - run against this exact project and runner at authoring time
 # (2026-08-29), with `dotnet test tests/Guardrails.Core.Tests --no-build --nologo`:

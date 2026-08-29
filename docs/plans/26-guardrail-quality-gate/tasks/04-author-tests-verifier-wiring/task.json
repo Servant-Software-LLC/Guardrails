@@ -1,0 +1,7 @@
+{
+  "description": "Author the composition-root wiring tests for SampleVerifier in the plan preflight phase, red against the UNWIRED phase",
+  "dependsOn": ["03-add-samples-verify-command"],
+  "stableId": "s4awrt",
+  "writeScope": ["tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs"],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

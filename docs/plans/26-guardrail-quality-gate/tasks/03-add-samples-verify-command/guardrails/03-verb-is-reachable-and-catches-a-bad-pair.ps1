@@ -1,11 +1,12 @@
 # catches: THREE failures a compile and a grep both miss.
 #          (1) A SamplesCommand type that exists, compiles, and is never REGISTERED - `guardrails samples
 #              verify` is an unrecognised command from the real entry point and the whole verb is dead
-#              code reachable only from a unit test (#120). CommandFactory.cs is outside this task's write
-#              scope, so registration happens in CommandFactory; nothing but driving the real entry point can
-#              tell a registered verb from an unregistered one.
+#              code reachable only from a unit test (#120). Registration lives in CommandFactory.cs, which
+#              IS in this task's write scope - and nothing but driving the REAL entry point can tell a
+#              registered verb from an unregistered one: the type compiles, its unit tests pass, and
+#              `guardrails samples verify` still does not exist.
 #          (2) A verb that reports FAILURE on a corpus that is provably sound - a false-red that would
-#              halt every future run once task 04 wires this into the preflight phase.
+#              halt every future run once task 05 wires this into the preflight phase.
 #          (3) A verb that reports SUCCESS on a corpus that is provably broken - a `samples verify` that
 #              can never fail. That is #510's own defect wearing the verb's clothes: the feature exists
 #              because a two-sided claim recorded in a folder was never executed, and a verifier that
@@ -103,8 +104,22 @@ else {
             if ($text2 -cnotmatch [regex]::Escape("$pairBase.ps1")) {
                 $failures += "probe 2: the report never names the GUARDRAIL file '$pairBase.ps1'. The plan of record requires every mismatch to carry the guardrail path, the sample path and the observed exit code - the guardrail path is the one an operator has to open to fix the polarity."
             }
-            if ($text2 -cnotmatch '(?i)exit') {
-                $failures += "probe 2: the report never mentions an exit code. The observed code is what distinguishes a reversed pair from a guardrail that ignored the sample entirely, and those two are repaired differently."
+            # A DIGIT IS REQUIRED, not the word (measured 2026-08-29). The clause this replaces was a
+            # bare `(?i)exit`, which the sentence "the guardrail exited unexpectedly" satisfies with no
+            # number anywhere - and the plan of record asks for the OBSERVED EXIT CODE, which is the
+            # single datum that tells a reversed pair apart from a guardrail that ignored the sample.
+            # The connector list keeps the digit anchored to the word `exit` while admitting every house
+            # phrasing. MEASURED against the repo's own operator-facing strings - `$"action exited {n}"`
+            # (StatusCommand.cs:113, ActionRunner.cs:493), `$"exited {n}"` (AttemptArtifacts.cs:137),
+            # `$"exit code {n}"` (GuardrailReVerifier.cs:84), `$"... exited {n}: {stderr}"`
+            # (AiMergeResolver.cs:252) - plus `exited with 1`, `exit code was 0`, `exit status 1`,
+            # `exited with code 1`, `exit code of 0`, `exit code is 0`: all ACCEPTED. And measured
+            # REJECTED on the no-code reports it exists to catch, including path-laden ones whose text is
+            # full of digits: "the guardrail exited", "the pair exited unexpectedly", "sample mismatch",
+            # "...01-wiring-test-drives-the-real-seam.invalid.cs did not behave as expected",
+            # "01-...ps1 / 01-...invalid.cs : reversed polarity", "2 findings across 2 pairs verified".
+            if ($text2 -cnotmatch '(?i)\bexit(ed)?\b[ \t]*(?:(?:with|code|status|was|of|is|[:=])[ \t]*)*\d') {
+                $failures += "probe 2: the report never carries an observed exit CODE - a number. Naming the word 'exit' is not enough: the plan of record requires every mismatch to report the code the guardrail actually returned, because that is the one datum distinguishing a REVERSED pair (the .invalid half exited 0 where non-zero was required) from a guardrail that IGNORED the sample entirely (both halves exited identically because neither reached the script). Those two are repaired differently. Print it the way the harness already does elsewhere - 'exited 1' or 'exit code 1'."
             }
         }
     }

@@ -1,7 +1,0 @@
-{
-  "description": "Wire SampleVerifier into the plan preflight phase so a bad sample pair halts the run BEFORE any task spends a token",
-  "dependsOn": ["03-add-samples-verify-command"],
-  "stableId": "s4wire",
-  "writeScope": ["src/Guardrails.Cli/PlanPreflightPhase.cs", "tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs"],
-  "action": { "tier": "hard", "maxTurns": 75 }
-}

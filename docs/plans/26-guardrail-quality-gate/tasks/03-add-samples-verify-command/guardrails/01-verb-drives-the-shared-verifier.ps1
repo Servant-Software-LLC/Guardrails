@@ -1,17 +1,30 @@
 # catches: a `samples verify` verb that re-implements pair discovery, the two-way sample binding and
 #          the mismatch classification INSIDE the CLI instead of driving the shared SampleVerifier.
 #          A private copy passes this task's reachability smoke perfectly well - and then the verb and
-#          the preflight phase (task 04) are two implementations of one policy, which drift, and the
+#          the preflight phase (task 05) are two implementations of one policy, which drift, and the
 #          two disagreeing about whether a pair is sound is the exact failure #510 exists to end.
 #
-# Why this is a SOURCE GREP and not a test (#468 demotion order, and dotnet.md 10c - the weakest wiring
-# form, used here because the stronger ones are structurally unavailable). Guardrail 03 proves the verb
-# WORKS from the real entry point, which is the runtime proxy for reachability - so no grep is spent on
-# that. But "works" is exactly what an inlined copy also does: the property here is that ONE
-# implementation is shared, and no runtime observation at the CLI boundary can distinguish that from a
-# faithful duplicate. This task may write no test project (writeScope is three Cli files), so there is
-# no rung to demote into. It proves the text is there; it does NOT prove the call is on the hot path.
-# /guardrails-review should re-check that residual.
+# THIS CLAUSE NO LONGER CARRIES THE INVARIANT ON ITS OWN - it is the cheap FAST PRE-FILTER, and
+# guardrail 04's AGREEMENT TEST is what the rule now rests on (#468 demotion order). Read that before
+# strengthening anything here. Measured 2026-08-29, TWO mutation operators defeat this clause while
+# `SamplesCommand` re-implements pair discovery and polarity inline: a dead field
+# (`private static readonly SampleVerifier _unused = new SampleVerifier();`) and - the form that survives
+# this repo's TreatWarningsAsErrors=true, because an unused private METHOD raises no diagnostic -
+# `private static object NeverCalled() => SampleVerifier.VerifyAsync(...);`. Guardrail 03's reachability
+# smoke does not catch either, because a faithful duplicate genuinely WORKS. Two operators green on one
+# source-shape guardrail is the #468 demotion gate firing: the archetype was the finding, not the clause,
+# and no further tightening of this regex would have fixed it.
+#
+# The load now sits on `tests/Guardrails.Integration.Tests/Commands/SamplesCommandTests.cs` (task 03's
+# third deliverable, gated by guardrail 04): for a fixture corpus the verb's REPORTED findings must equal
+# what `SampleVerifier.VerifyAsync` returns for that same corpus. An inlined duplicate passes that while
+# it is still faithful and fails the moment it drifts - which is the only moment the rule matters, and is
+# precisely the failure this feature exists to detect. No regex can express that property.
+#
+# This grep is KEPT anyway, deliberately: it is ~10ms against a build-and-test-shaped alternative, it
+# runs FIRST, and it turns the commonest form of the mistake into an instant, specific message instead of
+# a test-suite failure the agent has to interpret. It proves the text is there; it does NOT prove the
+# call is on the hot path, and it is no longer asked to.
 #
 # Author-time smoke test (#302), re-runnable (#468):
 #   $env:GR_SUBJECT='docs/plans/26-guardrail-quality-gate/tasks/03-add-samples-verify-command/samples/01-verb-drives-the-shared-verifier.valid.cs';   ./01-...ps1  # expect 0

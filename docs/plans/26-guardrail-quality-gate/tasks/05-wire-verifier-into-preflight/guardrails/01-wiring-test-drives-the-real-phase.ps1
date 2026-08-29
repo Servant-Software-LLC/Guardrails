@@ -2,25 +2,37 @@
 #          itself, runs it over a fixture, and asserts on ITS findings. That test is green whether or not
 #          PlanPreflightPhase was ever changed, which is the unwired-factory failure with extra steps
 #          (#120): a bad sample pair still costs a full run's tokens while the suite reports success.
-#          This task authors its OWN test with no TDD-red half to prove it, so nothing else in the plan
-#          can tell a real composition-root test from a hollow one.
+#
+# POST-SPLIT ROLE - read this before judging its strength. Task 04 now OWNS
+# tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs and carries an identical copy
+# of these two clauses (tasks/04-.../guardrails/01-test-drives-the-real-phase.ps1), which is where the
+# constraint is FIXABLE: this task's writeScope is src/Guardrails.Cli/PlanPreflightPhase.cs only, so it
+# may not edit the file this guardrail scans. Here the check is therefore a DEPENDENCY-DELIVERY /
+# REGRESSION check - it fires only if task 04's contribution arrived missing or mangled, and a red here
+# is a merge or upstream problem, NOT something this task's agent can repair by editing the test.
+# Escalate it as {"needsHuman": ...} rather than burning retries. (The doctrinally purer home for a
+# check on a file the task cannot write is tasks/05-.../preflights/ - the four-folder JIT
+# dependency-delivery slot; keeping it in guardrails/ is the deliberate, lower-churn choice.)
 #
 # Source-shape check over CODE, and it is NOT demotable to a test (#468): no test can assert what
 # ANOTHER test's body does. The property is structural about the test file itself. The runtime half -
 # that the phase actually halts, including on a plan with no preflights/ folder - is carried by
-# guardrail 03's per-test census, so nothing is greped here that a test could prove.
+# guardrail 03's per-test census here and by task 04's red census against the UNWIRED phase, so nothing
+# is greped here that a test could prove.
 #
 # Author-time smoke test (#302), re-runnable (#468):
-#   $env:GR_SUBJECT='docs/plans/26-guardrail-quality-gate/tasks/04-wire-verifier-into-preflight/samples/01-wiring-test-drives-the-real-phase.valid.cs';   ./01-...ps1  # expect 0
-#   $env:GR_SUBJECT='docs/plans/26-guardrail-quality-gate/tasks/04-wire-verifier-into-preflight/samples/01-wiring-test-drives-the-real-phase.invalid.cs'; ./01-...ps1  # expect 1
+#   $env:GR_SUBJECT='docs/plans/26-guardrail-quality-gate/tasks/05-wire-verifier-into-preflight/samples/01-wiring-test-drives-the-real-phase.valid.cs';   ./01-...ps1  # expect 0
+#   $env:GR_SUBJECT='docs/plans/26-guardrail-quality-gate/tasks/05-wire-verifier-into-preflight/samples/01-wiring-test-drives-the-real-phase.invalid.cs'; ./01-...ps1  # expect 1
 #
 # baseline counts on the untouched tree - MEASURED, not assumed:
 #   PlanPreflightPhase\s*\.\s*EvaluateAsync\s*\(   n/a - this test file is CREATED by this task.
 #   (the SampleVerifier ban is NOT censused: a ban green on arrival is a correct ban, #478 - and it was
 #    measured green, since "SampleVerifier" occurs ZERO times across src/ and tests/ on this tree.)
-#   No ancestor task's prompt or writeScope writes these tokens into this subject: tasks 01/02 write
-#   only under src/Guardrails.Core/Samples/ and tests/Guardrails.Core.Tests/Samples/, task 03 only
-#   under src/Guardrails.Cli/. This file is created here.
+#   The subject is created by the ANCESTOR task 04, not here, so on this task's own tree both clauses
+#   are measured against bytes task 04 already wrote - which is the point of the delivery-check role
+#   above. Tasks 01/02 write only under src/Guardrails.Core/Samples/ and
+#   tests/Guardrails.Core.Tests/Samples/, task 03 only under src/Guardrails.Cli/, so neither can put
+#   these tokens into this path.
 $f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { "tests/Guardrails.Integration.Tests/Samples/SampleVerifierWiringTests.cs" }
 
 # PRECONDITION - the only early exit: every clause below would crash on a missing subject.
