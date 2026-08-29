@@ -34,11 +34,16 @@ $scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')      # C# 11 raw strings
 $scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')     # verbatim strings
 $scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')     # ordinary strings
 
-# Anchored on a USE (a construction or a member access), never the bare word, and read from $scan so a
+# Anchored on a USE (a construction or an INVOKED member), never the bare word, and read from $scan so a
 # mention inside an operator-facing message string cannot satisfy it (#470/#75). DeclaredCountGateResult
 # and friends do not satisfy it either - the \b and the trailing '.' both require the type itself.
-if ($scan -cnotmatch '(new\s+DeclaredCountGate\b|\bDeclaredCountGate\s*\.)') {
-    Write-Output "$f does not USE DeclaredCountGate - the declared-count gate is not wired into the breakdown command, so a breakdown that records fewer delegated decisions than the plan declared still succeeds from the CLI (naming the type in a comment or a message string does not count)"
+#
+# The member-access alternative requires the CALL PAREN (#76 / review 2026-08-29, issue #521). The
+# earlier form ended at the dot, and `nameof(DeclaredCountGate.Anything)` is valid C# that survives the
+# $scan strip (nameof is not a string literal) and satisfies a bare dotted name. $scan already kills the
+# comment and message-string mentions; the paren kills the nameof mention. Do NOT drop it back to '\.'.
+if ($scan -cnotmatch '(new\s+DeclaredCountGate\b|\bDeclaredCountGate\s*\.\s*[A-Za-z_]\w*\s*\()') {
+    Write-Output "$f does not USE DeclaredCountGate - the declared-count gate is not wired into the breakdown command, so a breakdown that records fewer delegated decisions than the plan declared still succeeds from the CLI. Construct it (new DeclaredCountGate(...)) or CALL a member on it (DeclaredCountGate.Check(...)); naming the type in a comment, a message string, or a nameof() does not count."
     exit 1
 }
 exit 0
