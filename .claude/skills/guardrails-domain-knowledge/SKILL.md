@@ -241,6 +241,20 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   check the script's OWN correctness -- the motivating bug had no tool-output assumption, so #248's
   probe did not cover it. Homed here; enforced by `plan-breakdown` (Step 7.0d self-validate) and probed
   by `guardrails-review`.
+  <br>**Committed sample pairs are VERIFIED at run time (plan 26).** Beyond the author's smoke-test, the
+  harness executes `SampleVerifier` in two entry points:
+  - **CLI verb `guardrails samples verify [folder]`** — a read-only command that walks every `tasks/<id>/samples/`
+    pair, runs the matching guardrail against each half, and reports every mismatch (SSOT §12.4) — `.valid`
+    exits non-zero, `.invalid` exits 0, missing half, no matching guardrail, or guardrail parse failure.
+  - **Pre-DAG preflight phase** — runs the SAME `SampleVerifier` before the Scheduler builds the DAG, halting
+    the run immediately (exit 2) if any pair is wrong, so a reversed polarity or toothless check never burns an
+    agent token. A plan with no pairs pays only directory discovery (one probe per task, zero launches).
+  Both surfaces report findings identically: they drive the SAME `SampleVerifier` class, not two implementations
+  of the policy, guaranteeing consistency between operator-initiated verification (the verb) and automatic
+  mechanical verification (the run phase). Running the `.invalid` half is the **can-never-FAIL detector** —
+  the mirror of GR2055 (guardrails that cannot PASS, §4.7). A guardrail that can never fail is the worst object
+  this repo produces: it certifies broken work in the direction that looks fine. The invalid-half run catches it
+  mechanically where the author's smoke-test alone (exit 0, exit 0) would miss it.
 - **The child env is HERMETIC in the `GUARDRAILS_*` namespace (SSOT section 5.1, #442).** Every
   inherited `GUARDRAILS_`-prefixed key the harness does not itself declare for a child is **CLEARED**
   before the overlay is applied -- so the "Set for" table is a **prohibition as well as a promise**.
