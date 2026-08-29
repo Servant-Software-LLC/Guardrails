@@ -22,16 +22,15 @@ namespace Guardrails.Integration.Tests;
 public sealed class OnTheFlyDiagramTests
 {
     [Fact]
-    public void DuringRun_Diagram_ShowsSpinnerThenSettledBadges_WithRefresh_ThenFinalHasNone()
+    public void DuringRun_Diagram_ShowsSpinnerThenSettledBadges_ThenFinalHasNoRefresh()
     {
         using var temp = new TempLogs();
         PlanDefinition plan = Plan(TaskWith("01-a", "01-build"), TaskWith("02-b", "01-check"));
         var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
 
-        // Initial: fresh run → every node pending (empty status), but the page refreshes itself.
+        // Initial: fresh run → every node pending (empty status).
         observer.WriteInitialDiagram();
         string d0 = temp.ReadDiagram();
-        Assert.Contains("http-equiv=\"refresh\"", d0);
         Assert.Equal("{}", StatusJson(d0)); // fresh run seeds no badges
 
         // 01-a starts → its container flips to running (a spinner badge).

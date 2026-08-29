@@ -72,7 +72,16 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     in-flight, a settled check / X / "?" once finished). It is gitignored runtime state,
     `--fresh`-cleared, separate from the static plan-root `diagram.html` (a tracked artifact the
     run never touches). Same `source-sha256`; status is **hash-neutral chrome**. See SSOT
-    section 10.1.
+    section 10.1. **The log-site server now serves it** (`GET /diagram.html`, issue #522) --
+    the diagram's `click` hrefs are plan-folder-relative (`tasks/<id>/guardrails/<file>.ps1`),
+    exactly right for the server and 404ing under `file://`, where those same paths resolve
+    against the flat, script-free `logs/<runId>/` layout instead. **It no longer reloads the
+    whole document** (issue #523): the old `<meta http-equiv="refresh">` killed pan/zoom and
+    scroll on every tick and never stopped; the page now fetches its own url on a named
+    `GR_LIVE_POLL_MS` interval (15000ms) and re-badges the existing svg in place without
+    re-running `mermaid.render`, stopping cleanly at a terminal run state (`GR_DURING_RUN=false`)
+    or, under a plain `file://` view that cannot poll itself, revealing a hidden
+    `#gr-live-offline` notice. See SSOT section 12.1.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
   Zero guardrails = validation error.
@@ -800,10 +809,21 @@ tiering as a working feature.
 - **Both are now IN FRONT OF THE OPERATOR** (#349, Stage 3). The per-attempt `attempt-route.log` preamble
   names a literal **`requested model:`** key ONLY when the runner echoed something other than the route
   asked for -- its PRESENCE is the mismatch signal -- which is also why that log is RE-WRITTEN once the
-  action returns: the observed model is not known when the attempt launches. The same pair reaches the live
-  table and the `--no-ui` stream through **`IRunObserver.AttemptModelResolved`**, whose default no-op body
-  means a transparent decorator must forward it EXPLICITLY or the disclosure is swallowed silently. Neither
-  surface re-derives the comparison; both read the folded provenance. Details: SSOT sections 8 and 9.6.
+  action returns: the observed model is not known when the attempt launches. The same pair reaches the
+  `--no-ui` stream and the live table through **`IRunObserver.AttemptModelResolved`**, confirming or
+  correcting at attempt end, plus its launch-time counterpart **`AttemptRouteResolved`** (issue #524),
+  which fills the live table's Model column before the runner has reported back -- an attempt on this
+  repo's own runs can run 14 minutes or longer, so a cell fed only from the end-of-attempt event would
+  sit blank the whole time. Both events have a default no-op body, so a transparent decorator must
+  forward each EXPLICITLY or the disclosure is swallowed silently; neither surface re-derives the
+  comparison, both read the folded provenance. **The model now PERSISTS past the run, not just the live
+  table** (#524): the live row carries the `promptRunners` **block name** (eight characters, e.g.
+  `sonnet` -- the Spectre table's width budget), while the run-level log-site index carries the same
+  fact at the full model-id resolution -- one fact, two resolutions, so a reader who sees only one
+  surface knows the other exists. Only the **final / `--export`** log-site index renders this Model
+  column; the **during-run** index -- the transient surface #524 was raised about in the first place --
+  renders none. The task page also links `attempt-route.log` by name, labelled with what it answers,
+  rather than leaving it unnamed in the file combobox. Details: SSOT sections 8, 9.6 and 12.3.
 - **The RUN REPORT now names them too** (#349, Stage 3). The `run` summary closes with a **`Models used:`**
   line aggregating the per-attempt `provenance.model` -- one segment per distinct model, every attempt
   counted independently -- and naming the REQUESTED id only where `requestedModel` recorded a disagreement.

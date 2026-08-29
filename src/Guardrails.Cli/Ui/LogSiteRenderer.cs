@@ -205,6 +205,15 @@ public static class LogSiteRenderer
         Func<string, IndexLink> linkResolver =
             id => AttemptDirs(logsRoot, id).Count > 0 ? IndexLink.Static : IndexLink.Plain;
 
+        // #524 / design 29 §4.8: the run-level index's Model column — the FULL model id (no Spectre width
+        // crisis here, and this is the audit surface), disclosing a route mismatch through the shipped
+        // AttemptModelSummary wording so the log site and the console/live surfaces state one fact one
+        // way. Only ExportSite supplies this: the during-run index (WriteIndex, called directly by
+        // OnTheFlyLogSiteObserver) gets no resolver and therefore renders no Model column at all — #524
+        // was raised about a task that had already FINISHED, and the during-run index is exactly the
+        // transient surface that cannot answer the question anyway.
+        Func<string, string?> modelResolver = id => ModelCellText(journal, id);
+
         foreach (TaskNode task in tasks)
         {
             WriteTaskPageIfHasAttempts(logsRoot, task, statusResolver(task.Id), claimResolver(task.Id));
@@ -225,7 +234,7 @@ public static class LogSiteRenderer
 
         string index = IndexHtml(
             logsRoot, journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false,
-            halt: journal.Halt, claimResolver: claimResolver);
+            halt: journal.Halt, claimResolver: claimResolver, modelResolver: modelResolver);
 
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
@@ -261,11 +270,12 @@ public static class LogSiteRenderer
         bool includeRefresh,
         IReadOnlyList<WaveNode>? waves = null,
         RunHalt? halt = null,
-        Func<string, string?>? claimResolver = null)
+        Func<string, string?>? claimResolver = null,
+        Func<string, string?>? modelResolver = null)
     {
         string index = IndexHtml(
             logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
-            includeRefresh, halt, claimResolver);
+            includeRefresh, halt, claimResolver, modelResolver);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -308,6 +318,14 @@ public static class LogSiteRenderer
     /// final / <c>--export</c> index omits it.
     /// <para>When <paramref name="halt"/> is present (issue #436) the page LEADS with the gate-halt banner
     /// and its CSS; when it is null not one byte of the page changes.</para>
+    /// <para>
+    /// Issue #524 / design 29 §4.8: <paramref name="modelResolver"/> supplies the run-level Model column
+    /// — the full model id that actually ran, or the shared <c>AttemptModelSummary</c> mismatch wording.
+    /// Null (the during-run <see cref="WriteIndex"/> default) renders NO Model column at all, so that
+    /// transient surface stays exactly as it was; only <see cref="ExportSite(string,IReadOnlyList{TaskNode},IReadOnlyList{WaveNode},JournalDocument)"/>
+    /// supplies one. A task the resolver has nothing for (never run) gets the placeholder <c>—</c> rather
+    /// than an empty cell that could read as a repeat of the row above it.
+    /// </para>
     /// </summary>
     private static string IndexHtml(
         string logsRoot,
@@ -318,7 +336,8 @@ public static class LogSiteRenderer
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
         RunHalt? halt,
-        Func<string, string?>? claimResolver)
+        Func<string, string?>? claimResolver,
+        Func<string, string?>? modelResolver = null)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
@@ -331,7 +350,15 @@ public static class LogSiteRenderer
                 .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append('"')
                 .Append(ClaimAttribute(claim)).Append('>')
                 .Append(Enc(status)).Append(ClaimChip(claim)).Append("</td>")
-                .Append("<td>").Append(Enc(task.Description)).Append("</td></tr>");
+                .Append("<td>").Append(Enc(task.Description)).Append("</td>");
+
+            if (modelResolver is not null)
+            {
+                string model = modelResolver(task.Id) ?? "—";
+                rows.Append("<td>").Append(Enc(model)).Append("</td>");
+            }
+
+            rows.Append("</tr>");
         }
 
         // The meta-refresh is the "no server needed" mechanism for the during-run file:// view (#141):
@@ -354,6 +381,10 @@ public static class LogSiteRenderer
         string banner = HaltBanner(logsRoot, halt, runId, pageWaveDir: null);
         string haltStyle = banner.Length == 0 ? string.Empty : HaltStyle;
 
+        // Additive only (design 29 §4.8): appended after Description, so the existing Task/Status/
+        // Description head and every existing consumer of it is untouched when modelResolver is null.
+        string modelHeader = modelResolver is not null ? "<th>Model</th>" : string.Empty;
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -369,7 +400,7 @@ public static class LogSiteRenderer
 <h1>Guardrails run — task logs</h1>{banner}
 <p>{Enc(note)}</p>{wavesNav}
 <table>
-<thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
+<thead><tr><th>Task</th><th>Status</th><th>Description</th>{modelHeader}</tr></thead>
 <tbody>
 {rows}
 </tbody>
@@ -1059,6 +1090,7 @@ public static class LogSiteRenderer
             sections.Append("<section class=\"attempt\" data-attempt=\"").Append(n).Append('"')
                 .Append(visible ? string.Empty : " hidden").Append('>');
             sections.Append("<h2>attempt ").Append(n).Append("</h2>");
+            AppendRouteLogLink(sections, n, files);
             AppendAttemptFiles(sections, attemptDir, n, files, preferred);
             sections.Append("</section>");
         }
@@ -1098,6 +1130,28 @@ public static class LogSiteRenderer
 </body>
 </html>
 """;
+    }
+
+    /// <summary>
+    /// A named link to this attempt's <c>attempt-route.log</c> (issue #524): the file was already
+    /// inlined as one more option in the per-attempt file combobox (<see cref="AppendAttemptFiles"/>),
+    /// but that answers nobody looking at the page — nothing there names what the file is FOR. This adds
+    /// a real <c>&lt;a&gt;</c>, in the page's own <c>&lt;div class="bar"&gt;</c> idiom, labelled with what
+    /// it answers (the model that ran and the route that was resolved) rather than just its filename.
+    /// Only rendered when the file actually exists on disk — the same "a link is only ever a real file"
+    /// discipline <see cref="SourceLink"/> and the halt banner already follow.
+    /// </summary>
+    private static void AppendRouteLogLink(StringBuilder sections, int attempt, IReadOnlyList<string> files)
+    {
+        const string routeLog = "attempt-route.log";
+        if (!files.Contains(routeLog))
+        {
+            return;
+        }
+
+        string href = Href($"attempt-{attempt}/{routeLog}");
+        sections.Append("<div class=\"bar\"><a href=\"").Append(href)
+            .Append("\">which model ran &amp; the route resolved (").Append(routeLog).Append(")</a></div>");
     }
 
     /// <summary>
@@ -1306,6 +1360,27 @@ public static class LogSiteRenderer
         journal.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) && entry.Attempts.Count > 0
             ? NeedsHumanKinds.Parse(entry.Attempts[^1].NeedsHumanKind)
             : null;
+
+    /// <summary>
+    /// The run-level index's Model cell text (issue #524, design 29 §4.8): the LAST journaled attempt's
+    /// best-known-actual model, disclosing a route mismatch through the SAME shared wording
+    /// <see cref="LiveRunObserver.AttemptModelSummary"/> renders for the console and live surfaces — one
+    /// fact, one vocabulary, never a second disclosure sentence invented here. Null for a task with no
+    /// attempts (never run) or no recorded provenance/model (e.g. a script attempt), which the caller
+    /// renders as the placeholder <c>—</c> rather than silently repeating a neighbouring row's value.
+    /// </summary>
+    private static string? ModelCellText(JournalDocument journal, string taskId)
+    {
+        if (!journal.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) || entry.Attempts.Count == 0)
+        {
+            return null;
+        }
+
+        AttemptRecord last = entry.Attempts[^1];
+        return last.Provenance?.Model is { } model
+            ? LiveRunObserver.AttemptModelSummary(model, last.Provenance.RequestedModel)
+            : null;
+    }
 
     /// <summary>
     /// The status-cell suffix naming the agent's needs-human claim (issue #485): a leading space plus

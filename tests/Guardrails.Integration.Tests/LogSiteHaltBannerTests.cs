@@ -171,6 +171,16 @@ public sealed class LogSiteHaltBannerTests
         // so a legitimate CSS change stays a one-place edit while ANY change to the page skeleton, the
         // insertion points, or the emitted rows fails here. This is the tripwire for "a halt-less run's
         // page did not move".
+        //
+        // RE-BASELINED for issue #524 / design 29 §4.8: the tripwire fired on an INTENDED change — the
+        // EXPORTED site's index now carries a Model column (`<th>Model</th>` after Description, and a
+        // per-row cell that is the placeholder `—` for a task with no journaled attempt provenance, as
+        // both fixtures here are). IndexHtml is the only renderer that takes a modelResolver, and
+        // ExportSite is the only caller that supplies one: the during-run index (WriteIndex, called by
+        // OnTheFlyLogSiteObserver) passes none, and the wave page (WriteWaveIndex) has no such parameter
+        // at all. So the OTHER goldens stay untouched — NoHalt_WaveIndex_IsByteForBytePreBannerOutput
+        // below and T11_WavePageWithNoBreakdown_… in JitBreakdownVisibilityTests. If one of THOSE ever
+        // needs this edit, the column has leaked off the exported site and that is a bug, not a re-baseline.
         using var site = new TempSite();
         TaskNode ran = FakeTask("01-first", "First");
         TaskNode pending = FakeTask("02-second", "Second");
@@ -194,9 +204,9 @@ public sealed class LogSiteHaltBannerTests
 <h1>Guardrails run — task logs</h1>
 <p>Static export of this run. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.</p>
 <table>
-<thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
+<thead><tr><th>Task</th><th>Status</th><th>Description</th><th>Model</th></tr></thead>
 <tbody>
-<tr><td><a href="01-first/index.html">01-first</a></td><td class="status" data-status="succeeded">succeeded</td><td>First</td></tr><tr><td>02-second</td><td class="status" data-status="pending">pending</td><td>Second</td></tr>
+<tr><td><a href="01-first/index.html">01-first</a></td><td class="status" data-status="succeeded">succeeded</td><td>First</td><td>—</td></tr><tr><td>02-second</td><td class="status" data-status="pending">pending</td><td>Second</td><td>—</td></tr>
 </tbody>
 </table>
 </body>

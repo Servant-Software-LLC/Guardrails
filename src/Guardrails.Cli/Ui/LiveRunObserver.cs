@@ -22,6 +22,16 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly Dictionary<string, int> _rowByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RunningState> _running = new(StringComparer.Ordinal);
 
+    // Task lookup for the Model column's pending-row seed (RebuildRows) — a TaskLiveRow carries only the
+    // id, not the TaskNode, so this is how a pending cell reads task.Action.Tier / task.Action.Kind.
+    private readonly Dictionary<string, TaskNode> _taskById;
+
+    // The LAUNCH event's (runner, tier, climbed) per task (design 29 §4.2/§4.3), written by
+    // AttemptRouteResolved and read back by AttemptModelResolved — the post-action event has only model
+    // ids, never the promptRunners block name, so it cannot render the cell without this. A retry simply
+    // overwrites the entry.
+    private readonly Dictionary<string, (string Runner, string? Tier, bool Climbed)> _routeByTask = new(StringComparer.Ordinal);
+
     // In-flight wave phases (issue #469): the JIT breakdown, and — per design 23 §9 — the shape #476's wave
     // gates will reuse. Driven by the SAME 1 Hz ticker as _running; no new timer and no new lock.
     private readonly Dictionary<string, PhaseState> _phases = new(StringComparer.Ordinal);
@@ -103,12 +113,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         _planDirectory = planDirectory;
         _runId = runId;
         _tasks = tasks;
+        _taskById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
         _waves = waves ?? [];
         _showAllTasks = showAllTasks;
         _table = new Table().Border(TableBorder.Rounded);
         _table.AddColumn("Task");
         _table.AddColumn("Status");
         _table.AddColumn("Detail");
+        // Appended LAST (design 29 §4.1): Update/Tick/the wave-phase branch all write hard-coded cell
+        // indices 1 and 2, so inserting a column ahead of those would silently re-target every one of
+        // them. Width(8) is measured, not assumed — an auto-sized column lets one long block name steal
+        // width from every row for the whole run; pinned at 8 it wraps inside its own cell instead.
+        _table.AddColumn(new TableColumn("Model").Width(8));
 
         RebuildRows();
 
@@ -574,6 +590,47 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             AnsiConsole.MarkupLine(
                 $"[{colour}]model[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
                 + $"[{colour}]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]");
+
+            // The CORRECTION over the launch-event cell (design 29 §4.2/§4.3): this event cannot fire
+            // until the runner has reported what it ran on (MEASURED at 14m02s+ per attempt), so the cell
+            // is populated at LAUNCH by AttemptRouteResolved and this only confirms or corrects it.
+            // `substituted` mirrors AttemptModelResolved's own signal: requestedModel is non-null ONLY
+            // when the provider served something else. No route recorded for this task (a script attempt,
+            // or a legacy/no-route "(cli default)" attempt) leaves the cell exactly as the launch event
+            // (or the pending seed) left it, rather than guessing at a block name that was never resolved.
+            if (_routeByTask.TryGetValue(task.Id, out (string Runner, string? Tier, bool Climbed) route)
+                && _rowByKey.TryGetValue(task.Id, out int row))
+            {
+                _table.UpdateCell(row, 3, new Markup(
+                    ModelCell(route.Runner, route.Tier, route.Climbed, substituted: requestedModel is not null, isScript: false)));
+                _context?.Refresh();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The live table's Model cell at attempt LAUNCH (#524, design 29 §4.2/§4.3) — the PRIMARY source,
+    /// because <see cref="AttemptModelResolved"/> cannot fire until the runner has reported what it ran
+    /// on (§1.1: MEASURED at 14m02s and longer per attempt), so a cell fed only from it is a placeholder
+    /// for the whole attempt. Remembers the (runner, tier, climbed) triple so the later confirmation/
+    /// correction from <see cref="AttemptModelResolved"/> can re-render the SAME cell without re-deriving
+    /// the climb signal — <paramref name="requestedTier"/>'s presence is that signal, exactly as
+    /// <c>AttemptProvenance.RequestedModel</c>'s presence is the substitution signal.
+    /// </summary>
+    public void AttemptRouteResolved(
+        TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier)
+    {
+        bool climbed = requestedTier is not null;
+        string cell = ModelCellFromRoute(runner, tier, requestedTier);
+
+        lock (_gate)
+        {
+            _routeByTask[task.Id] = (runner, tier, climbed);
+            if (_rowByKey.TryGetValue(task.Id, out int row))
+            {
+                _table.UpdateCell(row, 3, new Markup(cell));
+                _context?.Refresh();
+            }
         }
     }
 
@@ -609,11 +666,13 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     _table.AddRow(
                         new Markup(Markup.Escape(task.TaskId)),
                         new Markup("[grey]pending[/]"),
-                        new Markup(string.Empty));
+                        new Markup(string.Empty),
+                        new Markup(PendingModelCell(task.TaskId)));
                     break;
                 case WaveSummaryLiveRow wave:
                     _table.AddRow(
                         new Markup($"[green]✔ {Markup.Escape(wave.WaveDir)} — {wave.TaskCount}/{wave.TaskCount} tasks green[/]"),
+                        new Markup(string.Empty),
                         new Markup(string.Empty),
                         new Markup(string.Empty));
                     break;
@@ -626,11 +685,25 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     _table.AddRow(
                         new Markup($"{Markup.Escape(phase.WaveDir)} — JIT breakdown"),
                         new Markup("[grey]pending[/]"),
-                        new Markup("[grey]no tasks yet — authored at the barrier[/]"));
+                        new Markup("[grey]no tasks yet — authored at the barrier[/]"),
+                        new Markup(string.Empty));
                     break;
             }
         }
     }
+
+    /// <summary>
+    /// A pending task row's Model cell, seeded from what is already known at load (design 29 §4.2): the
+    /// task's own resolved tier, or <c>(script)</c> for a script action. Never blank — an empty cell in a
+    /// live table reads as "still resolving", which is exactly the wrong claim about a task that has not
+    /// started (§1.1's rule, applied at the other end of a task's life).
+    /// </summary>
+    private string PendingModelCell(string taskId) =>
+        _taskById.TryGetValue(taskId, out TaskNode? task)
+            ? ModelCell(
+                runner: null, tier: task.Action.Tier, climbed: false, substituted: false,
+                isScript: task.Action.Kind == ActionKind.Script)
+            : ModelCell(runner: null, tier: null, climbed: false, substituted: false, isScript: false);
 
     private void Update(string taskId, string? statusMarkup, string? detailMarkup)
     {
@@ -714,4 +787,52 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         requestedModel is null
             ? model
             : $"{model} — MISMATCH: the route requested {requestedModel}";
+
+    /// <summary>
+    /// The live table's Model column cell (design 29 §4.2) — a pure formatter over the six
+    /// distinguishable cell states, so the seam is testable without touching the live region (no test
+    /// may construct <see cref="LiveRunObserver"/>).
+    ///
+    /// <para>A known <paramref name="runner"/> (the <c>promptRunners</c> block key) renders as that name,
+    /// plus a trailing <c>!</c> when <paramref name="climbed"/> or <paramref name="substituted"/> — never
+    /// the model id and never a mismatch sentence (§3.3: that sentence is 61 characters, measured, and
+    /// would re-lay-out every other row). The <c>!</c> is a POINTER, not a code: it never appears without
+    /// a companion line above the live region that spells the disagreement out in full (the shipped
+    /// <see cref="AttemptModelSummary"/> wording), so the cell never says anything that line does not.</para>
+    ///
+    /// <para>An unknown runner (nothing resolved yet — the row-build seed) renders the repo's own
+    /// stand-in convention: <c>(medium)</c>/<c>(easy)</c>/<c>(hard)</c> for a tagged prompt task,
+    /// <c>(script)</c> for a script action, else the untagged placeholder <c>—</c>. Never blank: an empty
+    /// cell in a live table reads as "still resolving", which is a wrong claim whether the row is
+    /// running healthily on an already-resolved route or has not started at all (§1.1).</para>
+    ///
+    /// <para>Colour is redundant by construction — grey where the cell agrees, yellow where it carries
+    /// <c>!</c> — exactly the pair <see cref="AttemptModelResolved"/> already spends today, so a
+    /// colourblind operator on a colour-capable terminal loses nothing.</para>
+    /// </summary>
+    public static string ModelCell(
+        string? runner, string? tier, bool climbed, bool substituted, bool isScript)
+    {
+        if (runner is not null)
+        {
+            bool mismatch = climbed || substituted;
+            string text = mismatch ? $"{runner} !" : runner;
+            string colour = mismatch ? "yellow" : "grey";
+            return $"[{colour}]{Markup.Escape(text)}[/]";
+        }
+
+        string placeholder = isScript ? "(script)" : tier is not null ? $"({tier})" : "—";
+        return $"[grey]{Markup.Escape(placeholder)}[/]";
+    }
+
+    /// <summary>
+    /// Translates the <see cref="Core.Execution.IRunObserver.AttemptRouteResolved"/> launch event into
+    /// <see cref="ModelCell"/>'s arguments (design 29 §4.2/§4.3): <c>climbed</c> is
+    /// <c>requestedTier is not null</c>, because <c>requestedTier</c> is written ONLY when a §6.2 climb
+    /// moved the rung, so its presence is the signal. Delegates to <see cref="ModelCell"/> rather than
+    /// re-implementing its formatting — the two are asserted to AGREE over the whole input domain, so an
+    /// inlined divergent copy would pass today and fail the moment they drift.
+    /// </summary>
+    public static string ModelCellFromRoute(string runner, string? tier, string? requestedTier) =>
+        ModelCell(runner, tier, climbed: requestedTier is not null, substituted: false, isScript: false);
 }

@@ -4619,6 +4619,38 @@ that empty body and the disclosure is swallowed silently, exactly as an unforwar
 decorators are stacked around the real observer in **both** the live and the plain path, so an
 unforwarded event reaches no operator in any mode.
 
+**The launch twin — `IRunObserver.AttemptRouteResolved` (#524).** `AttemptModelResolved` carries
+best-known-actual and so cannot fire until the runner has reported what it ran on — MEASURED at 14m02s
+and longer per attempt on `docs/plans/24-plan-source-provenance/state/run.json` — which left every
+surface fed only from it showing a placeholder for the whole attempt. `AttemptRouteResolved` is its
+launch-time counterpart: raised at attempt LAUNCH, before `_actionRunner.RunAsync`, from the same
+resolution the provenance and `attempt-route.log` are built from:
+
+```csharp
+void AttemptRouteResolved(
+    TaskNode task, int attempt, string runner, string model,
+    string? tier, string? requestedTier) { }
+```
+
+It is purely additive: `AttemptModelResolved` is UNCHANGED — same four arguments, same wording, same
+raise point — and now serves as the confirmation or correction of what the launch event announced.
+`requestedTier` is non-null ONLY when a §6.2 climb moved the rung, the exact sibling of the
+`requestedModel` rule above: its PRESENCE is the climb signal, and an always-written copy would destroy
+it. Like its sibling, the member has a **default no-op body**, so the same decorator footgun applies —
+a transparent decorator that omits it compiles cleanly and swallows the disclosure in every mode; both
+shipped decorators (on-the-fly log-site and diagram) forward it explicitly, in both the live and
+`--no-ui` chains. The bonus this buys: a §6.2 rung climb previously reached NO console surface at all —
+it was written only to `attempt-route.log` — and this event now makes it visible in both modes for the
+first time.
+
+The live task table renders this as a Model column beside cost and duration (design 29 §4.2):
+`AttemptRouteResolved` fills the cell at launch (`ModelCellFromRoute`) with the resolved
+`promptRunners` **block name** — eight characters wide, e.g. `sonnet`, the Spectre table's column
+budget — and `AttemptModelResolved` re-renders the SAME cell to confirm or correct it once the runner
+returns. The run-level log-site index (§12.3) carries the same fact at the OTHER resolution: the full
+model id, not the 8-character block name, since the audit page has no Spectre width to protect. One
+fact, two resolutions, so a reader who sees only one surface knows the other exists.
+
 **Provider unavailability — connection failures ride the shipped #115 pause.** A failure to *reach* the
 provider is classified **`Transient`** by the runner quarantine (§9) and routed to the shipped
 transient-pause machinery: bounded exponential backoff, **no retry-budget consumption**, capped by
@@ -5224,15 +5256,25 @@ never carries badges.
   page from an in-memory node-id → status map. Atomic write; best-effort (a render failure
   never flips an outcome or aborts the run). Wired in both the live and `--no-ui` paths, stacked
   around the log-site observer. A clickable `file://` link to it is printed at run start.
-- **During-run vs final.** The during-run page carries `<meta http-equiv="refresh" content="3">`
-  (a plain `file://` view refreshes itself — no server; the 3s interval is deliberately longer
-  than the log site's 2s, because re-running `mermaid.render` on a big DAG is heavier). The final
-  page, written once at run end from the observer's own in-memory map, drops the refresh and shows
-  every node settled — a durable post-mortem. **Settle-on-fault (issue #333):** the run-end final
-  writes (this diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`,
-  so an UNEXPECTED throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the
-  Scheduler and so is not a #150-converted abort) still settles both pages instead of leaving them
-  mid-refresh. Any node still `running` when the final page is written (the Terminal Gate whose
+- **During-run vs final (issue #523).** The during-run page no longer carries
+  `<meta http-equiv="refresh">` or any other whole-document reload: the old 3s reload killed pan/zoom
+  and scroll on every tick, dropped a click landing mid-reload, and re-ran `mermaid.render` on a big DAG
+  for content that only changes at task boundaries — minutes apart. Instead the page fetches its OWN url
+  on a named `GR_LIVE_POLL_MS` interval (15000ms — long enough that a redraw is a rare event, not a
+  per-tick cost), pulls the fresh `#node-status` JSON out of the response, and re-badges the EXISTING svg
+  by clearing and rebuilding each `.gr-status-badge` group; `mermaid.render` is never re-run, so pan,
+  zoom and scroll survive across every poll. The poll stops cleanly once a fetched page's own
+  `GR_DURING_RUN` reads `false` — the terminal run state written by
+  `OnTheFlyDiagramObserver.WriteFinalStatic` once the run settles — and, for a plain `file://` view that
+  cannot poll itself, a failed fetch instead reveals the hidden `#gr-live-offline` notice rather than
+  failing silently forever. The final page, written once at run end from the observer's own in-memory
+  map, carries no trace of `GR_LIVE_POLL_MS` or the poll script at all — the whole block is substituted
+  from one conditional template chunk, so `duringRun:false` renders a plain static page — and shows every
+  node settled: a durable post-mortem. **Settle-on-fault (issue #333):** the run-end final writes (this
+  diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`, so an UNEXPECTED
+  throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the Scheduler and so is
+  not a #150-converted abort) still settles both pages instead of leaving them polling indefinitely for a
+  terminal signal that never arrives. Any node still `running` when the final page is written (the Terminal Gate whose
   phase threw before its badge settled, or a task whose cancel propagated as an
   `OperationCanceledException` and skipped its settle) renders as an `interrupted` badge, never a
   frozen (un-animated) spinner. This is best-effort chrome: it never changes the run verdict, exit
@@ -5504,6 +5546,8 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 | `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
 | `GET /tasks/{id}/source` | JSON `{ sources[] }` of `{ name, label, empty }` — the task's action file + each guardrail script and `.json` sidecar (issue #141 item 3), derived from the plan's `TaskNode` (`action.path` + `guardrails/*`), so a thrown guardrail's script is one click from its log |
 | `GET /tasks/{id}/sourcefile?name={f}` | the raw text of ONE of the task's known source files. `{name}` is resolved **only** against the precomputed source set (action + guardrails + sidecars); an unknown / traversal name has no entry and is rejected — the served path is the known absolute source path, never derived from the request, so the surface is inherently confined to the declared sources |
+| `GET /diagram.html` | the live status diagram at `logs/<runId>/diagram.html` (§10.1, issue #522), kept written by `OnTheFlyDiagramObserver`; **404** when the run has not written one yet — never an empty `200` or a stub page |
+| `GET /tasks/{id}/guardrails/{file}` and `GET /tasks/{id}/preflights/{file}` | the raw text of ONE of the task's declared check scripts (issue #522) — exactly the hrefs the diagram's `click` directives write for that task's check nodes. `{file}` is resolved **only** through the same precomputed per-folder known-source set `/sourcefile` already uses; an unknown name, or a name declared under the OTHER folder, is rejected |
 
 ### 12.1 `guardrails run` — live log links
 
@@ -5516,6 +5560,21 @@ tasks (to `http://…/tasks/{id}`). The server is started **only** on the intera
 output not redirected) — nobody clicks links in CI or piped output — and a bind failure is
 **non-fatal**: the run prints one warning and proceeds without links. The server's lifetime is the
 run; it is disposed when the run ends.
+
+**Serving the live diagram (issue #522).** The live server also serves `GET /diagram.html` — the
+in-flight status diagram `OnTheFlyDiagramObserver` keeps written to `logs/<runId>/diagram.html`
+(§10.1) — plus `GET /tasks/{id}/guardrails/{file}` and `GET /tasks/{id}/preflights/{file}`, exactly the
+hrefs the diagram's `click` directives write for that task's check nodes. Before this route existed,
+the two halves of the same feature disagreed about their own transport: `index.html` emits absolute
+`http://` URLs while the diagram emits plan-folder-relative ones, and nothing reconciled them — so
+opening the diagram over `file://` resolved every click against the flat, script-free `logs/<runId>/`
+layout and every click 404ed. A second link convention is not the fix here. Nor is a blanket file
+server rooted at the logs directory the fix, even though it is the cheapest one: attempt logs may echo
+secrets (this section's own binding note), so serving `logs/<runId>/` as static files would expose
+every one of them to anything that can reach the port. The guardrail/preflight routes instead resolve
+`{file}` only through the same precomputed per-folder known-source set `/tasks/{id}/sourcefile` already
+uses, so the server's file surface stays exactly the declared sources — never an arbitrary path under
+the logs tree.
 
 **On-the-fly static site (issue #141 item 2).** Independently of the server, `run` also keeps the
 **static** log site (§12.3) up to date as the run proceeds — on **both** the live and the `--no-ui`
@@ -5610,10 +5669,20 @@ which holds mutable run state):
   Inlining every attempt's every file bloats the page by the full raw-stream size — accepted (uncapped)
   for the audit/demo use, since `file://` has no other way to show siblings. A **Source** section
   follows the attempts: relative `file://` links back to the action file and every `guardrails/*`
-  script + `.json` sidecar (#141 item 3), the static twin of the live page's Source list.
+  script + `.json` sidecar (#141 item 3), the static twin of the live page's Source list. Each
+  attempt's section also links `attempt-route.log` by name (issue #524): `AppendRouteLogLink` adds a
+  real `<a>` in the page's own `.bar` idiom, labelled with what it answers — the model that ran and the
+  route that was resolved — rather than just the bare filename already sitting in the file combobox, and
+  only when the file exists on disk.
 - `logs/<runId>/index.html` — the site index, a **projection of the journal** (§7) regenerated on
   every write (never appended): every task with its status word; a task with attempts on disk is a
-  **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule). The
+  **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule). Only the
+  **final / `--export`** index also renders a Model column beside each task's status word (issue #524,
+  design 29 §4.8) — the full model id that actually ran, or the shared `AttemptModelSummary` mismatch
+  wording naming what the route requested when the two disagree, resolved from the task's last
+  journaled attempt; a task with no recorded model renders `—` rather than repeating its neighbour's
+  cell. #524 was raised about a task that had already finished, so the **during-run** index — the
+  transient surface that cannot answer that question anyway — renders no Model column at all. The
   **during-run** index additionally carries a `meta refresh` and links a *running* task to the live
   server; the **final / `--export`** index has **no** refresh and **all-static** links (durable,
   non-flickering). For a **waved plan** (§14) it also carries a **Waves** drill-down nav — one link per
