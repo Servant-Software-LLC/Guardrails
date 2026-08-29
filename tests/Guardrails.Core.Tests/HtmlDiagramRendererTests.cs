@@ -586,11 +586,10 @@ public sealed class HtmlDiagramRendererTests
     }
 
     [Fact]
-    public void Render_DuringRunTrue_InjectsMetaRefresh_AndActiveSpinner()
+    public void Render_DuringRunTrue_ActiveSpinner()
     {
         string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
 
-        Assert.Contains("http-equiv=\"refresh\"", html, StringComparison.Ordinal);
         Assert.Contains("const GR_DURING_RUN = true;", html, StringComparison.Ordinal);
     }
 

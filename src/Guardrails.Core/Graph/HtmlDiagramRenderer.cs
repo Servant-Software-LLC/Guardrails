@@ -106,6 +106,25 @@ namespace Guardrails.Core.Graph;
 /// <see cref="MermaidRenderer.LegendMarkdown"/> "Edge direction" note that states the
 /// dependency→dependent reading in words.
 /// </para>
+/// <para>
+/// <b>In-place live status poll, replacing a whole-document reload (issue #523).</b> The DURING-RUN
+/// page no longer carries a whole-document <c>&lt;meta http-equiv="refresh"&gt;</c> — that reloaded
+/// the entire document every few seconds, discarding the rendered SVG and re-running
+/// <c>mermaid.render</c>, which destroyed the operator's pan, zoom and scroll on every tick and could
+/// swallow a click landing mid-tick, all to redraw a DAG whose status changes only at task boundaries
+/// (minutes apart). Instead the page fetches its OWN url on a named <c>GR_LIVE_POLL_MS</c> interval
+/// (this only works because the page is SERVED, not opened over <c>file://</c> — see task 02/#523),
+/// pulls the fresh <c>#node-status</c> JSON out of the response, and re-badges the EXISTING svg —
+/// never touching the Mermaid render, so the pan-zoom viewport is untouched. The poll stops when a
+/// fetched page's own <c>GR_DURING_RUN</c> reads <c>false</c> (the run settled, written by
+/// <c>OnTheFlyDiagramObserver.WriteFinalStatic</c>) or when a poll fails outright — most commonly a
+/// plain <c>file://</c> view, where <c>fetch</c> of the page's own url is blocked by the browser;
+/// that case reveals the <c>#gr-live-offline</c> notice (hidden by default) instead of silently
+/// looking live forever. The whole poll subsystem — the named constant, its functions, AND every
+/// reference to <c>GR_LIVE_POLL_MS</c> — is emitted from ONE conditional template block, so the FINAL
+/// settled page (<c>duringRun:false</c>) carries no trace of <c>GR_LIVE_POLL_MS</c> at all and a
+/// browser left open on it polls nothing.
+/// </para>
 /// </remarks>
 public static class HtmlDiagramRenderer
 {
@@ -119,6 +138,13 @@ public static class HtmlDiagramRenderer
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> NoStatus =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The in-place live-poll interval (issue #523). A DAG's status only changes at task
+    /// boundaries — minutes apart — so unlike the whole-document reload this replaces (which was
+    /// 3s), an in-place badge refresh has no reason to be that eager.
+    /// </summary>
+    private const int LivePollMs = 15000;
 
     /// <summary>
     /// The STATIC plan-root <c>diagram.html</c> overload (issue #33): no live status, no during-run
@@ -140,8 +166,9 @@ public static class HtmlDiagramRenderer
     /// <c>failed</c>/<c>needs-human</c>/<c>blocked</c>) — a node absent from the map gets no badge —
     /// and is embedded as a third <c>&lt;script type="application/json" id="node-status"&gt;</c> blob,
     /// read back by the overlay JS (same verbatim/<c>textContent</c> treatment as the Mermaid source
-    /// and the task-folder targets). <paramref name="duringRun"/> toggles the <c>meta refresh</c> and
-    /// the spinner animation ONLY.
+    /// and the task-folder targets). <paramref name="duringRun"/> toggles the spinner animation and
+    /// the in-place live status poll (issue #523 — see class remarks) ONLY; it never injects a
+    /// whole-document <c>meta refresh</c>.
     /// <para>
     /// <b>Hash-neutral by construction.</b> <paramref name="sourceHash"/> is computed upstream by
     /// <see cref="GraphSourceHash"/> over <see cref="MermaidRenderer.SemanticContent"/> and passed IN;
@@ -177,10 +204,13 @@ public static class HtmlDiagramRenderer
         string targetsJson = JsonSerializer.Serialize(taskFolderTargets, jsonOptions);
         string statusJson = JsonSerializer.Serialize(statusByNodeId, jsonOptions);
 
-        // During a run the page re-reads itself on a plain file:// view (no server) and animates the
-        // spinner; the FINAL settled page drops both. The interval is 3s (deliberately longer than the
-        // log site's 2s: re-running mermaid.render on a big DAG is heavier — issue #219 D2 / DA item 4).
-        string refresh = duringRun ? "<meta http-equiv=\"refresh\" content=\"3\">" : "";
+        // During a run the page polls itself IN PLACE (issue #523 — see class remarks) and animates
+        // the spinner; the FINAL settled page drops both. The whole poll subsystem — the named
+        // GR_LIVE_POLL_MS constant, its functions, and every reference to it — comes from ONE
+        // conditional block, so the final page carries no trace of it at all.
+        string livePollScript = duringRun
+            ? LivePollScriptTemplate.Replace("__LIVE_POLL_MS__", LivePollMs.ToString(), StringComparison.Ordinal)
+            : "";
         string duringRunLiteral = duringRun ? "true" : "false";
 
         // Normalize the full output — the template raw-string literal picks up \r\n when the
@@ -190,8 +220,8 @@ public static class HtmlDiagramRenderer
             .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal)
             .Replace("__TASK_FOLDER_TARGETS__", targetsJson, StringComparison.Ordinal)
             .Replace("__NODE_STATUS__", statusJson, StringComparison.Ordinal)
-            .Replace("__DURING_RUN_REFRESH__", refresh, StringComparison.Ordinal)
             .Replace("__DURING_RUN__", duringRunLiteral, StringComparison.Ordinal)
+            .Replace("__LIVE_POLL_SCRIPT__", livePollScript, StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
     }
@@ -200,8 +230,9 @@ public static class HtmlDiagramRenderer
     // is filled with the verbatim Mermaid text inside a raw-text <script> element (see remarks).
     // __TASK_FOLDER_TARGETS__ is filled with a JSON object (container id -> folder path).
     // __NODE_STATUS__ is filled with a JSON object (node id -> status token) for the live overlay
-    // (issue #219). __DURING_RUN_REFRESH__ is the during-run <meta refresh> (empty on the final
-    // page); __DURING_RUN__ is the JS boolean literal that gates the spinner animation.
+    // (issue #219). __DURING_RUN__ is the JS boolean literal that gates the spinner animation and
+    // the live poll below. __LIVE_POLL_SCRIPT__ is the entire in-place live-poll subsystem (issue
+    // #523 — see class remarks): empty on the final page, so it carries no trace of GR_LIVE_POLL_MS.
     private const string Template = """
 <!-- guardrails:graph v1 source-sha256=__SOURCE_SHA256__ -->
 <!doctype html>
@@ -209,7 +240,6 @@ public static class HtmlDiagramRenderer
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-__DURING_RUN_REFRESH__
 <title>Guardrails — task/guardrail DAG</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
@@ -222,6 +252,12 @@ __DURING_RUN_REFRESH__
   #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
   #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
           max-width: 90vw; }
+  /* In-place live-poll offline fallback (issue #523): hidden by the `hidden` attribute unless a
+     poll of this page's own url fails — most commonly because it was opened directly over file://
+     rather than served by the log-site server, where fetch() of its own url is blocked. */
+  #gr-live-offline { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
+                      border: 1px solid #b8860b; color: #ffd166; border-radius: 6px;
+                      padding: 6px 10px; font-size: 12px; max-width: 320px; }
   #legend { position: fixed; top: 8px; right: 8px; z-index: 10; background: #121a24;
             border: 1px solid #243343; border-radius: 6px; padding: 8px 12px;
             font-size: 12px; line-height: 1.5; max-width: 340px; }
@@ -294,6 +330,9 @@ __DURING_RUN_REFRESH__
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
   On GitHub, diagram.md renders instead.</div>
+<div id="gr-live-offline" hidden>Live status updates are unavailable on this copy &mdash; it is not
+  live. The diagram served by the log-site server IS live; open that copy to see task/guardrail
+  status update automatically as the run progresses.</div>
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
 <script type="application/json" id="task-folder-targets">__TASK_FOLDER_TARGETS__</script>
@@ -306,8 +345,9 @@ const graph = document.getElementById('graph-source').textContent;
 const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
 // Live status overlay (issue #219): a node id -> status-token map, embedded exactly like the
 // task-folder targets above. Empty {} on the static plan-root diagram.html (the badge loop then
-// appends nothing). GR_DURING_RUN toggles the spinner animation only.
-const nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
+// appends nothing). `let`, not `const`: the in-place live poll (issue #523, below) reassigns it
+// with each fresh fetch. GR_DURING_RUN toggles the spinner animation and the live poll.
+let nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
 const GR_DURING_RUN = __DURING_RUN__;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
@@ -527,8 +567,9 @@ function addEdgeDirectionMarkers(svgEl) {
 // transform for FREE — no pan/zoom callback, no per-frame recompute, no drift (the exact class of
 // bug screen-space divs hit). Runs AFTER mermaid.render + the other post-render fixes, mirroring
 // addTaskContainerOverlays/addEdgeDirectionMarkers. All assets are inline SVG — no external image
-// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh each
-// meta-refresh cycle from the current status JSON, so no incremental patching is needed.
+// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh from the
+// current status JSON on each live poll tick (issue #523, below) via clearStatusBadges + a re-run
+// of this function — cheap and simple, and no incremental per-node diffing is needed.
 const GR_STATUS_COLORS = { passed: '#3fb950', failed: '#f85149', 'needs-human': '#d29922',
                           running: '#58a6ff', blocked: '#6e7681', pending: '#6e7681' };
 // Resolve the SVG element carrying node id `id`. A task/plan container is a `g.cluster` whose own
@@ -616,7 +657,13 @@ function addStatusBadges(svgEl) {
     el.appendChild(buildStatusBadge(nodeStatus[id], box.x + box.width, box.y));
   }
 }
+// Idempotent repaint support: strip every badge addStatusBadges appended, so a re-run (each live
+// poll tick) replaces them fresh instead of accumulating duplicates when the status map repeats.
+function clearStatusBadges(svgEl) {
+  for (const b of svgEl.querySelectorAll('.gr-status-badge')) b.remove();
+}
 
+__LIVE_POLL_SCRIPT__
 // Client-side find box (issue #220). Substring-match the typed text against every searchable
 // node's id AND its visible label — task containers (task_<base>, plan_preflights, plan_guardrails)
 // and every leaf preflight/guardrail check node — highlighting matches, dimming the rest, and
@@ -724,6 +771,9 @@ try {
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
   setupSearch(el, pz); // wire the find box to the rendered SVG + pan-zoom instance (issue #220)
+  if (GR_DURING_RUN) {
+    startLivePoll(el); // begin the in-place status poll (issue #523) — no-op on the final page
+  }
 } catch (e) {
   // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
   // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.
@@ -744,5 +794,51 @@ document.getElementById('fs').onclick   = () => document.documentElement.request
 </script>
 </body>
 </html>
+""";
+
+    // The entire in-place live-poll subsystem (issue #523 — see class remarks), substituted whole
+    // into __LIVE_POLL_SCRIPT__ only when duringRun:true, and never onto the final settled page — so
+    // GR_LIVE_POLL_MS, and every function that mentions it, leaves no trace once the run has settled.
+    private const string LivePollScriptTemplate = """
+const GR_LIVE_POLL_MS = __LIVE_POLL_MS__;
+let livePollTimer = null;
+function stopLivePoll() {
+  if (livePollTimer !== null) { clearInterval(livePollTimer); livePollTimer = null; }
+}
+function showLiveOfflineNotice() {
+  const notice = document.getElementById('gr-live-offline');
+  if (notice) notice.hidden = false;
+}
+// Fetch this page's OWN url (served by the log-site server — a plain file:// view cannot fetch
+// itself, hence the catch below), pull the fresh #node-status JSON out of the response, and
+// re-badge the EXISTING svg. mermaid.render never runs again here, so the pan-zoom viewport (and
+// whatever the operator was doing with it) is completely untouched.
+async function pollLiveStatus(svgEl) {
+  let text;
+  try {
+    const res = await fetch(window.location.href, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    text = await res.text();
+  } catch (e) {
+    showLiveOfflineNotice();
+    stopLivePoll();
+    return;
+  }
+  const doc = new DOMParser().parseFromString(text, 'text/html');
+  const statusEl = doc.getElementById('node-status');
+  if (statusEl) {
+    nodeStatus = JSON.parse(statusEl.textContent);
+    clearStatusBadges(svgEl);
+    addStatusBadges(svgEl);
+  }
+  // The terminal signal this page can actually observe: a poll returning a document whose OWN
+  // GR_DURING_RUN is false is the run settling, written by OnTheFlyDiagramObserver.WriteFinalStatic.
+  if (text.includes('const GR_DURING_RUN = false;')) {
+    stopLivePoll();
+  }
+}
+function startLivePoll(svgEl) {
+  livePollTimer = setInterval(() => pollLiveStatus(svgEl), GR_LIVE_POLL_MS);
+}
 """;
 }
