@@ -1,12 +1,15 @@
 # catches: a union that left git conflict markers in - or emptied - a file this plan produces. The
 #          deterministic verdict on EVERY union's bytes, never git's no-conflict signal and never an
 #          AI-merge worker's say-so. This plan is ONE STRICTLY SERIAL CHAIN
-#          (01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07), so it has no PARALLEL siblings racing a shared
-#          file - but it still merges a segment back onto the plan branch at every task boundary, and
-#          a badly-resolved hunk there leaves markers behind with a zero exit code. THREE of the
-#          seventeen paths below are written by more than one task in the chain - LogSiteRenderer.cs
-#          by 01/02/06, OnTheFlyDiagramObserver.cs by 02/04, LiveRunObserver.cs by 05/06 - which is
-#          exactly where a dropped or duplicated hunk would land.
+#          (01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 09), so it has no PARALLEL siblings racing
+#          a shared file - but it still merges a segment back onto the plan branch at every task
+#          boundary, and a badly-resolved hunk there leaves markers behind with a zero exit code.
+#          THREE of the seventeen paths below are written by more than one task in the chain -
+#          LogSiteRenderer.cs by 02/07, OnTheFlyDiagramObserver.cs by 02/05, LiveRunObserver.cs by
+#          06/07 - which is exactly where a dropped or duplicated hunk would land.
+#          (RE-DERIVED MECHANICALLY 2026-08-29 after 08 was split into 08 SSOT + 09 skill. The three
+#          multi-writer paths were previously recorded as 01/02/06, 02/04 and 05/06: stale ordinals
+#          from an earlier renumbering, not a change in the SET. The PATHS were and are the same.)
 #
 # This is the run's integration-guardrail set (scope:"integration", declared in the sidecar). The
 # harness re-runs it on the merged bytes at EVERY union point AND on the final merged HEAD here, so
@@ -28,7 +31,8 @@
 # the seventeen paths below already exist. The three the plan CREATES are
 # tests/Guardrails.Integration.Tests/LogSite/ServeDiagramTests.cs (task 01),
 # tests/Guardrails.Core.Tests/Graph/DiagramRefreshTests.cs (task 03) and
-# tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs (task 05). The conflict-marker
+# tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs (task 06 - recorded as task 05
+# before the attribution fix below). The conflict-marker
 # clause is a forbidden-present clause and is exempt from the census (a ban green on arrival is a
 # correct ban).
 #
@@ -37,37 +41,47 @@
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-# Every file any task in this plan writes - the union of the SEVEN writeScopes, deduped, and nothing
+# Every file any task in this plan writes - the union of the NINE writeScopes, deduped, and nothing
 # else. A path no task here writes would be a silent lie in the one file whose whole job is honesty:
 # it can never fail (the conditional gates it away) and it would misdescribe the plan's surface to
-# the next reader. RE-DERIVED MECHANICALLY 2026-08-29 by reading all seven task.json writeScope
-# arrays and deduping: 2+3+5+4+2+3+2 = 21 declarations, 17 distinct paths, and this list is exactly
-# that set - no path missing, no path extra. Each path is commented with the FIRST task that declares
-# it; the three multi-writer paths are named in the header above.
+# the next reader. RE-DERIVED MECHANICALLY 2026-08-29 by reading all nine task.json writeScope
+# arrays and deduping: 1+3+1+4+4+2+3+1+1 = 20 declarations, 17 distinct paths, and this list is
+# exactly that set - no path missing, no path extra. Each path is commented with the FIRST task that
+# declares it; the three multi-writer paths are named in the header above.
+#
+# THE SET IS UNCHANGED by the 08 -> 08+09 split, and that is the point of re-deriving rather than
+# patching: the split MOVED one path (.claude/skills/.../SKILL.md) from task 08's writeScope to task
+# 09's, so the declaration count is unchanged at 20 and the distinct-path count unchanged at 17. What
+# WAS wrong here, and is fixed below, is the per-path ATTRIBUTION: every comment from 'task 03' down
+# was off by one (a leftover from an earlier renumbering that this file never caught up with), and
+# LogSiteRenderer.cs was attributed to task 01, which does not declare it at all - task 01's
+# writeScope is the single test file. Verified by reading the nine task.json files, not by eye.
 $produced = @(
     # task 01-author-tests-serve-diagram
     'tests/Guardrails.Integration.Tests/LogSite/ServeDiagramTests.cs',
-    'src/Guardrails.Cli/Ui/LogSiteRenderer.cs',
     # task 02-serve-diagram-from-log-site
     'src/Guardrails.Cli/Ui/LogServer.cs',
+    'src/Guardrails.Cli/Ui/LogSiteRenderer.cs',
     'src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs',
-    # task 03-replace-meta-refresh
-    'src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs',
+    # task 03-author-tests-diagram-refresh
     'tests/Guardrails.Core.Tests/Graph/DiagramRefreshTests.cs',
+    # task 04-replace-meta-refresh
+    'src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs',
     'tests/Guardrails.Core.Tests/HtmlDiagramRendererTests.cs',
     'tests/Guardrails.Integration.Tests/OnTheFlyDiagramTests.cs',
     'tests/Guardrails.Integration.Tests/RunCommandFinalSiteSettleTests.cs',
-    # task 04-raise-attempt-route-resolved  (also writes OnTheFlyDiagramObserver.cs, listed under 02)
+    # task 05-raise-attempt-route-resolved  (also writes OnTheFlyDiagramObserver.cs, listed under 02)
     'src/Guardrails.Core/Execution/IRunObserver.cs',
     'src/Guardrails.Core/Execution/TaskExecutor.cs',
     'src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs',
-    # task 05-author-tests-model-in-row
+    # task 06-author-tests-model-in-row
     'tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs',
     'src/Guardrails.Cli/Ui/LiveRunObserver.cs',
-    # task 06-render-model-in-row-and-index  (also writes LogSiteRenderer.cs and LiveRunObserver.cs)
+    # task 07-render-model-in-row-and-index  (also writes LogSiteRenderer.cs and LiveRunObserver.cs)
     'src/Guardrails.Cli/ConsoleRunObserver.cs',
-    # task 07-record-visibility-surfaces-in-ssot
+    # task 08-record-visibility-in-ssot
     'docs/plans/02-schemas-and-contracts.md',
+    # task 09-record-visibility-in-domain-knowledge
     '.claude/skills/guardrails-domain-knowledge/SKILL.md'
 )
 
@@ -100,6 +114,8 @@ foreach ($rel in $produced) {
     # real repo while authoring this guardrail and exited 0; RE-EXECUTED 2026-08-29 after the plan
     # grew its seventh task, it exits 0 with 14 of the 17 paths present. Do not
     # "tighten" this by dropping the (?m)^ anchors or adding an equals-sign clause.
+    # RE-EXECUTED 2026-08-29 after the 08 -> 08+09 split: still exits 0, still 14 of the 17 paths
+    # present (the same three unwritten test files as before - the split moved no path in or out).
     if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
         $failures += "$rel contains git conflict markers - the union did not cleanly integrate"
     }

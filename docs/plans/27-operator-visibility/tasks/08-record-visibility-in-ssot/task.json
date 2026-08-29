@@ -1,0 +1,13 @@
+{
+  "description": "Record the served live diagram, the replaced whole-document refresh, the model-in-the-task-row surface and the new IRunObserver.AttemptRouteResolved contract member in the SSOT",
+  "dependsOn": [
+    "07-render-model-in-row-and-index"
+  ],
+  "stableId": "v6surf",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

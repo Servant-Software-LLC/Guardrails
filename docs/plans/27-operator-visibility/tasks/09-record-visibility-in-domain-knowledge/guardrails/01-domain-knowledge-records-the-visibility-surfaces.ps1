@@ -24,8 +24,9 @@
 #   live table           1x   (in the very sentence this plan makes stale - it may legitimately go)
 #   pan/zoom             1x
 # Note in particular that `attempt-route.log` is UNUSABLE here for the same reason it is unusable in
-# guardrail 01 (3x in the SSOT): the token this plan is most tempted to demand is the one the
-# documents already carry, and demanding it would be a clause satisfied before the task started.
+# task 08's 01-ssot-records-the-visibility-surfaces (3x in the SSOT): the token this plan is most
+# tempted to demand is the one the documents already carry, and demanding it would be a clause
+# satisfied before the task started.
 #
 # EVERY CLAUSE IS A WIDE ALTERNATION, AND THAT IS THE POINT, NOT LAZINESS. A required-present clause
 # that demands ONE spelling is failed by a CORRECT entry written in a different but equally
@@ -53,7 +54,9 @@
 # Measure per subject; never copy a clause between two documents on the assumption they read alike.
 #
 #   No ancestor task's prompt or writeScope writes these tokens into this subject - tasks 01-07 write
-#   only under src/ and tests/, and this task is the only one in plan 27 whose writeScope names this file.
+#   only under src/ and tests/, task 08 (this task's sole dependsOn) writes only
+#   docs/plans/02-schemas-and-contracts.md, and this task is the only one in plan 27 whose writeScope
+#   names this file.
 #
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 # HTML COMMENTS ARE STRIPPED BEFORE ANY CLAUSE RUNS. MEASURED 2026-08-29: appending ONE 172-byte line -
@@ -61,15 +64,19 @@
 #     <!-- TODO(#522/#523/#524): GET /diagram.html is served; the page no longer needs a reload;
 #          the index gains a Model column; IRunObserver.AttemptRouteResolved exists. -->
 #
-# - took this guardrail from exit 1 (all three clauses failing) to exit 0, and took guardrail 01 to
-# exit 0 in the SAME stroke: one invisible line, two documents, seven clauses. That is the smallest
+# - took this guardrail from exit 1 (all three clauses failing) to exit 0, and took task 08's
+# 01-ssot-records-the-visibility-surfaces to exit 0 in the SAME stroke: one invisible line, two
+# documents, seven clauses. (The two checks lived in ONE task when that was measured; they are now
+# one per task, so no single edit can satisfy both any more - but a comment appended to THIS file
+# still satisfies all three clauses below, which is what the strip closes.) That is the smallest
 # edit an agent under retry pressure can make when a check demands a token, and it renders as NOTHING.
 # A record no reader can see is not a record.
 # This file carries 2 HTML comments today (76 characters, MEASURED) and neither carries any token
 # below, so the strip changes nothing about the baseline - it only closes the door.
 #
 # FENCED CODE BLOCKS ARE DELIBERATELY *NOT* STRIPPED, and the same decision is recorded at length in
-# guardrail 01 (which is where the measurements live: 26 fenced blocks / 43,387 characters in the SSOT,
+# task 08's 01-ssot-records-the-visibility-surfaces (which is where the measurements live: 26 fenced
+# blocks / 43,387 characters in the SSOT,
 # with 2 of its 36 `PlanDefinition` occurrences inside one - so refusing to see a fence would red-fail
 # a correct document written in its own house style, the GR2055 polarity). THIS subject measures ZERO
 # fenced blocks today, so the strip would currently be a no-op here; it is still omitted, because the

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=3c2e575b0973702833affc1056716a8b461b581beeb74f73ee2ad259bd88e268 -->
+<!-- guardrails:graph v1 source-sha256=d0674e4b06e208a4284ba57caae8eca2a846c594c4cda717c3f448c43b70ea39 -->
 
 ```mermaid
 flowchart TD
@@ -49,11 +49,14 @@ flowchart TD
     task_07_render_model_in_row_and_index_gr_3["04-model-and-log-site-neighbours-still-pass"]:::guardrail
   end
   style task_07_render_model_in_row_and_index fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_08_record_visibility_surfaces_in_ssot["08-record-visibility-surfaces-in-ssot"]
-    task_08_record_visibility_surfaces_in_ssot_gr_0["01-ssot-records-the-visibility-surfaces"]:::guardrail
-    task_08_record_visibility_surfaces_in_ssot_gr_1["02-domain-knowledge-records-the-visibility-surfaces"]:::guardrail
+  subgraph task_08_record_visibility_in_ssot["08-record-visibility-in-ssot"]
+    task_08_record_visibility_in_ssot_gr_0["01-ssot-records-the-visibility-surfaces"]:::guardrail
   end
-  style task_08_record_visibility_surfaces_in_ssot fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  style task_08_record_visibility_in_ssot fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_09_record_visibility_in_domain_knowledge["09-record-visibility-in-domain-knowledge"]
+    task_09_record_visibility_in_domain_knowledge_gr_0["01-domain-knowledge-records-the-visibility-surfaces"]:::guardrail
+  end
+  style task_09_record_visibility_in_domain_knowledge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-core-suite-passes"]:::guardrail
@@ -68,8 +71,9 @@ flowchart TD
   task_04_replace_meta_refresh --> task_05_raise_attempt_route_resolved
   task_05_raise_attempt_route_resolved --> task_06_author_tests_model_in_row
   task_06_author_tests_model_in_row --> task_07_render_model_in_row_and_index
-  task_07_render_model_in_row_and_index --> task_08_record_visibility_surfaces_in_ssot
-  task_08_record_visibility_surfaces_in_ssot --> plan_guardrails
+  task_07_render_model_in_row_and_index --> task_08_record_visibility_in_ssot
+  task_08_record_visibility_in_ssot --> task_09_record_visibility_in_domain_knowledge
+  task_09_record_visibility_in_domain_knowledge --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

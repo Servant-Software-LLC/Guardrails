@@ -1,0 +1,13 @@
+{
+  "description": "Record the served live diagram, the replaced whole-document refresh and the persistent model surface in the guardrails-domain-knowledge skill, via needsHarnessWrite",
+  "dependsOn": [
+    "08-record-visibility-in-ssot"
+  ],
+  "stableId": "v7know",
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

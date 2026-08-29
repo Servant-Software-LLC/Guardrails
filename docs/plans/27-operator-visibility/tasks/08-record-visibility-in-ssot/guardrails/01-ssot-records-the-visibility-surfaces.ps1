@@ -74,7 +74,8 @@
 # "reload", which is exactly why `reload` can carry a clause and `refresh` cannot.
 #
 #   No ancestor task's prompt or writeScope writes these tokens into this subject - tasks 01-07 write
-#   only under src/ and tests/, and this task is the only one in plan 27 whose writeScope names this file.
+#   only under src/ and tests/, task 09 writes only .claude/skills/guardrails-domain-knowledge/SKILL.md,
+#   and this task is the only one in plan 27 whose writeScope names this file.
 #
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 # HTML COMMENTS ARE STRIPPED BEFORE ANY CLAUSE RUNS, AND THAT IS THE ONE THING THIS FILE MOST NEEDED.
@@ -83,8 +84,12 @@
 #     <!-- TODO(#522/#523/#524): GET /diagram.html is served; the page no longer needs a reload;
 #          the index gains a Model column; IRunObserver.AttemptRouteResolved exists. -->
 #
-# - took this guardrail from exit 1 (all four clauses failing) to exit 0, and took guardrail 02 to
-# exit 0 in the same stroke. Four clauses, one invisible line, both documents. That is not an
+# - took this guardrail from exit 1 (all four clauses failing) to exit 0, and took task 09's
+# 01-domain-knowledge-records-the-visibility-surfaces to exit 0 in the same stroke. Four clauses,
+# one invisible line, both documents. (The two checks lived in ONE task when that was measured;
+# they are now one per task, which is why the sibling is named by its task. That split does not
+# weaken this strip - a single comment appended to THIS file still satisfies all four clauses
+# below, so the strip is what makes them mean anything.) That is not an
 # adversarial curiosity: an HTML comment is EXACTLY what an agent under retry pressure writes when a
 # check demands a token and it does not yet know where the prose belongs - it is the smallest possible
 # edit and it renders as NOTHING. A record no reader can see is not a record, so the strip below is a
