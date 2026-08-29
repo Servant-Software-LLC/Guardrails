@@ -1,0 +1,7 @@
+{
+  "description": "Implement SampleVerifier so its tests pass — pair discovery, per-half execution, and a distinct message for each mismatch class",
+  "dependsOn": ["01-author-tests-sample-verifier"],
+  "stableId": "s2vimp",
+  "writeScope": ["src/Guardrails.Core/Samples/SampleVerifier.cs"],
+  "action": { "tier": "medium" }
+}

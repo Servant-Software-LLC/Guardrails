@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant: every file this plan produces is, IF present, non-empty and conflict-marker-free",
+  "scope": "integration"
+}

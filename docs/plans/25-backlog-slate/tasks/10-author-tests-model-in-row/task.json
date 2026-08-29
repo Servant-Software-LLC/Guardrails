@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests + stubs for surfacing the resolved model IN the task row and on the run-level log index, so it persists after the task finishes",
+  "dependsOn": ["09-replace-meta-refresh"],
+  "stableId": "m10row",
+  "writeScope": ["tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs", "src/Guardrails.Cli/Ui/LiveRunObserver.cs"],
+  "action": { "tier": "medium" }
+}

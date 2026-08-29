@@ -1,0 +1,7 @@
+{
+  "description": "Implement barrier wait-and-poll so a provider limit at a wave barrier PAUSES and re-probes instead of ending the run, reusing the existing PromptPaused observer hook",
+  "dependsOn": ["05-author-tests-barrier-wait"],
+  "stableId": "b6wimp",
+  "writeScope": ["src/Guardrails.Core/Providers/BarrierWait.cs", "src/Guardrails.Core/Execution/Scheduler.cs"],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

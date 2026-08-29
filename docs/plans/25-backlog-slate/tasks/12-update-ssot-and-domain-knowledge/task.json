@@ -1,0 +1,7 @@
+{
+  "description": "Record the samples-verify verb, the preflight step, the barrier wait-and-poll and the model-in-row surface in the SSOT and the domain-knowledge skill",
+  "dependsOn": ["04-wire-verifier-into-preflight", "06-implement-barrier-wait", "11-render-model-in-row-and-index"],
+  "stableId": "s12ssot",
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md", ".claude/skills/guardrails-domain-knowledge/SKILL.md"],
+  "action": { "tier": "easy" }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests + stubs proving the log-site server serves /diagram.html, so the live diagram's server-relative hrefs resolve",
+  "dependsOn": [],
+  "stableId": "d7serv",
+  "writeScope": ["tests/Guardrails.Integration.Tests/LogSite/ServeDiagramTests.cs", "src/Guardrails.Cli/Ui/LogSiteRenderer.cs"],
+  "action": { "tier": "medium" }
+}

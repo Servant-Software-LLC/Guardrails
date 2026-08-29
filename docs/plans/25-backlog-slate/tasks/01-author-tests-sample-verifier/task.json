@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests + stubs for SampleVerifier: walk tasks/*/samples/, run the matching guardrail against each half, assert .valid exits 0 and .invalid exits non-zero",
+  "dependsOn": [],
+  "stableId": "s1verf",
+  "writeScope": ["tests/Guardrails.Core.Tests/Samples/SampleVerifierTests.cs", "src/Guardrails.Core/Samples/SampleVerifier.cs"],
+  "action": { "tier": "medium" }
+}
