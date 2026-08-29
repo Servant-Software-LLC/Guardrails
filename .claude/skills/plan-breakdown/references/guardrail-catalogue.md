@@ -140,6 +140,7 @@ restated.
 | 12 | **declaration-is-not-behaviour** | the 14-clause manifest, 10/14 green against declarations with zero wiring (above) | rung 1 — a test |
 | 13 | **control characters from the authoring pipeline** | a clause containing literal `0x08` bytes (a `\b` collapsed by the authoring transport) could never match, and a **negative-only** smoke test could not reveal it — everything was failing anyway | never author a regex-bearing guardrail through a shell heredoc; and run the **VALID** half of the sample pair, which is the only half that exposes a clause that can never match |
 | 14 | **vacuous test body** | a test NAMED for the behaviour whose body asserts a **tautology** (`Assert.True(true)`, `Assert.NotNull` on a value the test itself constructed, an assertion that never invokes the subject). It cleared the `covers-*` token floor **and** sat green on the stub tree behind its genuinely-failing siblings, so the suite-level red certified the file honest — five security invariants pinned by nothing (#375) | the **per-test red census** — every manifested behaviour's test observed **`Failed`** in the runner's own result file, never merely discovered by name. **Never** a rejection-shaped source regex (`Assert\.Throws`/`Assert\.False`): it false-**reds** a correct `Assert.Equal(RejectedStale, r.Outcome)` and is satisfied in one tautological line — taxonomy 1/9/10 all apply to it. Probe B op 21 |
+| 15 | **a guard that cannot fire** | a per-test census's zero-match precondition read `@($xml.TestRun.Results.UnitTestResult).Count -lt 1` — but with **zero tests executed the TRX carries no `<Results>` element**, so the navigation yields `$null` and `@($null).Count` is **1**. In the only situation the guard existed for it evaluated `1 -lt 1`, fell through, and emitted **11 misdirected findings** naming every pinned behaviour as unbound — at the one artifact the retry agent may edit, which is what its own header comment said it prevented | **execute the guard against its zero case** before shipping it — #302's sample pair applied to the precondition (a guard is *proven* to fire, never merely authored). Measured siblings in the same family: `Total:` counting `[Skip]`ped tests, a **localized** summary line, `-v q` suppressing the very string the guard matched on. Universal rule: §"Its SCOPE decides whether it proves anything" companion rule 2; the `@($null)` / TRX specifics are `stacks/dotnet.md §4.4` |
 
 ### The two-variable rule — one strip, two levels, no raw matching
 
@@ -535,6 +536,88 @@ full retry budget and escalates a correct artifact. Resolve it by stripping comm
 banned keywords** unless its guardrail is comment-safe. The per-language comment syntax lives in the
 stack file (`stacks/dotnet.md §11` for SQL/C#).
 
+### The DOCUMENTATION target has the same hole, at the opposite polarity — strip `<!-- -->` before a required-present clause (universal)
+
+Everything above is written about **source files**, and #97/#98's failure mode is a false **RED**: a
+comment *names* a banned construct and reds a correct artifact. Over a **`.md` target** the same
+blindness runs the other way and produces a false **GREEN** — because the clause you write over a
+document is almost always **required-present** ("the contract doc must mention `X`"), and the
+two-variable rule's *"every required-present clause reads `$code`, comments stripped"* was never
+extended past source syntax. Markdown's comment is `<!-- … -->`, and nothing in the family stripped it.
+
+**Measured.** A guardrail requiring two tokens in `docs/plans/02-schemas-and-contracts.md` and in a
+`SKILL.md` went from exit **1** to exit **0** when this one line was appended:
+
+```
+<!-- TODO: document `samples verify` and SampleVerifier here -->
+```
+
+The guardrail's stated purpose — *the contract moves in the same change-set as the code* — was
+discharged by a commented-out TODO. This is not the "thin prose" residual the `covers-*` floor already
+admits to. **An HTML comment renders as nothing**: it is *invisible* text, and a reader of the published
+document cannot tell the difference between it and the token's total absence. A one-word mention at
+least appears on the page for a human to judge; this does not.
+
+**Rule.** A required-present clause over a `.md` target strips HTML comments before matching:
+
+```powershell
+# catches: a required-present clause over a MARKDOWN target satisfied by an HTML COMMENT - the doc
+#          "documents" the contract in text that RENDERS AS NOTHING. Strip <!-- --> before matching.
+#          Fenced code is deliberately NOT stripped (see below): a fence renders.
+$f   = "docs/plans/02-schemas-and-contracts.md"
+$raw = Get-Content $f -Raw                              # never matched against (the two-variable rule)
+$doc = [regex]::Replace($raw, '(?s)<!--.*?-->', '')     # invisible text gone -> what the clauses read
+
+# The residual, NAMED rather than silently absorbed: an UNTERMINATED '<!--' has no closing '-->' for the
+# lazy quantifier to reach, so its text survives the strip. Do NOT "fix" that by stripping to EOF - that
+# deletes the rest of the document over one stray token and turns a typo into a green no-op. Fail on it:
+# it is malformed markdown, and this check cannot be trusted over it. (Measured on four real repo docs -
+# the SSOT, this catalogue, plan-breakdown's SKILL.md, the README - the residual count is 0 in all four,
+# so this clause fires only on a genuinely unterminated comment.)
+if ($doc -match '<!--') {
+    Write-Output "$f has an UNTERMINATED '<!--' - the comment strip cannot bound it, so this required-present check cannot be trusted. Close the comment."
+    exit 1
+}
+
+# -cnotmatch stays the default for a required-present clause (taxonomy 3 - case-insensitivity
+# false-GREENS a required clause). But note the judgement over PROSE: a token that legitimately appears
+# sentence-capitalized needs an explicit alternation, NOT a downgrade to -notmatch - dropping to
+# case-insensitive to dodge one capitalization re-opens the false-green for every other spelling.
+$failures = @()
+foreach ($token in 'samples verify', 'SampleVerifier') {
+    if ($doc -cnotmatch [regex]::Escape($token)) {
+        $failures += "$f does not document '$token' outside an HTML comment - the contract must move in the same change-set as the code"
+    }
+}
+if ($failures.Count -gt 0) {
+    $failures | ForEach-Object { Write-Output $_ }
+    exit 1
+}
+exit 0
+```
+
+**Fenced code blocks are NOT stripped — and this is the interesting half of the judgement.** The
+tempting symmetry ("a token in a fence isn't prose either") is wrong, and the discriminator is
+**rendering**: a fence *renders*, so an entry documenting a verb in a usage fence is legitimate house
+style, not evasion. Measured on the real SSOT (`docs/plans/02-schemas-and-contracts.md`): **43,387 bytes
+of fenced content across 26 blocks**, and **2 of its 36 `PlanDefinition` occurrences live inside one**.
+A clause that stripped fences would reject a correct document written in its own style — the
+name-locking-a-free-choice failure (taxonomy 8) wearing a different hat. Strip what renders as nothing;
+keep what renders.
+
+> **If you do count fences — for your own analysis, never as a strip — anchor the regex to line starts.**
+> An unanchored fence pattern (`(?s)` + triple-backtick + `.*?` + triple-backtick) also matches inline
+> triple-backtick spans sitting inside prose lines, and silently mis-attributes them. Measured on the same
+> SSOT: the unanchored form reports **29 blocks / 128,214 bytes / 15 of 36 occurrences fenced**; the
+> line-anchored form (`(?ms)^` + triple-backtick + `.*?^` + triple-backtick) reports **26 / 43,387 / 2**.
+> Get this wrong and your judgement about what is "legitimately fenced" is wrong before you write a clause.
+
+**Where this bites hardest:** a DOCUMENTATION deliverable is **exempt from the `.valid`/`.invalid` sample
+pair** (§"the two-sided sample pair" — you cannot synthesize a meaningful invalid design doc), so the one
+mechanism that would have caught a doc clause satisfiable by an invisible line is the one that does not
+run over doc targets. The strip above is the cheap compensating control for that exemption, and it is
+**not optional** on a `.md` required-present clause. The PRECEDENT check remains the other half.
+
 ### Positive-effect / non-hollow assertion (universal) (#73)
 
 The structural-vs-keyword rule has a sibling on the *value* side: a guardrail must
@@ -862,7 +945,7 @@ can pass purely because it branched before a sibling's red tests reached its bas
    class name) when it is not discriminating. Same lesson as the orphaned-golden broad-filter trap.
 2. **Narrowing reintroduces the zero-match hole — guard it.** A filter that matches **nothing** (or is
    malformed) typically reports SUCCESS (exit 0), so a typo'd class name turns both halves of the pair
-   into green no-ops. Emit a guard asserting the run actually executed ≥1 test. Three things decide
+   into green no-ops. Emit a guard asserting the run actually executed ≥1 test. Four things decide
    whether such a guard can fire at all, and each has bitten:
    - key it on the runner's **executed-test COUNT**, not on an error string — the "no tests matched"
      diagnostic is frequently verbosity-suppressed, which is how a string-keyed guard gets written,
@@ -873,6 +956,23 @@ can pass purely because it branched before a sibling's red tests reached its bas
      inverts into an unconditional failure on a non-English machine. This is the axis #248 most often
      misses: verbosity gets varied during authoring, culture almost never does, so the pattern ships
      "verified" with its most fragile dimension untested.
+   - **count what the runtime hands you when the answer IS zero.** The count expression itself can be the
+     dead part. PowerShell's `@(…)` wraps a `$null` into a **one**-element array, so a precondition keyed
+     on `@(<a navigation that yields nothing>).Count -lt 1` evaluates `1 -lt 1` and never fires — in the
+     one situation it exists for. Whatever the host language, write the zero case down and evaluate it;
+     a count that cannot reach zero is not a guard. (The .NET/TRX shape of this — a TRX with **no
+     `<Results>` element** when nothing ran — is `stacks/dotnet.md §4.4`.)
+
+   **A zero-match guard is not authored, it is PROVEN to fire.** All four traps share one property: the
+   guard reads correctly on the page and is dead in execution, so no amount of re-reading finds it — only
+   running it against an artifact that *should* trip it does. Before shipping one, execute it against its
+   own zero case (an empty result file, a deliberately typo'd filter) and watch the precondition line
+   come out. This is the #302 sample-pair discipline applied to the guard's own precondition, and it is
+   taxonomy 13's VALID-half lesson restated: the half where everything is failing anyway cannot reveal a
+   clause that can never match. **Measured cost of skipping it:** a census whose dead precondition let it
+   fall through and emit **11 misdirected findings** naming every pinned behaviour as unbound — a
+   confident, actionable, wrong message aimed at the one artifact a retry agent may edit, which is the
+   exact outcome its own header comment said the guard prevented.
 
    And **order the guard by polarity**: where exit 0 is the pass, check the exit code FIRST (a runner that
    never started exits non-zero with no summary, and a guard-first script misreports that as "your filter
@@ -972,6 +1072,42 @@ Mis-aiming is nonetheless in a different safety class from a mis-aimed source re
 that matches no test goes RED**, costs one attempt, and its message names the missing binding. A
 mis-aimed source regex goes GREEN on a comment *and* red on correct code. A gate whose mis-aiming can
 only cost time is not the same as a gate whose mis-aiming can certify a lie.
+
+### The declared exemption — a row a CORRECT implementation leaves GREEN
+
+The census demands `Failed`. Some enumerated behaviours a **correct** implementation leaves green even
+before it is implemented, and demanding red for those demands that a correct implementation fail. The
+measured case is the **discriminator**: *"a sound input does NOT halt the run"*. The production path
+returns early for that fixture's shape, so it never reaches the not-yet-implemented member; a correct
+test of it passes on the pre-implementation tree. It is not hollow — it is the row that gives the
+red ones their meaning, because a gate that only ever fires proves nothing about a gate that discriminates.
+
+**The wrong repair is to drop the row**, and it is nearly the one that gets authored: the census goes
+green, the behaviour disappears from the manifest, and **a silently omitted row is indistinguishable
+from an oversight** — the reviewer cannot tell a considered exemption from a behaviour nobody thought
+about. Same principle as every other named exemption in this catalogue (the documentation sample-pair
+hatch, the TDD-exempt seam): honest and named, never silent.
+
+**The rule.** Such a row stays in the manifest and carries an **`Expect='Executed'`** marker — the test
+is **present in the runner's result file and was not skipped** — with the **structural reason stated in
+the guardrail's header comment**, in terms of the production path (*"the consumer returns before it
+reaches the stubbed member, so a correct test of this is green on the stub tree"*). Never a bare
+`Expect='Executed'` with no reason: the reason is the thing a reviewer checks.
+
+`Executed` is deliberately weaker than `Failed` and deliberately stronger than name discovery. It proves
+the test compiled, was selected by the filter, and actually ran — which is exactly what `--list-tests`
+name discovery cannot prove and what a `[Fact(Skip="…")]` defeats. It does **not** prove the assertion
+bites; nothing in this section does (§"The honest boundary").
+
+> **The abuse to watch for, and its tell.** An exemption is a claim about the **production path**, never
+> about the test being awkward to write. If most rows are exempt you no longer have a red census — you
+> have a forward one, wearing the census's name. Read that as the structural signal it is: it almost
+> always means **there was no upstream test-author task to be red against**, and the repair is the split
+> (SKILL.md Step 2 rule 5 — a task that authors both the tests and the implementation they exercise must
+> split), not a manifest full of exemptions.
+
+The .NET manifest shape (a bare string means `Expect='Failed'`; a hashtable declares the exemption) and
+the loop that reads it are `stacks/dotnet.md §4.4`.
 
 ### Shape rules the census inherits (all non-optional)
 
@@ -2300,6 +2436,18 @@ trivially-failing stub test and never encode behaviors 2–5.
 encode, add a `03-covers-key-behaviors.ps1` guardrail that checks the test file for **2–3 of the most
 distinctive terms** from the behavior list (one `if` per term, so the failure line names the missing
 behavior). Scope the grep to the **one test file the task authors** (grep-scope rule).
+
+**A `covers-*` token floor is a NAMING lower bound — never the gate that carries the enumerated-behaviour
+claim.** Read that as part of the rule above, not as a caveat after it: the whole correction below exists
+because this section used to stop at the paragraph you just read. One question decides what to emit:
+
+| the test-author task | what carries the enumerated-behaviour claim |
+|---|---|
+| enumerates behaviours **and** authors a stub tree (a behavioural type — the usual case) | the **per-test red census** — every enumerated behaviour observed `Failed` in the runner's own result file. `covers-key-behaviors` ships **as well**, never instead: the census is what makes its lower bound worth having |
+| enumerates behaviours with **no** stub tree (a pure data model, a documentation deliverable — §"Where it does NOT apply") | the token floor is genuinely what you have. Then **say so in `# catches:`** — word it as a lower bound, never as proof the behaviour is tested |
+
+Do **not** reach for a rejection-shaped source regex (`Assert\.Throws` / `Assert\.False`) as the
+strengthening move — it is simultaneously too strict and too weak, and taxonomy 14 says why.
 
 ```powershell
 # catches: a test file that lacks coverage of <Behavior1> or <Behavior2> - both named in the action

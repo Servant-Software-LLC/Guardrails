@@ -718,11 +718,12 @@ while the guardrail goes green (#375). Per-test outcomes are not in the exit cod
 out of stdout (`[FAIL]` lines are verbosity- and culture-dependent — #248/#455). The runner writes them
 to a **TRX**; read that.
 
-**The four TRX facts the script depends on** (each one bites if you get it wrong):
+**The five TRX facts the script depends on** (each one bites if you get it wrong):
 
 | fact | consequence |
 |---|---|
 | The document has a **default `xmlns`** (`…/TeamTest/2010`) | `SelectNodes('//UnitTestResult')` returns **nothing** without a namespace manager — a silent zero-result census. Use **dotted navigation** (`$xml.TestRun.Results.UnitTestResult`), which ignores the default namespace |
+| When **zero tests ran** the TRX carries **no `<Results>` element at all**, so the dotted navigation yields `$null` — and `@($null)` is a **one**-element array | `@($xml.TestRun.Results.UnitTestResult).Count` is **1**, not 0, so a `-lt 1` precondition keyed on it **can never fire** — the guard is present, reads correctly, and is dead. Filter the `$null` out — `@(… \| Where-Object { $_ })` — or test `$null -eq $xml.TestRun.Results` explicitly before counting |
 | `testName` is the **fully-qualified** method name; a `[Theory]` row **appends its data** (`Ns.Cls.M(kind: "stale")`) | anchor on `\.<Name>(\(|$)`, never a bare substring — a sibling `RejectsStaleAnswerV2` contains `RejectsStaleAnswer` |
 | A skipped test is spelled **`NotExecuted`**, not `Skipped` | `-ne 'Failed'` catches it; an `-eq 'Passed'` test would let `[Fact(Skip="…")]` through |
 | `--results-directory` is **not cleared** between runs | a stale TRX from the previous attempt gets read as this attempt's evidence. Delete the directory first |
@@ -736,6 +737,20 @@ otherwise satisfy the entry); the `(\(|$)` tail admitted the `[Theory]` row
 against a **two-sided pair** (#302): a hollow TRX (`Passed` / `NotExecuted` / absent) → exit **1** with
 one named line per behaviour, and a genuine all-`Failed` TRX → exit **0**.
 
+**The precondition itself was measured, and the obvious form is DEAD (PowerShell 7).** Against a TRX with
+no `<Results>` element — the shape the runner actually writes when zero tests execute — `@($null).Count`
+is **1** and `@($null | Where-Object { $_ }).Count` is **0**; so the natural
+`$recorded = @($xml.TestRun.Results.UnitTestResult); if ($recorded.Count -lt 1)` guard evaluates
+`1 -lt 1` and **never fires**. That is not a theoretical hole: a guardrail carrying it exited 1 while
+emitting **11 misdirected findings** naming every pinned behaviour as unbound — a confident, actionable,
+wrong message aimed at the one artifact a retry agent is allowed to edit, which is the precise outcome
+its own header comment said the guard existed to prevent. `@(… | Where-Object { $_ })` in the script
+below is what makes it fire. This is the same family as §4.3's three siblings (`Total:` counting skipped
+tests, keying on the LOCALIZED summary line, `-v q` suppressing the string a guard matched on): a guard
+that reads correctly on the page and cannot fire. The universal rule — **a zero-match guard is not
+authored, it is PROVEN to fire** — is catalogue → "Its SCOPE decides whether it proves anything",
+companion rule 2.
+
 ```powershell
 # catches: a HOLLOW test - named for the behaviour, body a tautology (Assert.True(true), Assert.NotNull
 #          on a value the test itself constructed, any assertion that never invokes the subject). It
@@ -743,6 +758,11 @@ one named line per behaviour, and a genuine all-`Failed` TRX → exit **0**.
 #          siblings, so a suite-level non-zero exit certifies the file honest and the covers-* token
 #          floor certifies it covered (#375). One entry per enumerated behaviour, each observed Failed
 #          in the runner's OWN TRX - never merely discovered by name, which a hollow body satisfies.
+# DECLARED EXEMPTION (state every one here, with its reason): 'DoesNotHaltOnSoundAnswer' is the
+#          discriminator - a SOUND answer must NOT halt, and the consumer returns before it touches the
+#          not-yet-implemented member, so a CORRECT test is GREEN on the stub tree. Demanding red there
+#          would demand a correct implementation fail, so the row asserts Expect='Executed' (it ran, and
+#          was not [Skip]ped). It stays IN the manifest: a dropped row and an oversight look identical.
 # Culture pin: this census reads the TRX (schema tokens, NOT localized), so unlike §4.3 the guard does
 # not depend on it - keep it anyway so the logged summary is readable and the pair stays copy-pasteable.
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
@@ -750,12 +770,20 @@ $filter = 'Category=Answers&FullyQualifiedName~AnswerConsumerTests'   # SAME str
 
 # THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
 # The prompt must name these methods; a prompt that leaves naming to the agent makes no census writable.
+# A BARE STRING means Expect='Failed' - the default, and what almost every row is. A HASHTABLE declares
+# an EXEMPTION: Expect='Executed' for a row a CORRECT implementation leaves GREEN on the stub tree, so
+# demanding red would demand a correct implementation fail. Never DROP such a row instead - an undeclared
+# omission is indistinguishable from an oversight (catalogue -> "The declared exemption").
 $manifest = [ordered]@{
     'rejects a STALE answer (definitionHash mismatch)'        = 'RejectsStaleAnswer'
     'rejects a REPLAYED answer (already consumed)'            = 'RejectsReplayedAnswer'
     'rejects a WRONG-BOUND answer ({runId,seq,gate,subject})' = 'RejectsWrongBoundAnswer'
     'rejects a FORGED review attestation'                     = 'RejectsReviewAttestedKind'
     'CLAMPS high/critical under proceed-unreviewed'           = 'ClampsUnderProceedUnreviewed'
+    # DECLARED EXEMPTION - the discriminator. A SOUND answer must NOT halt the run, and the consumer
+    # returns before it reaches the not-yet-implemented member, so this test is green on the stub tree
+    # WHEN IT IS CORRECT. Assert it RAN (present, not [Skip]ped), never that it failed.
+    'a SOUND answer does NOT halt the run (discriminator)'    = @{ Name = 'DoesNotHaltOnSoundAnswer'; Expect = 'Executed' }
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -777,8 +805,12 @@ if (-not $trx) {
 }
 
 # DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
+# The Where-Object is NOT decoration: with zero tests executed the TRX has NO <Results> element, the
+# navigation yields $null, and @($null).Count is 1 - so the bare @(...) form makes the guard below
+# evaluate 1 -lt 1 and NEVER FIRE. Measured on PowerShell 7: @($null).Count -> 1,
+# @($null | Where-Object { $_ }).Count -> 0. ($null -eq $xml.TestRun.Results is the equivalent test.)
 $xml      = [xml](Get-Content $trx.FullName -Raw)
-$recorded = @($xml.TestRun.Results.UnitTestResult)
+$recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
 if ($recorded.Count -lt 1) {
     Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This is NOT a finding about the tests: do NOT rewrite them."
     exit 1
@@ -787,13 +819,24 @@ if ($recorded.Count -lt 1) {
 # ACCUMULATE (#179): one distinguishable message per unbound behaviour, so ONE attempt learns every gap.
 $failures = @()
 foreach ($behaviour in $manifest.Keys) {
-    $name    = $manifest[$behaviour]
+    $entry   = $manifest[$behaviour]
+    $name    = if ($entry -is [string]) { $entry }   else { $entry.Name }
+    $expect  = if ($entry -is [string]) { 'Failed' } else { $entry.Expect }
     # -cmatch: C# method names are case-SENSITIVE and PowerShell -match is not (taxonomy 3).
     # The (\(|$) tail admits a [Theory] row's appended data without admitting a longer sibling name.
     $pattern = '\.' + [regex]::Escape($name) + '(\(|$)'
     $hits    = @($recorded | Where-Object { $_.testName -cmatch $pattern })
     if ($hits.Count -lt 1) {
         $failures += "$behaviour -> no test named '$name' ran (absent from the file, or not selected by the filter)"
+        continue
+    }
+    if ($expect -eq 'Executed') {
+        # DECLARED EXEMPTION: assert the row RAN, not that it was red. An absent outcome attribute is
+        # treated as not-executed - never let a missing value read as satisfied.
+        $notRun = @($hits | Where-Object { $_.outcome -eq 'NotExecuted' -or [string]::IsNullOrEmpty($_.outcome) })
+        if ($notRun.Count -gt 0) {
+            $failures += "$behaviour -> '$name' is a DECLARED EXEMPTION (Expect='Executed' - see this file's header for why a correct implementation leaves it green) and did NOT execute. 'NotExecuted' means [Fact(Skip=...)]. An exempt row still has to run; skipping it turns the exemption into no coverage at all."
+        }
         continue
     }
     $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
@@ -821,7 +864,15 @@ exit 0
   race here, only a precondition.
 - **The zero-match guard is subsumed, not dropped.** A manifest entry matching no test is already a named
   finding; the two early exits above cover the cases where the *runner* produced nothing, which is a
-  different diagnosis and must read as one.
+  different diagnosis and must read as one. **Prove the second one FIRES before you ship it** — run the
+  script against a TRX with no `<Results>` element and watch it exit on the precondition line, not on
+  eleven "behaviour unbound" lines. That is the `@($null)` trap in the facts table above, and the
+  diagnosis it replaces is the entire reason the early exit exists.
+- **An `Expect='Executed'` row is a DECLARED exemption, and its reason belongs in the header.** The
+  `# catches:` block must name which row is exempt and *why a correct implementation leaves it green* —
+  the census's own failure text points the retry agent back at that header, and an exemption whose reason
+  nobody can read is indistinguishable from a row somebody quietly deleted. Exempt the row; never drop
+  it. Universal rule: catalogue → "The declared exemption".
 - **The second side is the implementation task's forward `tests-pass`** (§4.3's forward form) with the
   **same `$filter` copied verbatim** — those same names must then be observed `Passed`. Two trees, per
   test, both sides. If you want the forward half per-test as well, the same TRX loop with

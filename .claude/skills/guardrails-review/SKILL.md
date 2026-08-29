@@ -303,6 +303,39 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   BEHAVIORAL-type test-author task missing the `build-passes` + `tests-fail-on-stubs` pair
   (a lone non-zero-exit red passes on a non-compiling garbage test file — BLOCKER); a
   data-model task split without a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+  - **The task authors BOTH its tests AND the implementation those tests exercise (#521)** — the case the
+    rule above is **vacuous** on, which is why it needs asking separately. That rule says the
+    implementation task's `writeScope` must exclude the test files **its upstream test-author task** owns;
+    where **one** task does both there IS no upstream test-author task, nothing to exclude, and the rule
+    passes while checking nothing. Ask it of **every** task, not only the ones that look TDD-shaped:
+    *does this task write the test and also the code that test drives?* If yes it has **(a) no TDD-red
+    half** — with no red side to census against, its census can only be **FORWARD** (each pinned test
+    observed `-ne 'Passed'` → fail, over the runner's own result file), and a forward census **cannot see
+    a hollow body**, because a hollow body passes; and **(b) no write-scope test-protection gate**, since
+    there is no upstream owner to protect the file from. The strongest anti-tautology proof this skill has
+    (#155's red-then-green) is therefore **absent entirely** rather than weakened, which is exactly what
+    makes it invisible to a structural read.
+    **Measured, and it survived `guardrails validate`, `guardrails graph --check` and an entire structural
+    review pass:** a composition-root wiring task authored its own tests and its own implementation; a
+    test file carrying all **five** pinned method names — **four** `Assert.True(true)` bodies and **one**
+    real call — exited **0**. The one real call proved nothing either: the production method **returns
+    early** for the fixture's shape, so it passed against a **completely unwired** implementation. This is
+    the #120 built-but-unwired false green arriving through a door neither the #120 probe nor the
+    write-scope rule is watching. Severity: **BLOCKER when the task is a composition-root / production
+    path**; WEAK on its own, rising to BLOCKER wherever the only compensating control is a source-shape
+    grep Probe B can game (#521).
+    **The fix is the SPLIT** — an `author-tests` task upstream of an `implement` task, which restores both
+    halves at once (plan-breakdown Step 5 carries the insertion rule and the report's named-exception
+    form; do not restate it here, cite it). It is **never** a tighter source-shape regex over the test
+    body: reaching for the regex is the **#468 archetype error** — the finding is the archetype, not the
+    clause — and §2b says in three lines why a rejection-shaped one is worse than absent (#375).
+    **One interaction to name so the fix is not over-applied.** After the split, the red census may
+    legitimately need to **EXEMPT one test**: the discriminator a **correct** implementation leaves green.
+    In the measured case that is *"a sound input does NOT halt"*, which passes against the unwired code
+    precisely because of the early return — so demanding it be `Failed` on the stub tree would red a
+    correct plan. A **declared** exemption carrying its structural reason in the script header is correct
+    and is **not** a finding; a manifest row **silently dropped** is the finding. Grade the declaration,
+    not the intent — A₂'s rule (§2b), applied to a census row.
 - **Missing scope-boundary warning (#154)**: for any test-author task (`author-tests-*` / a
   task whose deliverable is a test file), check that `action.prompt.md` contains an explicit
   **harness-enforcement paragraph** — it must name the allowed path(s) (test file AND, under
@@ -1213,7 +1246,7 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
      one that is **malformed** (`\|` instead of `|`: VSTest reports `Incorrect format for TestCaseFilter`
      and runs zero tests) — exits **0**, so a typo'd class name turns a `tests-pass` into a green no-op
      and makes a `tests-fail-on-stubs` report a misleading "tautological tests" failure. Every narrowed
-     filter must assert ≥1 test actually EXECUTED. Read the guard's key, because three spellings look
+     filter must assert ≥1 test actually EXECUTED. Read the guard's key, because four spellings look
      right and are not — flag each **BLOCKER**, since a guard that cannot fire is worse than none (it
      buys false confidence):
      - keyed on the **`No test matches…` string** → verbosity-dependent, absent under `-v q`, so it is
@@ -1222,7 +1255,33 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
        that is supposed to prove tests ran. The executed count is `Passed:` + `Failed:`;
      - keyed on any English summary token **without pinning `$env:DOTNET_CLI_UI_LANGUAGE = 'en'`** → the
        summary is LOCALIZED (a German-culture box prints `gesamt:`, no `Total:`), so on such a machine the
-       guard fires on **every** run and the guardrail fails unconditionally.
+       guard fires on **every** run and the guardrail fails unconditionally;
+     - keyed on a **TRX census that counts an ARRAY-WRAPPED `$null`** → the shape a reviewer is most
+       likely to read as correct, because it is the idiomatic PowerShell array-wrap:
+       `$recorded = @($xml.TestRun.Results.UnitTestResult)` followed by `if ($recorded.Count -lt 1)`.
+       When zero tests run the TRX has **no `<Results>` element at all**, so `$xml.TestRun.Results` is
+       `$null` and **`@($null).Count` is `1`** — the guard **never fires**. Measured on both shapes of
+       results file: `<Results>`-less → count **1**; one `<UnitTestResult>` → count **1**; the two are
+       indistinguishable. Observed consequence on a TRX-reading census: the guardrail exited **1** while
+       emitting **11 misdirected findings** naming every pinned behaviour as unbound — pointing the retry
+       agent at the one artifact it is allowed to edit (the test file) and away from the empty run that
+       actually caused it, while the script's own header declared this guard prevented exactly that.
+       Fix: drop the nulls before counting —
+       `@($xml.TestRun.Results.UnitTestResult | Where-Object { $null -ne $_ }).Count`, measured **0** on a
+       `<Results>`-less TRX and **1** on a one-result TRX.
+
+     **A guard is not verified by READING it — construct the zero case and prove it fires.** All four
+     spellings above read correctly in place, and the fourth was written by an author who documented the
+     defence in the header directly above it. A guard is a claim about behaviour under an input the plan
+     has not produced yet, and the only way to grade that claim is to manufacture the input and run the
+     guardrail against it: for a **TRX-reading census**, a results file with **no `<Results>` element**;
+     for a **filter-based** guard, a filter that matches nothing
+     (`--filter "FullyQualifiedName~ZzNoSuchTestClass"`). Require a **non-zero exit that names the empty
+     run** — anything else, including a red for some other reason, leaves the guard ungraded. This is
+     Probe A's method (§2b) narrowed to one clause, and it costs one file. A guard you accepted on a read
+     is an **unchecked gap** for the Step 6 report, not a verified one; the header above it is the
+     authoring agent's belief, and A₂'s declared-claim rule (§2b) is the general form of why that is not
+     evidence.
 
      Also check the **ordering**, which is polarity-dependent: a **forward** check must test the exit code
      BEFORE the guard (a crashed/never-started test host exits non-zero with no summary; guard-first
@@ -1481,6 +1540,24 @@ motivating instance carried `# … appears nowhere else` above a token appearing
 A declared count that disagrees with your census is a **BLOCKER on the guardrail**, whichever number is more
 convenient. A *missing* declaration is not a finding on its own; it just means you census that clause.
 
+**And a script does not only declare COUNTS — it declares BEHAVIOUR about itself, which is a claim to be
+TESTED, exactly like a count.** Headers state what the script's own guards and preconditions DO: *"this
+precondition prevents X"*, *"this subsumes Y"*, *"the guard fires when Z"*, *"this check is the reason a
+zero-test run cannot pass here"*. **Measured: three such claims were false in one plan, each written in a
+header sitting directly above the code it described.** The fourth zero-match spelling in §2's #455
+sub-check is one of this shape — its header declared the guard prevented precisely the failure the
+guardrail then produced. A header comment is the authoring agent's **belief**, not evidence, and it was
+written by the same reasoning that wrote the bug; A₂ exists because a review that re-reads that reasoning
+is not a second measurement. So: **where the claim is cheap to test, TEST it** — construct the input the
+claim is about and observe what the script does (§2's #455 sub-check gives the two constructions for a
+zero-match guard: a `<Results>`-less results file, a filter matching nothing). **Where it is not cheap,
+record it in the Step 6 report as an UNCHECKED GAP** — never as verified, and never absorbed into "A₂
+applied". Verdict rule is the counts' rule: a declared claim your construction **contradicts** is a
+**BLOCKER on the guardrail**; a header carrying no behavioural claim is not a finding, it simply leaves
+nothing for this rule to grade. This does not soften the exception rule below: a declaration is still
+**necessary** for a pre-satisfied clause to be excused. It is simply never **sufficient** as proof that a
+guard does what its header says.
+
 **Verdict — a pre-satisfied required-present clause is a BLOCKER**, even beside strong siblings: clause
 strength does not compose, because the task only has to satisfy the clauses that are red. The legitimate
 exceptions are real — a positive-baseline / wave-entry preflight, a `tests-untouched` regression clause, the
@@ -1524,7 +1601,7 @@ inventive you feel that day. Work down it:
 | # | operator | dies against |
 |---|---|---|
 | 1 | append an unused type/const containing the required token | a dotted **call**, not a bare name (#76) |
-| 2 | put the token in a **comment** | comment-stripping |
+| 2 | put the token in a **comment** — in SOURCE, and, on a **documentation** target, in an **HTML comment** (`<!-- … -->`), which renders as nothing | comment-stripping — including `<!-- … -->` when the subject is `.md`/`.html` (#468; the doc form has its own note below) |
 | 3 | put the token in a **string literal** | string-stripping |
 | 4 | satisfy a proximity regex **across a statement boundary** | keying on the outcome, not adjacency |
 | 5 | one **omnibus method name** satisfying several substring markers | full pinned names, anchored |
@@ -1549,6 +1626,32 @@ Three patterns generalise and are worth applying before the table: **anchor on a
 (kills 1, 6, 9, 10, 11), **anchor on the DESTINATION, not the value** (kills 7 and 8), and **anchor on
 what the LANGUAGE fixes, not on what the author may freely vary** (kills 14, 15, 16 — case-sensitivity,
 brace style, modifier order).
+
+**Operator 2 has a DOCUMENTATION-target form, and it is the one that gets missed (#468).** Read as *"put
+the token in a comment"*, the operator points a reviewer at source files and comment-stripping; a guardrail
+whose subject is a `.md` document reads as immune to it, so the mutation is never tried. It is not immune.
+**Measured:** a guardrail requiring two tokens — one in a large SSOT document, one in a `SKILL.md` — went
+from exit **1** to exit **0** when a single line was appended:
+
+```
+<!-- TODO: document `samples verify` and SampleVerifier here -->
+```
+
+An HTML comment **renders as nothing**. The token is in the file and invisible on the page, so the claim
+*"the contract is documented"* is discharged by a TODO no reader can ever see. Same mechanism as
+#97/#98's comment-blind scan at the **opposite polarity**: there a comment falsely REDS a correct file,
+here a comment falsely GREENS an empty claim. Run operator 2 in this form against **every**
+guardrail whose subject is a documentation file, and where it goes green the fix is to strip HTML comments
+before matching: `$prose = [regex]::Replace($raw, '(?s)<!--.*?-->', '')` — measured, that takes the TODO
+above to **0** matches while leaving the rest of the document intact.
+
+**The counter-rule, because the obvious over-correction is itself a false-red: do NOT flag a FENCED code
+block the same way.** A fence **renders**, and documenting a CLI verb or a schema key inside a usage fence
+is legitimate house style, not a hidden token. **Measured on the real SSOT: 2 of its 36 `PlanDefinition`
+occurrences sit inside one of its 26 fenced blocks** — so a "fix" that stripped fences as well would reject
+a correct document written in its own voice — the same BLOCKER wearing the other polarity, and Probe C's
+two-level stripping rule in a documentation register: strip only as far as the thing a reader cannot see.
+Strip `<!-- … -->`; leave fenced blocks standing.
 
 **Operators 20 and 21 are outside all three patterns, and 20 is the only operator that can be
 INAPPLICABLE (#382).** Outside, because 1–19 all ask *what TEXT satisfies the clause*, while 20 asks
@@ -1832,6 +1935,14 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
   whole of #478. State separately that **the censused tree is the PLAN's baseline, not each task's** — a
   non-root task's clause can be pre-satisfied by an ancestor's output, and no review-time measurement can
   see that tree; say whether the ancestor-prompt/`writeScope` textual check was run in its place.
+- **which declared BEHAVIOURAL claims were TESTED, and which were only read** (#478 / #455) — a script's
+  header claims about its own guards and preconditions (*"this precondition prevents X"*, *"the guard fires
+  when Z"*) are claims exactly as its declared counts are. Name each one you **constructed the input for**
+  and what the script then did (exit code, verbatim), and list the rest as **unchecked** — in particular
+  every zero-match guard accepted on a read rather than by manufacturing the zero case (a `<Results>`-less
+  TRX, a filter matching nothing). Measured: **three** declared claims false in one plan, each in a header
+  sitting directly above the code it described. A guard reported present-and-correct **from its header** is
+  indistinguishable in the transcript from one observed to fire, which is the whole reason this line exists.
 - **which zero-match probes carried a POSITIVE CONTROL** (#500) — every check whose pass was *"no matches"*
   (an A₂ census count of 0, the ancestor-token grep, Probe C's collision sweep, §2's token greps) either
   names the control literal that proved the search reached the file, or is listed here as **unproven**. A
@@ -1990,6 +2101,7 @@ finding remains unaddressed.
 - [ ] Every `covers-key-behaviors` guardrail's required tokens are each named (directly or via synonym) in the SAME task's action prompt; a token the guardrail requires but the prompt never mentions is a BLOCKER ("the task will fail every attempt") — the human-judgement complement to the deterministic GR2026 warning (#157).
 - [ ] **Every task declares a `writeScope` (#389)** — an ABSENT field is a BLOCKER (GR2041); `"writeScope": []` ("writes nothing to the repo") is a FIRST-CLASS VALID declaration and is NOT flagged (flag only a truly absent field). Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (propose a real surface or `[]`, never omission).
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+- [ ] (#521) **Every** task was asked whether it authors BOTH its tests AND the implementation those tests exercise — the shape the "tests gameable" rule is VACUOUS on (no upstream test-author task ⇒ nothing to exclude ⇒ #155's red-then-green ABSENT ENTIRELY, not weakened). Such a task has **no TDD-red half** (its census can only be FORWARD — each pinned test observed `-ne 'Passed'` → fail — and a forward census cannot see a hollow body) and **no write-scope test-protection gate**. **BLOCKER on a composition-root / production path** (measured: five pinned method names, four `Assert.True(true)` bodies and one real call whose production method returns early — exit **0**, through `validate`, `graph --check` and a full structural review pass, against a completely unwired implementation); WEAK on its own, BLOCKER wherever the only compensating control is a source-shape grep Probe B can game. The fix is the **SPLIT** (`author-tests` upstream of `implement`, plan-breakdown Step 5), **never** a tighter source-shape regex over the test body — that is the #468 archetype error. After the split, a **DECLARED** red-census exemption for the discriminator a correct implementation leaves green ("a sound input does NOT halt", green because of the early return) is correct and not a finding; a **silently dropped** manifest row is the finding.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] Every PROMPT task whose primary deliverable is a file under `.claude/` (new or existing) carries the verbatim STRAIGHT-TO-HATCH `needsHarnessWrite` escape-hatch instruction in its `action.prompt.md` (emit `needsHarnessWrite` to the state-out path FIRST, no direct `Write`/`Edit` probe to the `.claude/` path); absence is a BLOCKER — the tool-permission layer refuses `.claude/` writes unconditionally, so the task hits the wall on attempt 1 and dead-ends at `needs-human` (SSOT §9.3 / #191 / #313 / #321). Exempt: SCRIPT actions, and tasks that declare `stagingOutputs` for the deliverable. A task whose deliverable IS `.claude/settings.json` / `.claude/settings.local.json` cannot use the hatch (the harness rejects permission-file writes on an agent's behalf, #321) — flag it for a human author instead.
 - [ ] Every state-writing prompt's fragment example/key is the task's FOLDER NAME (never the `stableId` or a foreign/shared key), and the producer's state-output guardrail indexes that same folder name — a `stableId`-shaped or otherwise-unowned key is a BLOCKER (harness rejects it every attempt → `needsHuman` loop, #164).
@@ -2023,16 +2135,17 @@ finding remains unaddressed.
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
-- [ ] Every TASK-LEVEL guardrail running a test filter was cross-referenced against the DAG's dependency EDGES — not read in isolation, which is why #248/#302 (both single-guardrail probes) cannot see this (#455). The scope×edges table was written out with column 4 RESOLVED (the filter run for a real `Total:` count where the classes exist, or resolved on paper against prompt-PINNED class names — prompts that do not pin their test class names are themselves a BLOCKER, since no one can then tell what any filter selects), and BOTH directions asked: **forward** — a filter selecting tests only a DOWNSTREAM task can make green is a **BLOCKER** (deadlock; `validate` and `graph --check` both PASS, the cycle is task↔sibling-test-corpus, not task↔task); **inverse** — a red check a SIBLING's tests can satisfy is a **BLOCKER** (tautology; the #155 red proof degraded to merge-order luck). Every task carrying the shape is flagged, not only the one that failed (merge timing decides which mode bites). A concurrent sibling with no edge either way is **nondeterministic**, not exempt — WEAK, BLOCKER same-wave. Fix: `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` on both halves of the pair (class term mandatory, trait an optional conjunct; the trait ALONE lives only in the #181 preflight's `!=` exclusion). Sub-checks: the class substring is discriminating (`--list-tests` enumerates what it really selects; `~Dispatch` also selects `DispatchRouterTests`), and each narrowed filter carries a zero-match guard that can actually fire — BLOCKER if keyed on the `No test matches…` string (suppressed by `-v q`), on `Total:` (counts `[Skip]`ped tests), or on English tokens without pinning `$env:DOTNET_CLI_UI_LANGUAGE='en'` (the summary is localized); and the guard's ORDER matches its polarity (forward: exit-code first; inverse: guard first).
+- [ ] Every TASK-LEVEL guardrail running a test filter was cross-referenced against the DAG's dependency EDGES — not read in isolation, which is why #248/#302 (both single-guardrail probes) cannot see this (#455). The scope×edges table was written out with column 4 RESOLVED (the filter run for a real `Total:` count where the classes exist, or resolved on paper against prompt-PINNED class names — prompts that do not pin their test class names are themselves a BLOCKER, since no one can then tell what any filter selects), and BOTH directions asked: **forward** — a filter selecting tests only a DOWNSTREAM task can make green is a **BLOCKER** (deadlock; `validate` and `graph --check` both PASS, the cycle is task↔sibling-test-corpus, not task↔task); **inverse** — a red check a SIBLING's tests can satisfy is a **BLOCKER** (tautology; the #155 red proof degraded to merge-order luck). Every task carrying the shape is flagged, not only the one that failed (merge timing decides which mode bites). A concurrent sibling with no edge either way is **nondeterministic**, not exempt — WEAK, BLOCKER same-wave. Fix: `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` on both halves of the pair (class term mandatory, trait an optional conjunct; the trait ALONE lives only in the #181 preflight's `!=` exclusion). Sub-checks: the class substring is discriminating (`--list-tests` enumerates what it really selects; `~Dispatch` also selects `DispatchRouterTests`), and each narrowed filter carries a zero-match guard that can actually fire — BLOCKER if keyed on the `No test matches…` string (suppressed by `-v q`), on `Total:` (counts `[Skip]`ped tests), on English tokens without pinning `$env:DOTNET_CLI_UI_LANGUAGE='en'` (the summary is localized), or on a **TRX census counting an array-wrapped `$null`** (`@($xml.TestRun.Results.UnitTestResult).Count` is **1** on a `<Results>`-less TRX — measured 1 there and 1 on a one-result TRX, so it never fires; observed cost: exit 1 with **11 misdirected findings** naming every pinned behaviour as unbound, under a header declaring this guard prevented exactly that — fix `| Where-Object { $null -ne $_ }` before counting, measured 0/1); the guard's ORDER matches its polarity (forward: exit-code first; inverse: guard first); and **no guard was accepted on a READ** — the zero case was CONSTRUCTED (a `<Results>`-less results file; a filter matching nothing) and the guard observed to exit non-zero naming the empty run, or it is named an unchecked gap in the report, never verified.
 - [ ] Every `.sh`/`.ps1`/`.py` guardrail that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was smoke-tested by EXECUTING the guardrail SCRIPT itself against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only; the highest-value target (a guardrail that renders/executes the task's own not-yet-authored output) was run against a synthesized sample. FAILS the valid sample or PASSES the invalid sample = BLOCKER; runnable-but-unrun = WEAK; not-runnable-at-author-time (live service / built binary / merged HEAD) = syntax pass + honest report deferral, never a block. Distinct from #248 (which runs the underlying TOOL, not the guardrail script) (#302).
 - [ ] (#254) A waved plan was reviewed WAVE-BY-WAVE (each wave a mini-plan): the §2 adversarial probes ran per task within each wave, and each wave's entry/exit gates got the four-folder treatment. No cross-wave `dependsOn` edge (GR2034 — a wave-2 dependency on a wave-1 artifact is the wave-2 ENTRY gate, not an edge; BLOCKER if present). Every waved-plan prompt's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (header + example + state-output guardrail index agree; a bare/wrong-wave key is a BLOCKER, the #164 loop one level up).
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run — a whole-repo build/suite invocation or a git-conflict-marker union invariant). **Every wave-root gate must be LOCAL — no `scope` key on any of them.** A wave-root `scope:"integration"` guardrail is **INERT**, and `validate` says so (**GR2059**, #459): the per-union re-verify set is built from the task `<task>/guardrails/` folders plus the **PLAN-root** `<plan>/guardrails/` folder only (SSOT §4.3), so a wave-root entry is never in it — it runs exactly once, on the merged HEAD at its own wave's exit (SSOT §14.3). **The severity rationale here is the OPPOSITE of the intermediate-wave #125 case**: an inert tag cannot red-halt a correct intermediate union, because it never fires at a union at all. The defect is the mirror image — **the per-union invariant the author believed they had authored is UNPROTECTED**, and the plan merely LOOKS union-guarded. Severity: **WEAK** when the file is a genuine wave-exit postcondition carrying a dead tag (fix = delete the `scope` key; behaviour-identical, the check already runs at wave exit); **BLOCKER** when the `catches:` line, the breakdown report, or the plan's topology relies on per-union protection — the real union invariant is then MISSING and must be authored at `<plan>/guardrails/`, keeping `scope:"integration"` there and made union-safe/conditional (#125/#165). Do **not** resolve it by relocating a wave-exit gate to the plan root (that changes WHEN it runs), and do not pre-empt the open #459 contract question. Only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
 <!-- BEGIN ADDED CHECKS #468/#470 -->
 - [ ] (#468) Every guardrail asserting a property of IMPLEMENTATION SOURCE was run through the demotion question — behaviour → a test (or an AGREEMENT property test for "X must USE Y"), source-shape only for a structural fact with no runtime proxy. A behavioural claim carried by a regex is a finding NAMING the test that should replace it (BLOCKER when a correct implementation can be written that it rejects, WEAK when it merely certifies vocabulary), and a surviving source-shape check with no report line saying WHY no test could carry it is itself a finding. Legitimate structural facts — build-descriptor registration, cross-module reference chains, entry-point wiring, the #120 grep fallback, #176 negative assertions — are NOT flagged. When ≥2 Probe B operators go green against one source-shape guardrail, the finding is the ARCHETYPE, not the clause: recommend the demotion rather than a fourth round of clause repair (three rounds did not converge).
 - [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest, read with the #375 census predicate rather than by name discovery); the #455 zero-match guard is not that and is not flagged.
+- [ ] (#468) Probe B **operator 2** was applied in its **DOCUMENTATION-target** form to every guardrail whose subject is a `.md`/doc file — append an HTML comment carrying the required token and re-run. Measured: a two-token doc guardrail (a large SSOT document + a `SKILL.md`) went from exit **1** to exit **0** on one appended `<!-- TODO: … -->` line; an HTML comment renders as NOTHING, so "the contract was documented" is discharged by a TODO no reader can see. Fix: strip HTML comments before matching (`[regex]::Replace($raw, '(?s)<!--.*?-->', '')`). The **counter-rule held**: a FENCED code block is NOT flagged the same way — a fence renders, and measured on the real SSOT **2 of its 36 `PlanDefinition` occurrences sit inside one of its 26 fenced blocks**, so banning fences rejects a correct document written in its own voice (the same BLOCKER wearing the other polarity).
 - [ ] (#470) Probe C ran: every required-present literal was reconciled against every forbid-present pattern IN THE SAME FILE (a hit is unsatisfiable-by-construction → BLOCKER), and every banned token against the task's own `action.prompt.md` (a hit invites the agent to write what reds it → WEAK). Every forbidden scan runs over STRIPPED source — comments AND string literals — and is anchored on a USE, not a mention. Not confused with GR2026/#177, which is the opposite polarity (REQUIRES a token the prompt never mentions).
 <!-- END ADDED CHECKS #468/#470 -->
-- [ ] (#478) Probe **A₂** ran: every **required-present** clause and every **numeric floor** of every guardrail has a BASELINE verdict — resolved by the fast path (an accumulator failure list Probe A actually printed) or by a hand census (`Select-String` of the clause's own pattern against the clause's own subject, case-sensitive iff the operator was `-cmatch`/`-cnotmatch`). A clause already satisfied on the baseline is a **BLOCKER** (the task is passable without delivering it, and it certifies nothing for the life of the plan) unless the script DECLARES its exception — positive-baseline/wave-entry preflight, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, or a ratcheting behaviour manifest **on a plan regenerated against a partially-landed tree** (the qualifier is part of the exception, not decoration: on a FRESH plan a nonzero manifest clause is not a ratchet, it is a pre-satisfied clause and stays a BLOCKER). **Forbidden-present clauses are NOT censused** — a ban green on arrival is a correct ban, and a ban RED on arrival is Probe C's #470 collision. Every count a script DECLARES was re-measured, never read (a `# … appears nowhere else` comment sat over a token appearing twice in that exact file); a declared count disagreeing with the census is a BLOCKER. Clauses left unmeasured (runtime-composed pattern, subject absent from the baseline, non-pattern clause, ungated cost stage) are NAMED in the report as NOT RUN, never absorbed into a red Probe A. A₂ does not subsume Probe B and B does not subsume A₂ — the motivating clause was both pre-satisfied AND gameable by a one-const append.
+- [ ] (#478) Probe **A₂** ran: every **required-present** clause and every **numeric floor** of every guardrail has a BASELINE verdict — resolved by the fast path (an accumulator failure list Probe A actually printed) or by a hand census (`Select-String` of the clause's own pattern against the clause's own subject, case-sensitive iff the operator was `-cmatch`/`-cnotmatch`). A clause already satisfied on the baseline is a **BLOCKER** (the task is passable without delivering it, and it certifies nothing for the life of the plan) unless the script DECLARES its exception — positive-baseline/wave-entry preflight, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, or a ratcheting behaviour manifest **on a plan regenerated against a partially-landed tree** (the qualifier is part of the exception, not decoration: on a FRESH plan a nonzero manifest clause is not a ratchet, it is a pre-satisfied clause and stays a BLOCKER). **Forbidden-present clauses are NOT censused** — a ban green on arrival is a correct ban, and a ban RED on arrival is Probe C's #470 collision. Every count a script DECLARES was re-measured, never read (a `# … appears nowhere else` comment sat over a token appearing twice in that exact file); a declared count disagreeing with the census is a BLOCKER. **Every BEHAVIOURAL claim a script's own header DECLARES about its guards or preconditions** ("this precondition prevents X", "this subsumes Y", "the guard fires when Z") was treated the same way — a claim to TEST, not to read: constructed and observed where cheap (§2's #455 sub-check gives the two constructions), else named in the report as an unchecked gap, never verified from the header. Measured: **three** such claims false in one plan, each in a header directly above the code it described — a header is the authoring agent's belief, written by the same reasoning that wrote the bug. A claim your construction contradicts is a BLOCKER on the guardrail. Clauses left unmeasured (runtime-composed pattern, subject absent from the baseline, non-pattern clause, ungated cost stage) are NAMED in the report as NOT RUN, never absorbed into a red Probe A. A₂ does not subsume Probe B and B does not subsume A₂ — the motivating clause was both pre-satisfied AND gameable by a one-const append.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
 - [ ] (#229) On a TIERING-CONFIGURED plan — at least one `promptRunners.<name>.routing` block, or a top-level `tiering` block — every prompt-action task and every SURVIVING prompt-judge guardrail (each task's `guardrails/`+`preflights/`, the plan-root pair, each wave's pair) either declares its own rung (`action.tier`, an explicit `action.model`/`action.effort` pin, or a frontmatter `tier`) or inherits one from a CLASSIFIED actor it guards (SSOT §4.2) — and anything left over is named as an advisory MISSING-CLASSIFICATION finding in the Step 6 report, WEAK/NIT, never a GR code and never a silent auto-fix (DoR §12.6). A plan-wide `tiering.defaultTier` does NOT discharge it (read `TierOrigin.Task`, not the resolved tier — DoR §12.4); script actions and script guardrails are not subjects. Any mismatched-tier finding is labelled an opinion about difficulty and phrased as a RUNG, never as a named model (difficulty maps to a candidate set). On an UNCONFIGURED plan this box is vacuously satisfied and the review says nothing about tiering at all — no finding, no gap line, no note that it was skipped.
 - [ ] The review left durable evidence (#366): the plan hash was obtained via `guardrails plan-hash <folder>` (the skill can't compute it), a review report — the Step 6 findings table + verdict + an embedded `Plan-Definition-Hash: sha256:…` line (F2a) — was written under the hash-EXCLUDED `<plan>/state/reviews/`, and the marker was stamped with `guardrails mark-reviewed <folder> --evidence <report>` (recording `attestation.source: review-artifact`, or a downgrade to `bare` on an F2 failure) — clearing the GR2025 nudge (#79/#131), NOT run while a BLOCKER remained open. The recorded evidence class (`review-artifact` / `bare` / `machine`, read-time `legacy`) is for AUDIT, not a gate — the marker is only as strong as write-access to the plan folder, and the harness never writes it on a human's behalf. For a waved plan, run the flow per-wave against `<folder>/wave-NN-<slug>` (its own `state/reviews/` + hash) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).

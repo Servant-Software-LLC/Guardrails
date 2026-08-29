@@ -256,6 +256,40 @@ A task is right-sized when ALL hold:
    1. `NN-author-tests-<feature>` — writes tests encoding the behavior BEFORE it exists
    2. `NM-implement-<feature>` — makes those tests pass without modifying them
 
+   **The trigger is AUTHORSHIP, not how singular the outcome sounds.** Keyed on *"the primary
+   deliverable is code"*, this rule walks straight past a **composition-root / wiring** task: "wire X
+   into Y" reads as **one** outcome, so a breakdown authors ONE task that writes both the wiring tests
+   and the wiring itself. Generalise it:
+
+   > **If a task authors BOTH the tests and the implementation those tests exercise, it MUST split —
+   > regardless of how singular the outcome sounds.**
+
+   The reason is mechanical, and say it rather than re-arguing the case each time: with no upstream
+   test-author task there is **no TDD RED half**, so the only census available is the **FORWARD** one
+   (`-ne 'Passed'`) — and *a forward census cannot see a body that can never fail*. **Measured, on a
+   plan whose entire purpose was catching exactly this class of defect:** such a task's guardrails could
+   not distinguish a wired implementation from an unwired one. A test file carrying all five pinned
+   method names — four with `Assert.True(true)` bodies and one making a real call — exited **0**; the
+   one real call proved nothing, because the production method returns early for the fixture's shape,
+   so it passed against a **completely unwired** implementation. The split also restores the gate the
+   collapsed task cannot have at all: a `writeScope` that **EXCLUDES the test file** (Step 5's TDD
+   test-exclusion is the deterministic test-protection, and it is meaningless when one task owns both).
+   This closes the case that had no name; it does not disturb the three collapse criteria below — (a)
+   and (b) because the task then authors no tests at all, (c) because a data model's collapse is
+   already a NAMED exemption carrying its own weaker-anti-tautology note.
+
+   **Companion rule for the split's downstream half — the DECLARED EXEMPTION.** Once split, the
+   test-author task's red census demands each enumerated behaviour be observed `Failed`. When the census
+   would demand a test be red that a **CORRECT implementation leaves green**, that test is a **declared
+   exemption, not a dropped row**. In the measured case the discriminator — *"a sound input does NOT
+   halt"* — legitimately passes against the unwired code, so demanding it be red would demand a correct
+   implementation fail. It stays in the manifest carrying an **`Expect='Executed'`** marker (present in
+   the runner's result file and not skipped) with the **structural reason stated in the guardrail
+   header** — never silently omitted, because an undeclared omission is indistinguishable from an
+   oversight. Most rows exempt means you have a forward census wearing the red one's name; that is the
+   signal the split above was the thing actually needed. (Catalogue → "The declared exemption";
+   `stacks/dotnet.md §4.4` for the manifest shape.)
+
    Collapse to a single task only when (a) tests for this behavior **already exist** in
    the repo, (b) the behavior is too simple to have meaningful unit tests, or (c) the
    deliverable is a **pure data model** (an enum/record/value type with no behavioral stub
@@ -307,6 +341,12 @@ it is the single most likely `needs-human` in a run (the exact retry-cheapness a
   plus a wide `dependsOn` fan-in — the same fingerprint `validate` flags **GR2042**. This trigger shares a
   root with the passing-but-blind check (#382, Step 4 analysis): the sink is over-scoped *because* it
   concentrates real-seam integration proof that should be distributed to each collaborator's own task.
+  **(e) splits by COLLABORATOR — it does not split by TDD polarity, and running it is not enough.**
+  Re-run each piece it produces through **rule 5's authorship test**: a per-collaborator wiring task
+  that also writes its own wiring tests is *still* one task authoring both halves, and still splits.
+  This is the exact pairing that was measured — the outcome sounded singular twice over ("wire X into
+  Y", then "wire just this one collaborator"), and the resulting guardrails could not tell a wired
+  implementation from an unwired one.
 
 **Carry the plan's own feasibility signals into sizing (#111).** When the plan's
 feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
@@ -495,6 +535,22 @@ optional:
   document for every literal token you demand; accept both forms where both are legitimate). A CODE
   guardrail gets no such hatch: if you cannot write its invalid sample you do not yet know what it
   catches. (Catalogue → the two-sided sample pair + its documentation escape hatch.)
+- **A required-present clause over a `.md` target STRIPS `<!-- … -->` before matching.** The
+  comment-blind family (#97/#98) and the two-variable rule are written for **source**, where the failure
+  is a false RED; over a **document** the same blindness runs the other way and yields a false **GREEN**,
+  because a clause over a doc is almost always required-present. **Measured:** a guardrail requiring two
+  tokens in `docs/plans/02-schemas-and-contracts.md` and in a `SKILL.md` went from exit **1** to exit
+  **0** when a single `<!-- TODO: document … here -->` line was appended — its stated purpose, *the
+  contract moves in the same change-set as the code*, discharged by a commented-out TODO. An HTML comment
+  **renders as nothing**: invisible text, not thin prose. Emit
+  `[regex]::Replace($doc,'(?s)<!--.*?-->','')` and **fail on a residual unterminated `<!--`** rather than
+  stripping to EOF (which would delete the rest of a document over one stray token). **Do NOT strip
+  fenced code blocks** — a fence RENDERS, so a verb documented in a usage fence is legitimate house
+  style; measured on that same SSOT, **43,387 bytes of fenced content across 26 blocks** and **2 of its
+  36 `PlanDefinition` occurrences live inside one**, so a fence-stripping clause would reject a correct
+  document written in its own style. This is the compensating control for the documentation **exemption
+  from the sample pair** in the bullet above — the doc target is precisely where no invalid sample runs.
+  (Catalogue → "The DOCUMENTATION target has the same hole".)
 - **MEASURE every required-present clause's baseline count and RECORD it in the script (#478).** The sample
   pair cannot catch this — both halves are synthetic files, and the defect lives in the **real tree**. Before
   pinning a token, run it against **the exact subject that clause scans**, with the clause's own case
@@ -597,13 +653,21 @@ optional:
   (`~Dispatch` also selects `DispatchRouterTests` — check it against every other test class the plan
   authors and every existing class in the target project, and namespace-qualify when it is not);
   **(b)** narrowing reintroduces the **zero-match hole** — a `--filter` matching nothing (or malformed)
-  **exits 0** — so every narrowed filter ships with the zero-match guard. Three measured details decide
+  **exits 0** — so every narrowed filter ships with the zero-match guard. Four measured details decide
   whether that guard actually works, and getting any of them wrong is worse than having no guard: key it
   on the **executed count (`Passed:` + `Failed:`)**, not `Total:` (which counts `[Skip]`ped tests, so a
   fully-skipped class passes it); pin **`$env:DOTNET_CLI_UI_LANGUAGE = 'en'`** first (the summary line is
   LOCALIZED — on a German-culture box it prints `gesamt:` and no `Total:`, inverting the guard into an
-  unconditional failure); and never key it on the "no tests matched" **string** (verbosity-dependent, so
-  it never fires — the #248 failure). The exact syntax, the measured output table, the guard expression,
+  unconditional failure); never key it on the "no tests matched" **string** (verbosity-dependent, so
+  it never fires — the #248 failure); and where the guard counts records read out of a result FILE,
+  **count what the runtime hands you when the answer IS zero** — with no tests executed the TRX carries
+  no `<Results>` element, the dotted navigation yields `$null`, and `@($null).Count` is **1**, so
+  `@($xml.TestRun.Results.UnitTestResult).Count -lt 1` evaluates `1 -lt 1` and never fires; write
+  `@(… | Where-Object { $_ })`. **Then PROVE it fires** — run the guard against its own zero case (an
+  empty result file, a deliberately typo'd filter) and watch the precondition line come out. All four
+  traps read correctly on the page and are dead only in execution, so re-reading cannot find them;
+  skipping that proof was measured at **11 misdirected findings** naming every pinned behaviour as
+  unbound, aimed at the one artifact a retry agent may edit. The exact syntax, the measured output table, the guard expression,
   the polarity-dependent ordering, and the two canonical scripts are `stacks/dotnet.md §4.3` (universal
   rule: catalogue → "Its SCOPE decides whether it proves anything").
 - "All tests pass" appears ONLY in the terminal `<plan>/guardrails/` folder (the terminal gate).
@@ -3713,7 +3777,9 @@ authority for every path/signature the new wave references.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks carry the right TDD "red" for the type under test (#155): a BEHAVIORAL type → the task also writes minimal `NotImplementedException` stubs, its `writeScope` covers test + stub file(s), and its guardrails are `build-passes` + `tests-fail-on-stubs`; a DATA MODEL → collapsed to one task (reason stated) or, if split, `tests-fail-on-current-code` + a STRUCTURAL `[Fact]`/`[Theory]` covers-key-behaviors check. Implementation tasks declare a `writeScope` that EXCLUDES the test file but TARGETS the stub file(s) (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
-- [ ] (#455) Every TASK-LEVEL test filter (`tests-pass` AND `tests-fail-on-stubs`, both halves of every TDD pair) names **that pair's OWN test class** — `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` — and NO task-level guardrail carries a bare plan-wide trait. The plan-wide trait appears in exactly ONE place: the baseline preflight's `!=` exclusion. The class substring is DISCRIMINATING (checked against every other test class the plan authors — `~Dispatch` also selects `DispatchRouterTests`; namespace-qualify when not), and every narrowed filter carries a **zero-match guard that can actually fire**: keyed on the EXECUTED count (`Passed:` + `Failed:`, NOT `Total:` — which counts `[Skip]`ped tests), with `$env:DOTNET_CLI_UI_LANGUAGE = 'en'` pinned first (the summary line is LOCALIZED — `gesamt:` on a German box), never on the "no tests matched" string (verbosity-dependent, so it never fires — #248), and ORDERED by polarity (forward: exit-code check first, so a never-ran test host is not misreported as a bad filter; inverse: guard first, so a crash is not certified as TDD red). The test-author task's `action.prompt.md` **PINS the exact test file + class name** the filter uses — a prompt that leaves the class name to the agent makes a correct filter unwritable and pushes the author back onto the plan-wide trait. `stacks/dotnet.md §4.3` (two classes → parenthesised `|` alternation; no trait → the FQN term alone; a collapsed data-model task still names its class).
+- [ ] (#455) Every TASK-LEVEL test filter (`tests-pass` AND `tests-fail-on-stubs`, both halves of every TDD pair) names **that pair's OWN test class** — `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` — and NO task-level guardrail carries a bare plan-wide trait. The plan-wide trait appears in exactly ONE place: the baseline preflight's `!=` exclusion. The class substring is DISCRIMINATING (checked against every other test class the plan authors — `~Dispatch` also selects `DispatchRouterTests`; namespace-qualify when not), and every narrowed filter carries a **zero-match guard that can actually fire**: keyed on the EXECUTED count (`Passed:` + `Failed:`, NOT `Total:` — which counts `[Skip]`ped tests), with `$env:DOTNET_CLI_UI_LANGUAGE = 'en'` pinned first (the summary line is LOCALIZED — `gesamt:` on a German box), never on the "no tests matched" string (verbosity-dependent, so it never fires — #248), never on a bare `@(<navigation>).Count` where the navigation yields `$null` when nothing ran (`@($null).Count` is **1**, so the guard evaluates `1 -lt 1` — filter with `| Where-Object { $_ }`), and ORDERED by polarity (forward: exit-code check first, so a never-ran test host is not misreported as a bad filter; inverse: guard first, so a crash is not certified as TDD red). The test-author task's `action.prompt.md` **PINS the exact test file + class name** the filter uses — a prompt that leaves the class name to the agent makes a correct filter unwritable and pushes the author back onto the plan-wide trait. `stacks/dotnet.md §4.3` (two classes → parenthesised `|` alternation; no trait → the FQN term alone; a collapsed data-model task still names its class). **And every zero-match guard was PROVEN to fire** — executed against its own zero case (an empty result file, a typo'd filter), not merely authored: all of these traps read correctly on the page and are dead only in execution, and skipping the proof was measured at **11 misdirected findings** naming every pinned behaviour as unbound.
+- [ ] **No task authors BOTH the tests and the implementation those tests exercise** (Step 2 rule 5's authorship test) — a composition-root / "wire X into Y" task splits even though its outcome sounds singular, because with no upstream test-author task there is no TDD RED half, only a FORWARD census, and a forward census cannot see a body that can never fail (measured: five pinned method names, four `Assert.True(true)` bodies and one real call that returned early, exit **0** against a completely unwired implementation). Split-trigger (e) splits by COLLABORATOR and does not discharge this. Where the split's red census would demand a test be red that a CORRECT implementation leaves GREEN (the discriminator — "a sound input does NOT halt"), that row is a **declared exemption** carrying `Expect='Executed'` with the structural reason in the guardrail header — never a silently dropped row, and never so many rows that the red census is a forward one wearing its name.
+- [ ] **Every required-present clause over a `.md` target strips `<!-- … -->` before matching** and fails on a residual unterminated `<!--`; fenced code blocks are NOT stripped (a fence renders — measured on the SSOT: 43,387 bytes across 26 blocks, 2 of 36 `PlanDefinition` occurrences inside one). Measured hole it closes: a two-token contract check flipping exit 1 → exit **0** on one appended `<!-- TODO: … -->` line. Doc targets are exempt from the `.valid`/`.invalid` sample pair, so this strip is the compensating control, not a nicety.
 - [ ] (#375) Every test-author task whose action prompt **enumerates behaviours** and has a **stub tree** emits its red as the **per-test census**, not a suite exit code: every enumerated behaviour bound to a **pinned test METHOD name** (pinned in the prompt, not left to the agent — **`validate` does NOT check this**: measured, GR2026 is blind to the census's name table, so read the prompt and the manifest side by side yourself) and observed **`Failed`** in the **runner's own result file** (TRX; never stdout, never `--list-tests` name discovery — a hollow body satisfies both), with **one accumulated message per unbound behaviour** and a **precondition early exit** that diagnoses a missing result file as *"the run did not happen"* rather than as unbound behaviours. `covers-key-behaviors` is emitted **as well** (naming floor), never instead. No rejection-shaped source regex (`Assert\.Throws` / `Assert\.False`) anywhere — it false-reds a correct `Assert.Equal(RejectedStale, r.Outcome)` and one tautological line satisfies it. The report states the boundary: an **invoking**-then-hollow test passes the census. `stacks/dotnet.md §4.4`.
 - [ ] (#154) Every generated test-author `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph after the target-file-path statement: it names the exact allowed path(s) (test + stub), states the harness's post-action `git diff` membership check rejects out-of-scope edits, states an out-of-scope edit fails the task and consumes a retry, and redirects an upstream missing-symbol compile error to `{"needsHuman": …}` rather than editing that file.
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
