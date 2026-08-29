@@ -1,7 +1,0 @@
-{
-  "description": "Author failing tests + stubs for barrier-time provider wait-and-poll: nextProbe = min(resetInstant, now + probeInterval), 30-minute default, bounded",
-  "dependsOn": [],
-  "stableId": "b5wait",
-  "writeScope": ["tests/Guardrails.Core.Tests/Providers/BarrierWaitTests.cs", "src/Guardrails.Core/Providers/BarrierWait.cs"],
-  "action": { "tier": "medium" }
-}

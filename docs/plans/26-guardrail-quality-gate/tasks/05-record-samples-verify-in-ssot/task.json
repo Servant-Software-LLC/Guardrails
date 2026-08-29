@@ -1,0 +1,7 @@
+{
+  "description": "Record the `guardrails samples verify` verb and the sample-verification preflight step in the SSOT and the domain-knowledge skill",
+  "dependsOn": ["04-wire-verifier-into-preflight"],
+  "stableId": "s5ssot",
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md", ".claude/skills/guardrails-domain-knowledge/SKILL.md"],
+  "action": { "tier": "easy" }
+}

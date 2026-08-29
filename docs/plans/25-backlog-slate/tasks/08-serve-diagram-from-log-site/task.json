@@ -1,7 +1,0 @@
-{
-  "description": "Serve the live diagram from the log-site server so its existing tasks/<id>/... hrefs resolve instead of 404ing under file://",
-  "dependsOn": ["07-author-tests-serve-diagram"],
-  "stableId": "d8simp",
-  "writeScope": ["src/Guardrails.Cli/Ui/LogServer.cs", "src/Guardrails.Cli/Ui/LogSiteRenderer.cs", "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs"],
-  "action": { "tier": "medium" }
-}

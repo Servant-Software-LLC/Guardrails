@@ -1,7 +1,0 @@
-{
-  "description": "Render the resolved model in the task row and the run-level log index, and link attempt-route.log by name from the task page",
-  "dependsOn": ["10-author-tests-model-in-row"],
-  "stableId": "m11rnd",
-  "writeScope": ["src/Guardrails.Cli/Ui/LiveRunObserver.cs", "src/Guardrails.Cli/ConsoleRunObserver.cs", "src/Guardrails.Cli/Ui/LogSiteRenderer.cs"],
-  "action": { "tier": "medium" }
-}

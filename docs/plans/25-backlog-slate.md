@@ -1,6 +1,22 @@
-# 25 — The post-tiering slate: a guardrail-quality gate, provider resilience, and the visibility half
+# 25 — SUPERSEDED: the post-tiering slate (re-cut into plans 26 and 27)
 
-**Status:** reviewed, ready for breakdown. **Issues:** #510, #511, #524, #522, #523.
+> **Status: ABANDONED, never run. Superseded 2026-08-29 by `26-guardrail-quality-gate.md` (#510) and
+> `27-operator-visibility.md` (#522/#523/#524).** The task folder was authored in full and then deleted;
+> it is recoverable at commit `cec5627`, which is also where the #511 provider-quota chain (tasks 05-06)
+> lives — that chain was dropped by the re-cut, since #511 is two isolated tasks and does not warrant a
+> plan of its own.
+>
+> **Why it was the wrong shape.** It batched five unrelated issues to amortise the ~$10 breakdown floor
+> — a cost argument, not a design one. A plan's unit is a coherent deliverable, and this was a shopping
+> list. Three of its five items collided on the same observer files, forcing a serialized chain that
+> gave up the parallelism the harness exists for; its docs sink coupled three otherwise-independent
+> chains; and delivery is all-or-nothing, so one failing chain would have stranded every other chain's
+> finished work (#525).
+>
+> The document is kept because plans 26 and 27 both cite it, and because the contention table in §0 and
+> the risks in §7 are the evidence for the re-cut. Nothing here should be executed.
+
+**Issues:** #510, #511, #524, #522, #523.
 
 Four independent deliverables chosen after the first tiered run (plan 24) landed. They are grouped into
 one plan because three of them collide on the same files — not because they are one feature.

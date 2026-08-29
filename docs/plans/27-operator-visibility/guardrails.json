@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "sonnet",
+    "haiku": {
+      "command": "claude",
+      "kind": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "costly": false,
+      "strength": 3,
+      "specialization": "coding",
+      "maxTurns": 50,
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ],
+      "routing": {
+        "tiers": [
+          "easy"
+        ],
+        "notes": "Mechanical, well-specified work with a deterministic gate behind it: SSOT/doc deltas, a domain-knowledge update, moving text between files. Avoid anything that has to DECIDE a contract."
+      }
+    },
+    "sonnet": {
+      "command": "claude",
+      "kind": "claude",
+      "model": "claude-sonnet-5",
+      "costly": false,
+      "strength": 6,
+      "specialization": "coding",
+      "maxTurns": 50,
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ],
+      "routing": {
+        "tiers": [
+          "medium"
+        ],
+        "notes": "Ordinary implementation and test-authoring against a spec that already exists. The plan-wide default tier, so anything untagged lands here rather than on the strongest model."
+      }
+    },
+    "opus": {
+      "command": "claude",
+      "kind": "claude",
+      "model": "claude-opus-5",
+      "costly": false,
+      "strength": 9,
+      "specialization": "planning-reasoning",
+      "maxTurns": 50,
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ],
+      "routing": {
+        "tiers": [
+          "hard"
+        ],
+        "notes": "Work that must reason across files or decide a contract: the hash-stability trap, the composition-root read site, anything touching PlanDefinitionHash or the review attestation."
+      }
+    }
+  },
+  "tiering": {
+    "defaultTier": "medium"
+  },
+  "maxCostUsd": 30
+}
