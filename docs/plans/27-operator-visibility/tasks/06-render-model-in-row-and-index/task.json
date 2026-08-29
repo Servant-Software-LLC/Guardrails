@@ -1,7 +1,0 @@
-{
-  "description": "Render the runner block name in the live task row from attempt launch, the model in the run-level log index, and link attempt-route.log by name from the task page",
-  "dependsOn": ["05-author-tests-model-in-row"],
-  "stableId": "m11rnd",
-  "writeScope": ["src/Guardrails.Cli/Ui/LiveRunObserver.cs", "src/Guardrails.Cli/ConsoleRunObserver.cs", "src/Guardrails.Cli/Ui/LogSiteRenderer.cs"],
-  "action": { "tier": "medium" }
-}

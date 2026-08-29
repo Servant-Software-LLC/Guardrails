@@ -56,7 +56,12 @@
 #   FullyQualifiedName~LogServerTests                                    -> executed 35, exit 0
 #   FullyQualifiedName~LogServerTests&Category!=BacklogSlate             -> executed 35, exit 0
 #     => `!=` INCLUDES tests carrying no Category trait. Every existing test in this project is one of
-#        those (`git grep -c BacklogSlate -- src tests` exits 1 with no output on the untouched tree),
+# EXCLUSION REWRITTEN 2026-08-29 - see the long note in preflights/01 for the full reasoning. In
+# short: `Category!=BacklogSlate` is a REPO-WIDE trait, plan 26 landed it at 6efded9, and this
+# baseline was certifying 900 while the terminal gate enforces 908 - the #181 misattribution this
+# file exists to prevent, arriving through a shared selector. Now excludes THIS PLAN'S OWN two
+# Integration classes by name: ServeDiagramTests (task 01) and ModelInRowTests (task 06).
+#        (superseded note) the old claim was that BacklogSlate
 #        so this filter does NOT vacuously select zero and red-halt before the DAG.
 #   FullyQualifiedName~AttemptModelRenderingTests                        -> executed  4, exit 0
 #   FullyQualifiedName~AttemptModelRenderingTests&Category!=ModelTieringStage3
@@ -90,7 +95,7 @@
 # This check is POSITIVE / assert-present, so it is GREEN ON ARRIVAL by design (#479's named
 # exception): a red here is a finding about the repo, not about this plan.
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guards below read is LOCALIZED (#455)
-$filter = 'Category!=BacklogSlate'
+$filter = 'FullyQualifiedName!~ServeDiagramTests&FullyQualifiedName!~ModelInRowTests'
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block,
 # leaving only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
 $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 2>&1

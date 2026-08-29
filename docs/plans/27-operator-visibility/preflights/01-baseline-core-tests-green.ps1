@@ -34,7 +34,25 @@
 #   FullyQualifiedName~HtmlDiagramRendererTests                              -> executed 48, exit 0
 #   FullyQualifiedName~HtmlDiagramRendererTests&Category!=BacklogSlate       -> executed 48, exit 0
 #     => `!=` INCLUDES tests that carry no Category trait at all. Every existing test in this project
-#        is one of those (`git grep -c BacklogSlate -- src tests` exits 1 with no output on the
+# EXCLUSION REWRITTEN 2026-08-29, and the reason is the whole point of this preflight.
+# It used to read `Category!=BacklogSlate`. That was correct when authored and is now WRONG:
+# `BacklogSlate` is a REPO-WIDE backlog trait, not a plan-27 marker, and plan 26 landed 3 files
+# carrying it at commit 6efded9 (SampleVerifierTests 13, SamplesCommandTests 4,
+# SampleVerifierWiringTests 7 occurrences; 12 executed tests in Core.Tests alone). The original
+# header declared as MEASURED that `git grep -c BacklogSlate -- src tests` "exits 1 with no output";
+# re-measured today it exits 0 with those 3 files (positive control: ModelTieringStage3 -> 6 files).
+#
+# Why that mattered rather than being cosmetic: the terminal gates run this project UNFILTERED, so
+# the baseline certified 2006 while the gate enforces 2018. A pre-existing red in the 12-test gap
+# passed HERE, red-halted the TERMINAL gate, and the gate's own text names "exactly TWO likely
+# causes in THIS plan" - sending the retry agent into HtmlDiagramRenderer.cs. That is precisely the
+# #181 misattribution this preflight exists to remove, inverted by a shared trait.
+#
+# The fix is the doctrine's own rule: exclude THIS PLAN'S OWN CLASSES, never a shared selector. The
+# only Core.Tests class this plan authors is DiagramRefreshTests (task 03). Measured on the starting
+# tree: that class does not exist yet, so the exclusion is inert today and becomes live the moment
+# task 03 lands - which is exactly the window it is for.
+#        (superseded note) the old claim was that BacklogSlate
 #        untouched tree; the same invocation for a literal that IS present, ModelTieringStage3,
 #        returns 6 files across src and tests - so that zero is a measurement, not a search that
 #        skipped its subject; RE-MEASURED 2026-08-29, the figure previously written here was 8), so
@@ -52,7 +70,7 @@
 # This check is POSITIVE / assert-present, so it is GREEN ON ARRIVAL by design (#479's named
 # exception): a red here is a finding about the repo, not about this plan.
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard below reads is LOCALIZED (#455)
-$filter = 'Category!=BacklogSlate'
+$filter = 'FullyQualifiedName!~DiagramRefreshTests'
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block,
 # leaving only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
 $out = dotnet test tests/Guardrails.Core.Tests --filter $filter --nologo 2>&1

@@ -1,0 +1,14 @@
+{
+  "description": "Record the served live diagram, the replaced whole-document refresh, the new IRunObserver.AttemptRouteResolved member and the model-in-the-task-row surface in the SSOT and the domain-knowledge skill",
+  "dependsOn": [
+    "07-render-model-in-row-and-index"
+  ],
+  "stableId": "v6surf",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": {
+    "tier": "easy"
+  }
+}

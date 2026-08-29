@@ -41,10 +41,13 @@ immediately and consumes a retry. If you hit a compile error caused by a missing
 file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and
 stop.
 
-**This task's own instruction is narrower than that boundary, deliberately: write the ONE file
-above and nothing else.** `writeScope` may list a production file as well; you do not need it and
-must not use it — see the next section for why. A production edit here would be invisible to this
-task's guardrails and would land ahead of the task that is supposed to make it.
+**This task writes exactly ONE file and nothing else**, and `writeScope` now says so: it lists that
+one test file, so the harness's post-action `git diff` check ENFORCES the boundary rather than
+merely asking for it. `src/Guardrails.Cli/Ui/LogSiteRenderer.cs` was removed from the scope on
+2026-08-29 for exactly that reason — it was granted but forbidden in prose, and a production edit
+here would be invisible to this task's guardrails and would land ahead of the task that is supposed
+to make it (task 02). If you find yourself needing a production edit, that is the signal to write
+`{"needsHuman": "<what is missing>"}` to the state-out path — not to reach for a wider scope.
 
 ### There is NO stub file, and that is deliberate — read this before you reach for one
 

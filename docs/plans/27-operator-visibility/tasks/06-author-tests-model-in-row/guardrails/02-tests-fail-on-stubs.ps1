@@ -1,0 +1,123 @@
+# catches: a HOLLOW test - named for the behaviour, body a tautology (Assert.True(true), Assert.NotNull
+#          on a value the test itself constructed, any assertion that never drives the real renderer).
+#          It PASSES against the current tree and hides behind its genuinely-failing siblings, so a
+#          suite-level non-zero exit certifies the file honest (#375). One entry per enumerated
+#          behaviour in this task's action prompt (its Group A table), each observed Failed in the
+#          runner's OWN TRX - never merely discovered by name, which a hollow body satisfies.
+#
+# THIS CENSUS IS THE ONLY THING THAT CATCHES THE attempt-route.log TRAP. `attempt-route.log` is
+# ALREADY in the rendered task page today (AppendAttemptFiles inlines every file in an attempt
+# directory as a <select> option plus a hidden <pre>), so a test asserting the page merely CONTAINS
+# that filename is green on arrival - the #478 pre-satisfaction defect, wearing a test's clothes. The
+# prompt therefore demands an <a> element AND a label naming the model question, and this census is
+# what proves the authored test actually fails today rather than accidentally passing.
+#
+# GROUP B IS DELIBERATELY ABSENT FROM THE MANIFEST - BOTH of its pins. The prompt asks for
+# RunLevelIndex_StillCarriesTaskStatusAndDescription_SoTheModelColumnIsAdditive and
+# BothDecorators_ForwardAttemptRouteResolved_ToTheirInnerObserver, and each PASSES against the tree
+# this task is handed, by design: the first is a regression pin on the index's existing shape, the
+# second is a regression pin on the forwarding 05-raise-attempt-route-resolved has ALREADY landed.
+# Censusing either would
+# demand it be red, which would be a demand to break working behaviour. The census "lists the
+# enumerated behaviours only; a test outside it is not the census's business" (catalogue, per-test
+# red census).
+#
+# Culture pin: this census reads the TRX (schema tokens, NOT localized), so unlike dotnet.md 4.3 the
+# guard does not depend on it - keep it anyway so the logged summary is readable and the pair stays
+# copy-pasteable. NO -v q anywhere: pointless here (nothing is re-emitted) and it propagates onto
+# forward checks by cloning (#462).
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+$filter = 'Category=BacklogSlate&FullyQualifiedName~ModelInRowTests'   # SAME string as the pair's forward half (07-render-model-in-row-and-index)
+
+# FILTER DISCRIMINATION (dotnet.md 4.3): 'ModelInRowTests' was measured against every one of the 282
+# distinct *Tests class names under tests/ and matches NONE of them - in fact NO test class anywhere
+# under tests/ contains the substring 'Row' at all, so this is maximally discriminating. The
+# model-named neighbours (ActionModelOverrideTests, ModelsUsedSummaryTests, ObservedModelCaptureTests,
+# AttemptModelRenderingTests, AttemptModelDisclosureTests) do not contain it, and neither does any
+# sibling class this plan authors (ServeDiagramTests, DiagramRefreshTests).
+
+# THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
+# Cross-checked BY HAND against tasks/06-author-tests-model-in-row/action.prompt.md (Group A) - the
+# prompt<->manifest agreement is NOT mechanically enforced (measured on plan 24: validate exits 0
+# either way).
+$manifest = [ordered]@{
+    'the run-level index declares a Model column'                        = 'RunLevelIndex_HasAModelColumn_BesideStatusAndDescription'
+    'each task row carries ITS OWN model, not one page-wide value'       = 'RunLevelIndex_ShowsTheModelThatActuallyRan_PerTask'
+    'a route/model mismatch is disclosed, not silently flattened'        = 'RunLevelIndex_DisclosesTheMismatch_WhenTheRouteRequestedADifferentModel'
+    'a task with no recorded model does not inherit its neighbour''s'    = 'RunLevelIndex_MarksATaskWithNoRecordedModel_RatherThanRepeatingItsNeighbours'
+    'the task page LINKS attempt-route.log by name, with a label'        = 'TaskPage_LinksAttemptRouteLogByName_WithALabelSayingWhatItAnswers'
+    'the cell names the runner BLOCK, flags a climb/substitution with !' = 'LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch'
+    'the row-build cell is (tier)/(script)/dash, never blank, bounded'   = 'LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded'
+    # The PURE SEAM the #468 demotion created, and the reason it is censused HERE rather than left to
+    # a source grep on the implementation task: ModelCellFromRoute is what the AttemptRouteResolved
+    # handler calls, so pinning it red now is what lets task 07's guardrail 03 require it as a CALL
+    # and thereby catch a handler that is declared, non-empty, and inert. Without a red pin on this
+    # name, that clause would be requiring a function nothing had ever proven works.
+    'the launch event maps to the cell, and requestedTier IS the climb' = 'LiveTableModelCellFromRoute_MapsTheLaunchEvent_AndFlagsAClimb'
+}
+
+$resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
+Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never read a PREVIOUS attempt's TRX
+$out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo `
+       --logger 'trx;LogFileName=census.trx' --results-directory $resultsDir 2>&1
+$out | ForEach-Object { Write-Output $_ }
+
+# PRECONDITION - the ONE legitimate early exit. No TRX means the run never happened (host failed to
+# start, wrong project path, malformed --filter which exits 0 SILENTLY). Diagnose THAT. Falling through
+# would print "every behaviour unbound", a confident wrong message aimed at the one artifact the retry
+# agent is allowed to edit.
+$trx = Get-ChildItem $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
+       Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $trx) {
+    Write-Output "no .trx under $resultsDir - the test run did not happen (test host failed to start, wrong project path, or a malformed --filter, which exits 0 with no results). This is NOT a finding about the tests: do NOT rewrite them."
+    exit 1
+}
+
+# DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
+#
+# THE `| Where-Object { $_ }` IS LOAD-BEARING AND WAS MEASURED, NOT ASSUMED (#478/#479). Without it
+# this guard is DEAD. PowerShell's dotted navigation over a TRX whose <Results> element is EMPTY - or
+# absent entirely - yields ONE element that is $null, so `@(...).Count` is 1, not 0, and the
+# zero-record precondition below can never fire. MEASURED 2026-08-29 against three hand-built TRX
+# files:
+#     <Results />        (empty)   -> .Count = 1  (1 null)  -> guard fires: NO   | with the filter: YES
+#     no <Results> at all           -> .Count = 1  (1 null)  -> guard fires: NO   | with the filter: YES
+#     one <UnitTestResult>          -> .Count = 1  (0 nulls) -> guard fires: NO   | with the filter: NO
+# The third row is the control: the filter does not change the real case. And the cost of the dead
+# guard was not merely a missing exit - the census loop below would then run over @($null), match
+# nothing, and report ALL SEVEN behaviours as "no test named X ran": a confident, actionable, wrong
+# message aimed at the one artifact the retry agent is allowed to edit, which is exactly what the
+# precondition above exists to prevent.
+$xml      = [xml](Get-Content $trx.FullName -Raw)
+$recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
+if ($recorded.Count -lt 1) {
+    Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This is NOT a finding about the tests: do NOT rewrite them."
+    exit 1
+}
+
+# ACCUMULATE (#179): one distinguishable message per unbound behaviour, so ONE attempt learns every gap.
+$failures = @()
+foreach ($behaviour in $manifest.Keys) {
+    $name = $manifest[$behaviour]
+    # -cmatch: C# method names are case-SENSITIVE and PowerShell -match is not.
+    # The (\(|$) tail admits a [Theory] row's appended data without admitting a longer sibling name.
+    $pattern = '\.' + [regex]::Escape($name) + '(\(|$)'
+    $hits    = @($recorded | Where-Object { $_.testName -cmatch $pattern })
+    if ($hits.Count -lt 1) {
+        $failures += "$behaviour -> no test named '$name' ran (absent from the file, or not selected by the filter)"
+        continue
+    }
+    $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
+    if ($notRed.Count -gt 0) {
+        $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
+        $failures += "$behaviour -> '$name' is $seen on the CURRENT tree, not Failed. LogSiteRenderer.cs renders the word 'model' NOWHERE today and LiveRunObserver.ModelCell is a NotImplementedException stub, so a test for either that passes is asserting something the code already does - most likely it checked that the page contains the bare string 'attempt-route.log', which is already inlined as a <select> option. Assert the <a> element and its label, and drive ModelCell directly. ('NotExecuted' = [Fact(Skip=...)].)"
+    }
+}
+
+if ($failures.Count -gt 0) {
+    Write-Output ""
+    Write-Output "=== per-test red census: $($failures.Count) of $($manifest.Count) enumerated behaviours are not proven RED on the current tree ==="
+    $failures | ForEach-Object { Write-Output "  - $_" }
+    exit 1
+}
+exit 0

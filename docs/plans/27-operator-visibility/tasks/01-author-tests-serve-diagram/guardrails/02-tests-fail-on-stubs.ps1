@@ -55,7 +55,15 @@ if (-not $trx) {
 
 # DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
 $xml      = [xml](Get-Content $trx.FullName -Raw)
-$recorded = @($xml.TestRun.Results.UnitTestResult)
+# The `| Where-Object { $_ }` is LOAD-BEARING, not tidiness. MEASURED 2026-08-29: a zero-match
+# `dotnet test --filter` EXITS 0 and writes a TRX with NO <Results> element at all, so
+# $xml.TestRun.Results is $null, $xml.TestRun.Results.UnitTestResult is $null, and `@($null).Count`
+# is **1** - which made the guard below unable to fire, ever. That is not hypothetical: it is this
+# task's FIRST-ATTEMPT path (the class does not exist yet), where the un-guarded fall-through
+# reports 'N of N behaviours not proven RED' - a confidently wrong message aimed at the one file
+# the retry agent is allowed to edit. The filter drops the $null and the count is 0; an XmlElement
+# is always truthy, so it can never drop a genuine result row.
+$recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
 if ($recorded.Count -lt 1) {
     Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This is NOT a finding about the tests: do NOT rewrite them."
     exit 1

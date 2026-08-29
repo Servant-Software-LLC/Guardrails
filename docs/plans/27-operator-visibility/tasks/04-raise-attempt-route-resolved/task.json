@@ -1,7 +1,0 @@
-{
-  "description": "Add IRunObserver.AttemptRouteResolved, raise it at attempt LAUNCH before the action runs, and forward it explicitly from BOTH transparent decorators",
-  "dependsOn": ["03-replace-meta-refresh"],
-  "stableId": "r12rout",
-  "writeScope": ["src/Guardrails.Core/Execution/IRunObserver.cs", "src/Guardrails.Core/Execution/TaskExecutor.cs", "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs", "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"],
-  "action": { "tier": "hard" }
-}

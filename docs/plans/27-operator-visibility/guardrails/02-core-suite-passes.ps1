@@ -7,13 +7,22 @@
 #
 # WHY THIS GATE IS WORTH ITS MINUTE, stated accurately for THIS plan. Of the nine production files
 # this plan modifies, THREE live in Guardrails.Core: src/Guardrails.Core/Graph/
-# HtmlDiagramRenderer.cs (task 03, #523) and, since the plan grew its contract task,
-# src/Guardrails.Core/Execution/IRunObserver.cs and src/Guardrails.Core/Execution/TaskExecutor.cs
-# (task 04, #524). The last two are why this gate matters MORE than it used to: THIRTY types
-# implement IRunObserver across src/ and tests/, and SEVEN of them live in
-# tests/Guardrails.Core.Tests (EscalationSinkTests, OverwatchNoVerdictTests,
-# SchedulerBreakdownPhaseEventsTests, SchedulerDriftAutoResolveTests, TopologyM2CleanupTests and
-# more) - a suite no task-level filter in this plan selects.
+# HtmlDiagramRenderer.cs (04-replace-meta-refresh, #523) and, since the plan grew its contract
+# task, src/Guardrails.Core/Execution/IRunObserver.cs and
+# src/Guardrails.Core/Execution/TaskExecutor.cs (05-raise-attempt-route-resolved, #524).
+#
+# The last two are why this gate matters MORE than it used to: adding a member to a public
+# interface touches every implementor. RE-MEASURED 2026-08-29 (the earlier figures here were
+# wrong and are corrected rather than quietly dropped): grep for the DECLARATION shape
+# `(class|record) <Name> : IRunObserver` returns **19** type declarations - 5 in src/, **5** in
+# tests/Guardrails.Core.Tests, 9 in tests/Guardrails.Integration.Tests. The superseded comment
+# said THIRTY and SEVEN; thirty was the LINE count from `grep -rn ': IRunObserver'`, most of
+# which are `observer: IRunObserver.Null` named-argument passes, not implementors, and it then
+# named five Core.Tests types followed by 'and more' - there are no more.
+#
+# The ARGUMENT survives the correction intact, which is why the gate stays as authored: 5 > 0,
+# so a solution-wide build and a whole-suite run are still the only things that compile and run
+# every implementor. No task-level filter in this plan selects that suite.
 # The diagram renderer is the other half of the story. That one file has substantial existing coverage OUTSIDE the
 # plan's Category=BacklogSlate trait - MEASURED 2026-08-29, THREE Core.Tests classes reference
 # HtmlDiagramRenderer (HtmlDiagramRendererTests, GraphSourceHashTests, MermaidRendererTests) carrying

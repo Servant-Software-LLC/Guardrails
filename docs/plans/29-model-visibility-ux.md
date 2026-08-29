@@ -36,7 +36,7 @@ src/Guardrails.Cli/Ui/LiveRunObserver.cs:111   _table.AddColumn("Detail");
 ### 1.1 The measured second defect, which plan 27 does not know about
 
 Plan 27 task 05 says to populate the new Model column from `AttemptModelResolved`
-(`tasks/05-render-model-in-row-and-index/action.prompt.md`, Half A item 3). **That event does not fire
+(`tasks/07-render-model-in-row-and-index/action.prompt.md`, Half A item 3). **That event does not fire
 when the attempt starts. It fires when the attempt's action has already finished.**
 
 ```
@@ -733,21 +733,27 @@ reading the diff.
 
 ## 7. What this changes in `docs/plans/27-operator-visibility` — reported, not edited
 
+> **Renumbered 2026-08-29 — this section was written against the 6-task plan.** The review that
+> followed split the meta-refresh task into a TDD pair, so plan 27 now has EIGHT tasks and every
+> ordinal below shifted: old 03 -> 03 (author-tests) + 04 (implement), old 04 -> 05, old 05 -> 06,
+> old 06 -> 07, old 07 -> 08. Task FOLDER NAMES are stable and are the reliable reference; bare
+> ordinals in this section are historical. The substance of every row still applies.
+
 Plan 27's **log-site half is unaffected**: task 05 Half B, and task 04's five HTML tests, stand exactly as
 written. The divergence is confined to the live table.
 
 | File | Change | Why |
 |---|---|---|
 | `27-operator-visibility.md` §3 "Done when" | *"the model appears in the task row"* → the task row carries the **runner block name** (the model id stays on the log-site row) | §3.3: the id costs 17–27 columns; the mismatch sentence costs the table |
-| `tasks/04-author-tests-model-in-row/action.prompt.md` — the one stub | `ModelCell(string? model, string? requestedModel)` → a signature carrying the block, the rung and the two mismatch flags, e.g. `ModelCell(string? runner, string? tier, bool climbed, bool substituted, bool isScript)` | §4.2: six states, none expressible from two model-id strings |
+| `tasks/06-author-tests-model-in-row/action.prompt.md` — the one stub | `ModelCell(string? model, string? requestedModel)` → a signature carrying the block, the rung and the two mismatch flags, e.g. `ModelCell(string? runner, string? tier, bool climbed, bool substituted, bool isScript)` | §4.2: six states, none expressible from two model-id strings |
 | — test `LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch` | rewrite: assert the cell is `sonnet` / `sonnet !`, **and assert it is ≤ 8 characters** | §3.3 — the width bound is the property, and no current test states it |
 | — test `LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded` | rewrite: `(medium)` when a rung is known, `—` only when nothing is, `(script)` for a script action | §1.1 — "no model recorded yet" is the *common* live state, not the exceptional one, and it has real content |
 | — the instruction *"reuse `AttemptModelSummary`'s shipped wording"* for the cell | drop **for the cell only**; keep it for the log site and the console line | §4.2 — the cell is an index into that line, not a copy of it |
-| `tasks/05-render-model-in-row-and-index/action.prompt.md` Half A | item 2 becomes `AddColumn(new TableColumn("Model").Width(8))`; item 3's population source becomes the new `AttemptRouteResolved`, with `AttemptModelResolved` as the correction; item 4's placeholder becomes the §4.2 state table | §1.1 — populating only from `AttemptModelResolved` leaves the column empty for the whole attempt |
-| `tasks/05-.../guardrails/03-live-table-has-a-populated-model-column.ps1` | **clause 1** `AddColumn\s*\(\s*"Model"\s*\)` no longer matches `AddColumn(new TableColumn("Model").Width(8))` — it must become something like `AddColumn\s*\(\s*(new\s+TableColumn\s*\(\s*)?"Model"` , or the width must move to a separate configuration call. **The baseline count comment (`0` on the untouched tree) still holds either way.** | the recommended construction is a `TableColumn`, not a string |
+| `tasks/07-render-model-in-row-and-index/action.prompt.md` Half A | item 2 becomes `AddColumn(new TableColumn("Model").Width(8))`; item 3's population source becomes the new `AttemptRouteResolved`, with `AttemptModelResolved` as the correction; item 4's placeholder becomes the §4.2 state table | §1.1 — populating only from `AttemptModelResolved` leaves the column empty for the whole attempt |
+| `tasks/07-.../guardrails/03-live-table-has-a-populated-model-column.ps1` | **clause 1** `AddColumn\s*\(\s*"Model"\s*\)` no longer matches `AddColumn(new TableColumn("Model").Width(8))` — it must become something like `AddColumn\s*\(\s*(new\s+TableColumn\s*\(\s*)?"Model"` , or the width must move to a separate configuration call. **The baseline count comment (`0` on the untouched tree) still holds either way.** | the recommended construction is a `TableColumn`, not a string |
 | — same file | **clause 2**'s `ModelCell\s*\(` floor of 2 survives unchanged **only if** `ModelCell` keeps its name. It should. Add a third clause requiring `AttemptRouteResolved` to be handled in this file, or the column is fed only from the post-action event and §1.1's defect ships | a floor of two calls does not say *which* event feeds them |
-| `tasks/05-.../samples/*.cs` | both samples need regenerating against the new signature and the `Width(8)` construction; the *invalid* sample's single defect (declared-but-never-populated) is still the right defect to encode | the samples are the guardrail's own smoke test |
-| `IRunObserver` | **new member `AttemptRouteResolved`** (§4.3) — a contract change, therefore an SSOT delta. Task 06 (`06-record-visibility-surfaces-in-ssot`) is where it lands | `IRunObserver.cs:43` has no launch-time route event |
+| `tasks/07-.../samples/*.cs` | both samples need regenerating against the new signature and the `Width(8)` construction; the *invalid* sample's single defect (declared-but-never-populated) is still the right defect to encode | the samples are the guardrail's own smoke test |
+| `IRunObserver` | **new member `AttemptRouteResolved`** (§4.3) — a contract change, therefore an SSOT delta. Task 08 (`08-record-visibility-surfaces-in-ssot`) is where it lands | `IRunObserver.cs:43` has no launch-time route event |
 
 **Sequencing:** plan 27's chain is serial by design (§0: two tasks appending to one file merge with no
 conflict marker and two copies, #175). Nothing here breaks that. If plan 27 has already run tasks 04/05

@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests pinning the live diagram's in-place status update - no whole-document meta refresh, a bounded named poll interval, and a file:// fallback notice",
+  "dependsOn": [
+    "02-serve-diagram-from-log-site"
+  ],
+  "stableId": "d9tdrf",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Graph/DiagramRefreshTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

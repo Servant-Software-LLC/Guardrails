@@ -1,7 +1,0 @@
-{
-  "description": "Replace the live diagram's whole-document meta-refresh so pan/zoom and scroll survive, clicks are not racy, and it stops at a terminal run state",
-  "dependsOn": ["02-serve-diagram-from-log-site"],
-  "stableId": "d9refr",
-  "writeScope": ["src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs", "tests/Guardrails.Core.Tests/Graph/DiagramRefreshTests.cs", "tests/Guardrails.Core.Tests/HtmlDiagramRendererTests.cs", "tests/Guardrails.Integration.Tests/OnTheFlyDiagramTests.cs", "tests/Guardrails.Integration.Tests/RunCommandFinalSiteSettleTests.cs"],
-  "action": { "tier": "medium" }
-}
