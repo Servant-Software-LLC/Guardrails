@@ -83,9 +83,26 @@ than the complaint against it: *"raising only on a disagreement would make the m
 exactly when something is odd and vanish the rest of the time."* The defect is **placement and
 persistence**, not conditionality. A transient line cannot answer a question asked after the fact.
 
-**Done when** the model appears **in the task row** (beside cost and duration, where it persists), on
-the run-level log index, and `attempt-route.log` is linked by name from the task page with a label
-saying what it answers.
+**Done when** the run's routing is visible **in the task row**, on the run-level log index, and
+`attempt-route.log` is linked by name from the task page with a label saying what it answers.
+
+The task-row half is specified by `docs/plans/29-model-visibility-ux.md` §4.1–§4.3, which measured this
+issue's obvious reading and rejected it. Three consequences, all binding here:
+
+- **The live row carries the `promptRunners` BLOCK NAME, not the model id** — a fourth column appended
+  last and pinned at `Width(8)`. The id costs 17–27 of 100 columns and `AttemptModelSummary`'s mismatch
+  sentence is 61 characters; one such cell re-lays-out every other row, on precisely the run an
+  operator is reading hardest. **The full model id stays on the log-site row**, which is the audit
+  surface and has no width crisis — one fact at two resolutions.
+- **The cell is filled at attempt LAUNCH, not at attempt end.** `AttemptModelResolved` carries
+  best-known-actual and therefore cannot fire until the runner has reported; attempts on this repo's
+  own runs last 14m02s and longer, so a cell fed only from it is blank for the whole attempt. A new
+  `IRunObserver.AttemptRouteResolved` — a contract change, and its own task — is raised before the
+  action runs and is what makes the column answer the question while it still matters.
+- **The column is never blank.** Before a route resolves it shows the planned rung parenthesised
+  (`(medium)`), or `(script)`, and `—` only when nothing is known. A blank cell in a live table reads
+  as "still resolving", which is a wrong claim about a finished task and about a healthy running one
+  alike.
 
 ## 4. Why it matters more than a UX nit
 
