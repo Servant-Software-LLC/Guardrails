@@ -4,8 +4,17 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — the name of the directory this task.json lives in, i.e.
-  `{ "06-record-visibility-surfaces-in-ssot": { "someKey": "someValue" } }`. The harness
+  `{ "07-record-visibility-surfaces-in-ssot": { "someKey": "someValue" } }`. The harness
   REJECTS a fragment keyed by anything else (every attempt).
+- **EXCEPTION — `needsHarnessWrite` is a TOP-LEVEL key, a SIBLING of the folder-name
+  key, never nested inside it.** The harness reads it off the fragment ROOT
+  (`HarnessWrite.cs:117` calls `document.RootElement.TryGetProperty("needsHarnessWrite", …)`).
+  Nested under the folder name it is NOT FOUND, and the harness treats the attempt as an
+  ordinary success — writing nothing, reporting nothing, and failing the guardrail with a
+  message about the file's CONTENT that gives you no hint the write never happened. Emit:
+  `{ "needsHarnessWrite": [ … ], "07-record-visibility-surfaces-in-ssot": { … } }`
+  — both at the root. If you have no ordinary state keys to publish, the folder-name key may
+  be omitted entirely; `needsHarnessWrite` alone at the root is a complete, valid fragment.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
@@ -69,7 +78,8 @@ it first (sections 1, 2 and 3) and write down what it says.
 
 **Write exactly two files:**
 
-1. `docs/plans/02-schemas-and-contracts.md` (the SSOT) — direct `Edit`.
+1. `docs/plans/02-schemas-and-contracts.md` (the SSOT) — direct `Edit`. It carries FOUR deltas: three
+   surfaces plus one contract member.
 2. `.claude/skills/guardrails-domain-knowledge/SKILL.md` — via `needsHarnessWrite` `edits`.
 
 **Scope boundary (harness-enforced):** Write only to those two paths. After this task completes, the
@@ -80,18 +90,20 @@ consumes a retry.
 ### Read what actually landed FIRST — and treat this section as authoring-time state
 
 You depend on the chain that ran before you: **02** (serving the diagram from the log site), **03**
-(replacing the diagram's whole-document refresh) and **05** (the model in the row and on the index).
+(replacing the diagram's whole-document refresh), **04** (the new `IRunObserver.AttemptRouteResolved`
+contract member) and **06** (the model in the row and on the index).
 Everything this prompt says about their shapes reflects the state at plan-authoring time, **before
 any of them had run**. `git log --oneline`, `git show` and a read of the changed files are the
 fastest way to see what actually shipped. **Document what landed, not what this prompt predicted.**
 If the two disagree, the code is right and this prompt is stale — say so in your summary.
 
-Navigate by **symbol and heading name, never by line number**: three tasks edited these areas before
+Navigate by **symbol and heading name, never by line number**: four tasks edited these areas before
 you and every line number in this prompt would already have moved. Grep for `LogServer.Handle`,
-`OnTheFlyDiagramObserver`, `HtmlDiagramRenderer`, `LiveRunObserver`, and in the SSOT for the
-headings `### 10.1 Live status overlay` and `### 12.1` / `### 12.3`.
+`OnTheFlyDiagramObserver`, `HtmlDiagramRenderer`, `LiveRunObserver`, `AttemptRouteResolved`, and in
+the SSOT for the headings `### 10.1 Live status overlay` and `### 12.1` / `### 12.3`, and for the
+paragraph beginning **“The live twin — `IRunObserver.AttemptModelResolved`”**.
 
-### Three surfaces to record, and two this plan deliberately does NOT record
+### FOUR surfaces to record, and two this plan deliberately does NOT record
 
 **(1) The live diagram is now SERVED — `GET /diagram.html` (#522).**
 The diagram emits plan-folder-relative hrefs (`tasks/<id>/guardrails/<file>.ps1`) which are exactly
@@ -137,9 +149,53 @@ conditionality; a transient line cannot answer a question asked after the fact.
 
 Record that the model now appears **in the task row** and **per task on the run-level log index**,
 and that the task page **links `attempt-route.log` by name** with a label saying what it answers.
-Record the boundary task 05 actually shipped — read its summary and the diff: state plainly whichever
+Record the boundary task 06 actually shipped — read its summary and the diff: state plainly whichever
 surface it does not yet reach (during-run index vs final/`--export` index), rather than letting the
-next reader discover it.
+next reader discover it. Record too that the **live task row carries the `promptRunners` BLOCK NAME**
+(eight characters, e.g. `sonnet`) while the **log-site row carries the full model id** — one fact at
+two resolutions, forced by the Spectre table's width, stated so a reader who sees only one surface
+knows the other exists.
+
+**(4) A new `IRunObserver` member — `AttemptRouteResolved` (#524). THIS IS A CONTRACT CHANGE, and it
+is the one item here that is not merely a UX note.**
+Task 04 added it to `src/Guardrails.Core/Execution/IRunObserver.cs`:
+
+```csharp
+void AttemptRouteResolved(
+    TaskNode task, int attempt, string runner, string model,
+    string? tier, string? requestedTier) { }
+```
+
+Read the LANDED signature out of that file rather than copying this block — if the two disagree, the
+code is right. Record, **in the SSOT only** (see the scope note at the end of this item):
+
+- **What it answers and WHEN.** It is raised at attempt **LAUNCH**, before `_actionRunner.RunAsync`,
+  from the same resolution the provenance and `attempt-route.log` are built from. That is the whole
+  difference from its sibling: `AttemptModelResolved` carries best-known-actual and therefore *cannot*
+  fire until the runner has reported what it ran on — MEASURED at 14m02s and longer per attempt on
+  `docs/plans/24-plan-source-provenance/state/run.json`. A surface fed only from the sibling shows a
+  placeholder for the whole attempt and fills in when the row settles.
+- **`AttemptModelResolved` is UNCHANGED** — same four arguments, same wording, same raise point. The
+  new event is additive; the old one becomes the confirmation or correction of what it announced.
+- **`requestedTier` is non-null ONLY when a §6.2 climb moved the rung**, so its PRESENCE is the climb
+  signal — the exact sibling of the `requestedModel` rule this document already states one paragraph
+  away. Say so, because an always-written copy would destroy the signal.
+- **The decorator footgun, by name.** The member has a **default no-op body**, so a transparent
+  decorator that omits it compiles cleanly and swallows the disclosure in every mode. Both shipped
+  decorators are stacked in both the live and the `--no-ui` chain. The SSOT already documents that
+  hazard for `AttemptModelResolved`; state that it applies to this member too.
+- **The bonus it buys:** a §6.2 rung climb previously reached NO console surface at all — it was
+  written only to `attempt-route.log`. This event makes it visible in both modes for the first time.
+
+The natural home is the paragraph that already begins **“The live twin —
+`IRunObserver.AttemptModelResolved`”**: put the new member beside it, in that paragraph's voice, as its
+launch-time counterpart. Do NOT open a new section for one interface member.
+
+**Scope note on the skill.** This contract delta is asked for in the **SSOT only**. The skill's job
+here is the three OPERATOR-FACING surfaces above; it points AT the SSOT for contract detail, and its
+guardrail checks exactly those three. If naming the new member falls out naturally while you rewrite
+the skill's *“Both are now IN FRONT OF THE OPERATOR”* paragraph, that is welcome — it is not required
+and nothing checks for it.
 
 **Not recorded here, deliberately, and do not add them:** the `guardrails samples verify` verb and
 the barrier-time provider wait. Both belong to other plans; neither shipped in this one. If a
@@ -181,8 +237,10 @@ job being done.
 
 - **SSOT.** The served route belongs in the **§12 Routes table** and its §12.1 narrative; the refresh
   change belongs in **§10.1's "During-run vs final" bullet**, edited in place; the model surface
-  belongs in **§12.3**, beside the sentence that already enumerates what the index shows per task.
-  Match each section's heading depth, its table and fenced-block style, and its voice.
+  belongs in **§12.3**, beside the sentence that already enumerates what the index shows per task; and
+  the **`AttemptRouteResolved` contract member** belongs beside the existing **“The live twin —
+  `IRunObserver.AttemptModelResolved`”** paragraph, as its launch-time counterpart. Match each
+  section's heading depth, its table and fenced-block style, and its voice.
 - **Skill.** Follow its own frontmatter SELF-UPDATING instruction: **update the affected section(s)
   only.** The served diagram and the refresh change belong in the **Live status overlay (issue #219,
   a THIRD companion)** sub-bullet under **Diagram**; the model surface belongs in the *"Both are now

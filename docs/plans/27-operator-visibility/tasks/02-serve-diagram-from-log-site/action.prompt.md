@@ -59,7 +59,7 @@ Navigate by symbol name, not line number — grep for these:
 - **`LogServer._logsRoot`** is the `logs/<runId>/` tree the run writes into;
   `OnTheFlyDiagramObserver` writes `diagram.html` there already, so the file the new route must
   serve is **already on disk at the right path** — that is why `OnTheFlyDiagramObserver` probably
-  needs no change at all. Verify before you touch it; the observer is also wanted by task 05's
+  needs no change at all. Verify before you touch it; the observer is also wanted by task 04's
   chain and a gratuitous edit here is a merge hazard for no gain.
 - **`LogServer._sourcesByTask`** is the precomputed task-id → (filename → `SourceFile`) map built by
   `BuildSourceMap` from the plan's `TaskNode` definitions. The existing `sourcefile` route resolves

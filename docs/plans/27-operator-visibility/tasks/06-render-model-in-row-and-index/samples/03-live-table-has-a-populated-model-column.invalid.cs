@@ -1,22 +1,25 @@
 using Spectre.Console;
+using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Cli.Ui;
 
 /// <summary>
 /// THE ONE DEFECT THIS SAMPLE CARRIES: the Model column is DECLARED and never POPULATED. ModelCell is
-/// implemented and passes its unit tests, the header renders, and every AddRow dutifully passes a
-/// fourth cell — an empty one. The model never reaches the row, so the live table answers "which
-/// model ran?" with a blank for the whole run, and a blank in a live table reads as "still
-/// resolving". "Declaration is not behaviour" (#468) at cell granularity.
+/// implemented and passes its unit tests, the header renders at Width(8), AttemptRouteResolved is
+/// declared and does fire, and every AddRow dutifully passes a fourth cell — an empty one. The block
+/// name never reaches the row, so the live table answers "which model ran?" with a blank for the whole
+/// run, and a blank in a live table reads as "still resolving". "Declaration is not behaviour" (#468)
+/// at cell granularity.
 ///
 /// Note what this sample does NOT do wrong, so the valid/invalid diff is exactly the one defect:
-/// AddColumn("Model") is present and correctly appended LAST, ModelCell is declared with the right
-/// shape, AttemptModelResolved still forwards to the console, and the name ModelCell even appears in
-/// a comment and in a nameof() below — the three places a name-only grep would accept and a
+/// AddColumn(new TableColumn("Model").Width(8)) is present and correctly appended LAST, ModelCell is
+/// declared with the right five-parameter shape, AttemptRouteResolved is declared with a NON-empty
+/// body, AttemptModelResolved still writes its console line — and the name ModelCell appears in a
+/// comment and in a nameof() below, which are the two places a name-only grep would accept and a
 /// call-anchored, $scan-based, floor-of-two clause must not.
 /// </summary>
-public sealed class LiveRunObserver
+public sealed class LiveRunObserver : IRunObserver
 {
     private readonly object _gate = new();
     private readonly Table _table;
@@ -30,15 +33,22 @@ public sealed class LiveRunObserver
         _table.AddColumn("Task");
         _table.AddColumn("Status");
         _table.AddColumn("Detail");
-        _table.AddColumn("Model");
+        _table.AddColumn(new TableColumn("Model").Width(8));
 
         RebuildRows();
     }
 
-    public static string ModelCell(string? model, string? requestedModel) =>
-        model is null
-            ? "[grey]—[/]"
-            : Markup.Escape(AttemptModelSummary(model, requestedModel));
+    public static string ModelCell(string? runner, string? tier, bool climbed, bool substituted, bool isScript)
+    {
+        string text =
+            isScript ? "(script)"
+            : runner is { Length: > 0 } ? (climbed || substituted ? runner + " !" : runner)
+            : tier is { Length: > 0 } ? "(" + tier + ")"
+            : "—";
+
+        string colour = climbed || substituted ? "yellow" : "grey";
+        return $"[{colour}]{Markup.Escape(text)}[/]";
+    }
 
     public static string AttemptModelSummary(string model, string? requestedModel) =>
         requestedModel is null
@@ -47,15 +57,23 @@ public sealed class LiveRunObserver
 
     public static string StatusMarkup(string outcome) => $"[green]{outcome}[/]";
 
+    public void AttemptRouteResolved(
+        TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier)
+    {
+        AnsiConsole.MarkupLine(
+            $"[grey]route[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
+            + $"[grey]{Markup.Escape(runner)} -> {Markup.Escape(model)}[/]");
+
+        // TODO: route this through ModelCell(...) and write it into cell 3 once the column is wired.
+        AnsiConsole.MarkupLine($"[grey]note: {nameof(ModelCell)} is not wired into the row yet[/]");
+    }
+
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
     {
         string colour = requestedModel is null ? "grey" : "yellow";
         AnsiConsole.MarkupLine(
             $"[{colour}]model[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
             + $"[{colour}]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]");
-
-        // TODO: route this through ModelCell(...) and write it into cell 3 once the column is wired.
-        AnsiConsole.MarkupLine($"[grey]note: {nameof(ModelCell)} is not wired into the row yet[/]");
     }
 
     private void RebuildRows()

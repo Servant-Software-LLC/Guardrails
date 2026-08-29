@@ -57,7 +57,7 @@ boundaries.
 ### The design, and why it depends on task 02
 
 `HtmlDiagramRenderer` is **pure** — it maps strings to a string with no I/O, and that must stay
-true. So the page cannot read a status file itself; it has to ask a server. Task 08 (your
+true. So the page cannot read a status file itself; it has to ask a server. Task 02 (your
 dependency, already merged) makes the log-site server serve this page at `/diagram.html`, which is
 what makes an in-place update possible at all: the page can `fetch` its own URL, take the
 `#node-status` JSON out of the returned document, and re-badge the existing SVG **without touching

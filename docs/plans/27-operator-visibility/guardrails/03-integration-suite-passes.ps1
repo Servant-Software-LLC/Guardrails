@@ -6,7 +6,7 @@
 #          lines at the END so a red terminal gate's WHY reaches the operator, not just
 #          `[FAIL] <name>` (#179).
 #
-# THIS IS THE MOST LOAD-BEARING GATE IN THE PLAN, and the measurement says why. FOUR of the six
+# THIS IS THE MOST LOAD-BEARING GATE IN THE PLAN, and the measurement says why. FIVE of the nine
 # production files this plan modifies have their ENTIRE existing coverage in this suite and ZERO in
 # tests/Guardrails.Core.Tests - MEASURED 2026-08-29 over source .cs only, bin/obj excluded:
 #   src/Guardrails.Cli/Ui/LogSiteRenderer.cs          Integration 6 files   Core 0
@@ -14,9 +14,16 @@
 #   src/Guardrails.Cli/ConsoleRunObserver.cs          Integration 8 files   Core 0
 #   src/Guardrails.Cli/Ui/LiveRunObserver.cs          Integration 8 files   Core 0
 #   src/Guardrails.Cli/Ui/LogServer.cs                Integration 2 files   Core 0
-# (positive control for that census: a literal read out of the tree, `ModelTieringStage3`, returned
-# 8 Core.Tests files - so a zero above is a measurement, not a search that never opened the door.)
-# Eighteen distinct Integration.Tests classes touch those observers. On top of that, task 03 is
+#   src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs  Integration 7 files   Core 0
+# (positive control for that census: a literal read out of the tree, `ModelTieringStage3`, returns
+# 4 Core.Tests files - so a zero above is a measurement, not a search that never opened the door.
+# RE-MEASURED 2026-08-29 with `git grep -l ModelTieringStage3 -- tests/Guardrails.Core.Tests`: the
+# figure previously written here was 8 and it was wrong. The control still does its job - a nonzero
+# proves the search reached the project - but the number is now the one the command prints.)
+# Eighteen distinct Integration.Tests classes touch those observers, and task 04's contract change
+# adds two more that exist ONLY here - AttemptModelDisclosureTests and AttemptModelForwardingTests,
+# the pair that pins the attempt-model raise counts and the decorator forwarding a new default
+# interface member can silently break. On top of that, task 03 is
 # deliberately licensed to EDIT two EXISTING files in this suite - OnTheFlyDiagramTests.cs (10
 # [Fact]/[Theory]) and RunCommandFinalSiteSettleTests.cs (2) - to retire the assertions #523 makes
 # false. Nothing but a whole-suite run can see an over-aggressive retirement, because every
@@ -25,7 +32,7 @@
 # scope: LOCAL (no sidecar `scope` key), deliberately, and this is the decision most worth not
 # reversing. A whole-suite run is a TERMINAL POSTCONDITION, not an integration check. Tagging it
 # scope:"integration" would re-run it at EVERY union point, including partial merges where a
-# downstream TDD task has not run yet - and this plan has two author-tests tasks (01 and 04) whose
+# downstream TDD task has not run yet - and this plan has two author-tests tasks (01 and 05) whose
 # tests are INTENTIONALLY RED until their implementing sibling lands, in THIS suite. A
 # scope:"integration" tag here would red-halt a correct run at task 01's own merge. That is the #125
 # anti-pattern with a live example attached. The union-safe integration invariant this plan does
@@ -77,7 +84,7 @@ if ($testExit -ne 0) {
         Write-Output "NOTE: the runner reports Failed: 0 yet exited $testExit. That is the CLASS-CLEANUP shape, not a failing assertion - look for '[Test Class Cleanup Failure (...)]' above. The known instance here is HostRepoCleanlinessGuard on RetrySalvageTests (#253/#433): it fails when the enclosing git checkout gains an untracked/modified path WHILE the suite runs. Check whether something wrote into the repo during this gate (an editor, a concurrent build, another agent) and re-run on a quiescent tree before concluding the suite is red."
     }
 
-    Write-Output "the Guardrails.Integration test suite is RED on the merged plan-branch HEAD - the union of this plan's tasks regressed something (see failure details above). This is the suite that carries ALL existing coverage for LogSiteRenderer.cs, OnTheFlyDiagramObserver.cs, LogServer.cs, LiveRunObserver.cs and ConsoleRunObserver.cs, so start there; then check whether task 03 retired more from OnTheFlyDiagramTests.cs or RunCommandFinalSiteSettleTests.cs than #523 actually made false."
+    Write-Output "the Guardrails.Integration test suite is RED on the merged plan-branch HEAD - the union of this plan's tasks regressed something (see failure details above). This is the suite that carries ALL existing coverage for LogSiteRenderer.cs, OnTheFlyDiagramObserver.cs, OnTheFlyLogSiteObserver.cs, LogServer.cs, LiveRunObserver.cs and ConsoleRunObserver.cs, so start there. Two specific suspects in this plan: task 03, which is licensed to retire assertions from OnTheFlyDiagramTests.cs and RunCommandFinalSiteSettleTests.cs - check it retired no more than #523 actually made false; and task 04, which adds a member to the PUBLIC IRunObserver interface and forwards it from both decorators - AttemptModelDisclosureTests and AttemptModelForwardingTests are the two classes that see a raise moved, duplicated or unforwarded."
     exit 1
 }
 

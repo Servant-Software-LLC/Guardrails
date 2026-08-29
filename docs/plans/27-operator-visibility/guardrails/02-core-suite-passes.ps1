@@ -5,9 +5,16 @@
 #          assertion/exception lines at the END so a red terminal gate's WHY reaches the operator,
 #          not just `[FAIL] <name>` (#179).
 #
-# WHY THIS GATE IS WORTH ITS MINUTE, stated accurately for THIS plan. Of the seven production files
-# this plan modifies, exactly ONE lives in Guardrails.Core: src/Guardrails.Core/Graph/
-# HtmlDiagramRenderer.cs (task 03, #523). That one file has substantial existing coverage OUTSIDE the
+# WHY THIS GATE IS WORTH ITS MINUTE, stated accurately for THIS plan. Of the nine production files
+# this plan modifies, THREE live in Guardrails.Core: src/Guardrails.Core/Graph/
+# HtmlDiagramRenderer.cs (task 03, #523) and, since the plan grew its contract task,
+# src/Guardrails.Core/Execution/IRunObserver.cs and src/Guardrails.Core/Execution/TaskExecutor.cs
+# (task 04, #524). The last two are why this gate matters MORE than it used to: THIRTY types
+# implement IRunObserver across src/ and tests/, and SEVEN of them live in
+# tests/Guardrails.Core.Tests (EscalationSinkTests, OverwatchNoVerdictTests,
+# SchedulerBreakdownPhaseEventsTests, SchedulerDriftAutoResolveTests, TopologyM2CleanupTests and
+# more) - a suite no task-level filter in this plan selects.
+# The diagram renderer is the other half of the story. That one file has substantial existing coverage OUTSIDE the
 # plan's Category=BacklogSlate trait - MEASURED 2026-08-29, THREE Core.Tests classes reference
 # HtmlDiagramRenderer (HtmlDiagramRendererTests, GraphSourceHashTests, MermaidRendererTests) carrying
 # 100 [Fact]/[Theory] declarations between them, and `--filter FullyQualifiedName~
@@ -22,13 +29,13 @@
 # WHAT THIS GATE DOES **NOT** COVER, so nobody mistakes it for the whole story: the other six files
 # this plan touches are all in Guardrails.Cli, and MEASURED on the untouched tree their Core.Tests
 # coverage is EXACTLY ZERO (LogSiteRenderer 0 files, OnTheFlyDiagramObserver 0, LogServer 0,
-# LiveRunObserver 0, ConsoleRunObserver 0; every one of them is covered only in
-# tests/Guardrails.Integration.Tests). That is what 03-integration-suite-passes.ps1 is for. Neither
+# LiveRunObserver 0, ConsoleRunObserver 0, OnTheFlyLogSiteObserver 0; every one of them is covered
+# only in tests/Guardrails.Integration.Tests). That is what 03-integration-suite-passes.ps1 is for. Neither
 # gate substitutes for the other.
 #
 # scope: LOCAL (no sidecar `scope` key), deliberately. A whole-suite run is a TERMINAL POSTCONDITION.
 # Tagging it scope:"integration" would re-run it at every union point, on partial merges where a
-# downstream TDD task has not run yet - so the deliberately-red author-tests of tasks 01 and 04 would
+# downstream TDD task has not run yet - so the deliberately-red author-tests of tasks 01 and 05 would
 # red-halt a correct run. That is the #125 anti-pattern by name.
 #
 # NO --filter here, and that is not an oversight: the #455 rule governs TASK-LEVEL filters, whose job
@@ -56,7 +63,7 @@ if ($testExit -ne 0) {
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "the Guardrails.Core test suite is RED on the merged plan-branch HEAD - the union of this plan's tasks regressed something (see failure details above). The likeliest cause in THIS plan is task 03: it edits src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs and is licensed to retire assertions from tests/Guardrails.Core.Tests/HtmlDiagramRendererTests.cs - check whether it retired more than the meta-refresh assertions #523 actually made false, and check GraphSourceHashTests and MermaidRendererTests, which also pin that renderer's output."
+    Write-Output "the Guardrails.Core test suite is RED on the merged plan-branch HEAD - the union of this plan's tasks regressed something (see failure details above). There are exactly TWO likely causes in THIS plan, because exactly two of its tasks touch Guardrails.Core. (1) Task 03 edits src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs and is licensed to retire assertions from tests/Guardrails.Core.Tests/HtmlDiagramRendererTests.cs - check whether it retired more than the meta-refresh assertions #523 actually made false, and check GraphSourceHashTests and MermaidRendererTests, which also pin that renderer's output. (2) Task 04 adds a member to the PUBLIC IRunObserver interface and raises it from TaskExecutor - SEVEN IRunObserver implementations live in this very project (EscalationSinkTests, OverwatchNoVerdictTests, SchedulerBreakdownPhaseEventsTests, SchedulerDriftAutoResolveTests, TopologyM2CleanupTests and more), and any of them stops compiling if that member lost its default no-op body."
     exit 1
 }
 

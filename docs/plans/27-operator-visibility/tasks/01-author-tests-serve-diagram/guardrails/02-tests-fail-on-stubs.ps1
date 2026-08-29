@@ -22,8 +22,8 @@ $filter = 'Category=BacklogSlate&FullyQualifiedName~ServeDiagramTests'   # SAME 
 # FILTER DISCRIMINATION (dotnet.md 4.3): 'ServeDiagramTests' was measured against every one of the 282
 # distinct *Tests class names under tests/ and matches NONE of them - the nearest neighbours are
 # LogServerTests ('Server', not 'Serve'+'Diagram'), HtmlDiagramRendererTests, OnTheFlyDiagramTests and
-# ContainerDiagramTests, and no plan-25 sibling class (SampleVerifierTests, SampleVerifierWiringTests,
-# BarrierWaitTests, DiagramRefreshTests, ModelInRowTests) contains it either. Once this task authors
+# ContainerDiagramTests, and no class this plan itself authors (DiagramRefreshTests, ModelInRowTests)
+# contains it either. Once this task authors
 # exactly one class with that name the filter selects exactly it.
 
 # THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.

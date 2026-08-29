@@ -4,7 +4,7 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — the name of the directory this task.json lives in, i.e.
-  `{ "04-author-tests-model-in-row": { "someKey": "someValue" } }`. The harness
+  `{ "05-author-tests-model-in-row": { "someKey": "someValue" } }`. The harness
   REJECTS a fragment keyed by anything else (every attempt).
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
@@ -49,6 +49,27 @@ Every API the log-site tests drive is already public and already does something:
 code and fail against today's OUTPUT** — the model is simply not in the HTML. That is a stronger red
 than a stub tree, so do not add stubs for them.
 
+### What task 04 already landed, and why it changes what you assert
+
+Task 04 (your dependency, already merged) added **`IRunObserver.AttemptRouteResolved(TaskNode task,
+int attempt, string runner, string model, string? tier, string? requestedTier)`** — raised at attempt
+**LAUNCH**, before the action runs, and forwarded by both transparent decorators. Read its landed
+signature out of `src/Guardrails.Core/Execution/IRunObserver.cs` (and out of your state-in fragment,
+where task 04 published it) rather than trusting this paragraph.
+
+That event is why the live cell's contract is **not** two model-id strings. The design of record is
+`docs/plans/29-model-visibility-ux.md` §4.1–§4.3; read those three short sections before you write a
+line, and §1.1 for the measurement behind them. The two facts that matter here:
+
+- **`AttemptModelResolved` fires only after the attempt's action returns** — MEASURED at 14m02s and
+  longer per attempt on `docs/plans/24-plan-source-provenance/state/run.json`. A cell fed only from it
+  is a placeholder for the whole attempt, which is the same "still resolving" lie this prompt already
+  forbids in the settled-task direction.
+- **The live cell carries the `promptRunners` BLOCK NAME, never the model id and never the mismatch
+  sentence.** `AttemptModelSummary`'s wording is 61 characters (measured); at `Width(8)` in a Spectre
+  table one such cell re-lays-out every other row. The model id stays on the log-site row, where HTML
+  has no width crisis.
+
 ### The one stub, and only it
 
 The live console table needs a **pure, testable seam** for its model cell, because the table itself
@@ -56,15 +77,47 @@ is not reachable from a test (see "What this task deliberately does NOT pin"). A
 member to `LiveRunObserver`:
 
 ```csharp
-public static string ModelCell(string? model, string? requestedModel) =>
+public static string ModelCell(
+    string? runner, string? tier, bool climbed, bool substituted, bool isScript) =>
     throw new NotImplementedException();
 ```
+
+**Five parameters, not two, because the cell has SIX distinguishable states and not one of them is
+expressible from two model-id strings** (design §4.2). This is the table; it is what your tests
+assert:
+
+| Moment | Condition | Cell |
+|---|---|---|
+| row built | prompt task, rung known at load (`ActionDefinition.Tier`) | `(medium)` |
+| row built | prompt task, untagged (no rung) | `—` |
+| row built | script action | `(script)` |
+| route resolved (launch) | served rung == requested rung | `sonnet` |
+| route resolved (launch) | a §6.2 climb moved the rung | `sonnet !` |
+| model observed (attempt end) | the provider served a different model | `sonnet !` |
+
+The parenthesis convention is the repo's own, not an invention: `AttemptProvenance.Model` already
+spells a stand-in as `"(cli default)"`. `(medium)` reads the same way — *planned, not yet actual* —
+and it is what makes the column **never blank**. `!` is a pointer, not a code: it means "the route did
+not get what it asked for", it never appears without a full-prose line above the live region saying
+which of the two causes it was, and it is the only flag.
+
+**One §4.2 row is deliberately absent from that table, and you must not add a test for it.** §4.2
+also lists a `no route` cell for the §6.2 no-candidate outcome. It is **not reachable** through this
+signature or through the event that fills the cell: `TaskExecutor` settles a no-route attempt and
+**returns** before the raise site §4.3 pins for `AttemptRouteResolved`, and a no-route resolution has
+no runner name and no model to hand the event anyway. A test asserting a `no route` cell would be
+asserting a state the harness cannot produce — a check no correct implementation can satisfy. Leave
+it out; it is a follow-on for whoever implements the rest of design 29, not a gap in this task.
 
 Place it beside the existing `public static string StatusMarkup(...)` and
 `public static string AttemptModelSummary(string, string?)` — that trio is the file's established
 convention for exactly this reason: a pure formatter a test can drive without touching the live
 region. Do not implement it, do not call it from anywhere, and do not add a second member. Nothing
 calls it yet, so adding it changes no behaviour and breaks no existing test.
+
+**Do NOT change `AttemptModelSummary`.** It stays exactly as it is and stays the shared wording for
+the log site and the console line. What the design drops is its use **in the cell** — one surface,
+not the vocabulary.
 
 ### What is measured today — this is the defect, and it is also the trap
 
@@ -113,16 +166,49 @@ stub you just wrote:
 | `RunLevelIndex_DisclosesTheMismatch_WhenTheRouteRequestedADifferentModel` | A task whose `Provenance.RequestedModel` is non-null and differs from `Provenance.Model`: the row discloses **both**, so an operator can see the route did not get what it asked for. `LiveRunObserver.AttemptModelSummary(model, requestedModel)` is the shipped formatter for exactly this and is visible from this test project — pin the shared wording rather than inventing a second one. |
 | `RunLevelIndex_MarksATaskWithNoRecordedModel_RatherThanRepeatingItsNeighbours` | A never-run task (no attempts, no provenance) listed beside a task that ran: its Model cell is a neutral placeholder, and specifically is **not** the neighbouring task's model. The cheapest wrong implementation carries the last value forward; this is the test that catches it. |
 | `TaskPage_LinksAttemptRouteLogByName_WithALabelSayingWhatItAnswers` | Write a real `attempt-route.log` into the attempt directory. After `ExportSite`, the task page contains an **`<a>` element whose href names `attempt-route.log`**, and whose visible label names what it answers (it must contain the word `model`). Do NOT assert merely that the string `attempt-route.log` appears — it already does, as an inlined `<select>` option, and that assertion is green today. |
-| `LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch` | Drive `LiveRunObserver.ModelCell(model, requestedModel)` directly. With `requestedModel` null it names the model. With a `requestedModel` that differs, it names **both** — reuse `AttemptModelSummary`'s shipped wording rather than inventing a second disclosure vocabulary; two formatters for one fact is how the two drift. |
-| `LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded` | `ModelCell(null, null)` returns a neutral placeholder — never an empty string, never a crash. An empty cell in a live table reads as "still resolving", which is a different and wrong claim about a task that already finished. |
+| `LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch` | The three RESOLVED states, driven through `LiveRunObserver.ModelCell(...)` directly. A route whose served rung equals the requested one gives the bare block name (`sonnet`). A §6.2 climb (`climbed: true`) and a provider substitution (`substituted: true`) each append the single flag `!` and nothing else (`sonnet !`). Assert **the width bound** — every cell this test produces is ≤ 8 visible characters — and assert the two things the cell must NEVER be: it does not contain `AttemptModelSummary`'s mismatch sentence, and it does not contain a model id such as `claude-sonnet-5`. |
+| `LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded` | The three ROW-BUILD states, which are the **common** live state and not the exceptional one. `(medium)` / `(easy)` / `(hard)` when a rung is known at load; `(script)` when `isScript` is true; `—` **only** when nothing at all is known — no block, no rung, not a script. Never an empty string, never a crash. An empty cell in a live table reads as "still resolving", which is a wrong claim about a task that already finished *and* about a task that is running healthily on a route the harness resolved before it launched. |
+
+**Two mechanics for those last two rows, so you do not have to guess them.**
+
+- **"Visible characters" means after Spectre markup is removed.** Whether `ModelCell` returns bare
+  text or `[grey]…[/]`-wrapped markup is task 06's call — the file's sibling `AttemptModelSummary`
+  returns plain text and its caller adds the colour, but `docs/plans/29-model-visibility-ux.md` §4.2
+  assigns a colour per state, so either shape is defensible. Measure width through a tiny local
+  helper that strips `\[[^\]]*\]` before counting, so the assertion is true under both and cannot be
+  satisfied by an implementation that pads the cell with markup.
+- **The ≤ 8 bound is asserted over the states this test drives, and the design says why that is not
+  the whole story.** §4.1's own worked example renders a 14-character block key (`local-qwen-32b`)
+  wrapping *inside* its `Width(8)` cell, and §10 risk 3 accepts that wrap rather than truncating —
+  truncation would misname the model. So ≤ 8 is a property of every block this repo actually
+  configures (`haiku`, `sonnet`, `opus` — 5, 6 and 4 characters) and of every parenthesised rung
+  (`(medium)` is exactly 8), **not** an invariant over arbitrary operator-chosen keys. Drive it with
+  those real block names. The bound that IS unconditional is the pair of negative assertions above:
+  no mismatch sentence, no model id. Assert both; they are what §3.3 exists to protect.
 
 ### Group B — a pin that is ALREADY GREEN today, and is NOT in the census
 
-Also author `RunLevelIndex_StillCarriesTaskStatusAndDescription_SoTheModelColumnIsAdditive`: the
-index still declares its Task, Status and Description columns and still renders a settled task as a
-link to its page with its `data-status` attribute. It passes against the current tree, so it is
-deliberately excluded from the red census — it is a regression pin, not evidence of the defect. Say
-so in a comment above it so the next reader does not think the census forgot it.
+Author **two** pins here. Both pass against the tree you are handed, so both are deliberately
+excluded from the red census — they are regression pins, not evidence of the defect. Say so in a
+comment above each one, so the next reader does not think the census forgot them.
+
+1. `RunLevelIndex_StillCarriesTaskStatusAndDescription_SoTheModelColumnIsAdditive`: the index still
+   declares its Task, Status and Description columns and still renders a settled task as a link to
+   its page with its `data-status` attribute.
+2. `BothDecorators_ForwardAttemptRouteResolved_ToTheirInnerObserver`: task 04 added
+   `IRunObserver.AttemptRouteResolved` with a **default no-op body**, so a decorator that stops
+   forwarding it still compiles, still satisfies the interface, and silently drops the disclosure for
+   every operator in every mode. Task 04's own guardrail is a source grep; this is the runtime pin
+   that outlives it, and it is the check that catches a *later* change breaking the forward.
+   `tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelForwardingTests.cs` is the exact
+   pattern — read it and mirror it: build each decorator over a `RecordingObserver` inner, invoke
+   **through the `IRunObserver` interface** and never the concrete type, and drive it in **both**
+   shapes (`requestedTier` present, `requestedTier` null), because a decorator that hard-coded null
+   would satisfy a one-shape test while destroying the climb signal. Constructing these two
+   decorators is safe and is not the forbidden construction below — the ban is on `LiveRunObserver`,
+   whose constructor starts a process-wide Spectre live region. Do NOT edit
+   `AttemptModelForwardingTests.cs`; it is outside your write scope. Copy the shape into
+   `ModelInRowTests`.
 
 ### What this task deliberately does NOT pin, and why you must not try
 

@@ -5,7 +5,7 @@
 #          The --filter names this pair's OWN test class, never the plan-wide trait alone - a
 #          trait-only filter asserts the state of every test in the plan, so this task could not go
 #          green until a task that DEPENDS on it has run (a deadlock validate/graph --check cannot
-#          see, #455). It is the SAME $filter string task 04's red census used, copied verbatim, so
+#          see, #455). It is the SAME $filter string task 05's red census used, copied verbatim, so
 #          the two halves of the pair can never drift apart.
 #          Re-emits the assertion/exception lines at the END so they reach the retry-feedback tail (#179).
 #          scope: LOCAL (no sidecar) - it asserts "the model IS rendered", which cannot be true before

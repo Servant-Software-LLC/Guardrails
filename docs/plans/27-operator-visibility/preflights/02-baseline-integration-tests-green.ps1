@@ -3,12 +3,12 @@
 #          starting code, so a later task's tests-pass failure gets misattributed to that task, its
 #          retry budget burns, and the run ends at needs-human with the deliverable complete.
 #          Asserting them green BEFORE the DAG makes the attribution honest, and makes the TDD red of
-#          tasks 01 and 04 unambiguous (#181). Re-emits the failure DETAIL at the END so a red
+#          tasks 01 and 05 unambiguous (#181). Re-emits the failure DETAIL at the END so a red
 #          baseline's WHY reaches the halt feedback, not just `[FAIL] <name>` (#179).
 #
 # WHY THIS IS A GENUINE SECOND BASELINE AREA, and not a duplicate of preflights/01. Three of this
-# plan's six tasks write tests into this project (01 authors LogSite/ServeDiagramTests.cs, 04 authors
-# ModelTiering/ModelInRowTests.cs, 03 edits OnTheFlyDiagramTests.cs and
+# plan's seven tasks write tests into this project (01 authors LogSite/ServeDiagramTests.cs, 05
+# authors ModelTiering/ModelInRowTests.cs, 03 edits OnTheFlyDiagramTests.cs and
 # RunCommandFinalSiteSettleTests.cs). More decisively, EVERY Guardrails.Cli file this plan modifies
 # has its existing coverage HERE and ZERO in tests/Guardrails.Core.Tests - MEASURED 2026-08-29 over
 # source .cs only, bin/obj excluded:
@@ -17,9 +17,11 @@
 #   ConsoleRunObserver.cs       Integration 8 files   Core 0
 #   LiveRunObserver.cs          Integration 8 files   Core 0
 #   LogServer.cs                Integration 2 files   Core 0
-# (positive control for that census: `ModelTieringStage3`, a literal read out of the tree, returns 8
+#   OnTheFlyLogSiteObserver.cs  Integration 7 files   Core 0
+# (positive control for that census: `ModelTieringStage3`, a literal read out of the tree, returns 4
 # Core.Tests files under the same invocation - so the zeros above are measurements, not a search that
-# skipped its subject.) Preflights/01 cannot see any of that: it covers exactly one production file
+# skipped its subject. RE-MEASURED 2026-08-29; the figure previously written here was 8 and it was
+# wrong. A nonzero is what the control needs; the number is now the one the command prints.) Preflights/01 cannot see any of that: it covers exactly one production file
 # of this plan, HtmlDiagramRenderer.cs. Two areas, two baselines, deduped one-per-area.
 #
 # NO NARROW FILTER IS AVAILABLE HERE, and pretending otherwise would be the dishonest move. The four
@@ -46,7 +48,8 @@
 # The `!=` exclusion is the ONE place the plan-wide trait stands ALONE (#455): "everything except the
 # tests this plan is about to write". Bare, this trait is NOT a task-level selector - every task
 # guardrail in this plan conjoins its OWN test class beside it (tasks 01/02 conjoin
-# ~ServeDiagramTests, tasks 04/05 conjoin ~ModelInRowTests).
+# ~ServeDiagramTests, tasks 05/06 conjoin ~ModelInRowTests; task 04 carries no BacklogSlate class at
+# all and its regression guard names AttemptModelDisclosureTests / AttemptModelForwardingTests).
 #
 # MEASURED, not recalled (#248) - the two halves of the `!=` semantics, run against THIS project and
 # runner at authoring time (2026-08-29). The zero-match guard below is NOT optional and this is why:
@@ -113,7 +116,7 @@ if ($testExit -ne 0) {
         Write-Output "NOTE: the runner reports Failed: 0 yet exited $testExit. That is the CLASS-CLEANUP shape, not a failing assertion - look for '[Test Class Cleanup Failure (...)]' above. The known instance is HostRepoCleanlinessGuard on RetrySalvageTests (#253/#433): it fails when the enclosing git checkout gains an untracked or modified path WHILE the suite runs. Check whether something wrote into the repo during this preflight (an editor, a concurrent build, another agent) and re-run on a quiescent tree before concluding the area is red."
     }
 
-    Write-Output "the existing tests in tests/Guardrails.Integration.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181). This baseline executed 896 tests green (900 total, 4 skipped) when the plan was authored. This is the suite that carries ALL existing coverage for LogSiteRenderer.cs, OnTheFlyDiagramObserver.cs, LogServer.cs, LiveRunObserver.cs and ConsoleRunObserver.cs, so a red here means every observer task in this plan would have been building on an unknown base."
+    Write-Output "the existing tests in tests/Guardrails.Integration.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181). This baseline executed 896 tests green (900 total, 4 skipped) when the plan was authored. This is the suite that carries ALL existing coverage for LogSiteRenderer.cs, OnTheFlyDiagramObserver.cs, OnTheFlyLogSiteObserver.cs, LogServer.cs, LiveRunObserver.cs and ConsoleRunObserver.cs, so a red here means every observer task in this plan - including the task 04 contract change - would have been building on an unknown base."
     exit 1
 }
 

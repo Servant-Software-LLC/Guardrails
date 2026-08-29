@@ -19,7 +19,7 @@ $filter = 'Category=BacklogSlate&FullyQualifiedName~DiagramRefreshTests'
 # FILTER DISCRIMINATION (dotnet.md 4.3): 'DiagramRefreshTests' was measured against every one of the
 # 282 distinct *Tests class names under tests/ and matches NONE of them - the nearest neighbours are
 # HtmlDiagramRendererTests, OnTheFlyDiagramTests and ContainerDiagramTests, none of which contains it
-# as a substring, and no plan-25 sibling class does either.
+# as a substring, and no class this plan itself authors does either.
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block,
 # leaving only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
 $out = dotnet test tests/Guardrails.Core.Tests --filter $filter --no-build --nologo 2>&1

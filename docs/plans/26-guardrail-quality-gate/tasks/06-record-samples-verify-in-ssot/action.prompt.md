@@ -6,6 +6,15 @@
   key — the name of the directory this task.json lives in, i.e.
   `{ "06-record-samples-verify-in-ssot": { "someKey": "someValue" } }`. The harness
   REJECTS a fragment keyed by anything else (every attempt).
+- **EXCEPTION — `needsHarnessWrite` is a TOP-LEVEL key, a SIBLING of the folder-name
+  key, never nested inside it.** The harness reads it off the fragment ROOT
+  (`HarnessWrite.cs:117` calls `document.RootElement.TryGetProperty("needsHarnessWrite", …)`).
+  Nested under the folder name it is NOT FOUND, and the harness treats the attempt as an
+  ordinary success — writing nothing, reporting nothing, and failing the guardrail with a
+  message about the file's CONTENT that gives you no hint the write never happened. Emit:
+  `{ "needsHarnessWrite": [ … ], "06-record-samples-verify-in-ssot": { … } }`
+  — both at the root. If you have no ordinary state keys to publish, the folder-name key may
+  be omitted entirely; `needsHarnessWrite` alone at the root is a complete, valid fragment.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working

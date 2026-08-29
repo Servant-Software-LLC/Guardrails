@@ -8,9 +8,12 @@
 # WHAT THIS PLAN ACTUALLY DOES IN THIS AREA - stated truthfully, because the number matters. This plan
 # authors exactly ONE file in tests/Guardrails.Core.Tests: Graph/DiagramRefreshTests.cs (task 03,
 # #523). It EDITS one existing file there: HtmlDiagramRendererTests.cs, and only to retire the
-# assertions #523 makes false. Nothing else in this plan lands in this project - the other four
-# production files it modifies are all in Guardrails.Cli, whose coverage is entirely in
-# tests/Guardrails.Integration.Tests (see preflights/02, the second baseline area). One area here,
+# assertions #523 makes false. It writes no other TEST into this project - but it does modify two
+# more Guardrails.Core PRODUCTION files, IRunObserver.cs and TaskExecutor.cs (task 04, #524), whose
+# implementors include seven IRunObserver types living in THIS test project. That makes this
+# baseline load-bearing for the contract change too, not only for the diagram renderer. The
+# remaining production files this plan modifies are in Guardrails.Cli, whose coverage is entirely
+# in tests/Guardrails.Integration.Tests (see preflights/02, the second baseline area). One area here,
 # one file authored, one file edited; the per-area dedupe therefore yields exactly this file and
 # preflights/02, and no third.
 #
@@ -21,7 +24,10 @@
 # preflight can say "everything except the tests this plan is about to write": the pre-DAG phase runs
 # against the STARTING bytes, where none of the BacklogSlate tests exist yet, and the filter makes
 # that intent explicit and robust. Bare, this trait is NOT a task-level selector - every task
-# guardrail in this plan conjoins its OWN test class beside it (task 03 conjoins ~DiagramRefreshTests).
+# guardrail in this plan that owns a BacklogSlate class conjoins that class beside it (task 03
+# conjoins ~DiagramRefreshTests). Task 04, the contract task, owns NO BacklogSlate class: it authors
+# no tests, and its regression guard names two pre-existing classes
+# (AttemptModelDisclosureTests / AttemptModelForwardingTests) with no Category term at all.
 #
 # MEASURED, not recalled (#248) - the two halves of the `!=` semantics this preflight depends on, run
 # against this exact project and runner at authoring time (2026-08-29):
@@ -30,7 +36,8 @@
 #     => `!=` INCLUDES tests that carry no Category trait at all. Every existing test in this project
 #        is one of those (`git grep -c BacklogSlate -- src tests` exits 1 with no output on the
 #        untouched tree; the same invocation for a literal that IS present, ModelTieringStage3,
-#        returns 8 files - so that zero is a measurement, not a search that skipped its subject), so
+#        returns 6 files across src and tests - so that zero is a measurement, not a search that
+#        skipped its subject; RE-MEASURED 2026-08-29, the figure previously written here was 8), so
 #        this filter does NOT vacuously select zero and red-halt before the DAG.
 #   FullyQualifiedName~TierClassificationAuditTests                          -> executed 12, exit 0
 #   FullyQualifiedName~TierClassificationAuditTests&Category!=ModelTieringStage3

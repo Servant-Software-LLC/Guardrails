@@ -12,28 +12,31 @@
 # prompt therefore demands an <a> element AND a label naming the model question, and this census is
 # what proves the authored test actually fails today rather than accidentally passing.
 #
-# GROUP B IS DELIBERATELY ABSENT FROM THE MANIFEST. The prompt's
-# RunLevelIndex_StillCarriesTaskStatusAndDescription_SoTheModelColumnIsAdditive pin PASSES against the
-# current tree by design - it is a regression pin, not evidence of #524. Censusing it would demand it
-# be red, which would be a demand to break working behaviour. The census "lists the enumerated
-# behaviours only; a test outside it is not the census's business" (catalogue, per-test red census).
+# GROUP B IS DELIBERATELY ABSENT FROM THE MANIFEST - BOTH of its pins. The prompt asks for
+# RunLevelIndex_StillCarriesTaskStatusAndDescription_SoTheModelColumnIsAdditive and
+# BothDecorators_ForwardAttemptRouteResolved_ToTheirInnerObserver, and each PASSES against the tree
+# this task is handed, by design: the first is a regression pin on the index's existing shape, the
+# second is a regression pin on the forwarding task 04 has ALREADY landed. Censusing either would
+# demand it be red, which would be a demand to break working behaviour. The census "lists the
+# enumerated behaviours only; a test outside it is not the census's business" (catalogue, per-test
+# red census).
 #
 # Culture pin: this census reads the TRX (schema tokens, NOT localized), so unlike dotnet.md 4.3 the
 # guard does not depend on it - keep it anyway so the logged summary is readable and the pair stays
 # copy-pasteable. NO -v q anywhere: pointless here (nothing is re-emitted) and it propagates onto
 # forward checks by cloning (#462).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
-$filter = 'Category=BacklogSlate&FullyQualifiedName~ModelInRowTests'   # SAME string as the pair's forward half (task 05)
+$filter = 'Category=BacklogSlate&FullyQualifiedName~ModelInRowTests'   # SAME string as the pair's forward half (task 06)
 
 # FILTER DISCRIMINATION (dotnet.md 4.3): 'ModelInRowTests' was measured against every one of the 282
 # distinct *Tests class names under tests/ and matches NONE of them - in fact NO test class anywhere
 # under tests/ contains the substring 'Row' at all, so this is maximally discriminating. The
 # model-named neighbours (ActionModelOverrideTests, ModelsUsedSummaryTests, ObservedModelCaptureTests,
 # AttemptModelRenderingTests, AttemptModelDisclosureTests) do not contain it, and neither does any
-# plan-25 sibling class.
+# sibling class this plan authors (ServeDiagramTests, DiagramRefreshTests).
 
 # THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
-# Cross-checked BY HAND against tasks/04-author-tests-model-in-row/action.prompt.md (Group A) - the
+# Cross-checked BY HAND against tasks/05-author-tests-model-in-row/action.prompt.md (Group A) - the
 # prompt<->manifest agreement is NOT mechanically enforced (measured on plan 24: validate exits 0
 # either way).
 $manifest = [ordered]@{
@@ -42,8 +45,8 @@ $manifest = [ordered]@{
     'a route/model mismatch is disclosed, not silently flattened'        = 'RunLevelIndex_DisclosesTheMismatch_WhenTheRouteRequestedADifferentModel'
     'a task with no recorded model does not inherit its neighbour''s'    = 'RunLevelIndex_MarksATaskWithNoRecordedModel_RatherThanRepeatingItsNeighbours'
     'the task page LINKS attempt-route.log by name, with a label'        = 'TaskPage_LinksAttemptRouteLogByName_WithALabelSayingWhatItAnswers'
-    'the live table cell names the model, and both on a mismatch'        = 'LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch'
-    'the live table cell is a placeholder, never blank, with no model'   = 'LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded'
+    'the cell names the runner BLOCK, flags a climb/substitution with !' = 'LiveTableModelCell_NamesTheModel_AndDisclosesTheRouteMismatch'
+    'the row-build cell is (tier)/(script)/dash, never blank, bounded'   = 'LiveTableModelCell_RendersAPlaceholder_WhenNoModelIsRecorded'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"

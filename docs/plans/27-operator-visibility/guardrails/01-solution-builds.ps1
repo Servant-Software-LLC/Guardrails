@@ -3,9 +3,10 @@
 #          both regions leaves no conflict marker and only the compiler sees it, #175).
 #
 # WHY THIS PLAN NEEDS IT, stated accurately: this plan does NOT run parallel chains that fan in. It
-# is ONE strictly serial chain (01 -> 02 -> 03 -> 04 -> 05 -> 06). But the collision hazard is real
-# and specific here - three tasks declare src/Guardrails.Cli/Ui/LogSiteRenderer.cs in their
-# writeScope (01, 02, 05) and two declare src/Guardrails.Cli/Ui/LiveRunObserver.cs (04, 05) - and
+# is ONE strictly serial chain (01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07). But the collision hazard is
+# real and specific here - three tasks declare src/Guardrails.Cli/Ui/LogSiteRenderer.cs in their
+# writeScope (01, 02, 06), two declare src/Guardrails.Cli/Ui/LiveRunObserver.cs (05, 06) and two
+# declare src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs (02, 04) - and
 # the SERIALISATION is precisely what removes it: each task's segment base already carries its
 # predecessor's merged output, so no two tasks ever append the same member to the same file from a
 # common base. That is the plan-of-record's own reasoning (section 0: "they share files ... so they
@@ -31,7 +32,7 @@
 # re-emit exists to surface.
 dotnet build Guardrails.sln --nologo -v q
 if ($LASTEXITCODE -ne 0) {
-    Write-Output "the solution does not build on the merged plan-branch HEAD - the union of this plan's tasks does not compile together (see the compiler errors above). The shared-file writeScopes are where this plan's version of that failure lands: check src/Guardrails.Cli/Ui/LogSiteRenderer.cs (written by tasks 01, 02 and 05) and src/Guardrails.Cli/Ui/LiveRunObserver.cs (written by tasks 04 and 05) first, then LogServer.cs, OnTheFlyDiagramObserver.cs, ConsoleRunObserver.cs and HtmlDiagramRenderer.cs."
+    Write-Output "the solution does not build on the merged plan-branch HEAD - the union of this plan's tasks does not compile together (see the compiler errors above). The shared-file writeScopes are where this plan's version of that failure lands: check src/Guardrails.Cli/Ui/LogSiteRenderer.cs (written by tasks 01, 02 and 06), src/Guardrails.Cli/Ui/LiveRunObserver.cs (written by tasks 05 and 06) and src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs (written by tasks 02 and 04) first, then IRunObserver.cs and TaskExecutor.cs - task 04 changes a PUBLIC interface, so a member added there and a decorator forward added here are the two halves most likely to arrive out of step - then LogServer.cs, OnTheFlyLogSiteObserver.cs, ConsoleRunObserver.cs and HtmlDiagramRenderer.cs."
     exit 1
 }
 exit 0

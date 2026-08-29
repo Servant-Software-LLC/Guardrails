@@ -88,5 +88,5 @@
   "tiering": {
     "defaultTier": "medium"
   },
-  "maxCostUsd": 30
+  "maxCostUsd": 45
 }

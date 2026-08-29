@@ -12,9 +12,15 @@
 # stub - LogSiteRenderer.ExportSite, WriteTaskPageIfHasAttempts, JournalDocument and AttemptProvenance
 # are all already public, so those tests compile against the current tree and are red on OUTPUT (the
 # model is absent from the HTML). The live-table behaviours are red on a genuine stub: the ONE member
-# this task adds to LiveRunObserver.cs, a `public static string ModelCell(string?, string?)` whose
-# body throws NotImplementedException. Building the test project compiles BOTH the stub's assembly
-# and the tests that drive it.
+# this task adds to LiveRunObserver.cs, a
+# `public static string ModelCell(string? runner, string? tier, bool climbed, bool substituted,
+# bool isScript)` whose body throws NotImplementedException. Building the test project compiles BOTH
+# the stub's assembly and the tests that drive it.
+#
+# It ALSO covers the one Group B pin that could not compile before this plan's task 04 ran: the
+# decorator-forwarding regression pin references IRunObserver.AttemptRouteResolved, a member task 04
+# added. That is the #176 transitive-compile-dependency rule satisfied by the chain ORDER - the
+# contract task runs first precisely so this task's tests have something to bind to.
 #
 # -v q is correct HERE (a dotnet BUILD): it strips restore/banner chatter and leaves the compiler
 # errors. It is NOT carried onto any dotnet test in this plan - there it would delete the failure

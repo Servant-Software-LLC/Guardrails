@@ -52,7 +52,7 @@
 # harder to false-red. Likewise `log server`/`LogServer` are ambient in the SSOT (2x each) and 0 here.
 # Measure per subject; never copy a clause between two documents on the assumption they read alike.
 #
-#   No ancestor task's prompt or writeScope writes these tokens into this subject - tasks 01-05 write
+#   No ancestor task's prompt or writeScope writes these tokens into this subject - tasks 01-06 write
 #   only under src/ and tests/, and this task is the only one in plan 27 whose writeScope names this file.
 $f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { ".claude/skills/guardrails-domain-knowledge/SKILL.md" }
 

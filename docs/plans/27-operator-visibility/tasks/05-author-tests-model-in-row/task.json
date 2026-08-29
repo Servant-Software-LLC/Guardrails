@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests + stubs for the live row's runner-block Model cell and the run-level log index's model column, so what ran persists after the task finishes",
+  "dependsOn": ["04-raise-attempt-route-resolved"],
+  "stableId": "m10row",
+  "writeScope": ["tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs", "src/Guardrails.Cli/Ui/LiveRunObserver.cs"],
+  "action": { "tier": "medium" }
+}

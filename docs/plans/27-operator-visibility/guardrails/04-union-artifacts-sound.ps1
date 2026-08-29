@@ -1,12 +1,12 @@
 # catches: a union that left git conflict markers in - or emptied - a file this plan produces. The
 #          deterministic verdict on EVERY union's bytes, never git's no-conflict signal and never an
 #          AI-merge worker's say-so. This plan is ONE STRICTLY SERIAL CHAIN
-#          (01 -> 02 -> 03 -> 04 -> 05 -> 06), so it has no PARALLEL siblings racing a shared file -
-#          but it still merges a segment back onto the plan branch at every task boundary, and a
-#          badly-resolved hunk there leaves markers behind with a zero exit code. Three of the
-#          fourteen paths below are written by more than one task in the chain
-#          (LogSiteRenderer.cs by 01/02/05, LiveRunObserver.cs by 04/05), which is exactly where a
-#          dropped or duplicated hunk would land.
+#          (01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07), so it has no PARALLEL siblings racing a shared
+#          file - but it still merges a segment back onto the plan branch at every task boundary, and
+#          a badly-resolved hunk there leaves markers behind with a zero exit code. THREE of the
+#          seventeen paths below are written by more than one task in the chain - LogSiteRenderer.cs
+#          by 01/02/06, OnTheFlyDiagramObserver.cs by 02/04, LiveRunObserver.cs by 05/06 - which is
+#          exactly where a dropped or duplicated hunk would land.
 #
 # This is the run's integration-guardrail set (scope:"integration", declared in the sidecar). The
 # harness re-runs it on the merged bytes at EVERY union point AND on the final merged HEAD here, so
@@ -24,11 +24,11 @@
 # exact files first.
 #
 # Baseline note (#478): the "if present" half of a union-safe conditional is EXPECTED to be nonzero
-# on arrival - MEASURED 2026-08-29 with a per-path Test-Path over the untouched tree, ELEVEN of the
-# fourteen paths below already exist. The three the plan CREATES are
+# on arrival - RE-MEASURED 2026-08-29 with a per-path Test-Path over the untouched tree, FOURTEEN of
+# the seventeen paths below already exist. The three the plan CREATES are
 # tests/Guardrails.Integration.Tests/LogSite/ServeDiagramTests.cs (task 01),
 # tests/Guardrails.Core.Tests/Graph/DiagramRefreshTests.cs (task 03) and
-# tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs (task 04). The conflict-marker
+# tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs (task 05). The conflict-marker
 # clause is a forbidden-present clause and is exempt from the census (a ban green on arrival is a
 # correct ban).
 #
@@ -37,10 +37,13 @@
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-# Every file any task in this plan writes - the union of the SIX writeScopes, deduped, and nothing
+# Every file any task in this plan writes - the union of the SEVEN writeScopes, deduped, and nothing
 # else. A path no task here writes would be a silent lie in the one file whose whole job is honesty:
 # it can never fail (the conditional gates it away) and it would misdescribe the plan's surface to
-# the next reader.
+# the next reader. RE-DERIVED MECHANICALLY 2026-08-29 by reading all seven task.json writeScope
+# arrays and deduping: 2+3+5+4+2+3+2 = 21 declarations, 17 distinct paths, and this list is exactly
+# that set - no path missing, no path extra. Each path is commented with the FIRST task that declares
+# it; the three multi-writer paths are named in the header above.
 $produced = @(
     # task 01-author-tests-serve-diagram
     'tests/Guardrails.Integration.Tests/LogSite/ServeDiagramTests.cs',
@@ -54,12 +57,16 @@ $produced = @(
     'tests/Guardrails.Core.Tests/HtmlDiagramRendererTests.cs',
     'tests/Guardrails.Integration.Tests/OnTheFlyDiagramTests.cs',
     'tests/Guardrails.Integration.Tests/RunCommandFinalSiteSettleTests.cs',
-    # task 04-author-tests-model-in-row
+    # task 04-raise-attempt-route-resolved  (also writes OnTheFlyDiagramObserver.cs, listed under 02)
+    'src/Guardrails.Core/Execution/IRunObserver.cs',
+    'src/Guardrails.Core/Execution/TaskExecutor.cs',
+    'src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs',
+    # task 05-author-tests-model-in-row
     'tests/Guardrails.Integration.Tests/ModelTiering/ModelInRowTests.cs',
     'src/Guardrails.Cli/Ui/LiveRunObserver.cs',
-    # task 05-render-model-in-row-and-index
+    # task 06-render-model-in-row-and-index  (also writes LogSiteRenderer.cs and LiveRunObserver.cs)
     'src/Guardrails.Cli/ConsoleRunObserver.cs',
-    # task 06-record-visibility-surfaces-in-ssot
+    # task 07-record-visibility-surfaces-in-ssot
     'docs/plans/02-schemas-and-contracts.md',
     '.claude/skills/guardrails-domain-knowledge/SKILL.md'
 )
@@ -82,7 +89,7 @@ foreach ($rel in $produced) {
     # '=======' - unanchored it false-fires on a '====' banner, a Markdown setext underline or an
     # ASCII table rule (#187).
     #
-    # THE ANCHOR IS LOAD-BEARING HERE, MEASURED, NOT INHERITED AS FOLKLORE. Two of the fourteen paths
+    # THE ANCHOR IS LOAD-BEARING HERE, MEASURED, NOT INHERITED AS FOLKLORE. Two of the seventeen paths
     # above are large Markdown documents that DISCUSS conflict markers in prose. Counted 2026-08-29
     # against the real docs/plans/02-schemas-and-contracts.md:
     #     '<<<<<<<'  4 occurrences anywhere,  0 at column 0
@@ -90,7 +97,8 @@ foreach ($rel in $produced) {
     #     '======='  4 occurrences anywhere,  0 at column 0
     # So an UNANCHORED scan - or a bare '=======' clause - would fire on that file at EVERY union and
     # red-halt every run of this plan, on prose, forever. The anchored form was executed against the
-    # real repo while authoring this guardrail and exited 0 with 11 of the 14 paths present. Do not
+    # real repo while authoring this guardrail and exited 0; RE-EXECUTED 2026-08-29 after the plan
+    # grew its seventh task, it exits 0 with 14 of the 17 paths present. Do not
     # "tighten" this by dropping the (?m)^ anchors or adding an equals-sign clause.
     if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
         $failures += "$rel contains git conflict markers - the union did not cleanly integrate"
