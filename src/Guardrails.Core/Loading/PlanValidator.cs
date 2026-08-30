@@ -82,6 +82,7 @@ public sealed class PlanValidator
         ValidatePromptRunnerAxes(plan, diagnostics);
         ValidatePromptRunnerKindsImplemented(plan, diagnostics);
         ValidateOpenAiCompatBlockSchema(plan, diagnostics);
+        ValidateOpenAiCompatActionReachable(plan, diagnostics);
         ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
@@ -450,15 +451,122 @@ public sealed class PlanValidator
         (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     /// <summary>
-    /// The reserved <c>promptRunners</c> profile names that make a block reachable purely by its NAME,
-    /// without a pin (<c>SchedulerFactory.cs</c>'s <c>MergeRunnerProfile</c> / <c>TriageRunnerProfile</c> /
-    /// <c>OverwatchRunnerProfile</c> / <c>BreakdownRunnerProfile</c>). Restated here rather than referenced
-    /// because those are <c>private const</c> in <c>Guardrails.Core.Execution.SchedulerFactory</c>; the two
-    /// lists are pinned together by <c>OpenAiCompatDiagnosticsTests</c> (Guardrails.Core.Tests) exercising
-    /// the real spellings end to end.
+    /// The reserved profiles whose runner the harness hands to a resolver that WRITES —
+    /// <c>SchedulerFactory.cs</c>'s <c>MergeRunnerProfile</c> (→ <c>AiMergeResolver</c>) and
+    /// <c>BreakdownRunnerProfile</c> (→ the wave-breakdown invoker). Naming an <c>openai-compat</c> block
+    /// one of these reaches it for an ACTION with no pin and no task reference at all, which is GR2066's
+    /// fifth route (plan 28 §3.7).
+    /// </summary>
+    private static readonly HashSet<string> ReservedActionRoleProfileNames =
+        new(StringComparer.Ordinal) { "ai-merge", "breakdown" };
+
+    /// <summary>
+    /// The reserved profiles that are ADVISORY — <c>SchedulerFactory.cs</c>'s <c>OverwatchRunnerProfile</c>
+    /// and <c>TriageRunnerProfile</c>. Their runner renders an assessment and never writes, so naming an
+    /// <c>openai-compat</c> block one of these is LEGAL and is half of what plan 28 v1 ships (§3.3): it is
+    /// a reachability route for GR2067's purposes and must never be one for GR2066's.
+    /// </summary>
+    private static readonly HashSet<string> ReservedAdvisoryRoleProfileNames =
+        new(StringComparer.Ordinal) { "overwatch", "ai-triage" };
+
+    /// <summary>
+    /// Every reserved <c>promptRunners</c> profile name — the names that make a block reachable purely by
+    /// its NAME, without a pin. DERIVED from the two role sets above rather than restated, so the
+    /// role split GR2066 turns on cannot drift from the membership GR2067 tests. Restated in this file
+    /// rather than referenced because the profile names are <c>private const</c> in
+    /// <c>Guardrails.Core.Execution.SchedulerFactory</c>; the two lists are pinned together by
+    /// <c>OpenAiCompatDiagnosticsTests</c> (Guardrails.Core.Tests) exercising the real spellings end to end.
     /// </summary>
     private static readonly HashSet<string> ReservedRunnerProfileNames =
-        new(StringComparer.Ordinal) { "ai-merge", "ai-triage", "overwatch", "breakdown" };
+        new(ReservedActionRoleProfileNames.Concat(ReservedAdvisoryRoleProfileNames), StringComparer.Ordinal);
+
+    /// <summary>
+    /// GR2066 (ERROR, plan 28 §3.7/§7, issue #223): an <c>openai-compat</c> block that is REACHABLE FOR AN
+    /// ACTION (<see cref="DiagnosticCodes.OpenAiCompatActionReachable"/>). v1's local runner is a verifier,
+    /// never an actor, so each of the five manifest-visible routes by which the harness could hand it a
+    /// task's WORK is an error here rather than a surprise mid-DAG. Static and offline: every route is read
+    /// off <c>guardrails.json</c>, the task definitions, and (for route 4) a prompt's front-matter that
+    /// <see cref="PlanLoader"/> has already folded onto the action.
+    ///
+    /// <para><b>One diagnostic per BLOCK, listing every route that reaches it</b> — not one per route. A
+    /// block reachable three ways is one misconfiguration with one fix-list, and splitting it would report
+    /// the same block three times while telling the operator nothing a combined message does not.</para>
+    ///
+    /// <para><b>What must NOT fire is as much the requirement as what must.</b> A judge guardrail's
+    /// front-matter <c>runner:</c> pin and an ADVISORY reserved profile name are the two sanctioned ways a
+    /// human reaches a local model, and they are the whole of v1's payload — neither appears as a route
+    /// below, and a "ban every openai-compat block" implementation would satisfy a route-by-route reading
+    /// of this check while deleting the feature it guards.</para>
+    /// </summary>
+    private static void ValidateOpenAiCompatActionReachable(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        string? effectiveDefault = ResolveDefaultRunner(plan.Config);
+
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (runner.Kind != PromptRunnerKind.OpenAiCompat)
+            {
+                continue;
+            }
+
+            var routes = new List<string>();
+
+            if (runner.Routing is not null)
+            {
+                routes.Add("it declares 'routing', which enters it in tier selection for ACTIONS, not " +
+                           "only for judges");
+            }
+
+            if (string.Equals(effectiveDefault, runner.Name, StringComparison.Ordinal))
+            {
+                // The two halves are ONE route because PromptRunnerRegistry.ResolveDefault treats them
+                // identically; only the sentence differs, because the fix does.
+                routes.Add(plan.Config.DefaultPromptRunner is null
+                    ? "it is the SOLE declared runner, which the registry resolves exactly as it would an " +
+                      "explicit 'promptRunners.default' pointer, so every prompt action that names no " +
+                      "runner of its own runs on it"
+                    : "'promptRunners.default' points at it, so every prompt action that names no runner " +
+                      "of its own runs on it");
+            }
+
+            List<string> pinningTasks =
+            [
+                .. plan.Tasks
+                    .Where(t => t.Action.Kind == ActionKind.Prompt &&
+                                string.Equals(t.Action.Runner, runner.Name, StringComparison.Ordinal))
+                    .Select(t => $"'{t.Id}'")
+                    .OrderBy(id => id, StringComparer.Ordinal)
+            ];
+
+            if (pinningTasks.Count > 0)
+            {
+                routes.Add($"the prompt action(s) of task(s) {string.Join(", ", pinningTasks)} pin it — " +
+                           "in 'action.runner' in task.json, or in the action prompt's own front-matter " +
+                           "'runner:', which the loader folds onto the task");
+            }
+
+            if (ReservedActionRoleProfileNames.Contains(runner.Name))
+            {
+                routes.Add($"'{runner.Name}' is a reserved ACTION-role promptRunners profile, whose runner " +
+                           "the harness hands straight to a resolver that WRITES");
+            }
+
+            if (routes.Count == 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatActionReachable, plan.PlanDirectory,
+                $"promptRunners.{runner.Name} is an openai-compat block that is REACHABLE FOR AN ACTION: " +
+                $"{string.Join("; ", routes)}. A locally-hosted model is a VERIFIER in this version, never " +
+                "an actor — the harness will not hand it a task's work (plan 28 §3.2/§3.7), and catching " +
+                "that here rather than mid-run is the whole point of the check. Fix ONE of: point the " +
+                "route(s) above at a runner kind this build can ACT with, or leave this block reachable " +
+                "only for VERIFICATION — a judge guardrail's front-matter 'runner:' pin, or one of the " +
+                "reserved ADVISORY profile names, which are the two routes that stay legal here."));
+        }
+    }
 
     /// <summary>
     /// GR2067 (WARNING, plan 28 §7, issue #223): two independent forms
