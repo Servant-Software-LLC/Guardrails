@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Guardrails.Core.Telemetry;
@@ -8,10 +9,6 @@ namespace Guardrails.Core.Telemetry;
 /// default <c>~/.guardrails/telemetry/</c> location itself — that belongs to the CLI (task 10), so the
 /// same store can be pointed at a throwaway directory in tests, at a bench's sandboxed root (charter §7),
 /// or at the real home-scoped corpus in production without three different code paths.
-///
-/// <para><b>STUB (#535, task 01).</b> Every member throws <see cref="NotImplementedException"/>.
-/// <c>02-implement-corpus-store</c> fills the behaviour; <c>TelemetryCorpusStoreTests</c> — authored
-/// alongside this stub — is the specification.</para>
 /// </summary>
 public sealed class TelemetryCorpusStore
 {
@@ -58,8 +55,77 @@ public sealed class TelemetryCorpusStore
     /// disk (idempotent no-op — re-ingesting a plan must be safe by construction). Never rewrites an
     /// existing line.
     /// </summary>
-    public void Append(TelemetryRow row) => throw new NotImplementedException();
+    public void Append(TelemetryRow row)
+    {
+        if (IsCollectionDisabled())
+        {
+            return;
+        }
+
+        if (AlreadyRecorded(row))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(CorpusRoot);
+
+        string fileName = "telemetry-" + row.StartedAt.UtcDateTime.ToString("yyyy-MM", CultureInfo.InvariantCulture) + ".jsonl";
+        string path = Path.Combine(CorpusRoot, fileName);
+        string line = JsonSerializer.Serialize(row, JsonOptions);
+
+        File.AppendAllText(path, line + Environment.NewLine);
+    }
 
     /// <summary>Removes every row under the corpus root. Safe to call on an empty or not-yet-created corpus.</summary>
-    public void Purge() => throw new NotImplementedException();
+    public void Purge()
+    {
+        if (Directory.Exists(CorpusRoot))
+        {
+            Directory.Delete(CorpusRoot, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// <c>GUARDRAILS_TELEMETRY=off</c> (case-insensitive) disables collection; any other value, or unset,
+    /// leaves it ON — the single opt-out definition <see cref="OptOutEnvVar"/> documents.
+    /// </summary>
+    private static bool IsCollectionDisabled() =>
+        string.Equals(Environment.GetEnvironmentVariable(OptOutEnvVar), "off", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Scans every <c>*.jsonl</c> file already on disk under the corpus root for a row matching
+    /// <paramref name="row"/>'s <c>(runId, taskId, attempt)</c> triple. Reading the rows back off disk —
+    /// rather than tracking an in-memory set — is what makes the idempotency check survive a process
+    /// restart, which is exactly the scenario a re-run of <c>telemetry ingest</c> needs.
+    /// </summary>
+    private bool AlreadyRecorded(TelemetryRow row)
+    {
+        if (!Directory.Exists(CorpusRoot))
+        {
+            return false;
+        }
+
+        foreach (string file in Directory.EnumerateFiles(CorpusRoot, "*.jsonl", SearchOption.TopDirectoryOnly))
+        {
+            foreach (string line in File.ReadLines(file))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                using JsonDocument document = JsonDocument.Parse(line);
+                JsonElement root = document.RootElement;
+
+                if (root.TryGetProperty("runId", out JsonElement runId) && runId.GetString() == row.RunId &&
+                    root.TryGetProperty("taskId", out JsonElement taskId) && taskId.GetString() == row.TaskId &&
+                    root.TryGetProperty("attempt", out JsonElement attempt) && attempt.GetInt32() == row.Attempt)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 }
