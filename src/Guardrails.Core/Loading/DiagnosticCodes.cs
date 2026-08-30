@@ -911,17 +911,66 @@ public static class DiagnosticCodes
     /// </summary>
     public const string BreakdownIntentDeclaresNothing = "GR2064";
 
-    // CURRENT next-free code: GR2065. GR2064 (BreakdownIntentDeclaresNothing) is the last taken code above —
+    // --- openai-compat block-schema diagnostics (plan 28 §4/§7, issue #223) ---------------------------
+    //
+    // GR2066 is SKIPPED here on purpose — it is RESERVED BY NAME for plan 28 §3.7/§7's Action-reachability
+    // error (an openai-compat block reachable for an Action), which a later task in this epic implements,
+    // not this one. Taking it out of order for a different meaning is the one outcome a code registry must
+    // not produce (the same discipline GR2043's own skip-note states).
+
+    /// <summary>
+    /// GR2065 (ERROR) — an <c>openai-compat</c> <c>promptRunners</c> block is malformed, or a block of
+    /// another <c>kind</c> carries one of the four openai-compat-only keys (plan 28 §4/§7, issue #223).
+    /// <c>validate</c> stays STATIC and OFFLINE for every clause: nothing here opens a socket or spawns a
+    /// process, only <c>guardrails.json</c> itself is read. The clauses, each its own diagnostic:
+    /// <list type="bullet">
+    /// <item><c>endpoint</c> missing, or present but not a well-formed ABSOLUTE http/https URL — no scheme,
+    ///   the wrong scheme, and a relative path all fail the same way;</item>
+    /// <item><c>model</c> missing;</item>
+    /// <item><c>contextTokens</c> missing, or present and below 1;</item>
+    /// <item><c>wire</c> overriding a harness-owned request field (<c>model</c> / <c>messages</c> /
+    ///   <c>stream</c> / <c>stream_options</c> / <c>tools</c> / <c>max_tokens</c>) — the exact
+    ///   <c>wire: {"stream": false}</c> typo that would otherwise silently disable streaming;</item>
+    /// <item>any of <c>endpoint</c> / <c>contextTokens</c> / <c>apiKeyEnv</c> / <c>wire</c> declared on a
+    ///   block whose <c>kind</c> is NOT <c>openai-compat</c> — a key that does nothing where it was
+    ///   written is indistinguishable from one that works.</item>
+    /// </list>
+    /// </summary>
+    public const string OpenAiCompatBlockSchema = "GR2065";
+
+    /// <summary>
+    /// GR2067 (WARNING) — an <c>openai-compat</c> block is declared but practically inert, in either of two
+    /// independent forms (plan 28 §7, issue #223):
+    /// <list type="bullet">
+    /// <item>no <c>strength</c> declared — <c>TierResolver.IsWeakVerifier</c>
+    ///   (<c>block.Strength is null &amp;&amp; block.Kind != PromptRunnerKind.Claude</c>) treats an
+    ///   undeclared <c>openai-compat</c> block as PERMANENTLY weak, so every judge routed to it carries a
+    ///   #229 advisory forever — an advisory that always fires stops being read;</item>
+    /// <item>the block is UNREACHABLE — neither pinned by any guardrail's frontmatter <c>runner:</c> key
+    ///   nor named as one of the harness's reserved <c>promptRunners</c> profiles (§3.7: with the actor
+    ///   routes closed by GR2066, those two are the only sanctioned ways left to reach one). This is the
+    ///   check that catches the <c>triage</c>-for-<c>ai-triage</c> misspelling, which otherwise fails
+    ///   silently — the block loads, validates, and simply never runs.</item>
+    /// </list>
+    /// A WARNING, not an error: both forms describe a working config that nothing has told the author is
+    /// pointless, not an invalid one.
+    /// </summary>
+    public const string OpenAiCompatWeakOrUnreachable = "GR2067";
+
+    // CURRENT next-free code: GR2068. GR2067 (OpenAiCompatWeakOrUnreachable) is the last taken code above —
     // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
-    // doc 19 Milestone B, #477; GR2063 by #402).
-    // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
+    // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is ALSO reserved-by-name now (see the block comment
+    // just above GR2065): allocated to plan 28 §3.7/§7's Action-reachability error, not yet implemented.
+    // FOUR codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
+    //   GR2066 — docs/plans/28-local-inference-runner.md §3.7/§7 (issue #223), the openai-compat
+    //            Action-reachability error, allocated by number but implemented by a later task, not this one
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2065 and update
-    // this line rather than colliding with any of the three above (issue #320).
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2068 and update
+    // this line rather than colliding with any of the four above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
     // review-marker change (#472). The GR10xx and GR20xx ladders advance independently; a doc that

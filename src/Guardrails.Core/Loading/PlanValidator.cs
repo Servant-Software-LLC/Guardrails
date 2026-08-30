@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Loading;
 
@@ -80,6 +81,8 @@ public sealed class PlanValidator
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
         ValidatePromptRunnerAxes(plan, diagnostics);
         ValidatePromptRunnerKindsImplemented(plan, diagnostics);
+        ValidateOpenAiCompatBlockSchema(plan, diagnostics);
+        ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
@@ -307,15 +310,223 @@ public sealed class PlanValidator
                 continue;
             }
 
+            // 'local' is a reserved name nobody should reach for on purpose (plan 28 §3.1): it would be
+            // the same openai-compat wire protocol under a second name, and never gets an implementation
+            // of its own. Naming the spelling the operator almost certainly wants turns this from a dead
+            // end into a redirect — one sentence, only for 'local'.
+            string redirect = runner.Kind == PromptRunnerKind.Local
+                ? " You likely want \"kind\": \"openai-compat\" instead — 'local' is a reserved name with " +
+                  "no implementation of its own, and every locally-hosted engine this build can serve " +
+                  "(Ollama, llama.cpp, LM Studio, vLLM, MLX) speaks the openai-compat wire protocol."
+                : "";
+
             diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, plan.PlanDirectory,
                 $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', which is a " +
                 "recognised runner kind but has NO implementation in this build — this build can serve " +
-                $"{PromptRunnerKinds.ImplementedTokenList} (concrete non-Claude runners are issue #223). " +
-                "Point that promptRunners block at an implemented kind, or remove it and route the tasks " +
-                "that used it to a runner this build can serve. The harness will NOT substitute a " +
-                "different model for the one the config asked for, so this is an honest halt at validate " +
-                "time rather than a surprise when the run starts (SSOT §9)."));
+                $"{PromptRunnerKinds.ImplementedTokenList} (concrete non-Claude runners are issue #223)." +
+                $"{redirect} Point that promptRunners block at an implemented kind, or remove it and " +
+                "route the tasks that used it to a runner this build can serve. The harness will NOT " +
+                "substitute a different model for the one the config asked for, so this is an honest halt " +
+                "at validate time rather than a surprise when the run starts (SSOT §9)."));
         }
+    }
+
+    /// <summary>
+    /// The four openai-compat-only keys on <see cref="PromptRunnerConfig"/> (plan 28 §4) — the ones GR2065
+    /// flags when they show up on a block of a DIFFERENT kind, because a key that does nothing where it was
+    /// written is indistinguishable from one that works.
+    /// </summary>
+    private static readonly (string Key, Func<PromptRunnerConfig, bool> IsPresent)[] OpenAiCompatOnlyKeys =
+    [
+        ("endpoint", r => r.Endpoint is not null),
+        ("contextTokens", r => r.ContextTokens is not null),
+        ("apiKeyEnv", r => r.ApiKeyEnv is not null),
+        ("wire", r => r.Wire is not null)
+    ];
+
+    /// <summary>
+    /// The six request-body fields the runner itself sets on every openai-compat call (plan 28 §4) — a
+    /// <c>wire</c> passthrough may never shadow one of these.
+    /// </summary>
+    private static readonly string[] HarnessOwnedWireFields =
+        ["model", "messages", "stream", "stream_options", "tools", "max_tokens"];
+
+    /// <summary>
+    /// GR2065 (ERROR, plan 28 §4/§7, issue #223): the openai-compat block-schema checks
+    /// (<see cref="DiagnosticCodes.OpenAiCompatBlockSchema"/>). Static and offline — every clause here is
+    /// knowable from <c>guardrails.json</c> alone. An <c>openai-compat</c> block must declare a well-formed
+    /// <c>endpoint</c>, a <c>model</c>, and a <c>contextTokens</c> of at least 1, and its <c>wire</c>
+    /// passthrough must not shadow a harness-owned request field; a block of any OTHER kind must not
+    /// declare any of the four openai-compat-only keys at all.
+    /// </summary>
+    private static void ValidateOpenAiCompatBlockSchema(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (runner.Kind != PromptRunnerKind.OpenAiCompat)
+            {
+                foreach ((string key, Func<PromptRunnerConfig, bool> isPresent) in OpenAiCompatOnlyKeys)
+                {
+                    if (!isPresent(runner))
+                    {
+                        continue;
+                    }
+
+                    diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                        $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', " +
+                        $"but it declares '{key}', which is an openai-compat-only key and does nothing on " +
+                        "this kind — a key that does nothing where it was written is indistinguishable " +
+                        $"from one that works. Remove '{key}', or set \"kind\": \"openai-compat\" if that " +
+                        "is what was intended (plan 28 §4)."));
+                }
+
+                continue;
+            }
+
+            if (runner.Endpoint is not { } endpoint)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name} is kind 'openai-compat' but declares no 'endpoint'. Add " +
+                    "an absolute http/https base URL (e.g. \"http://127.0.0.1:11434/v1\") — every " +
+                    "openai-compat runner needs a target to send requests to (plan 28 §4)."));
+            }
+            else if (!IsAbsoluteHttpUrl(endpoint))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.endpoint '{endpoint}' is not an absolute http/https URL " +
+                    "— it must include a scheme (\"http://\" or \"https://\") and a host, e.g. " +
+                    "\"http://127.0.0.1:11434/v1\" (plan 28 §4)."));
+            }
+
+            if (runner.Settings.Model is null)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name} is kind 'openai-compat' but declares no 'model'. Every " +
+                    "openai-compat runner must name the model to request from its endpoint (plan 28 §4)."));
+            }
+
+            if (runner.ContextTokens is not { } contextTokens)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name} is kind 'openai-compat' but declares no 'contextTokens'. " +
+                    "The runner's context-overflow checks (plan 28 §6.1) need the model's context window " +
+                    "in tokens to compare against."));
+            }
+            else if (contextTokens < 1)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.contextTokens is {contextTokens}, but it must be at " +
+                    "least 1 — there is no meaningful zero or negative context window."));
+            }
+
+            if (runner.Wire is not { } wire)
+            {
+                continue;
+            }
+
+            foreach (string field in HarnessOwnedWireFields)
+            {
+                if (!wire.ContainsKey(field))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.wire overrides the harness-owned request field " +
+                    $"'{field}', which the runner itself sets on every request (plan 28 §4) — a " +
+                    $"passthrough shadowing it would silently take control of the request away from the " +
+                    $"harness. Remove '{field}' from wire."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="value"/> parses as an ABSOLUTE http or https URL (GR2065's endpoint
+    /// clause, plan 28 §4/§7). No scheme, the wrong scheme, and a relative path all fail the same way.
+    /// </summary>
+    private static bool IsAbsoluteHttpUrl(string value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out Uri? uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    /// <summary>
+    /// The reserved <c>promptRunners</c> profile names that make a block reachable purely by its NAME,
+    /// without a pin (<c>SchedulerFactory.cs</c>'s <c>MergeRunnerProfile</c> / <c>TriageRunnerProfile</c> /
+    /// <c>OverwatchRunnerProfile</c> / <c>BreakdownRunnerProfile</c>). Restated here rather than referenced
+    /// because those are <c>private const</c> in <c>Guardrails.Core.Execution.SchedulerFactory</c>; the two
+    /// lists are pinned together by <c>OpenAiCompatDiagnosticsTests</c> (Guardrails.Core.Tests) exercising
+    /// the real spellings end to end.
+    /// </summary>
+    private static readonly HashSet<string> ReservedRunnerProfileNames =
+        new(StringComparer.Ordinal) { "ai-merge", "ai-triage", "overwatch", "breakdown" };
+
+    /// <summary>
+    /// GR2067 (WARNING, plan 28 §7, issue #223): two independent forms
+    /// (<see cref="DiagnosticCodes.OpenAiCompatWeakOrUnreachable"/>), both about an <c>openai-compat</c>
+    /// block that is declared but practically inert — no <c>strength</c>, and/or UNREACHABLE (neither
+    /// pinned by any guardrail's frontmatter <c>runner:</c> key nor named as a reserved profile).
+    /// </summary>
+    private static void ValidateOpenAiCompatWeakOrUnreachable(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        IReadOnlySet<string> pinned = PinnedRunnerNames(plan);
+
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (runner.Kind != PromptRunnerKind.OpenAiCompat)
+            {
+                continue;
+            }
+
+            if (runner.Strength is null)
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.OpenAiCompatWeakOrUnreachable, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name} declares no 'strength'. An openai-compat block with no " +
+                    "strength is treated as a permanently WEAK verifier, so every judge routed to it " +
+                    "carries a weak-verifier advisory forever. Declare 'strength' to say how capable this " +
+                    "model actually is (plan 28 §7)."));
+            }
+
+            if (!pinned.Contains(runner.Name) && !ReservedRunnerProfileNames.Contains(runner.Name))
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.OpenAiCompatWeakOrUnreachable, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name} is an openai-compat block that is neither PINNED by any " +
+                    "guardrail's frontmatter 'runner:' key nor named as one of the harness's reserved " +
+                    "promptRunners profiles, so nothing in this plan can ever reach it — a common cause is " +
+                    "a name that almost matches a reserved profile but is not exact. Fix ONE of: pin a " +
+                    $"judge guardrail's frontmatter 'runner:' to '{runner.Name}', or rename the block to " +
+                    "the exact profile name you intended (plan 28 §3.7/§7)."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every runner name PINNED by any prompt guardrail's frontmatter <c>runner:</c> key, anywhere in the
+    /// plan (task/wave/plan guardrails and preflights — see <see cref="EveryCheck"/>).
+    /// <see cref="GuardrailDefinition"/> itself carries no <c>Runner</c> field (plan 28 §3.7: the pin is
+    /// read at RUN time by <c>GuardrailRunner</c>/<c>Scheduler</c> re-parsing the guardrail's own
+    /// <c>.prompt.md</c> file), so this re-reads and re-parses each prompt guardrail exactly the same way,
+    /// mirroring <see cref="ValidateAutonomyDialValues"/>'s re-read pattern for a value the loaded model
+    /// does not carry.
+    /// </summary>
+    private static IReadOnlySet<string> PinnedRunnerNames(PlanDefinition plan)
+    {
+        var pinned = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach ((GuardrailDefinition guardrail, _) in EveryCheck(plan))
+        {
+            if (guardrail.Kind != ActionKind.Prompt || TryReadAllText(guardrail.Path) is not { } text)
+            {
+                continue;
+            }
+
+            if (PromptFileParser.Parse(text).File?.Frontmatter.Runner is { } runner)
+            {
+                pinned.Add(runner);
+            }
+        }
+
+        return pinned;
     }
 
     /// <summary>
@@ -2946,12 +3157,25 @@ public sealed class PlanValidator
     /// machine where the runner is installed. Every declared runner is probed even if no task
     /// currently references it — a stale runner config is worth surfacing. Runs only after the
     /// GR2008 error path (no runners at all) has been handled by <see cref="ValidatePromptRunners"/>.
+    ///
+    /// <para><b>Kind-aware (plan 28 §4/§7, issue #223): skipped for <c>openai-compat</c>.</b> An
+    /// <c>openai-compat</c> block has no local executable at all — <c>Command</c> defaults to the block
+    /// name and is never launched — so probing it against PATH is a confident, WRONG warning about a
+    /// command nobody was ever going to run. Whether the endpoint it names is actually reachable is the
+    /// <c>run</c> preflight's job (§7's <c>GET {endpoint}/models</c> probe, issue #223's runner task), not
+    /// a PATH check. Every other kind (including the still-unimplemented <c>codex</c>/<c>openrouter</c>/
+    /// <c>local</c>) keeps the probe.</para>
     /// </summary>
     private void ValidatePromptRunnerCommands(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
                      .OrderBy(r => r.Name, StringComparer.Ordinal))
         {
+            if (runner.Kind == PromptRunnerKind.OpenAiCompat)
+            {
+                continue;
+            }
+
             if (!_probe.Exists(runner.Command))
             {
                 diagnostics.Add(Warning(DiagnosticCodes.PromptRunnerNotOnPath, plan.PlanDirectory,
