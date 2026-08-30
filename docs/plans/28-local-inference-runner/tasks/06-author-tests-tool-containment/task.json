@@ -1,0 +1,12 @@
+{
+  "description": "Author the PromptToolContainment tests plus the throwing stub they compile against",
+  "dependsOn": [],
+  "stableId": "z8b3rp",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Prompts/PromptToolContainmentTests.cs",
+    "src/Guardrails.Core/Prompts/PromptToolContainment.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

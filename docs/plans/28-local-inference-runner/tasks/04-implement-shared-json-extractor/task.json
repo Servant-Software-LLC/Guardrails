@@ -1,0 +1,16 @@
+{
+  "description": "Implement the lenient extractor and route OverwatchProposal and the triage sidecar through it",
+  "dependsOn": [
+    "03-author-tests-json-extractor",
+    "02-assign-roles-at-seven-sites"
+  ],
+  "stableId": "w2h6nk",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/PromptJsonExtractor.cs",
+    "src/Guardrails.Core/Execution/OverwatchProposal.cs",
+    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Implement GR2065 and GR2067 and make the GR2009 PATH probe kind-aware",
+  "dependsOn": [
+    "14-author-tests-block-diagnostics"
+  ],
+  "stableId": "d8t3zq",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/PlanValidator.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

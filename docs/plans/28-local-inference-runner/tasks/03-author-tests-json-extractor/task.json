@@ -1,0 +1,12 @@
+{
+  "description": "Author the lenient PromptJsonExtractor tests plus the throwing stub they compile against",
+  "dependsOn": [],
+  "stableId": "m9d4vb",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Prompts/PromptJsonExtractorTests.cs",
+    "src/Guardrails.Core/Prompts/PromptJsonExtractor.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

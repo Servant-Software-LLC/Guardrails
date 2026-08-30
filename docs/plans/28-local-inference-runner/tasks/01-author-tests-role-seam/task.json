@@ -1,0 +1,20 @@
+{
+  "description": "Author the seven-site PromptRole tests plus the minimal Role seam stub they compile against",
+  "dependsOn": [],
+  "stableId": "k7a2m1",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Prompts/PromptRoleSeamTests.cs",
+    "src/Guardrails.Core/Prompts/PromptInvocation.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs",
+    "src/Guardrails.Core/Execution/AiMergeResolver.cs",
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs",
+    "src/Guardrails.Core/Execution/CriticalityJudge.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

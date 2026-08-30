@@ -1,0 +1,13 @@
+{
+  "description": "Author the GR2065 GR2067 and GR2009 block-schema diagnostic tests plus their fixtures",
+  "dependsOn": [
+    "08-author-tests-openai-runner"
+  ],
+  "stableId": "s5n1hv",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Loading/OpenAiCompatDiagnosticsTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

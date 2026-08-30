@@ -1,0 +1,19 @@
+{
+  "description": "Assign each of the seven PromptInvocation construction sites its correct PromptRole",
+  "dependsOn": [
+    "01-author-tests-role-seam"
+  ],
+  "stableId": "q3f8xz",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs",
+    "src/Guardrails.Core/Execution/AiMergeResolver.cs",
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs",
+    "src/Guardrails.Core/Execution/CriticalityJudge.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

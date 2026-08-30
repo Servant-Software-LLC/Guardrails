@@ -1,0 +1,14 @@
+{
+  "description": "Record judge cost and usage on the attempt without folding it into the run total",
+  "dependsOn": [
+    "22-author-tests-judge-spend"
+  ],
+  "stableId": "i2p7rv",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Journal/JournalTierSpend.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Implement the opt-in providers check verb that retires dialect risk against a real endpoint",
+  "dependsOn": [
+    "20-author-tests-providers-check"
+  ],
+  "stableId": "e5b1xd",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/ProvidersCommand.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

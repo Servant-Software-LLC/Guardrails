@@ -1,0 +1,16 @@
+{
+  "description": "Condition the containment splice on NeedsContainmentHook and make the verdict contract capability-aware",
+  "dependsOn": [
+    "12-author-tests-kind-aware-harness"
+  ],
+  "stableId": "p2w6bt",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Prompts/PromptComposer.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

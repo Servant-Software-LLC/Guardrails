@@ -1,0 +1,16 @@
+{
+  "description": "Extract the frontmatter reader, fold an action prompt runner onto the task, and implement GR2066",
+  "dependsOn": [
+    "16-author-tests-reachability-gate"
+  ],
+  "stableId": "g6v9pf",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/PlanValidator.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

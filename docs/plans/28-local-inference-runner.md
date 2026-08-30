@@ -844,8 +844,11 @@ Each bullet closes a specific wrong-but-passing implementation the adversarial p
 
 ## 10. Out of scope
 
-- **Task actions on local inference.** The honest v1.5 is not "add a write tool" — it is "re-express
-  the containment boundary in .NET and prove it with this same adversarial suite."
+- **Task actions on local inference — tracked as #544.** The honest v1.5 is not "add a write tool" —
+  it is "re-express the containment boundary in .NET and prove it with this same adversarial suite."
+  #544 records why that is the 80%, why containment (not effort) is the decider, and why it must not
+  be chartered until this plan has RUN green and `providers check` has met real hardware: two of its
+  deliverables are undesignable until this plan's artifacts exist.
 - **`routing` on an `openai-compat` block** — no tier candidacy, human pin only.
 - **The `local`, `codex` and `openrouter` kinds.**
 - **Provider probes (#227)** beyond the one preflight check.
