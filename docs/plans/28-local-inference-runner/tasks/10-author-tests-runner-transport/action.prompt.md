@@ -61,7 +61,41 @@ that is exactly how the bugs this plan cites shipped green.
 
 Every test must FAIL against the throwing stub. **Do NOT implement the runner.**
 
-**Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatTransportTests.cs`. After this task completes, the
+### Land the constructor you need, then test against it (added after this task halted)
+
+The first attempt at this task correctly refused to proceed: `OpenAiCompatPromptRunner` had exactly one
+constructor, `OpenAiCompatPromptRunner(string name)`, so no test could point a real runner instance at a
+specific `FakeOpenAiServer.Endpoint`. There is no other channel - `PromptInvocation` carries none of the
+five `openai-compat` keys, and they live only on `PromptRunnerConfig`, which
+`IPromptRunner.RunAsync(PromptInvocation, CancellationToken)` never sees.
+
+So `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs` is now in your writeScope, for **the
+constructor signature and nothing else**. This is the pattern task 07 already used in this plan: it
+carried `PromptToolContainment.cs` alongside its own tests so it could land the real signature its tests
+compile against, and it went green on the first attempt.
+
+**What you may change in that file:**
+
+- Widen the constructor so a runner can be handed its endpoint and the rest of its block config. Mirror
+  `ClaudePromptRunner`, whose constructor already takes its config-derived collaborators
+  (`ClaudePromptRunner(string name, string command, ProcessRunner processRunner)`) - the natural shape
+  here is to accept the `PromptRunnerConfig` (or the five keys it carries) plus whatever transport
+  collaborator the tests must substitute.
+- Keep `Name` behaving exactly as it does now.
+
+**What you must NOT change in that file:**
+
+- Do not implement `RunAsync`. Leave it throwing `NotImplementedException`. Task
+  `11-implement-runner-transport` owns the transport, and your tests are supposed to be RED against this
+  stub - that red bar is this task's deliverable, exactly as task 07's tests were red against
+  `PromptToolContainment`'s unimplemented body.
+- Do not add behavior, parsing, HTTP calls, or logging. Signature and field storage only.
+
+If you find you need a second production file to write these tests, do NOT reach for it: write
+`needsHuman` naming the file and the exact symbol you need, which is what got this task unblocked the
+first time.
+
+**Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatTransportTests.cs`, `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to
 other production files, neighbouring test files, or the `.csproj`. An out-of-scope edit fails the
 task immediately and consumes a retry. If you hit a compile error caused by a missing symbol in
