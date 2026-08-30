@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Prompts;
@@ -14,14 +15,26 @@ namespace Guardrails.Core.Prompts;
 /// exactly as the Claude equivalents are confined to <see cref="ClaudePromptRunner"/> (SSOT §9) — the
 /// signal table below is this class's OWN and never borrows Claude's.
 ///
-/// <para><b>What this task landed (plan 28 task 11): the TRANSPORT.</b> The request body (§4), SSE
-/// streaming (§6.3), the <c>runner-notice</c> disclosure (§4/§6.5), <c>usage</c> carriage (§6.2), both
-/// halves of the context bound (§6.1) and the failure taxonomy (§6.2). The turn loop below feeds a
-/// tool call's result back into the next request because §6.1's per-turn estimate is meaningless
-/// without it — but the CATALOGUE this runner offers (the fixed <c>Read</c>/<c>Glob</c>/<c>Grep</c>
-/// set, <c>allowedTools</c> filtering, the denial bound) and the §6.6 zero-tool-call rule are task
-/// 13's, and the role gate and verdict transcription are task 15's. Until the catalogue lands no
-/// <c>tools</c> array goes on the wire, so a real server has nothing to call.</para>
+/// <para><b>The TRANSPORT (task 11).</b> The request body (§4), SSE streaming (§6.3), the
+/// <c>runner-notice</c> disclosure (§4/§6.5), <c>usage</c> carriage (§6.2), both halves of the context
+/// bound (§6.1) and the failure taxonomy (§6.2).</para>
+///
+/// <para><b>The TOOL LOOP (task 13).</b> The fixed, read-only catalogue — <c>Read</c>, <c>Glob</c> and
+/// <c>Grep</c>, spelled exactly as <c>Overwatch.cs:55</c> and <c>NeedsHumanTriage.cs:27</c> already
+/// spell them in prose (§3.2c) — with <c>allowedTools</c> FILTERING the offer (§4), §5 containment on
+/// every call, the #452 consecutive-denial abort, the §6.6 zero-tool-call refusal, and the rendered
+/// transcript. The role gate (<c>Action</c> refusal) and verdict transcription remain task 15's.</para>
+///
+/// <para><b>Where §6.6 lands, stated plainly because it is narrower than the sentence in the plan.</b>
+/// §6.6 says a <c>Guardrail</c>-role invocation that calls no tool fails the attempt. This class fires
+/// that rule on a <c>Guardrail</c> invocation <b>that was given a verdict target</b> —
+/// <c>GUARDRAILS_VERDICT_OUT</c> in <see cref="PromptInvocation.Environment"/>, which
+/// <c>GuardrailRunner.cs:184-187</c> sets on EVERY real prompt guardrail, so every production judge is
+/// covered. The narrowing is deliberate and is what §9 actually gates: <i>"a server that accepts
+/// <c>tools</c> and calls none never produces a <c>pass: true</c> verdict file"</i>. An invocation with
+/// no verdict target cannot certify anything — there is nowhere for a verdict to land — so there is no
+/// false green to close, and firing there would fail the plan's own transport suite, every one of whose
+/// cases is a <c>Guardrail</c> invocation answering a scripted completion with no tools to call.</para>
 ///
 /// <para><b><c>engine</c> is operator-facing TEXT ONLY</b> (§3.1/§6.2). It selects one sentence —
 /// the model-not-found remedy — and nothing else: no code path, no request field. A plan configured
@@ -60,6 +73,104 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
 
     private const string SseDataPrefix = "data:";
     private const string SseDoneSentinel = "[DONE]";
+
+    /// <summary>
+    /// The env var naming where a prompt guardrail's verdict must land (SSOT §4.2). Its PRESENCE is how
+    /// this class recognises an invocation that will certify something, which is what scopes §6.6 —
+    /// <c>GuardrailRunner.cs:184-187</c> sets it on every real prompt guardrail.
+    /// </summary>
+    private const string VerdictOutEnvVar = "GUARDRAILS_VERDICT_OUT";
+
+    /// <summary>
+    /// The FIXED, read-only tool catalogue (§3.2). The names are <b>harness-owned and verbatim</b>:
+    /// <c>Overwatch.cs:55</c> and <c>NeedsHumanTriage.cs:27</c> declare exactly
+    /// <c>["Read", "Glob", "Grep"]</c>, and their prompts tell the model in prose <i>"your ONLY tools are
+    /// Read, Glob and Grep"</i>. A schema calling them <c>read_file</c>/<c>list_files</c>/<c>grep</c>
+    /// would hand the weakest model in the system two contradicting vocabularies.
+    ///
+    /// <para>There is NO write tool and NO shell tool, and there never will be in this class: §3.2(a)
+    /// — a write-capable local actor in worktree mode runs with the outer containment boundary absent,
+    /// and the run looks completely normal.</para>
+    /// </summary>
+    private static readonly ToolSpec[] Catalogue =
+    [
+        new(
+            "Read",
+            "Read a file's full text. The path must be absolute and inside the roots granted to this " +
+            "prompt; anything else is refused. This is how you read the evidence you are judging.",
+            """
+            {
+              "type": "object",
+              "properties": {
+                "file_path": {
+                  "type": "string",
+                  "description": "Absolute path of the file to read."
+                }
+              },
+              "required": ["file_path"]
+            }
+            """),
+        new(
+            "Glob",
+            "List files whose path matches a glob pattern (for example \"**/*.cs\"), newest first. " +
+            "Searches the roots granted to this prompt unless an absolute `path` inside them is given.",
+            """
+            {
+              "type": "object",
+              "properties": {
+                "pattern": {
+                  "type": "string",
+                  "description": "Glob pattern, e.g. \"**/*.cs\" or \"task.json\". A pattern with no \"/\" matches at any depth."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Optional absolute directory to search under. Defaults to every granted root."
+                }
+              },
+              "required": ["pattern"]
+            }
+            """),
+        new(
+            "Grep",
+            "Search file contents for a .NET regular expression and return matching lines as " +
+            "path:line:text. Searches the roots granted to this prompt unless an absolute `path` " +
+            "inside them is given.",
+            """
+            {
+              "type": "object",
+              "properties": {
+                "pattern": {
+                  "type": "string",
+                  "description": "Regular expression to search file contents for."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Optional absolute directory or file to search under. Defaults to every granted root."
+                },
+                "glob": {
+                  "type": "string",
+                  "description": "Optional glob narrowing which files are searched, e.g. \"*.cs\"."
+                }
+              },
+              "required": ["pattern"]
+            }
+            """)
+    ];
+
+    /// <summary>How many entries a <c>Glob</c> or <c>Grep</c> result may carry back into the prompt.</summary>
+    private const int MaxToolResultEntries = 100;
+
+    /// <summary>How many filesystem entries one <c>Glob</c>/<c>Grep</c> call may examine before it stops.</summary>
+    private const int MaxExaminedFiles = 20_000;
+
+    /// <summary>Files larger than this are skipped by <c>Grep</c> — a binary or a log is not evidence.</summary>
+    private const int MaxGrepFileBytes = 2_000_000;
+
+    /// <summary>
+    /// A bound on a model-supplied regular expression, so a pathological pattern cannot wedge a turn
+    /// (the model writes these, and nothing validates them before they run).
+    /// </summary>
+    private static readonly TimeSpan GrepPatternTimeout = TimeSpan.FromSeconds(2);
 
     private readonly PromptRunnerConfig _config;
     private readonly HttpClient _httpClient;
@@ -110,17 +221,35 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         // PlanDirectory. Skip the writer (and its Directory.CreateDirectory) rather than crashing on
         // Path.GetDirectoryName("") — and write NO runner-notice, which is correct for a caller that
         // asked for no log.
+        // §4's filter, resolved ONCE: the same selection is advertised in the runner-notice, put on the
+        // wire, and enforced when a call arrives — three views of one decision, so a model can never be
+        // refused a tool the notice claimed it was offered.
+        ToolSelection tools = SelectTools(invocation.Settings.AllowedTools);
+
         StreamWriter? streamLog = OpenStreamLog(invocation.StreamLogPath);
+        TranscriptRenderer? transcript = TranscriptRenderer.Open(invocation.TranscriptLogPath);
         try
         {
-            WriteRunnerNotice(streamLog, invocation);
-            return await RunTurnsAsync(invocation, streamLog, cancellationToken).ConfigureAwait(false);
+            WriteRunnerNotice(streamLog, invocation, tools);
+            WriteToolCatalogueNotice(streamLog, tools, ToolRootsNote(invocation));
+            transcript?.Header(Name, _config.Endpoint!, EffectiveModel(invocation)!, invocation.Role, tools);
+
+            PromptResult result = await RunTurnsAsync(invocation, tools, streamLog, transcript, cancellationToken)
+                .ConfigureAwait(false);
+
+            transcript?.Outcome(result);
+            return result;
         }
         finally
         {
             if (streamLog is not null)
             {
                 await streamLog.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (transcript is not null)
+            {
+                await transcript.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -134,7 +263,11 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// bounding only the first is the version of this check that passes its test and ships the bug.
     /// </summary>
     private async Task<PromptResult> RunTurnsAsync(
-        PromptInvocation invocation, StreamWriter? streamLog, CancellationToken cancellationToken)
+        PromptInvocation invocation,
+        ToolSelection tools,
+        StreamWriter? streamLog,
+        TranscriptRenderer? transcript,
+        CancellationToken cancellationToken)
     {
         string endpoint = _config.Endpoint!;
         string model = EffectiveModel(invocation)!;
@@ -142,11 +275,26 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         string requestUri = ChatCompletionsUri(endpoint);
         IReadOnlyList<string> readableRoots = [invocation.WorkingDirectory, invocation.PlanDirectory];
 
+        // ONE message: the composed prompt, verbatim. The runner's own framing — the catalogue and the
+        // roots — rides in the `tools` array's descriptions (see ToolRootsNote), not in a `system`
+        // message. §6.4 describes the framing as a system message; that shape is not available here,
+        // because §6.1's after-check measures MESSAGE content and the transport suite pins it against a
+        // server reporting 42 prompt tokens for a 10-char prompt — a budget of ~160 chars for anything
+        // the runner adds to `messages`. Tool documentation belongs in the tool schema anyway, which is
+        // where the protocol puts it, and `composed-prompt.md` stays "exactly what the runner got"
+        // (SSOT §8) either way.
         var messages = new List<WireMessage> { new("user", invocation.ComposedPrompt) };
         var transcriptText = new StringBuilder();
         string? observedModel = null;
         PromptUsage? totalUsage = null;
         int completedTurns = 0;
+
+        // #452: consecutive REFUSALS with no performed call between them. A performed call resets both,
+        // exactly as ClaudePermissionScanner.ConsecutiveDenials does for the Claude path — an agent
+        // making real progress between refusals is never cut short.
+        int consecutiveDenials = 0;
+        var refusedInARow = new List<string>();
+        int toolCallsMade = 0;
 
         while (true)
         {
@@ -192,7 +340,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     "confidently over half the evidence.");
             }
 
-            JsonObject body = BuildRequestBody(invocation, model, messages);
+            JsonObject body = BuildRequestBody(invocation, model, messages, tools);
             TurnOutcome outcome = await SendTurnAsync(
                 requestUri, body, invocation, streamLog, model, cancellationToken).ConfigureAwait(false);
 
@@ -214,6 +362,8 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             {
                 transcriptText.Append(turn.Content);
             }
+
+            transcript?.Assistant(completedTurns, turn.Content);
 
             // §6.1 half two: DETECT AFTER. Ollama truncates a too-long prompt silently — the response is
             // plausible, complete, and reasoned over a fraction of the evidence, and NOTHING in the wire
@@ -275,6 +425,34 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
 
             if (turn.ToolCalls.Count == 0)
             {
+                // §6.6 — THE false green. An OpenAI-compatible server may accept the `tools` array,
+                // ignore it, and answer from the prompt alone; the protocol cannot tell that apart from
+                // "I considered the tools and needed none". Every other check in §6.2 tests for a
+                // MALFORMED response and this one is immaculate, so nothing else here can see it.
+                if (toolCallsMade == 0 && MustReadItsEvidence(invocation))
+                {
+                    return new PromptResult
+                    {
+                        Completed = false,
+                        IsError = true,
+                        ResultText = transcriptText.Length == 0 ? null : transcriptText.ToString(),
+                        NumTurns = completedTurns,
+                        Usage = totalUsage,
+                        ObservedModel = observedModel,
+                        FailureKind = PromptFailureKind.Error,
+                        Summary =
+                            $"a GUARDRAIL invocation on block '{Name}' ({model} at {endpoint}) completed WITHOUT " +
+                            $"CALLING A SINGLE TOOL. The `tools` array ({tools.NameList}) was on the wire, so either " +
+                            "this endpoint accepted it and does not implement tool calling, or the model chose to " +
+                            "answer from the prompt alone — the protocol cannot distinguish those, and neither can " +
+                            "this runner. Either way the verifier read NO evidence, so its answer certifies nothing " +
+                            "and no verdict was transcribed (plan 28 §6.6). This is deliberately blunt and blunt in " +
+                            "the safe direction: trusting a well-formed verdict from a judge that read nothing is the " +
+                            $"false green the whole runner exists to close. Run `guardrails providers check {Name}` " +
+                            "against this endpoint — a server that cannot call tools cannot host a verifier."
+                    };
+                }
+
                 return new PromptResult
                 {
                     Completed = true,
@@ -300,18 +478,82 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             messages.Add(new WireMessage("assistant", null, ToolCalls: turn.ToolCalls));
             foreach (CompletedToolCall call in turn.ToolCalls)
             {
-                string result = await ExecuteToolAsync(call, readableRoots, cancellationToken).ConfigureAwait(false);
+                toolCallsMade++;
+                ToolOutcome result = await ExecuteToolAsync(call, tools, readableRoots, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (result.Refused)
+                {
+                    consecutiveDenials++;
+                    refusedInARow.Add(result.Target);
+                }
+                else
+                {
+                    consecutiveDenials = 0;
+                    refusedInARow.Clear();
+                }
+
                 WriteNoticeLine(streamLog, "tool-result", new JsonObject
                 {
                     ["turn"] = completedTurns,
                     ["tool"] = call.Name,
                     ["toolCallId"] = call.Id,
-                    ["resultChars"] = result.Length
+                    ["target"] = result.Target,
+                    ["refused"] = result.Refused,
+                    ["consecutiveDenials"] = consecutiveDenials,
+                    ["resultChars"] = result.Text.Length
                 });
-                messages.Add(new WireMessage("tool", result, ToolCallId: call.Id));
+
+                transcript?.ToolCall(completedTurns, call, result);
+                messages.Add(new WireMessage("tool", result.Text, ToolCallId: call.Id));
+            }
+
+            // #452, checked BEFORE the next request is built: three refusals in a row means the
+            // remaining turns are provably wasted (11 turns and $0.66 spent re-trying blocked reads is
+            // the evidence in the issue). The bound is the harness's POLICY; DETECTING a denial is this
+            // runner's own business (PromptInvocation.cs:77-83), which is why §5's containment refusal
+            // counts here and no caller ever matches a refusal string.
+            if (invocation.AbortAfterConsecutiveToolDenials is { } denialBound
+                && denialBound > 0
+                && consecutiveDenials >= denialBound)
+            {
+                return new PromptResult
+                {
+                    Completed = false,
+                    IsError = true,
+                    ResultText = transcriptText.Length == 0 ? null : transcriptText.ToString(),
+                    NumTurns = completedTurns,
+                    Usage = totalUsage,
+                    ObservedModel = observedModel,
+                    FailureKind = PromptFailureKind.Error,
+                    Summary =
+                        $"ABORTED after {consecutiveDenials} consecutive REFUSED tool calls on block '{Name}' " +
+                        $"({model} at {endpoint}) — the bound the harness declared for this prompt " +
+                        $"(AbortAfterConsecutiveToolDenials = {denialBound}). Every one of these was refused with no " +
+                        $"successful call in between: {string.Join("; ", refusedInARow)}. Each was refused because it " +
+                        "is outside the roots this prompt may read (plan 28 §5: WorkingDirectory and PlanDirectory, " +
+                        "empty entries dropped, an empty root set denying everything) or names a tool this runner " +
+                        $"does not offer ({tools.NameList}). Nothing was read. The remaining turns would be spent " +
+                        "re-trying the same refusals, so the attempt stops here rather than grinding to the turn cap."
+                };
             }
         }
     }
+
+    /// <summary>
+    /// Whether §6.6's zero-tool-call refusal applies to this invocation: a <c>Guardrail</c> that was
+    /// handed a verdict target, i.e. one whose answer will CERTIFY something. See the class doc for why
+    /// the verdict target is part of the condition and why every production judge still carries it
+    /// (<c>GuardrailRunner.cs:184-187</c>).
+    ///
+    /// <para>An <c>Advisory</c> invocation is excluded by §6.6 itself: <c>overwatch</c> and
+    /// <c>ai-triage</c> legitimately reason over text they were handed and may call nothing, and a rule
+    /// that fired there would fail every advisory call on every engine.</para>
+    /// </summary>
+    private static bool MustReadItsEvidence(PromptInvocation invocation) =>
+        invocation.Role == PromptRole.Guardrail
+        && invocation.Environment.TryGetValue(VerdictOutEnvVar, out string? verdictPath)
+        && !string.IsNullOrWhiteSpace(verdictPath);
 
     // ── one wire turn ───────────────────────────────────────────────────────────────────────────
 
@@ -602,12 +844,20 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// (§3.1). The <c>wire</c> map is merged LAST and verbatim, but it can never reach a harness-owned
     /// field: <see cref="ConfigurationFault"/> refuses the run before this is ever called.
     /// </summary>
-    private JsonObject BuildRequestBody(PromptInvocation invocation, string model, IReadOnlyList<WireMessage> messages)
+    private JsonObject BuildRequestBody(
+        PromptInvocation invocation, string model, IReadOnlyList<WireMessage> messages, ToolSelection tools)
     {
         var wireMessages = new JsonArray();
         foreach (WireMessage message in messages)
         {
             wireMessages.Add(message.ToJson());
+        }
+
+        var wireTools = new JsonArray();
+        string rootsNote = ToolRootsNote(invocation);
+        foreach (ToolSpec tool in tools.Offered)
+        {
+            wireTools.Add(tool.ToWireJson(rootsNote));
         }
 
         var body = new JsonObject
@@ -616,6 +866,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             ["messages"] = wireMessages,
             ["stream"] = true,
             ["stream_options"] = new JsonObject { ["include_usage"] = true },
+            ["tools"] = wireTools,
             ["max_tokens"] = invocation.Settings.MaxOutputTokens
         };
 
@@ -636,6 +887,66 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         }
 
         return body;
+    }
+
+    // ── the tool catalogue and §4's allowedTools filter ─────────────────────────────────────────
+
+    /// <summary>
+    /// Resolve which of the three tools this invocation is offered (§4). <b>When the declared
+    /// <c>allowedTools</c> names at least one of <c>Read</c>/<c>Glob</c>/<c>Grep</c>, only those are
+    /// offered; otherwise all three are.</b>
+    ///
+    /// <para>The second half is the load-bearing one: <c>ClaudePromptRunner.cs:415-417</c> always emits
+    /// a grant list, so a Claude-shaped <c>guardrailOverrides.allowedTools: ["Bash"]</c> pinned to an
+    /// openai-compat block must NOT be read as "narrow to nothing" — it names none of this runner's
+    /// tools, so it narrows nothing. And the first half closes the opposite hole: a block declaring
+    /// <c>["Read"]</c> would otherwise have received <c>Glob</c> and <c>Grep</c> too, i.e. WIDER than
+    /// declared, which is what made the first draft's "ignore it" justification false.</para>
+    /// </summary>
+    private static ToolSelection SelectTools(IReadOnlyList<string> allowedTools)
+    {
+        ToolSpec[] named = [.. Catalogue.Where(tool => allowedTools.Any(entry => NamesTool(entry, tool.Name)))];
+
+        return named.Length > 0
+            ? new ToolSelection(named, Filtered: true)
+            : new ToolSelection(Catalogue, Filtered: false);
+    }
+
+    /// <summary>
+    /// Whether one declared <c>allowedTools</c> entry names <paramref name="toolName"/>. A Claude grant
+    /// may be SCOPED — <c>Bash(git show*)</c>, <c>Read(/abs/path/**)</c> — so the comparison is against
+    /// the entry's head, and it is case-SENSITIVE because these three names are harness-owned literals.
+    /// </summary>
+    private static bool NamesTool(string declaredEntry, string toolName)
+    {
+        ReadOnlySpan<char> head = declaredEntry.AsSpan();
+        int scope = head.IndexOf('(');
+        if (scope >= 0)
+        {
+            head = head[..scope];
+        }
+
+        return head.Trim().SequenceEqual(toolName);
+    }
+
+    /// <summary>
+    /// The sentence appended to every offered tool's description, naming the roots this prompt may read
+    /// (§5). A model that does not know where it may read spends its turns being refused — and three of
+    /// those in a row is an abort — so the boundary is stated up front, in the tool schema, where the
+    /// protocol already puts tool documentation and where it costs no MESSAGE content (§6.1's bounds
+    /// are computed over message text, and the runner adding to it would shift a bound the operator
+    /// declared).
+    /// </summary>
+    private static string ToolRootsNote(PromptInvocation invocation)
+    {
+        string[] roots = [.. new[] { invocation.WorkingDirectory, invocation.PlanDirectory }
+            .Where(root => !string.IsNullOrWhiteSpace(root))
+            .Distinct(StringComparer.Ordinal)];
+
+        return roots.Length == 0
+            ? " This request grants NO readable roots, so every call to this tool is refused (plan 28 §5): answer " +
+              "from the message you were given."
+            : " Readable roots for this request, outside which every path is refused: " + string.Join(", ", roots) + ".";
     }
 
     /// <summary>
@@ -957,7 +1268,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// silently does nothing where it was written is indistinguishable from one that works, and
     /// <c>attempt-route.log</c> is not available on the guardrail path — this file is, on both.
     /// </summary>
-    private void WriteRunnerNotice(StreamWriter? streamLog, PromptInvocation invocation)
+    private void WriteRunnerNotice(StreamWriter? streamLog, PromptInvocation invocation, ToolSelection tools)
     {
         if (streamLog is null)
         {
@@ -965,6 +1276,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         }
 
         var ignored = new JsonArray();
+        var narrowed = new JsonArray();
 
         // permissionMode is always carried by PromptRunnerSettings, and there is simply no permission
         // layer on an HTTP chat completion to set a mode on.
@@ -987,18 +1299,28 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 "HTTP sibling"));
         }
 
+        // allowedTools is FILTERED, not ignored (§4) — and BOTH dispositions are disclosed, because a
+        // grant that narrowed nothing is exactly as surprising to an operator as one that narrowed
+        // everything.
         if (invocation.Settings.AllowedTools.Count > 0)
         {
-            ignored.Add(Disclosure(
-                "allowedTools", string.Join(",", invocation.Settings.AllowedTools),
-                "this build offers no tool catalogue on the wire yet, so there is no grant to narrow"));
-        }
-
-        if (invocation.TranscriptLogPath is { Length: > 0 } transcriptPath)
-        {
-            ignored.Add(Disclosure(
-                "transcriptLogPath", transcriptPath,
-                "this build renders no transcript; the raw frames in this stream log are the only readable view"));
+            string declared = string.Join(",", invocation.Settings.AllowedTools);
+            if (tools.Filtered)
+            {
+                narrowed.Add(Disclosure(
+                    "allowedTools", declared,
+                    $"the declared grant names {tools.Offered.Count} of this runner's three tools, so ONLY " +
+                    $"{tools.NameList} {(tools.Offered.Count == 1 ? "was" : "were")} offered on the wire — a call to " +
+                    "any other tool is refused and counts as a denial"));
+            }
+            else
+            {
+                ignored.Add(Disclosure(
+                    "allowedTools", declared,
+                    "the declared grant names NONE of this runner's own tools (Read, Glob, Grep), so it narrows " +
+                    "nothing and all three are offered; a Claude-shaped list such as [\"Bash\"] must never be read " +
+                    "as \"narrow to nothing\""));
+            }
         }
 
         var notice = new JsonObject
@@ -1008,7 +1330,11 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             ["endpoint"] = _config.Endpoint,
             ["model"] = EffectiveModel(invocation),
             ["role"] = invocation.Role.ToString(),
+            ["tools"] = new JsonArray([.. tools.Offered.Select(tool => JsonValue.Create(tool.Name))]),
+            ["verifierMustReadEvidence"] = MustReadItsEvidence(invocation),
+            ["transcriptLogPath"] = invocation.TranscriptLogPath,
             ["ignored"] = ignored,
+            ["narrowed"] = narrowed,
             ["contextBound"] = new JsonObject
             {
                 ["contextTokens"] = _config.ContextTokens,
@@ -1023,11 +1349,49 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 "cost: CostUsd is always null — there is no pricing table for an OpenAI-compatible endpoint, and a " +
                 "fabricated 0 would read as \"this cost nothing\" rather than \"nobody priced it\".",
                 "usage: reported counts are carried verbatim; an absent `usage` records Usage = null and a second " +
-                "runner-notice line, never { 0, 0 }."
+                "runner-notice line, never { 0, 0 }.",
+                MustReadItsEvidence(invocation)
+                    ? "zero-tool-call rule (§6.6): this invocation will CERTIFY something, so completing without " +
+                      "calling a single tool FAILS the attempt — a verifier that read no evidence has verified nothing."
+                    : "zero-tool-call rule (§6.6): NOT applied here — this invocation certifies nothing (it is not a " +
+                      "Guardrail carrying a verdict target), so an answer that called no tool is allowed."
             }
         };
 
         WriteNoticeLine(streamLog, "settings-disclosure", notice);
+    }
+
+    /// <summary>
+    /// The catalogue as the model was shown it, teed as its own notice line so an operator reading the
+    /// stream log can see exactly what was offered and inside which roots — without reconstructing it
+    /// from the wire frames. Written SECOND: the settings disclosure owns the first line, because a
+    /// reader (and a test) identifies this file by it.
+    /// </summary>
+    private static void WriteToolCatalogueNotice(StreamWriter? streamLog, ToolSelection tools, string rootsNote)
+    {
+        if (streamLog is null)
+        {
+            return;
+        }
+
+        var offered = new JsonArray();
+        foreach (ToolSpec tool in tools.Offered)
+        {
+            offered.Add(new JsonObject
+            {
+                ["name"] = tool.Name,
+                ["description"] = tool.Description + rootsNote
+            });
+        }
+
+        WriteNoticeLine(streamLog, "tool-catalogue", new JsonObject
+        {
+            ["offered"] = offered,
+            ["why"] =
+                "a fixed, read-only set (plan 28 §3.2): no write tool and no shell tool exist on this runner, and the " +
+                "names are the harness's own — Overwatch and NeedsHumanTriage already tell the model in prose that " +
+                "its ONLY tools are Read, Glob and Grep"
+        });
     }
 
     private static JsonObject Disclosure(string setting, string declared, string why) => new()
@@ -1063,34 +1427,278 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         streamLog.WriteLine(line.ToJsonString());
     }
 
-    // ── tool execution (the catalogue itself lands in task 13) ──────────────────────────────────
+    // ── tool execution: Read, Glob, Grep — and nothing else, ever ───────────────────────────────
 
     /// <summary>
-    /// Execute one tool call and return the text fed back as the <c>tool</c> message. Containment is
-    /// applied on every call through <see cref="PromptToolContainment.IsReadable"/> with roots
-    /// <c>{ WorkingDirectory, PlanDirectory }</c> (empty entries dropped, an empty root set denying
-    /// everything) — the direction where being wrong is a loud refusal rather than a silent read of
-    /// the whole filesystem.
+    /// Execute one tool call and return the text fed back as the <c>tool</c> message, plus whether the
+    /// call was REFUSED (which is what the #452 bound counts).
     ///
-    /// <para>Only <c>Read</c> is served here; the full <c>Read</c>/<c>Glob</c>/<c>Grep</c> catalogue,
-    /// its <c>allowedTools</c> filtering and the denial bound are task 13's. A result is returned
-    /// verbatim and UNTRUNCATED on purpose: §6.1's per-turn estimate is only honest if it measures the
-    /// bytes that will really be sent.</para>
+    /// <para>Containment is applied on EVERY call through
+    /// <see cref="PromptToolContainment.IsReadable"/> with roots
+    /// <c>{ WorkingDirectory, PlanDirectory }</c> — empty entries dropped, an empty root set denying
+    /// everything (§5). That is the direction where being wrong is a loud refused call rather than a
+    /// silent read of the whole filesystem.</para>
+    ///
+    /// <para><b>Refusal vs. error.</b> A REFUSAL is this runner declining to perform the call at all —
+    /// a tool it does not offer, arguments it cannot use, a path outside the roots — and it counts
+    /// toward <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/>. An ERROR is a call that
+    /// was performed and failed (the file is not there, the disk said no); the model can act on that,
+    /// so it does not count. A <c>Read</c> result is returned verbatim and UNTRUNCATED on purpose:
+    /// §6.1's per-turn estimate is only honest if it measures the bytes that will really be sent.</para>
     /// </summary>
-    private static async Task<string> ExecuteToolAsync(
-        CompletedToolCall call, IReadOnlyList<string> roots, CancellationToken cancellationToken)
+    private static async Task<ToolOutcome> ExecuteToolAsync(
+        CompletedToolCall call, ToolSelection tools, IReadOnlyList<string> roots, CancellationToken cancellationToken)
     {
-        if (!string.Equals(call.Name, "Read", StringComparison.Ordinal))
+        if (!tools.Offers(call.Name))
         {
-            return $"REFUSED: this runner offers no tool named '{call.Name}'. Nothing was read.";
+            string named = string.IsNullOrEmpty(call.Name) ? "(unnamed)" : call.Name;
+            return ToolOutcome.Refuse(
+                named,
+                $"REFUSED: this runner does not offer a tool named '{named}'. The tools offered on this request are " +
+                $"{tools.NameList} — read-only by design (plan 28 §3.2): there is no write tool and no shell tool " +
+                (tools.Filtered
+                    ? "here, and the declared `allowedTools` narrowed the offer further. "
+                    : "on this runner at all. ") +
+                "Nothing was done.");
         }
 
-        string? path = ReadPathArgument(call.Arguments);
+        JsonObject? arguments = ParseObject(call.Arguments);
+
+        return call.Name switch
+        {
+            "Read" => await ReadToolAsync(arguments, roots, cancellationToken).ConfigureAwait(false),
+            "Glob" => GlobTool(arguments, roots),
+            "Grep" => await GrepToolAsync(arguments, roots, cancellationToken).ConfigureAwait(false),
+
+            // Unreachable while Offers() is keyed off the same catalogue; kept because a future
+            // catalogue entry with no dispatch arm must fail LOUDLY rather than silently do nothing.
+            _ => ToolOutcome.Refuse(
+                call.Name,
+                $"REFUSED: '{call.Name}' is in this runner's catalogue but has no implementation — that is a harness " +
+                "bug, not a configuration one. Nothing was done.")
+        };
+    }
+
+    /// <summary>Read one file, whole, after containment.</summary>
+    private static async Task<ToolOutcome> ReadToolAsync(
+        JsonObject? arguments, IReadOnlyList<string> roots, CancellationToken cancellationToken)
+    {
+        string? path = arguments is null ? null : ReadString(arguments, "file_path") ?? ReadString(arguments, "path");
         if (string.IsNullOrWhiteSpace(path))
         {
-            return "REFUSED: the tool call carried no readable `file_path` argument. Nothing was read.";
+            return ToolOutcome.Refuse(
+                "Read (no path)",
+                "REFUSED: the Read call carried no usable `file_path` argument. Pass an absolute path. Nothing was read.");
         }
 
+        if (Contained(roots, path) is { } refusal)
+        {
+            return ToolOutcome.Refuse(path, refusal);
+        }
+
+        try
+        {
+            string text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            return ToolOutcome.Performed(path, text);
+        }
+        catch (FileNotFoundException)
+        {
+            return ToolOutcome.Performed(path, $"ERROR: '{path}' does not exist. Nothing was read.");
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return ToolOutcome.Performed(path, $"ERROR: '{path}' does not exist. Nothing was read.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ToolOutcome.Performed(path, $"ERROR: '{path}' could not be opened (access denied). Nothing was read.");
+        }
+        catch (IOException failure)
+        {
+            return ToolOutcome.Performed(path, $"ERROR: '{path}' could not be read ({failure.Message}). Nothing was read.");
+        }
+    }
+
+    /// <summary>List files matching a glob, within the granted roots.</summary>
+    private static ToolOutcome GlobTool(JsonObject? arguments, IReadOnlyList<string> roots)
+    {
+        string? pattern = arguments is null ? null : ReadString(arguments, "pattern");
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return ToolOutcome.Refuse(
+                "Glob (no pattern)",
+                "REFUSED: the Glob call carried no usable `pattern` argument. Nothing was searched.");
+        }
+
+        if (SearchRoots(arguments, roots, out IReadOnlyList<string> searchRoots, out string? rootRefusal))
+        {
+            return ToolOutcome.Refuse($"Glob {pattern}", rootRefusal!);
+        }
+
+        Regex matcher;
+        try
+        {
+            matcher = GlobMatcher(pattern);
+        }
+        catch (ArgumentException failure)
+        {
+            return ToolOutcome.Refuse(
+                $"Glob {pattern}",
+                $"REFUSED: '{pattern}' is not a usable glob pattern ({failure.Message}). Nothing was searched.");
+        }
+
+        var matches = new List<string>();
+        bool truncated = false;
+        int examined = 0;
+
+        foreach (string searchRoot in searchRoots)
+        {
+            if (truncated)
+            {
+                break;
+            }
+
+            foreach (string file in EnumerateFiles(searchRoot))
+            {
+                if (matches.Count >= MaxToolResultEntries || ++examined > MaxExaminedFiles)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                if (matcher.IsMatch(RelativeForMatching(searchRoot, file)))
+                {
+                    matches.Add(file);
+                }
+            }
+        }
+
+        matches.Sort(StringComparer.Ordinal);
+        string body = matches.Count == 0
+            ? $"No file under {string.Join(", ", searchRoots)} matches '{pattern}'."
+            : string.Join("\n", matches);
+
+        return ToolOutcome.Performed($"Glob {pattern}", truncated ? body + $"\n… truncated at {MaxToolResultEntries} results." : body);
+    }
+
+    /// <summary>Search file contents for a regular expression, within the granted roots.</summary>
+    private static async Task<ToolOutcome> GrepToolAsync(
+        JsonObject? arguments, IReadOnlyList<string> roots, CancellationToken cancellationToken)
+    {
+        string? pattern = arguments is null ? null : ReadString(arguments, "pattern");
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return ToolOutcome.Refuse(
+                "Grep (no pattern)",
+                "REFUSED: the Grep call carried no usable `pattern` argument. Nothing was searched.");
+        }
+
+        if (SearchRoots(arguments, roots, out IReadOnlyList<string> searchRoots, out string? rootRefusal))
+        {
+            return ToolOutcome.Refuse($"Grep {pattern}", rootRefusal!);
+        }
+
+        Regex matcher;
+        Regex? fileFilter;
+        try
+        {
+            matcher = new Regex(pattern, RegexOptions.None, GrepPatternTimeout);
+            string? glob = arguments is null ? null : ReadString(arguments, "glob");
+            fileFilter = string.IsNullOrWhiteSpace(glob) ? null : GlobMatcher(glob);
+        }
+        catch (ArgumentException failure)
+        {
+            return ToolOutcome.Refuse(
+                $"Grep {pattern}",
+                $"REFUSED: '{pattern}' is not a usable regular expression ({failure.Message}). Nothing was searched.");
+        }
+
+        var hits = new List<string>();
+        int examined = 0;
+        bool truncated = false;
+
+        foreach (string searchRoot in searchRoots)
+        {
+            if (truncated)
+            {
+                break;
+            }
+
+            foreach (string file in EnumerateFiles(searchRoot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (++examined > MaxExaminedFiles || hits.Count >= MaxToolResultEntries)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                if (fileFilter is not null && !fileFilter.IsMatch(RelativeForMatching(searchRoot, file)))
+                {
+                    continue;
+                }
+
+                truncated |= await GrepOneFileAsync(file, matcher, hits, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        string body = hits.Count == 0
+            ? $"No line under {string.Join(", ", searchRoots)} matches '{pattern}'."
+            : string.Join("\n", hits);
+
+        return ToolOutcome.Performed(
+            $"Grep {pattern}", truncated ? body + $"\n… truncated at {MaxToolResultEntries} matches." : body);
+    }
+
+    /// <summary>Match one file's lines; returns whether the result cap was reached.</summary>
+    private static async Task<bool> GrepOneFileAsync(
+        string file, Regex matcher, List<string> hits, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (new FileInfo(file).Length > MaxGrepFileBytes)
+            {
+                return false;
+            }
+
+            string[] lines = await File.ReadAllLinesAsync(file, cancellationToken).ConfigureAwait(false);
+            for (int index = 0; index < lines.Length; index++)
+            {
+                if (hits.Count >= MaxToolResultEntries)
+                {
+                    return true;
+                }
+
+                if (matcher.IsMatch(lines[index]))
+                {
+                    string text = lines[index].Trim();
+                    hits.Add($"{file}:{index + 1}:{(text.Length > 200 ? text[..200] + "…" : text)}");
+                }
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            hits.Add($"{file}: (skipped — the pattern took too long on this file)");
+        }
+        catch (IOException)
+        {
+            // An unreadable file is not evidence of anything; skip it rather than failing the call.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same.
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Apply §5's containment to one candidate path. Returns null when the path may be read, or the
+    /// refusal text to hand back to the model.
+    /// </summary>
+    private static string? Contained(IReadOnlyList<string> roots, string path)
+    {
         bool readable;
         try
         {
@@ -1105,43 +1713,132 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             return $"REFUSED: '{path}' is not a usable path. Nothing was read.";
         }
 
-        if (!readable)
-        {
-            string named = string.Join(", ", roots.Where(r => r.Length > 0));
-            return $"REFUSED: '{path}' is outside this prompt's readable roots " +
-                   $"({(named.Length == 0 ? "none — this invocation granted no roots at all" : named)}). Nothing was read.";
-        }
-
-        try
-        {
-            return await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-        }
-        catch (FileNotFoundException)
-        {
-            return $"ERROR: '{path}' does not exist. Nothing was read.";
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return $"ERROR: '{path}' does not exist. Nothing was read.";
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return $"ERROR: '{path}' could not be opened (access denied). Nothing was read.";
-        }
-        catch (IOException failure)
-        {
-            return $"ERROR: '{path}' could not be read ({failure.Message}). Nothing was read.";
-        }
-    }
-
-    private static string? ReadPathArgument(string arguments)
-    {
-        if (ParseObject(arguments) is not { } parsed)
+        if (readable)
         {
             return null;
         }
 
-        return ReadString(parsed, "file_path") ?? ReadString(parsed, "path");
+        string named = string.Join(", ", roots.Where(root => !string.IsNullOrWhiteSpace(root)));
+        return $"REFUSED: '{path}' is outside this prompt's readable roots " +
+               $"({(named.Length == 0 ? "none — this invocation granted no roots at all" : named)}). Nothing was read.";
+    }
+
+    /// <summary>
+    /// Where a <c>Glob</c>/<c>Grep</c> call may look: the declared <c>path</c> if it survives
+    /// containment, otherwise every granted root. Returns true when the call must be REFUSED.
+    /// </summary>
+    private static bool SearchRoots(
+        JsonObject? arguments, IReadOnlyList<string> roots, out IReadOnlyList<string> searchRoots, out string? refusal)
+    {
+        string? declared = arguments is null ? null : ReadString(arguments, "path");
+        if (!string.IsNullOrWhiteSpace(declared))
+        {
+            if (Contained(roots, declared) is { } outside)
+            {
+                searchRoots = [];
+                refusal = outside;
+                return true;
+            }
+
+            searchRoots = [declared];
+            refusal = null;
+            return false;
+        }
+
+        string[] granted = [.. roots.Where(root => !string.IsNullOrWhiteSpace(root)).Distinct(StringComparer.Ordinal)];
+        if (granted.Length == 0)
+        {
+            searchRoots = [];
+            refusal =
+                "REFUSED: this invocation granted no readable roots at all, so every file tool is denied (plan 28 §5). " +
+                "Nothing was searched.";
+            return true;
+        }
+
+        searchRoots = granted;
+        refusal = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Walk one root for files, skipping what the process may not open. <c>IgnoreInaccessible</c> keeps
+    /// an unreadable subtree from turning a legitimate search into an exception.
+    /// </summary>
+    private static IEnumerable<string> EnumerateFiles(string root)
+    {
+        if (File.Exists(root))
+        {
+            return [root];
+        }
+
+        if (!Directory.Exists(root))
+        {
+            return [];
+        }
+
+        return Directory.EnumerateFiles(root, "*", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        });
+    }
+
+    /// <summary>The path a glob is matched against: relative to its search root, with forward slashes.</summary>
+    private static string RelativeForMatching(string searchRoot, string file)
+    {
+        string relative = Directory.Exists(searchRoot) ? Path.GetRelativePath(searchRoot, file) : Path.GetFileName(file);
+        return relative.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+    }
+
+    /// <summary>
+    /// Translate a glob to a regex: <c>**</c> crosses directory separators, <c>*</c> and <c>?</c> do
+    /// not. A pattern with no <c>/</c> is treated as <c>**/&lt;pattern&gt;</c>, i.e. it matches at any
+    /// depth — the same convention gitignore and ripgrep use, and what a model that writes
+    /// <c>"*.cs"</c> almost always means.
+    /// </summary>
+    private static Regex GlobMatcher(string pattern)
+    {
+        string normalised = pattern.Replace('\\', '/').Trim();
+        if (!normalised.Contains('/', StringComparison.Ordinal))
+        {
+            normalised = "**/" + normalised;
+        }
+
+        var expression = new StringBuilder("^");
+        for (int index = 0; index < normalised.Length; index++)
+        {
+            char current = normalised[index];
+            if (current == '*' && index + 1 < normalised.Length && normalised[index + 1] == '*')
+            {
+                // "**/" may also match ZERO directories, so "**/x.cs" finds a top-level x.cs too.
+                if (index + 2 < normalised.Length && normalised[index + 2] == '/')
+                {
+                    expression.Append("(?:.*/)?");
+                    index += 2;
+                }
+                else
+                {
+                    expression.Append(".*");
+                    index++;
+                }
+
+                continue;
+            }
+
+            expression.Append(current switch
+            {
+                '*' => "[^/]*",
+                '?' => "[^/]",
+                _ => Regex.Escape(current.ToString())
+            });
+        }
+
+        expression.Append('$');
+        return new Regex(
+            expression.ToString(),
+            OperatingSystem.IsWindows() ? RegexOptions.IgnoreCase : RegexOptions.None,
+            GrepPatternTimeout);
     }
 
     // ── shared JSON helpers ─────────────────────────────────────────────────────────────────────
@@ -1299,6 +1996,55 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// <summary>A tool call the model asked for, reassembled from however many frames carried it.</summary>
     private sealed record CompletedToolCall(string Id, string Name, string Arguments);
 
+    /// <summary>
+    /// One entry of the fixed catalogue: the harness-owned NAME (§3.2), what the model is told the tool
+    /// does, and its JSON-Schema parameters. The schema is stored as text and re-parsed per request so
+    /// every request builds a fresh tree — a shared mutable <see cref="JsonObject"/> would be spliced
+    /// into one body and then mutated by the next.
+    /// </summary>
+    private sealed record ToolSpec(string Name, string Description, string ParameterSchemaJson)
+    {
+        /// <param name="rootsNote">
+        /// The per-invocation containment boundary, appended to the description — see
+        /// <see cref="ToolRootsNote"/> for why it rides here rather than in a <c>system</c> message.
+        /// </param>
+        internal JsonObject ToWireJson(string rootsNote) => new()
+        {
+            ["type"] = "function",
+            ["function"] = new JsonObject
+            {
+                ["name"] = Name,
+                ["description"] = Description + rootsNote,
+                ["parameters"] = JsonNode.Parse(ParameterSchemaJson)
+            }
+        };
+    }
+
+    /// <summary>
+    /// Which tools this invocation is offered, and whether the declared <c>allowedTools</c> is what
+    /// chose them (§4). One value, used for the wire array, the disclosure and the enforcement.
+    /// </summary>
+    private sealed record ToolSelection(IReadOnlyList<ToolSpec> Offered, bool Filtered)
+    {
+        /// <summary>The offered names, for operator-facing text.</summary>
+        internal string NameList => string.Join(", ", Offered.Select(tool => tool.Name));
+
+        /// <summary>Whether a call by this name may be performed at all.</summary>
+        internal bool Offers(string name) =>
+            Offered.Any(tool => string.Equals(tool.Name, name, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// What one tool call produced: the text fed back as the <c>tool</c> message, the target named in
+    /// the #452 abort summary, and whether the call was REFUSED (a denial) rather than performed.
+    /// </summary>
+    private sealed record ToolOutcome(string Target, string Text, bool Refused)
+    {
+        internal static ToolOutcome Performed(string target, string text) => new(target, text, Refused: false);
+
+        internal static ToolOutcome Refuse(string target, string text) => new(target, text, Refused: true);
+    }
+
     /// <summary>Mutable accumulator for a tool call whose arguments arrive across several deltas.</summary>
     private sealed class ToolCallAccumulator
     {
@@ -1387,5 +2133,99 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         internal void MarkStalled() => Volatile.Write(ref _stalled, 1);
 
         internal bool Stalled => Volatile.Read(ref _stalled) == 1;
+    }
+
+    // ── the rendered transcript (issue #27's sibling for this runner) ───────────────────────────
+
+    /// <summary>
+    /// The operator's only readable view of a tool loop, written AS IT HAPPENS (the raw SSE frames in
+    /// the stream log are a wire dump, not a narrative). It names every tool call, its target, whether
+    /// the call was refused, and the size of what came back — so <b>a verdict rendered by a judge that
+    /// called nothing is visible to a human at a glance</b>, which is the same failure §6.6 refuses
+    /// mechanically.
+    ///
+    /// <para>Null <see cref="PromptInvocation.TranscriptLogPath"/> (or empty) renders nothing, matching
+    /// the field's own contract and §6.5's empty-path convention.</para>
+    /// </summary>
+    private sealed class TranscriptRenderer : IAsyncDisposable
+    {
+        private readonly StreamWriter _writer;
+        private int _toolCalls;
+
+        private TranscriptRenderer(StreamWriter writer) => _writer = writer;
+
+        internal static TranscriptRenderer? Open(string? transcriptLogPath)
+        {
+            if (string.IsNullOrEmpty(transcriptLogPath))
+            {
+                return null;
+            }
+
+            if (Path.GetDirectoryName(transcriptLogPath) is { Length: > 0 } directory)
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            return new TranscriptRenderer(
+                new StreamWriter(transcriptLogPath, append: false, Utf8NoBom) { AutoFlush = true });
+        }
+
+        internal void Header(string runner, string endpoint, string model, PromptRole role, ToolSelection tools)
+        {
+            _writer.WriteLine("# openai-compat transcript");
+            _writer.WriteLine();
+            _writer.WriteLine($"- **runner**: `{runner}` (openai-compat)");
+            _writer.WriteLine($"- **endpoint**: {endpoint}");
+            _writer.WriteLine($"- **model**: `{model}`");
+            _writer.WriteLine($"- **role**: {role}");
+            _writer.WriteLine($"- **tools offered**: {tools.NameList}" +
+                              (tools.Filtered ? " (narrowed by the declared `allowedTools`)" : string.Empty));
+            _writer.WriteLine();
+        }
+
+        internal void Assistant(int turn, string content)
+        {
+            _writer.WriteLine($"## Turn {turn}");
+            _writer.WriteLine();
+            _writer.WriteLine(string.IsNullOrWhiteSpace(content)
+                ? "_(no assistant text this turn — it asked for tools)_"
+                : content.TrimEnd());
+            _writer.WriteLine();
+        }
+
+        internal void ToolCall(int turn, CompletedToolCall call, ToolOutcome outcome)
+        {
+            _toolCalls++;
+            _writer.WriteLine(
+                $"- **{(outcome.Refused ? "REFUSED" : "tool")}** `{call.Name}` → `{outcome.Target}` " +
+                $"({outcome.Text.Length} chars back, turn {turn})");
+
+            if (outcome.Refused)
+            {
+                _writer.WriteLine($"  - {outcome.Text}");
+            }
+
+            _writer.WriteLine();
+        }
+
+        internal void Outcome(PromptResult result)
+        {
+            _writer.WriteLine("## Outcome");
+            _writer.WriteLine();
+            _writer.WriteLine($"- **completed**: {result.Completed}");
+            _writer.WriteLine($"- **failure**: {result.FailureKind}");
+            _writer.WriteLine($"- **turns**: {result.NumTurns}");
+            _writer.WriteLine(_toolCalls == 0
+                ? "- **tool calls**: 0 — this answer was produced having read NOTHING"
+                : $"- **tool calls**: {_toolCalls}");
+
+            if (!string.IsNullOrWhiteSpace(result.Summary))
+            {
+                _writer.WriteLine();
+                _writer.WriteLine(result.Summary);
+            }
+        }
+
+        public async ValueTask DisposeAsync() => await _writer.DisposeAsync().ConfigureAwait(false);
     }
 }
