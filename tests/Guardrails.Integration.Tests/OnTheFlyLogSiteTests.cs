@@ -27,10 +27,11 @@ public sealed class OnTheFlyLogSiteTests
             IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [a, b],
             liveUrlForTask: id => liveUrls.TryGetValue(id, out string? u) ? u : null);
 
-        // Initial: both pending → both plain text, with a meta-refresh.
+        // Initial: both pending → both plain text, with the in-place live poll (issue #543).
         observer.WriteInitialIndex();
         string index0 = temp.ReadIndex();
-        Assert.Contains("http-equiv=\"refresh\"", index0);   // during-run page refreshes itself
+        Assert.Contains("GR_LOG_POLL_MS", index0);            // during-run page polls itself in place
+        Assert.DoesNotContain("http-equiv=\"refresh\"", index0); // ...and never whole-document reloads
         Assert.DoesNotContain("tasks/01-alpha", index0);     // pending → no live link yet
         Assert.DoesNotContain("01-alpha/index.html", index0); // pending → no static link yet
 
@@ -77,6 +78,7 @@ public sealed class OnTheFlyLogSiteTests
 
         string index = temp.ReadIndex();
         Assert.DoesNotContain("http-equiv=\"refresh\"", index); // durable artifact does not flicker
+        Assert.DoesNotContain("GR_LOG_POLL_MS", index);        // ...and carries no poll to leave running (#543)
         Assert.Contains("01-alpha/index.html", index);          // settled task is a static link
     }
 
@@ -112,7 +114,8 @@ public sealed class OnTheFlyLogSiteTests
 
         observer.WriteInitialIndex();
         string wave0 = temp.ReadWaveIndex("wave-01-alpha");
-        Assert.Contains("http-equiv=\"refresh\"", wave0);        // during-run wave page refreshes itself
+        Assert.Contains("GR_LOG_POLL_MS", wave0);                 // during-run wave page polls itself (#543)
+        Assert.DoesNotContain("http-equiv=\"refresh\"", wave0);  // ...and never whole-document reloads
         Assert.Contains("wave-01-alpha — wave log", wave0);
         Assert.DoesNotContain("href=\"01-a/index.html\"", wave0); // pending → no static link yet
         Assert.Contains("0/1 complete", wave0);

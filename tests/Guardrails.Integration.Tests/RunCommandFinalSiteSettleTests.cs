@@ -33,7 +33,7 @@ public sealed class RunCommandFinalSiteSettleTests
         var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
         OnTheFlyLogSiteObserver.WriteInitialIndex(temp.LogsRoot, TempPlan.RunId, plan.Tasks, liveUrlForTask: null);
         observer.PlanGuardrailsStarting();
-        Assert.Contains("http-equiv=\"refresh\"", temp.ReadIndex());
+        Assert.Contains("GR_LOG_POLL_MS", temp.ReadIndex());
         Assert.Equal("running", Status(temp.ReadDiagram(), "plan_guardrails"));
 
         // The fault path: the finally's extracted body settles both pages.
@@ -46,6 +46,7 @@ public sealed class RunCommandFinalSiteSettleTests
 
         string index = temp.ReadIndex();
         Assert.DoesNotContain("http-equiv=\"refresh\"", index);            // durable log index (no refresh)
+        Assert.DoesNotContain("GR_LOG_POLL_MS", index);                     // and no poll left running (#543)
         Assert.Contains("01-a/index.html", index);                         // settled task links to its page
     }
 

@@ -17,9 +17,11 @@ namespace Guardrails.Cli.Ui;
 ///     settled task with attempts on disk now links to its static page.</item>
 /// </list>
 ///
-/// <para>The index always carries the <c>meta refresh</c> (<c>includeRefresh:true</c>) so a
-/// <c>file://</c> view re-reads it as it is rewritten; the DURABLE final/<c>--export</c> index (no
-/// refresh, all-static) is written separately by the run's end-of-run path, NOT here.</para>
+/// <para>The index always carries the in-place live poll (<c>includeRefresh:true</c>) so a SERVED view
+/// updates itself as it is rewritten, and stops on its own when the run settles or the poll fails
+/// (issue #543 — it replaced a <c>meta refresh</c> that could never stop by itself); the DURABLE
+/// final/<c>--export</c> index (no poll, all-static) is written separately by the run's end-of-run
+/// path, NOT here.</para>
 ///
 /// <para>The renderer writes atomically, so a browser never reads a torn file. This decorator's own
 /// status map is the only shared mutable state, and M4 worker threads call in concurrently, so all

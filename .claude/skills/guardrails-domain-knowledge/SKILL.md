@@ -82,6 +82,20 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     re-running `mermaid.render`, stopping cleanly at a terminal run state (`GR_DURING_RUN=false`)
     or, under a plain `file://` view that cannot poll itself, revealing a hidden
     `#gr-live-offline` notice. See SSOT section 12.1.
+- **The LOG SITE got the same treatment** (issue #543). Its during-run pages -- the run-level
+  `index.html` and each per-wave `index.html` -- carried the same defect one surface over: a
+  `<meta http-equiv="refresh" content="2">` whole-document reload with **no terminal condition
+  of its own**, which stopped only because the run completed and rewrote the file. A run that
+  was killed or interrupted therefore left its log pages reloading every 2s forever. They now
+  carry an in-place poll on a named `GR_LOG_POLL_MS` interval (5000ms -- shorter than the
+  diagram's 15s because swapping a small table body is cheap and this is the page an operator
+  watches a run through) that fetches the page's own url and swaps in the fetched `<body>`, so
+  scroll survives. It stops on **both** conditions: a fetched page that no longer mentions
+  `GR_LOG_POLL_MS` (the run settled), and **any failed poll** (a killed run's dead server, or a
+  `file://` view), which reveals the same `#gr-live-offline` notice. Note the terminal signal is
+  the **absence** of the poll block, so the FINAL settled page needed nothing added and is
+  byte-for-byte what it was before #543 -- the byte-identity goldens in
+  `LogSiteHaltBannerTests` are the tripwire for that.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
   Zero guardrails = validation error.

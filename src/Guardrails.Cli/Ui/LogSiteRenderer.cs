@@ -17,11 +17,17 @@ namespace Guardrails.Cli.Ui;
 /// layout + the same status colours); they differ ONLY in the index's per-task link target and
 /// whether the index auto-refreshes:
 /// <list type="bullet">
-///   <item>DURING-RUN index — a <c>&lt;meta http-equiv="refresh"&gt;</c> so a <c>file://</c> view
-///     re-reads it as the harness rewrites it; a RUNNING task links to the LIVE server URL (a click
-///     tails it), a settled/with-attempts task links to its static <c>&lt;taskId&gt;/index.html</c>,
-///     a pending/no-attempts task is plain text.</item>
-///   <item>FINAL / <c>--export</c> index — NO refresh, ALL links static (durable, non-flickering).</item>
+///   <item>DURING-RUN index — an IN-PLACE live status poll (issue #543; see
+///     <see cref="LivePollScript"/>) that fetches this page's own url and swaps in the fetched
+///     <c>&lt;body&gt;</c>, so scroll survives and the page stops on its own when the run settles OR when
+///     a poll fails. It replaced a <c>&lt;meta http-equiv="refresh" content="2"&gt;</c> whole-document
+///     reload, which had no terminal condition of its own and so left a killed run's pages reloading
+///     forever. A RUNNING task links to the LIVE server URL (a click tails it), a settled/with-attempts
+///     task links to its static <c>&lt;taskId&gt;/index.html</c>, a pending/no-attempts task is plain
+///     text.</item>
+///   <item>FINAL / <c>--export</c> index — NO poll, ALL links static (durable, non-flickering). The
+///     absence of the poll block is itself the terminal signal a polling page reads, which is why nothing
+///     was added to this page and its bytes are unchanged from before #543.</item>
 /// </list>
 ///
 /// <para>The static site is written next to the artifacts it renders, under the <c>logs/&lt;runId&gt;/</c>
@@ -56,6 +62,96 @@ public static class LogSiteRenderer
   pre { background: #06090d; border: 1px solid #1c2733; border-radius: 6px; padding: 1rem;
         white-space: pre-wrap; word-break: break-word; font-size: .82rem; line-height: 1.35;
         max-height: 70vh; overflow: auto; }
+""";
+
+    /// <summary>
+    /// The in-place live-poll interval (issue #543). Deliberately shorter than the diagram's 15s
+    /// (<c>HtmlDiagramRenderer.LivePollMs</c>): re-badging a big Mermaid SVG is heavy, whereas swapping a
+    /// small table body is not, and this index is the surface an operator actually watches a run through —
+    /// the "click a task the moment it settles" flow wants to feel current. Still well above the 2s
+    /// whole-document reload it replaces, because task status only changes at task boundaries.
+    /// </summary>
+    private const int LivePollMs = 5000;
+
+    /// <summary>
+    /// The live-poll offline notice's CSS (issue #543). Appended to the page's one <c>&lt;style&gt;</c>
+    /// element ONLY on a during-run page, so the FINAL settled page keeps its exact pre-#543 bytes.
+    /// </summary>
+    private const string LivePollStyle = """
+
+  #gr-live-offline { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
+                     border: 1px solid #b8860b; border-radius: 6px; padding: .5rem .7rem;
+                     color: #f0d9a8; font-size: .78rem; max-width: 32rem; }
+""";
+
+    /// <summary>
+    /// The during-run page's in-place status poll (issue #543), replacing the whole-document
+    /// <c>&lt;meta http-equiv="refresh" content="2"&gt;</c> this page used to carry.
+    /// <para>
+    /// <b>Why the meta refresh had to go.</b> It reloaded the entire document every 2 seconds, which threw
+    /// away scroll position, could swallow a click that landed mid-tick, and — the defect that actually
+    /// prompted this — <b>had no terminal condition of its own</b>. It stopped only because the run reached
+    /// completion and rewrote the file without it, so a run that was killed, crashed, or interrupted left
+    /// its log pages reloading every 2 seconds forever, on every machine that ever opened them.
+    /// </para>
+    /// <para>
+    /// <b>What replaces it.</b> The page fetches its OWN url, and swaps in the fetched document's
+    /// <c>&lt;body&gt;</c> — the table, the note, the waves nav and any halt banner all update in place,
+    /// with no navigation, so scroll survives. It stops on BOTH terminal conditions:
+    /// </para>
+    /// <list type="number">
+    ///   <item>the fetched page no longer carries <c>GR_LOG_POLL_MS</c> — i.e. the run settled and the
+    ///     final static page was written. This is why the terminal signal needs nothing added to the FINAL
+    ///     page: its identity IS the absence of this block, so that page stays byte-for-byte what it was
+    ///     before #543.</item>
+    ///   <item>the poll fails outright — most commonly a plain <c>file://</c> view, where <c>fetch</c> of
+    ///     the page's own url is blocked, and equally a run whose server is gone because it was killed.
+    ///     That case reveals the <c>#gr-live-offline</c> notice instead of leaving the page looking live
+    ///     forever. <b>This is the one that closes the defect</b>: a stranded artifact now goes quiet and
+    ///     says so, rather than flashing indefinitely.</item>
+    /// </list>
+    /// <para>
+    /// The trade-off, stated plainly: a during-run page opened over <c>file://</c> no longer updates
+    /// itself, because <c>fetch</c> cannot read a <c>file://</c> url. It shows the offline notice and
+    /// points at the live server, which is the surface that can actually stream. An honest static snapshot
+    /// is worth more than a page that reloads forever and cannot say whether it is current.
+    /// </para>
+    /// </summary>
+    private static string LivePollScript() => $$"""
+<div id="gr-live-offline" hidden>Not live &mdash; this page cannot poll for updates (it was opened as a
+file, or the run's log server is gone). It is a snapshot. Use the live server URL printed by
+<code>guardrails run</code> to watch a run in progress.</div>
+<script>
+const GR_LOG_POLL_MS = {{LivePollMs}};
+let grLogPollTimer = null;
+function grStopLogPoll() {
+  if (grLogPollTimer !== null) { clearInterval(grLogPollTimer); grLogPollTimer = null; }
+}
+function grShowLogOffline() {
+  const notice = document.getElementById('gr-live-offline');
+  if (notice) notice.hidden = false;
+}
+// Fetch this page's OWN url and swap in the fetched <body>. No navigation happens, so scroll position
+// (and any click already in flight) survives — the whole point of not using <meta refresh>.
+async function grPollLog() {
+  let text;
+  try {
+    const res = await fetch(window.location.href, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    text = await res.text();
+  } catch (e) {
+    grShowLogOffline();
+    grStopLogPoll();
+    return;
+  }
+  const doc = new DOMParser().parseFromString(text, 'text/html');
+  if (doc.body) { document.body.innerHTML = doc.body.innerHTML; }
+  // The terminal signal: the settled page is rendered WITHOUT this poll block, so a fetched document
+  // that no longer mentions GR_LOG_POLL_MS is the run having finished and rewritten the page.
+  if (!text.includes('GR_LOG_POLL_MS')) { grStopLogPoll(); }
+}
+grLogPollTimer = setInterval(grPollLog, GR_LOG_POLL_MS);
+</script>
 """;
 
     /// <summary>
@@ -313,9 +409,10 @@ public static class LogSiteRenderer
     /// <summary>
     /// The site landing page: every task with its status word and a link target chosen by the caller's
     /// <paramref name="linkResolver"/> (static page / live URL / plain text). Regenerated on every write
-    /// (never appended). When <paramref name="includeRefresh"/> is true a <c>meta refresh</c> makes a
-    /// <c>file://</c> view re-read the file as the harness rewrites it ("updated on the fly"); the durable
-    /// final / <c>--export</c> index omits it.
+    /// (never appended). When <paramref name="includeRefresh"/> is true the page carries the in-place live
+    /// poll (issue #543, <see cref="LivePollScript"/>) so a SERVED view updates itself as the harness
+    /// rewrites the file ("updated on the fly") and stops on its own at a settled run or a failed poll; the
+    /// durable final / <c>--export</c> index omits it.
     /// <para>When <paramref name="halt"/> is present (issue #436) the page LEADS with the gate-halt banner
     /// and its CSS; when it is null not one byte of the page changes.</para>
     /// <para>
@@ -361,14 +458,14 @@ public static class LogSiteRenderer
             rows.Append("</tr>");
         }
 
-        // The meta-refresh is the "no server needed" mechanism for the during-run file:// view (#141):
-        // the browser re-reads index.html every 2s, so a click after a task settles finds the static page.
-        string refresh = includeRefresh
-            ? "\n<meta http-equiv=\"refresh\" content=\"2\">"
-            : string.Empty;
+        // The during-run page updates IN PLACE (issue #543 — see LivePollScript) instead of reloading the
+        // whole document every 2s. Both the script and its CSS come from this one conditional, so the
+        // FINAL settled page carries no trace of the poll and keeps its exact pre-#543 bytes.
+        string livePoll = includeRefresh ? LivePollScript() : string.Empty;
+        string livePollStyle = includeRefresh ? LivePollStyle : string.Empty;
 
         string note = includeRefresh
-            ? "Live run — this page refreshes itself. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
+            ? "Live run — this page updates itself in place. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
             : "Static export of this run. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.";
 
         // Waves drill-down (issue #380): for a WAVED plan, a nav section linking each wave's own index —
@@ -390,10 +487,10 @@ public static class LogSiteRenderer
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guardrails run {Enc(runId)} — log site</title>
 <style>
-{SharedStyle}{haltStyle}
+{SharedStyle}{haltStyle}{livePollStyle}
 </style>
 </head>
 <body>
@@ -404,7 +501,7 @@ public static class LogSiteRenderer
 <tbody>
 {rows}
 </tbody>
-</table>
+</table>{livePoll}
 </body>
 </html>
 """;
@@ -722,9 +819,11 @@ public static class LogSiteRenderer
             EvidenceHref: BreakdownHref);
 
     /// <summary>
-    /// The RUNNING panel for an in-flight breakdown (design 23 §5.3) — the during-run page already carries a
-    /// 2s <c>meta refresh</c>, so this animates for free. The note is load-bearing: it says in words why
-    /// there is no percentage, which is the question the count invites.
+    /// The RUNNING panel for an in-flight breakdown (design 23 §5.3) — the during-run page carries the
+    /// in-place live poll (issue #543), which re-fetches and swaps the body, so this elapsed clock still
+    /// animates for free; only the cadence changed, from the old 2s whole-document reload to the poll's
+    /// <see cref="LivePollMs"/>. The note is load-bearing: it says in words why there is no percentage,
+    /// which is the question the count invites.
     /// </summary>
     /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree.</param>
     /// <param name="waveDir">The wave being authored.</param>
@@ -943,12 +1042,13 @@ public static class LogSiteRenderer
                 .Append("<td>").Append(Enc(task.Description)).Append("</td></tr>");
         }
 
-        string refresh = includeRefresh
-            ? "\n<meta http-equiv=\"refresh\" content=\"2\">"
-            : string.Empty;
+        // Same in-place poll as the plan index (issue #543 — see LivePollScript); the wave page had the
+        // identical 2s whole-document reload and the identical never-stops defect.
+        string livePoll = includeRefresh ? LivePollScript() : string.Empty;
+        string livePollStyle = includeRefresh ? LivePollStyle : string.Empty;
 
         string note = includeRefresh
-            ? "Live run — this wave page refreshes itself. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
+            ? "Live run — this wave page updates itself in place. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
             : "Static export of this wave. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.";
 
         // This wave's own gate halt (issue #436); empty for every wave whose gates did not stop the run,
@@ -966,10 +1066,10 @@ public static class LogSiteRenderer
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{Enc(wave.Dir)} — Guardrails wave log ({Enc(runId)})</title>
 <style>
-{SharedStyle}{haltStyle}{phaseStyle}
+{SharedStyle}{haltStyle}{phaseStyle}{livePollStyle}
 </style>
 </head>
 <body>
@@ -981,7 +1081,7 @@ public static class LogSiteRenderer
 <tbody>
 {rows}
 </tbody>
-</table>
+</table>{livePoll}
 </body>
 </html>
 """;

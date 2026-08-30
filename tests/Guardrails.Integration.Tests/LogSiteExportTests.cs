@@ -76,8 +76,11 @@ public sealed class LogSiteExportTests
         Assert.True(File.Exists(taskPage), "the finished task's static page should exist after the run");
 
         string index = await File.ReadAllTextAsync(siteIndex, TestContext.Current.CancellationToken);
-        // The DURABLE final index: all-static, no refresh (the during-run refreshing index was replaced).
+        // The DURABLE final index: all-static, and carrying neither live mechanism (the during-run
+        // self-updating index was replaced). The absent poll is what a still-polling page reads as its
+        // terminal signal, so this assertion is load-bearing for #543, not merely cosmetic.
         Assert.DoesNotContain("http-equiv=\"refresh\"", index);
+        Assert.DoesNotContain("GR_LOG_POLL_MS", index);
         Assert.Contains("01-first/index.html", index);
         Assert.Contains("data-status=\"succeeded\"", index);
 
@@ -297,8 +300,10 @@ public sealed class LogSiteExportTests
             Assert.DoesNotContain("data-status=\"succeeded\">succeeded</td>", index);
             Assert.DoesNotContain("href=\"01-a/index.html\"", index); // no task is a link yet (all plain text)
             Assert.DoesNotContain("href=\"02-b/index.html\"", index);
-            // During-run index carries the meta-refresh so a file:// view re-reads it as it is rewritten.
-            Assert.Contains("http-equiv=\"refresh\"", index);
+            // During-run index carries the in-place live poll (issue #543) rather than a whole-document
+            // reload, so it updates without losing scroll and stops on its own when the run settles.
+            Assert.Contains("GR_LOG_POLL_MS", index);
+            Assert.DoesNotContain("http-equiv=\"refresh\"", index);
         }
         finally
         {
@@ -533,6 +538,7 @@ public sealed class LogSiteExportTests
             Assert.Contains("<a href=\"../index.html\">&larr; all waves</a>", w1);
             Assert.Contains("2/2 complete", w1);
             Assert.DoesNotContain("http-equiv=\"refresh\"", w1);
+            Assert.DoesNotContain("GR_LOG_POLL_MS", w1);   // no poll left running on a durable page (#543)
 
             string w2 = File.ReadAllText(wave2Index);
             Assert.Contains("wave-02-beta — wave log", w2);

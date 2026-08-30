@@ -5270,7 +5270,28 @@ never carries badges.
   failing silently forever. The final page, written once at run end from the observer's own in-memory
   map, carries no trace of `GR_LIVE_POLL_MS` or the poll script at all — the whole block is substituted
   from one conditional template chunk, so `duringRun:false` renders a plain static page — and shows every
-  node settled: a durable post-mortem. **Settle-on-fault (issue #333):** the run-end final writes (this
+  node settled: a durable post-mortem.
+- **The log site's during-run pages, same mechanism (issue #543).** The run-level `index.html` and each
+  per-wave `index.html` carried the identical defect one surface over: a `<meta http-equiv="refresh"
+  content="2">` whole-document reload with **no terminal condition of its own**. It stopped only because
+  the run completed and the final settle rewrote the file, so a run that was killed, crashed or
+  interrupted left its log pages reloading every 2 seconds forever, on every machine that opened them —
+  and those are the pages an operator opens most often after a run. They now carry an in-place poll on a
+  named `GR_LOG_POLL_MS` interval (5000ms; deliberately shorter than the diagram's 15000ms, because
+  swapping a small table body is cheap where re-badging a large SVG is not, and this index is the surface
+  an operator actually watches a run through). The poll fetches the page's own url and swaps in the
+  fetched document's `<body>`, so the table, the note, the waves nav, any halt banner and the JIT
+  breakdown panel all update with no navigation and scroll survives. It stops on **both** terminal
+  conditions: a fetched page that no longer mentions `GR_LOG_POLL_MS` (the run settled and the durable
+  page was written), and **any failed poll** — a killed run's dead server, or a plain `file://` view where
+  `fetch` of a `file://` url is blocked — which reveals the hidden `#gr-live-offline` notice instead of
+  leaving the page looking live forever. Note the asymmetry with the diagram: the terminal signal here is
+  the **absence** of the poll block, so nothing was added to the FINAL page and its bytes are unchanged
+  from before #543 (the byte-identity goldens in `LogSiteHaltBannerTests` are the tripwire). The
+  trade-off is explicit: a during-run page opened over `file://` no longer updates itself, because it
+  cannot fetch itself — it shows the offline notice and points at the live server, which is the surface
+  that can actually stream. An honest static snapshot beats a page that reloads forever and cannot say
+  whether it is current. **Settle-on-fault (issue #333):** the run-end final writes (this
   diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`, so an UNEXPECTED
   throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the Scheduler and so is
   not a #150-converted abort) still settles both pages instead of leaving them polling indefinitely for a
