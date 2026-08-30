@@ -135,6 +135,7 @@ public sealed class PromptDenialFailFastTests : IDisposable
     private PromptInvocation Invocation(int? abortAfter) => new()
     {
         ComposedPrompt = "diagnose this\n",
+        Role = PromptRole.Action,
         WorkingDirectory = _workDir,
         PlanDirectory = _workDir,
         Environment = new Dictionary<string, string>(StringComparer.Ordinal),

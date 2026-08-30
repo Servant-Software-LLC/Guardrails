@@ -54,6 +54,7 @@ public sealed class FakeClaudeRunTests
             new PromptInvocation
             {
                 ComposedPrompt = "analyze this failure",
+                Role = PromptRole.Action,
                 WorkingDirectory = cwd,
                 PlanDirectory = plan.PlanDir,
                 Environment = env,

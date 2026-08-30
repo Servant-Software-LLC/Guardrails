@@ -185,6 +185,7 @@ internal sealed class ActionRunner
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
+            Role = PromptRole.Action,
             WorkingDirectory = workspace,
             PlanDirectory = _plan.PlanDirectory,
             Environment = actionEnv,

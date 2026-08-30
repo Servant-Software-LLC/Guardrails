@@ -12,6 +12,7 @@ public sealed class ClaudePromptRunnerArgsTests
     private static PromptInvocation Invocation(PromptRunnerSettings settings) => new()
     {
         ComposedPrompt = "prompt",
+        Role = PromptRole.Action,
         WorkingDirectory = "/work",
         PlanDirectory = "/plan",
         Environment = new Dictionary<string, string>(),

@@ -178,6 +178,7 @@ public sealed class WaveBreakdownInvoker
         var invocation = new PromptInvocation
         {
             ComposedPrompt = p.Prompt,
+            Role = PromptRole.Action,
             WorkingDirectory = workingDirectory,
             PlanDirectory = planDirectory,
             Environment = new Dictionary<string, string>(StringComparer.Ordinal),

@@ -128,6 +128,7 @@ internal sealed class AiMergeResolver
                 // Embed the resolved ABSOLUTE paths in the prompt body so an agent that does not (or
                 // cannot) read process env vars still gets the three-way inputs and the write target.
                 ComposedPrompt   = BuildPrompt(conflictFile, basePath, oursPath, theirsPath, outPath),
+                Role             = PromptRole.Action,
                 WorkingDirectory = worktreePath,
                 PlanDirectory    = planDirectory,
                 Environment      = env,

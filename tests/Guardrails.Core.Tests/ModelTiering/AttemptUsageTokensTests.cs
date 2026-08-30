@@ -235,6 +235,7 @@ public sealed class AttemptUsageTokensTests : IDisposable
             new PromptInvocation
             {
                 ComposedPrompt = "do the thing\n",
+                Role = PromptRole.Action,
                 WorkingDirectory = _root,
                 PlanDirectory = _root,
                 Environment = new Dictionary<string, string>(StringComparer.Ordinal),
