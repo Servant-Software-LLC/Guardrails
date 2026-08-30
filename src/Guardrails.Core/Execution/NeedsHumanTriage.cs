@@ -91,7 +91,7 @@ public sealed class NeedsHumanTriage
         var invocation = new PromptInvocation
         {
             ComposedPrompt = prompt,
-            Role = PromptRole.Action,
+            Role = PromptRole.Advisory,
             WorkingDirectory = workspace,
             PlanDirectory = planDirectory,
             // Empty ON PURPOSE: triage is an advisory READER, so it gets no state channel and no

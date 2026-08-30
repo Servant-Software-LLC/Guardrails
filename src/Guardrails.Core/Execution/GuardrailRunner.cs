@@ -222,7 +222,7 @@ internal sealed class GuardrailRunner
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
-            Role = PromptRole.Action,
+            Role = PromptRole.Guardrail,
             WorkingDirectory = workspace,
             PlanDirectory = _plan.PlanDirectory,
             Environment = guardrailEnv,

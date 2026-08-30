@@ -457,7 +457,7 @@ public sealed class Overwatch
             var invocation = new PromptInvocation
             {
                 ComposedPrompt = prompt,
-                Role = PromptRole.Action,
+                Role = PromptRole.Advisory,
                 WorkingDirectory = plan.Workspace,
                 PlanDirectory = plan.PlanDirectory,
                 Environment = new Dictionary<string, string>(StringComparer.Ordinal),
