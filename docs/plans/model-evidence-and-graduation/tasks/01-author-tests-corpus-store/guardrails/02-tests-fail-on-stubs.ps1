@@ -15,7 +15,8 @@ $behaviours = @(
     @{ Name = 'month-rotated file name';                   Test = 'Append_WritesIntoAMonthRotatedFile' },
     @{ Name = 'schemaVersion on every row';                Test = 'Append_EveryRowCarriesSchemaVersion' },
     @{ Name = 'opt-out writes nothing at all';             Test = 'Append_WhenCollectionDisabled_WritesNothing' },
-    @{ Name = 'purge removes every row';                   Test = 'Purge_RemovesEveryRowUnderTheCorpusRoot' }
+    @{ Name = 'purge removes every row';                   Test = 'Purge_RemovesEveryRowUnderTheCorpusRoot' },
+    @{ Name = 'an unrecognized kind round-trips verbatim'; Test = 'Row_UnrecognizedKind_RoundTripsVerbatim' }
 )
 
 $trxDir = Join-Path ([System.IO.Path]::GetTempPath()) ("gr-census-" + [guid]::NewGuid().ToString('N'))

@@ -57,6 +57,7 @@ behaviour to its method name and will not accept a rename:
 | `schemaVersion` on every row | `Append_EveryRowCarriesSchemaVersion` |
 | opt-out writes nothing at all | `Append_WhenCollectionDisabled_WritesNothing` |
 | purge removes every row | `Purge_RemovesEveryRowUnderTheCorpusRoot` |
+| an unrecognized `kind` round-trips verbatim | `Row_UnrecognizedKind_RoundTripsVerbatim` |
 
 **Design constraints the tests must encode** (from the charter, §9):
 - The store takes its **corpus root directory as a constructor parameter**. It must NEVER resolve
@@ -79,6 +80,16 @@ behaviour to its method name and will not accept a rename:
 `inputTokens`, `outputTokens`, `repo`. Cost and token fields are **independently nullable** — null means
 "never reported", which is NOT the claim zero makes (the charter's §6 rule, and the distinction
 `JournalTierSpend` already draws).
+
+**`kind`, `model`, `tier`, `tierSource` and `runner` are recorded as VERBATIM STRINGS — never as an enum
+the corpus re-validates.** Write a test that pins this: a row carrying an unrecognized `kind` must
+round-trip unchanged. The corpus is an **archive**, and its job is to record what the journal said, not
+to have an opinion about it. A `kind` typed as an enum rejects — or worse, silently drops — the first
+row from a provider added after this code was written, which is precisely the provider the corpus exists
+to evaluate (`openai-compat` arrives with #223, and local inference is the whole reason for the arc this
+plan belongs to). `JournalTierSpend` already sets the precedent one level up: it reports a rung this
+build does not recognize rather than discarding it, on the reasoning that the job is to account for
+recorded facts, not to re-validate a token the loader already gated. Same rule here.
 
 **The tests MUST COMPILE and FAIL.** Write the stubs so the test project builds: members that throw
 `NotImplementedException` (or return `default`). Failing is the point; NOT compiling is a mistake to fix.

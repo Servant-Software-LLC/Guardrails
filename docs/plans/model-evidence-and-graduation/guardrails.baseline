@@ -1,14 +1,15 @@
 {
   "Version": 1,
   "Files": {
+    ".gitignore": "77d79149f78bdb4793d16f67bfadabc6ac3f033d9b22cddd0c55e220a9565125",
     "guardrails.json": "938181f45c4a5251e464c109ad32d4d1664dd3fc43ea61e44b9b06632a1ec7cb",
     "guardrails/01-solution-builds.ps1": "03759eef6206cda61441263491be47c6adebe79016c0b6f95bcfb6db1c16aa25",
     "guardrails/02-all-tests-pass.ps1": "6dbede7b76797f7aea8cb1cd48e7ae4e941044b1a579b60a5fea8d69946f4b27",
     "preflights/01-baseline-core-tests-green.ps1": "2f72346454253ad384243468476f0ac438595d5bd7c7c932ef9504f4bb56cece",
     "preflights/02-baseline-integration-tests-green.ps1": "4dcabcc0b823bc0c52403c88733af37633c78a2f81709bc4780c8113a0b808f0",
-    "tasks/01-author-tests-corpus-store/action.prompt.md": "e5f740242489bad3da7a10f40f532c738b68fc5450ebd9d5adb1286fef3d5fc8",
+    "tasks/01-author-tests-corpus-store/action.prompt.md": "5e8dee3b83060fdff181199cadfbe0235fe61aee975aad7bae6aecfb5301c541",
     "tasks/01-author-tests-corpus-store/guardrails/01-build-passes.ps1": "fdca44c1d5ed3e157701f4b728e8871b23def87c2637d213e2af2c3a670af3bd",
-    "tasks/01-author-tests-corpus-store/guardrails/02-tests-fail-on-stubs.ps1": "85442bce6a0d1fb8ffbf4e22dbcdb0f977e67935f28a3a1e642e53166a81f7f1",
+    "tasks/01-author-tests-corpus-store/guardrails/02-tests-fail-on-stubs.ps1": "b1973061c7cd279f59487c80de62876d2d56a2fcbf8399c1d5910f6d383f14b1",
     "tasks/01-author-tests-corpus-store/task.json": "9addf61b1bf675df10da906e4ab25edfffa8546916ef88e2411a4c1e9126adae",
     "tasks/02-implement-corpus-store/action.prompt.md": "71e4b4006ed927dcab570a5b109a95879e026ce9a25d19210faa954002794964",
     "tasks/02-implement-corpus-store/guardrails/01-build-passes.ps1": "5653a9dae3ca26cf669d52bfb46499acee352997189648c5d444c1993613e5b8",
