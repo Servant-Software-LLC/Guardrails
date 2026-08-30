@@ -7,10 +7,6 @@ namespace Guardrails.Core.Telemetry;
 /// (<see cref="TelemetryReport"/> and its rows) plus one deterministic formatter
 /// (<see cref="Build"/>); text rendering for the console is the CLI task's concern, not this one's.
 ///
-/// <para><b>STUB (#535, task 07).</b> <see cref="Build"/> unconditionally throws
-/// <see cref="NotImplementedException"/> until <c>08-implement-corpus-report</c> fills it. Nothing here
-/// computes anything; the shape below is the specification <c>TelemetryReportTests</c> pins.</para>
-///
 /// <para><b>Input is NOT the raw corpus row.</b> <see cref="TelemetryRow"/> (task 01's frozen schema) has
 /// no dedicated fields for a model's true identity or a task's fingerprint bucket, and this task's write
 /// scope excludes that file. <see cref="TelemetryReportSample"/> is therefore a SEPARATE, already-resolved
@@ -74,8 +70,109 @@ public sealed record TelemetryReport
     /// </summary>
     public static TelemetryReport Build(
         IReadOnlyList<TelemetryReportSample> samples,
-        int minimumSampleSize = DefaultMinimumSampleSize) =>
-        throw new NotImplementedException();
+        int minimumSampleSize = DefaultMinimumSampleSize)
+    {
+        List<TelemetryReportRow> rows = [];
+
+        foreach (IGrouping<(string ModelFingerprint, string Tier, string FingerprintBucket), TelemetryReportSample> stratum
+                 in samples.GroupBy(s => (s.ModelFingerprint, s.Tier, s.FingerprintBucket)))
+        {
+            List<TelemetryReportSample> strataSamples = stratum.ToList();
+            int sampleSize = strataSamples.Count;
+
+            rows.Add(sampleSize < minimumSampleSize
+                ? new InsufficientEvidenceReportRow
+                {
+                    ModelFingerprint = stratum.Key.ModelFingerprint,
+                    Tier = stratum.Key.Tier,
+                    FingerprintBucket = stratum.Key.FingerprintBucket,
+                    SampleSize = sampleSize
+                }
+                : BuildSufficientRow(stratum.Key, strataSamples, sampleSize));
+        }
+
+        return new TelemetryReport { Rows = rows };
+    }
+
+    /// <summary>
+    /// Charter §6's metrics for one stratum that cleared the evidence floor. First-attempt pass rate and
+    /// cost are summed/averaged over every sample; attempts-to-green and abandonment share the single
+    /// <see cref="TelemetryAttemptsToGreen"/> denominator described on the class doc.
+    /// </summary>
+    private static SufficientEvidenceReportRow BuildSufficientRow(
+        (string ModelFingerprint, string Tier, string FingerprintBucket) key,
+        List<TelemetryReportSample> strataSamples,
+        int sampleSize)
+    {
+        double firstAttemptPassRate = strataSamples.Count(s => s.FirstAttemptSucceeded) / (double)sampleSize;
+
+        // Only the samples that ever went green have an attempts-to-green figure to contribute; the
+        // abandonment rate below still divides by the WHOLE stratum, not this narrower count (charter §5
+        // survivorship).
+        List<int> attemptsAmongGreen = strataSamples
+            .Where(s => s.AttemptsToGreen is not null)
+            .Select(s => s.AttemptsToGreen!.Value)
+            .Order()
+            .ToList();
+
+        double abandonmentRate = (sampleSize - attemptsAmongGreen.Count) / (double)sampleSize;
+
+        // Same null-versus-zero convention as JournalTierSpend: a cost is summed only across samples that
+        // actually reported one, and the stratum renders null (not 0) when NOT ONE of them did.
+        decimal costUsd = 0m;
+        bool anyCost = false;
+        foreach (TelemetryReportSample sample in strataSamples)
+        {
+            if (sample.CostUsd is { } cost)
+            {
+                costUsd += cost;
+                anyCost = true;
+            }
+        }
+
+        return new SufficientEvidenceReportRow
+        {
+            ModelFingerprint = key.ModelFingerprint,
+            Tier = key.Tier,
+            FingerprintBucket = key.FingerprintBucket,
+            SampleSize = sampleSize,
+            FirstAttemptPassRate = firstAttemptPassRate,
+            AttemptsToGreen = new TelemetryAttemptsToGreen
+            {
+                MedianAttempts = Median(attemptsAmongGreen),
+                P90Attempts = Percentile(attemptsAmongGreen, 0.9),
+                AbandonmentRate = abandonmentRate
+            },
+            CostUsd = anyCost ? costUsd : null
+        };
+    }
+
+    /// <summary>The middle of <paramref name="sortedValues"/> (mean of the two middle values on an even count), or <c>0</c> when nothing ever went green.</summary>
+    private static double Median(IReadOnlyList<int> sortedValues)
+    {
+        if (sortedValues.Count == 0)
+        {
+            return 0.0;
+        }
+
+        int mid = sortedValues.Count / 2;
+        return sortedValues.Count % 2 == 0
+            ? (sortedValues[mid - 1] + sortedValues[mid]) / 2.0
+            : sortedValues[mid];
+    }
+
+    /// <summary>Nearest-rank percentile of <paramref name="sortedValues"/> — the value at position <c>ceil(p * n)</c>, or <c>0</c> when nothing ever went green.</summary>
+    private static double Percentile(IReadOnlyList<int> sortedValues, double p)
+    {
+        if (sortedValues.Count == 0)
+        {
+            return 0.0;
+        }
+
+        int rank = (int)Math.Ceiling(p * sortedValues.Count);
+        int index = Math.Clamp(rank - 1, 0, sortedValues.Count - 1);
+        return sortedValues[index];
+    }
 }
 
 /// <summary>
