@@ -33,6 +33,7 @@ public static class CommandFactory
         rootCommand.Add(SkillsCommand.Create(io));
         rootCommand.Add(SkillsCommand.CreateInstallAlias(io));
         rootCommand.Add(SamplesCommand.Create(io));
+        rootCommand.Add(TelemetryCommand.Create(io));
 
         WireVersionDriftWarning(rootCommand, io);
         return rootCommand;
