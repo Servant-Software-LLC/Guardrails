@@ -129,6 +129,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails merge [folder] --remote <dir> [--apply]` | Merge a freshly regenerated breakdown into the current folder, preserving human guardrail edits; `--apply` materializes it (otherwise dry-run report) |
 | `guardrails logs [folder] [--port <n>] [--task <id>] [--no-open]` | Serve the web log viewer over a plan's persisted logs for post-mortem (any task — pass or fail); reads per-task status from the journal; opens a browser unless `--no-open`; runs until Ctrl-C |
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
+| `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 
 The `folder` argument is optional everywhere: omit it to use the current directory, so you
@@ -160,6 +161,28 @@ To make a plan never auto-deliver, set it in the plan instead of remembering the
 The AI-merge is still withheld at the boundary: the harness merges its own task branches, and hands
 you anything it cannot resolve rather than guessing.
 
+### Local telemetry
+
+**Every run records what it cost and which model ran each task, into a file on your own machine.**
+This is on by default, so you should know it is there:
+
+- **Where:** `~/.guardrails/telemetry/` — append-only JSONL, one file per month.
+- **What:** per attempt — the model, runner, tier and effort that ran it, its outcome, timings, token
+  counts and cost. Facts and identifiers only: **no prompt text, no file contents, no diffs, no
+  absolute paths.**
+- **Nothing is transmitted anywhere.** There is no upload path in the design. It is a local file you
+  can read, grep, or delete.
+- **Off switch:** set `GUARDRAILS_TELEMETRY=off`. `guardrails telemetry purge` erases what is already
+  there.
+
+It is on by default because it is cheap to store and only becomes useful once there is enough of it:
+a corpus you have to remember to switch on is a corpus that is empty on exactly the machines that
+would benefit. `guardrails telemetry report` turns it into a per-model, per-tier comparison — how
+often a model gets it right first time, how many attempts it needs, what that costs — which is what
+makes "should this task run on a cheaper model?" a question with an answer instead of a guess.
+
+The contract is `docs/plans/02-schemas-and-contracts.md` §15.
+
 ## The skills
 
 `.claude/skills/` ships the agent-side tooling. The `guardrails` tool **bundles**
@@ -185,6 +208,7 @@ them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 | Roadmap, Reality Gate, v2 bets | `docs/plans/03-roadmap.md` |
 | Golden example | `examples/hello-guardrails/` |
 | Harness source | `src/Guardrails.Core`, `src/Guardrails.Cli` (net10.0 dotnet tool) |
+| Local telemetry corpus (yours, never transmitted) | `~/.guardrails/telemetry/` |
 
 ## From source (contributors)
 
