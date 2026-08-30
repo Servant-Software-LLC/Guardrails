@@ -1,3 +1,5 @@
+using Guardrails.Core.Io;
+
 namespace Guardrails.Core.Prompts;
 
 /// <summary>
@@ -28,6 +30,24 @@ public static class PromptToolContainment
     /// </summary>
     public static bool IsReadable(IReadOnlyList<string> roots, string absolutePath)
     {
-        throw new NotImplementedException();
+        string candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(absolutePath));
+
+        foreach (string root in roots)
+        {
+            if (root.Length == 0)
+            {
+                continue;
+            }
+
+            string rootFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+
+            if (string.Equals(candidate, rootFull, RealPath.Comparison) ||
+                candidate.StartsWith(rootFull + Path.DirectorySeparatorChar, RealPath.Comparison))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
