@@ -49,10 +49,16 @@ all output through `io`, never `Console` directly.
 1. **Resolving the default corpus root** — `~/.guardrails/telemetry/` — since every Core type takes its
    root as a parameter on purpose. Use the same `Environment.SpecialFolder.UserProfile` idiom
    `src/Guardrails.Cli/SkillsInstaller.cs` already uses. Allow an override so a test never writes to the
-   real corpus.
-2. **The opt-out**, honoured before anything is written. Collection is on by default (that decision is
-   recorded in the charter's `collection-default` question), so the off switch has to be real and easy
-   to find, or the default is not honest.
+   real corpus. **Expose the resolution as an `internal static` member of `TelemetryCommand`, not a
+   private one** — task 13 wires run-end ingest in `RunCommand.cs` and must call exactly this resolution.
+   Its `writeScope` is that one file, so a private member leaves it no in-scope option but to duplicate
+   the logic, and two copies of "where does the corpus live" drift silently.
+2. **The opt-out**, honoured before anything is written. The mechanism is already fixed by task 02:
+   the environment variable **`GUARDRAILS_TELEMETRY=off`**, checked inside the store. Do not invent a
+   second switch (a flag, a config key) and do not re-read the variable here — call the store, so the
+   verb and run-end ingest cannot disagree about whether collection is on. Collection is on by default
+   (the charter's `collection-default` decision), so the off switch has to be real, or the default is
+   not honest.
 
 Construct the **real** `TelemetryIngest`, `TelemetryCorpusStore`, `TelemetryReport` and
 `TelemetryFailureClassifier`. Do not re-implement any of their logic inline and do not introduce

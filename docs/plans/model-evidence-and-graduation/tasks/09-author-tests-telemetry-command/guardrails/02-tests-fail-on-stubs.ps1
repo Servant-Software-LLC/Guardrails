@@ -14,6 +14,7 @@ $behaviours = @(
     @{ Name = 'report prints the stratified table';              Test = 'Report_PrintsTheStratifiedTable' },
     @{ Name = 'purge empties the corpus';                        Test = 'Purge_EmptiesTheCorpus' },
     @{ Name = 'opt-out honoured end to end';                     Test = 'Ingest_WhenOptedOut_WritesNothing' },
+    @{ Name = 'the default corpus root resolves under the profile'; Test = 'DefaultCorpusRoot_ResolvesUnderTheUserProfile' },
     @{ Name = 'the verb is reachable from the REAL root';        Test = 'Telemetry_IsReachableFrom_CommandFactoryBuildRootCommand' }
 )
 

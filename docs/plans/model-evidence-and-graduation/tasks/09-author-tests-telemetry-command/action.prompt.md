@@ -60,12 +60,18 @@ same real-root idiom.
 | report prints the stratified table | `TelemetryCommandTests` | `Report_PrintsTheStratifiedTable` |
 | purge empties the corpus | `TelemetryCommandTests` | `Purge_EmptiesTheCorpus` |
 | opt-out honoured end to end | `TelemetryCommandTests` | `Ingest_WhenOptedOut_WritesNothing` |
+| the default corpus root resolves under the user profile | `TelemetryCommandTests` | `DefaultCorpusRoot_ResolvesUnderTheUserProfile` |
 | the verb is reachable from the REAL root | `TelemetryCommandWiringTests` | `Telemetry_IsReachableFrom_CommandFactoryBuildRootCommand` |
 
 **Design constraints:**
 - Every test points the corpus at a **temp directory** it deletes afterwards. No test may touch the real
   `~/.guardrails/telemetry/` — a test that writes to the user's actual corpus poisons the very data this
   plan exists to collect.
+- **`DefaultCorpusRoot_ResolvesUnderTheUserProfile` is the one test that must NOT take the override**, and
+  it must not perform I/O either: assert the **resolved path string** ends with `.guardrails/telemetry`
+  under the user profile, and write nothing. Without it, every other test supplies a root and an
+  implementation that never resolves a default passes the whole suite while shipping a verb that does not
+  work for a real user — the default path would be verified by nothing at all.
 - The command constructs the **real** `TelemetryIngest`, `TelemetryCorpusStore`, `TelemetryReport` and
   `TelemetryFailureClassifier` over that temp root. Do NOT introduce an interface so the tests can
   inject fakes of them: they are in-repo collaborators that already work, and faking them here would

@@ -51,8 +51,14 @@ method. The guardrails filter on exactly
 |---|---|
 | a completed run ingests its own journal, no manual verb | `Run_IngestsItsOwnJournal_WithoutAManualVerb` |
 | a run that ended needs-human still ingests its attempts | `Run_ThatEndedNeedsHuman_StillIngestsItsAttempts` |
-| a telemetry write failure never changes the exit code | `Run_TelemetryWriteFailure_DoesNotChangeTheExitCode` |
-| opt-out suppresses run-end ingest entirely | `Run_WhenCollectionDisabled_IngestsNothing` |
+| a failed telemetry write is REPORTED, and the exit code is unchanged | `Run_TelemetryWriteFailure_IsReported_AndExitCodeUnchanged` |
+| opt-out suppresses an ingest that otherwise happens | `Run_CollectionDisabled_SuppressesIngestThatOtherwiseHappens` |
+
+**Both of the last two assert a CONTRAST, and that is not a style preference — it is what makes them
+falsifiable before the wiring exists.** On the unwired tree nothing ingests, so *"the exit code is
+unchanged"* and *"nothing was written"* are both **already true**. A test asserting only those passes
+against unwired code, the red census can never bind it, and this task burns its whole retry budget on
+tests that are correct. Each must therefore assert something that is FALSE until task 13 lands.
 
 **Drive a REAL run.** `tests/Guardrails.Integration.Tests/FakeClaudeRunTests.cs` and
 `FakeClaudePlanBuilder.cs` are the existing end-to-end harness — a real plan folder, a fake `claude`,
@@ -64,13 +70,18 @@ production run path ingests, and only the real path can prove it.
 - **Every run outcome ingests, not just green.** A run that ends `needs-human` is exactly the run whose
   attempts the corpus most needs — a model that fails is the evidence a model comparison is made of.
   Assert this with a plan that genuinely ends unresolved.
-- **Telemetry can never change the run's outcome.** Point the corpus at a root that cannot be written
-  (a path taken by a file, a read-only location — whatever is portable on this repo's three OSes) and
-  assert the run's **exit code is unchanged** and the summary still prints. The precedent is already in
-  the seam: `WriteDurableFinalSite` is called from `RunCommand.Finish` under the comment *"Best-effort:
-  a render hiccup must never change the run's exit code."* This test is the same promise for telemetry,
-  and it is the one that stops a measurement feature from being able to fail a delivery.
-- **Opt-out is honoured at run end too**, not only in the verb. Assert nothing is written at all.
+- **Telemetry can never change the run's outcome — and its failure is REPORTED, not swallowed.** Point
+  the corpus at a root that cannot be written (a path taken by a file, a read-only location — whatever is
+  portable on this repo's three OSes) and assert **all three**: the run's exit code is unchanged, the
+  summary still prints, **and the console carries a line saying ingest did not happen**. That third
+  assertion is what makes the test red today; the first two are already true of unwired code. The
+  precedent is in the seam: `WriteDurableFinalSite` is called from `RunCommand.Finish` under *"Best-effort:
+  a render hiccup must never change the run's exit code."* This test is that promise for telemetry, plus
+  the half that keeps a silent failure from being indistinguishable from success.
+- **Opt-out is honoured at run end too**, not only in the verb — and the test proves it by CONTRAST. Run
+  the same plan twice against the same corpus root: once with collection enabled (assert rows appear) and
+  once opted out (assert nothing is written at all). The enabled half is what fails before the wiring; an
+  opted-out run alone proves nothing, because an unwired harness also writes nothing.
 - Every test points the corpus at a **temp directory** it deletes afterwards. No test may write to the
   real `~/.guardrails/telemetry/`.
 

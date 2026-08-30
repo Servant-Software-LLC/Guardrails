@@ -44,6 +44,12 @@ What the store is, restated so the implementation does not drift from the design
   over a plan whose rows are already recorded. Prefer a mechanism that survives a process restart (the
   key is derivable from the rows already on disk) over an in-memory set that forgets.
 - **Opt-out** — when collection is disabled the store writes nothing at all, creating no files.
+  **The mechanism is the environment variable `GUARDRAILS_TELEMETRY=off`** (any other value, or unset,
+  means collection is ON — that is the recorded default). This is the single definition for the whole
+  plan: the CLI verb (task 10) and run-end ingest (task 13) both honour the same variable rather than
+  inventing their own switch, and they check it by calling into this store rather than re-reading the
+  environment themselves. Two mechanisms for one decision is how a machine ends up opted out of one path
+  and not the other, which is worse than no opt-out at all — the operator believes collection is off.
 - **Purge** — removes every row under the corpus root, and is safe on an empty corpus.
 - **Cost and token fields are independently nullable.** Null means "never reported"; it is NOT zero.
   A costless local provider reports volume and no money; a runner that reports no usage reports money

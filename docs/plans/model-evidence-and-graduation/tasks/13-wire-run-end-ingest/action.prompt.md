@@ -52,9 +52,13 @@ build a corpus that flatters every model in it. The one branch that legitimately
 definition-drift early return above `WriteDurableFinalSite` — nothing ran and no logs were written, so
 there is nothing to ingest.
 
-**Honour the opt-out here too.** The verb checks it; so must this. Resolve the corpus root and the
-opt-out exactly the way `TelemetryCommand` already does — call into it or share its resolution rather
-than writing a second copy that can drift from the first.
+**Honour the opt-out here too — by CALLING, never by re-deriving.** Task 10 exposes the corpus-root
+resolution as an `internal static` member of `TelemetryCommand`; call it. The opt-out is the environment
+variable `GUARDRAILS_TELEMETRY=off`, checked inside the store — so you get it for free by going through
+the same path, and you must NOT read the variable yourself here. Your `writeScope` is `RunCommand.cs`
+alone, which is deliberate: a second copy of either rule is the only thing that could make the verb and
+the run disagree about where the corpus is or whether collection is on, and it would do so silently.
 
 Construct the real `TelemetryIngest` over the resolved root. Do not re-implement any part of the ETL
-here.
+here — if something you need is not reachable from `RunCommand.cs`, that is a finding to report with
+`{"needsHuman": …}`, not a reason to inline a second implementation.

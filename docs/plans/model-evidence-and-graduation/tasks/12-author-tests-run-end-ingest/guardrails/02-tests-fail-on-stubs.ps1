@@ -12,8 +12,8 @@ $filter = 'Category=ModelEvidence&FullyQualifiedName~RunEndTelemetryIngestTests'
 $behaviours = @(
     @{ Name = 'a completed run ingests its own journal';         Test = 'Run_IngestsItsOwnJournal_WithoutAManualVerb' },
     @{ Name = 'a needs-human run still ingests its attempts';    Test = 'Run_ThatEndedNeedsHuman_StillIngestsItsAttempts' },
-    @{ Name = 'a telemetry write failure cannot move the exit code'; Test = 'Run_TelemetryWriteFailure_DoesNotChangeTheExitCode' },
-    @{ Name = 'opt-out suppresses run-end ingest entirely';      Test = 'Run_WhenCollectionDisabled_IngestsNothing' }
+    @{ Name = 'a failed telemetry write is REPORTED, exit code unchanged'; Test = 'Run_TelemetryWriteFailure_IsReported_AndExitCodeUnchanged' },
+    @{ Name = 'opt-out suppresses an ingest that otherwise happens'; Test = 'Run_CollectionDisabled_SuppressesIngestThatOtherwiseHappens' }
 )
 
 $trxDir = Join-Path ([System.IO.Path]::GetTempPath()) ("gr-census-" + [guid]::NewGuid().ToString('N'))
