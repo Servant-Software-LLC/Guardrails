@@ -400,6 +400,7 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
             new PromptInvocation
             {
                 ComposedPrompt = "do the thing",
+                Role = PromptRole.Action,
                 WorkingDirectory = cwd,
                 PlanDirectory = _planDir,
                 Environment = env,

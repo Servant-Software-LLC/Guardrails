@@ -75,6 +75,7 @@ public sealed class ClaudePromptRunnerStreamLogTests : IDisposable
     private PromptInvocation Invocation(string streamLogPath) => new()
     {
         ComposedPrompt = "assess this\n",
+        Role = PromptRole.Action,
         WorkingDirectory = _workDir,
         PlanDirectory = _workDir,
         Environment = new Dictionary<string, string>(StringComparer.Ordinal),
