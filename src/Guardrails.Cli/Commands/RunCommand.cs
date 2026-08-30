@@ -5,6 +5,7 @@ using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.State;
+using Guardrails.Core.Telemetry;
 using Spectre.Console;
 
 namespace Guardrails.Cli.Commands;
@@ -883,6 +884,15 @@ public static class RunCommand
         // replaces it. Best-effort: a render hiccup must never change the run's exit code.
         WriteDurableFinalSite(logsRoot, plan, planDirectory);
 
+        // Run-end telemetry ingest (#535 charter §9) — the same trip, one seam over, and for the same
+        // reason: the journal is final here, so this run's own attempts can go into the local corpus with
+        // nobody typing `guardrails telemetry ingest`. Placed BELOW the definition-drift early return above
+        // (that halt ran nothing and wrote no logs, so it has nothing to ingest) and ABOVE every remaining
+        // exit path, so a green run, a needs-human run, an aborted run and a halted one all ingest alike —
+        // the failed attempts are precisely the evidence a model comparison is made of. Best-effort in the
+        // strongest sense: it cannot change the exit code, and it cannot suppress the summary below.
+        IngestRunTelemetry(plan, io);
+
         PrintSummary(report, planDirectory, runId, io);
 
         // The "all tasks" static page link at run END (alongside the post-mortem logs pointer).
@@ -1742,6 +1752,82 @@ public static class RunCommand
             // ditto — a logs-tree permission hiccup is not a run failure.
         }
     }
+
+    /// <summary>
+    /// The corpus-root override for RUN-END ingest: set to a non-blank value it is handed VERBATIM to
+    /// <see cref="TelemetryCommand.ResolveCorpusRoot"/> in place of the real <c>~/.guardrails/telemetry/</c>;
+    /// unset or blank falls through to that real default — the same env-override-wins-when-non-blank idiom
+    /// <c>SchedulerFactory.WorktreeRootFor</c> uses for <c>GUARDRAILS_WORKTREE_ROOT</c>. It is an environment
+    /// variable rather than a <c>run</c> flag on purpose: <c>--corpus-root</c> belongs to the <c>telemetry</c>
+    /// verb, and what needs redirecting here is not an operator's choice but a test's (or a sandboxed bench's)
+    /// need to keep a real run off the operator's own corpus.
+    ///
+    /// <para>This names WHERE the corpus lives, never WHETHER collection happens. The opt-out
+    /// (<see cref="TelemetryCorpusStore.OptOutEnvVar"/><c>=off</c>) is read inside the store and nowhere
+    /// else — least of all here, where a second copy of that rule could silently disagree with the verb.</para>
+    /// </summary>
+    private const string TelemetryCorpusRootEnvVar = "GUARDRAILS_TELEMETRY_CORPUS_ROOT";
+
+    /// <summary>
+    /// Run-end telemetry ingest (#535 charter §9): hand this run's own — now final — journal to the REAL
+    /// <see cref="TelemetryIngest"/> so the local corpus fills itself, without anyone ever typing
+    /// <c>guardrails telemetry ingest</c>. None of the ETL is re-implemented here; this is a call site.
+    ///
+    /// <para><b>Nothing may escape.</b> A full disk, a locked corpus file, a corpus root occupied by a file:
+    /// none of them may change the run's exit code, throw out of <see cref="Finish"/>, or suppress the
+    /// summary — a telemetry feature that can fail a delivered run is worse than no telemetry feature. So
+    /// every fault is swallowed, exactly as <see cref="TrySettleFinalSitesAfterFault"/> swallows a render
+    /// fault. Swallowed is NOT silent, though: a failure prints one line naming itself and the root it was
+    /// writing to, because a telemetry mechanism failing in the direction that merely LOOKS fine — a machine
+    /// that has quietly recorded nothing for months — is the exact defect this work exists to prevent.</para>
+    ///
+    /// <para><b>Both policy questions are settled elsewhere, by calling rather than re-deriving.</b> WHERE
+    /// the corpus lives comes from <see cref="TelemetryCommand.ResolveCorpusRoot"/> — the very member the
+    /// <c>telemetry</c> verb resolves through, so the verb and the run can never point at two different
+    /// corpora — and WHETHER collection is on is honoured by going through
+    /// <see cref="TelemetryCorpusStore.Append"/>, which checks the opt-out itself and writes nothing when it
+    /// is set. Neither rule is restated in this file.</para>
+    /// </summary>
+    private static void IngestRunTelemetry(Core.Model.PlanDefinition plan, IConsoleIo io)
+    {
+        // Declared outside the try so the failure line can still name the root when the fault came from the
+        // store rather than from resolution.
+        string? corpusRoot = null;
+        try
+        {
+            corpusRoot = TelemetryCommand.ResolveCorpusRoot(
+                Environment.GetEnvironmentVariable(TelemetryCorpusRootEnvVar));
+
+            TelemetryIngest.IngestPlanFolder(
+                plan.PlanDirectory, new TelemetryCorpusStore(corpusRoot), TelemetryRepoDimension(plan));
+        }
+        catch (Exception ex)
+        {
+            // Deliberately catch-all, matching TrySettleFinalSitesAfterFault: the promise made above is that
+            // NOTHING escapes, and a narrower filter would keep that promise only for the faults we happened
+            // to think of. The run's verdict is already decided; this is the one place it must not be revisited.
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                $"Telemetry ingest failed ({corpusRoot ?? "corpus root unresolved"}): {ex.Message}");
+            io.Out.WriteLine(
+                "  The run's outcome, exit code and logs below are unaffected — this run simply left no "
+                + $"evidence in the local telemetry corpus. Set {TelemetryCorpusStore.OptOutEnvVar}=off to "
+                + "stop collecting altogether.");
+            io.Out.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// The <see cref="TelemetryRow.Repo"/> dimension every row of this run carries: the NAME of the run's
+    /// workspace directory. That is the repository as the harness itself understands it — the git working
+    /// tree the plan branch, the per-task worktrees and the end-of-run delivery all operate on
+    /// (<c>WorktreeReclaim</c> and the Scheduler take the same value as the repo root) — so it is a fact
+    /// already resolved for this run, not a path re-guessed at reporting time. Charter §9 records repo as a
+    /// DIMENSION and never as a pooling key, so the bare directory name is the whole of what is wanted; the
+    /// absolute path is not recorded.
+    /// </summary>
+    private static string TelemetryRepoDimension(Core.Model.PlanDefinition plan) =>
+        new DirectoryInfo(plan.Workspace).Name;
 
     /// <summary>
     /// Print a clickable <c>file://</c> link to the run's static "all tasks" index
