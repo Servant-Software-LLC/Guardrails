@@ -32,6 +32,19 @@ public enum PromptFailureKind
     OutputCap,
 
     /// <summary>
+    /// The runner refused to send, or the server truncated, a request that overflowed the model's
+    /// context window (plan 28 §6.1) — the exact mirror of <see cref="OutputCap"/> on the other side of
+    /// the same window. Before sending, the runner refuses when a pessimistic estimate
+    /// (<c>ceil(chars / 3) + maxOutputTokens</c>) exceeds the block's <c>contextTokens</c>; after a
+    /// response, it fails when the server's reported <c>usage.prompt_tokens</c> is below an optimistic
+    /// floor (<c>floor(chars / 4)</c>), which is the vendor silently truncating rather than reporting an
+    /// error. Distinct from a generic <see cref="Error"/> so the retry carries actionable feedback (raise
+    /// <c>contextTokens</c> or shrink the task's inputs) — there is nothing the harness can auto-escalate,
+    /// unlike <see cref="MaxTurns"/>.
+    /// </summary>
+    ContextOverflow,
+
+    /// <summary>
     /// The runner process exceeded its timeout and was killed (issue #119). Distinct from a generic
     /// error so the retry carries timeout-specific feedback (serial mode: "partial work is preserved —
     /// continue from it, don't re-explore"; worktree mode: "your writes were rolled back — re-author,
