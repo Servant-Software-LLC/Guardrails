@@ -90,9 +90,25 @@ mode, which is the default whenever `maxParallelism > 1`.
 v1 implements `PromptRunnerKind.OpenAiCompat` and nothing else. `Local`, `Codex` and `OpenRouter`
 remain reserved names and remain GR2044 errors.
 
+**MLX is a named v1 target, and it is the one the hardware makes first-class.** The maintainer reports
+materially better throughput from MLX builds than from llama.cpp builds of the *same* model on Apple
+silicon, and the Mac Studio this epic is aimed at is exactly where that difference is collected. MLX
+is served over the same protocol — `mlx_lm.server`, or LM Studio's MLX engine — so it needs **no new
+kind and no new config key**: an `endpoint` and a `model`, like every other engine here.
+
+That it drops in is a property of the kind being named after the **protocol** rather than the engine,
+which is the whole reason §3.1 exists. But "it drops in" is not the same as "it is supported", and
+the difference is the rest of this plan: an engine is supported when its dialect is *probed* (§7,
+§8), its failures carry *its own* remedy text (§6.2), and its capabilities are *verified rather than
+assumed* (§7's tool-capability probe). MLX was absent from the first draft of this plan and from
+#223's own title, so all three of those were written against Ollama alone. They are corrected below —
+and the general rule they now follow is that **no engine name may appear in a code path**, only in
+operator-facing text and in the opt-in dialect check.
+
 **`local` is not implemented, and it should not be** — it would be the same wire protocol under a
 second name, and the enum's own doc says `openai-compat` is one kind *because* Ollama, llama.cpp,
-LM Studio and vLLM share that protocol (`PromptRunnerConfig.cs:206-214`). The tiering DoR records
+LM Studio and vLLM share that protocol (`PromptRunnerConfig.cs:206-214`) — MLX joins that list on the
+same grounds. The tiering DoR records
 `local` as an accident: *"`local` was missing from this list until 2026-08-15 — Stage 1 shipped it as
 a fourth reserved token and Stage 1.5 kept it rather than make an unrequested breaking change"*
 (`17-model-tiering.md:386-390`).
@@ -332,7 +348,14 @@ justify the harness choosing a local model on its own.
   "model": "qwen3-coder:30b",               // REQUIRED for this kind (no CLI default to fall back to).
   "contextTokens": 32768,                   // REQUIRED for this kind. Integer >= 1. See §6.1.
   "apiKeyEnv": "LOCAL_INFERENCE_KEY",       // OPTIONAL. The NAME of an env var holding a bearer token.
+  "engine": "ollama",                       // OPTIONAL. ollama | llama.cpp | mlx | lm-studio | vllm.
+                                            // OPERATOR-FACING TEXT ONLY (§6.2): selects the remedy
+                                            // sentence in an error. It never selects a code path and
+                                            // never changes a request — see §3.1.
   "wire": { "keep_alive": "30m", "options": { "num_ctx": 32768 } },  // OPTIONAL verbatim body passthrough
+                                            // NB: `options.num_ctx` is an OLLAMA knob. It is inert on
+                                            // MLX and on most others; §6.1 calls it belt, never
+                                            // enforcement, and `contextTokens` is the real bound.
   "maxTurns": 12,
   "maxOutputTokens": 8000,
   "strength": 2,                            // SHOULD be declared — GR2067
@@ -503,7 +526,19 @@ feedback text says so, and offers the alternative first: shrink the task's input
 | Loop / no progress | iterations reach `maxTurns` | `MaxTurns` | the shipped auto-escalation applies |
 | Every tool call refused | `AbortAfterConsecutiveToolDenials` reached | `Error` with the refused paths | the #452 bound, honoured (§4) |
 | **Model ignores the output contract** | the extractor finds no valid object | **no verdict file is written** | `GuardrailVerdictReader.Read` already fails closed on a missing file (`GuardrailVerdict.cs:39-42`). **No pass is ever synthesised** |
+| **Server accepts `tools` and never calls one** | §6.6 | **`Error`** naming the block and the endpoint | the one failure here whose natural direction is a **false GREEN** — see §6.6 |
+| Server rejects `tools` outright (400) | status + body | `Error` naming the block, the endpoint and the model | a server with no tool support cannot host a verifier; retrying is a loop |
 | Server reports no `usage` | absent after `include_usage` was requested | `Usage = null` + a `runner-notice` line | never `{ 0, 0 }` |
+
+**The model-not-found remedy is per-engine text, and it is the only place an engine name may appear.**
+`ollama pull <model>` is right for one engine and misleading for the four others. The runner holds a
+small map from the configured block to its remedy sentence — Ollama `ollama pull <model>`, MLX
+`mlx_lm.download --hf-repo <model>` or the LM Studio model manager, llama.cpp/vLLM "start the server
+with `--model <model>`" — selected by an **optional `engine` hint on the block**, defaulting to a
+neutral sentence naming the model and the endpoint. `engine` is **operator-facing text only**: it
+never selects a code path, never changes a request, and is absent from `ServesRoles`, the containment
+rules and the wire body. A hint that steers behaviour would be a second kind wearing a different name,
+which §3.1 just rejected.
 
 ### 6.3 Streaming — required, with two of the first draft's three reasons withdrawn
 
@@ -577,6 +612,48 @@ the one advisory path §3.3 advertises.
 The convention moves into `PromptInvocation`'s own XML docs as part of this change, covering all
 three fields, and §9 gates it.
 
+### 6.6 A server that accepts `tools` and never calls one — the false GREEN this plan otherwise ships
+
+This is the most dangerous failure in the class, it was missing from the first draft entirely, and
+widening the engine list to MLX is what surfaced it — because tool-calling support is precisely where
+these servers diverge most, and it is the one capability v1 cannot do its job without.
+
+**The mechanism.** v1's whole role is a verifier that *reads the evidence*: §5 exists to contain
+`Read`/`Glob`/`Grep`, §4 filters them, §6.2 counts their refusals. An OpenAI-compatible server is
+free to accept a `tools` array, ignore it, and return an ordinary completion. Nothing in the protocol
+distinguishes *"I considered the tools and needed none"* from *"I do not implement tools."* So the
+model answers from the composed prompt alone, having read **nothing**, and — because the prompt tells
+it to end with a verdict — emits a perfectly well-formed ```json block:
+
+```json
+{ "pass": true, "summary": "the implementation satisfies the criterion" }
+```
+
+Every check in §6.2 passes. The extractor is happy, the boolean is real, the verdict file is written,
+the guardrail goes **GREEN**. A deterministic gate has certified a claim no evidence was read for —
+which inverts the one sentence this whole product rests on.
+
+**Why the existing checks do not catch it.** They are all about the response being *malformed*: no
+JSON, wrong block, truncation, no `usage`. This response is immaculate. And the §6.1 context checks
+point the wrong way — a prompt with no tool results is *small*, so it clears both bounds comfortably.
+
+**The fix has two halves, and the first is the load-bearing one.**
+
+1. **Prove the capability at preflight, once per endpoint, before the DAG (§7).** A server that cannot
+   call tools is a configuration fact, knowable before a token of real work is spent, and it must halt
+   the run rather than degrade it.
+2. **Fail the attempt at runtime when a verifier invocation completes with zero tool calls**
+   (`PromptFailureKind.Error`, naming the block and the endpoint). This is the backstop for the case
+   where the probe passed but this particular model, at this prompt, called nothing. It is deliberately
+   a blunt rule, and the blunt direction is the safe one: a verifier that read no files has not
+   verified anything, so refusing is right even in the rare case where the answer was obtainable from
+   the prompt alone. The alternative — trusting it — is the false green above.
+
+**Scoped to the `Guardrail` role only.** An `Advisory` invocation (§3.3's `overwatch` / `ai-triage`)
+legitimately reasons over text it was handed and may call nothing; applying the rule there would fail
+every advisory call on every engine. `PromptInvocation.Role` (§3.4) already carries the distinction,
+which is a second payoff from that field existing.
+
 ---
 
 ## 7. Validation — what is knowable offline, and what is not
@@ -600,8 +677,38 @@ profile is an **unreachable block** (GR2067's second form, warning — it catche
 **Reachability goes in the `run` preflight, where plan 26 just put sample verification.** Before the
 DAG, once per **distinct** endpoint: `GET {endpoint}/models`, short timeout. Unreachable ⇒ halt
 before a token is spent. Reachable ⇒ assert every declared `model` for that endpoint appears in the
-list; halt naming `ollama pull <model>` when it does not. This also lets `OpenAiCompat` join
+list; halt naming the §6.2 per-engine remedy when it does not. This also lets `OpenAiCompat` join
 `ModelEnumerable` (`PromptRunnerConfig.cs:260`), which the doc already anticipates.
+
+**`GET /models` is itself a dialect assumption, not a certainty.** It is near-universal but not
+guaranteed, and an engine that serves chat perfectly while omitting the listing endpoint must not be
+locked out by a check that exists to help. So a **404/405 on the listing endpoint downgrades to a
+warning** naming the endpoint and skipping only the model-presence assertion; any other failure
+(refused, DNS, timeout, TLS, 5xx) stays a halt. The distinction is "the server answered, but does not
+offer this" versus "there is no server."
+
+**The tool-capability probe — the check that closes §6.6.** Same preflight, same once-per-endpoint
+budget: one minimal `POST {endpoint}/chat/completions` carrying a single trivial tool whose only
+correct response is to call it, with `max_tokens` small. Three outcomes:
+
+| Probe result | Verdict |
+|---|---|
+| the response contains a `tool_calls` entry | **capable** — proceed |
+| 400/422 rejecting `tools` or an unknown parameter | **halt**, naming the block, the endpoint, the model, and that v1's verifier role requires tool calling |
+| 200 with no `tool_calls` | **halt**, with the same text plus the §6.6 explanation — this is the silent case, and it is the entire reason the probe exists |
+
+**Why a probe rather than a documented prerequisite.** "Use a server that supports tool calling" in a
+README is not a gate, and the failure it fails to prevent is a *silent false green*, not a crash. The
+project's own repeated lesson applies exactly: a mechanism that fails in the direction that looks
+fine is caught by execution, never by reading. One request per endpoint, once per run, before any
+real spend, is a cheap price for the only failure in this class that certifies work nobody checked.
+
+**It costs zero requests on a plan with no `openai-compat` block**, on the same terms and proven the
+same way as the reachability probe below.
+
+**Model-level, not just endpoint-level.** The probe is keyed on (endpoint, model), because one server
+can host both a model whose template emits tool calls and one whose template does not — swapping the
+model is exactly the kind of edit that would otherwise re-open §6.6 silently.
 
 **The condition, borrowed in spirit from plan 26 §7:**
 
@@ -643,6 +750,11 @@ misbehave.
 | returns prose *around* a valid JSON object | `PromptJsonExtractor` recovers it — the §3.3 payoff |
 | requests a file outside both roots | `PromptToolContainment` refuses; the refusal counts toward the denial bound |
 | refuses three tool calls in a row | the #452 abort fires with the refused paths |
+| **accepts `tools`, calls none, returns a well-formed `pass: true`** | the §6.6 rule fails the attempt — **and the assertion is that no verdict file with `pass: true` exists**, not merely that an error was raised. This is the false-green test; asserting the error alone would still pass if the file were written first |
+| **rejects `tools` with a 400** | preflight halts naming the block, endpoint and model — before any task runs |
+| **answers the tool probe with no `tool_calls`** | preflight halts; a loopback counter proves the probe ran **once** per (endpoint, model), not per invocation |
+| **404s `GET /models` but serves chat** | a warning, not a halt; the model-presence assertion is skipped and the run proceeds |
+| an `Advisory` invocation calls no tool | **succeeds** — the §6.6 rule is `Guardrail`-scoped, and a test that omitted this would ship a rule that breaks every advisory path |
 
 Plus, driven from the harness rather than the server: an `Action`-role invocation is refused; a
 `Guardrail`-role invocation **in worktree mode** produces a verdict file (the §3.6 regression); a
@@ -653,10 +765,21 @@ crashing.
 implementation emits** — the verdict file's bytes, the `usage` numbers in `run.json`, the pause that
 did or did not happen. *"The seam was called" is not an assertion.*
 
-**What the fake cannot prove, said plainly.** That a real Ollama / llama.cpp / LM Studio / vLLM speaks
-the dialect we assume: `stream_options.include_usage` support, whether `num_ctx` is honoured, the
-exact 404 body, SSE framing, `reasoning_effort` tolerance. That is **dialect risk**, and no loopback
-fake retires it. The mitigation is a manual, opt-in, non-CI verb:
+**What the fake cannot prove, said plainly.** That a real Ollama / llama.cpp / **MLX (`mlx_lm.server`
+or LM Studio's MLX engine)** / LM Studio / vLLM speaks the dialect we assume:
+`stream_options.include_usage` support, **whether `tools` are accepted AND actually called**, whether
+`num_ctx` is honoured (it is an Ollama option and means nothing to MLX — hence "belt, never
+enforcement" in §6.1), the exact model-not-found body, SSE framing, `reasoning_effort` tolerance,
+and whether `GET /models` exists at all. That is **dialect risk**, and no loopback fake retires it.
+
+**MLX is the engine this list was written without, and it is the one most likely to diverge.** The
+first draft enumerated four engines that all descend from broadly the same server lineage; MLX is a
+separate implementation, and tool calling is exactly where these servers differ most. Nothing in the
+loopback suite can tell us which MLX server, at which version, emits `tool_calls` — which is why §7's
+probe verifies it at runtime instead of this plan asserting it. **This plan makes no claim about any
+specific MLX server's tool support; it makes the harness refuse to proceed without proof.**
+
+The mitigation is a manual, opt-in, non-CI verb:
 
 > **`guardrails providers check <block-name>`** — one probe per assumption against the operator's real
 > endpoint, each reported met / unmet / unknown. Not in CI, not in `run`, not in `validate`. The same
@@ -697,6 +820,18 @@ Each bullet closes a specific wrong-but-passing implementation the adversarial p
 - No GR2009 for an `openai-compat` block.
 - The preflight probes each distinct endpoint once and halts on unreachable and on model-not-listed;
   a plan with no `openai-compat` block accepts **zero connections** on a loopback listener.
+- **A server that accepts `tools` and calls none never produces a `pass: true` verdict file** (§6.6) —
+  asserted on the file's absence, not on an exception. This is the false-green gate; every other
+  bullet here guards a loud failure, and this one guards a quiet success.
+- **The tool-capability probe halts on both shapes** — a 400 rejecting `tools`, and a 200 with no
+  `tool_calls` — before any task runs, and runs once per (endpoint, model).
+- **An `Advisory` invocation that calls no tool still succeeds**, proving the §6.6 rule is
+  role-scoped and has not broken the advisory paths §3.3 advertises.
+- A `GET /models` that 404s **warns and proceeds**; a refused/timed-out endpoint still halts.
+- **No engine name appears in any code path** — asserted by a source-level check over the runner and
+  the preflight: engine strings live only in operator-facing remedy text keyed off the optional
+  `engine` hint. A plan configured for MLX and one configured for Ollama produce byte-identical
+  requests for the same `model`, `wire` and prompt.
 - Every ignored or narrowed setting appears in a `runner-notice` line — read from the file.
 - An invocation with empty `StreamLogPath`, `WorkingDirectory` and `PlanDirectory` completes.
 - `guardrails providers check` reports each dialect assumption met / unmet / unknown.
@@ -866,6 +1001,22 @@ Sequenced; each stage green before the next.
 
 4. **`guardrails providers check` — v1 or follow-on?** *Recommend: v1.* It is the only thing here that
    retires dialect risk; cutting it means first contact with the Mac Studio is a live `guardrails run`.
+
+5. **The `engine` hint — ship it, or let every engine share one neutral remedy sentence?**
+   *Recommend: ship it.* It is a string in an error message and it is the difference between an
+   operator being told what to run and being told what went wrong. The risk it carries is that
+   someone later makes it steer behaviour, which §3.1 forbids and §9 asserts against.
+
+**Decided by the maintainer 2026-08-30, recorded because it changed the plan:** **MLX is a named v1
+target.** The trigger was a direct report of materially better throughput from MLX builds than from
+llama.cpp builds of the *same* model — which is the entire economic case of this epic, collected on
+the hardware it is aimed at. Neither #223's title nor this plan's first draft mentioned MLX, so §6.2,
+§7 and §8 had been written against Ollama alone: the remedy text said `ollama pull`, the belt was
+`num_ctx`, and the dialect list omitted the one engine most likely to diverge. The correction added
+no kind and no wire change — the kind was already named after the protocol — but it did surface
+**§6.6**, a false-green hole that had nothing to do with MLX and would have shipped: a server that
+accepts `tools`, calls none, and returns an immaculate `pass: true`. Widening the engine list is what
+made anyone look.
 
 **Decided, recorded because a reader will want to reopen it:** `local` is **not** implemented and
 **not** removed. Removing it breaks configs that may carry the token; implementing it forks one wire
