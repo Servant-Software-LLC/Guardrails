@@ -490,9 +490,45 @@ public sealed class Overwatch
             }
 
             OverwatchProposal? parsed = OverwatchProposal.TryParse(result.ResultText);
-            return parsed is null
-                ? DiagnoseOutcome.NoVerdict("the diagnose returned a body that is not a parseable verdict")
-                : DiagnoseOutcome.Verdict(parsed);
+            if (parsed is not null)
+            {
+                return DiagnoseOutcome.Verdict(parsed);
+            }
+
+            // The body was PAID FOR (charged above, before the parse) and is the only evidence of why the
+            // judge produced nothing usable — so persist it instead of discarding it. Plan 28 hit this twice
+            // and the run recorded the same eleven-word reason both times; the actual bodies were two
+            // complete, correct verdicts wrapped in a ```json fence, and nothing on disk said so. Diagnosing
+            // it needed the raw stream JSONL and a hand-written parser.
+            //
+            // The FILE carries the body; the REASON carries only the path and a length. That keeps the
+            // existing rule at the catch below — this string is rendered to the console and journaled, so it
+            // must not carry model-authored content — while making the next occurrence a one-command answer
+            // rather than an investigation.
+            //
+            // DISPOSITION — PERMANENT, deliberately. This is NOT scaffolding for #551 and must not be
+            // removed when #551 closes. #551's fence-stripping fixes ONE cause of an unparseable body; it
+            // cannot fix truncation, a judge answering in prose, a future schema change, or — most
+            // pointedly — a NON-CLAUDE runner with different formatting habits, which is exactly what #223
+            // is about to introduce. The forensics get MORE valuable after #551, not less. The cost is one
+            // small file, written only on a path that has already failed and already spent money.
+            // If you disagree, argue it on #551 rather than deleting it in passing.
+            string bodyPath = Path.Combine(taskLogDir, $"overwatch-noverdict-attempt-{attempt}.txt");
+            string reason = "the diagnose returned a body that is not a parseable verdict";
+            try
+            {
+                File.WriteAllText(bodyPath, result.ResultText);
+                reason += $" ({result.ResultText.Length} chars, saved to {Path.GetFileName(bodyPath)})";
+            }
+            catch (IOException)
+            {
+                // Best-effort forensics must never be the thing that breaks an advisory path.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            return DiagnoseOutcome.NoVerdict(reason);
         }
         catch (Exception ex)
         {
