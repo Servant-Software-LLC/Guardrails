@@ -7,7 +7,8 @@
   "writeScope": [
     "src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs",
     "src/Guardrails.Core/Prompts/PromptRunnerRegistry.cs",
-    "src/Guardrails.Core/Model/PromptRunnerConfig.cs"
+    "src/Guardrails.Core/Model/PromptRunnerConfig.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/PromptRunnerSchemaTests.cs"
   ],
   "action": {
     "tier": "hard",

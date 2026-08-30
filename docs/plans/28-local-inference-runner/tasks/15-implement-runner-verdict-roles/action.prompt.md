@@ -58,7 +58,41 @@ Make **`OpenAiCompatVerdictTests`** pass, and only that class. After this task t
 
 **Do NOT edit any test file.**
 
-**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs`, `src/Guardrails.Core/Prompts/PromptRunnerRegistry.cs`, `src/Guardrails.Core/Model/PromptRunnerConfig.cs`. After this task completes, the
+### Two stale assertions you must update (added after this task halted)
+
+Implementing `openai-compat` makes two assertions in
+`tests/Guardrails.Core.Tests/ModelTiering/PromptRunnerSchemaTests.cs` false BY DESIGN - they encode the
+premise that this kind has no implementation, which is exactly the premise your deliverable exists to
+falsify. No task owned that file, so it is now in your writeScope FOR THESE TWO EDITS ONLY.
+
+Plan section 3.1 draws the line precisely, and it is the whole of your authority here:
+
+> v1 implements `PromptRunnerKind.OpenAiCompat` and nothing else. `Local`, `Codex` and `OpenRouter`
+> remain reserved names and **remain GR2044 errors**.
+
+So exactly ONE kind stops being an error. Make these two changes and nothing else:
+
+1. `RecognizedButUnimplementedKind_FailsValidate_NotJustRegistryConstruction` - remove the
+   `[InlineData("openai-compat")]` row. **Keep `codex`, `openrouter` and `local`.** The test keeps its
+   full force for every kind that is still reserved; it simply no longer claims that about the one kind
+   this plan implements.
+
+2. `OpenAiCompatKind_IsRecognized_NotAnUnknownToken` - keep what is still true and drop only what is
+   now false. `openai-compat` is still a RECOGNIZED token rather than an unknown one, and that is worth
+   pinning; what is no longer true is the "no implementation" half. Assert it produces neither
+   `InvalidPromptRunnerKind` nor a GR2044 "no implementation" diagnostic, and update the doc comment so
+   the next reader sees "recognized AND implemented" rather than the old "recognized but not yet".
+
+**Do not touch anything else in that file.** In particular
+`ImplementedKindList_AgreesWithRegistryDispatch_ForEveryKind` already passes - registry construction
+genuinely works for every kind - and the three reserved-kind rows must keep failing validate exactly as
+they do today. Deleting the theory, weakening it to a smoke test, or removing the reserved kinds would
+turn a real gate into scenery, and would be a far worse outcome than this task staying red.
+
+If any OTHER test in the repo turns red from your change, that is a finding, not a licence: write
+`needsHuman` naming it rather than widening your own scope again.
+
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs`, `src/Guardrails.Core/Prompts/PromptRunnerRegistry.cs`, `src/Guardrails.Core/Model/PromptRunnerConfig.cs`, `tests/Guardrails.Core.Tests/ModelTiering/PromptRunnerSchemaTests.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to
 other production files, neighbouring test files, or the `.csproj`. An out-of-scope edit fails the
 task immediately and consumes a retry. If you hit a compile error caused by a missing symbol in
