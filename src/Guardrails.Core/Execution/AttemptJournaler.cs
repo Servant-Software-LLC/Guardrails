@@ -247,7 +247,8 @@ internal sealed class AttemptJournaler
         TaskResult result,
         IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
         decimal? costUsd = null,
-        AttemptUsage? usage = null)
+        AttemptUsage? usage = null,
+        AttemptProvenance? provenance = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -264,6 +265,12 @@ internal sealed class AttemptJournaler
             // #475: a FAILED attempt burned tokens too, and the per-tier spend line aggregates every
             // recorded attempt — not just the ones that converged.
             Usage = usage,
+            // #532: and it burned them ON A MODEL, which is the half #475 left behind. The route was
+            // resolved BEFORE the action ran and is already on disk in attempt-route.log; carrying it
+            // here is plumbing, not new knowledge. Without it every failure lands in `(no route
+            // recorded)` and each stratum keeps only its own successes — so first-pass rates read 100%
+            // by construction and per-model cost understates each model by exactly its failure rate.
+            Provenance = provenance,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
@@ -326,6 +333,12 @@ internal sealed class AttemptJournaler
             EndedAt = DateTimeOffset.UtcNow,
             ActionExitCode = null,
             Outcome = AttemptOutcome.RateLimited,
+            // #532: deliberately NO Provenance, and this record carries no CostUsd either. It is a
+            // SETTLE MARKER written from ExecuteAsync after the pause budget ran out — a synthetic
+            // attempt number for a model call that never happened. The attempts that did run and did
+            // cost money are journaled separately and now carry their route. Resolving the route here
+            // just to fill the field would be a SECOND derivation of a decision this code insists must
+            // have exactly one (TaskExecutor: "One resolution, two consumers").
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -353,7 +366,8 @@ internal sealed class AttemptJournaler
         ActionRun action,
         string question,
         IReadOnlyList<string> options,
-        string? kind = null)
+        string? kind = null,
+        AttemptProvenance? provenance = null)
     {
         string feedback =
             $"# Task '{task.Id}' needs a human\n\n" +
@@ -370,6 +384,9 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // #532: a needs-human attempt is a PAID attempt — this one carries action.CostUsd right
+            // above — so it must say which model was paid.
+            Provenance = provenance,
             LogDir = relativeLogDir,
             // #485: the agent's claim, canonicalized once more at the journal boundary so a caller that
             // hand-builds a kind cannot write an unrecognised token into run.json.
@@ -472,7 +489,8 @@ internal sealed class AttemptJournaler
         string relativeLogDir,
         string logDir,
         ActionRun action,
-        PermissionWallDecision decision)
+        PermissionWallDecision decision,
+        AttemptProvenance? provenance = null)
     {
         Directory.CreateDirectory(logDir);
         string feedback = RetryPolicy.ForPermissionWall(task, decision.StructuralPaths, decision.RepeatedPaths);
@@ -492,6 +510,8 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.PermissionDenied,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // #532: the wall stopped the WORK, not the billing — the model ran and was paid.
+            Provenance = provenance,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -530,7 +550,8 @@ internal sealed class AttemptJournaler
         string summary,
         string feedback,
         IReadOnlyList<GuardrailResult> guardrailResults,
-        IReadOnlyList<FailedGuardrail> failedGuardrails)
+        IReadOnlyList<FailedGuardrail> failedGuardrails,
+        AttemptProvenance? provenance = null)
     {
         Directory.CreateDirectory(logDir);
         AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
@@ -545,6 +566,8 @@ internal sealed class AttemptJournaler
             FailedGuardrails = failedGuardrails,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // #532: same as every other paid halt — the model that ran is the model that is billed.
+            Provenance = provenance,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -606,6 +629,9 @@ internal sealed class AttemptJournaler
             ActionExitCode = null,
             Outcome = AttemptOutcome.TaskPreflightFailed,
             FailedGuardrails = failedChecks,
+            // #532: deliberately NO Provenance, and no CostUsd on this record either — the action never
+            // ran (that is the whole point of a preflight gate), so no model was chosen and none was
+            // billed. A route here would name a model that did nothing.
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -625,7 +651,8 @@ internal sealed class AttemptJournaler
         string relativeLogDir,
         ProcessResult actionResult,
         decimal? costUsd,
-        AttemptUsage? usage = null)
+        AttemptUsage? usage = null,
+        AttemptProvenance? provenance = null)
     {
         var record = new AttemptRecord
         {
@@ -636,6 +663,10 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.Cancelled,
             CostUsd = costUsd,
             Usage = usage,
+            // #532: a cancel mid-attempt can still have spent real money before the token tripped.
+            // Null here is honest for the pre-attempt cancel in ExecuteAsync, where no route was
+            // resolved and no model ran — see the note at that call site.
+            Provenance = provenance,
             LogDir = relativeLogDir
         };
 

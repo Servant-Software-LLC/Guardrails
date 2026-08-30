@@ -189,6 +189,13 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 // Cancellation during a pause: journal back to pending (resume re-runs), like any
                 // mid-attempt cancellation — NOT a rate-limit halt.
+                //
+                // #532: no provenance passed here, deliberately. This is the PRE-attempt cancel — we are
+                // between attempts inside a transient backoff, no route has been resolved on this pass
+                // and no model has run, which is why costUsd is null too. The route lives in
+                // RunAttemptAsync, and reaching for it here would be a second derivation of a decision
+                // that must have exactly one. The mid-attempt cancels, which CAN carry real spend, are
+                // the two Cancelled call sites inside RunAttemptAsync and they now pass it.
                 if (cancellationToken.IsCancellationRequested)
                 {
                     int n = _journal.NextAttemptNumber(task.Id);
@@ -824,7 +831,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
-                action.CostUsd, action.Usage);
+                action.CostUsd, action.Usage, provenance: provenance);
         }
 
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
@@ -832,7 +839,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             return _journaler.NeedsHuman(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, question,
-                action.NeedsHumanOptions, action.NeedsHumanKind);
+                action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance);
         }
 
         // --- permission wall observation (issues #86 / #104 / #325) ----------------------
@@ -895,7 +902,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             return _journaler.PermissionWall(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action,
-                new PermissionWallDecision(true, [], wall.RepeatedPaths));
+                new PermissionWallDecision(true, [], wall.RepeatedPaths), provenance: provenance);
         }
 
         if (!action.Succeeded)
@@ -911,7 +918,9 @@ public sealed class TaskExecutor : ITaskExecutor
             // wall yields structural-only feedback/summary wording.
             if (wall.HasStructural)
             {
-                return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
+                return _journaler.PermissionWall(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall,
+                    provenance: provenance);
             }
 
             // Compose signal-specific feedback so a retry CHANGES BEHAVIOR rather than re-hitting the
@@ -970,7 +979,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     ActionExitCode = action.ExitCode,
                     Summary = summary
                 },
-                costUsd: action.CostUsd, usage: action.Usage);
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance);
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
@@ -998,7 +1007,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"staging move failed: {moveResult.FailureReason}"
                     },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, provenance: provenance);
             }
         }
 
@@ -1069,7 +1078,7 @@ public sealed class TaskExecutor : ITaskExecutor
                             _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
                         }
                     },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, provenance: provenance);
             }
         }
 
@@ -1116,7 +1125,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"write-scope violation: {offendingList}"
                     },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, provenance: provenance);
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -1182,7 +1191,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
-                action.CostUsd, action.Usage);
+                action.CostUsd, action.Usage, provenance: provenance);
         }
 
         if (guardrails.AnyFailed)
@@ -1228,7 +1237,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 return _journaler.StructuralWallHalt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
-                    summary, wallFeedback, guardrails.Results, failedList);
+                    summary, wallFeedback, guardrails.Results, failedList, provenance: provenance);
             }
 
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
@@ -1262,7 +1271,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}"
                 },
                 failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
-                costUsd: action.CostUsd, usage: action.Usage);
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance);
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
