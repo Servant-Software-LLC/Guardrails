@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Execution;
 
@@ -35,9 +36,15 @@ public sealed record OverwatchProposal
             return null;
         }
 
+        string? candidate = PromptJsonExtractor.Extract(resultText);
+        if (candidate is null)
+        {
+            return null;
+        }
+
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(Unfence(resultText));
+            using JsonDocument doc = JsonDocument.Parse(candidate);
             JsonElement root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
@@ -84,63 +91,6 @@ public sealed record OverwatchProposal
         {
             return null;
         }
-    }
-
-    /// <summary>
-    /// Strip a surrounding markdown code fence before parsing.
-    /// <para>
-    /// <b>Why this exists.</b> The diagnose judge answers in a fenced block — <c>```json</c>, newline, the
-    /// object, newline, <c>```</c> — which is what a chat model does with a request for JSON unless
-    /// something stops it. <see cref="JsonDocument.Parse(string, JsonDocumentOptions)"/> sees the backticks,
-    /// throws, and the whole verdict is dropped as "not a parseable verdict". On plan 28 that discarded TWO
-    /// complete, correct diagnoses, one of which had already identified a real harness bug (#550) by reading
-    /// <c>action-result.json</c> and noticing the attempt had actually succeeded. The harness had the answer
-    /// and threw it away over three backticks.
-    /// </para>
-    /// <para>
-    /// Deliberately narrow: it removes a fence that WRAPS the body and does nothing else. It does not hunt
-    /// for an embedded object inside prose, because a judge that answered in prose has not produced a
-    /// verdict and "advisory-never-gates" means the right outcome there is still null.
-    /// </para>
-    /// <para>
-    /// <b>DISPOSITION — TEMPORARY, replace when #223 lands.</b> This is a LOCAL second implementation of
-    /// lenient JSON extraction, and the repo is about to grow the real one: plan 28 task 05
-    /// (<c>05-implement-shared-json-extractor</c>) builds a shared <c>PromptJsonExtractor</c>, which did not
-    /// exist on master when #551 had to be fixed. When it lands, delete this method and route
-    /// <see cref="TryParse"/> through it — one extractor, not two that drift apart while appearing to agree.
-    /// The behaviour to preserve on that swap is the NARROWNESS above, which
-    /// <c>OverwatchProposalFenceTests.Unfenced_Prose_StaysNull</c> pins: a shared extractor that scans for
-    /// an embedded object would silently start manufacturing verdicts out of a judge thinking out loud.
-    /// </para>
-    /// <para>
-    /// Note this is the opposite disposition from the no-verdict body logging in
-    /// <c>Overwatch.RunDiagnoseAsync</c>, which is PERMANENT — see the note there. The two landed in the
-    /// same change for the same issue and have different lifespans, so neither should be removed by
-    /// association with the other.
-    /// </para>
-    /// </summary>
-    private static string Unfence(string text)
-    {
-        string trimmed = text.Trim();
-        if (!trimmed.StartsWith("```", StringComparison.Ordinal))
-        {
-            return trimmed;
-        }
-
-        // Drop the opening fence line (```
-        // or ```json / ```JSON / ```  json) whatever the info string says.
-        int firstNewline = trimmed.IndexOf('\n');
-        if (firstNewline < 0)
-        {
-            return trimmed;
-        }
-
-        string body = trimmed[(firstNewline + 1)..].TrimEnd();
-
-        // Drop the closing fence if present. Absent is tolerated: a body truncated mid-stream still has its
-        // opening fence, and a JSON object that happens to be complete should still parse.
-        int lastFence = body.LastIndexOf("```", StringComparison.Ordinal);
-        return lastFence >= 0 ? body[..lastFence].TrimEnd() : body;
     }
 
     private static OverwatchFixOp? ParseFix(JsonElement fix)
