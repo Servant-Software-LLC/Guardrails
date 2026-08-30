@@ -3163,22 +3163,29 @@ public sealed class Scheduler
     /// best-guess injected into the composed prompt (via <see cref="ActionRunner"/> →
     /// <see cref="Prompts.PromptComposer.ComposeAction"/>'s <c>injectedHumanAnswer</c> channel, delimited
     /// UNTRUSTED data). The executor terminates a needs-human short-circuit WITHOUT retrying, so the injection
-    /// is OBSERVABLE only if the Scheduler re-runs the unit — this is that re-run. The re-driven result is a
-    /// pure side-effect (it composes + persists the injected next attempt); the ORIGINAL settle stands. Driven
-    /// DIRECTLY (never through the worker loop) so it does not re-enter the classify-then-act dispatch. Never
-    /// faults the run — a reply-channel side-effect must never flip the verdict (§6).
+    /// is OBSERVABLE only if the Scheduler re-runs the unit — this is that re-run. Driven DIRECTLY (never
+    /// through the worker loop) so it does not re-enter the classify-then-act dispatch.
+    /// <para>
+    /// <b>Returns the re-driven result (#550), and the caller adopts it ONLY if it is green.</b> This method
+    /// used to discard it and document that as intent — "a pure side-effect; the ORIGINAL settle stands" —
+    /// which silently threw away attempts that had run the action and passed every guardrail. Returning the
+    /// result does not weaken §6's "never faults the run": a failed or faulted re-drive still returns
+    /// something the caller ignores (null on fault, non-green otherwise), so the reply channel still cannot
+    /// turn a passing task into a failing one. It can now only do the opposite.
+    /// </para>
     /// </summary>
-    private async Task RerunForBestGuessInjectionIfPendingAsync(TaskNode task, WorktreeHandle handle, CancellationToken ct)
+    private async Task<TaskResult?> RerunForBestGuessInjectionIfPendingAsync(
+        TaskNode task, WorktreeHandle handle, CancellationToken ct)
     {
         if (!_pendingBestGuessInjection.TryRemove(task.Id, out string? bestGuess))
         {
-            return;
+            return null;
         }
 
         try
         {
             WriteInjectionFile(task.Id, bestGuess);
-            await _executor.ExecuteAsync(task, handle, ct).ConfigureAwait(false);
+            return await _executor.ExecuteAsync(task, handle, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -3186,7 +3193,10 @@ public sealed class Scheduler
         }
         catch (Exception ex)
         {
+            // A faulted re-drive is still never allowed to fault the run — swallow it and report nothing
+            // adoptable, exactly as before.
             _observer.CleanupFailed(task.Id, ex);
+            return null;
         }
     }
 
@@ -3424,7 +3434,15 @@ public sealed class Scheduler
     /// <see cref="_gate"/>. This ordering ensures dependents only become ready after the upstream
     /// integration has advanced the plan branch, making lazy handle creation FF-compatible.
     /// </summary>
-    private async Task OnSettledAsync(
+    /// <summary>
+    /// The green-settle half of <see cref="OnSettledAsync"/>, extracted (#550) so that a result adopted
+    /// LATER in the same settle — a best-guess re-drive that passed — travels the identical path instead of
+    /// a parallel one that could drift from it. Returns the POST-settle result: <see cref="SettleAsync"/>
+    /// can still turn a green-looking result into needs-human on a failed union re-verify, so callers must
+    /// use the returned value rather than the one they passed in. Inert for a non-green result, in serial
+    /// mode, and with no integration context.
+    /// </summary>
+    private async Task<TaskResult> SettleGreenIfWorktreeAsync(
         RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle, CancellationToken ct)
     {
         // B1 deferred settle (worktree mode, real segment): ValidateFragmentForSettle sets
@@ -3469,6 +3487,20 @@ public sealed class Scheduler
             }
         }
 
+        return result;
+    }
+
+    private async Task OnSettledAsync(
+        RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle, CancellationToken ct)
+    {
+        // B1 deferred settle (worktree mode, real segment): ValidateFragmentForSettle sets
+        // DeferredSettle=true, meaning the Scheduler owns the fragment merge → git commit →
+        // journal settle sequence under the integration lock.
+        //
+        // Old path (serial mode or fake provider): the executor already merged + journaled;
+        // just call provider.Integrate directly so IWorktreeProvider.IntegrateCallCount tests pass.
+        result = await SettleGreenIfWorktreeAsync(context, task, result, handle, ct).ConfigureAwait(false);
+
         // #361 Phase 3 (doc 12 §4): classify-then-act at a task-level gate when the autonomy dial is wired. A
         // non-green needs-human / rate-limit stop is deterministically classified and acted on (escalate /
         // proceed-best-guess / bounded class-(b) retry) as the task settles — independent branches keep
@@ -3479,7 +3511,33 @@ public sealed class Scheduler
             // Reply channel part 2 (doc 12 §4.1): if the classify step recorded a below-threshold best-guess,
             // re-drive ONE bounded attempt with it injected — the executor short-circuits a needs-human without
             // retrying, so this is the only place the injection becomes OBSERVABLE in a composed prompt.
-            await RerunForBestGuessInjectionIfPendingAsync(task, handle, ct).ConfigureAwait(false);
+            TaskResult? reDriven =
+                await RerunForBestGuessInjectionIfPendingAsync(task, handle, ct).ConfigureAwait(false);
+
+            // #550: HONOR a re-driven attempt that passed. This used to discard the result — "the ORIGINAL
+            // settle stands" — which meant an attempt that ran the action AND passed every guardrail was
+            // reported `needs human` with the PREVIOUS attempt's reason, was never journaled at all (in
+            // worktree mode the succeeded record is written by the settle below, not by the executor, so
+            // bypassing the settle drops it entirely), left the task on the non-terminal `running` status,
+            // and blocked its dependents with "dependency did not succeed" — about a task that had
+            // succeeded. Observed on plan 28's task 20, whose 4th attempt built clean and produced the exact
+            // designed red bar while the run reported a permission wall from attempt 3.
+            //
+            // ASYMMETRIC, deliberately, which is what keeps §6's "never faults the run" intact: only a GREEN
+            // re-drive is adopted. A re-driven attempt that fails changes nothing — the original settle
+            // stands, no extra retry is burned, and the reply channel still cannot turn a passing task into a
+            // failing one. What it can now do is let a passing task be recorded as passing, which is the
+            // whole point of proceeding on a best-guess: the guardrails, not the injection, are what
+            // certify the work.
+            //
+            // Routed through the SAME SettleGreenIfWorktreeAsync as any other green result rather than a
+            // second settle path — a parallel one would be free to disagree with the first, and this bug was
+            // born from exactly that kind of bypass.
+            if (reDriven is { IsGreen: true })
+            {
+                result = await SettleGreenIfWorktreeAsync(context, task, reDriven, handle, ct)
+                    .ConfigureAwait(false);
+            }
         }
 
         var newlyReady = new List<TaskEnvelope>();

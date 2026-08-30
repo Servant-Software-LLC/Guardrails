@@ -209,6 +209,82 @@ public sealed class SchedulerEscalationWiringTests
             "the recorded best-guess was not injected into any later composed prompt — proceed-best-guess is not wired");
     }
 
+    // ── (2b) #550: a re-driven attempt that PASSES must be honored, not discarded ─────────────────
+
+    /// <summary>
+    /// Issue #550. The best-guess re-drive ran a full attempt — action AND guardrails — and the Scheduler
+    /// threw its result away, documenting that as intent: "a pure side-effect; the ORIGINAL settle stands".
+    ///
+    /// <para>On plan 28's run that discarded task 20's 4th attempt, which built clean and produced the exact
+    /// designed TDD-red bar. The run instead reported <c>needs human: write repeatedly refused (permission
+    /// wall)</c> — a reason belonging to attempt 3 — left the task on the non-terminal <c>running</c> status,
+    /// never journaled the attempt at all, and blocked its dependent with "dependency did not succeed" about
+    /// a task that had succeeded.</para>
+    ///
+    /// <para><b>Why the attempt vanished from the journal</b> rather than merely being mis-reported: in
+    /// worktree mode a succeeded attempt is recorded by the SCHEDULER's settle (<c>RecordSucceededSettle</c>,
+    /// off <c>TaskResult.PendingAttempt</c>), not by the executor. The re-drive is driven directly, bypassing
+    /// the worker loop, so bypassing the settle dropped the record entirely — one cause, all three
+    /// symptoms.</para>
+    ///
+    /// <para>Asserted on the JOURNAL and the REPORT together, because they disagreed in the real failure and
+    /// either alone would have missed it.</para>
+    /// </summary>
+    [Fact]
+    public async Task BelowThreshold_ReDrivenAttemptThatPasses_IsHonored_NotDiscarded()
+    {
+        // Asks a human on attempt 1 (⇒ the needs-human gate, assessed LOW < high ⇒ proceed on a best-guess),
+        // then SUCCEEDS on the re-drive the best-guess grants.
+        using var plan = new EscalationPlanBuilder(
+                escalationThreshold: "high", overwatchAssessment: AssessLow(BestGuessSentinel), defaultRetries: 0)
+            .AddNeedsHumanThenSucceedTask("01-design", "which accent color should the banner use");
+
+        RunReport report = await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        // The gate really was crossed — otherwise this test would pass for the boring reason that no
+        // re-drive ever happened, and would keep passing if the whole best-guess path were deleted.
+        Assert.Contains(Decisions(plan.PlanDir),
+            d => d.Decision == DecisionTokens.ProceededBestGuess && d.Subject == "01-design");
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
+        TaskJournalEntry entry = doc.Tasks["01-design"];
+
+        // (1) TERMINAL, and terminal as SUCCEEDED. `running` was the observed value — a task still in
+        //     progress in a run that had exited.
+        Assert.Equal(Guardrails.Core.Journal.TaskStatus.Succeeded, entry.Status);
+
+        // (2) The re-driven attempt is IN the journal. It ran, it cost money, it passed; a journal that
+        //     omits it cannot be reconciled against the logs on disk, and a resume re-pays for it.
+        Assert.Contains(entry.Attempts, a => a.Outcome == AttemptOutcome.Succeeded);
+
+        // (3) The run's own report agrees with the journal. These two disagreed in the real failure: the
+        //     console said needs-human while the guardrail logs said PASS.
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+        Assert.True(task.IsGreen);
+    }
+
+    /// <summary>
+    /// The counterweight, and the reason the fix is ASYMMETRIC. A re-drive that does NOT pass must change
+    /// nothing — the original needs-human settle stands. Adopting a re-driven result unconditionally would
+    /// let the reply channel flip a verdict, which is exactly what doc 12 §6's "never faults the run" forbids;
+    /// only the green direction is safe, because there the deterministic guardrails are what certify the work.
+    /// </summary>
+    [Fact]
+    public async Task BelowThreshold_ReDrivenAttemptThatStillAsks_LeavesTheOriginalSettleStanding()
+    {
+        // Plain needs-human mode: it asks on EVERY invocation, so the re-drive asks again too.
+        using var plan = new EscalationPlanBuilder(
+                escalationThreshold: "high", overwatchAssessment: AssessLow(BestGuessSentinel), defaultRetries: 0)
+            .AddNeedsHumanTask("01-design", "which accent color should the banner use");
+
+        RunReport report = await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
+        Assert.Equal(Guardrails.Core.Journal.TaskStatus.NeedsHuman, doc.Tasks["01-design"].Status);
+        Assert.False(Assert.Single(report.Tasks).IsGreen);
+    }
+
     // ── (3) Class-(b) transient: bounded RETRY, not immediate escalation ──────────────────────────
 
     [Fact]
@@ -530,6 +606,17 @@ public sealed class SchedulerEscalationWiringTests
             return this;
         }
 
+        /// <summary>
+        /// Issue #550: asks a human on the FIRST invocation, then SUCCEEDS on the second. The second
+        /// invocation is the best-guess re-drive, so this is the fixture for "the re-driven attempt passed"
+        /// — the case whose result the Scheduler used to discard.
+        /// </summary>
+        public EscalationPlanBuilder AddNeedsHumanThenSucceedTask(string id, string question)
+        {
+            WriteTask(id, mode: "needshuman-then-ok", question: question);
+            return this;
+        }
+
         /// <summary>A class-(b) transient blocker (503/overloaded) that clears on the second run.</summary>
         public EscalationPlanBuilder AddTransientTask(string id)
         {
@@ -626,6 +713,22 @@ public sealed class SchedulerEscalationWiringTests
                 }
                 Write-Output '{"type":"result","is_error":false,"result":"asked a human (kind)","num_turns":1}'
             }
+            elseif ($mode -eq 'needshuman-then-ok') {
+                $counter = Join-Path $env:GUARDRAILS_PLAN_DIR 'redrive.count'
+                Add-Content -Path $counter -Value 'x'
+                $n = (Get-Content $counter).Count
+                if ($n -ge 2) {
+                    if ($env:GUARDRAILS_STATE_OUT) {
+                        Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value ('{"' + $env:GUARDRAILS_TASK_ID + '": {"produced": true}}')
+                    }
+                    Write-Output '{"type":"result","is_error":false,"result":"the best-guess unblocked it","num_turns":1}'
+                } else {
+                    if ($env:GUARDRAILS_STATE_OUT) {
+                        Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value ('{"needsHuman": "' + $env:FAKE_QUESTION + '"}')
+                    }
+                    Write-Output '{"type":"result","is_error":false,"result":"asked a human","num_turns":1}'
+                }
+            }
             elseif ($mode -eq 'transient') {
                 $counter = Join-Path $env:GUARDRAILS_PLAN_DIR 'transient.count'
                 Add-Content -Path $counter -Value 'x'
@@ -667,6 +770,21 @@ public sealed class SchedulerEscalationWiringTests
                 printf '{"needsHuman": {"question": "%s", "kind": "%s"}}' "$FAKE_QUESTION" "$FAKE_KIND" > "$GUARDRAILS_STATE_OUT"
               fi
               printf '{"type":"result","is_error":false,"result":"asked a human (kind)","num_turns":1}\n'
+            elif [ "$mode" = "needshuman-then-ok" ]; then
+              counter="$GUARDRAILS_PLAN_DIR/redrive.count"
+              echo x >> "$counter"
+              n=$(wc -l < "$counter" | tr -d '[:space:]')
+              if [ "$n" -ge 2 ]; then
+                if [ -n "$GUARDRAILS_STATE_OUT" ]; then
+                  printf '{"%s": {"produced": true}}' "$GUARDRAILS_TASK_ID" > "$GUARDRAILS_STATE_OUT"
+                fi
+                printf '{"type":"result","is_error":false,"result":"the best-guess unblocked it","num_turns":1}\n'
+              else
+                if [ -n "$GUARDRAILS_STATE_OUT" ]; then
+                  printf '{"needsHuman": "%s"}' "$FAKE_QUESTION" > "$GUARDRAILS_STATE_OUT"
+                fi
+                printf '{"type":"result","is_error":false,"result":"asked a human","num_turns":1}\n'
+              fi
             elif [ "$mode" = "transient" ]; then
               counter="$GUARDRAILS_PLAN_DIR/transient.count"
               echo x >> "$counter"
