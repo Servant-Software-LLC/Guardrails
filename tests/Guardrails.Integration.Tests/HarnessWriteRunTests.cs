@@ -459,10 +459,25 @@ public sealed class HarnessWriteRunTests
 
         string taskDir = Path.Combine(planDir, "tasks", "01-write");
         string writeScopeJson = writeScope is null ? "" : $", \"writeScope\": [{writeScope}]";
-        // #339 N1: a short whole-attempt timeout so the sleeping 02-timeout guardrail below is KILLED
+        // #339 N1: a whole-attempt timeout so the sleeping 02-timeout guardrail below is KILLED
         // (guardrails.TimedOut) rather than run to completion. The fast fake action and the trivial
-        // 01-exists check finish well under it; only the deliberate sleeper trips it.
-        string timeoutJson = guardrailTimesOut ? ", \"timeoutSeconds\": 3" : "";
+        // 01-exists check must finish well under it; only the deliberate sleeper trips it.
+        //
+        // WAS 3s, AND THAT MADE THIS TEST LOAD-SENSITIVE — do not tighten it back. The budget is
+        // WHOLE-ATTEMPT: it covers the fake action AND 01-exists AND the sleeper, not the sleeper
+        // alone. Under full-suite load on Windows, spawning a shell for the trivial 01-exists check
+        // can itself consume 3s, so the budget was exhausted BEFORE 02-timeout ever started; 01-exists
+        // was killed and the summary named IT instead of the sleeper. Observed as a plan-preflight
+        // halt: "Failed: 1, Passed: 954" with `Not found: "02-timeout"` against a summary reading
+        // "guardrail(s) failed: 01-exists - needs human", while the same test passed 3/3 in isolation
+        // on the same commit.
+        //
+        // 20s is chosen to be loose at BOTH ends and asserts nothing about timing itself: ~6x headroom
+        // over the observed 7s worst case for the work that must COMPLETE, and still 3x under the
+        // sleeper's 60s so the kill remains certain. Every assertion is unchanged - the attempt outcome
+        // is still Timeout, failedGuardrails is still exactly [02-timeout] - so this widens the room
+        // the NON-target work runs in without loosening what the test proves.
+        string timeoutJson = guardrailTimesOut ? ", \"timeoutSeconds\": 20" : "";
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
