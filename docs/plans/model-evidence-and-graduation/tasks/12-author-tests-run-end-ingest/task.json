@@ -1,0 +1,9 @@
+{
+  "description": "Author a failing wiring test: a completed run ingests its own journal, on every outcome, without ever changing the run exit code",
+  "dependsOn": ["11-wire-telemetry-command"],
+  "stableId": "c4y8jt",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEndTelemetryIngestTests.cs"
+  ],
+  "action": { "tier": "medium", "maxTurns": 75 }
+}

@@ -50,8 +50,16 @@
     "tasks/11-wire-telemetry-command/guardrails/01-build-passes.ps1": "7e57b0108c28e9c7f2e8dd0be4c43f8ae6efa9f7602d08cea589e521386669f0",
     "tasks/11-wire-telemetry-command/guardrails/02-verb-reachable-from-real-root.ps1": "e9d160fa02352d3dafd10fb454e19b35d5425fe5508e09007a4c04cf1a25fd0e",
     "tasks/11-wire-telemetry-command/task.json": "5b9128db15a7001df704e612c0cec12bb415660a08afd6db3fe62636734bef09",
-    "tasks/12-record-telemetry-surfaces-in-ssot/action.prompt.md": "d590c7834e3de5982190ffc041b4f66d21fd644ce9a7d4336baa057501816daf",
-    "tasks/12-record-telemetry-surfaces-in-ssot/guardrails/01-surfaces-recorded.ps1": "967341f04f62fdc084d86d8c98dc3a944307df3d350a1a82e29cb2de1f8b3eb6",
-    "tasks/12-record-telemetry-surfaces-in-ssot/task.json": "ef4831638c707dd5b63514047af8c8f341e3b3633b8656af3656283ad169b82d"
+    "tasks/12-author-tests-run-end-ingest/action.prompt.md": "69762aa0ba1aa9cfda8fcfd62f1236a8b581d40ffda05a79ac4b1bc04e36bb23",
+    "tasks/12-author-tests-run-end-ingest/guardrails/01-build-passes.ps1": "a997acbf32702f66b3e1d67eb3df74742b467b65225003be25db9c4b8faa6d93",
+    "tasks/12-author-tests-run-end-ingest/guardrails/02-tests-fail-on-stubs.ps1": "b6b4dbe8026b794f839e7525392bc6877930523ee6b88cfd31eb91c7d6c01dc5",
+    "tasks/12-author-tests-run-end-ingest/task.json": "a9dc8553dd2b6a0fed112ed85b4dc69ee8674b824fca1cc48872364f369de3d6",
+    "tasks/13-wire-run-end-ingest/action.prompt.md": "053a13f34eb928ca560c6a312207b5bea84c4d6b3d95c27ce3b613b19032a37f",
+    "tasks/13-wire-run-end-ingest/guardrails/01-build-passes.ps1": "a997acbf32702f66b3e1d67eb3df74742b467b65225003be25db9c4b8faa6d93",
+    "tasks/13-wire-run-end-ingest/guardrails/02-run-end-ingest-wired.ps1": "1b5e1e41a9afaf0bde33ef2a770d4bc62a6a1a4f01fd5826f8526bb9fc5965fb",
+    "tasks/13-wire-run-end-ingest/task.json": "d4f3fd255cc24d67216dad09a4bfa10e63a25534ca851305e28aba48553ec24d",
+    "tasks/14-record-telemetry-surfaces-in-ssot/action.prompt.md": "f6b0b3b12d36eaf21d7bc2c9324e11f385d87569c8387b060c6d6966bb1b8b8b",
+    "tasks/14-record-telemetry-surfaces-in-ssot/guardrails/01-surfaces-recorded.ps1": "631d584e7fe13eca6c4346ef131e752cb778fa6ebd4960044ea527402c37e55a",
+    "tasks/14-record-telemetry-surfaces-in-ssot/task.json": "73b3b4bafde3651b8917318e6cb49c6af149eb6c55f075f0447fa744413291ce"
   }
 }

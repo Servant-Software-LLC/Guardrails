@@ -11,7 +11,8 @@
 #          does not have.
 #          Required-present baselines, MEASURED at authoring time against these exact subjects, case
 #          sensitive, as SSOT/SKILL (#478): 'guardrails/telemetry' 0/0, 'telemetry ingest' 0/0,
-#          'TelemetryRow' 0/-, 'undifferentiated' 0/-, and the null-rule PAIR 0/-. Zero everywhere,
+#          'TelemetryRow' 0/-, 'undifferentiated' 0/-, 'run-end telemetry' 0/0, and the null-rule
+#          PAIR 0/-. Zero everywhere,
 #          which is the expected answer. It was not free: the null-versus-zero clause first shipped as
 #          a bare 'never reported' scan, which measures 1 in the SSOT (JournalTierSpend's own rule) and
 #          was therefore GREEN ON ARRIVAL - invisible, because its five failing siblings still exited 1.
@@ -42,8 +43,10 @@ $clauses = @(
     @{ File = $ssot;  Text = $ssotText;  Token = 'telemetry ingest';     What = 'the verb that fills the corpus' },
     @{ File = $ssot;  Text = $ssotText;  Token = 'TelemetryRow';         What = 'the corpus row type the null-versus-zero rule below must sit beside' },
     @{ File = $ssot;  Text = $ssotText;  Token = 'undifferentiated';     What = 'the bucket a guardrail-failed attempt lands in when its log site is gone - the rule that must never be guessed at' },
+    @{ File = $ssot;  Text = $ssotText;  Token = 'run-end telemetry'; What = 'that a completed run ingests its own attempts, so the corpus fills without anyone remembering the verb' },
     @{ File = $skill; Text = $skillText; Token = 'guardrails/telemetry'; What = 'the corpus location' },
-    @{ File = $skill; Text = $skillText; Token = 'telemetry ingest';     What = 'the verb that fills the corpus' }
+    @{ File = $skill; Text = $skillText; Token = 'telemetry ingest';     What = 'the verb that fills the corpus' },
+    @{ File = $skill; Text = $skillText; Token = 'run-end telemetry'; What = 'that a completed run ingests itself' }
 )
 
 foreach ($c in $clauses) {

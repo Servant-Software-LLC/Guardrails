@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=10527a82f0fe67d1f58c45939f85bad3adb01ee3efe57a0f7e65623cf52332f4 -->
+<!-- guardrails:graph v1 source-sha256=4e96589c5c52428422f98d3b83fb623854d362dba6886b51f0b976b46eebe185 -->
 
 ```mermaid
 flowchart TD
@@ -62,10 +62,20 @@ flowchart TD
     task_11_wire_telemetry_command_gr_1["02-verb-reachable-from-real-root"]:::guardrail
   end
   style task_11_wire_telemetry_command fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_12_record_telemetry_surfaces_in_ssot["12-record-telemetry-surfaces-in-ssot"]
-    task_12_record_telemetry_surfaces_in_ssot_gr_0["01-surfaces-recorded"]:::guardrail
+  subgraph task_12_author_tests_run_end_ingest["12-author-tests-run-end-ingest"]
+    task_12_author_tests_run_end_ingest_gr_0["01-build-passes"]:::guardrail
+    task_12_author_tests_run_end_ingest_gr_1["02-tests-fail-on-stubs"]:::guardrail
   end
-  style task_12_record_telemetry_surfaces_in_ssot fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  style task_12_author_tests_run_end_ingest fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_13_wire_run_end_ingest["13-wire-run-end-ingest"]
+    task_13_wire_run_end_ingest_gr_0["01-build-passes"]:::guardrail
+    task_13_wire_run_end_ingest_gr_1["02-run-end-ingest-wired"]:::guardrail
+  end
+  style task_13_wire_run_end_ingest fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_14_record_telemetry_surfaces_in_ssot["14-record-telemetry-surfaces-in-ssot"]
+    task_14_record_telemetry_surfaces_in_ssot_gr_0["01-surfaces-recorded"]:::guardrail
+  end
+  style task_14_record_telemetry_surfaces_in_ssot fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -82,8 +92,10 @@ flowchart TD
   task_08_implement_corpus_report --> task_09_author_tests_telemetry_command
   task_09_author_tests_telemetry_command --> task_10_implement_telemetry_command
   task_10_implement_telemetry_command --> task_11_wire_telemetry_command
-  task_11_wire_telemetry_command --> task_12_record_telemetry_surfaces_in_ssot
-  task_12_record_telemetry_surfaces_in_ssot --> plan_guardrails
+  task_11_wire_telemetry_command --> task_12_author_tests_run_end_ingest
+  task_12_author_tests_run_end_ingest --> task_13_wire_run_end_ingest
+  task_13_wire_run_end_ingest --> task_14_record_telemetry_surfaces_in_ssot
+  task_14_record_telemetry_surfaces_in_ssot --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

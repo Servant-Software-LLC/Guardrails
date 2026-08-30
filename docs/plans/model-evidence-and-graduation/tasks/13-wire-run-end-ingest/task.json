@@ -1,0 +1,9 @@
+{
+  "description": "Wire run-end telemetry ingest into RunCommand.Finish as a best-effort call that cannot change the exit code",
+  "dependsOn": ["12-author-tests-run-end-ingest"],
+  "stableId": "f6s0mv",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

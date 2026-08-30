@@ -1,6 +1,6 @@
 {
   "description": "Record the telemetry corpus surfaces in the SSOT and the domain-knowledge skill",
-  "dependsOn": ["11-wire-telemetry-command"],
+  "dependsOn": ["13-wire-run-end-ingest"],
   "stableId": "n0v5ek",
   "writeScope": [
     "docs/plans/02-schemas-and-contracts.md",

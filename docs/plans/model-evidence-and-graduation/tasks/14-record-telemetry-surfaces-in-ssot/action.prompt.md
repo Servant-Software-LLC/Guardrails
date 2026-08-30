@@ -4,9 +4,9 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — the name of the directory this task.json lives in (e.g.
-  `12-record-telemetry-surfaces-in-ssot`), NOT the stableId. The harness REJECTS a fragment
+  `14-record-telemetry-surfaces-in-ssot`), NOT the stableId. The harness REJECTS a fragment
   keyed by anything else (every attempt), so:
-  `{ "12-record-telemetry-surfaces-in-ssot": { "someKey": "someValue" } }`.
+  `{ "14-record-telemetry-surfaces-in-ssot": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
@@ -67,12 +67,16 @@ and rejects any edit outside those two paths.
    corpus per machine with the repo as a recorded dimension.
 2. **The verb that fills it** — `telemetry ingest`, including that it backfills over runs already on
    disk, and that ingest is idempotent on `(runId, taskId, attempt)`.
-3. **The `undifferentiated` bucket** (SSOT) — a `guardrail-failed` attempt whose log site no longer
+3. **`run-end telemetry` ingest** — a completed run ingests its own attempts from `RunCommand.Finish`,
+   on every outcome including `needs-human`, as a best-effort call that can never change the run exit
+   code. Use the phrase `run-end telemetry` so the rule is greppable; say that failures are reported
+   and never escalated.
+4. **The `undifferentiated` bucket** (SSOT) — a `guardrail-failed` attempt whose log site no longer
    exists, or whose `feedback.md` wording is not recognized, is recorded as `undifferentiated` and is
    **never guessed at**. Say why: three different failures (write-scope violation, staging-move failure,
    harness-write out-of-scope) all journal as `AttemptOutcome.GuardrailFailed`, and the `TaskResult.Summary`
    that distinguishes them is not persisted by `AttemptJournaler.FailedAttempt`.
-4. **The null-versus-zero rule** (SSOT) — a corpus row's cost and token fields are independently
+5. **The null-versus-zero rule** (SSOT) — a corpus row's cost and token fields are independently
    nullable, and null means *never reported*, which is not the claim zero makes.
 
 **Write in each document's own voice.** The SSOT documents contracts section by section with backticked
