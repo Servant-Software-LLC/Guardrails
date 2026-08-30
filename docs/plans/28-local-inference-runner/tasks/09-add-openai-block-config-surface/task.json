@@ -1,0 +1,15 @@
+{
+  "description": "Add the openai-compat block keys, the ContextOverflow failure kind, the kind-fact stubs and the runner class stub",
+  "dependsOn": [],
+  "stableId": "r9k4mt",
+  "writeScope": [
+    "src/Guardrails.Core/Model/PromptRunnerConfig.cs",
+    "src/Guardrails.Core/Loading/RawManifests.cs",
+    "src/Guardrails.Core/Prompts/PromptFailureKind.cs",
+    "src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/OpenAiCompatConfigShapeTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Author one GR2066 test per action-reachability route, including the frontmatter route",
+  "dependsOn": [
+    "19-implement-block-diagnostics"
+  ],
+  "stableId": "j4c7ky",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Loading/ActionReachabilityGateTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

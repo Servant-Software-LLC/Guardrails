@@ -2,7 +2,7 @@
 - Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in
   the appended sections; write ONLY new/changed keys as a JSON object to
   GUARDRAILS_STATE_OUT.
-- Write everything you publish under your task's FOLDER NAME as the single top-level
+- Write everything you publish under your task's 02-assign-roles-at-seven-sites NAME as the single top-level
   key - the name of the directory this task.json lives in, NOT the stableId. The
   harness REJECTS a fragment keyed by anything else (every attempt), so:
   `{ "02-assign-roles-at-seven-sites": { "someKey": "someValue" } }`.
@@ -33,9 +33,8 @@ Read: **plan section 3.4**.
 ### What to build
 
 Task 01 set all seven `PromptInvocation` construction sites to `PromptRole.Action` as an explicit
-stub and wrote `PromptRoleSeamTests` pinning the correct value at each. Five of those tests are RED.
-
-Replace each stub with the correct role from the plan's section 3.4 table:
+stub and wrote `PromptRoleSeamTests` pinning the correct value at each; four of those tests are RED.
+Replace each stub with the role from the plan's section 3.4 table:
 
 | Site | Role |
 |---|---|
@@ -47,17 +46,20 @@ Replace each stub with the correct role from the plan's section 3.4 table:
 | `NeedsHumanTriage.cs` | `Advisory` - advisory never gates |
 | `CriticalityJudge.cs` | `Advisory` - the **target-typed `=> new()`** site |
 
-Remove the `// STUB` comments as you go.
+Remove the `// STUB` comments as you go. The classification rule, so you can check yourself rather
+than copying the table: *does this prompt write anything other than its own verdict file?* Yes then
+`Action`. No, and its output is a pass/fail then `Guardrail`. No, and its output is advice then
+`Advisory`.
 
-The classification rule, so you can check yourself rather than copying the table: *does this prompt
-write anything other than its own verdict file?* Yes then `Action`. No, and its output is a
-pass/fail then `Guardrail`. No, and its output is advice then `Advisory`.
-
-**Do NOT edit `PromptRoleSeamTests.cs`.** It is outside your writeScope; an edit to it fails the
-write-scope check and burns a retry. If a test is genuinely wrong, emit `needsHuman` with the
+**Do NOT edit `PromptRoleSeamTests.cs`** - it is outside your writeScope; an edit fails the
+write-scope check and burns a retry. If a test there is genuinely wrong, emit `needsHuman` with the
 reason rather than changing it.
 
 `ClaudePromptRunner` must continue to ignore `Role` entirely - no Claude run changes by one byte.
+
+**Do NOT write the real-seam proof.** That is task 03's deliverable, split out of this task during
+review because assigning seven values and proving one survives the production path are two
+separately-verifiable outcomes.
 
 **Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs`, `src/Guardrails.Core/Execution/AiMergeResolver.cs`, `src/Guardrails.Core/Execution/GuardrailRunner.cs`, `src/Guardrails.Core/Execution/Overwatch.cs`, `src/Guardrails.Core/Execution/NeedsHumanTriage.cs`, `src/Guardrails.Core/Execution/CriticalityJudge.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to

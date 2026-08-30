@@ -1,0 +1,13 @@
+{
+  "description": "Record the openai-compat runner and its role gate in the domain-knowledge skill",
+  "dependsOn": [
+    "28-record-openai-compat-in-ssot"
+  ],
+  "stableId": "l4d9cz",
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": {
+    "tier": "easy"
+  }
+}

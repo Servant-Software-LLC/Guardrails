@@ -1,0 +1,13 @@
+{
+  "description": "Implement PromptToolContainment.IsReadable over normalised roots with deny-on-empty",
+  "dependsOn": [
+    "07-author-tests-tool-containment"
+  ],
+  "stableId": "c4y7ws",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/PromptToolContainment.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

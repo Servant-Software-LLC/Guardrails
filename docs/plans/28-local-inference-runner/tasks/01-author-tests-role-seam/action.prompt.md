@@ -47,7 +47,7 @@ EMPTY string is legal and means "no log / no cwd / no plan dir", not "abort".
 **2. The STUB assignment at all seven sites, plus the tests that pin the real values.**
 
 Set every one of the seven construction sites to `PromptRole.Action` - **deliberately wrong for
-five of them**, so the tests you write go RED. Mark each with a `// STUB (task 02 assigns the real
+four of them** - so the tests you write go RED. Mark each with a `// STUB (task 02 assigns the real
 role)` comment. The seven sites, from the plan's own table:
 
 | Site | Correct role (task 02 sets this) |
@@ -66,7 +66,7 @@ role)` comment. The seven sites, from the plan's own table:
 
 Write **one `[Fact]` per site**, each pinned to the method name below, asserting that site passes
 its correct role. Drive each producer and capture the `PromptInvocation` it builds - a fake
-`IPromptRunner` that records its argument is the honest way; do NOT assert by reading the same
+`IPromptRunner` that records its argument is the honest way here; do NOT assert by reading the same
 field the producer reads, and do NOT test the enum in isolation.
 
 Pin these exact method names - the red census binds to them:
@@ -79,14 +79,14 @@ Pin these exact method names - the red census binds to them:
 - `NeedsHumanTriage_PassesAdvisoryRole`
 - `CriticalityJudge_PassesAdvisoryRole`
 
-Five of the seven MUST FAIL against your stub (the three `Action` sites pass, which is correct and
+Four of the seven MUST FAIL against your stub (the three `Action` sites pass, which is correct and
 is the discriminator proving the tests are bound to the real code path).
 
 Every existing test fixture that constructs a `PromptInvocation` will stop compiling. Fixing those
 is IN SCOPE only for files inside your writeScope - if a fixture outside it breaks, that is a real
 finding: write `needsHuman` rather than editing out of scope.
 
-**Do NOT implement the correct assignments.** That is task 02's whole deliverable.
+**Do NOT implement the correct assignments.** That is task 02's deliverable.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/Prompts/PromptRoleSeamTests.cs`, `src/Guardrails.Core/Prompts/PromptInvocation.cs`, `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs`, `src/Guardrails.Core/Execution/AiMergeResolver.cs`, `src/Guardrails.Core/Execution/GuardrailRunner.cs`, `src/Guardrails.Core/Execution/Overwatch.cs`, `src/Guardrails.Core/Execution/NeedsHumanTriage.cs`, `src/Guardrails.Core/Execution/CriticalityJudge.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to

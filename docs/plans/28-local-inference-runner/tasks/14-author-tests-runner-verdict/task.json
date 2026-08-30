@@ -1,0 +1,15 @@
+{
+  "description": "Author the runner verdict-transcription and role-gate tests",
+  "dependsOn": [
+    "13-implement-runner-tool-loop",
+    "05-implement-shared-json-extractor"
+  ],
+  "stableId": "j5t9qc",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatVerdictTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

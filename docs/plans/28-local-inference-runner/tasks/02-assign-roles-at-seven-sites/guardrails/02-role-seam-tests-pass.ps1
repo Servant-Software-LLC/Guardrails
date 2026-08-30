@@ -3,7 +3,8 @@
 # SCOPE (#455): filtered to THIS task pair's OWN test class, never a plan-wide trait. A trait-keyed
 #          filter would assert the state of every test this plan authors - failing forward (this task
 #          cannot go green until a DOWNSTREAM task runs) or inverse (a sibling's red satisfies it).
-#          Discriminating: 'PromptRoleSeamTests' matches no other test class in this plan or the target project.
+#          Verified discriminating: 'PromptRoleSeamTests' is a substring of no other test class in this plan or in
+#          the target project.
 $ErrorActionPreference = 'Continue'
 
 # The dotnet summary line is LOCALIZED; pin the culture BEFORE the run or the executed-count guard
@@ -18,8 +19,8 @@ $code = $LASTEXITCODE
 
 Write-Output $log
 
-# FORWARD polarity: check the exit code FIRST, so a test host that never ran is not misreported as a
-# bad filter. Then the zero-match guard.
+# FORWARD polarity: exit code FIRST, so a test host that never started is not misreported as a bad
+# filter (which would send the retry agent to rename a correctly-named class). Then the zero-match guard.
 if ($code -ne 0) {
     Write-Output ""
     Write-Output "=== Failure detail (re-emitted at the END so the WHY reaches the retry feedback, #179) ==="
@@ -44,5 +45,5 @@ if ($executed -lt 1) {
     exit 1
 }
 
-Write-Output "$cls green: $executed executed, 0 failed."
+Write-Output "PromptRoleSeamTests green: $executed executed, 0 failed."
 exit 0

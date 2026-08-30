@@ -1,0 +1,14 @@
+{
+  "description": "Prove the Guardrail role survives the trip to the real ClaudePromptRunner over a stub binary",
+  "dependsOn": [
+    "02-assign-roles-at-seven-sites"
+  ],
+  "stableId": "d2v8hq",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RoleSeam/RoleReachesRealRunnerTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Author the runner tool-loop tests, including the accepts-tools-calls-none false green",
+  "dependsOn": [
+    "11-implement-runner-transport",
+    "08-implement-tool-containment"
+  ],
+  "stableId": "k8s3wn",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatToolLoopTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Mirror the canonical promptRunners block into the plan-breakdown schemas reference, byte for byte",
+  "dependsOn": [
+    "28-record-openai-compat-in-ssot"
+  ],
+  "stableId": "x8m5wq",
+  "writeScope": [
+    ".claude/skills/plan-breakdown/references/schemas.md"
+  ],
+  "action": {
+    "tier": "easy"
+  }
+}

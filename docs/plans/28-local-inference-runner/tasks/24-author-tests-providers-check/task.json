@@ -1,0 +1,13 @@
+{
+  "description": "Author the providers check tests: one probe per dialect assumption, met unmet or unknown",
+  "dependsOn": [
+    "23-implement-endpoint-preflight"
+  ],
+  "stableId": "a3k8ns",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/OpenAiCompat/ProvidersCheckTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

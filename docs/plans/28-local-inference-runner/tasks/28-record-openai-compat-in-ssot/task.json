@@ -1,0 +1,18 @@
+{
+  "description": "Record the openai-compat contract in the SSOT and correct the stale GR2044 row in the tiering DoR",
+  "dependsOn": [
+    "17-implement-kind-aware-harness",
+    "21-implement-reachability-gate",
+    "23-implement-endpoint-preflight",
+    "25-implement-providers-check",
+    "27-implement-judge-spend"
+  ],
+  "stableId": "o6f3jb",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    "docs/plans/17-model-tiering.md"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

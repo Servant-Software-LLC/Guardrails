@@ -1,0 +1,14 @@
+{
+  "description": "Implement the read-only tool loop, containment refusals, and the zero-tool-call verifier refusal",
+  "dependsOn": [
+    "12-author-tests-runner-tool-loop"
+  ],
+  "stableId": "v7m2ja",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

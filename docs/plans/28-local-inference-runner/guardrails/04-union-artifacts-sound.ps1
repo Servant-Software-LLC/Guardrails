@@ -24,39 +24,39 @@
 #
 # MULTI-WRITER PATHS (where a dropped or duplicated hunk would land), derived mechanically:
 #   src/Guardrails.Core/Execution/ActionRunner.cs
-#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 13-implement-kind-aware-harness
+#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 17-implement-kind-aware-harness
 #   src/Guardrails.Core/Execution/AiMergeResolver.cs
 #     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites
 #   src/Guardrails.Core/Execution/CriticalityJudge.cs
 #     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites
 #   src/Guardrails.Core/Execution/GuardrailRunner.cs
-#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 13-implement-kind-aware-harness, 23-implement-judge-spend
+#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 17-implement-kind-aware-harness, 27-implement-judge-spend
 #   src/Guardrails.Core/Execution/NeedsHumanTriage.cs
-#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 04-implement-shared-json-extractor
+#     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites, 05-implement-shared-json-extractor
 #   src/Guardrails.Core/Execution/Overwatch.cs
 #     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites
 #   src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs
 #     written by: 01-author-tests-role-seam, 02-assign-roles-at-seven-sites
 #   src/Guardrails.Core/Loading/DiagnosticCodes.cs
-#     written by: 15-implement-block-diagnostics, 17-implement-reachability-gate
+#     written by: 19-implement-block-diagnostics, 21-implement-reachability-gate
 #   src/Guardrails.Core/Loading/PlanValidator.cs
-#     written by: 15-implement-block-diagnostics, 17-implement-reachability-gate
+#     written by: 19-implement-block-diagnostics, 21-implement-reachability-gate
 #   src/Guardrails.Core/Model/PromptRunnerConfig.cs
-#     written by: 08-author-tests-openai-runner, 11-implement-runner-verdict-roles, 19-implement-endpoint-preflight
+#     written by: 09-add-openai-block-config-surface, 15-implement-runner-verdict-roles, 23-implement-endpoint-preflight
 #   src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs
-#     written by: 08-author-tests-openai-runner, 09-implement-runner-transport, 10-implement-runner-tool-loop, 11-implement-runner-verdict-roles
+#     written by: 09-add-openai-block-config-surface, 11-implement-runner-transport, 13-implement-runner-tool-loop, 15-implement-runner-verdict-roles
 #   src/Guardrails.Core/Prompts/PromptJsonExtractor.cs
-#     written by: 03-author-tests-json-extractor, 04-implement-shared-json-extractor
+#     written by: 04-author-tests-json-extractor, 05-implement-shared-json-extractor
 #   src/Guardrails.Core/Prompts/PromptToolContainment.cs
-#     written by: 06-author-tests-tool-containment, 07-implement-tool-containment
+#     written by: 07-author-tests-tool-containment, 08-implement-tool-containment
 #
 # Env/cwd: the attempt-decoupled re-verifier sets cwd to the union/integration worktree and does NOT set
 # $GUARDRAILS_WORKSPACE. Resolve robustly: prefer $GUARDRAILS_WORKSPACE, else use cwd.
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-# Every file any task in this plan writes - the union of all 26 writeScopes, deduped, and nothing
-# else. DERIVED MECHANICALLY from the task.json files (61 declarations, 41 distinct paths), never
+# Every file any task in this plan writes - the union of all 30 writeScopes, deduped, and nothing
+# else. DERIVED MECHANICALLY from the task.json files (64 declarations, 44 distinct paths), never
 # by eye: a path no task here writes can never fail (the conditional gates it away) and would misdescribe
 # the plan's surface to the next reader.
 $produced = @(
@@ -90,6 +90,8 @@ $produced = @(
     'tests/Guardrails.Core.Tests/Journal/JudgeSpendRecordingTests.cs',
     'tests/Guardrails.Core.Tests/Loading/ActionReachabilityGateTests.cs',
     'tests/Guardrails.Core.Tests/Loading/OpenAiCompatDiagnosticsTests.cs',
+    'tests/Guardrails.Core.Tests/ModelTiering/OpenAiCompatConfigShapeTests.cs',
+    'tests/Guardrails.Core.Tests/ModelTiering/ProvidersInitAnnotationTests.cs',
     'tests/Guardrails.Core.Tests/Prompts/PromptJsonExtractorTests.cs',
     'tests/Guardrails.Core.Tests/Prompts/PromptRoleSeamTests.cs',
     'tests/Guardrails.Core.Tests/Prompts/PromptToolContainmentTests.cs',
@@ -100,7 +102,8 @@ $produced = @(
     'tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatToolLoopTests.cs',
     'tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatTransportTests.cs',
     'tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatVerdictTests.cs',
-    'tests/Guardrails.Integration.Tests/OpenAiCompat/ProvidersCheckTests.cs'
+    'tests/Guardrails.Integration.Tests/OpenAiCompat/ProvidersCheckTests.cs',
+    'tests/Guardrails.Integration.Tests/RoleSeam/RoleReachesRealRunnerTests.cs'
 )
 
 $failures = @()

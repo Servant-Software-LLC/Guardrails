@@ -1,0 +1,16 @@
+{
+  "description": "Implement the once-per-endpoint reachability and tool-capability preflight and re-baseline the ModelEnumerable pin",
+  "dependsOn": [
+    "22-author-tests-endpoint-preflight"
+  ],
+  "stableId": "y7l2qw",
+  "writeScope": [
+    "src/Guardrails.Cli/PlanPreflightPhase.cs",
+    "src/Guardrails.Core/Model/PromptRunnerConfig.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/ProvidersInitAnnotationTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

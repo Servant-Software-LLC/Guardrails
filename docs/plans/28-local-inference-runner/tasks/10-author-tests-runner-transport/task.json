@@ -1,0 +1,16 @@
+{
+  "description": "Author the runner transport tests against the real loopback server",
+  "dependsOn": [
+    "06-build-fake-openai-server",
+    "09-add-openai-block-config-surface",
+    "02-assign-roles-at-seven-sites"
+  ],
+  "stableId": "n6q9td",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatTransportTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}
