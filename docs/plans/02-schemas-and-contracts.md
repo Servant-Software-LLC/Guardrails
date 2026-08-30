@@ -6407,3 +6407,131 @@ missed. Any exit from the breakdown other than a settled classification (a Ctrl+
 the same sweep-then-decide cleanup: a valid, manifest-backed prefix is kept; anything else is reverted to the
 pre-invocation state. The cleanup must complete with the cancellation token already signalled, so it is never
 token-bound.
+
+---
+
+## 15. Local telemetry corpus (`~/.guardrails/telemetry/`) — design of record `model-evidence-and-graduation.charter.md`, issues #533 / #535
+
+> **Status: LANDED (Phase 0, #535).** The corpus, the ETL from `state/run.json`, the guardrail-failed
+> classifier, the stratified report, the `guardrails telemetry` verb and run-end ingest. Phases 1–3 of the
+> epic (closing the instrumentation gaps, the replay bench, model graduation) remain **open under #533**
+> and are NOT described here — this section documents only what exists.
+
+**What it is.** A durable, **machine-local** record of what each task attempt cost, how long it took,
+which model ran it, and whether the gate passed — accumulated **across runs, plans and repos**, so
+questions of the form *"which model should serve tier X at all?"* become arithmetic rather than
+intuition. Every existing spend surface (`JournalTierSpend`, the run summary) is **per-run** and dies with
+the run; this is the grain above it.
+
+**Nothing is transmitted anywhere.** The corpus is a local file tree, and there is no upload path in this
+design. It records facts and identifiers only: no prompt text, no file contents, no diffs, no absolute
+paths.
+
+### 15.1 Location and layout
+
+The corpus root is `~/.guardrails/telemetry/` — **machine-scoped, never inside a repo.** In-repo would
+conflict on every branch, leak absolute paths, and bind machine-specific timings to shared history. The
+deeper reason is that the ANSWER is machine-local: geography and network quality change how a frontier
+model performs from one machine to the next, while a local model's speed is a property of the silicon in
+front of you, so a corpus pooled across machines would average away exactly the difference it exists to
+measure. **One corpus per machine; the repo is a recorded dimension** (`TelemetryRow.repo`, the workspace
+directory NAME — never its absolute path), never a pooling key.
+
+Rows are **append-only JSONL**, one JSON object per line, in **month-rotated** files so the corpus grows
+by file rather than without bound. Appending never rewrites an existing line.
+
+`GUARDRAILS_TELEMETRY_CORPUS_ROOT` overrides the root. It exists so tests and experiments never write to
+the real corpus; it is not an operator-facing setting.
+
+### 15.2 `TelemetryRow`
+
+Every row carries `schemaVersion` (the corpus outlives any one build, so a row must say which shape it
+is), `runId`, `taskId`, `attempt`, `startedAt`, `endedAt`, `outcome`, `repo`, and the resolved route:
+`model`, `runner`, `kind`, `tier`, `tierSource`, `effort`.
+
+**A `TelemetryRow`'s `costUsd`, `inputTokens` and `outputTokens` are independently nullable, and null
+means "never reported" — which is not the claim zero makes.** A costless local provider reports volume
+and no money; a runner that reports no usage reports money and no volume. Writing `0` where the source
+reported nothing makes the corpus assert that a run cost nothing when in fact nobody measured it, and no
+later reader can tell the two apart. This is the same null-versus-zero distinction `JournalTierSpend`
+already draws, and it is the rule most likely to be "simplified" away by a later implementer.
+
+**The route fields are recorded as VERBATIM STRINGS, never as enums the corpus re-validates.** The corpus
+is an ARCHIVE: its job is to record what the journal said, not to have an opinion about it. A `kind` typed
+as an enum would reject — or worse, silently drop — the first row from a provider registered after this
+code was written, which is precisely the provider the corpus exists to evaluate. `JournalTierSpend` sets
+the same precedent one level up, reporting a rung this build does not recognise rather than discarding it.
+
+### 15.3 Ingest
+
+`guardrails telemetry ingest [plan-folder]` reads a plan's `state/run.json` through `JournalReader` and
+writes rows. Given a directory of plans it ingests each one that has a journal; a folder without one is a
+reported no-op, not an error. **This is the backfill path** — the corpus can be populated from runs
+already on disk, so the record does not begin only when collection is switched on.
+
+**Ingest is idempotent on `(runId, taskId, attempt)`**, derived from the rows already on disk rather than
+from in-process memory, so re-ingesting a plan — or a whole directory of them — is safe by construction
+rather than by the operator remembering what they already ran.
+
+**Two grains.** A **task row** per task per run carries `definitionHash` (the identity that makes the same
+task comparable across runs and machines), the declared tier and its origin, and the terminal outcome. An
+**attempt row** per attempt carries the route, timings, outcome, cost and usage. **Every attempt counts,
+retries included:** folding a task down to its successful attempt under-reports it by exactly the retry
+spend, which is the spend a model comparison most needs to see.
+
+**`run-end telemetry` ingest.** `RunCommand.Finish` ingests the run's own journal, so the corpus fills
+without anyone typing the verb. It sits below the definition-drift early return (that halt ran nothing and
+wrote no logs, so it has nothing to ingest) and above every remaining exit path, so a green run, a
+needs-human run, an aborted run and a halted one all ingest alike — **the failed attempts are precisely
+the evidence a model comparison is made of**, and a corpus of successes only would flatter every model in
+it. It is **best-effort in the strongest sense**: a catch-all guarantees nothing escapes, so it can
+neither change the run's exit code nor suppress the summary. A failure prints one line saying the run left
+no evidence, and the run's verdict is not revisited — the precedent is `WriteDurableFinalSite`, its
+neighbour in the same method.
+
+### 15.4 Classifying `guardrail-failed`
+
+Three different failures are journaled as `AttemptOutcome.GuardrailFailed` and are **indistinguishable in
+`run.json`**: a write-scope violation (`TaskExecutor.cs`), a staging-move failure, and a harness-write
+out-of-scope. Each sets a distinguishing `TaskResult.Summary`, but `AttemptJournaler.FailedAttempt`
+persists only `ActionExitCode`, `Outcome`, `FailedGuardrails`, `CostUsd`, `Usage` and `LogDir` — **the
+summary is dropped**, and `GuardrailFailureFingerprint` never leaves memory. The three differ from a real
+guardrail failure only in that `failedGuardrails` is empty.
+
+So the journal alone cannot classify them. `TelemetryFailureClassifier` reads the attempt's `feedback.md`
+— reachable because `logDir` **is** journaled — and matches the wording
+`RetryPolicy.ForWriteScopeViolation` / `ForHarnessWriteOutOfScope` emit.
+
+**An attempt whose log site no longer exists, or whose feedback wording is not recognised, is recorded
+`undifferentiated` — and is NEVER guessed at.** A non-empty `failedGuardrails` short-circuits the read
+entirely: that is a genuine guardrail failure. The distinction matters because a write-scope violation is
+an instruction-following failure while a failed test is a capability failure, and averaging them produces
+a number about neither. Matching prose is a recovery technique for history, not an architecture:
+everything after a first-class outcome value would be classified at the source instead of reconstructed.
+
+### 15.5 Reporting, and what the report refuses to say
+
+`guardrails telemetry report` renders rows stratified by **(model fingerprint × tier × fingerprint
+bucket)**, every row carrying its sample size `n`.
+
+The constraints are the point, and they are structural rather than conventions a later author may forget:
+
+- **Stratification is mandatory.** Models are not assigned to tasks at random — the resolver assigns by
+  declared tier — so a per-model average compares a weak model's easy work against a strong model's hard
+  work and concludes the weak model is better. Any unstratified per-model figure is misinformation.
+- **Below the minimum sample, a row renders "insufficient evidence" and NO verdict** — an explicit value,
+  not a blank cell.
+- **Attempts-to-green never renders without abandonment rate over the same denominator.** Averaging
+  attempts over successes only flatters exactly the model that gives up.
+- **A costless provider reports time and volume, never a fabricated `$0`** (§15.2).
+- **Two model fingerprints never pool**, even under the same model string.
+
+### 15.6 Opt-out and purge
+
+Collection is **ON by default**. The opt-out is the environment variable `GUARDRAILS_TELEMETRY=off` — any
+other value, or unset, means collection is on. It is checked **inside `TelemetryCorpusStore`**, and the
+verb and run-end ingest both honour it by going through the store rather than re-reading the environment:
+two mechanisms for one decision is how a machine ends up opted out of one path and not the other, which is
+worse than no opt-out because the operator believes collection is off.
+
+`guardrails telemetry purge` removes every row under the corpus root, and is safe on an empty corpus.

@@ -868,6 +868,47 @@ tiering as a working feature.
   lines**. The SSOT section 2 canonical block therefore shows every tiering key `null` on purpose -- it is
   what gets copied.
 
+## Local telemetry corpus (Phase 0 -- SSOT section 15, issues #533 / #535)
+
+The measurement companion to model tiering. Tiering decides which model serves a task; the corpus is
+where the evidence for that decision accumulates. Every other spend surface (`JournalTierSpend`, the run
+summary) is **per-run and dies with the run** -- this is the grain above, spanning runs, plans and repos.
+
+- **Where.** `~/.guardrails/telemetry/`, machine-scoped, **never inside a repo**. Append-only JSONL,
+  month-rotated, `schemaVersion` on every row. One corpus per machine; the repo is a recorded DIMENSION
+  (the workspace directory name), never a pooling key -- geography and network quality change how a
+  frontier model performs from one machine to the next, so pooling across machines averages away the
+  difference the corpus exists to measure.
+- **Nothing leaves the machine.** No prompt text, no file contents, no diffs, no absolute paths. There is
+  no upload path in the design.
+- **How it fills.** `guardrails telemetry ingest [plan-folder]` reads `state/run.json` through
+  `JournalReader` -- this is the BACKFILL path, so runs already on disk can be ingested. It is idempotent
+  on `(runId, taskId, attempt)` derived from the rows on disk, so re-ingesting is safe by construction.
+  **`run-end telemetry` ingest** does it automatically from `RunCommand.Finish`, on EVERY outcome
+  (green, needs-human, halted alike -- failed attempts are precisely the evidence a model comparison is
+  made of), best-effort: it can neither change the exit code nor suppress the summary.
+- **Two grains.** A task row per task per run (keyed on `definitionHash`, the identity that makes the
+  same task comparable across runs) and an attempt row per attempt. Every attempt counts, **retries
+  included** -- folding a task down to its successful attempt under-reports it by exactly the retry spend.
+- **Route fields are VERBATIM STRINGS**, never enums the corpus re-validates. An archive records what the
+  journal said; a `kind` typed as an enum silently drops the first row from a provider added later, which
+  is exactly the provider worth evaluating.
+- **Null is not zero.** `costUsd` / `inputTokens` / `outputTokens` are independently nullable, and null
+  means NEVER REPORTED. Same distinction `JournalTierSpend` draws.
+- **`guardrail-failed` is three different failures** (write-scope violation, staging-move failure,
+  harness-write out-of-scope) that `run.json` cannot tell apart -- the distinguishing `TaskResult.Summary`
+  is not persisted. `TelemetryFailureClassifier` recovers it from the attempt's `feedback.md` (reachable
+  because `logDir` IS journaled); anything it cannot recognise is recorded **`undifferentiated`, never
+  guessed at**.
+- **The report refuses to mislead.** `guardrails telemetry report` stratifies by (model x tier x
+  fingerprint bucket) with `n` on every row; below the minimum sample it renders "insufficient evidence"
+  and no verdict; attempts-to-green never renders without abandonment rate over the same denominator.
+- **Opt-out** is `GUARDRAILS_TELEMETRY=off`, checked inside the store so the verb and run-end ingest
+  cannot disagree. Collection is ON by default. `guardrails telemetry purge` empties the corpus.
+
+Phases 1-3 of the epic (instrumentation gaps, the replay bench, model graduation) are **open under #533**
+-- do not describe them as shipped.
+
 ## Multi-wave plans (nested layout, M2 v1 -- SSOT section 14)
 
 The recursion is **`task ⊂ wave ⊂ plan`**: a **wave** is a first-class completion unit -- a task DAG plus
