@@ -592,6 +592,24 @@ public static class RunCommand
                     return ExitCodes.TaskFailed;
                 }
 
+                // Issue #542: journal the delivery outcome BEFORE rendering the banner, so the durable
+                // record exists even if the console is never read (or never seen at all — #496's unattended
+                // pipeline has no console). Written here, at the end, because delivery only fully resolves
+                // once the terminal gate's verdict is in (the DeliveryPendingTerminalGate path). Best-effort:
+                // a journal write must never flip a run's verdict this late.
+                try
+                {
+                    journal.RecordDelivery(
+                        DescribeDelivery(report, planGuardrailsPassed, probe.Plan.PlanDirectory));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+                {
+                    // The run's outcome stands; the banner below still tells the operator what happened.
+                    // JsonException is in scope because RecordDelivery re-reads the journal from disk before
+                    // writing (so it cannot clobber the run it is describing) — a corrupt journal must not
+                    // turn a finished run into a harness error at the very last step.
+                }
+
                 // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
                 // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                 // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
@@ -1453,6 +1471,79 @@ public static class RunCommand
     /// + unit-tested with a <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same
     /// rationale as <see cref="Hyperlink"/>).
     /// </summary>
+    /// <summary>
+    /// Derive the durable delivery record (SSOT §7 <c>delivery</c>, issue #542) from the finished run — the
+    /// machine-readable, on-disk counterpart of <see cref="RenderUndeliveredWorkWarning"/>'s banner.
+    /// <para>
+    /// <b>Why this exists.</b> The banner is the right OPERATOR surface and it works; it is also
+    /// terminal-only. Once the terminal is closed nothing on disk answered "did this run deliver?", so the
+    /// one outcome that determines whether the work is anywhere was the one outcome the otherwise-complete
+    /// journal did not record. That is not hypothetical: a wholly-green run was read as shipped and two
+    /// issues were closed against a plan branch that had never been merged.
+    /// </para>
+    /// <para>
+    /// Pure, and public + unit-tested for the same reason <see cref="RenderUndeliveredWorkWarning"/> is —
+    /// the Cli assembly ships no <c>InternalsVisibleTo</c>.
+    /// </para>
+    /// </summary>
+    public static DeliverySection DescribeDelivery(
+        RunReport report, bool terminalGatePassed, string planDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+
+        string planBranch = "guardrails/" + Path.GetFileName(
+            planDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        // The merge-back RAN: its own result is the whole story, success or refusal.
+        if (report.MergeOnSuccessOutcome is { } outcome)
+        {
+            bool delivered = outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
+            DeliveryOutcome token = outcome switch
+            {
+                MergeOnSuccessResult.FastForwarded => DeliveryOutcome.FastForwarded,
+                MergeOnSuccessResult.Merged => DeliveryOutcome.Merged,
+                MergeOnSuccessResult.Conflict => DeliveryOutcome.Conflict,
+                MergeOnSuccessResult.DirtyWorkingTree => DeliveryOutcome.DirtyWorkingTree,
+                MergeOnSuccessResult.HookRejected => DeliveryOutcome.HookRejected,
+                _ => DeliveryOutcome.NotAttempted
+            };
+
+            return new DeliverySection
+            {
+                Delivered = delivered,
+                Outcome = token,
+                Reason = delivered
+                    ? null
+                    : $"the end-of-run merge to your branch was refused ({JournalJson.DeliveryOutcomeToken(token)}); "
+                      + $"the verified work is on '{planBranch}'",
+                PlanBranch = delivered ? null : planBranch,
+                DeliveredToBranch = report.DeliveredToBranch,
+                Detail = report.MergeOnSuccessDetail,
+            };
+        }
+
+        // The merge-back never ran. WHY is the part a later reader cannot reconstruct, and the ordering here
+        // matters: the undelivered flag is the case that strands work, so it is reported ahead of the
+        // reasons that merely mean there was nothing to deliver.
+        string reason = report.WhollyGreenButUndelivered
+            ? $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
+              + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
+            : !terminalGatePassed
+                ? "the terminal gate did not pass, so delivery was never attempted and the work stayed on the plan branch"
+                : !report.AllSucceeded
+                    ? "the run was not wholly green, so delivery was never attempted"
+                    : "no separate plan branch was in play (serial mode), so there was nothing pending delivery — "
+                      + "the work is already in your checkout";
+
+        return new DeliverySection
+        {
+            Delivered = false,
+            Outcome = DeliveryOutcome.NotAttempted,
+            Reason = reason,
+            PlanBranch = report.WhollyGreenButUndelivered ? planBranch : null,
+        };
+    }
+
     public static void RenderUndeliveredWorkWarning(
         RunReport report, bool terminalGatePassed, string planDirectory, TextWriter output)
     {

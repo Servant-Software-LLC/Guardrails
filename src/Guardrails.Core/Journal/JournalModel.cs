@@ -92,6 +92,28 @@ public sealed record JournalDocument
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RunHalt? Halt { get; init; }
 
+    /// <summary>
+    /// OPTIONAL record of the end-of-run DELIVERY decision and its outcome (SSOT §7, issue #542) — whether
+    /// this run's verified work reached the user's branch, and if not, why not.
+    /// <para>
+    /// <b>The gap this closes.</b> Everything else about a run is durable here — every task, attempt, cost,
+    /// gate and decision — but the one outcome that determines whether the work is ANYWHERE was recorded
+    /// only on the operator's terminal, in the <c>*** WORK NOT DELIVERED ***</c> banner (#340). Close the
+    /// terminal and nothing on disk answered "did this run deliver?"; the only remaining signal was noticing
+    /// later that a plan branch was unmerged. That bit me exactly as described: a wholly-green run was read
+    /// as shipped, and two issues were closed against a branch that had never been merged.
+    /// </para>
+    /// <para>
+    /// This does NOT replace the banner, which is the right operator surface and is working. It makes the
+    /// same fact machine-readable and durable — for post-mortem, and for #496's unattended pipeline, which
+    /// has no console for a banner to print to.
+    /// </para>
+    /// Additive and backward-compatible on the same terms as <see cref="PlanPreflights"/>: absent (never
+    /// <c>null</c> noise) on a run that ended before delivery was ever considered.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeliverySection? Delivery { get; init; }
+
     // NOTE (issue #419): the Windows short-junction root is NO LONGER journaled. It was the field that made
     // the junction durable RUN STATE (forcing a resume onto the same .a..z letter and a sweep as the only
     // reclaim), which is the leak #407/#419 chased. The junction is now a process-scoped cwd alias
@@ -99,6 +121,92 @@ public sealed record JournalDocument
     // re-derived by the deterministic segment subpath on resume. An OLD run.json that still carries a
     // "worktreeJunctionRoot" key deserializes clean under this model (JournalJson has no
     // JsonUnmappedMemberHandling.Disallow → the unknown member is skipped) and is simply ignored.
+}
+
+/// <summary>
+/// The end-of-run DELIVERY record (SSOT §7 <c>delivery</c>, issue #542): did this run's verified work reach
+/// the user's branch, and if not, why not.
+/// <para>
+/// <see cref="Delivered"/> is the one field a consumer needs, and it is deliberately a plain boolean rather
+/// than something derived from <see cref="Outcome"/> — "did the work ship?" must be answerable without a
+/// reader knowing which outcome tokens count as success. The rest is the detail an operator or a
+/// post-mortem needs to act.
+/// </para>
+/// </summary>
+public sealed record DeliverySection
+{
+    /// <summary>
+    /// True IFF this run's work reached the user's branch (a fast-forward or a merge commit). False for
+    /// every other case — delivery off, a refused merge, a failed terminal gate, a non-green run.
+    /// </summary>
+    public required bool Delivered { get; init; }
+
+    /// <summary>
+    /// The SSOT §7 token for what happened: <c>fast-forwarded</c> | <c>merged</c> | <c>conflict</c> |
+    /// <c>dirty-working-tree</c> | <c>hook-rejected</c> when the merge-back actually ran, or
+    /// <c>not-attempted</c> when it never did.
+    /// </summary>
+    public required DeliveryOutcome Outcome { get; init; }
+
+    /// <summary>
+    /// Why delivery did not happen, in words, when <see cref="Delivered"/> is false — the durable form of
+    /// what the console banner says. Null on a delivered run. This is the field that answers the question
+    /// the banner answered only in scrollback.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+
+    /// <summary>
+    /// The branch the verified work is sitting on when it was NOT delivered (e.g.
+    /// <c>guardrails/27-operator-visibility</c>) — the thing a later reader has to merge by hand, and the
+    /// thing a <c>--fresh</c> would destroy. Null when there is no separate plan branch (serial mode) or
+    /// when the work was delivered.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PlanBranch { get; init; }
+
+    /// <summary>
+    /// The user's branch the work was delivered TO, when it was (mirrors
+    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null otherwise.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeliveredToBranch { get; init; }
+
+    /// <summary>
+    /// Free-text detail carried by a refusing outcome (mirrors
+    /// <see cref="Execution.RunReport.MergeOnSuccessDetail"/>): a hook's stderr for
+    /// <see cref="DeliveryOutcome.HookRejected"/>, or the blocking tracked paths for
+    /// <see cref="DeliveryOutcome.DirtyWorkingTree"/>. Null when the outcome carries none.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; init; }
+}
+
+/// <summary>
+/// What the end-of-run delivery did (SSOT §7 <c>delivery.outcome</c>, issue #542). Mirrors
+/// <see cref="Execution.MergeOnSuccessResult"/> and adds the case that enum cannot express — the merge-back
+/// never ran at all, which is by far the most common reason work is undelivered and was previously
+/// represented only by a null nobody journaled.
+/// </summary>
+public enum DeliveryOutcome
+{
+    /// <summary>The merge-back never ran (delivery off, a failed terminal gate, or a non-green run).</summary>
+    NotAttempted,
+
+    /// <summary>The user's branch was fast-forwarded to the plan branch tip.</summary>
+    FastForwarded,
+
+    /// <summary>A merge commit combined the plan branch into the user's branch.</summary>
+    Merged,
+
+    /// <summary>The merge conflicted; the user's branch was not modified.</summary>
+    Conflict,
+
+    /// <summary>Uncommitted changes to tracked files the merge would update refused it (issue #448).</summary>
+    DirtyWorkingTree,
+
+    /// <summary>One of the user's git hooks rejected the merge commit (issues #149/#150).</summary>
+    HookRejected
 }
 
 /// <summary>

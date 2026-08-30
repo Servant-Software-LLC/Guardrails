@@ -501,6 +501,21 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (naming the branch + the destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a
   safety notice, not a failure. The warning and the delivered-by-default notice never fire together (one
   needs delivery off, the other needs it to have run).
+  **Durable delivery record (#542):** the banner above is the right OPERATOR surface and it works — it is
+  also **terminal-only**. Everything else about a run was durable in `run.json` (tasks, attempts, cost,
+  gates, decisions) EXCEPT the one outcome that says whether the work is anywhere, so once the terminal was
+  closed the only signal left was noticing later that a plan branch was unmerged. That is not hypothetical:
+  a wholly-green run launched with `--no-merge-on-success` was read as shipped and two issues were closed
+  against a branch that had never been merged. `run.json` now carries a top-level `delivery` section (SSOT
+  section 7) — `delivered` (a plain boolean, deliberately not derived from `outcome`), `outcome`
+  (`not-attempted` | `fast-forwarded` | `merged` | `conflict` | `dirty-working-tree` | `hook-rejected`),
+  plus `reason`/`planBranch`/`deliveredToBranch`/`detail`. The **four** not-attempted reasons are kept
+  DISTINGUISHABLE (delivery off / terminal gate failed / not wholly green / serial mode), and `planBranch`
+  is written **only** for the case that actually strands work — naming a branch in serial mode would send
+  an operator after something that does not exist. Derived by the pure `RunCommand.DescribeDelivery` and
+  written once at run end, after delivery has fully resolved (the deferred-past-the-terminal-gate path
+  included); best-effort, so a failed journal write never changes a verdict. **When asked whether a run
+  shipped, read this — or `git branch --no-merged` — never a green summary.**
 - **Hook policy at the two commit boundaries (#149)** — internal vs user-facing commits are treated
   oppositely:
   - **Internal bookkeeping commits bypass user hooks.** The segment integration commit (`Integrate`,

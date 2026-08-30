@@ -63,6 +63,22 @@ public static class JournalJson
     };
 
     /// <summary>
+    /// The SSOT §7 token for a <see cref="DeliveryOutcome"/> (e.g. <c>fast-forwarded</c>,
+    /// <c>not-attempted</c>) — the single source of truth for the kebab spelling of
+    /// <c>delivery.outcome</c> (issue #542), reused by the JSON converter and by any run-report labelling.
+    /// </summary>
+    public static string DeliveryOutcomeToken(DeliveryOutcome outcome) => outcome switch
+    {
+        DeliveryOutcome.NotAttempted => "not-attempted",
+        DeliveryOutcome.FastForwarded => "fast-forwarded",
+        DeliveryOutcome.Merged => "merged",
+        DeliveryOutcome.Conflict => "conflict",
+        DeliveryOutcome.DirtyWorkingTree => "dirty-working-tree",
+        DeliveryOutcome.HookRejected => "hook-rejected",
+        _ => throw new JsonException($"Unhandled delivery outcome '{outcome}'.")
+    };
+
+    /// <summary>
     /// The SSOT §7 / DoR §12.4 token for a <see cref="Journal.TierSource"/> (<c>task</c> |
     /// <c>plan-default</c> | <c>override</c>) — the single source of truth for the kebab spelling of
     /// <c>provenance.tierSource</c>, reused by the JSON converter and by any run-report labelling
@@ -99,6 +115,7 @@ public static class JournalJson
         options.Converters.Add(new WaveStatusConverter());
         options.Converters.Add(new RunHaltKindConverter());
         options.Converters.Add(new TierSourceConverter());
+        options.Converters.Add(new DeliveryOutcomeConverter());
         return options;
     }
 
@@ -145,6 +162,28 @@ public static class JournalJson
 
         public override void Write(Utf8JsonWriter writer, RunHaltKind value, JsonSerializerOptions options) =>
             writer.WriteStringValue(RunHaltToken(value));
+    }
+
+    /// <summary>Maps <see cref="DeliveryOutcome"/> to/from the SSOT §7 <c>delivery.outcome</c> strings (issue #542).</summary>
+    private sealed class DeliveryOutcomeConverter : JsonConverter<DeliveryOutcome>
+    {
+        public override DeliveryOutcome Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "not-attempted" => DeliveryOutcome.NotAttempted,
+                "fast-forwarded" => DeliveryOutcome.FastForwarded,
+                "merged" => DeliveryOutcome.Merged,
+                "conflict" => DeliveryOutcome.Conflict,
+                "dirty-working-tree" => DeliveryOutcome.DirtyWorkingTree,
+                "hook-rejected" => DeliveryOutcome.HookRejected,
+                _ => throw new JsonException($"Unknown delivery outcome '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, DeliveryOutcome value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(DeliveryOutcomeToken(value));
     }
 
     /// <summary>Maps <see cref="WaveStatus"/> to/from the SSOT §7/§14 wave status strings.</summary>

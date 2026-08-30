@@ -2197,9 +2197,41 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
   // (#269), (2) the AI-merge worker at each union (#314), and (3) the terminal needs-human triage (#314).
   // Folded into the run's cumulative cost, so it BOTH counts toward the maxCostUsd gate AND appears in the
   // reported total. Absent (not null noise) until the first overhead spend.
-  "overheadCostUsd": 0.0123
+  "overheadCostUsd": 0.0123,
+
+  // OPTIONAL end-of-run DELIVERY record (issue #542): did this run's verified work reach the user's branch,
+  // and if not, why not. Everything ELSE about a run was already durable here — every task, attempt, cost,
+  // gate and decision — but the one outcome that determines whether the work is ANYWHERE lived only in the
+  // #340 console banner, so once the terminal closed nothing on disk answered "did this run deliver?". The
+  // banner is NOT replaced (it is the right operator surface and it works); this is its machine-readable,
+  // durable counterpart, for post-mortem and for the unattended pipeline (#496), which has no console.
+  // Absent (not null noise) on a run that ended before delivery was ever considered.
+  "delivery": {
+    "delivered": false,               // the one field a consumer needs; deliberately NOT derived from
+                                      // `outcome`, so "did the work ship?" is answerable without knowing
+                                      // which outcome tokens count as success
+    "outcome": "not-attempted",       // not-attempted | fast-forwarded | merged | conflict |
+                                      // dirty-working-tree | hook-rejected
+    "reason": "mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
+    "planBranch": "guardrails/27-operator-visibility"  // the branch to merge by hand; absent when delivered,
+                                      // and absent in serial mode where nothing is stranded
+    // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
+    // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, or the blocking paths
+  }
 }
 ```
+
+**`delivery` — the four reasons nothing was attempted are DISTINGUISHABLE, and that is the point (#542).**
+`outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in three of the
+four cases, holds nothing they need — and in the fourth holds everything. So `reason` separates: (a)
+`mergeOnSuccess` resolved off on a wholly-green run — the case that **strands work**, and the only one that
+sets `planBranch`; (b) the terminal gate did not pass; (c) the run was not wholly green; (d) serial mode,
+where there is no separate plan branch and the work is already in the checkout. `planBranch` is written
+**only** for (a): naming a branch in the serial case would send an operator to merge something that does not
+exist, which is worse than the silence this closed. Written once at the end of the run, after delivery has
+fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
+(`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
+delivered. Best-effort: a failed journal write never changes the run's verdict.
 
 **Removed field — `worktreeJunctionRoot` (issue #419).** Earlier revisions journaled the Windows
 short-junction root here (it was the field that made the junction durable RUN STATE — forcing a resume onto

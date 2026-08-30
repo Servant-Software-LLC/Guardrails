@@ -478,6 +478,42 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record whether this run's verified work reached the user's branch, and if not, why not (SSOT §7,
+    /// issue #542). Called once at the end of a run, after the delivery decision has fully resolved —
+    /// including the deferred path, where delivery waits on the terminal gate's verdict
+    /// (<see cref="Execution.RunReport.DeliveryPendingTerminalGate"/>), so an early write would record
+    /// "not delivered" for a run that then delivered.
+    /// <para>
+    /// Overwrites any previous record for the same reason <see cref="RecordHalt"/> does: a run delivers
+    /// once, and a resume that gets further is the authority on what finally happened.
+    /// </para>
+    /// </summary>
+    public void RecordDelivery(DeliverySection delivery)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+
+        lock (_gate)
+        {
+            // RE-READ FROM DISK FIRST — this method is unlike every other Record* on this type, and getting
+            // it wrong is destructive rather than merely wrong.
+            //
+            // The others are called DURING the run by the component that owns this instance, so its
+            // in-memory document is current. The delivery is recorded by the CLI at the very END, from an
+            // instance created BEFORE the run started (RunCommand's `journal`), while tasks are settled
+            // through the Scheduler's own journal. This instance's document is therefore stale — still all
+            // `pending` — and a plain `_document with { … }` + Persist() serializes that stale document over
+            // the real one, silently reverting every task, attempt and gate result on disk.
+            //
+            // That is not hypothetical: it reverted 26 integration tests to `Pending` on the first cut of
+            // this method. Re-reading makes the write additive: take what is actually on disk, add the one
+            // field, put it back.
+            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+            _document = current with { Delivery = delivery };
+            Persist();
+        }
+    }
+
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 
     /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>
