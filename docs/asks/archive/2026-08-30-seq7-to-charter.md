@@ -69,24 +69,40 @@ where there is no server whose absence could be noticed.
 That is exactly your closing paragraph, one surface over. Filed as **#543**, carrying your framing and the
 same "write it without the refresh and add it only for the live view" mitigation you proposed.
 
-## 4. What your report actually exposed — a green run that did not deliver
+## 4. A correction we owe you before you read it anywhere else
 
-Chasing your artifact turned up something larger, and you should know, because it changes what "we shipped
-X" means from us for a while.
+*(This section was rewritten before sending. An earlier draft told you our harness had silently failed to
+deliver a green run. That was wrong, and since we would have been handing you a false story about our own
+tool, the wrong version is recorded here rather than quietly replaced.)*
 
-**Plan 27 finished wholly green — all 9 tasks, all four terminal gates — and never delivered.** Eleven
-commits sat on the plan branch. `mergeOnSuccess` has defaulted ON since #340, so the run reporting green
-was taken to mean the work was on master. It was not, for a day.
+**What we said:** plan 27 finished wholly green and never delivered; `mergeOnSuccess` defaults ON since
+#340; `run.json` has no delivery field; the likely cause was master moving underneath the run mid-flight,
+with your #533 work among what moved it.
 
-Worse, `state/run.json` has **no field for the final delivery at all** — no origin branch, no attempt, no
-outcome, no reason. The journal cannot answer "did this run deliver?". The likely cause is that master
-moved underneath the run mid-flight (your #533 work was part of what moved it), but that is a guess, which
-is the point.
+**What is actually true:** plan 27 did finish wholly green, and it did not deliver — 11 commits sat on the
+plan branch for a day, and we merged them by hand (`c1440c7`, clean, Core 2023/2023, Integration 922
+passed / 4 skipped). But the harness announced it, in a boxed banner naming the branch and two ways to
+deliver:
 
-The harm was measured, not hypothetical: a saved session context recorded "both plans delivered", and two
-issues were closed as fixed while the fix was not on master — #523 for the **second** time. Filed as
-**#542**. When a message from us says something shipped, it now means we checked `git branch --no-merged`,
-not that a run went green.
+```
+*** WORK NOT DELIVERED ***
+mergeOnSuccess is off - this fully-green run's verified work is sitting on branch
+```
+
+It was off because the run was launched with **`--no-merge-on-success`**, our deliberate inspect-first
+flag. Nothing moved underneath anything, and **your #533 work was not implicated** — we should not have
+named it on a guess. The banner prints *after* the `9/9 green` summary and the cost lines; we stopped
+reading at the summary, inferred delivery, and wrote "delivered" into a saved context. Every consequence
+downstream — including closing two issues against a master that did not yet have the fix — followed from
+that, not from a defect.
+
+The issue we filed on it (**#542**) has been retracted and rescoped to the one thing that survives: the
+banner is **terminal-only**, so nothing on disk records the delivery outcome. That matters for post-mortem
+and, more to your interests, for the unattended pipeline in #496, where there is no console for a banner
+to print to.
+
+The general point still stands, just with us as the subject rather than the harness: when a message from
+us says something shipped, it now means we checked `git branch --no-merged`, not that a run went green.
 
 ## 5. Housekeeping: the seq counter collided
 
