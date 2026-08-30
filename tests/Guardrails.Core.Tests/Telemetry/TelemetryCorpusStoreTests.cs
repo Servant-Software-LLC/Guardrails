@@ -183,6 +183,63 @@ public sealed class TelemetryCorpusStoreTests : IDisposable
 
     // --- fixtures --------------------------------------------------------------------------------
 
+    // --- 7. provider-token forward compatibility (#546) --------------------------------------------
+
+    /// <summary>
+    /// A row carrying a <c>kind</c> / <c>model</c> / <c>tier</c> / <c>tierSource</c> / <c>runner</c> this
+    /// build has never heard of round-trips **verbatim** — the corpus records what the journal said and
+    /// has no opinion about it (#546).
+    ///
+    /// <para><b>Why this test exists when the code is already correct.</b> `TelemetryRow` types all five
+    /// as <c>string?</c> today, so this passes on arrival. It is a REGRESSION PIN, in the same class as a
+    /// <c>tests-untouched</c> check: it exists to stop someone later "tidying" <c>Kind</c> into a
+    /// <c>PromptRunnerKind</c>, which reads like an improvement and is the exact defect. Nothing else in
+    /// the suite would notice — every other row in every other test uses recognized tokens.</para>
+    ///
+    /// <para><b>What it protects.</b> The corpus is an ARCHIVE. A <c>kind</c> typed as an enum rejects —
+    /// or worse, silently drops — the first row from a provider registered after this code was written,
+    /// and that is precisely the provider the corpus exists to evaluate: <c>openai-compat</c> arrives with
+    /// #223, and local inference is the whole reason for the #533 arc. A corpus that quietly discarded the
+    /// early local-inference rows is not detectably wrong later; it just has a gap where the interesting
+    /// evidence should have been. <c>JournalTierSpend</c> set this precedent one level up — it reports a
+    /// rung this build does not recognize rather than discarding it.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ModelEvidence")]
+    public void Row_UnrecognizedKind_RoundTripsVerbatim()
+    {
+        var store = new TelemetryCorpusStore(corpusRoot);
+
+        // Deliberately not one of today's tokens: a kind, a runner block, a model id and a rung that no
+        // enum in this build defines. A re-validating implementation drops or rejects every one of them.
+        store.Append(Row() with
+        {
+            Kind = "openai-compat",
+            Runner = "local-qwen",
+            Model = "qwen3-coder:30b",
+            Tier = "featherweight",
+            TierSource = "some-future-site"
+        });
+
+        string line = Assert.Single(AllLines(corpusRoot));
+        using JsonDocument doc = JsonDocument.Parse(line);
+        JsonElement row = doc.RootElement;
+
+        Assert.Equal("openai-compat", row.GetProperty("kind").GetString());
+        Assert.Equal("local-qwen", row.GetProperty("runner").GetString());
+        Assert.Equal("qwen3-coder:30b", row.GetProperty("model").GetString());
+        Assert.Equal("featherweight", row.GetProperty("tier").GetString());
+        Assert.Equal("some-future-site", row.GetProperty("tierSource").GetString());
+
+        // Each must be a JSON STRING, not a number an enum was coerced into - a serializer configured with
+        // an enum converter would round-trip the VALUE while changing the TYPE, and a later reader parsing
+        // the corpus as strings would then silently see nothing.
+        foreach (string field in new[] { "kind", "runner", "model", "tier", "tierSource" })
+        {
+            Assert.Equal(JsonValueKind.String, row.GetProperty(field).ValueKind);
+        }
+    }
+
     private static TelemetryRow Row(
         string runId = "run-1",
         string taskId = "01-task",
