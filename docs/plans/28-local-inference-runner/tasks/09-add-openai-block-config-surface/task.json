@@ -5,6 +5,7 @@
   "writeScope": [
     "src/Guardrails.Core/Model/PromptRunnerConfig.cs",
     "src/Guardrails.Core/Loading/RawManifests.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs",
     "src/Guardrails.Core/Prompts/PromptFailureKind.cs",
     "src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs",
     "tests/Guardrails.Core.Tests/ModelTiering/OpenAiCompatConfigShapeTests.cs"

@@ -8,7 +8,8 @@
   "writeScope": [
     "src/Guardrails.Core/Prompts/PromptJsonExtractor.cs",
     "src/Guardrails.Core/Execution/OverwatchProposal.cs",
-    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs"
+    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs",
+    "tests/Guardrails.Core.Tests/OverwatchProposalFenceTests.cs"
   ],
   "action": {
     "tier": "medium"

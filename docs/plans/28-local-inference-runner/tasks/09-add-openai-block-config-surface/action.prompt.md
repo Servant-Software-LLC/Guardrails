@@ -69,7 +69,16 @@ be red against (the plan-breakdown collapse rule, reason stated).
 
 **Do NOT implement any runner behaviour** - that is tasks 11-15.
 
-**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Model/PromptRunnerConfig.cs`, `src/Guardrails.Core/Loading/RawManifests.cs`, `src/Guardrails.Core/Prompts/PromptFailureKind.cs`, `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs`, `tests/Guardrails.Core.Tests/ModelTiering/OpenAiCompatConfigShapeTests.cs`. After this task completes, the
+**Binding the five keys is part of THIS task (added after the first run halted here).** Declaring the
+properties on `PromptRunnerConfig` and `RawManifests` is only half the job: the ONLY code that maps a
+deserialized `RawPromptRunner` onto a `PromptRunnerConfig` is `PlanLoader.BuildRunnerConfig`
+(`src/Guardrails.Core/Loading/PlanLoader.cs`), and it binds every field by an explicit named-property
+assignment - there is no reflection and no extension point. Without five one-line assignments there, the
+keys deserialize and then read back null forever, which is exactly what guardrail
+`02-config-shape-tests-pass` exists to catch. `PlanLoader.cs` is in your writeScope for that and nothing
+else: touch `BuildRunnerConfig` only, and leave the frontmatter reader alone (that is task 21's).
+
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Model/PromptRunnerConfig.cs`, `src/Guardrails.Core/Loading/RawManifests.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs`, `src/Guardrails.Core/Prompts/PromptFailureKind.cs`, `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs`, `tests/Guardrails.Core.Tests/ModelTiering/OpenAiCompatConfigShapeTests.cs`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to
 other production files, neighbouring test files, or the `.csproj`. An out-of-scope edit fails the
 task immediately and consumes a retry. If you hit a compile error caused by a missing symbol in
