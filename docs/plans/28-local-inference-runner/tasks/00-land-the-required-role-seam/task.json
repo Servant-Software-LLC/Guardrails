@@ -1,0 +1,27 @@
+{
+  "description": "Land the required PromptRole seam: add the enum and the required Role property, then set Role = PromptRole.Action at EVERY construction site in src and tests so the solution compiles",
+  "dependsOn": [],
+  "stableId": "b7q2ef",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/PromptInvocation.cs",
+    "src/Guardrails.Core/Prompts/PromptRole.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/WaveBreakdownInvoker.cs",
+    "src/Guardrails.Core/Execution/AiMergeResolver.cs",
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/NeedsHumanTriage.cs",
+    "src/Guardrails.Core/Execution/CriticalityJudge.cs",
+    "tests/Guardrails.Core.Tests/ClaudePromptRunnerArgsTests.cs",
+    "tests/Guardrails.Core.Tests/ClaudePromptRunnerStreamLogTests.cs",
+    "tests/Guardrails.Core.Tests/PromptDenialFailFastTests.cs",
+    "tests/Guardrails.Core.Tests/ToolGrantInjectionTests.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/AttemptUsageTokensTests.cs",
+    "tests/Guardrails.Core.Tests/ModelTiering/ObservedModelCaptureTests.cs",
+    "tests/Guardrails.Integration.Tests/FakeClaudeRunTests.cs",
+    "tests/Guardrails.Integration.Tests/RetrySalvageTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

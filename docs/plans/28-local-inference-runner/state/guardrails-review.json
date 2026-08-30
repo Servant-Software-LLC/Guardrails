@@ -1,13 +1,9 @@
 {
   "version": 2,
-  "reviewedAt": "2026-08-30T12:41:21.9274239+00:00",
-  "planHash": "sha256:52821b69095d2dbeac3637684327c9140452487a9b12cf4b3e18a480303b8129",
+  "reviewedAt": "2026-08-30T18:19:55.5274161+00:00",
+  "planHash": "sha256:aaf983e7c38c89e62c02918f4bccd297d0dc92c6ac66c234008025e8f465af5a",
   "attestation": {
-    "source": "review-artifact",
-    "tool": "guardrails 1.11.0",
-    "evidence": {
-      "reportPath": "state\\reviews\\review-52821b69095d-2026-08-30T113000Z.md",
-      "reportDigest": "sha256:731ffa728e2b2c653a09f21563da8baf01b476b879e2a92416e9b7f34ba6e126"
-    }
+    "source": "bare",
+    "tool": "guardrails 1.11.0"
   }
 }

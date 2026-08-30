@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=db8b3073dc165a6a21d7bdf0c75a3cb45fd162c6b391da437f25489dd9197ce3 -->
+<!-- guardrails:graph v1 source-sha256=ba8361a9d863a30c3c882cd0154bbf8464864355b78c51bd04b72bbc215aae44 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -96,6 +96,13 @@
     plan_preflights_1["02-baseline-integration-tests-green"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph task_00_land_the_required_role_seam["00-land-the-required-role-seam"]
+    task_00_land_the_required_role_seam_gr_0["01-build-passes"]:::guardrail
+    task_00_land_the_required_role_seam_gr_1["02-role-is-required-not-defaulted"]:::guardrail
+    task_00_land_the_required_role_seam_gr_2["03-every-fixture-still-sets-role"]:::guardrail
+    task_00_land_the_required_role_seam_gr_3["04-src-sites-are-the-uniform-action-stub"]:::guardrail
+  end
+  style task_00_land_the_required_role_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_01_author_tests_role_seam["01-author-tests-role-seam"]
     task_01_author_tests_role_seam_gr_0["01-build-passes"]:::guardrail
     task_01_author_tests_role_seam_gr_1["02-seven-sites-fail-on-stubs"]:::guardrail
@@ -259,11 +266,12 @@
     plan_guardrails_3["04-union-artifacts-sound"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  plan_preflights --> task_01_author_tests_role_seam
+  plan_preflights --> task_00_land_the_required_role_seam
   plan_preflights --> task_04_author_tests_json_extractor
   plan_preflights --> task_06_build_fake_openai_server
   plan_preflights --> task_07_author_tests_tool_containment
   plan_preflights --> task_09_add_openai_block_config_surface
+  task_00_land_the_required_role_seam --> task_01_author_tests_role_seam
   task_01_author_tests_role_seam --> task_02_assign_roles_at_seven_sites
   task_02_assign_roles_at_seven_sites --> task_03_prove_role_reaches_real_runner
   task_02_assign_roles_at_seven_sites --> task_05_implement_shared_json_extractor
@@ -306,6 +314,10 @@
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click plan_preflights_0 href "preflights/01-baseline-core-tests-green.ps1" "01-baseline-core-tests-green" _blank
   click plan_preflights_1 href "preflights/02-baseline-integration-tests-green.ps1" "02-baseline-integration-tests-green" _blank
+  click task_00_land_the_required_role_seam_gr_0 href "tasks/00-land-the-required-role-seam/guardrails/01-build-passes.ps1" "01-build-passes" _blank
+  click task_00_land_the_required_role_seam_gr_1 href "tasks/00-land-the-required-role-seam/guardrails/02-role-is-required-not-defaulted.ps1" "02-role-is-required-not-defaulted" _blank
+  click task_00_land_the_required_role_seam_gr_2 href "tasks/00-land-the-required-role-seam/guardrails/03-every-fixture-still-sets-role.ps1" "03-every-fixture-still-sets-role" _blank
+  click task_00_land_the_required_role_seam_gr_3 href "tasks/00-land-the-required-role-seam/guardrails/04-src-sites-are-the-uniform-action-stub.ps1" "04-src-sites-are-the-uniform-action-stub" _blank
   click task_01_author_tests_role_seam_gr_0 href "tasks/01-author-tests-role-seam/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_01_author_tests_role_seam_gr_1 href "tasks/01-author-tests-role-seam/guardrails/02-seven-sites-fail-on-stubs.ps1" "02-seven-sites-fail-on-stubs" _blank
   click task_02_assign_roles_at_seven_sites_gr_0 href "tasks/02-assign-roles-at-seven-sites/guardrails/01-build-passes.ps1" "01-build-passes" _blank
@@ -376,7 +388,7 @@
   click plan_guardrails_1 href "guardrails/02-core-suite-passes.ps1" "02-core-suite-passes" _blank
   click plan_guardrails_2 href "guardrails/03-integration-suite-passes.ps1" "03-integration-suite-passes" _blank
   click plan_guardrails_3 href "guardrails/04-union-artifacts-sound.ps1" "Union invariant: every file this plan produces is, IF present, non-empty and conflict-marker-free" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_01_author_tests_role_seam":"tasks/01-author-tests-role-seam/","task_02_assign_roles_at_seven_sites":"tasks/02-assign-roles-at-seven-sites/","task_03_prove_role_reaches_real_runner":"tasks/03-prove-role-reaches-real-runner/","task_04_author_tests_json_extractor":"tasks/04-author-tests-json-extractor/","task_05_implement_shared_json_extractor":"tasks/05-implement-shared-json-extractor/","task_06_build_fake_openai_server":"tasks/06-build-fake-openai-server/","task_07_author_tests_tool_containment":"tasks/07-author-tests-tool-containment/","task_08_implement_tool_containment":"tasks/08-implement-tool-containment/","task_09_add_openai_block_config_surface":"tasks/09-add-openai-block-config-surface/","task_10_author_tests_runner_transport":"tasks/10-author-tests-runner-transport/","task_11_implement_runner_transport":"tasks/11-implement-runner-transport/","task_12_author_tests_runner_tool_loop":"tasks/12-author-tests-runner-tool-loop/","task_13_implement_runner_tool_loop":"tasks/13-implement-runner-tool-loop/","task_14_author_tests_runner_verdict":"tasks/14-author-tests-runner-verdict/","task_15_implement_runner_verdict_roles":"tasks/15-implement-runner-verdict-roles/","task_16_author_tests_kind_aware_harness":"tasks/16-author-tests-kind-aware-harness/","task_17_implement_kind_aware_harness":"tasks/17-implement-kind-aware-harness/","task_18_author_tests_block_diagnostics":"tasks/18-author-tests-block-diagnostics/","task_19_implement_block_diagnostics":"tasks/19-implement-block-diagnostics/","task_20_author_tests_reachability_gate":"tasks/20-author-tests-reachability-gate/","task_21_implement_reachability_gate":"tasks/21-implement-reachability-gate/","task_22_author_tests_endpoint_preflight":"tasks/22-author-tests-endpoint-preflight/","task_23_implement_endpoint_preflight":"tasks/23-implement-endpoint-preflight/","task_24_author_tests_providers_check":"tasks/24-author-tests-providers-check/","task_25_implement_providers_check":"tasks/25-implement-providers-check/","task_26_author_tests_judge_spend":"tasks/26-author-tests-judge-spend/","task_27_implement_judge_spend":"tasks/27-implement-judge-spend/","task_28_record_openai_compat_in_ssot":"tasks/28-record-openai-compat-in-ssot/","task_29_mirror_canonical_block_in_schemas":"tasks/29-mirror-canonical-block-in-schemas/","task_30_record_in_domain_knowledge":"tasks/30-record-in-domain-knowledge/"}</script>
+<script type="application/json" id="task-folder-targets">{"task_00_land_the_required_role_seam":"tasks/00-land-the-required-role-seam/","task_01_author_tests_role_seam":"tasks/01-author-tests-role-seam/","task_02_assign_roles_at_seven_sites":"tasks/02-assign-roles-at-seven-sites/","task_03_prove_role_reaches_real_runner":"tasks/03-prove-role-reaches-real-runner/","task_04_author_tests_json_extractor":"tasks/04-author-tests-json-extractor/","task_05_implement_shared_json_extractor":"tasks/05-implement-shared-json-extractor/","task_06_build_fake_openai_server":"tasks/06-build-fake-openai-server/","task_07_author_tests_tool_containment":"tasks/07-author-tests-tool-containment/","task_08_implement_tool_containment":"tasks/08-implement-tool-containment/","task_09_add_openai_block_config_surface":"tasks/09-add-openai-block-config-surface/","task_10_author_tests_runner_transport":"tasks/10-author-tests-runner-transport/","task_11_implement_runner_transport":"tasks/11-implement-runner-transport/","task_12_author_tests_runner_tool_loop":"tasks/12-author-tests-runner-tool-loop/","task_13_implement_runner_tool_loop":"tasks/13-implement-runner-tool-loop/","task_14_author_tests_runner_verdict":"tasks/14-author-tests-runner-verdict/","task_15_implement_runner_verdict_roles":"tasks/15-implement-runner-verdict-roles/","task_16_author_tests_kind_aware_harness":"tasks/16-author-tests-kind-aware-harness/","task_17_implement_kind_aware_harness":"tasks/17-implement-kind-aware-harness/","task_18_author_tests_block_diagnostics":"tasks/18-author-tests-block-diagnostics/","task_19_implement_block_diagnostics":"tasks/19-implement-block-diagnostics/","task_20_author_tests_reachability_gate":"tasks/20-author-tests-reachability-gate/","task_21_implement_reachability_gate":"tasks/21-implement-reachability-gate/","task_22_author_tests_endpoint_preflight":"tasks/22-author-tests-endpoint-preflight/","task_23_implement_endpoint_preflight":"tasks/23-implement-endpoint-preflight/","task_24_author_tests_providers_check":"tasks/24-author-tests-providers-check/","task_25_implement_providers_check":"tasks/25-implement-providers-check/","task_26_author_tests_judge_spend":"tasks/26-author-tests-judge-spend/","task_27_implement_judge_spend":"tasks/27-implement-judge-spend/","task_28_record_openai_compat_in_ssot":"tasks/28-record-openai-compat-in-ssot/","task_29_mirror_canonical_block_in_schemas":"tasks/29-mirror-canonical-block-in-schemas/","task_30_record_in_domain_knowledge":"tasks/30-record-in-domain-knowledge/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

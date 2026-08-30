@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=db8b3073dc165a6a21d7bdf0c75a3cb45fd162c6b391da437f25489dd9197ce3 -->
+<!-- guardrails:graph v1 source-sha256=ba8361a9d863a30c3c882cd0154bbf8464864355b78c51bd04b72bbc215aae44 -->
 
 ```mermaid
 flowchart TD
@@ -7,6 +7,13 @@ flowchart TD
     plan_preflights_1["02-baseline-integration-tests-green"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph task_00_land_the_required_role_seam["00-land-the-required-role-seam"]
+    task_00_land_the_required_role_seam_gr_0["01-build-passes"]:::guardrail
+    task_00_land_the_required_role_seam_gr_1["02-role-is-required-not-defaulted"]:::guardrail
+    task_00_land_the_required_role_seam_gr_2["03-every-fixture-still-sets-role"]:::guardrail
+    task_00_land_the_required_role_seam_gr_3["04-src-sites-are-the-uniform-action-stub"]:::guardrail
+  end
+  style task_00_land_the_required_role_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_01_author_tests_role_seam["01-author-tests-role-seam"]
     task_01_author_tests_role_seam_gr_0["01-build-passes"]:::guardrail
     task_01_author_tests_role_seam_gr_1["02-seven-sites-fail-on-stubs"]:::guardrail
@@ -170,11 +177,12 @@ flowchart TD
     plan_guardrails_3["04-union-artifacts-sound"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  plan_preflights --> task_01_author_tests_role_seam
+  plan_preflights --> task_00_land_the_required_role_seam
   plan_preflights --> task_04_author_tests_json_extractor
   plan_preflights --> task_06_build_fake_openai_server
   plan_preflights --> task_07_author_tests_tool_containment
   plan_preflights --> task_09_add_openai_block_config_surface
+  task_00_land_the_required_role_seam --> task_01_author_tests_role_seam
   task_01_author_tests_role_seam --> task_02_assign_roles_at_seven_sites
   task_02_assign_roles_at_seven_sites --> task_03_prove_role_reaches_real_runner
   task_02_assign_roles_at_seven_sites --> task_05_implement_shared_json_extractor

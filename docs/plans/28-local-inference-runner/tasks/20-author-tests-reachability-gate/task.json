@@ -8,6 +8,7 @@
     "tests/Guardrails.Core.Tests/Loading/ActionReachabilityGateTests.cs"
   ],
   "action": {
-    "tier": "medium"
+    "tier": "medium",
+    "maxTurns": 75
   }
 }

@@ -6,8 +6,8 @@
 #          one of the seven behaviours is bound to a PINNED method name and must be observed Failed in
 #          the runner's OWN result file (TRX), never in stdout (#248).
 #
-# WHY FOUR, NOT SEVEN, MUST FAIL: task 01's stub sets every site to PromptRole.Action, which is CORRECT
-#          for three of them. So the three Action sites pass and the five non-Action sites fail. That
+# WHY FOUR, NOT SEVEN, MUST FAIL: task 00's stub sets every site to PromptRole.Action, which is CORRECT
+#          for three of them. So the three Action sites pass and the four non-Action sites fail. That
 #          asymmetry is the discriminator proving the tests are bound to the real code path rather than
 #          asserting a constant: a test that passed for all seven would be reading its own stub back.
 #
