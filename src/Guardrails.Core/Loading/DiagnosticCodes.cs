@@ -911,12 +911,13 @@ public static class DiagnosticCodes
     /// </summary>
     public const string BreakdownIntentDeclaresNothing = "GR2064";
 
-    // --- openai-compat block-schema diagnostics (plan 28 §4/§7, issue #223) ---------------------------
+    // --- openai-compat block diagnostics (plan 28 §3.7/§4/§7, issue #223) -----------------------------
     //
-    // GR2066 is SKIPPED here on purpose — it is RESERVED BY NAME for plan 28 §3.7/§7's Action-reachability
-    // error (an openai-compat block reachable for an Action), which a later task in this epic implements,
-    // not this one. Taking it out of order for a different meaning is the one outcome a code registry must
-    // not produce (the same discipline GR2043's own skip-note states).
+    // GR2066 was reserved BY NAME by the block-schema task above and is now ALLOCATED, in numeric order,
+    // to the meaning it was reserved for — plan 28 §3.7's Action-reachability error. Taking a reserved
+    // code for a DIFFERENT meaning is the one outcome a code registry must not produce (the same
+    // discipline GR2043's own skip-note states); taking it for its OWN meaning is what the reservation
+    // was for.
 
     /// <summary>
     /// GR2065 (ERROR) — an <c>openai-compat</c> <c>promptRunners</c> block is malformed, or a block of
@@ -939,6 +940,36 @@ public static class DiagnosticCodes
     public const string OpenAiCompatBlockSchema = "GR2065";
 
     /// <summary>
+    /// GR2066 (ERROR) — an <c>openai-compat</c> <c>promptRunners</c> block is REACHABLE FOR AN
+    /// <b>Action</b> (plan 28 §3.7/§7, issue #223). v1's local runner is a VERIFIER, not an actor: it may
+    /// render a judge's verdict or an advisory, and nothing else (§3.2). Every manifest-visible route by
+    /// which the harness could hand it an ACTION is an error at <c>validate</c> time, because the only
+    /// other place to catch it is mid-DAG with a task's work already in flight. Static and offline, like
+    /// every clause of GR2065. The five routes — one diagnostic per block, naming every route that
+    /// reaches it:
+    /// <list type="bullet">
+    /// <item>the block declares <c>routing</c>, which makes it a tier candidate for ACTORS;</item>
+    /// <item>the block is the EFFECTIVE default — the <c>default</c> pointer OR the sole declared runner,
+    ///   which <c>PromptRunnerRegistry.ResolveDefault</c> treats identically. The sole-runner half fires
+    ///   on the most natural misconfiguration there is: a plan with a single local runner;</item>
+    /// <item>a task's <c>task.json action.runner</c> names it;</item>
+    /// <item>a task's ACTION PROMPT names it in its own YAML frontmatter <c>runner:</c> —
+    ///   <c>ActionRunner</c> already resolves that at RUN time, and <c>PlanLoader</c> folds it onto the
+    ///   task definition purely so this check can see it at all (§3.7's chosen way out);</item>
+    /// <item>the block is declared under a reserved ACTION-role profile name — <c>ai-merge</c> or
+    ///   <c>breakdown</c>, whose runner <c>SchedulerFactory</c> hands straight to a resolver that WRITES.</item>
+    /// </list>
+    /// <para><b>The two LEGAL reachability paths must never fire here.</b> A judge guardrail's frontmatter
+    /// <c>runner:</c> pin (SSOT §9.6 rule 1 — an explicit pin "names a block and bypasses selection
+    /// entirely") and the two ADVISORY reserved profile names are how a human assigns a local model to
+    /// verification, which is the whole of what v1 ships. A blunt ban on every <c>openai-compat</c> block
+    /// would pass a route-by-route reading of this list and take the flagship deliverable with it.</para>
+    /// <para>GR2067's unreachable clause is the OPPOSITE failure — a block NO route reaches — so the two
+    /// codes bound the same axis from either end and share the one reserved-profile list, split by role.</para>
+    /// </summary>
+    public const string OpenAiCompatActionReachable = "GR2066";
+
+    /// <summary>
     /// GR2067 (WARNING) — an <c>openai-compat</c> block is declared but practically inert, in either of two
     /// independent forms (plan 28 §7, issue #223):
     /// <list type="bullet">
@@ -959,18 +990,16 @@ public static class DiagnosticCodes
 
     // CURRENT next-free code: GR2068. GR2067 (OpenAiCompatWeakOrUnreachable) is the last taken code above —
     // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
-    // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is ALSO reserved-by-name now (see the block comment
-    // just above GR2065): allocated to plan 28 §3.7/§7's Action-reachability error, not yet implemented.
-    // FOUR codes remain RESERVED BY NAME in design documents and must not be re-used:
+    // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
+    // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
+    // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
-    //   GR2066 — docs/plans/28-local-inference-runner.md §3.7/§7 (issue #223), the openai-compat
-    //            Action-reachability error, allocated by number but implemented by a later task, not this one
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
     // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2068 and update
-    // this line rather than colliding with any of the four above (issue #320).
+    // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
     // review-marker change (#472). The GR10xx and GR20xx ladders advance independently; a doc that
