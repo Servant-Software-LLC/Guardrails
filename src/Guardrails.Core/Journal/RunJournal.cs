@@ -462,6 +462,41 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     // alias (WorktreeJunctionLifetime), not resume state — nothing to persist.
 
     /// <summary>
+    /// Re-baseline a drifted task's recorded definition hash to <paramref name="newHash"/> WITHOUT re-running
+    /// it — the accept-and-continue half of the definition-drift prompt (issue #545, SSOT §7.2).
+    /// <para>
+    /// <b>What this deliberately does NOT touch.</b> Status, attempts, merge sequence and every other field
+    /// stay exactly as they were: the task really did succeed, its output really is on the plan branch, and
+    /// the only thing that changed is which definition the journal says that output was produced against.
+    /// Re-running is the OTHER branch of the prompt; conflating them here would make an accept silently
+    /// re-do work the operator chose not to re-do.
+    /// </para>
+    /// <para>
+    /// <b>The honesty cost, stated where the method lives.</b> After this call the recorded hash matches the
+    /// current one, so the task reads as cleanly green and nothing in <c>tasks{}</c> distinguishes it from a
+    /// task that was actually built against this definition. That is why the caller MUST also append a
+    /// <see cref="Execution.DecisionTokens.DriftAccepted"/> entry to <c>decisions[]</c> — that entry is the
+    /// only durable record that a trade was made, and it is what the end-of-run report reads.
+    /// </para>
+    /// </summary>
+    public void RecordDriftAccepted(string taskId, string newHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newHash);
+
+        lock (_gate)
+        {
+            if (!_document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry))
+            {
+                return; // nothing recorded for this task - there is no baseline to move.
+            }
+
+            UpdateTask(taskId, entry with { DefinitionHash = newHash });
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Record the machine-readable reason the run STOPPED at a deterministic gate (SSOT §7, issue #432).
     /// Overwrites any previous halt — a run stops once, and the LAST gate to fail is the one that stopped
     /// it. Nothing else about the journal is touched, so the per-gate phase markers (which carry the full

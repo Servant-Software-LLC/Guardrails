@@ -118,6 +118,20 @@ public static class DecisionTokens
     /// <summary>A class-(b) transient blocker resolved within the retry ceiling (doc 12 §6.2).</summary>
     public const string BlockerRetried = "blocker-retried";
 
+    /// <summary>
+    /// The operator saw a definition drift and chose to ACCEPT it rather than rewind (issue #545): the
+    /// drifted task's recorded definition hash was re-baselined to the current one WITHOUT re-running it,
+    /// and the run resumed from where it stopped.
+    /// <para>
+    /// <b>This is an explicit "the delivered artifact predates this definition" trade, and it is recorded
+    /// precisely because it cannot be inferred later.</b> The task's output on the plan branch was produced
+    /// against the OLD definition; after this, nothing in the journal would otherwise say so — the hashes
+    /// match and the task reads as cleanly green. Reachable only through an interactive prompt: there is no
+    /// flag for it, so an unattended run can never take this branch.
+    /// </para>
+    /// </summary>
+    public const string DriftAccepted = "drift-accepted";
+
     /// <summary>A resume consumed a firstmate answer file for this escalation (§7.4–§7.6, doc 12 §6.2).</summary>
     public const string AnswerInjected = "answer-injected";
 

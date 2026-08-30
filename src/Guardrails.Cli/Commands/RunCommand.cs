@@ -1114,6 +1114,12 @@ public static class RunCommand
         /// <summary>The operator answered <c>y</c> — pre-authorize the safe rewind for this run.</summary>
         Confirmed,
 
+        /// <summary>
+        /// The operator answered <c>a</c> (issue #545) — ACCEPT the drift: re-baseline the drifted tasks'
+        /// recorded definition hashes without re-running them, and carry on from where the run stopped.
+        /// </summary>
+        Accepted,
+
         /// <summary>The operator answered <c>N</c> — halt without running (exit 2).</summary>
         Declined
     }
@@ -1137,16 +1143,76 @@ public static class RunCommand
 
         PrintDriftPromptPreview(drift, io);
 
-        string ask = drift.Decision.Outcome == SafeSuffixOutcome.Safe
-            ? $"Rewind the plan branch ({drift.Decision.RemovedCommitCount} commit(s)) and re-run {drift.SafeSet.Count} task(s)"
-            : $"Reset and re-run {drift.SafeSet.Count} task(s)";
-        io.Out.Write($"{ask}? [y/N] ");
+        // Issue #545: state the COST OF EACH BRANCH, because that is what the decision actually turns on.
+        // The harness knows both numbers and used to print only one of them - "re-run set: 14 tasks" is a
+        // very different proposition once you can see "remaining: 2 tasks" beside it, and an operator who
+        // cannot see the second number has no way to tell a cheap rewind from an expensive one.
+        int remaining = journal.Document.Tasks.Count(t => t.Value.Status != Core.Journal.TaskStatus.Succeeded);
+        string rewind = drift.Decision.Outcome == SafeSuffixOutcome.Safe
+            ? $"rewind the plan branch ({drift.Decision.RemovedCommitCount} commit(s)) and re-run {drift.SafeSet.Count} task(s)"
+            : $"reset and re-run {drift.SafeSet.Count} task(s)";
 
-        string? answer = Console.ReadLine();
-        bool yes = answer is not null && answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
-        if (!yes)
+        io.Out.WriteLine();
+        io.Out.WriteLine($"  [y] {rewind}.");
+        io.Out.WriteLine(
+            $"  [a] ACCEPT the drift and continue: re-baseline the drifted task(s) WITHOUT re-running them, "
+            + $"then finish the {remaining} task(s) that remain.");
+        io.Out.WriteLine(
+            "      The delivered artifact then predates its own definition - a real trade, recorded in");
+        io.Out.WriteLine(
+            "      decisions[] and named in the run report, because nothing else would show it afterwards.");
+        io.Out.WriteLine("  [N] abort - change nothing and stop.");
+        io.Out.Write("Choose [y/a/N] ");
+
+        string answer = (Console.ReadLine() ?? "").Trim();
+
+        if (answer.Equals("a", StringComparison.OrdinalIgnoreCase))
         {
-            io.Out.WriteLine("Declined — nothing was changed (definition-drift halt, SSOT §7.2).");
+            foreach (DefinitionDriftProbe.DriftedEntry d in drift.Drifted)
+            {
+                journal.RecordDriftAccepted(d.TaskId, d.NewHash);
+                journal.RecordDecision(new DecisionEntry
+                {
+                    Boundary = "drift",
+                    Policy = "prompt",
+                    Decision = DecisionTokens.DriftAccepted,
+                    Subject = d.TaskId,
+                    Headline =
+                        $"Definition drift ACCEPTED (not re-run): '{d.TaskId}' was re-baselined "
+                        + $"{ShortHash(d.OldHash)} -> {ShortHash(d.NewHash)} and the run continued.",
+                    Detail =
+                        "The operator chose accept-and-continue over a rewind of "
+                        + $"{drift.SafeSet.Count} task(s). This task's delivered output was produced against "
+                        + "the OLD definition and was NOT rebuilt against the new one."
+                });
+            }
+
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                $"Accepted — {drift.Drifted.Count} task(s) re-baselined without re-running; continuing with "
+                + $"{remaining} task(s) remaining.");
+            io.Out.WriteLine(
+                "  Recorded in decisions[] as 'drift-accepted'. Their output predates the current definition.");
+            return (DriftPromptDecision.Accepted, null);
+        }
+
+        if (!answer.Equals("y", StringComparison.OrdinalIgnoreCase))
+        {
+            // Issue #545: the old message was "Declined - nothing was changed", which reads as a safe no-op
+            // and is not - the run is STRANDED, and the operator has to work out for themselves that the
+            // only way forward is a BYTE-EXACT restore. Say that, because a semantic revert hits this same
+            // halt and looks like the harness ignoring the fix.
+            io.Out.WriteLine();
+            io.Out.WriteLine("Aborted — nothing was changed (definition-drift halt, SSOT §7.2).");
+            io.Out.WriteLine("  This run CANNOT resume while the drifted definition(s) differ. To get moving:");
+            io.Out.WriteLine(
+                "    - re-run and answer [a] to accept the drift and finish the remaining task(s); or");
+            io.Out.WriteLine(
+                "    - re-run and answer [y] to rewind and rebuild the re-run set; or");
+            io.Out.WriteLine(
+                "    - restore the drifted file(s) to their previous content and re-run. The comparison is a");
+            io.Out.WriteLine(
+                "      HASH, so the restore must be BYTE-EXACT - a semantically equivalent edit still drifts.");
             return (DriftPromptDecision.Declined, null);
         }
 
