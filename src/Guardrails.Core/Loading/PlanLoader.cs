@@ -427,7 +427,19 @@ public sealed class PlanLoader
             Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
             Specialization = ReadSpecialization(name, raw.Specialization, configPath, diagnostics),
             Routing = ReadRouting(name, raw.Routing, configPath, diagnostics),
-            GuardrailOverrides = overrides
+            GuardrailOverrides = overrides,
+
+            // The openai-compat block config surface (plan 28 §4, issue #223). Bound directly, same as
+            // Effort/MaxOutputTokens above — shape/range validation (absolute-URL endpoint,
+            // contextTokens >= 1, wire's harness-owned-field check) is GR2065, a validator-time concern,
+            // not the loader's.
+            Endpoint = raw.Endpoint,
+            ContextTokens = raw.ContextTokens,
+            ApiKeyEnv = raw.ApiKeyEnv,
+            Wire = raw.Wire is null
+                ? null
+                : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
+            Engine = raw.Engine
         };
     }
 

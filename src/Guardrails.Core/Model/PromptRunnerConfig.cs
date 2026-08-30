@@ -1,3 +1,6 @@
+using System.Text.Json;
+using Guardrails.Core.Prompts;
+
 namespace Guardrails.Core.Model;
 
 /// <summary>
@@ -103,6 +106,46 @@ public sealed record PromptRunnerConfig
     /// inherit from <see cref="Settings"/>. Null = no overrides (guardrails use the base).
     /// </summary>
     public PromptRunnerOverrides? GuardrailOverrides { get; init; }
+
+    /// <summary>
+    /// The openai-compat base URL (plan 28 §4, issue #223) — REQUIRED for
+    /// <see cref="PromptRunnerKind.OpenAiCompat"/>, an absolute http/https URL (GR2065). Null = the key
+    /// was absent, which is every other kind, or a malformed block ahead of <c>guardrails validate</c>.
+    /// </summary>
+    public string? Endpoint { get; init; }
+
+    /// <summary>
+    /// The model's context window in tokens (plan 28 §4/§6.1) — REQUIRED for
+    /// <see cref="PromptRunnerKind.OpenAiCompat"/>, must be at least 1 (GR2065). Null = the key was
+    /// absent. The runner's own before/after overflow checks (§6.1) are this field's only readers.
+    /// </summary>
+    public int? ContextTokens { get; init; }
+
+    /// <summary>
+    /// The NAME of an env var holding a bearer token for the openai-compat endpoint (plan 28 §4) —
+    /// NEVER the token itself: <c>guardrails.json</c> is committed and hashed into
+    /// <c>PlanDefinitionHash</c>, which keys the review attestation. Null = no auth header is sent.
+    /// </summary>
+    public string? ApiKeyEnv { get; init; }
+
+    /// <summary>
+    /// A verbatim request-body passthrough map for the openai-compat wire protocol (plan 28 §4) — the
+    /// HTTP sibling of <see cref="PromptRunnerSettings.Env"/>. Merged into the outgoing JSON body by
+    /// the runner; a top-level key that shadows a harness-owned field (<c>model</c>, <c>messages</c>,
+    /// <c>stream</c>, <c>stream_options</c>, <c>tools</c>, <c>max_tokens</c>) is GR2065, not a runtime
+    /// throw. Values are held as raw <see cref="JsonElement"/> so a nested knob (e.g.
+    /// <c>options.num_ctx</c>) round-trips untouched. Null = the key was absent.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonElement>? Wire { get; init; }
+
+    /// <summary>
+    /// OPERATOR-FACING TEXT ONLY (plan 28 §6.2) — <c>ollama</c> | <c>llama.cpp</c> | <c>mlx</c> |
+    /// <c>lm-studio</c> | <c>vllm</c>. Selects the model-not-found remedy SENTENCE and nothing else: it
+    /// never selects a code path, never changes a request, and is absent from
+    /// <see cref="PromptRunnerKinds.ServesRoles"/>, the containment rules and the wire body. Null = the
+    /// neutral remedy sentence naming the model and the endpoint.
+    /// </summary>
+    public string? Engine { get; init; }
 
     /// <summary>The effective settings for a prompt of the given kind (base, or base + guardrail overrides).</summary>
     public PromptRunnerSettings EffectiveSettings(bool isGuardrail) =>
@@ -267,6 +310,37 @@ public static class PromptRunnerKinds
     /// or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3 ruling 2).
     /// </summary>
     public static bool HasModelEnumeration(PromptRunnerKind kind) => ModelEnumerable.Contains(kind);
+
+    /// <summary>
+    /// STUB (plan 28 §3.5, issue #223) — a statement of fact about the BUILD, never a config key: which
+    /// <see cref="PromptRole"/>s a real, constructed runner of this kind actually accepts. Declared here,
+    /// throwing, so code written against the real signature ahead of the runner landing still compiles;
+    /// filled in alongside <see cref="PromptRunnerRegistry"/> gaining an <c>openai-compat</c> dispatch
+    /// arm (Claude ⇒ every role; OpenAiCompat ⇒ <see cref="PromptRole.Guardrail"/> and
+    /// <see cref="PromptRole.Advisory"/>, never <see cref="PromptRole.Action"/>).
+    /// </summary>
+    public static IReadOnlySet<PromptRole> ServesRoles(PromptRunnerKind kind) =>
+        throw new NotImplementedException(
+            "PromptRunnerKinds.ServesRoles is a stub (plan 28 §3.5) — filled in alongside the openai-compat runner.");
+
+    /// <summary>
+    /// STUB (plan 28 §3.5/§3.6, issue #223) — true when this kind's runner is an agent whose file writes
+    /// need the SSOT §9.4 containment hook. See <see cref="ServesRoles"/> for why this throws here rather
+    /// than answering (Claude ⇒ true; OpenAiCompat ⇒ false, it offers no write tool).
+    /// </summary>
+    public static bool NeedsContainmentHook(PromptRunnerKind kind) =>
+        throw new NotImplementedException(
+            "PromptRunnerKinds.NeedsContainmentHook is a stub (plan 28 §3.5) — filled in alongside the openai-compat runner.");
+
+    /// <summary>
+    /// STUB (plan 28 §6.4, issue #223) — true when this kind's runner has a write tool and so gets the
+    /// shipped verdict-file contract; false when it can only transcribe a fenced JSON block for the
+    /// harness itself to write. See <see cref="ServesRoles"/> for why this throws here rather than
+    /// answering (Claude ⇒ true; OpenAiCompat ⇒ false).
+    /// </summary>
+    public static bool WritesFiles(PromptRunnerKind kind) =>
+        throw new NotImplementedException(
+            "PromptRunnerKinds.WritesFiles is a stub (plan 28 §6.4) — filled in alongside the openai-compat runner.");
 
     /// <summary>The implemented kinds as a comma-separated quoted list, for diagnostic messages.</summary>
     public static string ImplementedTokenList => string.Join(", ", Implemented.Select(k => $"'{Token(k)}'"));
