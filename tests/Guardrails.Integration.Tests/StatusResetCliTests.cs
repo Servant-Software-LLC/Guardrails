@@ -32,12 +32,12 @@ public sealed class StatusResetCliTests
                 guardrailBody: StatePlanBuilder.Fail("not yet"),
                 dependsOn: "01-first");
 
-        int firstExit = await InvokeAsync("run", plan.PlanDir);
+        int firstExit = await InvokeAsync("run", plan.PlanDir, "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, firstExit);
 
         plan.SetGuardrail("02-second", StatePlanBuilder.Succeed());
 
-        int secondExit = await InvokeAsync("run", plan.PlanDir);
+        int secondExit = await InvokeAsync("run", plan.PlanDir, "--no-log-server");
         Assert.Equal(ExitCodes.Success, secondExit);
     }
 
@@ -49,7 +49,7 @@ public sealed class StatusResetCliTests
         // Before any run: status still succeeds (reports "not run yet").
         Assert.Equal(ExitCodes.Success, await InvokeAsync("status", plan.PlanDir));
 
-        await InvokeAsync("run", plan.PlanDir);
+        await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         // After a run: status reads the journal.
         Assert.Equal(ExitCodes.Success, await InvokeAsync("status", plan.PlanDir));
@@ -62,20 +62,20 @@ public sealed class StatusResetCliTests
             .AddTask("01-first")
             .AddTask("02-second", dependsOn: "01-first");
 
-        await InvokeAsync("run", plan.PlanDir);
+        await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         int resetExit = await InvokeAsync("reset", plan.PlanDir, "01-first");
         Assert.Equal(ExitCodes.Success, resetExit);
 
         // Re-run is green.
-        Assert.Equal(ExitCodes.Success, await InvokeAsync("run", plan.PlanDir));
+        Assert.Equal(ExitCodes.Success, await InvokeAsync("run", plan.PlanDir, "--no-log-server"));
     }
 
     [Fact]
     public async Task ResetUnknownTask_ThroughCli_ExitsOne()
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
-        await InvokeAsync("run", plan.PlanDir);
+        await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         int exit = await InvokeAsync("reset", plan.PlanDir, "99-does-not-exist");
         Assert.Equal(ExitCodes.HarnessError, exit);
@@ -85,9 +85,9 @@ public sealed class StatusResetCliTests
     public async Task RunFresh_ThroughCli_ExitsZero()
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
-        await InvokeAsync("run", plan.PlanDir);
+        await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
-        int exit = await InvokeAsync("run", plan.PlanDir, "--fresh");
+        int exit = await InvokeAsync("run", plan.PlanDir, "--fresh", "--no-log-server");
         Assert.Equal(ExitCodes.Success, exit);
     }
 }

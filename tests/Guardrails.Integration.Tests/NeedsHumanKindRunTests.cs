@@ -49,7 +49,7 @@ public sealed class NeedsHumanKindRunTests
         using var plan = new ScriptPlanBuilder().AddTask("01-escalates");
         MakeEscalatingAction(plan, "01-escalates", ", \"kind\": \"defective-guardrail\"");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, exit);
 
         // (1) --no-ui: the grep-anchored leading line is untouched, and the claim rides one line below it.
@@ -105,7 +105,7 @@ public sealed class NeedsHumanKindRunTests
         using var plan = new ScriptPlanBuilder().AddTask("01-escalates");
         MakeEscalatingAction(plan, "01-escalates", ", \"kind\": \"blocked-work\"");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, exit);
 
         Assert.Contains("  [claim] blocked-work — the agent could not complete the work (unverified)", output, StringComparison.Ordinal);
@@ -131,7 +131,7 @@ public sealed class NeedsHumanKindRunTests
         using var plan = new ScriptPlanBuilder().AddTask("01-escalates");
         MakeEscalatingAction(plan, "01-escalates", kindJson: "");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, exit);
 
         Assert.Contains($"[NEEDS HUMAN] 01-escalates — needs human: {Question}", output, StringComparison.Ordinal);
@@ -163,7 +163,7 @@ public sealed class NeedsHumanKindRunTests
         using var plan = new ScriptPlanBuilder().AddTask("01-escalates");
         MakeEscalatingAction(plan, "01-escalates", ", \"kind\": \"some-future-kind\"");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, exit);
 
         Assert.Contains($"[NEEDS HUMAN] 01-escalates — needs human: {Question}", output, StringComparison.Ordinal);
@@ -187,7 +187,7 @@ public sealed class NeedsHumanKindRunTests
             : "#!/usr/bin/env bash\nprintf '%s' '{\"needsHuman\": \"plain question\"}' > \"$GUARDRAILS_STATE_OUT\"\nexit 0\n";
         File.WriteAllText(plan.ActionPath("01-escalates"), body);
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, exit);
         Assert.Contains("[NEEDS HUMAN] 01-escalates — needs human: plain question", output, StringComparison.Ordinal);

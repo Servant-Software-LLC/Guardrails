@@ -5990,10 +5990,19 @@ The **prominent** "all tasks" line the run prints is the clickable `file://` lin
 **static index** (below); the live server's base URL is printed de-emphasised as the *live tailing
 server (active tasks)* — the user navigates from the static index, which links a running task to it
 (issue #143). The live progress table still carries clickable per-task "view log" links for running
-tasks (to `http://…/tasks/{id}`). The server is started **only** on the interactive path (a live UI,
-output not redirected) — nobody clicks links in CI or piped output — and a bind failure is
-**non-fatal**: the run prints one warning and proceeds without links. The server's lifetime is the
-run; it is disposed when the run ends.
+tasks (to `http://…/tasks/{id}`). **`--no-log-server` is the server's only gate (issue #552).** It is
+started for **every** run that did not pass that flag — `--no-ui`, redirected output, no TTY at all —
+because an HTTP listener on loopback needs none of the things the Spectre table needs (an interactive,
+ANSI-capable, non-redirected console). It was gated on that same `live` condition until #552, which
+made the consequence backwards: a headless, backgrounded or CI run has no console to watch, so it is
+precisely the run that most needs a browser page, and it was the only one that could never have had
+one. `live` now governs the progress **table** alone. The base URL is written to stdout, so a run
+launched as `guardrails run … > run.log 2>&1` carries `http://127.0.0.1:<port>/` in its log file.
+Starting the server is **never** able to fail a run: any failure (a bind race, a refused socket, a
+sandbox with no socket permission) degrades to one warning and a run without links. Whenever the
+server is **not** running — `--no-log-server`, or a start that failed — the run prints the remedy by
+name: `guardrails logs <folder>` (§12.2), which serves the same live view against a run **already in
+flight**. The server's lifetime is the run; it is disposed when the run ends.
 
 **Serving the live diagram (issue #522).** The live server also serves `GET /diagram.html` — the
 in-flight status diagram `OnTheFlyDiagramObserver` keeps written to `logs/<runId>/diagram.html`
@@ -6046,16 +6055,19 @@ the live progress table's existing per-task elapsed clock as their liveness sign
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--no-log-server` | off (server on) | Do not start the log server / per-task links (headless or CI use). The server is also skipped whenever the run is non-interactive or `--no-ui` is set, regardless of this flag. |
+| `--no-log-server` | off (server on) | Do not start the log server / per-task links. This flag is the server's **only** gate (issue #552) — the server starts on the `--no-ui`, redirected and non-interactive paths too. When it is suppressed here (or fails to start) the run names `guardrails logs <folder>` as the remedy. |
 | `--log-port <n>` | `0` | Port for the live log server. `0` = an automatically chosen free port. Bound to localhost only. |
 | `--all-tasks` | off (collapse on) | Live table only (issue #379): show EVERY task's row across ALL waves, even completed ones. By default a WAVED run collapses each COMPLETED wave to a one-line summary (`✔ <wave-dir> — N/N tasks green`) so the active wave stays on-screen; this restores the full flat table. No effect on a flat plan or under `--no-ui`; the static log site (§12.3) always keeps every task. |
 
-### 12.2 `guardrails logs` — post-mortem viewer
+### 12.2 `guardrails logs` — persisted-log viewer (post-mortem **and** attach-to-a-live-run)
 
 `guardrails logs [folder] [--port n] [--task id] [--no-open]` reviews a plan's **persisted** logs,
 decoupled from any active run — the post-mortem companion for reviewing an overnight run, or judging
-whether a *passing* task's guardrails were strong enough, from the same attempt logs. It
-(re)generates the **static** site for the journal-selected run and advertises the canonical static
+whether a *passing* task's guardrails were strong enough, from the same attempt logs. Because it
+serves what is **on disk**, it equally attaches to a run **already in flight** from another terminal:
+the executor is writing those attempt logs and that journal as it goes, so the tailing server streams
+them live. That is why §12.1 names this command as the remedy whenever a run has no server of its own.
+It (re)generates the **static** site for the journal-selected run and advertises the canonical static
 index file (`logs/<runId>/index.html`) as the **entry point** by its `file://` path (issue #143), and
 also starts the live tailing server (so a *running* task's live page works — for a completed run the
 server simply goes unused). With `--no-open` it opens nothing; otherwise it opens the static index

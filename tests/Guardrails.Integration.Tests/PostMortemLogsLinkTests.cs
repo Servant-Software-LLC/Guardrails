@@ -67,7 +67,7 @@ public sealed class PostMortemLogsLinkTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
 

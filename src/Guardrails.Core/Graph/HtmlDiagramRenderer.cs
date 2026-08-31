@@ -331,8 +331,9 @@ public static class HtmlDiagramRenderer
   <code>file://&rarr;file://</code> navigation by default.
   On GitHub, diagram.md renders instead.</div>
 <div id="gr-live-offline" hidden>Live status updates are unavailable on this copy &mdash; it is not
-  live. The diagram served by the log-site server IS live; open that copy to see task/guardrail
-  status update automatically as the run progresses.</div>
+  live. The diagram SERVED by the log-site server is live. To get one for a run in progress, run
+  <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
+  under the URL it prints; task/guardrail status then updates automatically as the run progresses.</div>
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
 <script type="application/json" id="task-folder-targets">__TASK_FOLDER_TARGETS__</script>

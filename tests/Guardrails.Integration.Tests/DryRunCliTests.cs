@@ -100,7 +100,7 @@ public sealed class DryRunCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
         // A script-only plan records no costUsd, so the run summary omits the cost line.
@@ -114,7 +114,7 @@ public sealed class DryRunCliTests
         using var plan = new FakeClaudePlanBuilder()
             .AddPromptTask("01-generate", mode: "fragment", cost: "0.0150");
 
-        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
         Assert.Contains("Total prompt cost: $0.0150", output);
@@ -122,7 +122,7 @@ public sealed class DryRunCliTests
 
     private static async Task<int> InvokeCapturingAsync_Run(string planDir)
     {
-        (int exit, _) = await InvokeCapturingAsync("run", planDir);
+        (int exit, _) = await InvokeCapturingAsync("run", planDir, "--no-log-server");
         return exit;
     }
 

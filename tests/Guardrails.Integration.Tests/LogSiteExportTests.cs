@@ -31,7 +31,7 @@ public sealed class LogSiteExportTests
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
         // A real run writes logs/<runId>/01-first/attempt-1/action-stdout.log ("action ok").
-        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, runExit);
 
         (int exportExit, string output) = await InvokeAsync("logs", plan.PlanDir, "--export");
@@ -65,7 +65,7 @@ public sealed class LogSiteExportTests
         // finished task's page — without anyone calling `logs --export`.
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int runExit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, runExit);
 
         string runId = RunId(plan.PlanDir);
@@ -92,7 +92,7 @@ public sealed class LogSiteExportTests
     public async Task Export_IsIdempotent_RegeneratesTheWholeSite()
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
-        await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         (int first, _) = await InvokeAsync("logs", plan.PlanDir, "--export");
         string siteIndex = Path.Combine(plan.PlanDir, "logs", RunId(plan.PlanDir), "index.html");

@@ -92,7 +92,7 @@ public sealed class PlanFileArgumentCliTests
         string mdPath = CreateSiblingMarkdown(plan.PlanDir);
         try
         {
-            (int exit, string output) = await InvokeCapturingAsync("run", mdPath, "--no-ui");
+            (int exit, string output) = await InvokeCapturingAsync("run", mdPath, "--no-ui", "--no-log-server");
 
             Assert.Equal(ExitCodes.Success, exit);
             Assert.Contains(InfoLine, output);
@@ -113,7 +113,7 @@ public sealed class PlanFileArgumentCliTests
         File.WriteAllText(mdPath, "# plan source\n");
         try
         {
-            (int exit, string output) = await InvokeCapturingAsync("run", mdPath, "--no-ui");
+            (int exit, string output) = await InvokeCapturingAsync("run", mdPath, "--no-ui", "--no-log-server");
 
             Assert.Equal(ExitCodes.HarnessError, exit);
             Assert.Contains("GR1001", output);

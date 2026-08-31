@@ -102,7 +102,7 @@ public sealed class WaveCheckpointGraphTests
             BuildTwoWavePlan(planDir);
 
             (int exit, string output) = await InvokeRunAsync(
-                "run", planDir, "--no-ui");
+                "run", planDir, "--no-ui", "--no-log-server");
 
             // JIT checkpoint exits 2 (actionable — SSOT §7).
             Assert.Equal(ExitCodes.TaskFailed, exit);
@@ -240,7 +240,7 @@ public sealed class WaveCheckpointGraphTests
                 UnixFileMode.GroupRead | UnixFileMode.OtherRead);
             WritePassScript(Path.Combine(w2TaskDir, "guardrails", "01-check" + Ext));
 
-            (int exit, string output) = await InvokeRunAsync("run", planDir, "--no-ui");
+            (int exit, string output) = await InvokeRunAsync("run", planDir, "--no-ui", "--no-log-server");
 
             // Fully green run exits 0 (mergeOnSuccess is a no-op in serial mode — no plan branch).
             // (In serial mode there is no plan branch, so WhollyGreenButUndelivered is suppressed.)

@@ -95,6 +95,29 @@ public sealed class DiagramRefreshTests
             "when a poll fails and never on a page that is polling fine");
     }
 
+    /// <summary>
+    /// Issue #552 — the notice must name the command that produces a live copy, not merely assert one
+    /// exists somewhere. "The diagram served by the log-site server IS live; open that copy" told the
+    /// reader what they were missing and nothing about how to get it, which for a headless or
+    /// backgrounded run was a dead end: no server had been started and no URL printed.
+    /// <c>guardrails logs &lt;plan-folder&gt;</c> serves the persisted logs — and this diagram —
+    /// against a run already in flight, so it is a remedy the reader can act on from the notice alone.
+    /// </summary>
+    [Fact]
+    public void FileViewFallback_NamesTheCommandThatProducesALiveCopy()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        int idAttrIndex = html.IndexOf("id=\"gr-live-offline\"", StringComparison.Ordinal);
+        Assert.True(idAttrIndex >= 0, "expected the offline notice on the during-run page");
+
+        int noticeEnd = html.IndexOf("</div>", idAttrIndex, StringComparison.Ordinal);
+        Assert.True(noticeEnd > idAttrIndex, "expected the offline notice to be a closed element");
+        string notice = html[idAttrIndex..noticeEnd];
+
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+    }
+
     // Deliberately EXCLUDED from the #523 red census: this pin PASSES against the current tree — it
     // guards provenance/source embedding, which the meta-refresh defect does not touch. It exists so
     // the next task, which adds page chrome around the live-update behaviour above, cannot quietly

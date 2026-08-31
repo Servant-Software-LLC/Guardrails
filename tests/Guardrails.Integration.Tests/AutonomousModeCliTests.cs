@@ -90,7 +90,7 @@ public sealed class AutonomousModeCliTests
         // offending token so the operator can fix it. (No --dry-run — dial validation is not dry-run-only.)
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--dial", "bogus", "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--dial", "bogus", "--no-ui", "--no-log-server");
 
         Assert.NotEqual(ExitCodes.Success, exit);
         Assert.Contains("bogus", output);
