@@ -13,6 +13,7 @@
     "docs/plans/17-model-tiering.md"
   ],
   "action": {
-    "tier": "medium"
+    "tier": "medium",
+    "maxTurns": 100
   }
 }
