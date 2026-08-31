@@ -727,6 +727,25 @@ public sealed record AttemptJudge
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Advisory { get; init; }
+
+    /// <summary>
+    /// The judge invocation's own cost in USD (plan 28 §11 finding 3) — the VERIFIER's spend, recorded
+    /// beside <see cref="AttemptRecord.CostUsd"/> and never folded into it. A verifier is overhead
+    /// against the run, not part of the task's own cost, and quietly adding it to the actor's total
+    /// would inflate every per-tier and per-model figure the #533 evidence arc depends on and move
+    /// <c>maxCostUsd</c>/<c>--autonomous</c>'s liveness floor. Null when the judge runner reports no
+    /// cost (a costless local provider) — never <c>0</c>, which would claim a measurement never taken.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? CostUsd { get; init; }
+
+    /// <summary>
+    /// The judge invocation's own token volume — the verifier-side counterpart of
+    /// <see cref="AttemptRecord.Usage"/>, so a costless judge provider still shows how much work it did.
+    /// Absent (never a zeroed record) when the judge runner reports no usage.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptUsage? Usage { get; init; }
 }
 
 /// <summary>A guardrail that failed, with its one-line reason (SSOT §7 <c>failedGuardrails</c>).</summary>

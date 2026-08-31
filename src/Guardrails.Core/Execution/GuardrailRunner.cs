@@ -279,7 +279,7 @@ internal sealed class GuardrailRunner
         return (
             result,
             !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal),
-            ToAttemptJudge(judge, route));
+            ToAttemptJudge(judge, route, promptResult));
     }
 
     /// <summary>
@@ -299,7 +299,11 @@ internal sealed class GuardrailRunner
     /// <param name="judge">The resolution that graded this pass.</param>
     /// <param name="actor">The §6 actor route the judge was resolved AGAINST — null on the revalidate
     /// path, where there is no action attempt and therefore nothing for the judge to be weaker THAN.</param>
-    private static Journal.AttemptJudge ToAttemptJudge(JudgeResolution judge, TierResolution? actor) => new()
+    /// <param name="promptResult">The judge's own invocation result (plan 28 §11 finding 3) — its
+    /// <see cref="PromptResult.CostUsd"/>/<see cref="PromptResult.Usage"/> are the verifier's spend,
+    /// carried onto the journal alongside the actor's and never folded into it.</param>
+    private static Journal.AttemptJudge ToAttemptJudge(
+        JudgeResolution judge, TierResolution? actor, PromptResult promptResult) => new()
     {
         Runner = judge.RunnerName,
         Kind = judge.Kind is { } kind ? PromptRunnerKinds.Token(kind) : null,
@@ -310,7 +314,14 @@ internal sealed class GuardrailRunner
         // NOT optional: recording a real `false` is a measurement ("a judge resolved and no bump was
         // needed"), where an absent key would be indistinguishable from "no judge resolved at all".
         Bumped = judge.Bumped,
-        Advisory = DescribeAdvisory(actor, judge)
+        Advisory = DescribeAdvisory(actor, judge),
+        // Verifier spend (§11 finding 3) — recorded beside the actor's, never folded into
+        // JournalCost.Total. Absent stays absent: a runner reporting no cost/usage must not be recorded
+        // as a claimed zero.
+        CostUsd = promptResult.CostUsd,
+        Usage = promptResult.Usage is { } usage
+            ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+            : null
     };
 
     /// <summary>
