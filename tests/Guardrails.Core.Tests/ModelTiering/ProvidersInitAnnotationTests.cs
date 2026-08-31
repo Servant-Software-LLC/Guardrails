@@ -264,16 +264,28 @@ public sealed class ProvidersInitAnnotationTests
     // ── criterion 2: it never invents a model (settled OD-E) ─────────────────────────────────
 
     /// <summary>
-    /// No kind in this build has a model-enumeration surface, so the command adds NO block and writes NO
-    /// model identifier — it annotates what is there, says out loud that it could not enumerate, and
-    /// SUCCEEDS. The assertion is deliberately structural: the only keys that appear anywhere in the
-    /// annotated config that were not in the original are the four solicited ones, so a <c>model</c> key
-    /// (or a whole invented block) cannot slip in unnoticed.
+    /// <c>claude</c> — the only kind this fixture declares — has no model-enumeration surface, so the
+    /// command adds NO block and writes NO model identifier: it annotates what is there, says out loud that
+    /// it could not enumerate, and SUCCEEDS. The assertion is deliberately structural: the only keys that
+    /// appear anywhere in the annotated config that were not in the original are the four solicited ones,
+    /// so a <c>model</c> key (or a whole invented block) cannot slip in unnoticed.
+    ///
+    /// <para><b>Re-baselined when <c>openai-compat</c> joined <see cref="PromptRunnerKinds.ModelEnumerable"/></b>
+    /// (plan 28 §7, issue #223): that kind's blocks declare an <c>endpoint</c> and the pre-DAG preflight
+    /// really does <c>GET {endpoint}/models</c>, so "no kind in this build can be enumerated" stopped being
+    /// true. What this test is FOR did not move an inch — the premise below now pins the two facts the
+    /// fixture actually rests on (the new member really carries <c>openai-compat</c>; <c>claude</c> really
+    /// is still unenumerable, so the honest-degradation path below is genuinely taken rather than
+    /// vacuously satisfied), and every never-invents-a-model assertion is unchanged.</para>
     /// </summary>
     [Fact]
     public void Annotate_NeverInventsAModelIdAndStillSucceeds()
     {
-        Assert.Empty(PromptRunnerKinds.ModelEnumerable);
+        Assert.Contains(PromptRunnerKind.OpenAiCompat, PromptRunnerKinds.ModelEnumerable);
+        Assert.False(
+            PromptRunnerKinds.HasModelEnumeration(PromptRunnerKind.Claude),
+            "the fixture declares only `claude` blocks, so this test only means anything while the Claude CLI "
+            + "still exposes no model list — otherwise 'adds no block' would be vacuous rather than a decision");
 
         RegistryAnnotationResult result = RegistryAnnotation.Annotate(Fixture);
 

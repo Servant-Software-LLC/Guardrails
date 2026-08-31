@@ -293,25 +293,36 @@ public static class PromptRunnerKinds
     /// same shape as <see cref="Implemented"/> right above it, and read by <c>guardrails providers init</c>
     /// (SSOT §9.7) to decide whether it may add blocks or must degrade to annotating the ones already there.
     ///
-    /// <para><b>EMPTY, and that is the whole of v1's behaviour rather than a gap.</b> The Claude CLI
-    /// exposes no model list (settled OD-E), and <see cref="PromptRunnerKind.OpenAiCompat"/>'s runner
-    /// speaks only <c>/chat/completions</c> — so there is nothing to enumerate anywhere. The
-    /// <c>GET /v1/models</c> surface adds that kind here and supplies the enumerator when it lands;
-    /// nothing else about <c>providers init</c> moves.</para>
+    /// <para><b><see cref="PromptRunnerKind.OpenAiCompat"/> is here because the LISTING ENDPOINT is what
+    /// this member describes</b> (plan 28 §7). The kind's blocks declare an <c>endpoint</c>, and
+    /// <c>GET {endpoint}/models</c> is a real, near-universal surface this build now speaks: the pre-DAG
+    /// endpoint preflight reads it to assert every declared model is present before a token is spent.
+    /// <see cref="PromptRunnerKind.Claude"/> stays out — the Claude CLI exposes no model list at all
+    /// (settled OD-E) — so <c>providers init</c> still takes its "could not enumerate" path for a
+    /// Claude-only registry, exactly as before.</para>
+    ///
+    /// <para><b>Enumerable is not the same as invented.</b> This member answers <i>can this kind be
+    /// ASKED?</i>, and nothing about it licenses writing a model id no provider reported: a registry entry
+    /// is a ROUTING TARGET, not documentation (SSOT §9.7, DoR §4.3 ruling 2). Its first reader is the
+    /// pre-DAG preflight; <c>providers init</c> has no <c>openai-compat</c> enumerator wired yet, so for
+    /// such a block it neither adds a block nor emits the "could not enumerate" note — the generator half
+    /// of plan 28 §12 item 10 is still to land.</para>
     ///
     /// <para><b>This is a list, not a seam.</b> There is deliberately no <c>IModelEnumerator</c> stub to
     /// fill: an interface with no implementation is dead code that cannot be tested, and the generator
     /// needs exactly one fact from this file — <i>can this kind be enumerated?</i> — which a list answers
     /// honestly today.</para>
     /// </summary>
-    public static IReadOnlyList<PromptRunnerKind> ModelEnumerable { get; } = [];
+    public static IReadOnlyList<PromptRunnerKind> ModelEnumerable { get; } = [PromptRunnerKind.OpenAiCompat];
 
     /// <summary>
-    /// True when this build can ask <paramref name="kind"/> for its model list. FALSE FOR EVERY KIND in
-    /// v1 — which is what routes <c>providers init</c> down its "could not enumerate" path, where it
-    /// annotates the blocks already present, says plainly that it added none, and exits 0. It never
-    /// synthesises a model id: a registry entry is a ROUTING TARGET, not documentation, so a fabricated
-    /// or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3 ruling 2).
+    /// True when this build can ask <paramref name="kind"/> for its model list — <c>openai-compat</c>
+    /// (<c>GET {endpoint}/models</c>) and nothing else. False for <see cref="PromptRunnerKind.Claude"/>,
+    /// which is what routes <c>providers init</c> down its "could not enumerate" path for a Claude-only
+    /// registry, where it annotates the blocks already present, says plainly that it added none, and exits
+    /// 0. It never synthesises a model id: a registry entry is a ROUTING TARGET, not documentation, so a
+    /// fabricated or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3
+    /// ruling 2).
     /// </summary>
     public static bool HasModelEnumeration(PromptRunnerKind kind) => ModelEnumerable.Contains(kind);
 
