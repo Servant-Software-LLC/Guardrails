@@ -40,19 +40,54 @@ $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
 function Get-Code([string]$rel) {
-    $full = Join-Path $ws $rel
+    # GR_SUBJECT arrives ABSOLUTE from `guardrails samples verify`; joining it to the workspace would
+    # yield a nonsense path and PRECONDITION-fail, which reads exactly like a real finding.
+    $full = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $ws $rel }
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { return $null }
     $raw  = Get-Content -Raw -LiteralPath $full                # NEVER matched against, never reassigned
     $code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', ' ')     # /* */ block comments
     return   [regex]::Replace($code, '(?m)//[^\r\n]*', ' ')    # // and /// line comments
 }
 
+# GR_SUBJECT is the `guardrails samples verify` contract (Samples/SampleVerifier.cs): the verifier runs
+# this script with the sample path as argv[0] AND in $env:GR_SUBJECT. Without the override a sample run
+# scans the real repo instead, both halves see the same untouched bytes, and BOTH exit 1 - the
+# ValidHalfFailed shape, whose own diagnosis is "the guardrail may not be reading the sample at all".
+# Author-time smoke-testing that stages samples into the real paths does NOT exercise this; only
+# `guardrails samples verify` does.
+#
+# THIS GUARDRAIL HAS THREE SUBJECTS WITH DIFFERENT CLAUSES, so the single-file substitution needs one
+# extra move the plan-27 precedent does not: a sample can only model ONE subject, and the clause groups
+# for the other two would then PRECONDITION-fail on files the sample run cannot see - a false red in
+# exactly the direction that looks like a real finding. Under GR_SUBJECT the other two groups therefore
+# go INERT. Which group the sample models is read off its NAME, using the same suffix that keeps the two
+# extra cases out of the verifier's paired scan (SampleVerifier keys on the SECOND extension being
+# exactly .valid or .invalid, so `.valid-runreport.cs` is skipped while `.runreport.valid.cs` would be
+# picked up as an orphan):
+#   03-watch-is-wired.valid.cs / .invalid.cs   -> the Scheduler subject   (the PAIR the verifier runs)
+#   03-watch-is-wired.valid-decisionentry.cs   -> the DecisionEntry subject (extra case, run by hand)
+#   03-watch-is-wired.valid-runreport.cs       -> the RunReport subject     (extra case, run by hand)
+#
+# The four cases, and RE-RUN ALL FOUR after ANY edit to this file, not just the clause you touched.
+# Paths are relative to the repo root; $D below is this task's samples folder:
+#   $D = 'docs/plans/31-unattended-run-hardening/tasks/09-wire-the-plan-edit-watch/samples'
+#   $env:GR_SUBJECT="$D/03-watch-is-wired.valid.cs"              -> expect 0
+#   $env:GR_SUBJECT="$D/03-watch-is-wired.invalid.cs"            -> expect 1  (unwired Scheduler)
+#   $env:GR_SUBJECT="$D/03-watch-is-wired.valid-decisionentry.cs" -> expect 0
+#   $env:GR_SUBJECT="$D/03-watch-is-wired.valid-runreport.cs"     -> expect 0
+$subject = $env:GR_SUBJECT
+$models  = if (-not $subject)                       { 'all'           }
+           elseif ($subject -match 'decisionentry') { 'decisionentry' }
+           elseif ($subject -match 'runreport')     { 'runreport'     }
+           else                                     { 'scheduler'     }
+
 # ACCUMULATE (#478): one distinguishable message per clause, dumped once - never an exit-1 chain that
 # reports one gap per attempt.
 $failures = @()
 
 # --- Scheduler.cs: the watch is constructed, polled at two boundaries, and re-baselined -----------
-$schedRel = 'src/Guardrails.Core/Execution/Scheduler.cs'
+if ($models -eq 'all' -or $models -eq 'scheduler') {
+$schedRel = if ($subject) { $subject } else { 'src/Guardrails.Core/Execution/Scheduler.cs' }
 $sched    = Get-Code $schedRel
 if ($null -eq $sched) {
     $failures += "PRECONDITION: $schedRel does not exist."
@@ -71,9 +106,11 @@ else {
         $failures += "$schedRel never calls .Rebaseline(. Section 5.3's five harness writers each need a PLAN-WIDE re-baseline (no task ids) after them, or the watch reports the harness's own writes as operator edits and the advisory gets muted (#229). NOTE this clause only proves the hook EXISTS - only the JIT-breakdown writer has a pin (P2); the other four are a human read."
     }
 }
+}
 
+if ($models -eq "all" -or $models -eq "decisionentry") {
 # --- DecisionEntry.cs: the two additive tokens ----------------------------------------------------
-$deRel = 'src/Guardrails.Core/Execution/DecisionEntry.cs'
+$deRel = if ($subject) { $subject } else { "src/Guardrails.Core/Execution/DecisionEntry.cs" }
 $de    = Get-Code $deRel
 if ($null -eq $de) {
     $failures += "PRECONDITION: $deRel does not exist."
@@ -86,15 +123,18 @@ else {
         $failures += "$deRel does not carry the literal ""observed"". It is the NEW decision token - the harness noticed and reported at this boundary; nothing was decided and nothing changed. It is also what makes the entry outcome-INERT: RunOutcomePolicy branches on the DECISION token only (SuppressesDelivery and ProceededUnreviewedWaveCount) and never reads Boundary, so ""observed"" cannot suppress mergeOnSuccess or reach exit code 5."
     }
 }
+}
 
+if ($models -eq "all" -or $models -eq "runreport") {
 # --- RunReport.cs: the Observations sibling -------------------------------------------------------
-$rrRel = 'src/Guardrails.Core/Execution/RunReport.cs'
+$rrRel = if ($subject) { $subject } else { "src/Guardrails.Core/Execution/RunReport.cs" }
 $rr    = Get-Code $rrRel
 if ($null -eq $rr) {
     $failures += "PRECONDITION: $rrRel does not exist."
 }
 elseif ($rr -cnotmatch 'IReadOnlyList\s*<\s*DecisionEntry\s*>\s+Observations') {
     $failures += "$rrRel does not declare: public IReadOnlyList<DecisionEntry> Observations. RunReport.Decision is SINGULAR and means the pre-DAG drift decision this run took; a run can produce N plan-edit observations. Section 5.4 adds a defaulted sibling rather than widening Decision, so no existing consumer changes and the shipped drift renderer is not touched for a reason unrelated to drift."
+}
 }
 
 if ($failures.Count -gt 0) {

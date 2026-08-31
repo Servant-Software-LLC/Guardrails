@@ -37,8 +37,27 @@ $ErrorActionPreference = 'Continue'
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-$rel  = 'tests/Guardrails.Core.Tests/Loading/HandoffScopeCoverageTests.cs'
-$full = Join-Path $ws $rel
+# GR_SUBJECT is the `guardrails samples verify` contract (Samples/SampleVerifier.cs): the verifier runs
+# this script with the sample path as argv[0] AND in $env:GR_SUBJECT, so a sample-aware guardrail MUST
+# let it override the hardcoded target. Without the override a sample run scans the real repo instead,
+# both halves see the same untouched bytes, and BOTH exit 1 - the ValidHalfFailed shape, whose own
+# diagnosis is "the guardrail may not be reading the sample at all". Author-time smoke-testing that
+# stages samples into the real paths does NOT exercise this; only `guardrails samples verify` does.
+#   $env:GR_SUBJECT='docs/plans/31-unattended-run-hardening/tasks/04-author-tests-handoff-coverage/samples/03-pins-key-the-right-codes.valid.cs';   <this script>  # expect 0
+#   $env:GR_SUBJECT='docs/plans/31-unattended-run-hardening/tasks/04-author-tests-handoff-coverage/samples/03-pins-key-the-right-codes.invalid.cs'; <this script>  # expect 1
+# A THIRD case ships beside the pair, and the verifier deliberately SKIPS it: SampleVerifier keys on
+# the SECOND extension being exactly .valid or .invalid, so `.invalid-comment-mutation.cs` is ignored
+# the way plan 27's `.invalid-transposed-args.cs` is, while `.comment-mutation.invalid.cs` would have
+# been picked up as a lone .invalid half with no partner (an ORPHAN finding). Run it BY HAND:
+#   $D = 'docs/plans/31-unattended-run-hardening/tasks/04-author-tests-handoff-coverage/samples'
+#   $env:GR_SUBJECT="$D/03-pins-key-the-right-codes.invalid-comment-mutation.cs"  -> expect 1
+# It is the B1 BLOCKER case: pin 1 still asserts GR2068 while a COMMENT and a string literal name
+# GR2069. Read against raw source it flipped this guardrail from exit 1 to exit 0. RE-RUN ALL THREE
+# cases after ANY edit to this file, not just the clause you touched.
+$rel  = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { 'tests/Guardrails.Core.Tests/Loading/HandoffScopeCoverageTests.cs' }
+# GR_SUBJECT arrives ABSOLUTE from `guardrails samples verify`; joining it to the workspace would
+# yield a nonsense path and PRECONDITION-fail, which reads exactly like a real finding.
+$full = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $ws $rel }
 
 # PRECONDITION - the one legitimate early exit: without the subject every clause below is meaningless.
 if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {

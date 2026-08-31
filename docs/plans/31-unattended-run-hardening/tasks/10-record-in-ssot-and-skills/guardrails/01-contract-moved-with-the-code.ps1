@@ -45,7 +45,9 @@ if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 $failures = @()
 
 function Get-RenderedText([string]$rel) {
-    $full = Join-Path $ws $rel
+    # GR_SUBJECT arrives ABSOLUTE from `guardrails samples verify`; joining it to the workspace would
+    # yield a nonsense path and PRECONDITION-fail, which reads exactly like a real finding.
+    $full = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $ws $rel }
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { return $null }
     $raw = Get-Content -Raw -LiteralPath $full          # NEVER matched against, never reassigned
 

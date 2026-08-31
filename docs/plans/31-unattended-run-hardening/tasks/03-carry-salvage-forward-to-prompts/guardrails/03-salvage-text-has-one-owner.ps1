@@ -36,8 +36,19 @@ $ErrorActionPreference = 'Continue'
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-$rel  = 'src/Guardrails.Core/Prompts/PromptComposer.cs'
-$full = Join-Path $ws $rel
+# GR_SUBJECT is the `guardrails samples verify` contract (Samples/SampleVerifier.cs): the verifier runs
+# this script with the sample path as argv[0] AND in $env:GR_SUBJECT, so a sample-aware guardrail MUST
+# let it override the hardcoded target. Without the override a sample run scans the real repo instead,
+# both halves see the same untouched bytes, and BOTH exit 1 - the ValidHalfFailed shape, whose own
+# diagnosis is "the guardrail may not be reading the sample at all". Author-time smoke-testing that
+# stages samples into the real paths does NOT exercise this; only `guardrails samples verify` does.
+#   $env:GR_SUBJECT='docs/plans/31-unattended-run-hardening/tasks/03-carry-salvage-forward-to-prompts/samples/03-salvage-text-has-one-owner.valid.cs';   <this script>  # expect 0
+#   $env:GR_SUBJECT='docs/plans/31-unattended-run-hardening/tasks/03-carry-salvage-forward-to-prompts/samples/03-salvage-text-has-one-owner.invalid.cs'; <this script>  # expect 1
+# RE-RUN EVERY case after ANY edit to this file, not just the clause you touched.
+$rel  = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { 'src/Guardrails.Core/Prompts/PromptComposer.cs' }
+# GR_SUBJECT arrives ABSOLUTE from `guardrails samples verify`; joining it to the workspace would
+# yield a nonsense path and PRECONDITION-fail, which reads exactly like a real finding.
+$full = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $ws $rel }
 
 # PRECONDITION - the one legitimate early exit: without the subject every clause below is meaningless.
 if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {

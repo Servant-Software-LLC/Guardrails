@@ -27,10 +27,27 @@ $ErrorActionPreference = 'Continue'
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-$targets = @(
-    'tests/Guardrails.Core.Tests/Execution/EscalationSalvageTests.cs',
-    'tests/Guardrails.Integration.Tests/EscalationSalvageTests.cs'
-)
+# GR_SUBJECT is the `guardrails samples verify` contract (Samples/SampleVerifier.cs): the verifier runs
+# this script with the sample path as argv[0] AND in $env:GR_SUBJECT. When it is set it REPLACES THE
+# WHOLE LIST with the one file named - which is what makes a single-file sample meaningful here, since
+# a sample can only model one of the two test files and requiring both would false-red every sample
+# run. Without the override a sample run scans the real repo instead, both halves see the same
+# untouched bytes, and BOTH exit 1 - the ValidHalfFailed shape, whose own diagnosis is "the guardrail
+# may not be reading the sample at all". Author-time smoke-testing that stages samples into the real
+# paths does NOT exercise this; only `guardrails samples verify` does.
+#   $env:GR_SUBJECT='<plan>/tasks/01-author-tests-escalation-salvage/samples/03-no-new-api-named.valid.cs'
+#       -> expect 0
+#   $env:GR_SUBJECT='<plan>/tasks/01-author-tests-escalation-salvage/samples/03-no-new-api-named.invalid.cs'
+#       -> expect 1
+# RE-RUN BOTH cases after ANY edit to this file, not just the clause you touched.
+$targets = if ($env:GR_SUBJECT) {
+    @($env:GR_SUBJECT)
+} else {
+    @(
+        'tests/Guardrails.Core.Tests/Execution/EscalationSalvageTests.cs',
+        'tests/Guardrails.Integration.Tests/EscalationSalvageTests.cs'
+    )
+}
 
 # Each ban: the identifier, and the sentence a retry agent needs to act on it.
 $bans = @(
@@ -50,7 +67,9 @@ $failures = @()
 $scanned  = 0
 
 foreach ($rel in $targets) {
-    $full = Join-Path $ws $rel
+    # GR_SUBJECT arrives ABSOLUTE from `guardrails samples verify`; joining it to the workspace would
+    # yield a nonsense path and PRECONDITION-fail, which reads exactly like a real finding.
+    $full = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $ws $rel }
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         $failures += "PRECONDITION: $rel does not exist. This task authors it; guardrail 01 would have failed first if it were merely broken, so an absent file means the deliverable was not written."
         continue
