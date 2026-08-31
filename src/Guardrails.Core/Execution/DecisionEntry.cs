@@ -141,6 +141,23 @@ public static class DecisionTokens
     /// auditable instead of silent; it changes no task verdict (the deterministic policy stands).
     /// </summary>
     public const string NoVerdict = "no-verdict";
+
+    /// <summary>
+    /// The harness NOTICED something and reported it; nothing was decided and nothing changed (plan 31
+    /// §5.4, issue #545 part 3). Carried by the <see cref="PlanEditDecisions.Boundary"/> entry for a
+    /// mid-run plan-folder edit.
+    /// <para>
+    /// <b>This token is what makes the entry outcome-inert.</b> <c>RunOutcomePolicy</c> is the only
+    /// consumer that branches on a decision, through <c>SuppressesDelivery</c>
+    /// (<see cref="ProceededBestGuess"/> / <see cref="ProceededUnreviewed"/>) and
+    /// <c>ProceededUnreviewedWaveCount</c> (<see cref="ProceededUnreviewed"/>); neither reads
+    /// <see cref="DecisionEntry.Boundary"/> at all. <c>observed</c> is neither token, so an observation can
+    /// neither suppress <c>mergeOnSuccess</c> nor reach <c>ExitCodes.ProceededUnreviewed</c>. The inertness
+    /// is a fact about THIS token, not about the boundary — a future non-<c>observed</c> token on the same
+    /// boundary would need re-checking.
+    /// </para>
+    /// </summary>
+    public const string Observed = "observed";
 }
 
 /// <summary>
@@ -393,5 +410,114 @@ public static class DriftDecisions
         const string prefix = "sha256:";
         string body = hash.StartsWith(prefix, StringComparison.Ordinal) ? hash[prefix.Length..] : hash;
         return body.Length <= 8 ? body : body[..8];
+    }
+}
+
+/// <summary>
+/// Builds the <c>plan-edit</c>-boundary <see cref="DecisionEntry"/> for a mid-run plan-folder edit that
+/// <see cref="LivePlanEditWatch"/> observed (plan 31 §5.4, issue #545 part 3) — the single place the five
+/// <c>required</c> fields are filled, so no call site has to rediscover them.
+///
+/// <para><b>Why not reuse <c>boundary: "drift"</c>.</b> A consumer filtering on it would start counting
+/// observations as drift decisions. The <c>drift</c> boundary means <i>a gate was reached and resolved</i>;
+/// here nothing was resolved, and nothing was even decided — hence a new boundary paired with the
+/// <see cref="DecisionTokens.Observed"/> decision token that carries the inertness (see its remarks).</para>
+///
+/// <para><b>No new <see cref="IRunObserver"/> event.</b> <see cref="IRunObserver.DecisionRecorded"/> already
+/// exists, is rendered by BOTH operator surfaces (<c>ConsoleRunObserver</c> for <c>--no-ui</c>,
+/// <c>LiveRunObserver</c> for the live table) and forwarded by BOTH transparent decorators
+/// (<c>OnTheFlyLogSiteObserver</c>, <c>OnTheFlyDiagramObserver</c>). A new event would have to be added to
+/// all five, and <see cref="IRunObserver"/>'s members carry default no-op bodies — so a decorator missed in
+/// the wiring would compile, pass every test that does not exercise it, and drop the warning SILENTLY: this
+/// plan's own failure archetype, shipped inside the fix for it.</para>
+/// </summary>
+public static class PlanEditDecisions
+{
+    /// <summary>
+    /// The <c>boundary</c> token for a mid-run plan-folder edit observation — additive alongside
+    /// <c>drift</c> / <c>wave</c> / <c>task</c> (SSOT §7.2).
+    /// </summary>
+    public const string Boundary = "plan-edit";
+
+    /// <summary>The <c>action:&lt;rel&gt;</c> prefix <c>TaskDefinitionFiles.Enumerate</c> puts on the action file's label.</summary>
+    private const string ActionLabelPrefix = "action:";
+
+    /// <summary>
+    /// One entry per <see cref="LivePlanEditWatch.Poll"/> that saw anything. <c>Subject</c> is the edited
+    /// task ids comma-joined (the <c>drift</c> entry's own convention); <c>Detail</c> is one
+    /// <c>&lt;taskId&gt;: &lt;old&gt; -&gt; &lt;new&gt;</c> line per edited task, then the changed files —
+    /// GROUPED BY FILE, each naming the task ids that share it.
+    ///
+    /// <para>Grouping by file is not de-duplication. <c>PlanLoader</c> validates <c>action.path</c> for
+    /// existence only, so N tasks may legitimately share one action script; editing it mid-run really does
+    /// change N task definitions and all N ids stay in <c>Subject</c> and in the file's own bracket — which
+    /// tasks are affected is the fact the operator needs. Grouping only stops the same path being printed
+    /// N times (plan 31 §11 risk 7).</para>
+    /// </summary>
+    public static DecisionEntry Observed(AutonomyPolicy policy, IReadOnlyList<PlanEdit> edits)
+    {
+        ArgumentNullException.ThrowIfNull(edits);
+
+        string subject = string.Join(", ", edits.Select(e => e.TaskId));
+
+        var lines = new List<string>(edits.Select(
+            e => $"{e.TaskId}: {ShortHash(e.OldHash)} -> {ShortHash(e.NewHash)}"));
+
+        // (kind, label) → the task ids sharing it, in first-sighting order (which is the enumeration order:
+        // task.json, the action file, guardrails/**, preflights/**).
+        var byFile = new List<(PlanEditKind Kind, string Label, List<string> TaskIds)>();
+        foreach (PlanEditedFile file in edits.SelectMany(e => e.Files))
+        {
+            (PlanEditKind Kind, string Label, List<string> TaskIds) existing =
+                byFile.FirstOrDefault(g => g.Kind == file.Kind
+                                           && string.Equals(g.Label, file.Label, StringComparison.Ordinal));
+            if (existing.TaskIds is null)
+            {
+                byFile.Add((file.Kind, file.Label, [file.TaskId]));
+            }
+            else if (!existing.TaskIds.Contains(file.TaskId, StringComparer.Ordinal))
+            {
+                existing.TaskIds.Add(file.TaskId);
+            }
+        }
+
+        lines.AddRange(byFile.Select(g =>
+            $"{KindToken(g.Kind),-8}  {AsPath(g.Label)}  [{string.Join(", ", g.TaskIds)}]"));
+
+        return new DecisionEntry
+        {
+            Boundary = Boundary,
+            Policy = AutonomyPolicies.Token(policy),
+            Decision = DecisionTokens.Observed,
+            Subject = subject,
+            Headline = $"Plan folder edited during this run: {byFile.Count} definition file(s) across "
+                       + $"{edits.Count} task(s) — reported, nothing halted",
+            Detail = string.Join("\n", lines)
+        };
+    }
+
+    private static string KindToken(PlanEditKind kind) => kind switch
+    {
+        PlanEditKind.Added => "added",
+        PlanEditKind.Removed => "removed",
+        _ => "modified"
+    };
+
+    /// <summary>
+    /// The enumeration label as a PATH. <c>task.json</c>, <c>guardrails/…</c> and <c>preflights/…</c> already
+    /// read as task-folder-relative paths; the action file's label carries an <c>action:</c> prefix that does
+    /// not, so it is dropped rather than printed at an operator who is about to go and open the file.
+    /// </summary>
+    private static string AsPath(string label) =>
+        label.StartsWith(ActionLabelPrefix, StringComparison.Ordinal)
+            ? label[ActionLabelPrefix.Length..]
+            : label;
+
+    /// <summary>The advisory's short form of a watch-level definition hash — the same shape the drift entry uses.</summary>
+    private static string ShortHash(string hash)
+    {
+        const string prefix = "sha256:";
+        string body = hash.StartsWith(prefix, StringComparison.Ordinal) ? hash[prefix.Length..] : hash;
+        return prefix + (body.Length <= 8 ? body : body[..8]);
     }
 }
