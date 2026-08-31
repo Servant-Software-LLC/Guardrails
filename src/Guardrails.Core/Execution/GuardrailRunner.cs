@@ -178,7 +178,14 @@ internal sealed class GuardrailRunner
         string stagingVerdictPath = PromptOutputStaging.PrepareStagingPath(
             effectiveWorkspaceRoot, task.Id, attemptFolder, verdictPath);
 
-        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, stagingVerdictPath, actionStdoutPath, isWorktreeMode);
+        // §6.4: the verdict contract branches on ONE capability of the block this invocation will
+        // actually execute on — can its runner write files? A runner that cannot is told to TRANSCRIBE
+        // (emit the verdict as the last fenced JSON block; the harness writes it) instead of being handed
+        // a "you MUST write this file" instruction it has no tool to obey. `judgeBlock` is the block the
+        // dispatch below resolves to, so the contract and the runner can never disagree.
+        string composed = PromptComposer.ComposeGuardrail(
+            promptFile.Body, snapshotPath, stagingVerdictPath, actionStdoutPath, isWorktreeMode,
+            PromptRunnerKinds.WritesFiles(judgeBlock.Kind));
         AtomicFile.WriteAllText(Path.Combine(logDir, $"composed-prompt.{Sanitize(guardrail.Name)}.md"), composed);
 
         var guardrailEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
@@ -212,7 +219,16 @@ internal sealed class GuardrailRunner
 
         // Worktree containment hook (issue #199/#192) for a prompt GUARDRAIL: same OUTER boundary as
         // a prompt action — a verifier prompt is still an agent that can Write/Edit/Bash.
-        if (isWorktreeMode)
+        //
+        // ...unless the block's runner offers none of those tools (plan 28 §3.6). The hook polices
+        // Write/Edit/MultiEdit/NotebookEdit/Bash tool calls (SSOT §9.4); generating a Claude
+        // settings.json and passing it as a CLI flag to a runner that has no argv and no write tool is
+        // litter, not containment. This is not a weakening: NeedsContainmentHook answers TRUE for every
+        // kind but the ones registered as tool-less, so a future file-writing runner inherits the
+        // boundary rather than silently losing it — and with the condition here, the runner's own
+        // `--settings` refusal becomes a TRUE backstop, reachable only when this splice and that build
+        // fact disagree, which is a harness bug worth throwing on.
+        if (isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook(judgeBlock.Kind))
         {
             string guardrailSettingsPath = WorktreeContainmentHook.WriteHookFiles(
                 logDir, worktreeRoot!, $"guardrail-{Sanitize(guardrail.Name)}");
