@@ -82,6 +82,35 @@ overhead, not review.
 run. This loop is the *human design review* of a plan doc — a separate concern. A pointer for
 the dev workflow lives in `guardrails-dev-knowledge`.
 
+## The `filesTouched` handoff-table convention (load-bearing, issue #553)
+
+Every design-of-record's Implementation handoff table (`| # | Agent | filesTouched | ... |`,
+below) is now machine-checked at `guardrails validate` time (`HandoffScopeCoverage`,
+`docs/plans/02-schemas-and-contracts.md` section 9.6), not merely a review nicety. Author the
+`filesTouched` column to survive that check:
+
+- **Every path or glob is backticked**, and prose stays OUTSIDE the backticks — the checker
+  extracts candidates from backtick-delimited code spans only; a path buried in prose is
+  invisible to it and silently unchecked.
+- **A relative path must be a true segment suffix of the real path.** `Prompts/Foo.cs`
+  resolves against `src/Guardrails.Core/Prompts/Foo.cs` (a whole path segment matches);
+  `Cli/Commands/` does **not** resolve against `src/Guardrails.Cli/Commands/` — the real
+  segment is `Guardrails.Cli`, not `Cli`, so the checker drops the fragment silently rather
+  than reporting it. Write the segment that actually appears in the tree.
+- **A row claiming a directory must be backed by a task whose `writeScope` authorizes it** —
+  the checker resolves each cell against the plan's task manifests, not against prose.
+- **The two codes, and which mistake fires which:** `GR2068` `HandoffPathUnreachable` — a
+  named path no task's `writeScope` covers at all (undeliverable under any implementation).
+  `GR2069` `HandoffRowSplitAcrossTasks` — every path IS covered, but by more than one task,
+  so no SINGLE task can deliver the row as written. They are mutually exclusive per row.
+- **The shape this now expects:** a row deliverable by **one** task, or split into **several
+  rows** each owned by one task — not one row spanning multiple collaborators' scopes. A
+  deliberate split still trips `GR2069`, and that is a confirm, not a defect — its message
+  says so — but design the table to need it rarely.
+
+Full contract: `docs/plans/02-schemas-and-contracts.md` section 9.6 (the `GR2068`/`GR2069` rows) and
+section 3.4 (the `GR2042` cross-reference).
+
 ## What You Do NOT Do
 
 - Write production code or edit `src/`.
@@ -113,3 +142,4 @@ the dev workflow lives in `guardrails-dev-knowledge`.
 - [ ] Devil's-advocate self-critique included.
 - [ ] Handoff concrete (agent + files + order).
 - [ ] A substantial design-of-record is delivered as a **draft PR** for inline review, and implementation milestones do not start until the human has reviewed and comments are addressed (#106); trivial/mechanical changes are exempt.
+- [ ] The handoff table's `filesTouched` column is backticked, segment-resolvable, and one task per row (or split into several rows) — the `GR2068`/`GR2069` convention (#553).

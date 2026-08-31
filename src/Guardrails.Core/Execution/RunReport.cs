@@ -310,6 +310,19 @@ public sealed record RunReport
     public DecisionEntry? Decision { get; init; }
 
     /// <summary>
+    /// The entries this run merely NOTICED — in M1 the <c>plan-edit</c> observations
+    /// <see cref="LivePlanEditWatch"/> raised when the operator edited the plan folder mid-run (plan 31
+    /// §5.4, issue #545 part 3). A sibling of <see cref="Decision"/> rather than a widening of it, because
+    /// the two mean different things: <see cref="Decision"/> is something the harness <b>decided</b> (and is
+    /// singular — the pre-DAG drift decision this run took), <see cref="Observations"/> are things it
+    /// <b>noticed</b>, of which a run can produce N. Additive and defaulted, so no existing consumer changes
+    /// and the shipped drift renderer is untouched by a reason unrelated to drift.
+    /// <para>These are ALSO appended to the durable <c>decisions[]</c> in <c>run.json</c> as they happen;
+    /// this list is the end-of-run report's copy, for the terminal advisory the CLI renders.</para>
+    /// </summary>
+    public IReadOnlyList<DecisionEntry> Observations { get; init; } = [];
+
+    /// <summary>
     /// Non-null when a WAVED run HALTED at a wave boundary (SSOT §14, #254 M2b) other than a per-task
     /// needs-human (which is reported via the ordinary task outcomes + later-wave Blocked entries): the next
     /// wave is unauthored/empty (the JIT checkpoint, §14.4), a wave's entry or exit gate failed, or a

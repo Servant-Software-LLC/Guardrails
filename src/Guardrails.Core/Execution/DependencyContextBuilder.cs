@@ -108,9 +108,33 @@ internal sealed class DependencyContextBuilder
     }
 
     /// <summary>
+    /// The salvage artifact a preserved attempt leaves in its own log dir (written by
+    /// <see cref="AttemptArtifacts.WriteSalvagePatch"/>). Its PRESENCE is the record that the attempt left
+    /// recoverable work — plan 31 §3.3 deliberately journals neither this nor the ref name below.
+    /// </summary>
+    internal const string SalvagePatchFileName = "prior-attempt.patch";
+
+    /// <summary>
+    /// The git ref an attempt's preserved working tree lives at, DERIVED from the task id and the attempt
+    /// number exactly as <c>TaskExecutor.TryStash</c> mints it (issue #554, plan 31 §3.3). One owner of the
+    /// format: the composed-prompt carry (<see cref="BuildPriorAttempts"/>) and the escalation gate context
+    /// (<c>Scheduler.BuildGateContext</c>) both read it from here rather than re-spelling it, so a human
+    /// answering a halt and the next attempt's prompt can never name different refs for the same work.
+    /// </summary>
+    internal static string SalvageRefNameFor(string taskId, int attempt) =>
+        $"refs/guardrails/{taskId}/attempt-{attempt}";
+
+    /// <summary>
     /// Build pointers to this task's PRIOR attempts (issue #26 Gaps 2 &amp; 3): every recorded
     /// attempt earlier than <paramref name="currentAttemptNumber"/>, most recent first, each
     /// with its transcript (what it did) and feedback (why it failed) if present.
+    ///
+    /// <para><b>Issue #554 — the salvage pointers.</b> An attempt that was preserved also carries the two
+    /// pointers a next attempt needs to RECOVER that work: the patch in its log dir and the ref its tree
+    /// was committed to. Neither is journaled (plan 31 §3.3): the patch is found by probing the log dir
+    /// this walker already resolves, and the ref name is derived. This matters most on the ESCALATION
+    /// path, whose <c>feedback.md</c> is never inlined into the next prompt (that path returns a null
+    /// feedback path), so <see cref="PriorAttemptRef"/> is the only carrier the work has.</para>
     /// </summary>
     public IReadOnlyList<PriorAttemptRef> BuildPriorAttempts(string taskId, int currentAttemptNumber)
     {
@@ -126,13 +150,21 @@ internal sealed class DependencyContextBuilder
                      .OrderByDescending(a => a.Attempt))
         {
             string absLogDir = ResolveAbsoluteLogDir(record.LogDir);
+
+            // Both salvage pointers are set together, or neither is: the ref is minted by the same call
+            // that writes the patch, so advertising a ref for an attempt that left no patch would point
+            // the next agent at something that may not exist.
+            string? salvagePatch = ExistingOrNull(Path.Combine(absLogDir, SalvagePatchFileName));
+
             refs.Add(new PriorAttemptRef
             {
                 Attempt = record.Attempt,
                 Outcome = JournalJson.OutcomeToken(record.Outcome),
                 LogDir = absLogDir,
                 TranscriptPath = ExistingOrNull(Path.Combine(absLogDir, "transcript.md")),
-                FeedbackPath = ExistingOrNull(Path.Combine(absLogDir, "feedback.md"))
+                FeedbackPath = ExistingOrNull(Path.Combine(absLogDir, "feedback.md")),
+                SalvagePatchPath = salvagePatch,
+                SalvageRefName = salvagePatch is null ? null : SalvageRefNameFor(taskId, record.Attempt)
             });
         }
 

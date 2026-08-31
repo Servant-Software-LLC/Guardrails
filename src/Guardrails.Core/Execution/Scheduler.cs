@@ -93,6 +93,18 @@ public sealed class Scheduler
     // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
     private IntegrationHandle? _pendingDeliveryIntegration;
 
+    // #545 part 3 (plan 31 §5.2): the mid-run plan-folder edit watch. Constructed HERE rather than at the
+    // composition root — unlike the Scheduler's other collaborators — because nothing depends on the seam
+    // being injectable: the watch has no substitutable behaviour any test needs to fake, and it is built
+    // from the PlanDefinition this Scheduler already holds. Null only when construction itself failed (see
+    // TryCreatePlanEditWatch), which leaves the advisory inert and the run otherwise untouched.
+    private readonly LivePlanEditWatch? _planEditWatch;
+
+    // The plan-edit observations this run raised, in order, for the end-of-run advisory
+    // (RunReport.Observations). Each is ALSO already durable in decisions[] and already emitted live;
+    // this is the report's copy. Written under _gate by PollPlanEdits.
+    private readonly List<DecisionEntry> _planEditObservations = [];
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -124,6 +136,11 @@ public sealed class Scheduler
         _escalationSink = escalationSink;
         _criticalityJudge = criticalityJudge;
         _blockerRetry = blockerRetry;
+
+        // Baseline the definition surface as early as the Scheduler can see the plan: the watch takes its
+        // baseline in its own constructor (not at the first Poll), so an operator edit landing between plan
+        // load and the first scheduler boundary is still reported — which is the point.
+        _planEditWatch = TryCreatePlanEditWatch(plan);
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -312,6 +329,105 @@ public sealed class Scheduler
         catch (Exception)
         {
             // The outer containment. An advisory is not allowed to be the reason a run does not start.
+        }
+    }
+
+    /// <summary>
+    /// Build the mid-run plan-folder edit watch (plan 31 §5.2, #545 part 3), or null if that fails. The
+    /// watch is an ADVISORY, and an advisory that can be the reason a run does not start is strictly worse
+    /// than no advisory. Its constructor reads the whole plan's definition surface off disk, so a plan
+    /// folder that vanished (or a synthetic <see cref="TaskNode"/> whose directory is not a real path) must
+    /// degrade to silence rather than take the run down before the DAG starts.
+    /// </summary>
+    private static LivePlanEditWatch? TryCreatePlanEditWatch(PlanDefinition plan)
+    {
+        try
+        {
+            return new LivePlanEditWatch(plan);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What one poll boundary does with its result (plan 31 §5.2): when an OPERATOR edited the definition
+    /// surface since the last boundary, record ONE <c>plan-edit</c>/<c>observed</c> entry on all three
+    /// surfaces — live (<see cref="IRunObserver.DecisionRecorded"/>), durable (<c>decisions[]</c>) and
+    /// terminal (<see cref="RunReport.Observations"/>, rendered by the CLI at end of run). Empty (or a run
+    /// whose watch failed to construct) is silence.
+    ///
+    /// <para>The two boundaries that call this are the ones that already exist — task DISPATCH and task
+    /// SETTLE — and each does its own <see cref="LivePlanEditWatch.Poll"/> on the scheduler's own thread.
+    /// No new thread, no daemon, and no <c>FileSystemWatcher</c>: that would fire on the harness's own
+    /// writes under the plan folder, needs a debounce policy, and is platform-quirky. Polling costs at most
+    /// 2N recomputes of the definition surface per run — a few hundred KB of reads against a run that spends
+    /// dollars per attempt — and the price is timeliness: the warning appears at the NEXT scheduler boundary
+    /// rather than instantly, and a single long task retrying alone can delay it by one attempt (§11 risk 3).</para>
+    ///
+    /// <para>Each <c>Poll()</c> is taken under the Scheduler's EXISTING <see cref="_gate"/> (no new lock):
+    /// both boundaries are reached from the parallel worker loop, and <see cref="LivePlanEditWatch"/>
+    /// replaces its whole baseline per call, so two concurrent polls would race on it. Serializing there is
+    /// also what makes "exactly one entry per edit" true — the first poll to run consumes the diff and
+    /// re-baselines. The journal write and the observer notification are deliberately OUTSIDE the gate:
+    /// neither touches scheduler state, and neither should hold a worker-visible lock over file IO.
+    /// <see cref="LivePlanEditWatch.Poll"/> never throws (an unreadable file is carried forward, not
+    /// reported), so no try/catch is needed around it.</para>
+    /// </summary>
+    private void RecordPlanEdits(IReadOnlyList<PlanEdit>? edits)
+    {
+        if (edits is not { Count: > 0 })
+        {
+            return;
+        }
+
+        DecisionEntry entry = PlanEditDecisions.Observed(_plan.Config.AutonomyPolicy, edits);
+        lock (_gate)
+        {
+            _planEditObservations.Add(entry);
+        }
+
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+    }
+
+    /// <summary>
+    /// Silently re-baseline the WHOLE plan after a harness-authored definition write (plan 31 §5.3) — a
+    /// harness write is not an operator edit, and an advisory that fires on the harness's own writes stops
+    /// being read (#229).
+    ///
+    /// <para><b>Plan-wide, never per-task</b>, because three of the five writers have authority over files
+    /// outside the unit they nominally act on — most of all the JIT breakdown, which runs a Claude subprocess
+    /// rooted at the PLAN directory with <c>Write</c>/<c>Edit</c>/<c>Bash</c> at <c>acceptEdits</c> and no
+    /// containment hook. A per-task re-baseline would leave the watch reporting the harness's own writes as
+    /// operator edits.</para>
+    ///
+    /// <para><b>This is a workaround for #557, not a fix.</b> Re-baselining plan-wide is only necessary
+    /// because <c>WaveBreakdownInvoker</c> has plan-wide write authority it should not have. Until #557
+    /// scopes that authority to the wave being authored, the watch pays for the reach by going blind to any
+    /// operator edit landing in the same window as a JIT breakdown — a real, accepted hole in this feature,
+    /// caused by a hole in a different one.</para>
+    /// </summary>
+    private void RebaselinePlanEdits()
+    {
+        if (_planEditWatch is not { } watch)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            watch.Rebaseline();
+        }
+    }
+
+    /// <summary>The report's copy of this run's plan-edit observations, read under <see cref="_gate"/>.</summary>
+    private IReadOnlyList<DecisionEntry> PlanEditObservationsSnapshot()
+    {
+        lock (_gate)
+        {
+            return _planEditObservations.Count == 0 ? [] : _planEditObservations.ToArray();
         }
     }
 
@@ -629,6 +745,12 @@ public sealed class Scheduler
                 driftDecision = gate.Decision;
                 _journal.RecordDecision(driftDecision);
                 _observer.DecisionRecorded(driftDecision);
+
+                // Harness writer 5 of 5 (plan 31 §5.3): a TryResolveDrift that RESOLVED. Its destructive
+                // section is a `git reset --hard`, and this is NOT pre-DAG on a waved plan — DrainAsync is
+                // called once per wave, so it fires mid-run. Whatever it moved on disk is the harness's own
+                // work, not an operator edit.
+                RebaselinePlanEdits();
 
                 IReadOnlyDictionary<string, PlanBranchTaskRecord> refreshed = planBranchRecords;
                 if (_worktreeProvider is { } wpAfter && integ is { } integAfter)
@@ -1478,10 +1600,20 @@ public sealed class Scheduler
                     cancellationToken, resume, prepared)
                 .ConfigureAwait(false);
 
+            // Harness writer 1 of 5 (plan 31 §5.3): a JIT wave BREAKDOWN ATTEMPT. Plan-wide, because the
+            // invoker's subprocess is rooted at the plan directory with no containment hook — it can rewrite
+            // any other wave's tasks/, any task's guardrails/, or guardrails.json (#557).
+            RebaselinePlanEdits();
+
             // Sweep the half-written TRAILING task folder(s) this attempt created before the gate runs, so an
             // "11 complete + 1 with a task.json and no action file" truncation is judged as the 11-task valid
             // prefix it is — rather than discarding 79% of the work because of one missing file (§4.3).
             inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
+
+            // Harness writer 3 of 5, call site 1 of its TWO: the post-invoke sweep moved task folders into
+            // rejected/tasks/. (Site 2 is the cancel/fault cleanup in LeaveWaveLoadable — re-baselining only
+            // here would leave that path blind, reporting the harness's own deletions as operator edits.)
+            RebaselinePlanEdits();
 
             // Read at FULL fidelity: the quarantine reason below has to say which of "no manifest" and "a
             // manifest that declares nothing" actually happened, and TryRead collapses them into one null.
@@ -1934,8 +2066,25 @@ public sealed class Scheduler
     /// it degrades to the pre-#471 whole-<c>tasks/</c> move, because a guess about provenance is worse than
     /// a coarse but honest fallback.
     /// </summary>
-    private static RevertSummary RevertScoped(WaveNode wave, BreakdownInventory? inventory, string rejectedRoot) =>
-        inventory?.Revert(rejectedRoot) ?? QuarantineWholeTasksFolder(wave, rejectedRoot);
+    private RevertSummary RevertScoped(WaveNode wave, BreakdownInventory? inventory, string rejectedRoot)
+    {
+        if (inventory is not null)
+        {
+            RevertSummary reverted = inventory.Revert(rejectedRoot);
+
+            // Harness writer 2 of 5 (plan 31 §5.3): BreakdownInventory.Revert moved attempt-created files to
+            // rejected/ and restored pre-existing ones from snapshot.
+            RebaselinePlanEdits();
+            return reverted;
+        }
+
+        RevertSummary quarantined = QuarantineWholeTasksFolder(wave, rejectedRoot);
+
+        // Harness writer 4 of 5 (plan 31 §5.3): QuarantineWholeTasksFolder moved the wave's ENTIRE tasks/
+        // directory to rejected/tasks — or, on its catch branch, hard-deleted it recursively.
+        RebaselinePlanEdits();
+        return quarantined;
+    }
 
     /// <summary>
     /// The pre-#471 fallback: move the whole <c>tasks/</c> to <c>rejected/tasks/</c> and RESTORE an empty stub
@@ -1991,12 +2140,18 @@ public sealed class Scheduler
     /// kept (the checkpoint re-fires on it); anything else is reverted to the pre-invocation state. Never
     /// throws — a cleanup fault must not mask the cancellation it is cleaning up after.
     /// </summary>
-    private static void LeaveWaveLoadable(
+    private void LeaveWaveLoadable(
         PlanDefinition plan, WaveNode wave, BreakdownInventory? inventory, string rejectedRoot)
     {
         try
         {
             inventory?.SweepIncompleteTrailingTaskFolders(rejectedRoot);
+
+            // Harness writer 3 of 5, call site 2 of its TWO (plan 31 §5.3): the CANCEL/FAULT cleanup sweep.
+            // Without this the fault path is blind — a cancelled or faulted wave sweeps task folders into
+            // rejected/tasks/, the watch sees its own harness's deletions on the next Poll(), and reports
+            // them to the operator as edits they did not make.
+            RebaselinePlanEdits();
 
             bool resumable = BreakdownIntent.TryRead(wave.Directory) is { } intent
                              && intent.MissingFolders(wave.Directory).Count > 0;
@@ -2719,6 +2874,18 @@ public sealed class Scheduler
                 TaskNode task = envelope.Task;
                 WorktreeHandle handle = MaterializeForkIfDeferred(context, envelope);
 
+                // Plan 31 §5.2 — poll boundary 1 of 2: task DISPATCH. Placed before the attempt runs, so an
+                // edit made while the DAG was busy elsewhere is reported at the first boundary that follows
+                // it rather than waiting for something to settle. Under the EXISTING _gate (see
+                // RecordPlanEdits); the recording itself is done off-gate.
+                IReadOnlyList<PlanEdit>? editsAtDispatch;
+                lock (_gate)
+                {
+                    editsAtDispatch = _planEditWatch?.Poll();
+                }
+
+                RecordPlanEdits(editsAtDispatch);
+
                 if (CostCapHaltFor(task) is { } capped)
                 {
                     await OnSettledAsync(context, task, capped, handle, cancellationToken).ConfigureAwait(false);
@@ -3080,7 +3247,43 @@ public sealed class Scheduler
     {
         string logs = Path.Combine(_plan.PlanDirectory, "logs");
         string q = question is { Length: > 0 } ? $" Question: {question}." : "";
-        return $"Autonomous {gate} gate for '{subject}'.{q} Full logs under {logs}.";
+        return $"Autonomous {gate} gate for '{subject}'.{q} Full logs under {logs}.{DescribePreservedWork(subject)}";
+    }
+
+    /// <summary>
+    /// What the halting attempt already BUILT, for whoever answers the gate (issue #554, plan 31 §3.3).
+    /// The context above tells a human what is WRONG and nothing about what exists — plan 28's attempt-7
+    /// escalation enumerated its completed work in detail, none of it was reachable, and the record pointed
+    /// at none of it. When the attempt was preserved, both durable copies are named: the git ref (its own
+    /// segment worktree is orphaned, so the ref is the only thing that outlives the run) and the readable
+    /// patch beside its logs.
+    ///
+    /// <para>Empty for a gate whose <paramref name="subject"/> is not a task (a wave dir), for a task with
+    /// no attempts, and — deliberately — whenever the LAST attempt left no patch: naming an earlier
+    /// attempt's ref would answer a question about the halting attempt with someone else's work.</para>
+    /// </summary>
+    private string DescribePreservedWork(string subject)
+    {
+        if (_journal is not Journal.RunJournal run
+            || run.AttemptsFor(subject) is not { Count: > 0 } attempts)
+        {
+            return "";
+        }
+
+        Journal.AttemptRecord last = attempts.MaxBy(a => a.Attempt)!;
+        string patch = Path.GetFullPath(Path.Combine(
+            _plan.PlanDirectory, last.LogDir, DependencyContextBuilder.SalvagePatchFileName));
+
+        if (!File.Exists(patch))
+        {
+            return "";
+        }
+
+        // Forward slashes so the path reads the same on every OS, matching the salvage section's own
+        // convention (RetryPolicy.AppendSalvageSection).
+        return $" Attempt {last.Attempt} wrote work before it stopped, and its in-scope files were preserved: "
+             + $"git ref {DependencyContextBuilder.SalvageRefNameFor(subject, last.Attempt)}, "
+             + $"readable patch {patch.Replace('\\', '/')}.";
     }
 
     /// <summary>
@@ -3613,6 +3816,17 @@ public sealed class Scheduler
         {
             context.Channel.Writer.TryWrite(ready);
         }
+
+        // Plan 31 §5.2 — poll boundary 2 of 2: task SETTLE. This is the boundary that catches an edit made
+        // BY a task's own action (or by an operator during it), and the last boundary a run reaches, so a
+        // late edit is still reported before the end-of-run advisory is composed.
+        IReadOnlyList<PlanEdit>? editsAtSettle;
+        lock (_gate)
+        {
+            editsAtSettle = _planEditWatch?.Poll();
+        }
+
+        RecordPlanEdits(editsAtSettle);
     }
 
     /// <summary>
@@ -4081,7 +4295,7 @@ public sealed class Scheduler
         return report with { Tasks = rewritten };
     }
 
-    private static RunReport BuildReport(
+    private RunReport BuildReport(
         PlanDefinition plan,
         IReadOnlyDictionary<string, TaskResult> settled,
         bool cancelled)
@@ -4099,7 +4313,15 @@ public sealed class Scheduler
                 });
         }
 
-        return new RunReport { Tasks = results, Cancelled = cancelled };
+        // Every report this run produces — green, halted, cancelled — comes through here, so the terminal
+        // surface of the plan-edit advisory is carried on ALL of them (plan 31 §5.4). An operator who edited
+        // the plan folder during a run that then halted for an unrelated reason still needs to be told.
+        return new RunReport
+        {
+            Tasks = results,
+            Cancelled = cancelled,
+            Observations = PlanEditObservationsSnapshot()
+        };
     }
 
     /// <summary>

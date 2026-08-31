@@ -587,6 +587,12 @@ public static class RunCommand
                 // (SSOT §7 rendering lives behind the CLI seam).
                 RenderUnreviewedWavesWarning(report, io.Out);
 
+                // Issue #545 part 3 (plan 31 §5.1/§5.4): the terminal surface of the mid-run plan-folder
+                // edit advisory. Placed beside the unreviewed-waves warning and BEFORE the exit-path
+                // branches below, so an operator who edited the plan folder is told regardless of how the
+                // run ended — including the terminal-gate-failure early return.
+                RenderPlanEditWarning(report, io.Out);
+
                 if (report.AllSucceeded && !planGuardrailsPassed)
                 {
                     PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
@@ -1679,6 +1685,84 @@ public static class RunCommand
         output.WriteLine(
             $"permanently flagged and exits {ExitCodes.ProceededUnreviewed} when otherwise green — it is NOT a clean green run.");
         output.WriteLine(rule);
+    }
+
+    /// <summary>
+    /// Render the end-of-run mid-run-plan-edit advisory (issue #545 part 3, plan 31 §5.4) — the terminal
+    /// third of the three surfaces the observation reaches (live/<c>--no-ui</c> and the durable
+    /// <c>decisions[]</c> are the other two, both through the shipped <c>DecisionRecorded</c> event).
+    ///
+    /// <para><b>A WARNING that never halts.</b> Halting would destroy the exact workflow this exists to
+    /// support — fixing a defective guardrail while the rest of the DAG runs — so the text says plainly that
+    /// nothing was halted and nothing was re-run.</para>
+    ///
+    /// <para><b>It must state all three §5.1 consequences and overstate none.</b> "Your edit was ignored" is
+    /// FALSE: action prompts and guardrail scripts ARE re-read per attempt, and only <c>task.json</c> and the
+    /// DAG were frozen at load. The third consequence — the settling task records the POST-edit definition
+    /// hash, so a later resume will not flag it as drift — is a quiet false green this plan does NOT fix
+    /// (issue #556); disclosing it is the whole reason a half-true message would be worse than none.</para>
+    ///
+    /// <para>Each observation's <c>Detail</c> is already grouped BY FILE by
+    /// <see cref="PlanEditDecisions.Observed"/>, so a single action script shared by N tasks prints once
+    /// while still naming all N ids — §11 risk 7 accepts the N-task report as literally correct and refuses
+    /// to de-duplicate away which tasks are affected.</para>
+    ///
+    /// <para>Pure (writes only to <paramref name="output"/>) and public, like its two sibling renderers —
+    /// the Cli assembly ships no <c>InternalsVisibleTo</c>.</para>
+    /// </summary>
+    public static void RenderPlanEditWarning(RunReport report, TextWriter output)
+    {
+        if (report.Observations is not { Count: > 0 } observations)
+        {
+            return;
+        }
+
+        IReadOnlyList<DecisionEntry> planEdits = observations
+            .Where(o => o.Boundary == PlanEditDecisions.Boundary)
+            .ToList();
+        if (planEdits.Count == 0)
+        {
+            return;
+        }
+
+        // Distinct across observations: a task edited at two separate boundaries is ONE task whose
+        // definition changed, not two.
+        int taskCount = planEdits
+            .SelectMany(e => e.Subject.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+        string taskWord = taskCount == 1 ? "task definition" : "task definitions";
+
+        output.WriteLine();
+        output.WriteLine(
+            $"PLAN FOLDER EDITED DURING THIS RUN (SSOT §7.2) - {taskCount} {taskWord} changed since the run started.");
+
+        foreach (DecisionEntry entry in planEdits)
+        {
+            foreach (string line in (entry.Detail ?? "").Split('\n'))
+            {
+                if (line.Trim().Length > 0)
+                {
+                    output.WriteLine("  " + line.TrimEnd());
+                }
+            }
+        }
+
+        output.WriteLine("  Nothing was halted and nothing was re-run.");
+        output.WriteLine(
+            "  What your edit reaches: a task's action prompt and its guardrail scripts are re-read on every");
+        output.WriteLine(
+            "    attempt, so an edit to either applies from that task's next attempt onward.");
+        output.WriteLine(
+            "  What it does NOT reach: task.json (writeScope, dependsOn, retries, maxTurns) and the DAG were");
+        output.WriteLine(
+            "    loaded when this run started; edits to those apply only to a later run.");
+        output.WriteLine(
+            "  The quiet consequence: each task above records its POST-edit definition hash when it settles,");
+        output.WriteLine(
+            "    so a later resume will NOT flag this as drift (issue #556 owns that false green; this run");
+        output.WriteLine(
+            "    only warns about it).");
     }
 
     /// <summary>

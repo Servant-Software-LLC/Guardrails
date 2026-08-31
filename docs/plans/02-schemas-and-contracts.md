@@ -760,6 +760,27 @@ recoverable" wording) rather than failing the attempt or altering the unconditio
 (§5.3(D)) — `node_modules` / `.guardrails-*` never bloat the agent-applyable patch — but into a throwaway
 index, so the segment's real staged state is untouched.
 
+**Escalation salvage — the `needsHuman` path (issue #554).** Salvage also fires when a prompt action
+emits `needsHuman` (§9), **regardless of `isFinal`**: the escalating attempt's tree is never reset in
+place — the attempt loop returns terminally *before* the F2 reset, so the tree is **orphaned** (a resume
+mints a new `runId` and forks a fresh segment at `planHead`; `reuse`/`fork` are intra-run worktree
+policies and never reach across runs, so nothing ever hands the old tree back). The guard is therefore
+**`IsRealGitSegment`, not `WorktreeWillReset`** — a *final* escalating attempt still preserves, which is
+exactly the attempt whose work a human is about to build on. The staged set is **filtered to the task's
+declared `writeScope`** — `PreserveAttemptToRef` gained a `restrictToScope` parameter for exactly this
+divergence (`null` on the retry path, which keeps its snapshot byte-identical to pre-#554; the task's
+`writeScope` array on the escalation path), enforced by `RestrictStagedSetToScope`, which lists the
+already-staged set and `git reset`s every path outside scope back out of the throwaway index before
+`write-tree`: this short-circuit fires well upstream of the write-scope check and `ScopedRevert`, so
+`PreserveAttemptToRef`'s otherwise-unfiltered `git add -A` would write an escalating agent's out-of-scope
+edits into a durable, agent-readable patch. The retry path's **protected-artifact (`tests-untouched`-class)
+suppression is structurally inapplicable here** — it keys off the failed-guardrail list, and on this path
+`failed` is empty (no guardrail ran); the `writeScope` filter is what takes its place, with the same
+residual as the retry path (a protected file *inside* the task's own `writeScope` is still stashed, caught
+if re-gamed by the deterministic per-attempt re-check). **The feedback wording on this path must not claim
+a rollback** — nothing was rolled back; the honest framing states the tree is orphaned and the ref/patch
+are the only durable copies.
+
 **Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
 record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
 the moment a task's FINAL settle is `succeeded` (alongside the Scheduler's existing green-worktree
@@ -767,7 +788,14 @@ sweep) — its prior rolled-back attempts have served their purpose; (2) a full 
 the existing stale segment/fork branch prune in `RunReset.Fresh`), which sweeps every salvage ref in the
 repo regardless of task, since a fresh run's tasks get fresh attempt numbers and any survivor would be
 orphaned bookkeeping. A task that never succeeds (exhausts to `needs-human`) keeps its salvage refs
-until the next `--fresh` — they remain available for a human to inspect during triage.
+until the next `--fresh` — they remain available for a human to inspect during triage. **This clause now
+also covers the action-emitted escalation above** — before #554 an escalating attempt left no ref at
+all, so there was nothing to retain; now a task that escalates repeatedly across many resumes accumulates
+one ref per escalating attempt. A **per-task retention cap**, `GitWorktreeProvider.SalvageRefRetentionPerTask`
+(internal const, `5` — at/above the default retry budget so an ordinary retry chain never loses a ref it
+might still be offered), bounds that growth: writing attempt `N`'s ref deletes this task's `attempt-M`
+refs for `M <= N - SalvageRefRetentionPerTask`. Refs are throwaway bookkeeping; the per-attempt
+`prior-attempt.patch` files in the log dirs are unaffected and remain the durable record.
 
 ### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
@@ -993,6 +1021,14 @@ budget; (iii) `dependsOn.Count >= 5` **AND** `writeScope.Count >= 3` (a fan-in s
 error, that `/guardrails-review` must acknowledge or resolve with a split (one task per collaborator
 wiring, the turn-expensive composition-root proof isolated to a thin sink), moving the thrash-and-timeout
 class left of the run deterministically. A non-writing task's `[]` (Count 0) never trips it.
+
+**Related, not merged, with §9.6's `GR2068`/`GR2069`.** `HandoffScopeCoverage` (issue #553) checks a
+DIFFERENT surface at the same author-time moment — the plan document's own `filesTouched` handoff table
+against these SAME `writeScope` arrays, not `writeScope`'s cardinality — so an author who trips `GR2042`
+here and either `GR2068`/`GR2069` there is meeting one underlying pull twice, not two unrelated warnings
+(§11 Risk 2: because `GR2069`'s verdict is per row against ONE task, the `filesTouched` column becomes a
+CONTRACT rather than prose, which pushes toward the same one-task-per-collaborator split this paragraph
+already asks for).
 
 When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
@@ -2210,7 +2246,7 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
   // `task` (M3) boundaries append here unchanged.
   "decisions": [
     {
-      "boundary": "drift",              // drift | wave | task — the decision-class discriminator (extensible)
+      "boundary": "drift",              // drift | wave | task | plan-edit — the decision-class discriminator (extensible)
       "policy": "auto",                 // the autonomyPolicy value in force at this boundary
       "decision": "auto-applied",       // halted | prompted-approved | prompted-declined | auto-applied
       "at": "2026-07-08T14:03:11Z",
@@ -2305,6 +2341,22 @@ New **`decision`** tokens extend the shipped `halted | prompted-approved | promp
 All additions are **OPTIONAL / additive** — the shipped `drift` / `task` / `wave` entries and the existing
 `halted` / `prompted-approved` / `prompted-declined` / `auto-applied` tokens are **UNCHANGED**, and an
 existing `decisions[]` consumer (the CLI renderer, the log viewer) ignores the new fields.
+
+**Plan-edit observations — `decisions[]` deltas (issue #545 part 3, plan 31 §5.4).** Two more additive
+tokens, for a mid-run edit to the plan folder that the live plan-edit watch (§7.2) observed:
+**`boundary: "plan-edit"`** (alongside `drift` / `wave` / `task`) and **`decision: "observed"`** — *the
+harness noticed and reported at this boundary; nothing was decided and nothing changed*. `subject` is the
+edited task ids, comma-joined (the `drift` entry's own convention); `detail` is the per-task old→new
+definition-hash line plus the changed files, grouped by file when one file is shared by several tasks.
+**The inertness is precise, not a house style.** `RunOutcomePolicy` is the only consumer that branches on
+a decision — `SuppressesDelivery` and `ProceededUnreviewedWaveCount` — and both branch on **`decision`**
+only; neither reads `Boundary` at all. `observed` is neither token, so a `plan-edit` entry can neither
+suppress `mergeOnSuccess` nor reach `ExitCodes.ProceededUnreviewed`. That guarantee is a fact about the
+**`observed` token**, not about the `plan-edit` boundary — **a future token on this boundary that is not
+`observed` must be re-checked against both predicates** before it can be assumed equally inert.
+`RunReport` carries these under a sibling `Observations` array (plural — a run can raise several; the
+existing `Decision` field stays singular, the one pre-DAG drift/no-op decision a run can take), additive
+and defaulted so no existing consumer changes.
 
 **Attempt outcomes** (the per-attempt `outcome` field; distinct from task `status`):
 - `action-failed` — a generic non-zero action / `is_error` with no recognized signal.
@@ -2815,7 +2867,7 @@ identically), deterministic ordering, `sha256:`-prefixed — but at **task granu
 whole-plan, folding over the SAME `TaskDefinitionFiles` enumeration `PlanDefinitionHash` uses (§7.3) so the
 two hashes cannot drift on "what defines a task".
 
-**Two boundary calls (named, not hand-waved):**
+**Three boundary calls (named, not hand-waved):**
 - **Out of scope — a shared file OUTSIDE the task folder referenced by path in free prose.** If a prompt
   action names a repo file by path in its instructions, editing that file does NOT change any task's
   `definitionHash`. No mechanism resolves such free-text path references anywhere in the codebase today;
@@ -2828,6 +2880,38 @@ two hashes cannot drift on "what defines a task".
   proceed and reuse — a **narrower instance of the same "warn but reuse" bug class** this section closes
   at task granularity. Part A does **not** change the pre-existing `PlanHash` signal; the relationship is
   noted so the two are not confused.
+- **Known limitation — the plan folder is only partially LIVE during a run (issue #545 part 3, plan 31
+  §5.1).** Some definition inputs are read fresh per attempt; others are held from load: an action prompt
+  file and a guardrail script are re-read **per attempt** (from disk, on every action/guardrail
+  invocation), so a mid-run edit to either **applies** to the next attempt; `task.json` (`writeScope`,
+  `dependsOn`, retries, `maxTurns`) and the DAG are read **once, at plan load**, so a mid-run edit to
+  either does **NOT** apply to this run; the recorded `definitionHash` is computed **at settle**, from the
+  **current** on-disk bytes. The consequence: a task edited mid-run can run under the OLD `task.json`
+  semantics, succeed, and record the **post-edit** hash — after which a later resume's drift comparison
+  reads equal and never flags it. This is a named limitation, not silently ignored: the live plan-edit
+  watch (below) reports the edit as it happens, but does **not** close this gap — filed as **#556**
+  (capturing each task's hash at load and journalling *that* instead is the fix, and it changes this
+  section's drift semantics, which is why it is out of scope for the watch).
+
+**The plan-edit watch — reporting a live edit, not gating on it (issue #545 part 3, plan 31 §5.2–§5.4).**
+`LivePlanEditWatch` is a passive, per-task, per-**file** baseline over the same `TaskDefinitionFiles.Enumerate`
+surface `definitionHash` folds over (§7.3), plus one deliberate divergence: an editor-artifact ignore list
+(`.DS_Store`, `Thumbs.db`, `*.swp`, `*.orig`, `*.rej`) applied only in the watch, never in the shared
+`HashText` primitive — so the watch is strictly QUIETER than `definitionHash` and never noisier; anything
+the hash sees and the watch ignores is a pre-existing drift condition the resume-time check above already
+owns. The Scheduler calls `Poll()` at the two boundaries that already exist — task dispatch and task
+settle — no new thread, lock, or daemon. A `Poll()` that finds a change appends one
+`boundary:"plan-edit"`/`decision:"observed"` `decisions[]` entry (§7) naming the edited task(s) and, per
+task, its changed definition files. **What it reports:** a WARNING that never halts, rendered at
+end-of-run (`PLAN FOLDER EDITED DURING THIS RUN`) stating what the edit reaches (prompts and guardrail
+scripts, re-read per attempt), what it does NOT reach (`task.json` and the DAG, held from load), and that
+the post-edit hash will be recorded at settle (the #556 quiet consequence, above). **What must NOT fire
+it — the harness's own mid-run definition writes:** a JIT wave breakdown (`WaveBreakdownInvoker`, which
+runs with plan-wide `Write`/`Edit`/`Bash` authority and no containment hook — a workaround for **#557**,
+not a fix), `BreakdownInventory.Revert`, `SweepIncompleteTrailingTaskFolders`, `QuarantineWholeTasksFolder`,
+and a `TryResolveDrift` that resolved (see the correction below). The Scheduler therefore re-baselines the
+watch **plan-wide** — never per-task — after each of those five writers; a per-task re-baseline would
+under-cover the three writers whose authority reaches outside the unit they nominally act on.
 
 **The `Guardrails-Task-Hash` trailer.** A task's integration commit carries a **third** trailer line,
 `Guardrails-Task-Hash: <definitionHash>`, alongside the existing `Guardrails-Task: <taskId>` /
@@ -2954,10 +3038,19 @@ rewind* **iff both** hold:
 
 When safe: `git reset --hard <parent-of-c_j>` on the plan branch (physically removing exactly `S`'s
 commits and only them), journal-reset every member of `S` to `pending` (§6.1), and the next scheduling
-wave re-runs `S` from a base that no longer contains the stale bytes. The rewind runs at the **pre-DAG
-gate**, *before* the Scheduler builds any wave, so no segment worktree is ever forked off the
-soon-to-be-rewound tip. The discarded commits stay recoverable via the plan branch's **reflog** for its
-expiry window (destructive, but not unrecoverable).
+wave re-runs `S` from a base that no longer contains the stale bytes.
+
+**Correction to the "pre-DAG gate" framing (surfaced by the plan-edit watch design, plan 31 §5.3):** an
+earlier revision of this section called the rewind — and Part A's halt above — a **pre-DAG gate**,
+*before* the Scheduler builds any wave. That is only true for a FLAT plan, or for a waved plan's FIRST
+wave. `TryResolveDrift` (the one call site for both Part A's halt and this rewind) is invoked from
+`DrainAsync`, and the wave loop calls `DrainAsync` **once per wave** — so on a waved plan's second wave
+onward, the gate (including this `git reset --hard`) runs **after** earlier waves have already built and
+drained their own DAGs, i.e. it can fire **mid-run**, not pre-DAG for the run as a whole. It remains true,
+and load-bearing, that no segment worktree of the CURRENT wave is ever forked before that wave's own gate
+resolves — the stale wording named a stronger, plan-wide guarantee than the code gives. This is a
+pre-existing inaccuracy, corrected here rather than left standing. The discarded commits stay recoverable
+via the plan branch's **reflog** for its expiry window (destructive, but not unrecoverable).
 
 **Refuse floor (un-overridable).** Anything the check cannot *prove* safe halts — a non-`S` trailer in the
 removed range, an uncontained merge lineage, **or a commit with no identifiable `Guardrails-Task:` trailer
@@ -3237,8 +3330,12 @@ logs/<runId>/<task-id>/attempt-N/
                                                  #   historical-filename / runner-notice-led mirror)
 ├── guardrail-<name>.transcript.md              # prompt guardrail: deterministic transcript projection
 ├── guardrail-<name>.verdict.json               # prompt guardrail: the verdict file (§4.2) — the ONLY pass/fail authority
-├── prior-attempt.patch      # retry salvage (§3.2, #306): applyable diff of THIS rolled-back attempt vs taskBase
-                              #   — the NEXT attempt's feedback.md points at it (`git apply`); absent on a no-op/serial attempt
+├── prior-attempt.patch      # retry salvage (§3.2, #306; #554): applyable diff of THIS attempt vs taskBase —
+                              #   either a rolled-back retry attempt, OR an escalating (needsHuman) attempt
+                              #   whose tree was never rolled back, only ORPHANED; the escalation form is
+                              #   scope-filtered to writeScope, the retry form is not. The NEXT attempt's
+                              #   feedback.md (retry) or the escalation record + composed prompt (escalation)
+                              #   points at it (`git apply`); absent on a no-op/serial attempt
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
 
@@ -3539,7 +3636,10 @@ inert hook. See §9.4 for the mechanism this condition gates.
   that would only ever report a false positive or a confusing negative for an HTTP target.
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
-  as needs-human immediately (no retry burn).
+  as needs-human immediately (no retry burn) and, in worktree mode, preserves the attempt's
+  **in-scope** work per §3.2 (issue #554): the salvage ref and `prior-attempt.patch` are named
+  in the escalation record's `context` and carried into the next attempt's composed prompt (the
+  size-routed `git apply` / `git show` choice `AppendSalvageSection` renders, §3.2).
 - **Structured `needsHuman` with OPTIONS (issue #387).** When the decision is an ENUMERATED choice, the
   action may write the object form instead of a bare string:
   `{ "needsHuman": { "question": "<question>", "options": ["A", "B", …] } }`. The `question` is required
@@ -4943,6 +5043,8 @@ rather than by rule.)*
 | `GR2065` | error | `OpenAiCompatBlockSchema` (plan 28 §4/§7, issue #223) — an `openai-compat` block is malformed: missing or non-absolute-http(s) `endpoint`, missing `model`, missing or `< 1` `contextTokens`, a `wire` map overriding a harness-owned request field (`model`/`messages`/`stream`/`stream_options`/`tools`/`max_tokens`) — **or** any of `endpoint`/`contextTokens`/`apiKeyEnv`/`wire` declared on a block whose `kind` is NOT `openai-compat`. Static and offline: every clause is knowable from `guardrails.json` alone, nothing opens a socket at validate time |
 | `GR2066` | error | `OpenAiCompatActionReachable` (plan 28 §3.7/§7, issue #223) — an `openai-compat` block is reachable for an **Action**, by any of five routes (one diagnostic per block, naming every route that reaches it): it declares `routing`; it is the **effective default** (`default` pointer **or** sole declared runner — `PromptRunnerRegistry.ResolveDefault`'s own rule); a task's `action.runner`; an action prompt's own frontmatter `runner:` (folded onto the task definition by the loader purely so this check can see it, §3.7); or the block is declared under a reserved **Action**-role profile name — `ai-merge` or `breakdown`. v1's local runner is a verifier, not an actor (§9.8), so every manifest-visible route to an ACTION is an honest halt at validate time rather than a mid-DAG failure with a task's work already in flight. The two LEGAL reachability paths — a judge guardrail's own frontmatter `runner:` pin, and the reserved **Advisory**-role profile names `overwatch`/`ai-triage` — must never fire here; GR2067's unreachable clause is the opposite failure and shares the same reserved-profile list, split by role |
 | `GR2067` | warning | `OpenAiCompatWeakOrUnreachable` (plan 28 §7, issue #223) — an `openai-compat` block is declared but practically inert, in either of two independent forms: it declares no `strength` (the §9.6 verifier-kind fallback then treats it as PERMANENTLY weak, so every judge routed to it carries a #229 advisory forever); **or** it is unreachable — neither pinned by any guardrail's frontmatter `runner:` nor named as one of the two reserved advisory profiles (`overwatch`, `ai-triage`), which is the check that catches a `triage`-for-`ai-triage` misspelling that would otherwise fail silently: the block loads, validates, and simply never runs |
+| `GR2068` | warning | `HandoffPathUnreachable` — a handoff row names a resolvable path that **no task's** `writeScope` covers, so the row cannot be delivered under any implementation. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **warning** in v1 only because `RunCommand.RunAsync` refuses to run a plan whose validation emits any error, and a correct shipped plan can carry a stale cell (plan 28 row 3) — an ERROR would be a retroactive run-blocking gate. **Promotion to ERROR** when a hand-run of this code alone across every plan carrying the convention produces only genuine defects |
+| `GR2069` | warning | `HandoffRowSplitAcrossTasks` — every path a handoff row names is writable by *some* task, but **no single task** can write them all: the row is delivered by several tasks and each half must be reachable by the task implementing *that* half. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **confirm**, not a fault: a deliberately split row legitimately triggers it, and the message says so in its own words. It is a **separate code from GR2068 by design** — it fires on 3 of 10 rows of a correct plan, and under one shared code a reviewer learns to skim the code itself, taking GR2068's precision with it (#229). **Should probably never be an ERROR**: it reports a shape the check cannot adjudicate, so blocking on it would refuse a plan whose author already made the right call. Note it is GR2069, not GR2068, that catches both plan-28 failures |
 | `GR2047` | error | a malformed `routing`: missing/empty/non-array `tiers`, or a value outside the tier enum |
 | `GR2048` | error | a **used** tier (task tag, judge frontmatter tag, or `defaultTier`) in a **tiering-configured** plan has no **candidate** at or above it |
 | `GR2049` | warning | tier tags present but **no** block declares `routing` — the tags are inert and the plan runs by legacy resolution |
