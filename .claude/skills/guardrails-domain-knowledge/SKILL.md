@@ -860,7 +860,10 @@ tiering as a working feature.
   recorded a model, so a deterministic-only plan's report is unchanged. Wire detail: SSOT section 9.
 - **`openai-compat` runner (v1 local inference, #223, SSOT section 9.8).** A second implemented
   runner kind, named after the **protocol** not the engine -- Ollama, llama.cpp, MLX (`mlx_lm.server`
-  or LM Studio's MLX engine), LM Studio and vLLM all speak it, so none of them needs a new kind.
+  or LM Studio's MLX engine), LM Studio, vLLM and Apple's `fm` stack (macOS 27) all speak it, so none of
+  them needs a new kind. The optional `engine` hint is FREE TEXT selecting a remedy SENTENCE only; it is
+  validated against no enum so a macOS-only value (`apple-fm`) still loads on every OS, and only the
+  suggestion list is host-aware.
   `local`, `codex` and `openrouter` remain reserved names. **v1 is a VERIFIER, not an actor:** it
   serves the `Guardrail` and `Advisory` roles only, offers a fixed read-only tool set
   (`Read`/`Glob`/`Grep`), and refuses an `Action` invocation loudly. `PromptRole` is the required

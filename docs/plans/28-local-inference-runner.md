@@ -348,7 +348,9 @@ justify the harness choosing a local model on its own.
   "model": "qwen3-coder:30b",               // REQUIRED for this kind (no CLI default to fall back to).
   "contextTokens": 32768,                   // REQUIRED for this kind. Integer >= 1. See §6.1.
   "apiKeyEnv": "LOCAL_INFERENCE_KEY",       // OPTIONAL. The NAME of an env var holding a bearer token.
-  "engine": "ollama",                       // OPTIONAL. ollama | llama.cpp | mlx | lm-studio | vllm.
+  "engine": "ollama",                       // OPTIONAL. ollama | llama.cpp | mlx | lm-studio | vllm |
+                                            // apple-fm. FREE TEXT — validated against no enum, so a
+                                            // macOS-only value still loads on Windows/Linux (§6.2).
                                             // OPERATOR-FACING TEXT ONLY (§6.2): selects the remedy
                                             // sentence in an error. It never selects a code path and
                                             // never changes a request — see §3.1.
@@ -531,14 +533,34 @@ feedback text says so, and offers the alternative first: shrink the task's input
 | Server reports no `usage` | absent after `include_usage` was requested | `Usage = null` + a `runner-notice` line | never `{ 0, 0 }` |
 
 **The model-not-found remedy is per-engine text, and it is the only place an engine name may appear.**
-`ollama pull <model>` is right for one engine and misleading for the four others. The runner holds a
+`ollama pull <model>` is right for one engine and misleading for the five others. The runner holds a
 small map from the configured block to its remedy sentence — Ollama `ollama pull <model>`, MLX
 `mlx_lm.download --hf-repo <model>` or the LM Studio model manager, llama.cpp/vLLM "start the server
-with `--model <model>`" — selected by an **optional `engine` hint on the block**, defaulting to a
-neutral sentence naming the model and the endpoint. `engine` is **operator-facing text only**: it
-never selects a code path, never changes a request, and is absent from `ServesRoles`, the containment
-rules and the wire body. A hint that steers behaviour would be a second kind wearing a different name,
-which §3.1 just rejected.
+with `--model <model>`", Apple `fm --help` on the serving machine — selected by an **optional `engine`
+hint on the block**, defaulting to a neutral sentence naming the model and the endpoint. `engine` is
+**operator-facing text only**: it never selects a code path, never changes a request, and is absent
+from `ServesRoles`, the containment rules and the wire body. A hint that steers behaviour would be a
+second kind wearing a different name, which §3.1 just rejected.
+
+**`apple-fm` — a macOS-only engine that must not make a plan macOS-only.** Apple's `fm` stack (macOS 27)
+serves AFM 3 Core / Core Advanced over a local OpenAI-compatible endpoint, so it needs **no new kind**,
+exactly as MLX needed none. Two things make it unlike the other five, and both land in text, never in a
+request:
+
+1. **Its models cannot be pulled.** Apple serves a fixed set under its own ids; there is no download
+   command to suggest, so the remedy points at `fm --help` on the machine serving the endpoint and says
+   plainly that the OpenAI-compatible server is undocumented by Apple and beta as of macOS 27.
+2. **It is macOS-only, but the OPERATOR need not be on macOS.** `engine` stays **free text, validated
+   against no enum** — a plan naming `apple-fm` must load and validate unchanged on Windows and Linux, or
+   3-OS CI reddens on a plan that is merely targeted elsewhere. Only the SUGGESTION list in the neutral
+   sentence is host-aware, and it withholds `apple-fm` **only when the endpoint is loopback AND this host
+   is not macOS** — the one case where the server is provably not a Mac. A remote endpoint keeps the
+   suggestion, because a Windows workstation pointing at a Mac inference box across the LAN is the
+   deployment this whole plan exists to serve. Unknown is not the same as no; suppressing a valid
+   suggestion is the worse of the two errors.
+
+Neither point reaches the wire: an `apple-fm` block and an `ollama` block still emit byte-identical
+requests for the same `model`, `wire` and prompt (§9).
 
 ### 6.3 Streaming — required, with two of the first draft's three reasons withdrawn
 

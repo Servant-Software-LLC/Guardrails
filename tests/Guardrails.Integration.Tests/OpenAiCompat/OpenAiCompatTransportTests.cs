@@ -235,6 +235,63 @@ public sealed class OpenAiCompatTransportTests
     }
 
     [Fact]
+    public async Task ModelNotFound_404_AppleFm_PointsAtFmHelp_AndOffersNoPullCommand()
+    {
+        await using FakeOpenAiServer server = FakeOpenAiServer.Start(ScriptedResponse.ModelNotFound("afm-3-core"));
+        OpenAiCompatPromptRunner runner = BuildRunner(server, engine: "apple-fm", model: "afm-3-core");
+
+        PromptResult result = await runner.RunAsync(BuildInvocation("check this"), TestContext.Current.CancellationToken);
+
+        // The point of the arm: Apple serves a FIXED set under its own ids, so unlike every other engine
+        // there is no download command to suggest. A remedy that told the operator to pull the model would
+        // be worse than the neutral sentence — it names a command that does not exist.
+        Assert.Equal(PromptFailureKind.Error, result.FailureKind);
+        Assert.Contains("afm-3-core", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("fm --help", result.Summary, StringComparison.OrdinalIgnoreCase);
+        // The claim is that no OTHER engine's download command leaks in — not that the word "pull" is
+        // absent, which it is not: the 404 classification's own prose says "no amount of waiting pulls a
+        // model". Asserting on the bare word tested the classifier, not this arm.
+        Assert.DoesNotContain("ollama pull", result.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("mlx_lm.download", result.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--model", result.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ModelNotFound_404_NoEngineHint_OffersAppleFmOnlyWhenTheServerIsNotProvablyNonMac()
+    {
+        // FakeOpenAiServer binds 127.0.0.1, so the endpoint is LOOPBACK: the server IS this machine, and
+        // this is the one case where the host OS settles what the server can be. On a non-Mac that makes
+        // `apple-fm` noise pointing at something unrunnable; on a Mac it is a real option. Asserted as an
+        // iff rather than skipped off-macOS, so the rule is covered on all three CI platforms.
+        await using FakeOpenAiServer server = FakeOpenAiServer.Start(ScriptedResponse.ModelNotFound("qwen3-coder:30b"));
+        OpenAiCompatPromptRunner runner = BuildRunner(server, engine: null, model: "qwen3-coder:30b");
+
+        PromptResult result = await runner.RunAsync(BuildInvocation("check this"), TestContext.Current.CancellationToken);
+
+        Assert.Contains("ollama", result.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            OperatingSystem.IsMacOS(),
+            result.Summary.Contains("apple-fm", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task EngineHint_NeverReachesTheWire_AppleFmAndOllamaSendIdenticalBodies()
+    {
+        // Plan 28 §9: the kind is named after the PROTOCOL, so the engine hint selects a sentence and
+        // nothing else. Adding a macOS-only engine is only safe because of this — if `engine` could steer
+        // a request, `apple-fm` would be a second kind wearing a different name.
+        await using FakeOpenAiServer ollamaServer = FakeOpenAiServer.Start(ScriptedResponse.Completion("ok"));
+        await using FakeOpenAiServer appleServer = FakeOpenAiServer.Start(ScriptedResponse.Completion("ok"));
+
+        await BuildRunner(ollamaServer, engine: "ollama")
+            .RunAsync(BuildInvocation("check this"), TestContext.Current.CancellationToken);
+        await BuildRunner(appleServer, engine: "apple-fm")
+            .RunAsync(BuildInvocation("check this"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ollamaServer.ChatRequests[0].Body, appleServer.ChatRequests[0].Body);
+    }
+
+    [Fact]
     public async Task RateLimited_429_IsTransient()
     {
         await using FakeOpenAiServer server = FakeOpenAiServer.Start(ScriptedResponse.RateLimited(retryAfterSeconds: 20));

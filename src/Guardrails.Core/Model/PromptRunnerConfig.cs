@@ -140,10 +140,16 @@ public sealed record PromptRunnerConfig
 
     /// <summary>
     /// OPERATOR-FACING TEXT ONLY (plan 28 §6.2) — <c>ollama</c> | <c>llama.cpp</c> | <c>mlx</c> |
-    /// <c>lm-studio</c> | <c>vllm</c>. Selects the model-not-found remedy SENTENCE and nothing else: it
-    /// never selects a code path, never changes a request, and is absent from
+    /// <c>lm-studio</c> | <c>vllm</c> | <c>apple-fm</c>. Selects the model-not-found remedy SENTENCE and
+    /// nothing else: it never selects a code path, never changes a request, and is absent from
     /// <see cref="PromptRunnerKinds.ServesRoles"/>, the containment rules and the wire body. Null = the
     /// neutral remedy sentence naming the model and the endpoint.
+    /// <para>
+    /// This is FREE TEXT, validated against no enum — deliberately, so a plan authored for a macOS-only
+    /// engine (<c>apple-fm</c>) still loads and validates unchanged on Windows and Linux. Only the
+    /// SUGGESTION list shown when the hint is absent is host-aware, and only where the server is provably
+    /// not a Mac; the value itself is portable everywhere.
+    /// </para>
     /// </summary>
     public string? Engine { get; init; }
 
