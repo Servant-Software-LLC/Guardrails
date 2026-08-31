@@ -196,7 +196,12 @@ Two invariants govern the folder, and a future change must honour both:
       "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
       "maxTurns": 50,
       "model": null,                  // null = CLI default
-      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat. Only "claude" is IMPLEMENTED; an unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
+      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat. "claude" AND "openai-compat" are IMPLEMENTED (#223); codex | openrouter | local remain reserved names with no runner class. An unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
+      "endpoint": null,               // OPTIONAL, openai-compat ONLY (§9.8, issue #223). REQUIRED when kind is "openai-compat": an absolute http/https base URL for the chat-completions endpoint, e.g. "http://127.0.0.1:11434/v1" (GR2065) — declaring it on a block of another kind is GR2065 too. `command` is IGNORED for kind "openai-compat": there is no local executable to launch, so GR2009's PATH probe is skipped for it (§9)
+      "contextTokens": null,          // OPTIONAL, openai-compat ONLY. REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader
+      "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
+      "wire": null,                    // OPTIONAL, openai-compat ONLY. A verbatim request-body passthrough map merged into the outgoing JSON, e.g. { "options": { "num_ctx": 32768 } } — the HTTP sibling of `env`. A key that shadows a harness-owned request field (model/messages/stream/stream_options/tools/max_tokens) is GR2065, never a runtime throw
+      "engine": null,                  // OPTIONAL, openai-compat ONLY. "ollama" | "llama.cpp" | "mlx" | "lm-studio" | "vllm" — OPERATOR-FACING TEXT ONLY (§9.8): selects the model-not-found remedy sentence and nothing else, never a code path or a request field. Absent = a neutral remedy sentence naming the model and endpoint
       "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
       "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
       "strength": null,               // OPTIONAL axis 2/3 (#201). Integer >= 1, HIGHER = stronger — the ONLY totally-ordered axis. Orders same-rung candidates ASCENDING (the weakest model that can serve the tier goes first); absent sorts LAST. Malformed = GR2045
@@ -223,6 +228,13 @@ Two invariants govern the folder, and a future change must honour both:
      `costly` / `strength` / `specialization` / `routing` — are now IN this block, closing the mirror gap
      Stage 1 left open (it updated §9's prose but not this block). They are all OPTIONAL and are defined
      normatively in §9; §9 wins on meaning, this block shows placement.
+     NOTE (plan 28, issue #223): `endpoint`, `contextTokens`, `apiKeyEnv`, `wire` and `engine` are now IN
+     this block too, all OPTIONAL and shown in their ABSENT (`null`) state. They apply to
+     `kind: "openai-compat"` ONLY — declaring any of `endpoint` / `contextTokens` / `apiKeyEnv` / `wire`
+     on a block of another kind is GR2065 — and `endpoint` / `contextTokens` are REQUIRED once a block
+     declares that kind. `command` is IGNORED for `kind: "openai-compat"`: there is no local executable
+     to launch, so GR2009's PATH probe is skipped for it (§9). Defined normatively in the new §9.8; this
+     block shows placement, same as the tiering axes above.
      EVERY tiering key here is shown in its ABSENT state (`null`) on purpose, and that is load-bearing
      rather than tidy: the canonical block is what a generator or a hand-editor copies, so it must
      demonstrate the DEFAULT — no `kind` behaviour change, no axes, and above all NO `routing`, since a
@@ -1118,7 +1130,16 @@ later reader will otherwise "fix" them:
   never folded, so an unrecognised token is reported rather than quietly repaired into a legal one. An
   empty `tier:` is treated as unset, not as a token.
 
-**Verdict contract**: a prompt guardrail MUST end by writing
+**Verdict contract — two forms, selected by runner capability (plan 28 §6.4, issue #223).** The
+composer (`PromptComposer.AppendVerdictContract`) emits one of two instructions, never both, chosen by
+the single boolean `PromptRunnerKinds.WritesFiles(kind)` — a runner that CAN write files (`claude`) is
+told to write the verdict itself; one that cannot (`openai-compat` — §9.8, no write tool) is told to
+TRANSCRIBE instead. Handing a non-writing runner the file-writing instruction, or vice versa, would
+leave the weakest model in the system holding two contradicting facts about its own tools, so the
+composer learns a **capability**, never a vendor name — the same distinction §9's runner quarantine
+draws everywhere else.
+
+**Form 1 — a writing runner (shipped, unchanged).** A prompt guardrail MUST end by writing
 
 ```json
 { "pass": false, "reason": "Report never names the failing task." }
@@ -1128,6 +1149,16 @@ to the file at `GUARDRAILS_VERDICT_OUT`. Missing file, invalid JSON, or missing
 `pass` ⇒ the guardrail **fails** with reason "guardrail produced no valid verdict".
 CLI exit codes are never used for semantic pass/fail of prompt guardrails — exit
 codes only distinguish "ran" from "crashed".
+
+**Form 2 — a non-writing runner (transcription).** *"You have no write tool: emit your verdict as the
+last fenced ```json block of your final message; the harness will write it to this absolute path:
+`<GUARDRAILS_VERDICT_OUT>`. If your final message carries no such block, or the block does not parse,
+or it carries no boolean `pass`, NO verdict file is written and the guardrail FAILS."* The runner
+recovers the model's own JSON with the shared lenient extractor (`PromptJsonExtractor`, plan 28 §3.3 —
+the LAST fenced ` ```json ` block in the text if one parses, else the last top-level `{...}` object),
+requires a boolean `pass`, and writes those bytes **verbatim** — or writes **no file at all**. The
+failure direction is safe by construction: "no file" is already the contractual Form-1 fail path above,
+so this runner can never produce a `pass: true` the model did not itself write as a boolean.
 
 ### 4.3 Guardrail scope (`scope: "integration" | "local"`)
 
@@ -3195,11 +3226,15 @@ logs/<runId>/<task-id>/attempt-N/
                               #   the harness moves here immediately after the sub-agent exits
 ├── fragment.json            # copy of the fragment made on successful merge — audit trail
 ├── composed-prompt.md       # prompt ACTION: exactly what the runner got
-├── claude-stream.jsonl      # prompt ACTION: raw runner output stream (canonical debug artifact)
+├── claude-stream.jsonl      # prompt ACTION: raw runner output stream — canonical debug artifact
+                             #   (historical filename; a non-Claude runner writes its own wire lines
+                             #   here too, led by a `{"type":"runner-notice", "notice": …}` object
+                             #   disclosing any declared setting it ignores or narrows — plan 28 §4/§6.5)
 ├── transcript.md            # prompt ACTION: CLI-equivalent view, rendered deterministically from the stream (#27)
 ├── guardrail-<name>.stdout.log / .stderr.log   # script guardrail: captured output
 ├── composed-prompt.<name>.md                   # prompt guardrail: exactly what the verifier got
-├── guardrail-<name>.stream.jsonl               # prompt guardrail: raw runner output stream
+├── guardrail-<name>.stream.jsonl               # prompt guardrail: raw runner output stream (same
+                                                 #   historical-filename / runner-notice-led mirror)
 ├── guardrail-<name>.transcript.md              # prompt guardrail: deterministic transcript projection
 ├── guardrail-<name>.verdict.json               # prompt guardrail: the verdict file (§4.2) — the ONLY pass/fail authority
 ├── prior-attempt.patch      # retry salvage (§3.2, #306): applyable diff of THIS rolled-back attempt vs taskBase
@@ -3370,7 +3405,53 @@ task's prompt links to (§9, #26) — the raw stream stays as the debug artifact
 ## 9. Prompt runners
 
 `promptRunners` (§2) maps names to runner configs. The `IPromptRunner` C# interface
-quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`:
+quarantines all CLI specifics (flag spelling, output parsing). This build ships two concrete runners:
+`claude` (`ClaudePromptRunner`, an agent) and `openai-compat` (`OpenAiCompatPromptRunner`, a read-only
+HTTP verifier — §9.8, issue #223).
+
+**What a `PromptInvocation` is FOR — `PromptRole` (plan 28 §3.4).** Every `PromptInvocation` carries a
+required `Role: PromptRole` — `Action` | `Guardrail` | `Advisory` — set by the harness at every
+construction site, never inferred by the runner. **The classification rule:** does this prompt write
+anything other than its own verdict file? Yes ⇒ `Action`. No, and its output is a pass/fail ⇒
+`Guardrail`. No, and its output is advice the harness may not treat as a verdict ⇒ `Advisory`. A runner
+class may refuse a role it cannot honestly serve — which of the three roles a given kind's runner
+actually accepts is `PromptRunnerKinds.ServesRoles(kind)`, a fact about the BUILD, never a config key:
+`claude` serves all three (it can write files and run commands); `openai-compat` serves only
+`Guardrail`/`Advisory` (§9.8 — v1's local runner is a verifier, not an actor, so an `Action`-role
+invocation is refused before anything reaches the wire); a kind with no concrete runner serves none.
+Declaring a `roles:` key on a `promptRunners` block would invite an operator to assert a capability the
+assembly does not have — the operator declares PREFERENCE (`routing`, `strength`), the assembly
+declares capability, and this is the single source both the runner itself and the tests consult, so the
+fact and the refusal cannot drift apart.
+
+**Two build facts a `PromptRunnerKind` carries beside `ServesRoles` — both true for every kind except
+`openai-compat`, by design (`PromptRunnerKinds.NeedsContainmentHook` / `.WritesFiles`):**
+
+- **`NeedsContainmentHook(kind)`** — does this kind's runner need the §9.4 worktree-containment
+  PreToolUse hook spliced onto its invocation? An agent kind (`claude`) does: it can call
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit`/`Bash`, so the hook has something to police. A kind whose
+  runner offers none of those tools has nothing for the hook to police — generating a Claude
+  `settings.json` to pass as a CLI flag to an HTTP client is litter, not containment — so `openai-compat`
+  answers `false` and the splice (§9.4) is skipped for it. **An unlisted future kind defaults to `true`**:
+  a file-writing runner whose author forgets to register it here inherits the boundary rather than
+  silently losing it.
+- **`WritesFiles(kind)`** — does this kind's runner have a write tool, and therefore get the shipped
+  "write your verdict to this path" instruction (§4.2 Form 1) rather than "transcribe it in your final
+  message" (§4.2 Form 2)? `claude` does; `openai-compat` does not (no write tool at all). Same
+  unlisted-kind-defaults-`true` rule, for the same reason: a future writing runner never registered here
+  would otherwise be told to transcribe, and the verdict it wrote to the path would be silently ignored.
+
+**The empty-path convention (§9.8, §5).** A read-only tool grant is expressed as a root LIST
+(`PromptToolContainment.IsReadable`, roots typically `{ WorkingDirectory, PlanDirectory }`); an EMPTY
+root list is not "no restriction" but its opposite — **deny every path**. The one caller that supplies
+an empty root set on purpose is the criticality-assessment invocation, which needs no file tools at all,
+and deny-all fails in the safe direction: a loud refused tool call, never a silent read of the whole
+filesystem.
+
+**The containment splice (§9.4) is now conditioned on `NeedsContainmentHook`.** Both `ActionRunner` and
+`GuardrailRunner` gate the hook injection on `isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook(kind)`
+— a kind answering `false` gets no `--settings` flag and no generated hook files at all, not merely an
+inert hook. See §9.4 for the mechanism this condition gates.
 
 - **Which CLASS serves a block is its `kind`, and the switch is `PromptRunnerRegistry.FromConfig`**
   (issue #224): the registry dispatches each `promptRunners` block on `kind`, not on the map key, and a
@@ -3409,7 +3490,19 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - Per-attempt `total_cost_usd` is recorded in the journal. The `run` summary and
   `guardrails status` print a final `Total prompt cost: $X.XXXX` line summing every
   recorded attempt's `costUsd`; the line is omitted entirely when no attempt recorded a
-  cost (deterministic-only plans stay noise-free).
+  cost (deterministic-only plans stay noise-free). **A runner that reports no cost records `null`,
+  never `0`** (plan 28 §11 finding 3) — `0` would claim a measurement the runner never took, and a
+  costless local provider must be distinguishable from one that billed nothing this attempt.
+- **Judge spend is recorded but not summed into the actor total (plan 28 §11 finding 3, issue #223).**
+  Every attempt whose guardrail set resolved a prompt judge through routing (§9.6) records that judge's
+  own `costUsd`/`usage` on `AttemptProvenance.Judge` (`AttemptJudge.CostUsd`/`.Usage`, §7) — recorded
+  beside `AttemptRecord.CostUsd`, never folded into it, and therefore never folded into `JournalCost.Total`
+  or the `Total prompt cost:` line above. A verifier is overhead against the run, not part of the task's
+  own cost: quietly adding it in would inflate every per-tier/per-model figure and move `maxCostUsd`'s
+  gate and the `--autonomous` liveness floor — a semantic change to the cap, shipped inside a
+  local-inference plan. The two numbers are labelled: the attempt total is *actor spend*, the judge field
+  is *verifier spend*, and `JournalCost.Total` is provably unchanged by a judge that reports a cost.
+  Whether verifier spend should ever count against the cap is a real question, filed but not answered.
 - **Per-tier spend (model tiering #230-lite, DoR §9.3).** The `run` summary adds a
   `Per-tier spend: easy: 180k tok / $0 · hard: 42k tok / $3.1200` line — pure aggregation over the
   per-attempt `provenance.tier` + `costUsd` + `usage` above, one segment per rung in ascending
@@ -3438,7 +3531,12 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   deliberately not this one, following its per-tier sibling.
 - `guardrails validate` probes each DECLARED runner's `command` on PATH and emits a
   **warning** (GR2009) if it does not resolve — not an error, since the plan may run on
-  another machine where the runner is installed.
+  another machine where the runner is installed. **Kind-aware (plan 28 §7, issue #223):** the probe
+  runs for `kind: "claude"` (a local executable really must resolve on PATH) and is SKIPPED entirely
+  for `kind: "openai-compat"`, whose block has no `command` to probe — `command` is ignored for that
+  kind (§2) — and whose real reachability question ("does this endpoint answer, and does it serve the
+  declared model?") is answered by the pre-DAG endpoint preflight instead (§9.8), not by a PATH lookup
+  that would only ever report a false positive or a confusing negative for an HTTP target.
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
@@ -3757,24 +3855,31 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
   **unrecognised** value is **GR2044 (error)**, and the message NAMES the offending value so an operator
   with several blocks knows which one to fix; the block then falls back to `claude` only so the REST of
   validation still reports (the error blocks the run regardless).
-  - **`openai-compat` is the reserved #223 seam** — ONE kind covering Ollama, llama.cpp, LM Studio and
-    vLLM, because they share the wire protocol. It deliberately spans a loopback local endpoint *and* a
-    cloud OpenAI-compatible API, which is exactly why the verifier's provider-kind "weak" fallback (§9.6)
-    is **verifier-only** and may never be used for actor ordering: this kind cannot tell the two apart.
-    `codex` and `openrouter` are reserved names, unassigned.
+  - **`openai-compat` shipped with #223 (plan 28) — ONE kind covering Ollama, llama.cpp, LM Studio, MLX
+    and vLLM**, because they share the wire protocol. **The kind is named after the PROTOCOL, not the
+    engine, which is precisely why MLX needed no new kind of its own**: it speaks the same
+    OpenAI-compatible `/chat/completions` surface as the other four, so a block pointed at an MLX server
+    (directly, or via LM Studio's MLX support) is configured exactly like one pointed at Ollama — same
+    `kind`, same request shape — and only the OPERATOR-FACING `engine` hint (§9.8) differs, never a code
+    path. `openai-compat` deliberately spans a loopback local endpoint *and* a cloud OpenAI-compatible
+    API, which is exactly why the verifier's provider-kind "weak" fallback (§9.6) is **verifier-only** and
+    may never be used for actor ordering: this kind cannot tell the two apart. `codex` and `openrouter`
+    remain reserved names, unassigned.
   - **A recognised-but-unimplemented kind is a `guardrails validate` ERROR (GR2044), and registry
     construction is the BACKSTOP — not the gate** (#201 Stage 1.5; Stage 1 shipped this the other way
-    round). Only `claude` has a concrete runner. A config declaring `codex`/`openrouter`/`local`/
-    `openai-compat` **fails validation**, naming the kind and what this build can serve.
-    `PromptRunnerRegistry.FromConfig` *still* throws an `InvalidOperationException` for such a kind —
-    that backstop covers a value cast in past the loader — but reaching it now means the gate was
-    bypassed. The reason for the move is the rule this document applies everywhere else: anything
-    knowable from the config alone is caught at validate time, never by a run that starts and then dies
-    composing its registry. It must **never** silently fall back to Claude — quietly serving a request
-    for another provider with a different model is the one failure mode this seam exists to prevent. The
-    concrete runners land with #223, and GR2044's implemented-set grows with them; the set is declared
-    once in `PromptRunnerKinds.Implemented` and pinned to the dispatch switch by a test, so the gate and
-    the backstop cannot drift apart.
+    round). **`claude` and `openai-compat` have concrete runners; `codex`/`openrouter`/`local` do not.** A
+    config declaring `codex`/`openrouter`/`local` **fails validation** naming the kind and what this build
+    can serve — `local` specifically is redirected to `openai-compat` in the message text, since every
+    locally-hosted engine this build actually serves speaks that wire protocol and `local` itself gets no
+    implementation of its own (§9.8). `PromptRunnerRegistry.FromConfig` *still* throws an
+    `InvalidOperationException` for an unimplemented kind — that backstop covers a value cast in past the
+    loader — but reaching it now means the gate was bypassed. The reason for the move is the rule this
+    document applies everywhere else: anything knowable from the config alone is caught at validate time,
+    never by a run that starts and then dies composing its registry. It must **never** silently fall back
+    to Claude — quietly serving a request for another provider with a different model is the one failure
+    mode this seam exists to prevent. `openai-compat`'s concrete runner landed with #223 and GR2044's
+    implemented-set grew to two; the set is declared once in `PromptRunnerKinds.Implemented` and pinned to
+    the dispatch switch by a test, so the gate and the backstop cannot drift apart.
 - **`effort` — the thinking-effort knob (issue #201).** An OPTIONAL, **opaque** per-block string (`"low"`,
   `"xhigh"`, …). The harness never interprets it: it is shape-checked only (**GR2050** — non-empty, no
   leading/trailing/embedded whitespace or control characters, the same predicate `model` gets for GR2030)
@@ -4387,6 +4492,19 @@ is still an agent that can call `Write`/`Edit`/`Bash`), the harness generates a 
 the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`). `--settings` is
 **absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to.
 
+- **The splice is conditioned on `PromptRunnerKinds.NeedsContainmentHook(kind)` (plan 28 §3.5/§3.6,
+  issue #223).** `ActionRunner` and `GuardrailRunner` both gate the injection on
+  `isWorktreeMode && NeedsContainmentHook(kind)` — for a kind whose runner offers none of
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit`/`Bash` (in this build, `openai-compat` — §9.8: a read-only
+  HTTP verifier with a fixed `Read`/`Glob`/`Grep` catalogue and no write tool at all), the condition is
+  `false` and NEITHER `WorktreeContainmentHook.WriteHookFiles` NOR `--settings` is invoked — not merely
+  a hook generated and left inert. A hook has nothing to police for a runner with no tool it polices;
+  generating a Claude `settings.json` to pass as a CLI flag to an HTTP client would be litter, not
+  containment. An **unlisted future kind defaults to `true`**: a file-writing runner an author forgets to
+  register here inherits the boundary rather than silently losing it, so the failure direction of a gap
+  in this predicate is "over-contained", never "uncontained". Conditioning the splice this way also makes
+  the runner's own refusal of a stray `--settings` in its `ExtraArgs` (§9.8) a TRUE backstop, reachable
+  only when the splice and this build fact disagree — a harness bug, never a configuration one.
 - **Generation.** `Guardrails.Core.Prompts.WorktreeContainmentHook.WriteHookFiles(logDir,
   worktreeRoot)` writes two files into the attempt's **log dir** (`logs/<runId>/<task-id>/attempt-N/`
   — harness-owned, OUTSIDE the segment worktree, so the generated files never pollute `git status` /
@@ -4819,9 +4937,12 @@ rather than by rule.)*
 | Code | Sev | Rule |
 |---|---|---|
 | `GR2043` | error | a tier token outside `easy`/`medium`/`hard`, at any of the four sites (§3) |
-| `GR2044` | error | a `kind` that is unrecognised, **or** recognised but not implemented in this build |
+| `GR2044` | error | a `kind` that is unrecognised, **or** recognised but not implemented in this build. `claude` and `openai-compat` are implemented; `codex`/`openrouter`/`local` are not — and for `local` specifically the message redirects to `openai-compat` by name ("'local' is a reserved name with no implementation of its own, and every locally-hosted engine this build can serve — Ollama, llama.cpp, LM Studio, vLLM, MLX — speaks the openai-compat wire protocol"), since `local` names no wire protocol of its own while `openai-compat` is the one this build actually speaks (§9.8) |
 | `GR2045` | error | a malformed axis: non-boolean `costly`, non-integer or `< 1` `strength`, out-of-enum `specialization` |
 | `GR2046` | warning | a retired `routing.rank` key (ignored; ordering is ascending `strength`) |
+| `GR2065` | error | `OpenAiCompatBlockSchema` (plan 28 §4/§7, issue #223) — an `openai-compat` block is malformed: missing or non-absolute-http(s) `endpoint`, missing `model`, missing or `< 1` `contextTokens`, a `wire` map overriding a harness-owned request field (`model`/`messages`/`stream`/`stream_options`/`tools`/`max_tokens`) — **or** any of `endpoint`/`contextTokens`/`apiKeyEnv`/`wire` declared on a block whose `kind` is NOT `openai-compat`. Static and offline: every clause is knowable from `guardrails.json` alone, nothing opens a socket at validate time |
+| `GR2066` | error | `OpenAiCompatActionReachable` (plan 28 §3.7/§7, issue #223) — an `openai-compat` block is reachable for an **Action**, by any of five routes (one diagnostic per block, naming every route that reaches it): it declares `routing`; it is the **effective default** (`default` pointer **or** sole declared runner — `PromptRunnerRegistry.ResolveDefault`'s own rule); a task's `action.runner`; an action prompt's own frontmatter `runner:` (folded onto the task definition by the loader purely so this check can see it, §3.7); or the block is declared under a reserved **Action**-role profile name — `ai-merge` or `breakdown`. v1's local runner is a verifier, not an actor (§9.8), so every manifest-visible route to an ACTION is an honest halt at validate time rather than a mid-DAG failure with a task's work already in flight. The two LEGAL reachability paths — a judge guardrail's own frontmatter `runner:` pin, and the reserved **Advisory**-role profile names `overwatch`/`ai-triage` — must never fire here; GR2067's unreachable clause is the opposite failure and shares the same reserved-profile list, split by role |
+| `GR2067` | warning | `OpenAiCompatWeakOrUnreachable` (plan 28 §7, issue #223) — an `openai-compat` block is declared but practically inert, in either of two independent forms: it declares no `strength` (the §9.6 verifier-kind fallback then treats it as PERMANENTLY weak, so every judge routed to it carries a #229 advisory forever); **or** it is unreachable — neither pinned by any guardrail's frontmatter `runner:` nor named as one of the two reserved advisory profiles (`overwatch`, `ai-triage`), which is the check that catches a `triage`-for-`ai-triage` misspelling that would otherwise fail silently: the block loads, validates, and simply never runs |
 | `GR2047` | error | a malformed `routing`: missing/empty/non-array `tiers`, or a value outside the tier enum |
 | `GR2048` | error | a **used** tier (task tag, judge frontmatter tag, or `defaultTier`) in a **tiering-configured** plan has no **candidate** at or above it |
 | `GR2049` | warning | tier tags present but **no** block declares `routing` — the tags are inert and the plan runs by legacy resolution |
@@ -4922,15 +5043,26 @@ the harness parsed the file itself, so it does not have to guess where a passage
    config produces **zero insertions**: not "the same bytes re-emitted", but no edit at all. *A generator
    that clobbers the annotation it exists to solicit is worse than no generator.*
 2. **It NEVER invents a model id.** A `kind` may be enumerated only when this build says it can —
-   `PromptRunnerKinds.ModelEnumerable`, which is **EMPTY in v1** (the Claude CLI exposes no model list;
-   `openai-compat`'s `GET /v1/models` arrives with its runner in #223). For a kind with no enumeration
-   surface the command annotates the blocks **already present**, emits an explicit
-   `// could not enumerate models for kind '<kind>'` note with the reason, adds **no** block, writes **no**
-   model identifier, and **exits 0**. Degrading honestly is not failing — the annotation half of the job
-   succeeded, and that half is most of the value. The rule is hard rather than a nicety because **a
-   registry entry is a ROUTING TARGET, not documentation**: a fabricated or stale id would be *spent
-   against* at a model that may not exist, or silently substituted by a provider that resolves unknown
-   names loosely. Same rule as GR2044's refusal to fall back to `claude` (§9), applied one layer earlier.
+   `PromptRunnerKinds.ModelEnumerable`. **`openai-compat` joined it with #223 (plan 28 §12 item 10)**:
+   its blocks declare an `endpoint`, and `GET {endpoint}/models` is a real, near-universal surface this
+   build now speaks — the pre-DAG endpoint preflight (§9.8) reads it to assert every declared model is
+   present before a token is spent, and `RegistryAnnotation.Collect` consults the same
+   `HasModelEnumeration` fact so it no longer emits a "could not enumerate" note for an `openai-compat`
+   block. `claude` stays OUT of `ModelEnumerable` — the Claude CLI exposes no model list at all — so
+   `providers init` still takes the "could not enumerate" path below for a Claude-only registry, exactly
+   as before. **Enumerable is not yet wired to enumerate**, and the command says so honestly rather than
+   guessing: `openai-compat` has no model-listing ENUMERATOR wired into this generator yet, so for such a
+   block `providers init` currently takes NEITHER path — it neither adds a block from the endpoint's
+   `/models` response nor emits the "could not enumerate" note for it — pending that generator half of
+   the work. For every kind with no enumeration surface (or, today, no enumerator wired) the command
+   annotates the blocks **already present**, emits an explicit
+   `// could not enumerate models for kind '<kind>'` note with the reason where applicable, adds **no**
+   block, writes **no** model identifier, and **exits 0**. Degrading honestly is not failing — the
+   annotation half of the job succeeded, and that half is most of the value. The rule is hard rather than
+   a nicety because **a registry entry is a ROUTING TARGET, not documentation**: a fabricated or stale id
+   would be *spent against* at a model that may not exist, or silently substituted by a provider that
+   resolves unknown names loosely. Same rule as GR2044's refusal to fall back to `claude` (§9), applied
+   one layer earlier.
 3. **An absent key is written as `null`, never as a guessed value.** The loader treats a missing key and an
    explicit JSON `null` identically as "not stated" (`PlanLoader.AbsentAxis`), so the placeholder changes
    nothing semantically while turning a remembered schema into a filled-in form. It also keeps the
@@ -4958,6 +5090,144 @@ rather than trusting it, and turns a would-be silent corruption into a refusal.
 
 `guardrails providers status`, the live-state inspector, stays a **v2** verb in the same noun-space: `init`
 needs only a model list, `status` needs a usage surface.
+
+### 9.8 The `openai-compat` runner (#223)
+
+**What it is.** `OpenAiCompatPromptRunner` — one concrete `IPromptRunner` (§9) serving `kind:
+"openai-compat"` (§2) by POSTing to an OpenAI-compatible `/chat/completions` endpoint. It is the ONE
+kind covering Ollama, llama.cpp, LM Studio, MLX and vLLM, because they all speak the same wire protocol
+— **the kind is named after the protocol, not the engine**, which is exactly why MLX did not need a kind
+of its own and why a block pointed at MLX and one pointed at Ollama emit byte-identical requests for the
+same model, wire and prompt. It is a **verifier, not an actor**: read-only tools only, no write tool, no
+shell.
+
+**Block schema — GR2065.** An `openai-compat` block declares five keys beyond the base shape (§2), all
+OPTIONAL on the schema but two REQUIRED once the block declares this kind:
+
+- `endpoint` (REQUIRED) — an absolute http/https base URL, e.g. `"http://127.0.0.1:11434/v1"`. Missing,
+  or present but not a well-formed absolute http(s) URL (no scheme, wrong scheme, a relative path), is
+  GR2065. `command` is IGNORED for this kind — there is no local executable to launch, so GR2009's PATH
+  probe is skipped for it (§9).
+- `model` (REQUIRED, the base `model`/`Settings.Model` key, §2) — missing is GR2065.
+- `contextTokens` (REQUIRED) — integer `>= 1`, the model's context window; missing or `< 1` is GR2065.
+  Its only reader is this runner's own before/after context-overflow check, below.
+- `apiKeyEnv` (OPTIONAL) — the NAME of an env var holding a bearer token, never the token itself
+  (`guardrails.json` is committed and hashed into `PlanDefinitionHash`). Absent = no `Authorization`
+  header is sent at all — a 401 with no `apiKeyEnv` declared and a 401 with `apiKeyEnv` set but the env
+  var unset or wrong are three distinct, distinguishable failures the runner's own diagnosis names.
+- `wire` (OPTIONAL) — a verbatim request-body passthrough map merged LAST into the outgoing JSON body,
+  the HTTP sibling of `env` (e.g. `{ "options": { "num_ctx": 32768 } }`). A key that shadows one of the
+  SIX harness-owned request fields — `model`, `messages`, `stream`, `stream_options`, `tools`,
+  `max_tokens` — is GR2065, never a runtime throw; the runner refuses it as the backstop (the exact
+  `wire: {"stream": false}` typo that would otherwise silently disable streaming).
+- `engine` (OPTIONAL) — `"ollama"` | `"llama.cpp"` | `"mlx"` | `"lm-studio"` | `"vllm"`, OPERATOR-FACING
+  TEXT ONLY: it selects the model-not-found remedy SENTENCE (`ollama pull <model>` for `ollama`, an
+  `mlx_lm.download`/LM Studio pointer for `mlx`, a "download in LM Studio's model manager" pointer for
+  `lm-studio`, a "start the server with `--model <model>`" pointer for `llama.cpp`/`vllm`) and nothing
+  else — no request field, no code path, absent from `ServesRoles`, the containment rules and the wire
+  body. Absent ⇒ a neutral sentence naming the model and endpoint and inviting the operator to add one.
+
+**Any of `endpoint`/`contextTokens`/`apiKeyEnv`/`wire` declared on a block of another `kind` is ALSO
+GR2065** — a key that does nothing where it was written is indistinguishable from one that works.
+
+**The role gate — `ServesRoles` (§9, plan §3.5).** Every invocation carries a required `PromptRole`
+(§9). This runner is registered for `{Guardrail, Advisory}` only — `Action` is refused BEFORE anything
+reaches the wire, no HTTP request is sent, no config is even fully resolved. v1's local runner may render
+a judge's verdict or an advisory opinion, and nothing else; every manifest-visible route that could hand
+it an ACTION instead is the validate-time GR2066 halt above, not a runtime refusal — a refused invocation
+here is the defensive residual for a config edited or resolved between `validate` and `run`, exactly
+GR2048's relationship to `no-route` (§9.6).
+
+**Wire mapping.** The request body: `model`, `messages`, `stream: true`, `stream_options:
+{"include_usage": true}`, `tools` (the read-only catalogue below, when offered), `max_tokens`, and an
+optional `reasoning_effort` carried from the resolved `effort` (§9) — then the block's `wire` map is
+merged in LAST, verbatim, subject to the GR2065/runtime-refusal check above. The response is consumed as
+Server-Sent Events; a server that returns one whole, non-streamed completion body instead is also
+tolerated. Every notice this runner writes to the per-attempt stream log (§8) is a
+`{"type":"runner-notice","notice":"<kind>",…}` object — `settings-disclosure` first (which tools were
+offered and why, and any declared setting the runner ignores or narrows), then `tool-catalogue`, and
+later `context-overflow-refused` / `context-overflow-detected` / `usage-absent` / `tool-result` /
+`verdict-transcribed` / `verdict-not-written` as the turn progresses — the concrete instance of §8's
+"led by a `runner-notice` object" rewording.
+
+**The containment primitive (§5) — `PromptToolContainment.IsReadable`.** The tool loop offers a FIXED,
+read-only catalogue — `Read`, `Glob`, `Grep` — filtered (never widened) by the block's own
+`allowedTools`; there is no write tool and no shell tool to offer, ever. Every call is checked against
+`IsReadable(roots, path)`: normalise the candidate and each root with `Path.GetFullPath`, accept on a
+directory-boundary match against any root (never a bare string prefix — a sibling such as `srcevil` does
+not count as inside `src`), roots typically `{ WorkingDirectory, PlanDirectory }`. **The empty-path
+convention:** an empty root LIST is not "unrestricted" but its opposite — DENY every path. The one caller
+that supplies an empty root set on purpose is the criticality-assessment invocation, which needs no file
+tools at all, and deny-all fails in the safe direction (a loud refused tool call, never a silent read of
+the whole filesystem). This is a DIFFERENT containment layer from §9.4's PreToolUse hook: it polices this
+runner's own read-only tool calls at the application level, which is also why §9.4's write/shell hook is
+unneeded for this kind (`NeedsContainmentHook` is `false` — §9) — there is no `Write`/`Edit`/`Bash` call
+for that hook to ever see.
+
+**Failure taxonomy.** Non-success is classified into the same `PromptFailureKind` enum (§9) by this
+runner's OWN vendor-string quarantine — `Error`, `Transient` (HTTP 429/503/529, and every connection-level
+failure that never reached the endpoint, riding the shipped §9.6 transient-pause machinery), `OutputCap`
+(the server's own `finish_reason: "length"`), `MaxTurns`, `Timeout` — plus one member this runner is the
+first to produce:
+
+- **`ContextOverflow` — both halves refuse/detect rather than silently truncate (plan §6.1).**
+  **Half one, BEFORE SENDING:** each turn's request is bounded pessimistically — `ceil(promptChars / 3) +
+  maxOutputTokens > contextTokens` refuses the send outright, over the request that would have been sent,
+  because sending a request that does not fit means the vendor silently truncates the prompt and answers
+  confidently over a fraction of the evidence. **Half two, AFTER THE RESPONSE:** if the server reports
+  `usage.prompt_tokens` BELOW an optimistic floor — `promptChars / 4` — the server truncated the prompt
+  itself even though the pre-send bound allowed it (a local engine's real window can be smaller than the
+  block's declared `contextTokens`), and this half catches exactly that gap the operator's own declaration
+  cannot cover. The divisors are deliberately asymmetric: `/3` (pessimistic) before sending, so a refusal
+  that could have fit is the accepted cost; `/4` (optimistic) after, so a false "you got truncated" alarm
+  on a response that actually fit is the accepted cost — each direction erring toward the loud failure
+  over the silent one.
+
+**Verdict transcription (§4.2 Form 2).** This runner never writes `GUARDRAILS_VERDICT_OUT` directly — it
+has no write tool. When its final message completes with zero tool calls on a `Guardrail`-role
+invocation, it recovers the model's own JSON with the shared `PromptJsonExtractor` (§9 intro / plan
+§3.3): the LAST fenced ` ```json ` block if one parses, else the last top-level `{...}` object; the
+candidate must carry a boolean `pass`; on success the runner writes those bytes **verbatim** to the
+verdict path — never composes or reshapes them — and on any failure of that chain writes **NO file at
+all**, which is already the Form-1 contractual fail path (§4.2). The failure direction is safe by
+construction: this class can never produce a `pass: true` the model did not itself write as a boolean.
+
+**The zero-tool-call refusal, and the §6.6 false green it closes.** A `Guardrail`-role invocation that
+completes having called NO tool, **and that was given a verdict target** (`GUARDRAILS_VERDICT_OUT` is
+present in its environment — set on every real prompt guardrail, §4.2), FAILS the attempt outright rather
+than being allowed to transcribe a verdict: a verifier that read no evidence has verified nothing. The
+scope is deliberately narrower than "every Guardrail invocation" — an invocation with no verdict target
+cannot certify anything, so there is no false green to close for it, and firing there would fail the
+runner's own transport test suite, every case of which is a scripted completion with no tools to call and
+no verdict at stake. This is the SAME shape as the pre-DAG probe below, one layer earlier: a server that
+ACCEPTS a `tools` array in the request and simply never emits a `tool_calls` entry is
+indistinguishable, on the wire, from one that genuinely considered the tools and needed none — so without
+this rule a judge on such a server could emit an immaculate `{"pass": true}` having read nothing, and the
+guardrail would go green over work nobody checked.
+
+**The pre-DAG endpoint preflight, and its zero-cost condition (plan §6.6/§7).** Before the task DAG
+executes (alongside the committed-sample-pairs check, and — like it — NOT skippable through the resume
+door, because re-probing an endpoint mid-lifecycle can never false-halt a healthy run), the harness walks
+the registry once: every DISTINCT `openai-compat` `endpoint` is reached ONCE (`GET {endpoint}/models`),
+every model declared against it is asserted present in that listing, and every distinct (endpoint, model)
+pair answers one **tool-capability probe** — a minimal, non-streaming completion offering one trivial
+no-op function, whose only correct response is to call it. **Its zero-cost condition is structural, not
+a guard clause:** discovery is a registry scan, so a plan declaring no `openai-compat` block opens ZERO
+connections and constructs no `HttpClient` at all — the same "a plan that tags nothing pays nothing"
+discipline Invariant 7 states elsewhere (§9.6). A `200` response with a non-empty `tool_calls` entry
+passes; a `200` response with NO `tool_calls` entry is the failure this probe exists for — **the §6.6
+false green**: nothing on the wire distinguishes "I considered the tools and needed none" from "I do not
+implement tools", so an unprobed server could let every judge pinned to it render an unearned
+`{"pass": true}` over evidence nobody read. Closing it here, before a token is spent on a real run, is
+cheaper than closing it per-attempt.
+
+**`providers check <block-name>` (§9.7 sibling, plan §8) — the opt-in dialect probe.** A MANUAL verb,
+never run by `validate`, `run`, or CI, that retires DIALECT risk (as opposed to the preflight's
+reachability/capability risk) against the block's REAL endpoint: seven assumptions this harness's wire
+code makes about an OpenAI-compatible server — `stream_options.include_usage` honoured, tools accepted
+and called, `num_ctx`-style options honoured, the model-not-found body shape, SSE framing,
+`reasoning_effort` tolerance, and `GET /models` being served — each reported `met` / `unmet` / `unknown`
+(never collapsing `unknown` into `unmet`, which would misreport an inconclusive probe as a proven gap).
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
