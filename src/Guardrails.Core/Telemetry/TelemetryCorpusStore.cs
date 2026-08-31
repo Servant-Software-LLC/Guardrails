@@ -73,7 +73,97 @@ public sealed class TelemetryCorpusStore
         string path = Path.Combine(CorpusRoot, fileName);
         string line = JsonSerializer.Serialize(row, JsonOptions);
 
-        File.AppendAllText(path, line + Environment.NewLine);
+        AppendLineExclusively(path, line);
+    }
+
+    /// <summary>
+    /// Append one COMPLETE line, with writers serialized against each other.
+    /// <para>
+    /// <b>Why not <c>File.AppendAllText</c>.</b> It opens shared-for-write and does not hold a lock, so two
+    /// appenders can interleave inside a single line and leave a TORN record — a fragment ending mid-object
+    /// followed by another row's tail. The corpus is JSONL, so one torn line makes the whole file
+    /// unparseable to every reader: <see cref="AlreadyRecorded"/>, the report, and the ingest all
+    /// deserialize line by line and throw <c>'}' is an invalid start of a value</c> on the fragment.
+    /// </para>
+    /// <para>
+    /// This is not a hypothetical. Two concurrent <c>guardrails run</c> invocations on one machine append to
+    /// the same month file, and the corpus they corrupt is the #533 model-evidence corpus — the data a
+    /// graduation decision is supposed to rest on. It first surfaced as an intermittent Ubuntu CI failure
+    /// where parallel tests shared a corpus root.
+    /// </para>
+    /// <para>
+    /// <c>FileShare.Read</c> is the mechanism: a second writer is refused rather than admitted alongside, so
+    /// lines cannot interleave. The refused writer retries briefly — an append holds the handle for
+    /// microseconds — and telemetry is best-effort, so a row lost to a pathologically contended file is
+    /// preferable to a corrupt corpus or a failed run. Collection must never be able to break a run.
+    /// </para>
+    /// </summary>
+    private static void AppendLineExclusively(string path, string line)
+    {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line + Environment.NewLine);
+
+        for (int attempt = 0; attempt < 12; attempt++)
+        {
+            try
+            {
+                // FileShare.None, not FileShare.Read: a reader admitted mid-append could observe the line
+                // half-written, which is the same torn record one layer over. Readers use
+                // ReadLinesTolerantly below and retry around this window, which is microseconds wide.
+                using var stream = new FileStream(
+                    path, FileMode.Append, FileAccess.Write, FileShare.None);
+                stream.Write(bytes, 0, bytes.Length);
+                return;
+            }
+            catch (IOException)
+            {
+                // Another appender or a reader holds it. Back off and retry.
+                Thread.Sleep(5 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return; // not writable at all - best-effort, never fail the run
+            }
+        }
+    }
+
+    /// <summary>
+    /// Read every line of a corpus file, tolerating a concurrent appender.
+    /// <para>
+    /// <c>File.ReadLines</c> opens with <c>FileShare.Read</c>, which DENIES writers — so a reader could
+    /// make a concurrent <see cref="Append"/> fail, and an appender holding the file could make the reader
+    /// fail. Both directions were live: the first cut of this fix locked the writer and moved the
+    /// <c>IOException</c> onto the read path instead. Sharing ReadWrite and retrying makes the pair
+    /// cooperate rather than trading which side throws.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> ReadLinesTolerantly(string path)
+    {
+        for (int attempt = 0; attempt < 12; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream);
+                var lines = new List<string>();
+                while (reader.ReadLine() is { } line)
+                {
+                    lines.Add(line);
+                }
+
+                return lines;
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(5 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return [];
+            }
+        }
+
+        return [];
     }
 
     /// <summary>Removes every row under the corpus root. Safe to call on an empty or not-yet-created corpus.</summary>
@@ -107,14 +197,29 @@ public sealed class TelemetryCorpusStore
 
         foreach (string file in Directory.EnumerateFiles(CorpusRoot, "*.jsonl", SearchOption.TopDirectoryOnly))
         {
-            foreach (string line in File.ReadLines(file))
+            foreach (string line in ReadLinesTolerantly(file))
             {
                 if (string.IsNullOrWhiteSpace(line))
                 {
                     continue;
                 }
 
-                using JsonDocument document = JsonDocument.Parse(line);
+                // Skip, never throw, on a line that will not parse. A corpus torn by the pre-fix
+                // non-atomic append is still out there on real machines, and letting one bad line abort
+                // the duplicate check would make an already-damaged corpus permanently un-ingestable -
+                // turning a recoverable data problem into a dead end. A skipped line simply is not
+                // matched, which at worst re-appends a row the corpus already held.
+                JsonDocument document;
+                try
+                {
+                    document = JsonDocument.Parse(line);
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                using JsonDocument _ = document;
                 JsonElement root = document.RootElement;
 
                 if (root.TryGetProperty("runId", out JsonElement runId) && runId.GetString() == row.RunId &&
