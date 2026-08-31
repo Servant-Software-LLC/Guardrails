@@ -6,12 +6,22 @@
 #
 # This is the repo's OWN test, not a re-implementation. Running it here rather than re-deriving the
 # parse in PowerShell is deliberate: two parsers on one property is the drift trap this plan is about.
+#
+# SCOPE (#455) - the filter is METHOD-scoped, and must NOT be widened back to the class. A
+#          `~SchemaDriftTests` filter also selects PromptRunnersSkillCopyMatchesSsot, which this task
+#          CANNOT satisfy: the moment task 28 correctly adds the openai-compat keys to the canonical
+#          block, the skill copy diverges, and only task 29 is scoped to mirror it - and task 29
+#          dependsOn task 28. That is a circular deadlock, and it is exactly the "failing forward"
+#          trap #455 names. It halted this task once, with the content already complete and correct.
+#          The skill-copy assertion is NOT lost: task 29's own guardrail runs the whole class, which is
+#          right for 29 because by then both halves can pass. Coverage moves to the task that can
+#          satisfy it rather than disappearing.
 $ErrorActionPreference = 'Continue'
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $project = 'tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj'
-$filter = 'FullyQualifiedName~SchemaDriftTests'
+$filter = 'FullyQualifiedName~SchemaDriftTests.CanonicalPromptRunnersBlock_ValidatesClean_AndConfiguresNoTiering'
 
 $log = & dotnet test $project --nologo --filter $filter 2>&1 | Out-String
 $code = $LASTEXITCODE
@@ -25,11 +35,7 @@ if ($code -ne 0) {
         if ($line -match '^\s*(\[FAIL\]|Error Message:|Expected:|Actual:|\s+at\s)') { Write-Output $line }
     }
     Write-Output ""
-    Write-Output "The canonical block no longer parses or validates."
-    Write-Output "NOTE: the SKILL-COPY half of this test (PromptRunnersSchema_SkillCopyMatchesSsot) is EXPECTED to"
-    Write-Output "fail here - task 26 has not mirrored your edit yet, and that is the correct order. If the ONLY"
-    Write-Output "failure is the skill-copy mismatch, your block is fine; if the VALIDATES-CLEAN half failed, the"
-    Write-Output "JSON you wrote is broken and only you can fix it."
+    Write-Output "The canonical block no longer parses or validates. The JSON you wrote is broken and only you can fix it."
     exit 1
 }
 
