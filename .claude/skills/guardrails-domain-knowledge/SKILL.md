@@ -335,6 +335,14 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   default `true`). Salvaged files remain subject to the task's `writeScope` -- the check is retrospective on
   the FINAL state regardless of how it got there. Pruned on task settle-`succeeded` and on a full `--fresh`
   reset (a task parked at `needs-human` keeps its refs for human inspection).
+  **Escalation salvage too (#554, SSOT section 3.2).** An action-emitted `needsHuman` ALSO triggers this
+  salvage -- regardless of `isFinal` -- because the escalating attempt's tree is never reset in place,
+  only ORPHANED (a resume forks a fresh segment; nothing hands the old tree back), so the guard is
+  `IsRealGitSegment`, not `WorktreeWillReset`. The staged set on this path is **filtered to the task's
+  `writeScope`** via `PreserveAttemptToRef`'s new `restrictToScope` parameter (`RestrictStagedSetToScope`)
+  -- the protected-artifact suppression above is structurally inapplicable here (`failed`
+  is empty; no guardrail ran). A **per-task retention cap** (`GitWorktreeProvider.SalvageRefRetentionPerTask`,
+  `5`) bounds the refs an endlessly-escalating task accumulates. The feedback framing never claims a rollback.
 - **Per-guardrail verdicts + honest retry messaging (#306, closes the #167 gap)**: a guardrail-failure
   `feedback.md` carries a "## Prior attempt: guardrail verdicts" ledger -- every guardrail marked ✅ (passed,
   do not break) or ❌ (failed, with its reason) -- so a one-token miss becomes a one-token fix, not a
@@ -609,6 +617,17 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   attempt off a LIVE rev-parse of the plan branch, so it is picked up automatically on the next resume.
   There is deliberately **no `guardrails hash` command** -- the trailer-less rule is the answer. Full
   steps: SSOT section 7.
+- **Live plan-edit watch -- reporting, not gating (#545 part 3, SSOT section 7.2/5.2-5.4).** A passive,
+  per-task, per-file baseline over the same `TaskDefinitionFiles.Enumerate` surface `definitionHash`
+  folds over, polled at the two existing Scheduler boundaries (task dispatch, task settle). A detected
+  mid-run edit to the plan folder never halts -- it appends one `boundary:"plan-edit"` /
+  `decision:"observed"` `decisions[]` entry (a sibling of `drift`/`wave`/`task`, above) and is rendered
+  at end-of-run (`PLAN FOLDER EDITED DURING THIS RUN`). **`observed` is provably inert**:
+  `RunOutcomePolicy`'s `SuppressesDelivery`/`ProceededUnreviewedWaveCount` branch on `decision` only,
+  and `observed` is neither token, so it can never suppress `mergeOnSuccess` or reach exit code 5.
+  Re-baselined PLAN-WIDE (never per-task) after every harness writer that edits the plan folder mid-run
+  (a JIT wave breakdown, its revert, the incomplete/quarantine sweeps, a `TryResolveDrift` that resolved --
+  which on a WAVED plan is not pre-DAG, since `DrainAsync` runs once per wave, SSOT section 7.2).
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
   was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
@@ -620,6 +639,9 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   re-scope the task, versus fix the plan folder because the work may already be correct. `kind`
   is the AGENT's claim, never the harness's judgement: absent or unrecognised is UNCLASSIFIED
   and the harness invents no default, rendering exactly as it always did.
+  In worktree mode it also **preserves the attempt's in-scope work** (the escalation salvage above,
+  #554, SSOT section 3.2/9) -- the salvage ref and `prior-attempt.patch` are named in the escalation
+  record's `context` and carried into the next attempt's composed prompt.
 - **`needsHarnessWrite` (issues #191, #437, #445)**: a SECOND fragment escape hatch, parallel to `needsHuman`
   -- asks the .NET HARNESS PROCESS ITSELF (never subject to Claude Code's tool-permission layer) to
   write a `.claude/` file the action's own subprocess can never write (broader than #101's
@@ -773,6 +795,16 @@ guardrails-review):**
   `action.maxTurns` or `dependsOn` (GR2042's fields, exclusively), and #378 NEVER adds a rule about what a
   guardrail PROVES. On a fan-in sink the relocation remedy is tried FIRST: narrowing `writeScope` alone
   yields N small tasks that still hold the first exercise of every real path.
+- **Handoff-table coverage lint (`GR2068`/`GR2069`, WARN, #553, SSOT section 9.6).** `guardrails validate`
+  checks a plan document's own implementation-handoff table (its `filesTouched` column) against the
+  SAME `writeScope` arrays GR2042 above inspects -- a different surface, same underlying pull, so
+  tripping GR2042 and either of these on one row is meeting one pull twice, not two unrelated warnings
+  (SSOT section 3.4). `GR2068` `HandoffPathUnreachable`: a named path no task's `writeScope` covers --
+  undeliverable under any implementation. `GR2069` `HandoffRowSplitAcrossTasks`: every path IS writable
+  by some task, but no SINGLE task covers the whole row -- a CONFIRM, not a fault; a deliberate split
+  legitimately trips it. Mutually exclusive per row. Both WARN, never ERROR, because `RunCommand.RunAsync`
+  refuses to run a plan whose validation emits any error, and a stale cell (plan 28 row 3) is a real,
+  non-blocking shipped-plan state.
 
 ## Model tiering -- the SCHEMA half only (#201, SSOT section 9.6)
 
