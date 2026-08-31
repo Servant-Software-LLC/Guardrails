@@ -4,6 +4,39 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Execution;
 
 /// <summary>
+/// Which disposition the "Prior attempt work is salvageable" section is describing (issue #554, plan 31
+/// §3.3). The recovery ROUTING is identical in all three cases — it is the same preserved ref and the same
+/// patch — so the section has exactly one owner (<see cref="RetryPolicy.AppendSalvageSection"/>) and this
+/// selects only the opening sentence, which states what actually happened to the tree that produced the
+/// work. Getting that sentence wrong is not a wording nit: it is what the human deciding how to unblock,
+/// or the agent deciding whether to trust the files on disk, reads.
+/// </summary>
+internal enum SalvageFraming
+{
+    /// <summary>
+    /// The retry path (#195/#306): a non-final worktree attempt failed and the F2 reset is about to roll
+    /// its writes back to a clean base. TODAY'S BYTES, and the default — <c>RetryPolicySalvageAdviceTests</c>
+    /// and <c>RetrySalvageTests</c> hard-pin them, so this branch must never move.
+    /// </summary>
+    Retry,
+
+    /// <summary>
+    /// The escalation path (#554, plan 31 §3.4 divergence 2): the attempt emitted <c>needsHuman</c>, so
+    /// the loop returned terminally BEFORE the reset and nothing was rolled back — the tree is ORPHANED
+    /// instead. Reusing the <see cref="Retry"/> wording here would tell a human something actively false
+    /// about the state of the tree.
+    /// </summary>
+    Escalation,
+
+    /// <summary>
+    /// The forward carry into a later attempt's COMPOSED PROMPT (plan 31 §3.5): a prior attempt of this
+    /// task left a patch behind, and the prompt must carry the recovery routing rather than one more log
+    /// path. Nothing is being rolled back at composition time — the work is simply available.
+    /// </summary>
+    PriorAttempt
+}
+
+/// <summary>
 /// Composes the <c>feedback.md</c> written after a failed attempt (SSOT §8). The text is
 /// the retry's input: deterministic actions just re-run, but prompt actions receive it
 /// verbatim via <c>GUARDRAILS_FEEDBACK</c> / the composed prompt, so it must be specific
@@ -434,8 +467,17 @@ public static class RetryPolicy
     /// — the per-guardrail verdicts (where shown, on the guardrail-fail path) tell the agent what
     /// already passed. No-op when <paramref name="salvageRef"/> is null (salvage off, serial mode, an
     /// empty/no-op diff, or the preserve itself failed).
+    /// <para>
+    /// <b>Three framings, ONE owner of the text (issue #554, plan 31 §3.3).</b> The routing bullets, the
+    /// inspection command, the <c>git -C</c> warning and the writeScope caveat are identical wherever
+    /// preserved work is offered; only the OPENING sentence — what actually happened to the tree that
+    /// produced it — differs, and <see cref="SalvageFraming"/> selects it. <see cref="SalvageFraming.Retry"/>
+    /// is the default and emits today's bytes unchanged, which is what lets
+    /// <c>RetryPolicySalvageAdviceTests</c> and <c>RetrySalvageTests</c> keep passing untouched.
+    /// </para>
     /// </summary>
-    private static void AppendSalvageSection(StringBuilder text, SalvageRef? salvageRef)
+    internal static void AppendSalvageSection(
+        StringBuilder text, SalvageRef? salvageRef, SalvageFraming framing = SalvageFraming.Retry)
     {
         if (salvageRef is null)
         {
@@ -449,9 +491,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("## Prior attempt work is salvageable");
         text.AppendLine();
-        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was preserved to the");
-        text.AppendLine($"git ref `{salvageRef.RefName}` so you can BUILD ON IT instead of re-deriving everything. The");
-        text.AppendLine("clean base is still the default starting point; recovering the prior work is YOUR call. Route");
+        AppendSalvageFraming(text, salvageRef, framing);
         text.AppendLine(string.IsNullOrWhiteSpace(salvageRef.DiffStat)
             ? "each file by SIZE:"
             : "each file by SIZE — the changed-line counts below tell you which of these it needs:");
@@ -535,6 +575,47 @@ public static class RetryPolicy
         text.AppendLine("Salvaged files remain subject to this task's declared writeScope, exactly like any other");
         text.AppendLine("write this attempt makes — the write-scope check runs on your FINAL state regardless of how");
         text.AppendLine("it got there.");
+    }
+
+    /// <summary>
+    /// The one paragraph of <see cref="AppendSalvageSection"/> that differs by <see cref="SalvageFraming"/>:
+    /// what happened to the tree that produced the preserved work. Every branch ends on the word "Route" so
+    /// the shared size-routing line reads as its continuation.
+    /// </summary>
+    private static void AppendSalvageFraming(StringBuilder text, SalvageRef salvageRef, SalvageFraming framing)
+    {
+        switch (framing)
+        {
+            case SalvageFraming.Escalation:
+                // Plan 31 §3.4 divergence 2. NOTHING was rolled back on this path — the attempt loop
+                // returns terminally on NeedsHuman before the F2 reset — so the Retry branch's "rolled
+                // back to a clean base, but SAVED" is a claim about a reset that never happened. The
+                // honest disposition is worse and more useful: the tree survives on disk for a day and
+                // then goes away, and nobody is ever handed it, so the ref and the patch are the only
+                // durable copies there are.
+                text.AppendLine($"Attempt {salvageRef.Attempt} STOPPED to ask a human rather than failing, so nothing was rolled back — but the");
+                text.AppendLine("segment worktree it wrote in is now ORPHANED: a resume mints a new run and a fresh segment, so");
+                text.AppendLine("no later attempt ever inherits that tree, and it is deleted once it goes stale. Its IN-SCOPE");
+                text.AppendLine($"work was preserved to the git ref `{salvageRef.RefName}`, which is now the ONLY durable copy of");
+                text.AppendLine("it. Route");
+                break;
+
+            case SalvageFraming.PriorAttempt:
+                // Composed-prompt carry (plan 31 §3.5): nothing is being rolled back at composition time,
+                // and the work may have come from either the retry or the escalation path — so this
+                // states only what is true of both, that the work exists and adopting it is the agent's
+                // call.
+                text.AppendLine($"Attempt {salvageRef.Attempt} of this task left work behind: its working tree was preserved to the git");
+                text.AppendLine($"ref `{salvageRef.RefName}` and is still there. Nothing has been applied for you — the tree you");
+                text.AppendLine("start from is the default, and recovering any of this is YOUR call. Route");
+                break;
+
+            default:
+                text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was preserved to the");
+                text.AppendLine($"git ref `{salvageRef.RefName}` so you can BUILD ON IT instead of re-deriving everything. The");
+                text.AppendLine("clean base is still the default starting point; recovering the prior work is YOUR call. Route");
+                break;
+        }
     }
 
     /// <summary>
@@ -977,16 +1058,24 @@ public static class RetryPolicy
     ///     section so "keep what already works" becomes true via recovery, not a false claim.</item>
     ///   <item><b>Rolled back and lost</b> (worktree non-final, salvage off/failed): the writes are
     ///     genuinely gone — say so honestly and instruct re-authoring (the #167 gap this closes).</item>
+    ///   <item><b>Preserved but NOT rolled back</b> (issue #554, plan 31 §3.3 — <paramref name="framing"/>
+    ///     of <see cref="SalvageFraming.Escalation"/>): work was stashed on a path that performs no reset.
+    ///     The attempt loop returns terminally on <c>needsHuman</c> before the F2 reset, so the tree is
+    ///     orphaned rather than reverted. The salvage section is still the route to the work, but claiming
+    ///     a rollback that never happened would be false, so this branch says what actually became of the
+    ///     tree.</item>
     /// </list>
-    /// Defaults keep the Persisted prompt wording, so callers that pass no disposition are unchanged.
+    /// Defaults keep the Persisted prompt wording and the <see cref="SalvageFraming.Retry"/> framing, so
+    /// callers that pass no disposition are unchanged.
     /// </summary>
-    private static void AppendHeader(
+    internal static void AppendHeader(
         StringBuilder text,
         TaskNode task,
         int attempt,
         ActionKind actionKind = ActionKind.Prompt,
         bool fileWritesRolledBack = false,
-        SalvageRef? salvageRef = null)
+        SalvageRef? salvageRef = null,
+        SalvageFraming framing = SalvageFraming.Retry)
     {
         text.AppendLine($"# Attempt {attempt} of task '{task.Id}' failed");
         text.AppendLine();
@@ -1011,6 +1100,18 @@ public static class RetryPolicy
             text.AppendLine("Your previous attempt's file writes were rolled back to a clean base and are NOT");
             text.AppendLine("recoverable. Re-author from scratch, but carry forward what you learned and go");
             text.AppendLine("straight at what failed — do not re-explore the whole codebase to re-orient.");
+        }
+        else if (framing == SalvageFraming.Escalation && salvageRef is not null)
+        {
+            // #554: preserved without a rollback. Unreachable from the retry call sites (they never pass a
+            // framing, and only ever produce a salvage ref when they also reset — see StashIfRollingBack),
+            // so today's bytes do not move; it exists because the escalation path's disposition is a real
+            // fifth state, and a header reusing either rollback branch above would state a reset that
+            // never happened.
+            text.AppendLine("Your previous attempt was NOT rolled back — but its files are not in front of you");
+            text.AppendLine("either: the tree it wrote them in is orphaned, and the preserved copy under");
+            text.AppendLine("'## Prior attempt work is salvageable' below is what you recover from. Take the parts");
+            text.AppendLine("that already work, then make ONLY the change needed to fix what failed.");
         }
         else
         {

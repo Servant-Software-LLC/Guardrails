@@ -1369,8 +1369,30 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// byte-identical to the parent's, so the ref always exists once called — "does a salvage ref exist
     /// for this attempt" is a simple ref lookup, never a conditional-commit gotcha. Static, mirroring
     /// <see cref="ResetSegment"/>, so the attempt loop can call it without a provider reference.
+    /// <para>
+    /// <b>Issue #554 / plan 31 §3.4 divergence 3 — <paramref name="restrictToScope"/>.</b> The RETRY path
+    /// reaches here only AFTER the write-scope check and <c>ScopedRevert</c> have run, so its tree is
+    /// already scope-clean and it passes <c>null</c> (byte-identical to pre-#554 behaviour). The
+    /// ESCALATION path short-circuits ~250 lines UPSTREAM of both, so an escalating agent's OUT-OF-SCOPE
+    /// edits would otherwise be written into a durable, agent-readable patch the next attempt is invited
+    /// to adopt. When non-null, the staged set is filtered to the scope AFTER staging: the whole tree is
+    /// staged exactly as today, then every staged path outside the scope is <c>git reset</c>-ed back out
+    /// of the throwaway index. <c>reset</c> rather than <c>rm --cached</c> because it restores the base
+    /// blob for a modified or deleted file and drops the entry for an added one — all three cases in one
+    /// command. The staging pathspec itself is untouched: it lives in <see cref="SegmentStaging"/>, which
+    /// the segment-commit path shares, so changing it would alter every segment commit in the harness.
+    /// </para>
+    /// <para>
+    /// <b>Retention (plan 31 §3.4, "Ref growth is bounded").</b> Salvage refs are pruned only when a
+    /// task's final settle is <c>succeeded</c> or wholesale on <c>--fresh</c>/<c>reset</c>, and #554 adds
+    /// refs on precisely the tasks that by definition never succeed. Writing attempt <c>N</c> therefore
+    /// deletes this task's <c>attempt-M</c> refs for <c>M &lt;= N - </c><see cref="SalvageRefRetentionPerTask"/>.
+    /// Best-effort: a prune that fails never fails the preserve, and the per-attempt patches in the log
+    /// dirs remain the durable record regardless.
+    /// </para>
     /// </summary>
-    public static void PreserveAttemptToRef(string worktreePath, string refName)
+    public static void PreserveAttemptToRef(
+        string worktreePath, string refName, IReadOnlyList<string>? restrictToScope = null)
     {
         string tempIndex = Path.Combine(Path.GetTempPath(), $"gr-salvage-index-{Guid.NewGuid():N}");
         try
@@ -1381,12 +1403,18 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             // the harness's own .guardrails-* scaffolding never bloat the agent-applyable salvage patch,
             // while the segment's real staged/unstaged state stays untouched.
             GitInWithEnv(worktreePath, env, SegmentStaging.StageAllArguments().ToArray());
+            if (restrictToScope is not null)
+            {
+                RestrictStagedSetToScope(worktreePath, env, restrictToScope);
+            }
+
             string treeSha = GitInWithEnv(worktreePath, env, "write-tree").Trim();
             string parentSha = GitIn(worktreePath, "rev-parse", "HEAD").Trim();
             string commitSha = GitIn(
                 worktreePath, "commit-tree", treeSha, "-p", parentSha, "-m",
                 $"guardrails: salvage snapshot ({refName})").Trim();
             GitIn(worktreePath, "update-ref", refName, commitSha);
+            PruneSalvageRefsBeyondRetention(worktreePath, refName);
         }
         finally
         {
@@ -1395,6 +1423,102 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
                 try { File.Delete(tempIndex); } catch (IOException) { /* best-effort */ }
             }
         }
+    }
+
+    /// <summary>
+    /// How many of a task's most recent salvage refs <see cref="PreserveAttemptToRef"/> keeps (plan 31
+    /// §3.4). At or above the default retry budget (<c>RunConfig.DefaultRetries</c> is 2, so three
+    /// attempts), so an ordinary retry chain never loses a ref it might still be offered; the cap only
+    /// bites on a task escalating repeatedly across resumes, where the settle-prune never fires. It is
+    /// deliberately NOT zero: a cap that pruned everything would be the very defect #554 fixes, wearing a
+    /// bound.
+    /// </summary>
+    internal const int SalvageRefRetentionPerTask = 5;
+
+    /// <summary>How many paths one <c>git reset</c> child is handed, so a very large staged set cannot
+    /// overflow the command line.</summary>
+    private const int ScopeResetBatchSize = 100;
+
+    /// <summary>
+    /// Plan 31 §3.4 divergence 3: drop every staged path outside <paramref name="scope"/> from the
+    /// throwaway index, leaving the working tree untouched. Listed with <c>-z</c> so a path with a space
+    /// or a non-ASCII byte is never C-quoted, and reset in batches so a very large staged set cannot
+    /// overflow the child process's command line. <c>HEAD</c> is the base to reset against because it is
+    /// the very commit this snapshot is parented on two lines below — the blob it restores for a modified
+    /// or deleted path is the one the salvage diff is computed against.
+    /// </summary>
+    private static void RestrictStagedSetToScope(
+        string worktreePath, IReadOnlyDictionary<string, string> env, IReadOnlyList<string> scope)
+    {
+        string[] staged = GitInWithEnv(worktreePath, env, "diff", "--cached", "--name-only", "-z", "HEAD")
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries);
+
+        // WriteScope.IsInScope splits the PATH literally and globs the SCOPE side (WriteScope.cs:74-98),
+        // which is exactly the direction a concrete staged path + the task's declared scope needs — no
+        // second matcher.
+        List<string> outOfScope = staged.Where(p => !WriteScope.IsInScope(p, scope)).ToList();
+        for (int i = 0; i < outOfScope.Count; i += ScopeResetBatchSize)
+        {
+            var args = new List<string> { "reset", "--quiet", "HEAD", "--" };
+            args.AddRange(outOfScope.Skip(i).Take(ScopeResetBatchSize));
+            GitInWithEnv(worktreePath, env, args.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// Delete this task's salvage refs older than <see cref="SalvageRefRetentionPerTask"/>, given the ref
+    /// just written (<c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c>). Best-effort throughout: a
+    /// ref name that does not carry a parseable attempt number, or a git failure, leaves the refs alone
+    /// rather than failing the preserve the caller actually asked for.
+    /// </summary>
+    private static void PruneSalvageRefsBeyondRetention(string worktreePath, string refName)
+    {
+        const string marker = "/attempt-";
+        int at = refName.LastIndexOf(marker, StringComparison.Ordinal);
+        if (at < 0 || !int.TryParse(refName[(at + marker.Length)..], out int attempt))
+        {
+            return;
+        }
+
+        int oldest = attempt - SalvageRefRetentionPerTask;
+        if (oldest < 1)
+        {
+            return;
+        }
+
+        string prefix = refName[..at];
+        try
+        {
+            string[] stale = GitIn(worktreePath, "for-each-ref", "--format=%(refname)", prefix)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(r => r.StartsWith(prefix + marker, StringComparison.Ordinal)
+                            && int.TryParse(r[(prefix.Length + marker.Length)..], out int m)
+                            && m <= oldest)
+                .ToArray();
+
+            foreach (string r in stale)
+            {
+                DeleteRef(worktreePath, r);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Best-effort: an unprunable ref set is bookkeeping debt, never a reason to lose the snapshot.
+        }
+    }
+
+    /// <summary>
+    /// Delete one salvage ref (issue #554). The escalation path writes the snapshot before it can know
+    /// whether the FILTERED diff is empty — <c>commit-tree</c> is what produces the tree to diff — so when
+    /// it turns out there was nothing in scope to salvage this removes the ref again, leaving "no patch,
+    /// no ref, no salvage section" for an attempt with nothing to offer. Best-effort, like every other
+    /// ref sweep here.
+    /// </summary>
+    public static void DeleteRef(string worktreePath, string refName)
+    {
+        try { GitIn(worktreePath, "update-ref", "-d", refName); }
+        catch (InvalidOperationException) { /* best-effort */ }
     }
 
     /// <summary>

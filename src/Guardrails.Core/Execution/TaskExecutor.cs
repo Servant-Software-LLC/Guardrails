@@ -835,11 +835,19 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
+        // #554 / plan 31 §3: PRESERVE first. Until now this returned before any salvage call, so an
+        // agent that wrote real work and then asked a human left nothing behind — and "the work is
+        // discarded" understates it: the attempt loop returns terminally on NeedsHuman BEFORE the F2
+        // reset, so the tree is not reset, it is ORPHANED (a resume mints a new runId and a fresh segment
+        // at planHead; reuse/fork are intra-run; reclaim only deletes after the staleness threshold).
+        // The ref and the patch are therefore the ONLY durable copies anyone — the resumed agent, the
+        // triaging human, the firstmate — can be pointed at.
         if (action.NeedsHumanQuestion is { } question)
         {
             return _journaler.NeedsHuman(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, question,
-                action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance);
+                action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance,
+                salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber));
         }
 
         // --- permission wall observation (issues #86 / #104 / #325) ----------------------
@@ -1370,7 +1378,51 @@ public sealed class TaskExecutor : ITaskExecutor
     /// fails — salvage is a best-effort convenience, never a reason to fail the attempt or change the F2
     /// reset that happens unconditionally regardless.
     /// </summary>
-    private SalvageRef? TryStashFailedAttempt(TaskNode task, WorktreeHandle worktree, int attemptNumber)
+    private SalvageRef? TryStashFailedAttempt(TaskNode task, WorktreeHandle worktree, int attemptNumber) =>
+        TryStash(task, worktree, attemptNumber, restrictToScope: null, dropRefWhenNothingToSalvage: false);
+
+    /// <summary>
+    /// Escalation salvage (issue #554, plan 31 §3.4): the twin of <see cref="TryStashFailedAttempt"/> for
+    /// the <c>needsHuman</c> short-circuit, differing in exactly the three ways §3.4 names — and each
+    /// difference is load-bearing, not incidental:
+    /// <list type="number">
+    ///   <item><b>The guard is <see cref="IsRealGitSegment"/>, not <see cref="WorktreeWillReset"/>.</b>
+    ///     <c>StashIfRollingBack</c> asks "will this attempt be reset?", and on this path that question is
+    ///     wrong: no reset follows, and on a FINAL attempt <c>WorktreeWillReset</c> is false — yet a final
+    ///     escalating attempt is precisely the one whose work a human is about to build on, because there
+    ///     is no next attempt to hand it to, only a person. So it preserves regardless of <c>isFinal</c>.</item>
+    ///   <item><b>The staged set is filtered to <c>writeScope</c>.</b> The retry path reaches its stash
+    ///     only after the write-scope check and <c>ScopedRevert</c>, so its tree is already scope-clean;
+    ///     this site is ~250 lines upstream of both. And the retry path's protected-artifact suppression
+    ///     cannot stand in: it keys off the FAILED guardrail list, which is empty here because no
+    ///     guardrail ran. The residual is identical to the retry path's post-<c>ScopedRevert</c> state —
+    ///     a protected artifact INSIDE the task's own scope is still stashed, and the deterministic
+    ///     per-attempt re-check on the next attempt's FINAL state remains the backstop.</item>
+    ///   <item><b>An empty filtered diff leaves NO ref.</b> The retry helper writes the ref before it can
+    ///     test the diff, and leaves the (harmless) empty ref behind for the settle/--fresh sweep. Here
+    ///     there is no settle to sweep it — an escalating task by definition never succeeds — and an
+    ///     empty ref would advertise recoverable work that does not exist, so it is deleted again. Note
+    ///     the scope filter itself can CREATE this case: an attempt whose every write was out of scope
+    ///     produces an empty filtered patch and is correctly offered nothing.</item>
+    /// </list>
+    /// </summary>
+    private SalvageRef? TryStashEscalatingAttempt(TaskNode task, WorktreeHandle worktree, int attemptNumber) =>
+        IsRealGitSegment(worktree)
+            ? TryStash(task, worktree, attemptNumber, task.WriteScope ?? [], dropRefWhenNothingToSalvage: true)
+            : null;
+
+    /// <summary>
+    /// The one implementation behind <see cref="TryStashFailedAttempt"/> and
+    /// <see cref="TryStashEscalatingAttempt"/>. <paramref name="restrictToScope"/> is null on the retry
+    /// path, which keeps its snapshot byte-identical to pre-#554; <paramref name="dropRefWhenNothingToSalvage"/>
+    /// is the ORDER difference the escalation path cannot avoid (see that method's remarks).
+    /// </summary>
+    private SalvageRef? TryStash(
+        TaskNode task,
+        WorktreeHandle worktree,
+        int attemptNumber,
+        IReadOnlyList<string>? restrictToScope,
+        bool dropRefWhenNothingToSalvage)
     {
         if (!_plan.Config.PreserveAttemptsForSalvage)
         {
@@ -1380,15 +1432,21 @@ public sealed class TaskExecutor : ITaskExecutor
         string refName = $"refs/guardrails/{task.Id}/attempt-{attemptNumber}";
         try
         {
-            GitWorktreeProvider.PreserveAttemptToRef(worktree.WorktreePath, refName);
+            GitWorktreeProvider.PreserveAttemptToRef(worktree.WorktreePath, refName, restrictToScope);
             string diffStat = GitWorktreeProvider.DiffStatAgainstBase(worktree.WorktreePath, worktree.TaskBase, refName);
             string patch = GitWorktreeProvider.DiffAgainstBase(worktree.WorktreePath, worktree.TaskBase, refName);
 
             // A genuine no-op attempt (nothing changed vs taskBase) has nothing to salvage — do not offer
-            // a misleading "recover your work" section for an empty diff. The (empty) ref is harmless and
-            // pruned on settle/--fresh like any other.
+            // a misleading "recover your work" section for an empty diff. On the retry path the (empty)
+            // ref is harmless and pruned on settle/--fresh like any other; on the escalation path there is
+            // no settle to prune it and an empty ref would advertise work that does not exist, so it goes.
             if (string.IsNullOrWhiteSpace(diffStat) && string.IsNullOrEmpty(patch))
             {
+                if (dropRefWhenNothingToSalvage)
+                {
+                    GitWorktreeProvider.DeleteRef(worktree.WorktreePath, refName);
+                }
+
                 return null;
             }
 
