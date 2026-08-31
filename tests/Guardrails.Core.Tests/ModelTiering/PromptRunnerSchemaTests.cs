@@ -77,13 +77,21 @@ public sealed class PromptRunnerSchemaTests : IDisposable
     }
 
     /// <summary>
-    /// <c>openai-compat</c> — the reserved #223 seam covering Ollama / llama.cpp / LM Studio / vLLM,
-    /// which share a wire protocol — is a RECOGNIZED token. It is asserted separately from the parse
-    /// theory above because of what it would otherwise cost: the design-of-record's own worked example
-    /// (§14) writes <c>"kind": "openai-compat"</c>, so a config copied straight out of the design would
-    /// have failed validation as an UNRECOGNIZED kind — a far more confusing message than "recognized,
-    /// not implemented here yet", and one that says the design is wrong rather than that the build is
-    /// early.
+    /// <c>openai-compat</c> — the #223 seam covering Ollama / llama.cpp / LM Studio / MLX / vLLM, which
+    /// share a wire protocol — is a RECOGNIZED token, and now an IMPLEMENTED one. It is asserted
+    /// separately from the parse theory above because of what it would otherwise cost: the
+    /// design-of-record's own worked example (§14) writes <c>"kind": "openai-compat"</c>, so a config
+    /// copied straight out of the design would have failed validation as an UNRECOGNIZED kind — a message
+    /// saying the design is wrong rather than that the build is early.
+    ///
+    /// <para><b>What changed, and what deliberately did not.</b> Stage 1 also asserted here that the kind
+    /// was refused for having NO IMPLEMENTATION, which was true when it was written and is exactly the
+    /// premise plan 28 exists to falsify (§3.1: <i>"v1 implements <c>PromptRunnerKind.OpenAiCompat</c> and
+    /// nothing else"</i>). That half is gone. The recognition half stays, because it is still worth
+    /// pinning that this token never reads as unknown — and
+    /// <see cref="RecognizedButUnimplementedKind_FailsValidate_NotJustRegistryConstruction"/> keeps its
+    /// full force for <c>codex</c>, <c>openrouter</c> and <c>local</c>, which remain reserved names and
+    /// remain GR2044 errors.</para>
     /// </summary>
     [Fact]
     public void OpenAiCompatKind_IsRecognized_NotAnUnknownToken()
@@ -100,13 +108,13 @@ public sealed class PromptRunnerSchemaTests : IDisposable
 
         Assert.Equal(PromptRunnerKind.OpenAiCompat, loaded.Runner("local-kimi").Kind);
 
-        // The distinction the message must carry: it is refused for being UNIMPLEMENTED, never for being
-        // unknown. A test that only checked "an error fired" would pass on either message.
-        Diagnostic error = Assert.Single(
-            loaded.Diagnostics, d => d.Code == DiagnosticCodes.InvalidPromptRunnerKind);
-        Assert.Contains("openai-compat", error.Message, StringComparison.Ordinal);
-        Assert.Contains("no implementation", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("not a recognised", error.Message, StringComparison.OrdinalIgnoreCase);
+        // Neither half of GR2044 fires for this token any more: not the loader's "unrecognised kind", and
+        // not the validator's "recognised but has NO implementation in this build". Both are asserted,
+        // because they share one diagnostic code — a test that checked only the code would not be able to
+        // tell which of the two it had ruled out.
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Code == DiagnosticCodes.InvalidPromptRunnerKind);
+        Assert.DoesNotContain(
+            loaded.Diagnostics, d => d.Message.Contains("no implementation", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -122,7 +130,6 @@ public sealed class PromptRunnerSchemaTests : IDisposable
     [InlineData("codex")]
     [InlineData("openrouter")]
     [InlineData("local")]
-    [InlineData("openai-compat")]
     public void RecognizedButUnimplementedKind_FailsValidate_NotJustRegistryConstruction(string kind)
     {
         Loaded loaded = Load($$"""

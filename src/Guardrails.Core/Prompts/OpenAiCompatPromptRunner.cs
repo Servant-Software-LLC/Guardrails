@@ -23,7 +23,16 @@ namespace Guardrails.Core.Prompts;
 /// <c>Grep</c>, spelled exactly as <c>Overwatch.cs:55</c> and <c>NeedsHumanTriage.cs:27</c> already
 /// spell them in prose (§3.2c) — with <c>allowedTools</c> FILTERING the offer (§4), §5 containment on
 /// every call, the #452 consecutive-denial abort, the §6.6 zero-tool-call refusal, and the rendered
-/// transcript. The role gate (<c>Action</c> refusal) and verdict transcription remain task 15's.</para>
+/// transcript.</para>
+///
+/// <para><b>The ROLE GATE and the VERDICT (task 15).</b> An invocation whose
+/// <see cref="PromptInvocation.Role"/> is outside <see cref="PromptRunnerKinds.ServesRoles"/> for this
+/// kind — in practice <see cref="PromptRole.Action"/> — is REFUSED before anything reaches the wire
+/// (§3.5). And this runner may only ever <b>TRANSCRIBE</b> a verdict (§6.4): it recovers the model's
+/// own JSON with <see cref="PromptJsonExtractor"/>, requires a boolean <c>pass</c>, and writes those
+/// bytes verbatim — or writes NO FILE. The failure direction is safe by construction, because no file
+/// is already the contractual fail (<see cref="GuardrailVerdictReader"/>), so this class can never
+/// produce a <c>pass: true</c> the model did not write as a boolean.</para>
 ///
 /// <para><b>Where §6.6 lands, stated plainly because it is narrower than the sentence in the plan.</b>
 /// §6.6 says a <c>Guardrail</c>-role invocation that calls no tool fails the attempt. This class fires
@@ -196,6 +205,16 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// <inheritdoc />
     public async Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
     {
+        // THE ROLE GATE (§3.5), first — before the --settings backstop, before the configuration faults,
+        // and before a single byte reaches the wire. The set consulted is the BUILD FACT
+        // PromptRunnerKinds.ServesRoles, not a copy of it, so the declared capability and the refusal
+        // cannot drift; that is also what lets the tests pin ServesRoles BY CONSTRUCTION rather than by
+        // reading back the same field this check reads.
+        if (!PromptRunnerKinds.ServesRoles(PromptRunnerKind.OpenAiCompat).Contains(invocation.Role))
+        {
+            return ErrorResult(RoleRefusal(invocation.Role));
+        }
+
         // --settings is FATAL, not ignored (plan §4). After §3.6 makes the containment splice
         // kind-aware this is genuinely unreachable: if it still arrives, the splice and
         // PromptRunnerKinds.NeedsContainmentHook disagree — a harness bug — and generating a Claude
@@ -253,6 +272,31 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             }
         }
     }
+
+    /// <summary>
+    /// The §3.5 refusal, LOUD rather than served. An <see cref="PromptRole.Action"/> invocation reaching
+    /// here is a routing mistake, and the honest failure is the one that names both the missing
+    /// capability and the four manifest routes GR2066 already gates — so the operator edits the config
+    /// rather than wondering why a local model produced no diff.
+    ///
+    /// <para>The alternative — attempting it anyway — is the one this class must never take: a runner
+    /// with no write tool and no shell would return a beautifully-argued description of the work,
+    /// having changed nothing, and the harness would take that for an attempt (§3.2).</para>
+    /// </summary>
+    private string RoleRefusal(PromptRole role) =>
+        $"block '{Name}' is kind openai-compat and CANNOT serve a {role} invocation. This runner is a " +
+        $"VERIFIER, not an actor (plan 28 §3.2/§3.5): it serves " +
+        $"{string.Join(" and ", PromptRunnerKinds.ServesRoles(PromptRunnerKind.OpenAiCompat).Order())} only, " +
+        "because its whole tool catalogue is Read, Glob and Grep — there is no write tool and no shell " +
+        "tool, so it cannot produce work. Nothing was sent to " +
+        $"{_config.Endpoint ?? "the endpoint"}. Serving this anyway would return a confident description " +
+        "of work that was never done, and the harness would record it as an attempt. " +
+        "`guardrails validate` reports this as GR2066 before a run starts, for all four routes that make " +
+        "the block reachable for an Action: it declares `routing`, it is the effective default (the " +
+        "`default` pointer OR the sole declared runner), a task's `action.runner` names it, or it is " +
+        "declared under a reserved Action-role profile name (`ai-merge`, `breakdown`). Reaching THIS " +
+        "message means one more route got past that gate — an action prompt's own frontmatter `runner:` " +
+        "pin is the one the validator historically could not see.";
 
     // ── the turn loop ───────────────────────────────────────────────────────────────────────────
 
@@ -453,6 +497,11 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     };
                 }
 
+                // §6.4, and DELIBERATELY AFTER the §6.6 refusal above: a judge that read nothing returns
+                // before this line, so it can never leave a verdict file behind.
+                await TranscribeVerdictAsync(invocation, turn.Content, streamLog, transcript, cancellationToken)
+                    .ConfigureAwait(false);
+
                 return new PromptResult
                 {
                     Completed = true,
@@ -550,10 +599,142 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// <c>ai-triage</c> legitimately reason over text they were handed and may call nothing, and a rule
     /// that fired there would fail every advisory call on every engine.</para>
     /// </summary>
-    private static bool MustReadItsEvidence(PromptInvocation invocation) =>
+    private static bool MustReadItsEvidence(PromptInvocation invocation) => VerdictTarget(invocation) is not null;
+
+    /// <summary>
+    /// Where this invocation's verdict must land, or null when it certifies nothing. ONE definition
+    /// serves both §6.6 (must this invocation have read evidence?) and §6.4 (may this invocation leave a
+    /// verdict file?), because they are two questions about the same fact — and if they could disagree,
+    /// the disagreement that matters is the one where a judge exempted from §6.6 still writes a verdict.
+    /// </summary>
+    private static string? VerdictTarget(PromptInvocation invocation) =>
         invocation.Role == PromptRole.Guardrail
         && invocation.Environment.TryGetValue(VerdictOutEnvVar, out string? verdictPath)
-        && !string.IsNullOrWhiteSpace(verdictPath);
+        && !string.IsNullOrWhiteSpace(verdictPath)
+            ? verdictPath
+            : null;
+
+    // ── the verdict (§6.4): TRANSCRIBE, never synthesise ────────────────────────────────────────
+
+    /// <summary>
+    /// Write the verdict file — and the rule that makes a write-tool-less runner safe to certify a
+    /// guardrail with is that this may only ever TRANSCRIBE. Three conditions, all of them the model's
+    /// doing: <see cref="PromptJsonExtractor"/> must recover a candidate from the FINAL message (the last
+    /// fenced <c>```json</c> block, else the last top-level object), it must parse, and it must carry a
+    /// boolean <c>pass</c>. Anything else writes NO FILE.
+    ///
+    /// <para><b>The failure direction is safe by construction.</b> No file is ALREADY the contractual
+    /// fail — <see cref="GuardrailVerdictReader.Read"/> reports
+    /// <see cref="GuardrailVerdictReader.NoValidVerdictReason"/> for a missing one — so every path out of
+    /// here that is not a verbatim transcription lands on FAIL. Nothing in this method composes JSON, so
+    /// this class cannot produce a <c>pass: true</c> the model did not write as a boolean.</para>
+    /// </summary>
+    private static async Task TranscribeVerdictAsync(
+        PromptInvocation invocation,
+        string finalMessage,
+        StreamWriter? streamLog,
+        TranscriptRenderer? transcript,
+        CancellationToken cancellationToken)
+    {
+        if (VerdictTarget(invocation) is not { } verdictPath)
+        {
+            return;
+        }
+
+        string? candidate = PromptJsonExtractor.Extract(finalMessage);
+        if (candidate is null)
+        {
+            NoVerdict(streamLog, transcript, verdictPath,
+                "the final message carried no JSON this runner could recover — no fenced ```json block, and no " +
+                "parseable top-level object in the prose either");
+            return;
+        }
+
+        if (!CarriesBooleanPass(candidate))
+        {
+            NoVerdict(streamLog, transcript, verdictPath,
+                "the recovered JSON carries no boolean `pass`, so it is not a verdict — and supplying one here " +
+                "would be this runner certifying a claim the model never made");
+            return;
+        }
+
+        try
+        {
+            if (Path.GetDirectoryName(verdictPath) is { Length: > 0 } directory)
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // The MODEL'S OWN BYTES, verbatim. "Transcribe" means the object it wrote, not a reshaped
+            // pass/reason subset of it: a judge that reported which files it reviewed has said something
+            // an operator will want, and re-serialising from a parsed pair would silently drop it.
+            await File.WriteAllTextAsync(verdictPath, candidate, Utf8NoBom, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException failure)
+        {
+            NoVerdict(streamLog, transcript, verdictPath, $"the verdict file could not be written ({failure.Message})");
+            return;
+        }
+        catch (UnauthorizedAccessException failure)
+        {
+            NoVerdict(streamLog, transcript, verdictPath, $"the verdict file could not be written ({failure.Message})");
+            return;
+        }
+
+        WriteNoticeLine(streamLog, "verdict-transcribed", new JsonObject
+        {
+            ["path"] = verdictPath,
+            ["bytes"] = candidate.Length,
+            ["how"] = "the model's own JSON object, written verbatim — this runner never composes a verdict, it " +
+                      "only transcribes one (plan 28 §6.4)"
+        });
+
+        transcript?.Verdict(verdictPath, written: true, why: "the model's own JSON object, written verbatim");
+    }
+
+    /// <summary>
+    /// The one shape test §6.4 imposes on a transcription candidate: a JSON OBJECT carrying <c>pass</c>
+    /// as a real boolean. It is the same predicate <see cref="GuardrailVerdictReader.Parse"/> applies
+    /// when it reads the file back, checked here so a candidate that would read as "no valid verdict"
+    /// never becomes a file at all — a present-but-unreadable verdict file is harder to diagnose than
+    /// an absent one, and both fail.
+    /// </summary>
+    private static bool CarriesBooleanPass(string candidateJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(candidateJson);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("pass", out JsonElement pass)
+                && pass.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        }
+        catch (JsonException)
+        {
+            // Unreachable while PromptJsonExtractor only returns candidates it parsed; kept because the
+            // alternative to a false here is an unhandled fault on the path that certifies a guardrail.
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Disclose a verdict that was NOT written, on both surfaces an operator has (§6.5's empty paths make
+    /// each independently optional). Silence would be the worst of the three outcomes: the guardrail
+    /// fails with the contractual "no valid verdict" reason and nothing anywhere says why.
+    /// </summary>
+    private static void NoVerdict(StreamWriter? streamLog, TranscriptRenderer? transcript, string verdictPath, string why)
+    {
+        WriteNoticeLine(streamLog, "verdict-not-written", new JsonObject
+        {
+            ["path"] = verdictPath,
+            ["why"] = why,
+            ["consequence"] =
+                "NO FILE was written, and no file is the CONTRACTUAL FAIL (plan 28 §6.4) — GuardrailVerdictReader " +
+                "reports \"guardrail produced no valid verdict (see logs)\". That is the safe direction and it is " +
+                "safe by construction: this runner transcribes or it writes nothing."
+        });
+
+        transcript?.Verdict(verdictPath, written: false, why: why);
+    }
 
     // ── one wire turn ───────────────────────────────────────────────────────────────────────────
 
@@ -2205,6 +2386,19 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 _writer.WriteLine($"  - {outcome.Text}");
             }
 
+            _writer.WriteLine();
+        }
+
+        /// <summary>
+        /// What became of the verdict — written verbatim, or not written and why (§6.4). A judge whose
+        /// answer certified nothing is the thing a human most needs to see in this file, and it belongs
+        /// beside the tool-call count that explains it.
+        /// </summary>
+        internal void Verdict(string path, bool written, string why)
+        {
+            _writer.WriteLine(written
+                ? $"- **verdict**: transcribed to `{path}` — {why}"
+                : $"- **verdict**: NOT WRITTEN (`{path}`) — {why}");
             _writer.WriteLine();
         }
 

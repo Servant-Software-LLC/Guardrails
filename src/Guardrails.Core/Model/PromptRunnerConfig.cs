@@ -227,10 +227,12 @@ public sealed record PromptRunnerOverrides
 }
 
 /// <summary>
-/// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224). Only
-/// <see cref="Claude"/> has a concrete runner — the others are the seam #223 fills. Declaring one of
-/// them is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction still
-/// refuses it, but as the BACKSTOP rather than the gate (see <see cref="PromptRunnerKinds.Implemented"/>).
+/// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224).
+/// <see cref="Claude"/> and <see cref="OpenAiCompat"/> have concrete runners; <see cref="Codex"/>,
+/// <see cref="OpenRouter"/> and <see cref="Local"/> remain RESERVED NAMES (plan 28 §3.1). Declaring one
+/// of those is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction
+/// still refuses it, but as the BACKSTOP rather than the gate (see
+/// <see cref="PromptRunnerKinds.Implemented"/>).
 /// </summary>
 public enum PromptRunnerKind
 {
@@ -252,7 +254,8 @@ public enum PromptRunnerKind
     /// #223 fills, and it deliberately spans BOTH a loopback local endpoint and a cloud
     /// OpenAI-compatible API: that is precisely why the DoR's provider-kind "weak" fallback (§4.1) is
     /// VERIFIER-ONLY and may never be used for actor ordering — this kind cannot tell the two apart.
-    /// No concrete runner yet (#223).
+    /// Served by <see cref="OpenAiCompatPromptRunner"/> (#223), for the <see cref="PromptRole.Guardrail"/>
+    /// and <see cref="PromptRole.Advisory"/> roles only — see <see cref="PromptRunnerKinds.ServesRoles"/>.
     /// </summary>
     OpenAiCompat
 }
@@ -274,7 +277,8 @@ public static class PromptRunnerKinds
     /// dispatch switch, which is the runtime backstop. Two places state the same fact, so a test pins
     /// them together rather than letting them drift.
     /// </summary>
-    public static IReadOnlyList<PromptRunnerKind> Implemented { get; } = [PromptRunnerKind.Claude];
+    public static IReadOnlyList<PromptRunnerKind> Implemented { get; } =
+        [PromptRunnerKind.Claude, PromptRunnerKind.OpenAiCompat];
 
     /// <summary>The recognised wire tokens, in declaration order — for diagnostic messages.</summary>
     public static IReadOnlyList<PromptRunnerKind> All { get; } =
@@ -289,11 +293,11 @@ public static class PromptRunnerKinds
     /// same shape as <see cref="Implemented"/> right above it, and read by <c>guardrails providers init</c>
     /// (SSOT §9.7) to decide whether it may add blocks or must degrade to annotating the ones already there.
     ///
-    /// <para><b>EMPTY, and that is the whole of v1's behaviour rather than a gap.</b> Only
-    /// <see cref="PromptRunnerKind.Claude"/> is implemented at all, and the Claude CLI exposes no model
-    /// list (settled OD-E) — so there is nothing to enumerate anywhere. The <c>openai-compat</c>
-    /// <c>GET /v1/models</c> surface arrives with its runner in #223, which adds that kind here and
-    /// supplies the enumerator; nothing else about <c>providers init</c> moves.</para>
+    /// <para><b>EMPTY, and that is the whole of v1's behaviour rather than a gap.</b> The Claude CLI
+    /// exposes no model list (settled OD-E), and <see cref="PromptRunnerKind.OpenAiCompat"/>'s runner
+    /// speaks only <c>/chat/completions</c> — so there is nothing to enumerate anywhere. The
+    /// <c>GET /v1/models</c> surface adds that kind here and supplies the enumerator when it lands;
+    /// nothing else about <c>providers init</c> moves.</para>
     ///
     /// <para><b>This is a list, not a seam.</b> There is deliberately no <c>IModelEnumerator</c> stub to
     /// fill: an interface with no implementation is dead code that cannot be tested, and the generator
@@ -311,36 +315,75 @@ public static class PromptRunnerKinds
     /// </summary>
     public static bool HasModelEnumeration(PromptRunnerKind kind) => ModelEnumerable.Contains(kind);
 
-    /// <summary>
-    /// STUB (plan 28 §3.5, issue #223) — a statement of fact about the BUILD, never a config key: which
-    /// <see cref="PromptRole"/>s a real, constructed runner of this kind actually accepts. Declared here,
-    /// throwing, so code written against the real signature ahead of the runner landing still compiles;
-    /// filled in alongside <see cref="PromptRunnerRegistry"/> gaining an <c>openai-compat</c> dispatch
-    /// arm (Claude ⇒ every role; OpenAiCompat ⇒ <see cref="PromptRole.Guardrail"/> and
-    /// <see cref="PromptRole.Advisory"/>, never <see cref="PromptRole.Action"/>).
-    /// </summary>
-    public static IReadOnlySet<PromptRole> ServesRoles(PromptRunnerKind kind) =>
-        throw new NotImplementedException(
-            "PromptRunnerKinds.ServesRoles is a stub (plan 28 §3.5) — filled in alongside the openai-compat runner.");
+    /// <summary>Every role — what an agent CLI that can write files and run commands serves.</summary>
+    private static readonly IReadOnlySet<PromptRole> AllRoles =
+        new HashSet<PromptRole> { PromptRole.Action, PromptRole.Guardrail, PromptRole.Advisory };
 
     /// <summary>
-    /// STUB (plan 28 §3.5/§3.6, issue #223) — true when this kind's runner is an agent whose file writes
-    /// need the SSOT §9.4 containment hook. See <see cref="ServesRoles"/> for why this throws here rather
-    /// than answering (Claude ⇒ true; OpenAiCompat ⇒ false, it offers no write tool).
+    /// The two roles a read-only HTTP verifier can honestly serve (plan 28 §3.2: v1 is a verifier, not
+    /// an actor) — no <see cref="PromptRole.Action"/>, because a runner with no write tool and no shell
+    /// cannot produce work.
     /// </summary>
-    public static bool NeedsContainmentHook(PromptRunnerKind kind) =>
-        throw new NotImplementedException(
-            "PromptRunnerKinds.NeedsContainmentHook is a stub (plan 28 §3.5) — filled in alongside the openai-compat runner.");
+    private static readonly IReadOnlySet<PromptRole> VerifierRoles =
+        new HashSet<PromptRole> { PromptRole.Guardrail, PromptRole.Advisory };
+
+    /// <summary>No role at all — a reserved kind with no runner class serves nothing.</summary>
+    private static readonly IReadOnlySet<PromptRole> NoRoles = new HashSet<PromptRole>();
 
     /// <summary>
-    /// STUB (plan 28 §6.4, issue #223) — true when this kind's runner has a write tool and so gets the
-    /// shipped verdict-file contract; false when it can only transcribe a fenced JSON block for the
-    /// harness itself to write. See <see cref="ServesRoles"/> for why this throws here rather than
-    /// answering (Claude ⇒ true; OpenAiCompat ⇒ false).
+    /// Which <see cref="PromptRole"/>s a real, constructed runner of this kind actually accepts — a
+    /// statement of fact about the BUILD, never a config key (plan 28 §3.5). A <c>roles:</c> key on the
+    /// block would invite an operator to DECLARE a capability the assembly does not have; the operator
+    /// declares preference (<c>routing</c>, <c>strength</c>), the assembly declares capability.
+    ///
+    /// <para>This is the SINGLE source the runner itself consults, so the fact and the refusal cannot
+    /// drift: <see cref="OpenAiCompatPromptRunner"/> reads this set and refuses anything outside it,
+    /// which is what lets the tests pin the answer BY CONSTRUCTION — build the real runner, hand it a
+    /// real invocation of each role, and watch it proceed or refuse — rather than by reading back the
+    /// same field the check reads, which would be an echo of itself.</para>
+    ///
+    /// <para>A kind with no implementation serves NOTHING rather than throwing: this answers a question
+    /// about the build, and "which roles does a kind we cannot construct serve?" has an honest answer.
+    /// The refusal for such a kind belongs to <see cref="Implemented"/> (GR2044) and to
+    /// <see cref="PromptRunnerRegistry"/>'s dispatch backstop, and duplicating it here would give the
+    /// same mistake two different failure shapes.</para>
     /// </summary>
-    public static bool WritesFiles(PromptRunnerKind kind) =>
-        throw new NotImplementedException(
-            "PromptRunnerKinds.WritesFiles is a stub (plan 28 §6.4) — filled in alongside the openai-compat runner.");
+    public static IReadOnlySet<PromptRole> ServesRoles(PromptRunnerKind kind) => kind switch
+    {
+        PromptRunnerKind.Claude => AllRoles,
+        PromptRunnerKind.OpenAiCompat => VerifierRoles,
+        _ => NoRoles
+    };
+
+    /// <summary>
+    /// True when this kind's runner is an agent whose file writes need the SSOT §9.4 containment hook
+    /// (plan 28 §3.5/§3.6). The hook polices <c>Write</c>/<c>Edit</c>/<c>MultiEdit</c>/<c>NotebookEdit</c>/
+    /// <c>Bash</c> tool calls; a runner that offers none of them has nothing for it to police, and
+    /// generating a Claude <c>settings.json</c> to pass as a CLI flag to an HTTP client is litter, not
+    /// containment. Conditioning the splice on this is what makes the runner's own <c>--settings</c>
+    /// refusal a TRUE backstop — reachable only when the splice and this fact disagree.
+    ///
+    /// <para><b>An unlisted kind gets TRUE, and the default direction is deliberate.</b> A future
+    /// file-writing runner whose author forgets to register it here inherits the boundary rather than
+    /// silently losing it; the wrong answer is then a hook that polices nothing, not an agent writing
+    /// outside its worktree unobserved.</para>
+    /// </summary>
+    public static bool NeedsContainmentHook(PromptRunnerKind kind) => kind != PromptRunnerKind.OpenAiCompat;
+
+    /// <summary>
+    /// True when this kind's runner has a write tool and so gets the shipped verdict-file contract
+    /// (<i>"you MUST end by writing your verdict as a JSON object to this absolute path"</i>); false when
+    /// it can only TRANSCRIBE — emit the verdict as the last fenced <c>```json</c> block of its final
+    /// message, for the harness to write (plan 28 §6.4). The composer reads this ONE boolean and emits
+    /// one instruction or the other, never both, so the weakest model in the system is never holding two
+    /// opposite instructions — and it learns a CAPABILITY, never a vendor name, which is what keeps the
+    /// SSOT §9 quarantine intact.
+    ///
+    /// <para>An unlisted kind gets TRUE for the same reason as
+    /// <see cref="NeedsContainmentHook"/>: a runner that CAN write files and was never registered here
+    /// would otherwise be told to transcribe, and the verdict it wrote to the path would be ignored.</para>
+    /// </summary>
+    public static bool WritesFiles(PromptRunnerKind kind) => kind != PromptRunnerKind.OpenAiCompat;
 
     /// <summary>The implemented kinds as a comma-separated quoted list, for diagnostic messages.</summary>
     public static string ImplementedTokenList => string.Join(", ", Implemented.Select(k => $"'{Token(k)}'"));
