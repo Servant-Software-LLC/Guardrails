@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Guardrails.Core.Journal;
@@ -356,6 +357,16 @@ internal sealed class AttemptJournaler
     /// key to its fragment. Record the attempt with the <c>needs-human</c> outcome and journal
     /// the task <c>needs-human</c> immediately — no retry, no guardrails. Returns a non-green
     /// result so the scheduler blocks dependents.
+    /// <para>
+    /// <b>Issue #554 — <paramref name="salvage"/>.</b> An agent that writes real work and THEN asks a
+    /// human used to leave nothing behind: this path returns before any salvage call, and its tree is not
+    /// reset but ORPHANED, so the ref and the patch are the only durable copies anyone can be pointed at.
+    /// When the caller preserved one, its recovery routing is appended to the <c>feedback.md</c> composed
+    /// here — the artifact a resumed agent and a triaging human both read. It carries the
+    /// <see cref="SalvageFraming.Escalation"/> wording, never the retry path's rollback claim, because on
+    /// this path no rollback happened. Null (salvage off, serial mode, or nothing IN SCOPE was written)
+    /// leaves the bytes exactly as they were.
+    /// </para>
     /// </summary>
     public AttemptResult NeedsHuman(
         TaskNode task,
@@ -367,12 +378,20 @@ internal sealed class AttemptJournaler
         string question,
         IReadOnlyList<string> options,
         string? kind = null,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        SalvageRef? salvage = null)
     {
         string feedback =
             $"# Task '{task.Id}' needs a human\n\n" +
             $"Task: {task.Description}\n\n" +
             $"The prompt action signalled it cannot proceed without a human decision:\n\n> {question}\n";
+        if (salvage is not null)
+        {
+            var body = new StringBuilder(feedback);
+            RetryPolicy.AppendSalvageSection(body, salvage, SalvageFraming.Escalation);
+            feedback = body.ToString();
+        }
+
         AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
 
         var record = new AttemptRecord
