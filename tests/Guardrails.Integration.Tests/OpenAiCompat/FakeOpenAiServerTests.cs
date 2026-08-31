@@ -384,9 +384,35 @@ public sealed class FakeOpenAiServerTests
         }
 
         // The listener is gone: the port refuses rather than hanging or answering.
-        using var probe = new TcpClient();
-        await Assert.ThrowsAsync<SocketException>(async () =>
-            await probe.ConnectAsync(IPAddress.Loopback, port, TestContext.Current.CancellationToken));
+        //
+        // POLLED, not asserted once. Release is not instantaneous on every platform - a just-closed
+        // listener can still complete a connect for a short window on macOS, where this failed in CI while
+        // Windows and Ubuntu passed. The PROPERTY under test is that the port is released, not that the
+        // kernel releases it synchronously with Dispose returning, so waiting briefly tests the thing the
+        // test is named for instead of a platform's socket-teardown timing.
+        //
+        // A leaked listener never starts refusing, so the timeout still fails the test - which is the
+        // regression this exists to catch.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (true)
+        {
+            try
+            {
+                using var probe = new TcpClient();
+                await probe.ConnectAsync(IPAddress.Loopback, port, TestContext.Current.CancellationToken);
+
+                // Connected - the listener (or its lingering socket) is still there.
+                Assert.True(
+                    DateTime.UtcNow < deadline,
+                    $"port {port} still accepted a connection 5s after disposal - the listener leaked");
+
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+            catch (SocketException)
+            {
+                return; // refused: the port is released, which is the whole assertion
+            }
+        }
     }
 
     // --- driving the socket ---------------------------------------------------------------------
