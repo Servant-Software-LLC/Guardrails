@@ -201,7 +201,7 @@ Two invariants govern the folder, and a future change must honour both:
       "contextTokens": null,          // OPTIONAL, openai-compat ONLY. REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader
       "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
       "wire": null,                    // OPTIONAL, openai-compat ONLY. A verbatim request-body passthrough map merged into the outgoing JSON, e.g. { "options": { "num_ctx": 32768 } } — the HTTP sibling of `env`. A key that shadows a harness-owned request field (model/messages/stream/stream_options/tools/max_tokens) is GR2065, never a runtime throw
-      "engine": null,                  // OPTIONAL, openai-compat ONLY. "ollama" | "llama.cpp" | "mlx" | "lm-studio" | "vllm" — OPERATOR-FACING TEXT ONLY (§9.8): selects the model-not-found remedy sentence and nothing else, never a code path or a request field. Absent = a neutral remedy sentence naming the model and endpoint
+      "engine": null,                  // OPTIONAL, openai-compat ONLY. "ollama" | "llama.cpp" | "mlx" | "lm-studio" | "vllm" | "apple-fm" — OPERATOR-FACING TEXT ONLY (§9.8): selects the model-not-found remedy sentence and nothing else, never a code path or a request field. Absent = a neutral remedy sentence naming the model and endpoint
       "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
       "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
       "strength": null,               // OPTIONAL axis 2/3 (#201). Integer >= 1, HIGHER = stronger — the ONLY totally-ordered axis. Orders same-rung candidates ASCENDING (the weakest model that can serve the tier goes first); absent sorts LAST. Malformed = GR2045
@@ -5120,12 +5120,21 @@ OPTIONAL on the schema but two REQUIRED once the block declares this kind:
   SIX harness-owned request fields — `model`, `messages`, `stream`, `stream_options`, `tools`,
   `max_tokens` — is GR2065, never a runtime throw; the runner refuses it as the backstop (the exact
   `wire: {"stream": false}` typo that would otherwise silently disable streaming).
-- `engine` (OPTIONAL) — `"ollama"` | `"llama.cpp"` | `"mlx"` | `"lm-studio"` | `"vllm"`, OPERATOR-FACING
-  TEXT ONLY: it selects the model-not-found remedy SENTENCE (`ollama pull <model>` for `ollama`, an
-  `mlx_lm.download`/LM Studio pointer for `mlx`, a "download in LM Studio's model manager" pointer for
-  `lm-studio`, a "start the server with `--model <model>`" pointer for `llama.cpp`/`vllm`) and nothing
+- `engine` (OPTIONAL) — `"ollama"` | `"llama.cpp"` | `"mlx"` | `"lm-studio"` | `"vllm"` | `"apple-fm"`,
+  OPERATOR-FACING TEXT ONLY: it selects the model-not-found remedy SENTENCE (`ollama pull <model>` for
+  `ollama`, an `mlx_lm.download`/LM Studio pointer for `mlx`, a "download in LM Studio's model manager"
+  pointer for `lm-studio`, a "start the server with `--model <model>`" pointer for `llama.cpp`/`vllm`, a
+  "run `fm --help` on the machine serving that endpoint" pointer for `apple-fm` — whose models are not
+  downloadable at all, so no pull command exists to suggest) and nothing
   else — no request field, no code path, absent from `ServesRoles`, the containment rules and the wire
   body. Absent ⇒ a neutral sentence naming the model and endpoint and inviting the operator to add one.
+  The value is **free text, validated against no enum** — deliberately, so a plan authored for the
+  macOS-only `apple-fm` still loads and validates unchanged on Windows and Linux, and 3-OS CI never
+  reddens on a legitimately macOS-targeted plan. Only the SUGGESTION list in that neutral sentence is
+  host-aware: `apple-fm` is withheld from it **only when the endpoint is loopback AND this host is not
+  macOS** — the one case where the server is provably not a Mac. A remote endpoint keeps the suggestion,
+  because a Windows operator pointing at a Mac across the LAN is the entire point of a separate
+  inference box, and suppressing a valid suggestion is the worse error of the two.
 
 **Any of `endpoint`/`contextTokens`/`apiKeyEnv`/`wire` declared on a block of another `kind` is ALSO
 GR2065** — a key that does nothing where it was written is indistinguishable from one that works.

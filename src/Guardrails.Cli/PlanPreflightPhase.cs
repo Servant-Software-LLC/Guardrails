@@ -788,10 +788,42 @@ public static class PlanPreflightPhase
             return $"Start the server with `--model {model}` (it serves the model it was launched with).";
         }
 
+        if (IsEngine(engine, "apple-fm"))
+        {
+            return $"Apple's system models are not downloadable — the `fm` stack serves a fixed set under Apple's "
+                   + $"own ids, so `{model}` is either misspelled or not one this build serves. Run `fm --help` on "
+                   + "the machine serving that endpoint. NB: `apple-fm` is macOS-only, and its OpenAI-compatible "
+                   + "server is undocumented by Apple and beta as of macOS 27.";
+        }
+
         return $"Make `{model}` available there. The block declares no `engine` hint, so there is no engine-specific "
-               + "command to suggest — add one (ollama | llama.cpp | mlx | lm-studio | vllm) and this message names "
+               + $"command to suggest — add one ({SuggestableEngines(declared.Block.Endpoint)}) and this message names "
                + "the exact command next time.";
     }
+
+    /// <summary>
+    /// The engine hints worth SUGGESTING for this block. <c>apple-fm</c> names a macOS-only stack, but the
+    /// machine serving the block's endpoint is not necessarily this one — a Windows operator pointing at a Mac
+    /// across the LAN is the entire point of a separate inference box — so it is withheld only when the endpoint
+    /// is LOOPBACK and this host is not macOS, the one case where the server is provably not a Mac. SUGGESTION
+    /// TEXT only: <c>engine</c> is free text, validated nowhere, so a plan naming <c>apple-fm</c> loads and
+    /// validates unchanged on every OS (plan 28 §6.2).
+    /// </summary>
+    private static string SuggestableEngines(string? endpoint)
+    {
+        const string Portable = "ollama | llama.cpp | mlx | lm-studio | vllm";
+        return ServerIsProvablyNotMac(endpoint) ? Portable : Portable + " | apple-fm (macOS host only)";
+    }
+
+    /// <summary>
+    /// True only when we KNOW the endpoint is served by a non-Mac: the URL is loopback (so the server is this
+    /// machine) and this machine is not macOS. A remote or unparseable endpoint returns false — unknown is not
+    /// the same as no, and suppressing a valid suggestion is the worse error of the two.
+    /// </summary>
+    private static bool ServerIsProvablyNotMac(string? endpoint) =>
+        !OperatingSystem.IsMacOS()
+        && Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri)
+        && uri.IsLoopback;
 
     private static bool IsEngine(string declared, string candidate) =>
         string.Equals(declared, candidate, StringComparison.OrdinalIgnoreCase);
