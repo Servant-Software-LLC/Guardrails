@@ -3080,7 +3080,43 @@ public sealed class Scheduler
     {
         string logs = Path.Combine(_plan.PlanDirectory, "logs");
         string q = question is { Length: > 0 } ? $" Question: {question}." : "";
-        return $"Autonomous {gate} gate for '{subject}'.{q} Full logs under {logs}.";
+        return $"Autonomous {gate} gate for '{subject}'.{q} Full logs under {logs}.{DescribePreservedWork(subject)}";
+    }
+
+    /// <summary>
+    /// What the halting attempt already BUILT, for whoever answers the gate (issue #554, plan 31 §3.3).
+    /// The context above tells a human what is WRONG and nothing about what exists — plan 28's attempt-7
+    /// escalation enumerated its completed work in detail, none of it was reachable, and the record pointed
+    /// at none of it. When the attempt was preserved, both durable copies are named: the git ref (its own
+    /// segment worktree is orphaned, so the ref is the only thing that outlives the run) and the readable
+    /// patch beside its logs.
+    ///
+    /// <para>Empty for a gate whose <paramref name="subject"/> is not a task (a wave dir), for a task with
+    /// no attempts, and — deliberately — whenever the LAST attempt left no patch: naming an earlier
+    /// attempt's ref would answer a question about the halting attempt with someone else's work.</para>
+    /// </summary>
+    private string DescribePreservedWork(string subject)
+    {
+        if (_journal is not Journal.RunJournal run
+            || run.AttemptsFor(subject) is not { Count: > 0 } attempts)
+        {
+            return "";
+        }
+
+        Journal.AttemptRecord last = attempts.MaxBy(a => a.Attempt)!;
+        string patch = Path.GetFullPath(Path.Combine(
+            _plan.PlanDirectory, last.LogDir, DependencyContextBuilder.SalvagePatchFileName));
+
+        if (!File.Exists(patch))
+        {
+            return "";
+        }
+
+        // Forward slashes so the path reads the same on every OS, matching the salvage section's own
+        // convention (RetryPolicy.AppendSalvageSection).
+        return $" Attempt {last.Attempt} wrote work before it stopped, and its in-scope files were preserved: "
+             + $"git ref {DependencyContextBuilder.SalvageRefNameFor(subject, last.Attempt)}, "
+             + $"readable patch {patch.Replace('\\', '/')}.";
     }
 
     /// <summary>
