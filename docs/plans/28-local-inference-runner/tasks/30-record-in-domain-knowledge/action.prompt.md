@@ -58,6 +58,42 @@ Cover, briefly and in the skill's own voice:
 Keep it proportionate: this is a knowledge skill, not a copy of the SSOT. Point at SSOT section 9.8
 for the full contract.
 
+### Tool discipline - this is what killed the four prior attempts, not the content
+
+Four attempts have failed here and NONE of them failed on understanding the material. Attempt 3 got four
+of the five required tokens into the file. They failed on how they reached for the filesystem.
+
+**Use the `Grep`, `Glob` and `Read` TOOLS. Never `Bash` for searching or reading.** This runner grants
+`Bash` only for `dotnet *` and `git log/diff/show/status`. A `grep`, `find`, `cat`, `ls` or `head`
+through `Bash` is REFUSED every time. Each refusal burns a turn, and repeated refusals trip the
+permission-wall detector - attempt 2 ended `permission-denied` that way, and the run's halt message
+still quotes a refused `grep -n "^## 9" ...` as though it were a failed write.
+
+**Your deliverable is under `.claude/`. Write it with the `Write` and `Edit` TOOLS only.** Do not shell
+out to copy, redirect, or `sed` into it: `.claude/` writes through `Bash` are structurally blocked by the
+containment hook, and no number of retries clears that.
+
+### Adopt the prior attempt instead of starting over
+
+The best previous attempt is preserved. Its retry-salvage section names a git ref and a
+`prior-attempt.patch` you can `git apply` (`git show` and `git diff` ARE granted). Attempt 3 left the
+file needing only ONE more token; attempt 4 ignored the salvage, started from scratch, wrote nothing and
+regressed to zero of five. Read the patch first.
+
+### The five tokens the guardrail checks, and the one that is still missing
+
+All five must appear literally in `.claude/skills/guardrails-domain-knowledge/SKILL.md`:
+
+  `Advisory`  `MLX`  `PromptRole`  `ServesRoles`  `tool_calls`
+
+The only one attempt 3 did not land is **`tool_calls`** - the tool-capability probe and the
+"accepts a tools array, calls none" false green it closes (SSOT section 9.8). Make sure the prose that
+carries it actually explains the probe; the guardrail checks the token, but a token dropped into an
+unrelated sentence would be exactly the reword-to-match-a-pattern this task's own instructions forbid.
+
+Keep it proportionate. This is a knowledge skill, not a copy of the SSOT - point at section 9.8 for the
+full contract.
+
 **Scope boundary (harness-enforced):** Write only to `.claude/skills/guardrails-domain-knowledge/SKILL.md`. After this task completes, the
 harness runs a `git diff` check and rejects any edit outside these paths - including changes to
 other production files, neighbouring test files, or the `.csproj`. An out-of-scope edit fails the

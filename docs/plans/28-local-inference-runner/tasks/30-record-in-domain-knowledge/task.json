@@ -8,6 +8,6 @@
     ".claude/skills/guardrails-domain-knowledge/SKILL.md"
   ],
   "action": {
-    "tier": "easy"
+    "tier": "medium"
   }
 }
