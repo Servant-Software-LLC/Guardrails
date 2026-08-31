@@ -123,10 +123,9 @@ and it is the *serial-mode* settle, while plan 28's motivating overnight run was
 **W6 is the one nobody had counted, and it escaped for a structural reason worth naming.** It calls no
 hash function at all — it is a *write* whose value is handed to it by a site §4.3 classifies as a *read*
 (`DefinitionDriftProbe.Evaluate`). Any enumeration built by searching for `TaskDefinitionHash.Compute`
-misses it by construction, which is exactly how the first draft — and the first adversarial pass — both
-lost it. Its consequences are handled in §6.6 and §14 rather than waved at: the SSOT sentence "never the
-current on-disk bytes" needs its exception stated, and the `[a]` branch is one keystroke from re-creating
-exactly the lie this plan removes.
+misses it by construction, which is how the first draft and the first adversarial pass both lost it. Its consequences are handled in §6.6 and §14 rather than waved at:
+the SSOT sentence "never the current on-disk bytes" needs its exception stated, and the `[a]` branch is
+one keystroke from re-creating exactly the lie this plan removes.
 
 W2 is the one that matters most and the one the issue does not name. The trailer chain is
 `Scheduler.cs:3953` → `handle.DefinitionHash` → `GitWorktreeProvider.cs:176` → `TrailerMessage` →
@@ -134,10 +133,10 @@ W2 is the one that matters most and the one the issue does not name. The trailer
 
 ### 4.3 The full call-site taxonomy — and the rule, corrected
 
-An earlier draft of this section said *"reads recompute from disk; writes read the pin,"* split the sites
-into a WRITE table and a READ table, and built §9's guardrail on that split. **The split was wrong**: three
-sites listed as READ are durable *writes* of a disk-computed hash, so the sentence was false as written and
-the guardrail derived from it under-counted. The honest rule:
+An earlier draft split the sites into a WRITE table and a READ table, said *"reads recompute from disk;
+writes read the pin,"* and built §9's guardrail on that split. **The split was wrong**: three sites listed
+as READ are durable *writes* of a disk-computed hash, so the sentence was false as written and the
+guardrail derived from it under-counted. The honest rule:
 
 > **Reads recompute from disk. Writes of the EXECUTED-DEFINITION RECORD read the pin.**
 > Every other durable write of a hash is a different record with its own contract, enumerated below and
@@ -147,26 +146,26 @@ There are **12** `TaskDefinitionHash.Compute` call sites in `src/` today. All 12
 
 | # | Site | Member | Role | After |
 |---|---|---|---|---|
-| 1 | `AttemptJournaler.cs:91` | `CompleteSucceededOrInvalidFragment` | **W1** — executed-definition record (serial) | **pin** |
-| 2 | `Scheduler.cs:3953` | `SettleAsync` | **W2** — executed-definition record + trailer (worktree, the default) | **pin** |
-| 3 | `Scheduler.cs:3676` | `SettleGreenIfWorktreeAsync` | **W3** — trailer only | **pin** |
-| 4 | `TaskExecutor.cs:590` | `RevalidateAsync` | **W4** — executed-definition record (`revalidate`) | **pin** |
-| 5 | `Scheduler.cs:2520` | `DetectDefinitionDrift` | READ — the resume drift pre-pass | disk |
-| 6 | `Scheduler.cs:2758` | `BuildResolvedTasks` | READ — Part C audit rows | disk |
-| 7 | `Scheduler.cs:3429` | `ConsumePendingAnswers` | READ — answer-file anti-stale key | disk |
-| 8 | `DryRun.cs:173` | `IsDrifted` | READ — `--dry-run` preview | disk |
-| 9 | `DefinitionDriftProbe.cs:69` | `Evaluate` | READ — the pre-run probe | disk |
-| 10 | `RunReset.cs:480` | `SafeComputeHash` | READ — reset audit rows | disk |
-| 11 | `WaveDefinitionHash.cs:47` | `Compute` | READ — the disk form's task fold | disk |
-| 12 | `Scheduler.cs:2996` | `ClassifyTaskGateAsync` | **durable WRITE of a disk value** — the escalation record's anti-stale binding (§4.4) | **disk, deliberately** |
+| 1 | `AttemptJournaler.cs` | `CompleteSucceededOrInvalidFragment` | **W1** — executed-definition record (serial) | **pin** |
+| 2 | `Scheduler.cs` | `SettleAsync` | **W2** — executed-definition record + trailer (worktree, the default) | **pin** |
+| 3 | `Scheduler.cs` | `SettleGreenIfWorktreeAsync` | **W3** — trailer only | **pin** |
+| 4 | `TaskExecutor.cs` | `RevalidateAsync` | **W4** — executed-definition record (`revalidate`) | **pin** |
+| 5 | `Scheduler.cs` | `DetectDefinitionDrift` | READ — the resume drift pre-pass | disk |
+| 6 | `Scheduler.cs` | `BuildResolvedTasks` | READ — Part C audit rows | disk |
+| 7 | `Scheduler.cs` | `ConsumePendingAnswers` | READ — answer-file anti-stale key | disk |
+| 8 | `DryRun.cs` | `IsDrifted` | READ — `--dry-run` preview | disk |
+| 9 | `DefinitionDriftProbe.cs` | `Evaluate` | READ — the pre-run probe | disk |
+| 10 | `RunReset.cs` | `SafeComputeHash` | READ — reset audit rows | disk |
+| 11 | `WaveDefinitionHash.cs` | `Compute` | READ — the disk form's task fold | disk |
+| 12 | `Scheduler.cs` | `ClassifyTaskGateAsync` | **durable WRITE of a disk value** — the escalation record's anti-stale binding (§4.4) | **disk, deliberately** |
 
 **So the post-fix count is 8**, not the six an earlier draft derived by counting only the READ table — it
-omitted #11 and #12, which appear in neither. That number is load-bearing: §9's anchor test enumerates
+omitted #11 and #12, which appeared in neither. That number is load-bearing: §9's anchor test enumerates
 exactly this set.
 
-Two further durable writes of a disk-computed hash exist at **wave** granularity and are equally deliberate:
-`Scheduler.cs:1506` and `:1916` (the wave-checkpoint and review-gate escalation records, via
-`WaveDefinitionHash.Compute`). And one write is fed by a read — **W6**, `RecordDriftAccepted` — which is
+Two further durable writes of a disk-computed hash exist at **wave** granularity and are equally
+deliberate: `Scheduler`'s wave-checkpoint and review-gate escalation records, via
+`WaveDefinitionHash.Compute`. And one write is fed by a read — **W6**, `RecordDriftAccepted` — which is
 why it escaped both tables in the first draft (§4.2).
 
 ### 4.4 Also considered, and deliberately NOT changed
@@ -211,7 +210,7 @@ expression in `src/` (`PlanLoader.cs:1061`, inside `LoadTask` declared at `:1011
 
 ```csharp
 // TaskNode.cs — both captured by the loader from the bytes it just read.
-public string? DefinitionHashAtLoad { get; init; }              // FULL surface, aggregate. The journal records THIS.
+public string? DefinitionHashAtLoad { get; init; }                                // FULL surface, aggregate. The journal records THIS.
 public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }  // FILTERED, per file. The GATE diffs THIS.
 ```
 
@@ -219,14 +218,14 @@ public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }
 aggregate string cannot serve milestone C at all: §6.2 decides the gate compares the *ignore-list-filtered*
 surface while the journal records the *full* one, and §6.3 requires the gate to name **which files moved**.
 A per-file diff needs per-file load-time state, and one hash carries none. An implementation handed only
-`DefinitionHashAtLoad` has exactly three ways out, and all three are worse than the defect: compare two
+`DefinitionHashAtLoad` has exactly three ways out and all three are worse than the defect: compare two
 different file sets (wrong on any task carrying an editor artifact), abandon §6.2 and block deliveries on a
 `.DS_Store`, or drive the gate off `LivePlanEditWatch`'s moving baseline (P15). **So the map lands in stage
-3, with the aggregate**, named in §9's anchor test and §14's contract text — not discovered at stage 13
-by an agent whose `writeScope` cannot reach `TaskNode.cs`.
+3, with the aggregate** — not discovered at stage 13 by an agent whose `writeScope` cannot reach
+`TaskNode.cs`.
 
-**Cost.** A handful of entries per task — `task.json`, one action file, and each guardrail/preflight script
-and sidecar; on this repo's own plans that is typically 3-8 short strings, held for the life of the run.
+**Cost.** A handful of entries per task — `task.json`, one action file, each guardrail/preflight script and
+sidecar; on this repo's own plans typically 3–8 short strings, held for the life of the run.
 `PlanDefinitionHash` already walks and hashes the identical enumeration at load for every plan, so the walk
 is a cost the harness already pays; only the retention is new, and it is bounded by the plan's size.
 
@@ -267,15 +266,14 @@ re-baselining problem that `LivePlanEditWatch` had to solve with six call sites:
 There is **no re-pin hook list to maintain and no way to forget one**. This is the design's main claim, and
 it is a structural argument rather than a checklist.
 
-**One correction to that argument, because an earlier draft overstated it.** "One construction site, no
-`with`-clone anywhere" is **false**: `PlanLoader.QualifyWaveDependencies` clones both
-(`PlanLoader.cs:949`, `task with { DependsOn = qualified }`, and `:952`, `wave with { Tasks = … }`). The
-conclusion survives — a record `with`-expression copies every property it does not name, so both captures
-ride through untouched, and that clone rebinds only `DependsOn`, which is *inside* `task.json` and therefore
-already inside the hash. But the premise had to be corrected rather than left standing, and it sharpens the
-actual requirement: **a clone that rebound `Directory` or `Action` would carry a pin describing a different
-folder.** Neither does today. §9's type guardrail pins that too — no `with`-expression in `src/` may name
-`Directory` or `Action` on a `TaskNode`.
+**One correction, because an earlier draft overstated it.** "One construction site, no `with`-clone
+anywhere" is **false**: `PlanLoader.QualifyWaveDependencies` clones both (`PlanLoader.cs:949`,
+`task with { DependsOn = qualified }`, and `:952`, `wave with { Tasks = … }`). The conclusion survives — a
+record `with`-expression copies every property it does not name, so both captures ride through, and that
+clone rebinds only `DependsOn`, which lives *inside* `task.json` and is therefore already inside the hash.
+But the premise had to be corrected rather than left standing, and it sharpens the real requirement: **a
+clone that rebound `Directory` or `Action` would carry a pin describing a different folder.** Neither does
+today, and §9's anchor test pins that too.
 
 **Zero plumbing at the write sites.** All five already hold the `TaskNode` (or the `WaveNode`) whose hash
 they are stamping — `AttemptJournaler.CompleteSucceededOrInvalidFragment(TaskNode task, …)`,
@@ -462,14 +460,14 @@ The remaining pins:
     pre-pass **without re-loading**. It must see the **post-edit** hash. This is a direct assertion that
     R1 recomputes, and it is the only form that separates a pinned read site from a disk one at all.
   - **P6b (waved, the reachable production shape) — REPAIRED, the first version was unsatisfiable.** An
-    earlier draft asked for drift on *an earlier wave's* settled task. That cannot happen:
-    `DrainAsync` is called per wave with **that wave's tasks only** (`Scheduler.cs:632-635`,
+    earlier draft asked for drift on *an earlier wave's* settled task. That cannot happen: `DrainAsync` is
+    called per wave with **that wave's tasks only** (`Scheduler.cs:632-635`,
     `DrainAsync(plan, wave.Tasks, waveGraph, …)`) and `DetectDefinitionDrift` iterates exactly that list,
     so nothing re-checks an earlier wave within one run. The scenario that *is* reachable and *does*
     discriminate: **a task in wave N, settled green in a PREVIOUS run, whose definition is edited after
     this run's load and before wave N's drain.** Its pin and its recorded hash are both the pre-edit value,
-    so a pinned read site sees a match and waves it through, while a disk read halts. That separation is
-    the whole point of the pin, and it needs a waved, two-run fixture.
+    so a pinned read site sees a match and waves it through while a disk read halts. That needs a waved,
+    two-run fixture.
 - **P7 — the wave levels do not drift apart (§5.4). TWO legs, because one covers half of milestone B.**
   - **P7a — the task fold.** Editing one constituent task's `task.json` mid-run changes the wave's
     recorded hash *iff* it changes that task's recorded hash.
@@ -544,8 +542,8 @@ whose gate turned that test red would have been wrong.
 
 At every successful settle — W1 through W4 — the gate diffs **two per-file maps over the same filtered
 surface**. It never compares two aggregates, and in particular it never compares the full-surface
-`DefinitionHashAtLoad` against a filtered recompute — those hash different file sets, so on any task
-carrying an editor artifact they differ with nobody having edited anything:
+`DefinitionHashAtLoad` against a filtered recompute — those hash different file sets, so on a task carrying
+an editor artifact they differ with nobody having edited anything:
 
 | | Value | Cost |
 |---|---|---|
@@ -717,10 +715,9 @@ this plan's to relitigate.
   `LivePlanEditWatch`'s already-collected `PlanEdit`s and P9 through P13 all pass, shipping the watch's
   **moving** baseline under this plan's name. **Asserting the report's payload is not enough** — a
   watch-driven implementation can populate both hash fields from the watch's own before/after snapshot and
-  satisfy a payload pin exactly. The pin must therefore discriminate on **provenance**: after a mid-run
-  edit that `Poll()` has ALREADY reported and re-baselined on (so the watch's baseline now holds the
-  post-edit bytes and it will never report that file again), the settling task must **still** diverge.
-  Only a pinned baseline survives that; a moving one cannot.
+  satisfy a payload pin exactly. The pin must discriminate on **provenance**: after a mid-run edit that
+  `Poll()` has ALREADY reported and re-baselined on (so the watch holds the post-edit bytes and will never
+  report that file again), the settling task must **still** diverge. Only a pinned baseline survives that.
 - **P16 — the gate is quieter than the recorded hash** (§6.2). A mid-run stray `.DS_Store` under a task's
   `guardrails/` leaves the run **green and delivering** while that task's *recorded* hash still differs
   from disk. This is the shipped `StrayDsStoreInTargetGuardrails` assertion, and it must survive this plan
@@ -841,23 +838,23 @@ Each bullet closes a specific wrong-but-passing implementation.
   entirely.
 - **`TaskDefinitionHash.Compute` output has not moved** (P8), byte-pinned on a fixture.
 **The tripwire — a SOURCE-READING ANCHOR TEST, not a plan-folder guardrail.** Two rounds of adversarial
-review broke three successive drafts of this, and the defeats are the specification:
+review broke three successive drafts, and the defeats are the specification:
 
 | Draft | What defeats it |
 |---|---|
-| *"`handle.DefinitionHash = Journal.TaskDefinitionHash.Compute` matches zero times in `src/`"* | It matches **once today** — `Scheduler.cs:3676` — and **zero** times at W1, W2 and W4, because `SettleAsync` hoists to a local, `AttemptJournaler.cs` has no `Journal.` prefix, and `TaskExecutor.cs` uses a named argument. Fixing only W3 turns it green with the defect intact in serial mode, `revalidate`, **and the default worktree settle** |
+| *"`handle.DefinitionHash = Journal.TaskDefinitionHash.Compute` matches zero times in `src/`"* | It matches **once today** — `SettleGreenIfWorktreeAsync` — and **zero** times at W1, W2 and W4, because `SettleAsync` hoists to a local, `AttemptJournaler` has no `Journal.` prefix, and `TaskExecutor` uses a named argument. Fixing only W3 turns it green with the defect intact in serial mode, `revalidate`, **and the default worktree settle** |
 | *"the write-site expressions read `.DefinitionHashAtLoad`"* | Satisfied verbatim by `public string DefinitionHashAtLoad => TaskDefinitionHash.Compute(this);` — every site reads the identifier, the defect is 100% intact |
-| *"`TaskDefinitionHash.Compute(` appears exactly N times"* | **Two separate defects.** The derivation gave **6** against a true **8** (§4.3 — it omitted `WaveDefinitionHash.cs:47` and `Scheduler.cs:2996`, which appear in neither of the old tables). And a bare count is a **tautology magnet**: an agent that meets a wrong number under retry pressure runs the grep and writes down whatever it says — installing the exact anti-pattern in the guardrail whose job is to prevent one |
+| *"`TaskDefinitionHash.Compute(` appears exactly N times"* | **Two separate defects.** The derivation gave **6** against a true **8** (§4.3 — it omitted `WaveDefinitionHash.Compute` and `ClassifyTaskGateAsync`, which appeared in neither of the old tables). And a bare count is a **tautology magnet**: an agent that meets a wrong number under retry pressure runs the grep and writes down whatever it says — installing the exact anti-pattern in the guardrail whose job is to prevent one |
 
-**And all three shared a deeper flaw: they were plan-folder guardrails, which evaporate when the run ends.**
+**All three shared a deeper flaw: they were plan-folder guardrails, which evaporate when the run ends.**
 Risk 6's hazard — *"a seventh site added later by someone who has not read this document"* — is
-repo-lifetime. A guard that lives only inside this plan's task folder cannot address it.
+repo-lifetime. A guard living only inside this plan's task folder cannot address it.
 
-So the tripwire is a **committed anchor test**, following the repo's own idiom
-(`SeamDoctrineAnchorTests`, `ModelAppropriatenessDoctrineAnchorTests`): it reads `src/` as text and
-asserts the **enumerated SET** of `TaskDefinitionHash.Compute` call sites — **file + enclosing member**,
-never a bare count. A set is self-documenting, fails informatively ("`Scheduler.SettleAsync` is calling
-Compute again"), and cannot be satisfied by writing down whatever the grep says.
+So the tripwire is a **committed anchor test**, following the repo's own idiom (`SeamDoctrineAnchorTests`,
+`ModelAppropriatenessDoctrineAnchorTests`): it reads `src/` as text and asserts the **enumerated SET** of
+`TaskDefinitionHash.Compute` call sites — **file + enclosing member**, never a bare count. A set is
+self-documenting, fails informatively ("`Scheduler.SettleAsync` is calling Compute again"), and cannot be
+satisfied by writing down whatever the grep says.
 
 **The set it pins, exactly — 8 sites** (§4.3's table, minus the four that become pins):
 
@@ -874,17 +871,17 @@ Compute again"), and cannot be satisfied by writing down whatever the grep says.
 
 And **zero** in `AttemptJournaler.cs`, `TaskExecutor.cs`, `TaskNode.cs`, `WaveNode.cs`.
 
-Two more anchors in the same test, both closing a hole a behavioral pin cannot reach:
+Three more anchors in the same test, each closing a hole no behavioral pin reaches:
 
 - **The declaration shape.** `TaskNode.cs` and `WaveNode.cs` contain **zero** occurrences of
-  `TaskDefinitionHash` / `WaveDefinitionHash`, and both captures are bodiless auto-properties. A property
-  that cannot name the hash function cannot compute it lazily, in any syntax — which is what defeats the
+  `TaskDefinitionHash` / `WaveDefinitionHash`, and every capture is a bodiless auto-property. A property
+  that cannot name the hash function cannot compute it lazily in any syntax — which is what defeats the
   expression-bodied form that beat draft 2.
-- **No fallback to disk, and no identity-rebinding clone.** No line in `src/` contains both
-  `DefinitionHashAtLoad` and `Compute(` — a `?? Compute(task)` is the **cheapest wrong implementation of
-  this entire plan**, reads like defensive coding, and survives every behavioral pin. And no
-  `with`-expression on a `TaskNode` may rebind `Directory` or `Action` (§5.2), which would carry a pin
-  describing a different folder.
+- **No fallback to disk.** No line in `src/` contains both `DefinitionHashAtLoad` and `Compute(`. A
+  `?? Compute(task)` is the **cheapest wrong implementation of this entire plan**: it reads like defensive
+  coding and survives every behavioral pin.
+- **No identity-rebinding clone.** No `with`-expression on a `TaskNode` may rebind `Directory` or `Action`
+  (§5.2) — that would carry a pin describing a different folder.
 
 **Because §11 forbids implementation stages from writing `tests/**`, this needs its own test-authoring
 row** — stage 6 in §15.
@@ -1371,6 +1368,14 @@ the smallest change that gives it a home: no new file, no move, no behavior chan
 one place the list lives stays the one place a future pattern gets added. Stage 5 already owns the other
 half of the seam (`Scheduler.cs`), so the row stays deliverable by a single task.
 
+**Row 5 has ZERO margin, and that is worth knowing before `/plan-breakdown` touches it.** Measured against
+the real check: `Scheduler.cs` is owned by tasks {5, 9, 13}, `LivePlanEditWatch.cs` by **{5} alone**, and
+the intersection is exactly {5}. Every other row in §15 tolerates a scope edit; this one does not. **If
+stage 5 loses either entry from its `writeScope`, row 5 splits and GR2069 fires immediately** — and the
+failure it would be reporting is real, not cosmetic: the two halves of one seam handed to two tasks, with
+the ignore predicate on one side of the boundary and its only consumer on the other. Do not "tidy" this row
+by moving `LivePlanEditWatch.cs` elsewhere.
+
 ### 15.3 Hand-run of GR2068 / GR2069 against this table
 
 Run against `HandoffScopeCoverage.cs` as authored at `4495653` (its only commit; merged to master in
@@ -1384,17 +1389,17 @@ when **one** task covers **every** candidate.
 |---|---|---|---|---|
 | 1 | 1 | `tests` | {1} | clean |
 | 2 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (2) covers it** |
-| 3 | 2 | `src` | `TaskNode.cs`→{3}, `PlanLoader.cs`→{3, 9} | clean — task 3 covers both |
+| 3 | 2 | `src` | `TaskNode.cs`→{3}, `PlanLoader.cs`→{3,9} | clean — task 3 covers both |
 | 4 | 2 | `src` | {4}, {4} | clean |
 | 5 | 2 (`Scheduler.cs`, `LivePlanEditWatch.cs`) | `src` | {5,9,13}, {5} | clean — **task 5 covers BOTH** |
 | 6 | 1 | `tests` | {6} | clean |
 | 7 | 1 | `tests` | {7} | clean |
 | 8 | 1 | `tests` | {8} | clean |
-| 9 | 4 | `src` | `PlanLoader.cs`→{3, 9}, `Scheduler.cs`→{5, 9, 13}, the other two →{9} | clean — task 9 covers all four |
+| 9 | 4 | `src` | {9}, {9}, `PlanLoader.cs`→{3,9}, `Scheduler.cs`→{5,9,13} | clean — task 9 covers all four |
 | 10 | 1 | `tests` | {10} | clean |
 | 11 | 1 | `tests` | {11} | clean |
 | 12 | 3 | `src` | {12} for all three | clean |
-| 13 | 2 | `src` | `Scheduler.cs`→{5, 9, 13}, `RunReport.cs`→{13} | clean — task 13 covers both |
+| 13 | 2 | `src` | `RunReport.cs`→{13}, `Scheduler.cs`→{5,9,13} | clean — task 13 covers both |
 | 14 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (14) covers it** |
 | 15 | 1 | `src` | {15} | clean |
 | 16 | 2 | `docs`, `.claude` | {16}, {16} | clean |
@@ -1442,11 +1447,10 @@ Three things that would have broken it, checked explicitly rather than assumed:
   **only**, so nothing outside that cell is extracted. Confirmed against `HandoffScopeCoverage.cs:169`.
 - **Other tables in this document.** The check scans **every** markdown table whose header normalizes to
   `filestouched`. This document carries **16 tables** and **exactly one** has that column — the §15 handoff
-  table. The two worth naming, because they are the dense ones: **§4.3**'s twelve-row call-site table
+  table. The two worth naming are the dense ones: **§4.3**'s twelve-row call-site table
   (`# | Site | Member | Role | After`), now the densest collection of backticked paths in the document, and
   **§15.1**'s assertion table (`# | Test method | Line | Today | After, and why | Stage`), which carries
-  `:NNN` refs. Neither header matches, so neither is read as a handoff table — verified below rather than
-  reasoned.
+  `:NNN` refs. Neither header matches — verified below rather than reasoned.
 
 ---
 
