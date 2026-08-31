@@ -75,6 +75,7 @@ public sealed class PlanValidator
         ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
+        ValidateHandoffScopeCoverage(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
@@ -1965,6 +1966,22 @@ public sealed class PlanValidator
                 "a WARN for /guardrails-review to resolve, not a hard failure."));
         }
     }
+
+    /// <summary>
+    /// GR2068 / GR2069 (WARNING, plan 31 §4 / issue #553): the handoff-table path-coverage check — does
+    /// each row of the plan document's implementation-handoff table name files the plan's own tasks are
+    /// authorized to write? The third <c>writeScope</c>-reading check, and the only one that reads the
+    /// plan DOCUMENT as well as the folder, which is why it lives in
+    /// <see cref="HandoffScopeCoverage"/> rather than inline here.
+    ///
+    /// <para>Silent by default: no sibling <c>&lt;plan-folder&gt;.md</c>, no <c>filesTouched</c> column,
+    /// or no candidate written in the plan's own path vocabulary all produce nothing at all. Both codes
+    /// are WARNINGS in v1 because <c>RunCommand</c> refuses to run a plan whose validation emits any
+    /// error, so an ERROR here would be a retroactive, run-blocking gate on every plan that adopted the
+    /// convention — and a correct, shipped, fully green plan can carry a stale cell (§4.7).</para>
+    /// </summary>
+    private static void ValidateHandoffScopeCoverage(PlanDefinition plan, List<Diagnostic> diagnostics) =>
+        HandoffScopeCoverage.Validate(plan, diagnostics);
 
     /// <summary>
     /// Validate <c>stagingOutputs</c> entries across all tasks (SSOT §3.5, issue #130). All causes

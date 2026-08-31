@@ -988,17 +988,55 @@ public static class DiagnosticCodes
     /// </summary>
     public const string OpenAiCompatWeakOrUnreachable = "GR2067";
 
-    // CURRENT next-free code: GR2068. GR2067 (OpenAiCompatWeakOrUnreachable) is the last taken code above —
+    /// <summary>
+    /// GR2068 (WARNING) — a handoff row names a RESOLVABLE path that <b>no task's</b> <c>writeScope</c>
+    /// covers, so the row cannot be delivered under any implementation (plan 31 §4, issue #553).
+    /// <para>Shared extraction with <see cref="HandoffRowSplitAcrossTasks"/>: candidates are the
+    /// backticked code spans of the plan document's implementation-handoff table that carry a separator
+    /// or a file extension, and a candidate is RESOLVABLE only when its first path segment equals a WHOLE
+    /// path segment of some <c>writeScope</c> entry in the plan — so a vague fragment like
+    /// <c>Cli/Commands/</c>, where the real segment is <c>Guardrails.Cli</c>, is dropped silently rather
+    /// than reported. The verdict is per row, against ONE task. Static and offline. Silent when the
+    /// sibling <c>&lt;plan-folder&gt;.md</c> is absent, when it carries no <c>filesTouched</c> column, or
+    /// when no candidate resolves.</para>
+    /// <para>The two codes are MUTUALLY EXCLUSIVE per row. This is the precise half — a provable
+    /// impossibility rather than a judgement call — and its message deliberately offers NO suggested
+    /// correction, because a wrong suggestion is worse than none. A WARNING in v1 only because
+    /// <c>RunCommand</c> refuses to run a plan carrying any validation error, and a correct shipped plan
+    /// can carry a stale cell; promotion to ERROR when a hand-run of this code alone across every plan
+    /// carrying the convention produces only genuine defects (§4.7).</para>
+    /// </summary>
+    public const string HandoffPathUnreachable = "GR2068";
+
+    /// <summary>
+    /// GR2069 (WARNING) — every path a handoff row names is writable by <i>some</i> task, but NO SINGLE
+    /// task can write them all: the row is delivered by several tasks, and each half must be reachable by
+    /// the task implementing THAT half (plan 31 §4, issue #553).
+    /// <para>A CONFIRM, not a fault: a deliberately split row legitimately triggers it, and the message
+    /// says so in its own words while naming, per path, the task(s) that cover it. It is a SEPARATE code
+    /// from <see cref="HandoffPathUnreachable"/> by design — it fires on 3 of 10 rows of a correct plan,
+    /// and under one shared code a reviewer learns to skim the code itself, taking GR2068's precision
+    /// with it (#229). It should probably never be an ERROR: it reports a shape the check cannot
+    /// adjudicate, so blocking on it would refuse a plan whose author already made the right call.</para>
+    /// <para>Note it is GR2069, not GR2068, that catches BOTH of plan 28's real failures: in each the row
+    /// was reachable ACROSS the plan and unreachable by the ONE task that owned it (§4.6).</para>
+    /// </summary>
+    public const string HandoffRowSplitAcrossTasks = "GR2069";
+
+    // CURRENT next-free code: GR2070. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
     // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
     // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
+    // GR2068 and GR2069 were taken TOGETHER by plan 31 §4 (#553): the handoff-table path-coverage
+    // check needs two codes, so that an operator who decides their tables split legitimately can
+    // silence GR2069 while GR2068 keeps meaning "provably broken" forever.
     // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2068 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2070 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
