@@ -1384,17 +1384,17 @@ when **one** task covers **every** candidate.
 |---|---|---|---|---|
 | 1 | 1 | `tests` | {1} | clean |
 | 2 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (2) covers it** |
-| 3 | 2 | `src` | {3}, {3} | clean |
+| 3 | 2 | `src` | `TaskNode.cs`→{3}, `PlanLoader.cs`→{3, 9} | clean — task 3 covers both |
 | 4 | 2 | `src` | {4}, {4} | clean |
 | 5 | 2 (`Scheduler.cs`, `LivePlanEditWatch.cs`) | `src` | {5,9,13}, {5} | clean — **task 5 covers BOTH** |
 | 6 | 1 | `tests` | {6} | clean |
 | 7 | 1 | `tests` | {7} | clean |
 | 8 | 1 | `tests` | {8} | clean |
-| 9 | 4 | `src` | {9} for all four | clean |
+| 9 | 4 | `src` | `PlanLoader.cs`→{3, 9}, `Scheduler.cs`→{5, 9, 13}, the other two →{9} | clean — task 9 covers all four |
 | 10 | 1 | `tests` | {10} | clean |
 | 11 | 1 | `tests` | {11} | clean |
 | 12 | 3 | `src` | {12} for all three | clean |
-| 13 | 2 | `src` | {13} for both | clean |
+| 13 | 2 | `src` | `Scheduler.cs`→{5, 9, 13}, `RunReport.cs`→{13} | clean — task 13 covers both |
 | 14 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (14) covers it** |
 | 15 | 1 | `src` | {15} | clean |
 | 16 | 2 | `docs`, `.claude` | {16}, {16} | clean |
