@@ -270,9 +270,20 @@ public sealed class LogServer : IAsyncDisposable
             // existing warn-and-return-null path below.
             throw lastBindFailure!;
         }
-        catch (Exception ex) when (ex is HttpListenerException or SocketException or PlatformNotSupportedException)
+        catch (Exception ex)
         {
-            warn.WriteLine($"Log server not started ({ex.Message}); run continues without live log links.");
+            // Starting the viewer must NEVER be able to fail a run (issue #552). Until that issue this
+            // path only ran in an interactive terminal — an environment the operator is watching and
+            // whose failure they can interpret. It now runs for EVERY run that did not pass
+            // --no-log-server: CI, a service, a backgrounded shell, a locked-down sandbox with no
+            // socket permission. So the catch is deliberately total rather than a list of the three
+            // shapes we happened to foresee: a viewer that cannot start is a lost convenience, never a
+            // lost run. The expected shapes (a bind race, a refused socket, an unsupported platform)
+            // report just their message; anything else names its type, so an unforeseen environment is
+            // diagnosable from the run log instead of merely mysterious.
+            bool expected = ex is HttpListenerException or SocketException or PlatformNotSupportedException;
+            string detail = expected ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
+            warn.WriteLine($"Log server not started ({detail}); run continues without live log links.");
             return null;
         }
     }

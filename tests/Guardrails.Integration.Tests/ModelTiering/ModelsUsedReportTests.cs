@@ -57,7 +57,7 @@ public sealed class ModelsUsedReportTests
         using var plan = new FakeClaudePlanBuilder()
             .AddPromptTask("01-generate", mode: "fragment", cost: "0.0150");
 
-        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
 
@@ -94,7 +94,7 @@ public sealed class ModelsUsedReportTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
         // A script-only plan records no provenance.model, so the run summary omits the models-used line.

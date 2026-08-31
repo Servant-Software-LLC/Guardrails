@@ -64,7 +64,7 @@ public sealed class ReviewMarkerCliTests
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         // Warn, never block: the run proceeds to green; the nudge is just printed.
         Assert.Equal(ExitCodes.Success, exit);
@@ -76,7 +76,7 @@ public sealed class ReviewMarkerCliTests
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--skip-review-check");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--skip-review-check", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
         Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, output);
@@ -133,11 +133,11 @@ public sealed class ReviewMarkerCliTests
         // The positive twin: on `run` the flag suggestion is correct, and the suggested command works.
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, exit);
         Assert.Contains("--skip-review-check", output);
 
-        (int followed, string quiet) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--skip-review-check");
+        (int followed, string quiet) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--skip-review-check", "--no-log-server");
         Assert.Equal(ExitCodes.Success, followed);
         Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, quiet);
     }

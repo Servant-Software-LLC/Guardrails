@@ -28,7 +28,7 @@ public sealed class CliExitCodeTests
             .AddTask("01-first")
             .AddTask("02-second", dependsOn: "01-first");
 
-        int exitCode = await InvokeAsync("run", plan.PlanDir);
+        int exitCode = await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exitCode);
     }
@@ -40,7 +40,7 @@ public sealed class CliExitCodeTests
             .AddTask("01-first", guardrailPasses: false)
             .AddTask("02-second", dependsOn: "01-first");
 
-        int exitCode = await InvokeAsync("run", plan.PlanDir);
+        int exitCode = await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, exitCode);
     }
@@ -51,7 +51,7 @@ public sealed class CliExitCodeTests
         using var plan = new ScriptPlanBuilder()
             .AddTask("01-first", actionSucceeds: false);
 
-        int exitCode = await InvokeAsync("run", plan.PlanDir);
+        int exitCode = await InvokeAsync("run", plan.PlanDir, "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, exitCode);
     }

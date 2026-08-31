@@ -146,7 +146,7 @@ public sealed class RunEndTelemetryIngestTests
         using var plan = new ScriptPlanBuilder().AddTask("01-a");
         using var corpus = new TempDir();
 
-        (int exit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui");
+        (int exit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, exit);
 
@@ -168,7 +168,7 @@ public sealed class RunEndTelemetryIngestTests
         using var corpus = new TempDir();
         MakeEscalatingAction(plan, "01-escalates", question);
 
-        (int exit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui");
+        (int exit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         // The run genuinely ends unresolved — this is not a green run wearing a different label. A model
         // that fails is exactly the evidence a model comparison is made of, so this attempt must land in
@@ -198,7 +198,7 @@ public sealed class RunEndTelemetryIngestTests
         File.WriteAllText(blockedCorpusRoot, "not a directory");
 
         (int exit, string output) =
-            await RunAgainstCorpusAsync(blockedCorpusRoot, null, "run", plan.PlanDir, "--no-ui");
+            await RunAgainstCorpusAsync(blockedCorpusRoot, null, "run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         // (1) Already true of unwired code today — the baseline, not the point of this test.
         Assert.Equal(ExitCodes.Success, exit);
@@ -230,7 +230,7 @@ public sealed class RunEndTelemetryIngestTests
         // Pass 1 — collection ON: the run that PROVES ingest happens at all (fails today; this is the
         // half an opted-out run alone could never demonstrate, since an unwired harness also writes
         // nothing).
-        (int firstExit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await RunAgainstCorpusAsync(corpus.Path, null, "run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         string firstRunId = RunId(plan.PlanDir);
@@ -243,7 +243,7 @@ public sealed class RunEndTelemetryIngestTests
         // idempotency check alone would explain zero new rows regardless of the opt-out — --fresh is what
         // makes this a real test of the opt-out rather than of dedup.
         (int secondExit, _) = await RunAgainstCorpusAsync(
-            corpus.Path, "off", "run", plan.PlanDir, "--fresh", "--no-ui");
+            corpus.Path, "off", "run", plan.PlanDir, "--fresh", "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, secondExit);
 
         string secondRunId = RunId(plan.PlanDir);

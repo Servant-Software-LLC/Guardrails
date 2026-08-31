@@ -54,7 +54,7 @@ public sealed class LogsCliTests
         // returns after advertising; --no-open keeps it headless.
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, runExit);
 
         using var cts = new CancellationTokenSource();

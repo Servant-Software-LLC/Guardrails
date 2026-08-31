@@ -66,7 +66,7 @@ public sealed class DefinitionDriftCliTests
             .AddTask("02-second", dependsOn: "01-first");
 
         // Phase 1: run to green. Both tasks settle succeeded and journal their definition hash.
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         // Edit the already-succeeded task's action definition (a real definition change — the edit still
@@ -76,7 +76,7 @@ public sealed class DefinitionDriftCliTests
 
         // Phase 2: a PLAIN resume (no --fresh). Pre-Part-A this printed
         // "01-first  skipped  already succeeded (resumed) - skipped" and exited 0. Part A halts.
-        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, resumeExit); // exit 2 — needs-human/actionable, NOT 1 or 0.
         Assert.Contains("DEFINITION DRIFT", output);
@@ -92,12 +92,12 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         EditTaskJson(plan.PlanDir, "01-only", "edited description drives a task.json byte change");
 
-        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, resumeExit);
         Assert.Contains("DEFINITION DRIFT", output);
@@ -113,11 +113,11 @@ public sealed class DefinitionDriftCliTests
             .AddTask("01-first")
             .AddTask("02-second", dependsOn: "01-first");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         // No edit — a plain resume must skip both and exit 0, never a false drift halt.
-        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int resumeExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, resumeExit);
         Assert.DoesNotContain("DEFINITION DRIFT", output);
@@ -131,7 +131,7 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         EditActionBody(plan.PlanDir, "01-only", "# edited\nexit 0");
@@ -150,7 +150,7 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         (int dryExit, string output) = await InvokeCapturingAsync("run", plan.PlanDir, "--dry-run");
@@ -172,14 +172,14 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         EditActionBody(plan.PlanDir, "01-only", "# edited after success\nexit 0");
 
         // Default (prompt, non-interactive) would HALT (exit 2); --reprocess-drift auto-resolves (exit 0).
         (int resumeExit, string output) = await InvokeCapturingAsync(
-            "run", plan.PlanDir, "--no-ui", "--reprocess-drift");
+            "run", plan.PlanDir, "--no-ui", "--reprocess-drift", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, resumeExit);
         Assert.DoesNotContain("DEFINITION DRIFT", output);
@@ -197,13 +197,13 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         EditActionBody(plan.PlanDir, "01-only", "# edited after success\nexit 0");
 
         (int resumeExit, string output) = await InvokeCapturingAsync(
-            "run", plan.PlanDir, "--no-ui", "--autonomy", "auto");
+            "run", plan.PlanDir, "--no-ui", "--autonomy", "auto", "--no-log-server");
 
         Assert.Equal(ExitCodes.Success, resumeExit);
         Assert.DoesNotContain("DEFINITION DRIFT", output);
@@ -217,14 +217,14 @@ public sealed class DefinitionDriftCliTests
     {
         using var plan = new StatePlanBuilder(autonomyPolicy: "auto").AddTask("01-only");
 
-        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui");
+        (int firstExit, _) = await InvokeCapturingAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, firstExit);
 
         EditActionBody(plan.PlanDir, "01-only", "# edited after success\nexit 0");
 
         // Config would auto-resolve, but --autonomy halt forces the strict Part A halt (exit 2).
         (int resumeExit, string output) = await InvokeCapturingAsync(
-            "run", plan.PlanDir, "--no-ui", "--autonomy", "halt");
+            "run", plan.PlanDir, "--no-ui", "--autonomy", "halt", "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, resumeExit);
         Assert.Contains("DEFINITION DRIFT", output);
@@ -237,7 +237,7 @@ public sealed class DefinitionDriftCliTests
         using var plan = new StatePlanBuilder().AddTask("01-only");
 
         (int exit, string output) = await InvokeCapturingAsync(
-            "run", plan.PlanDir, "--no-ui", "--autonomy", "reprocess"); // the pre-fold value is now invalid
+            "run", plan.PlanDir, "--no-ui", "--autonomy", "reprocess", "--no-log-server"); // the pre-fold value is now invalid
 
         Assert.Equal(ExitCodes.HarnessError, exit);
         Assert.Contains("Unknown --autonomy value", output);

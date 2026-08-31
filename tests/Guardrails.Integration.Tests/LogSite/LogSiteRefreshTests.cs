@@ -183,6 +183,23 @@ public sealed class LogSiteRefreshTests
         Assert.Contains("hidden", html[tagStart..tagEnd], StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Issue #552 — the notice must name a remedy the reader can actually carry out. It used to say
+    /// "use the live server URL printed by <c>guardrails run</c>", which is precisely backwards: the
+    /// reader is looking at this notice BECAUSE no server is reachable, and until #552 a headless or
+    /// redirected run never printed such a URL at all. So the banner sent the operator to look for a
+    /// line that, in the very case that produced the banner, had never existed. `guardrails logs` is
+    /// the verb that produces one on demand, against a run already in flight.
+    /// </summary>
+    [Fact]
+    public void OfflineNotice_NamesGuardrailsLogs_NotAUrlTheRunMayNeverHavePrinted()
+    {
+        string html = Index(live: true);
+
+        Assert.Contains("guardrails logs", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("URL printed by", html, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void PollInterval_IsWellAboveTheTwoSecondReloadItReplaced()
     {

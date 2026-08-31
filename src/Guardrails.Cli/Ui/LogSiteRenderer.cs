@@ -119,8 +119,9 @@ public static class LogSiteRenderer
     /// </summary>
     private static string LivePollScript() => $$"""
 <div id="gr-live-offline" hidden>Not live &mdash; this page cannot poll for updates (it was opened as a
-file, or the run's log server is gone). It is a snapshot. Use the live server URL printed by
-<code>guardrails run</code> to watch a run in progress.</div>
+file, or the run's log server is gone). It is a snapshot. To watch a run in progress, run
+<code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints &mdash; it
+serves these logs live, and works against a run already in flight.</div>
 <script>
 const GR_LOG_POLL_MS = {{LivePollMs}};
 let grLogPollTimer = null;

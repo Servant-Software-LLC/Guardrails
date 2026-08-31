@@ -482,7 +482,7 @@ public sealed class SchedulerEscalationWiringTests
         using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
             .AddNeedsHumanTask("01-design", "which database engine should I target");
 
-        (int exit, _) = await RunViaCliAsync("run", plan.PlanDir, "--autonomous", "--no-ui", "--max-cost-usd", "50");
+        (int exit, _) = await RunViaCliAsync("run", plan.PlanDir, "--autonomous", "--no-ui", "--max-cost-usd", "50", "--no-log-server");
 
         Assert.NotEqual(ExitCodes.Success, exit);      // not green
         Assert.NotEqual(ExitCodes.TaskFailed, exit);   // not a plain needs-human (2) — the escalation is distinct

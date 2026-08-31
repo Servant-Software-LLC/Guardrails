@@ -433,13 +433,17 @@ public static class RunCommand
             breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io);
         }
 
-        // The log server is a companion to the live table: start it only in the interactive path
-        // (nobody clicks links in CI / redirected output), and never let a binding failure abort
-        // the run — TryStart returns null and prints one warning. It is passed the proceed-unreviewed
-        // posture so the #387 v2 pick endpoints enforce the same non-answerable floor as the resume consumer.
+        // The log server's ONLY gate is --no-log-server (issue #552). It used to also require `live`,
+        // which coupled an HTTP listener on loopback to the Spectre table's needs — an interactive,
+        // ANSI-capable, non-redirected console. The listener needs none of those, and the coupling made
+        // the consequence backwards: a headless / backgrounded / CI run has no console to watch, so it
+        // is precisely the run that most needs a browser page, and it was the only one that could never
+        // have had one. `live` still governs the table alone. A binding failure never aborts the run —
+        // TryStart returns null and prints one warning. TryStart is passed the proceed-unreviewed posture
+        // so the #387 v2 pick endpoints enforce the same non-answerable floor as the resume consumer.
         bool proceedUnreviewed =
             probe.Plan.Config.Autonomy?.GateThresholds?.ReviewGate == Core.Model.ReviewGateDecision.ProceedUnreviewed;
-        LogServer? logServer = (live && !noLogServer)
+        LogServer? logServer = !noLogServer
             ? LogServer.TryStart(probe.Plan.PlanDirectory, runId, probe.Plan.Tasks, logPort, io.Out, proceedUnreviewed)
             : null;
 
@@ -450,7 +454,25 @@ public static class RunCommand
                 // The canonical "all tasks" page is the static index file (printed by
                 // PrintStaticIndexLink below); this http server is just the tailing backend that the
                 // static index links a RUNNING task to (issue #143). De-emphasised accordingly.
+                // This goes to io.Out, so under `> run.log 2>&1` it lands in the redirected stream —
+                // which is exactly where an unattended operator goes looking for it (#552).
                 io.Out.WriteLine($"Live tailing server (active tasks): {logServer.BaseUrl}\n");
+            }
+            else
+            {
+                // #552: a run without a server must NAME the remedy rather than leave the operator to
+                // discover a shipped verb from --help. `guardrails logs <folder>` starts the same live
+                // tailing server against a run ALREADY IN FLIGHT (it serves the persisted logs and the
+                // journal from disk), so it covers both reasons there is no server here: the operator
+                // opted out with --no-log-server, or the bind failed (TryStart already printed why).
+                string reason = noLogServer ? "--no-log-server" : "it could not start";
+                // The line exists to be PASTED, so a folder path containing a space must arrive quoted
+                // — otherwise the remedy we print is itself a broken command, and the operator's first
+                // experience of the fix is a shell splitting their plan folder in half.
+                string logsTarget = folder.Contains(' ', StringComparison.Ordinal) ? $"\"{folder}\"" : folder;
+                io.Out.WriteLine(
+                    $"Live log viewer not started ({reason}). Run `guardrails logs {logsTarget}` in another "
+                    + "terminal for a live view.\n");
             }
 
             Func<string, string?>? logUrlForTask = logServer is null ? null : logServer.UrlForTask;

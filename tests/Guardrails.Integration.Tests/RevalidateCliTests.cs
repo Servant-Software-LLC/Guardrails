@@ -30,7 +30,7 @@ public sealed class RevalidateCliTests
 
         // 1. Normal run: action writes the broken artifact (and a sentinel proving it ran); the
         //    guardrail checks for the human's fixed-marker, which is absent → needs-human.
-        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, runExit);
         Assert.True(File.Exists(plan.ActionRanSentinel), "the action should have run on the normal run");
 
@@ -55,7 +55,7 @@ public sealed class RevalidateCliTests
     {
         using var plan = new RevalidatePlan();
 
-        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.TaskFailed, runExit);
         File.Delete(plan.ActionRanSentinel);
 
@@ -86,7 +86,7 @@ public sealed class RevalidateCliTests
 
         // Fix and run normally so the task genuinely succeeds.
         File.WriteAllText(plan.FixedMarker, "fixed");
-        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
         Assert.Equal(ExitCodes.Success, runExit);
         Assert.Equal(TaskStatus.Succeeded, StatusOf(plan.PlanDir, "01-fix-manifest"));
 
