@@ -1,0 +1,15 @@
+{
+  "description": "Author section 5.5's pins for the plan-edit watch - the Core unit behaviours plus the Integration positive, JIT-breakdown-negative, outcome-inertness, ignore-list and rendered-text pins",
+  "dependsOn": [
+    "06-stub-the-plan-edit-watch"
+  ],
+  "stableId": "p31a7t",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/LivePlanEditWatchTests.cs",
+    "tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

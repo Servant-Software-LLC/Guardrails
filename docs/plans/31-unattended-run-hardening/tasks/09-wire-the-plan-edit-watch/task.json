@@ -1,0 +1,17 @@
+{
+  "description": "Wire the watch into the run: two Scheduler poll sites, the five plan-wide re-baseline hooks, the plan-edit and observed tokens, RunReport.Observations, and the end-of-run rendering",
+  "dependsOn": [
+    "08-implement-the-plan-edit-watch",
+    "03-carry-salvage-forward-to-prompts"
+  ],
+  "stableId": "p31a9w",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

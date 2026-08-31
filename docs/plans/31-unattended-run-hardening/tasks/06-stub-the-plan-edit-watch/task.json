@@ -1,0 +1,11 @@
+{
+  "description": "Declare the LivePlanEditWatch surface pinned in plan 31 section 5.2 - the two records, the enum, the class, and Poll/Rebaseline - with the two methods INERT, so stage 7's tests compile",
+  "dependsOn": [],
+  "stableId": "p31a6t",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/LivePlanEditWatch.cs"
+  ],
+  "action": {
+    "tier": "easy"
+  }
+}

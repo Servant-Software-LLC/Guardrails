@@ -1,0 +1,15 @@
+{
+  "description": "Implement the handoff-coverage check: the table locator, the extractor, the per-row single-task coverage verdict, and the GR2068/GR2069 constants with the next-free marker advanced to GR2070",
+  "dependsOn": [
+    "04-author-tests-handoff-coverage"
+  ],
+  "stableId": "p31a5t",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/HandoffScopeCoverage.cs",
+    "src/Guardrails.Core/Loading/PlanValidator.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

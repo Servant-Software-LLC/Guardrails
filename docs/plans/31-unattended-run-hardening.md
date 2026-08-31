@@ -115,13 +115,24 @@ detail. None of it was reachable.
 | Seam | Change |
 |---|---|
 | `TaskExecutor.RunAttemptAsync` (`:837-843`) | Before `_journaler.NeedsHuman(...)`, call `TryStashFailedAttempt(task, worktree, attemptNumber, restrictToScope: task.WriteScope)` — guarded by the existing `IsRealGitSegment(worktree)` predicate, **not** by `StashIfRollingBack` (§3.4 divergence 1). Pass the `SalvageRef?` into the journaler. |
-| `GitWorktreeProvider.PreserveAttemptToRef` (`:1373-1398`) | Gains an optional `IReadOnlyList<string>? restrictToScope = null`. When non-null, between the `git add -A` stage (`:1383`) and `git write-tree` (`:1384`) it lists the staged set (`git diff --cached --name-only <taskBase>`, same `GIT_INDEX_FILE` env) and runs `git reset --quiet <taskBase> -- <paths>` for every path where `WriteScope.IsInScope(path, restrictToScope)` is false. `reset` — not `rm --cached` — because it restores the `taskBase` blob for a modified or deleted file and drops the entry for an added one, which is all three cases in one command. **The retry path passes `null` and is byte-identical to today** (§3.4 divergence 3). |
+| `GitWorktreeProvider.PreserveAttemptToRef` (`:1373-1398`) | Gains an optional `IReadOnlyList<string>? restrictToScope = null`. When non-null, between the **staging call** at `:1383` and `git write-tree` at `:1384` it lists the staged set (`git diff --cached --name-only <taskBase>`, same `GIT_INDEX_FILE` env) and runs `git reset --quiet <taskBase> -- <paths>` for every path where `WriteScope.IsInScope(path, restrictToScope)` is false. `reset` — not `rm --cached` — because it restores the `taskBase` blob for a modified or deleted file and drops the entry for an added one, which is all three cases in one command. **The retry path passes `null` and is byte-identical to today** (§3.4 divergence 3). |
 | `AttemptJournaler.NeedsHuman` | Gains a `SalvageRef? salvage` parameter. It has exactly **one** caller (`TaskExecutor.cs:840`), so this is not a source break and needs no test-fixture edit. It appends the salvage section to the `feedback.md` body it already composes. |
 | `RetryPolicy.AppendSalvageSection` (`:438-538`) and `AppendHeader` (`:983`) | `private static` → `internal static`, plus an optional `SalvageFraming framing = SalvageFraming.Retry`. **One owner of that text**, three framings: `Retry` (today's bytes, unchanged), `Escalation` (no rollback claim — §3.4 divergence 2), `PriorAttempt` (the compact routing block §3.5 needs). `AppendHeader`'s existing four-way branch gains a fifth for preserved-but-not-rolled-back. |
 | `PriorAttemptRef` (`Prompts/PromptContext.cs`) | Gains two optional init-only members: `SalvagePatchPath` and `SalvageRefName`. Optional, so no existing construction site breaks. |
 | `DependencyContextBuilder.BuildPriorAttempts` | Already walks the journal and already knows each prior attempt's `LogDir`. It fills the two new members by **probing `File.Exists(logDir/prior-attempt.patch)`** and deriving the ref name from `taskId` + attempt number. **No journal schema change** — the patch file's existence is the record. |
 | `PromptComposer.AppendPreviousAttempt` (`:298-318`) | Today a flat bullet list of log paths with no recovery guidance at all. For a prior attempt carrying a patch it now calls `AppendSalvageSection(..., SalvageFraming.PriorAttempt)` — the same owner, never a second copy. |
 | `Scheduler.BuildGateContext` (`:3079-3084`) | The escalation `Context` string names the salvage ref and patch path when the escalating attempt left one. This is what a human — or a firstmate answering the escalation — reads. |
+
+> **There is no literal `git add -A` in `PreserveAttemptToRef`, and an implementer must not go looking
+> for one.** Line `:1383` is
+> `GitInWithEnv(worktreePath, env, SegmentStaging.StageAllArguments().ToArray());` — the `add -A -- .`
+> pathspec with its three `:(exclude,glob)` terms is built in `SegmentStaging.StageAllArguments()`, in
+> `src/Guardrails.Core/Execution/SegmentStaging.cs`. **That file is deliberately NOT in §13 stage 2's
+> `writeScope`:** it is shared with the segment-commit path, so changing its pathspec would alter every
+> segment commit in the harness. The mechanism above needs no change to it — stage everything exactly
+> as today, then `reset` the out-of-scope paths back out of the index. An earlier revision of this row
+> said "the `git add -A` stage", which reads as an invitation to edit the staging arguments; that is a
+> retry burned on the plan's own wording, so the row now names the call it actually means.
 
 **Why the framing parameter and not new text.** `AppendSalvageSection`'s output is hard-pinned in two
 suites: `tests/Guardrails.Core.Tests/RetryPolicySalvageAdviceTests.cs` (the patch bullet must be **first**,
@@ -656,7 +667,12 @@ gate was reached and resolved*, and nothing here was resolved. So:
 | `decision` | **`observed`** — a new token: *the harness noticed and reported; nothing was decided and nothing changed* |
 | `policy` | the run's `autonomyPolicy` in force, like every other entry |
 | `subject` | the edited task ids, comma-joined (the `drift` entry's own convention) |
+| `headline` | **REQUIRED** — a one-line summary, like every other entry. `DecisionEntry` declares `Boundary`, `Policy`, `Decision`, `Subject` **and `Headline`** all `required`, so an entry built from the other five rows alone does **not compile** (CS9035). An earlier revision of this table omitted it |
 | `detail` | the per-file added / removed / modified list |
+
+A `PlanEditDecisions.Observed(...)` factory beside the existing `DriftDecisions` factories in that same
+file is the natural home for the construction, and is what keeps the required fields from being
+rediscovered at each call site.
 
 **Both new tokens are outcome-inert, and the reason is the `decision` token, not the boundary.**
 `RunOutcomePolicy.cs:33-46` is the only consumer that branches on a decision, via two predicates —
@@ -870,7 +886,7 @@ check is always to weaken the thing that would have caught its absence:
   and the loud post-summary banner (#340/#542) says so. Read to the end of the output and check
   `git branch --no-merged master` before claiming this shipped.
 
-**Sizing.** Nine stages — three test-authoring, one stub, four implementation, one documentation. Two new
+**Sizing.** Ten stages — three test-authoring, one stub, five implementation, one documentation. Two new
 source files, one new diagnostic code, one new decision token, one new boundary token. No stage touches
 more than five files. Nothing needs model tiering, local inference, or network access.
 
@@ -1042,8 +1058,20 @@ Invariant 4: these land in the same change as the code they describe.
 
 ## 13. Implementation handoff
 
-Sequenced; each stage green before the next. Stages 1–3 close **#554**, 4–5 close **#553**, 6–8 close
-**#545 part 3**, and 9 closes the SSOT.
+Sequenced; each stage green before the next. Stages 1–3 close **#554**, 4–5 close **#553**, 6–9 close
+**#545 part 3**, and 10 closes the SSOT.
+
+> **Why stage 8 is two rows.** An earlier revision handed the watch AND its wiring to one stage, five
+> files in one row. That task carried the structural over-scope fingerprint `GR2042` fires on: a
+> fan-in sink whose every guardrail miss re-runs the whole five-file change, and — the sharper half of
+> #378 — one that concentrates the first real exercise of every integration path in a single action
+> that cannot fix the cross-file bug it finds. Since this plan is *itself* run unattended (§9), a
+> cheap retry is worth more than a tidy table. Split **by collaborator**: the watch is one deliverable
+> verified by unit tests, the wiring is another verified by a real run. The discovery-heavy work — the
+> baseline, the ignore list, the `Poll`/`Rebaseline` semantics — leaves with the watch, which is why
+> neither half is turn-heavy enough to warrant a `maxTurns` bump. **The two rows also keep this table
+> self-covering:** each half owns its paths outright, so neither row trips the GR2069 this plan
+> introduces, and the split is recorded here rather than demonstrated as noise.
 
 **Every `writeScope` below is pinned verbatim, as concrete paths.** This is an instruction to
 `/plan-breakdown`, not a suggestion: across every plan folder in this repo — **289 `task.json` files, 483 `writeScope`
@@ -1061,19 +1089,20 @@ therefore the **same list**, per row.
 | 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/HandoffScopeCoverage.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | the same three paths | The table locator, extractor and coverage check (new file); a `ValidateHandoffScopeCoverage(plan, diagnostics);` line added to `PlanValidator.Validate` (declared `:51`) beside its two `writeScope` siblings at `:76-77` (`ValidateWriteScopes`, `ValidateStructuralOverScope`); the `GR2068` (`HandoffPathUnreachable`) and `GR2069` (`HandoffRowSplitAcrossTasks`) constants with the marker advanced to **GR2070** — no new path is needed for the second code, `DiagnosticCodes.cs` is already in this row. Carries §4.9 pin 8's grep guardrail. **`Fixes #553`**. |
 | 6 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/LivePlanEditWatch.cs` | the same path | **Stub stage** — the §5.2 signature declared and **inert** (members throw `NotImplementedException`), following `docs/plans/model-tiering-stage-3/wave-03-operator-surfaces/tasks/01-stub-the-observer-seam/`. Guardrails, cheapest-first: `build-passes`, then a `stubs-declared-and-inert` check asserting each declaration is present **and** each body is inert, on comment-and-string-literal-stripped source, plus a zero-match guard. |
 | 7 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Execution/LivePlanEditWatchTests.cs`, `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` | the same two paths | §5.5's four pins, including the **JIT-breakdown negative pin** and the outcome-inertness pin. Guardrails: `build-passes` (the stub makes them compile), then `tests-fail-on-stubs`. |
-| 8 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/LivePlanEditWatch.cs`, `src/Guardrails.Core/Execution/Scheduler.cs`, `src/Guardrails.Core/Execution/DecisionEntry.cs`, `src/Guardrails.Core/Execution/RunReport.cs`, `src/Guardrails.Cli/Commands/RunCommand.cs` | the same five paths | The watch implemented; its two Scheduler poll sites and the **five** plan-wide re-baseline hooks (§5.3); the `plan-edit` boundary and `observed` tokens; `RunReport.Observations`; the end-of-run rendering. It emits through the shipped `DecisionRecorded`, so **no observer or decorator is touched**. **`Fixes #545`**. |
-| 9 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md`, `.claude/agents/guardrails-architect.md` | the same three paths | §12's edits, items 1–8 and 10–11. Item 9 lands with stage 5 (a code comment). |
+| 8 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/LivePlanEditWatch.cs` | the same path | The watch **implemented** over stage 6's inert stubs: the per-**file** definition-surface baseline over `TaskDefinitionFiles.Enumerate`, the ignore list applied HERE and **not** in `HashText` (§5.2), and the `Poll`/`Rebaseline` semantics. Verified by the **Core** unit suite, which drives the watch directly and needs no run — so this half's retry is cheap and its failures are local. Guardrails: `build-passes`, then the filtered Core `tests-pass`. |
+| 9 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/Scheduler.cs`, `src/Guardrails.Core/Execution/DecisionEntry.cs`, `src/Guardrails.Core/Execution/RunReport.cs`, `src/Guardrails.Cli/Commands/RunCommand.cs` | the same four paths | The watch **wired**: its two Scheduler poll sites and the **five** plan-wide re-baseline hooks (§5.3); the `plan-edit` boundary and `observed` tokens; `RunReport.Observations`; the end-of-run rendering. It emits through the shipped `DecisionRecorded`, so **no observer or decorator is touched**. Verified by the **Integration** suite (§5.5's five pins). Depends on stage 8 and — for the `Scheduler.cs` overlap — on stage 3. **`Fixes #545`**. |
+| 10 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md`, `.claude/agents/guardrails-architect.md` | the same three paths | §12's edits, items 1–8 and 10–11. Item 9 lands with stage 5 (a code comment). |
 
-> **Overlapping write scopes, and why each is expected.** `Scheduler.cs` is claimed by stages 3 and 8;
+> **Overlapping write scopes, and why each is expected.** `Scheduler.cs` is claimed by stages 3 and 9;
 > `LivePlanEditWatch.cs` by stages 6 and 8 — the latter is the canonical TDD stub+impl pair
 > `WriteScope.OverlappingWriteScopeHint` already documents as EXPECTED. Overlap serializes those tasks,
 > which costs nothing because this plan is strictly sequential.
 
 > **Closing keywords are not optional (#547's lesson).** A `fix(#553):` conventional-commit **scope is not
-> a closing keyword** — four issues stayed open for a day because of exactly that. Stages 3, 5 and 8 must
+> a closing keyword** — four issues stayed open for a day because of exactly that. Stages 3, 5 and 9 must
 > each carry a literal `Fixes #NNN` line in the commit body, and the PR body must repeat it.
 
-> **`.claude/` writes need `stagingOutputs`.** Stage 9 touches `.claude/skills/**` and `.claude/agents/**`;
+> **`.claude/` writes need `stagingOutputs`.** Stage 10 touches `.claude/skills/**` and `.claude/agents/**`;
 > in worktree mode a task action cannot write under `.claude/` directly (SSOT §3.5 / §9). The task must
 > declare `stagingOutputs`, and its `writeScope` gates the post-move destinations.
 

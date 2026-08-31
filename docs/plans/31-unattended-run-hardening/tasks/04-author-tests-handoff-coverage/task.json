@@ -1,0 +1,12 @@
+{
+  "description": "Author #553's nine regression pins as fixture plan folders in temp dirs - pins 1 and 2 are the two REAL plan-28 rows in their broken state and both assert GR2069, which is the acceptance criterion",
+  "dependsOn": [],
+  "stableId": "p31a4t",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Loading/HandoffScopeCoverageTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

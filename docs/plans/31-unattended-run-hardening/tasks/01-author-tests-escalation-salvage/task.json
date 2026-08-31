@@ -1,0 +1,13 @@
+{
+  "description": "Author #554's regression pins - Core (the composed-prompt forward carry) and Integration (the real-git-segment salvage guarantees) - every assertion on an observable artifact, naming no new API member",
+  "dependsOn": [],
+  "stableId": "p31a1t",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/EscalationSalvageTests.cs",
+    "tests/Guardrails.Integration.Tests/EscalationSalvageTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Implement LivePlanEditWatch over stage 6's inert stubs - the per-file definition-surface baseline, the ignore list applied HERE and not in HashText, and the Poll/Rebaseline semantics section 5.2 pins",
+  "dependsOn": [
+    "07-author-tests-plan-edit-watch"
+  ],
+  "stableId": "p31a8t",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/LivePlanEditWatch.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

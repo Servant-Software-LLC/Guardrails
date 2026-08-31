@@ -1,0 +1,16 @@
+{
+  "description": "Carry the preserved work forward: two optional PriorAttemptRef members filled by probing prior-attempt.patch, the PriorAttempt routing block in the composed prompt, and the escalation Context that names the ref and the patch",
+  "dependsOn": [
+    "02-preserve-on-escalation-path"
+  ],
+  "stableId": "p31a3t",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/PromptContext.cs",
+    "src/Guardrails.Core/Execution/DependencyContextBuilder.cs",
+    "src/Guardrails.Core/Prompts/PromptComposer.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

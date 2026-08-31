@@ -1,0 +1,18 @@
+{
+  "description": "Record all three changes where the next reader will look: section 12's eleven SSOT edits, the moved execution semantics and new diagnostic in guardrails-domain-knowledge, and the now-load-bearing filesTouched convention in the architect agent",
+  "dependsOn": [
+    "03-carry-salvage-forward-to-prompts",
+    "05-implement-handoff-coverage-check",
+    "09-wire-the-plan-edit-watch"
+  ],
+  "stableId": "p31a9t",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md",
+    ".claude/agents/guardrails-architect.md"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

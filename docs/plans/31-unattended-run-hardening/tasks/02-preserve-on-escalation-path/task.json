@@ -1,0 +1,16 @@
+{
+  "description": "Preserve the escalating attempt's IN-SCOPE work: call the salvage helper before the needsHuman short-circuit, filter the staged set to writeScope, cap the ref growth, and open AppendSalvageSection/AppendHeader with a defaulted SalvageFraming",
+  "dependsOn": [
+    "01-author-tests-escalation-salvage"
+  ],
+  "stableId": "p31a2t",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/GitWorktreeProvider.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/RetryPolicy.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}
