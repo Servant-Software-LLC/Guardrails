@@ -247,6 +247,12 @@ public static class PromptComposer
     /// full arc of what was tried, not only the immediately preceding failure (issue #26 Gaps
     /// 2 &amp; 3). The agent is pointed at the clean <c>transcript.md</c> (what it did) and
     /// <c>feedback.md</c> (why it failed) — never the raw stream.
+    ///
+    /// <para><b>Issue #554 — the recovery ROUTING, not one more path bullet.</b> A prior attempt that left
+    /// a <c>prior-attempt.patch</c> gets <see cref="AppendPriorAttemptSalvage"/> appended: naming the patch
+    /// in the bullet list above satisfies "the prompt names it" and changes nothing an agent actually does
+    /// (plan 31 §3.5 clarification 2). This is the ONLY carrier on the escalation path, whose
+    /// <c>feedback.md</c> is never inlined here — that path returns a null feedback path.</para>
     /// </summary>
     private static void AppendPreviousAttempt(
         StringBuilder text,
@@ -262,9 +268,10 @@ public static class PromptComposer
 
         text.Append("\n## Previous attempt failed\n\n");
 
+        string feedback = hasFeedback ? File.ReadAllText(feedbackPath!).TrimEnd() : "";
+
         if (hasFeedback)
         {
-            string feedback = File.ReadAllText(feedbackPath!).TrimEnd();
             text.Append(feedback);
             text.Append("\n\nThis is a RETRY. Fix these specific problems; do not start over — keep what already ");
             text.Append("works and address only what failed above.\n");
@@ -310,12 +317,54 @@ public static class PromptComposer
                     text.Append("  - What it did: `").Append(transcript).Append("`\n");
                 }
 
-                if (attempt.FeedbackPath is { } feedback)
+                if (attempt.FeedbackPath is { } attemptFeedback)
                 {
-                    text.Append("  - Why it failed: `").Append(feedback).Append("`\n");
+                    text.Append("  - Why it failed: `").Append(attemptFeedback).Append("`\n");
                 }
             }
+
+            AppendPriorAttemptSalvage(text, priorAttempts!, feedback);
         }
+    }
+
+    /// <summary>
+    /// The recovery-routing block for the most recent prior attempt whose work was PRESERVED (issue #554,
+    /// plan 31 §3.3/§3.5). Emitted only when that attempt left a <c>prior-attempt.patch</c> — an attempt
+    /// that wrote nothing has nothing to salvage, and offering "recover your work" for absent work is worse
+    /// than silence (§11).
+    ///
+    /// <para><b>One owner of the text.</b> The bullets, the <c>git show</c> command shape, the
+    /// <c>git -C</c> warning and the writeScope caveat are emitted by
+    /// <see cref="Execution.RetryPolicy.AppendSalvageSection"/> — the same method the retry feedback and the
+    /// escalation <c>feedback.md</c> call, under a different <see cref="Execution.SalvageFraming"/>. A second
+    /// copy here is exactly what the framing parameter exists to prevent: the two would drift, and an agent
+    /// reading a prompt carrying both would be handed contradictory recovery advice.</para>
+    ///
+    /// <para><b>Only the MOST RECENT one, and never twice.</b> Each earlier attempt of a retry chain leaves
+    /// its own patch, so routing every one of them would repeat forty lines per attempt to offer work a
+    /// later attempt already superseded. And when the inlined <paramref name="inlinedFeedback"/> above
+    /// already advertises that same ref (the retry path composes its salvage section INTO
+    /// <c>feedback.md</c>), this adds nothing but a second, differently-framed account of one event.</para>
+    /// </summary>
+    private static void AppendPriorAttemptSalvage(
+        StringBuilder text, IReadOnlyList<PriorAttemptRef> priorAttempts, string inlinedFeedback)
+    {
+        // Most recent first (DependencyContextBuilder.BuildPriorAttempts orders them descending).
+        PriorAttemptRef? preserved = priorAttempts.FirstOrDefault(
+            a => a.SalvagePatchPath is { Length: > 0 } && a.SalvageRefName is { Length: > 0 });
+
+        if (preserved?.SalvageRefName is not { } refName
+            || inlinedFeedback.Contains(refName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        // No diff-stat: it is not journaled, and the section degrades to its own no-stat wording rather
+        // than inventing a summary of a diff this composer never saw.
+        Execution.RetryPolicy.AppendSalvageSection(
+            text,
+            new Execution.SalvageRef(refName, DiffStat: "", preserved.Attempt, preserved.SalvagePatchPath),
+            Execution.SalvageFraming.PriorAttempt);
     }
 
     /// <summary>

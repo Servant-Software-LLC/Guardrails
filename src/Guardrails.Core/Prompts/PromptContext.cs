@@ -51,4 +51,26 @@ public sealed record PriorAttemptRef
 
     /// <summary>Absolute path to that attempt's <c>feedback.md</c> (why it failed), if it exists.</summary>
     public string? FeedbackPath { get; init; }
+
+    /// <summary>
+    /// Absolute path to that attempt's <c>prior-attempt.patch</c> — a plain unified diff of the work it
+    /// left behind — or null when it left none (issue #554, plan 31 §3.3).
+    ///
+    /// <para><b>Why this is a pointer and not a journal field.</b> The patch's PRESENCE on disk is the
+    /// record; journaling it would create a second source of truth for a fact the filesystem already
+    /// holds, and would need a migration. <see cref="Execution.DependencyContextBuilder.BuildPriorAttempts"/>
+    /// fills it by probing the attempt's log dir, so EVERY prior attempt that left a patch is routed in the
+    /// next attempt's composed prompt — not only an escalating one.</para>
+    ///
+    /// <para>Set together with <see cref="SalvageRefName"/>: both are non-null, or neither is.</para>
+    /// </summary>
+    public string? SalvagePatchPath { get; init; }
+
+    /// <summary>
+    /// The git ref that attempt's working tree was preserved to
+    /// (<c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c>), or null when it preserved nothing. DERIVED
+    /// from the task id and the attempt number — see
+    /// <see cref="Execution.DependencyContextBuilder.SalvageRefNameFor"/>, which owns the format.
+    /// </summary>
+    public string? SalvageRefName { get; init; }
 }
