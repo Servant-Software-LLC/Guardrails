@@ -6,6 +6,7 @@
   "stableId": "i2p7rv",
   "writeScope": [
     "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
     "src/Guardrails.Core/Journal/JournalTierSpend.cs"
   ],
   "action": {
