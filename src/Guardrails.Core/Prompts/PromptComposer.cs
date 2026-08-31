@@ -90,18 +90,28 @@ public static class PromptComposer
         return text.ToString();
     }
 
-    /// <summary>Compose a GUARDRAIL (verifier) prompt.</summary>
+    /// <summary>
+    /// Compose a GUARDRAIL (verifier) prompt.
+    ///
+    /// <para><paramref name="writesFiles"/> is the ONE capability the verdict contract branches on
+    /// (plan 28 §6.4) — <i>can the runner that will execute this prompt write files?</i>, resolved by
+    /// the caller from <see cref="Model.PromptRunnerKinds.WritesFiles"/>. It defaults to <c>true</c>,
+    /// the shipped behaviour, so a caller that knows nothing about runner kinds still gets the
+    /// file-writing contract. See <see cref="AppendVerdictContract"/> for why one instruction, never
+    /// two, is the whole point.</para>
+    /// </summary>
     public static string ComposeGuardrail(
         string body,
         string stateInPath,
         string verdictOutPath,
         string actionStdoutPath,
-        bool isWorktreeMode = false)
+        bool isWorktreeMode = false,
+        bool writesFiles = true)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
         AppendSharedState(text, stateInPath);
-        AppendVerdictContract(text, verdictOutPath, actionStdoutPath);
+        AppendVerdictContract(text, verdictOutPath, actionStdoutPath, writesFiles);
         AppendWorktreeSafety(text, isWorktreeMode);
         return text.ToString();
     }
@@ -340,19 +350,61 @@ public static class PromptComposer
         text.Append('\n').Append(InjectedHumanAnswerEndMarker).Append('\n');
     }
 
-    private static void AppendVerdictContract(StringBuilder text, string verdictOutPath, string actionStdoutPath)
+    /// <summary>
+    /// The verdict contract, in one of two forms selected by <paramref name="writesFiles"/> — the
+    /// capability the composer is allowed to know (plan 28 §6.4). A runner WITH a write tool is told to
+    /// write the verdict file itself, in the shipped words, byte for byte. A runner WITHOUT one is told
+    /// to TRANSCRIBE: emit the verdict as the last fenced JSON block of its final message, for the
+    /// harness to write to the same path.
+    ///
+    /// <para><b>One instruction, never two.</b> Handing a non-writing runner the "you MUST end by
+    /// writing your verdict" sentence and then having its own framing say "you have no write tool"
+    /// leaves the weakest model in the system holding two opposite instructions — and the failure that
+    /// produces is silent: no verdict file on every guardrail it judges. Branching HERE, rather than
+    /// appending a correction downstream, is also what keeps <c>composed-prompt.md</c> honest: it is
+    /// written before the invocation and SSOT §8 calls it "exactly what the runner got", so the runner
+    /// must append nothing to it.</para>
+    ///
+    /// <para>The composer learns a CAPABILITY, never a vendor name — the same line §3.5 draws between
+    /// what the assembly can do and what an operator prefers — so the SSOT §9 runner quarantine holds:
+    /// no <c>kind</c>, no runner class and no engine name appears in this file.</para>
+    /// </summary>
+    private static void AppendVerdictContract(
+        StringBuilder text, string verdictOutPath, string actionStdoutPath, bool writesFiles)
     {
         text.Append("\n## Verdict contract\n\n");
         text.Append("You are a VERIFIER. Do NOT fix, edit, or create anything beyond your verdict file — ");
         text.Append("only judge the criterion above.\n\n");
         text.Append("The action's captured stdout is at this absolute path (read it if your criterion needs it):\n\n");
         text.Append('`').Append(actionStdoutPath).Append("`\n\n");
-        text.Append("You MUST end by writing your verdict as a JSON object to this absolute path:\n\n");
-        text.Append('`').Append(verdictOutPath).Append("`\n\n");
+        AppendVerdictDelivery(text, verdictOutPath, writesFiles);
         text.Append("The verdict shape is `{ \"pass\": <true|false>, \"reason\": \"<one line>\" }`. ");
         text.Append("The reason is shown to a human and (on failure) fed back to the author, so make it ");
         text.Append("specific and actionable. If you cannot determine a verdict, write `pass: false` with ");
         text.Append("a reason explaining why it is undeterminable.\n");
+    }
+
+    /// <summary>
+    /// HOW the verdict reaches <paramref name="verdictOutPath"/> — the only part of the contract that
+    /// differs between a runner that can write files and one that can only speak. Both forms name the
+    /// SAME absolute path: the transcribing runner is told where its words will land, so an operator
+    /// reading <c>composed-prompt.md</c> sees one verdict target either way.
+    /// </summary>
+    private static void AppendVerdictDelivery(StringBuilder text, string verdictOutPath, bool writesFiles)
+    {
+        if (writesFiles)
+        {
+            text.Append("You MUST end by writing your verdict as a JSON object to this absolute path:\n\n");
+            text.Append('`').Append(verdictOutPath).Append("`\n\n");
+            return;
+        }
+
+        text.Append("You have no write tool: ");
+        text.Append("emit your verdict as the last fenced ```json block of your final message; ");
+        text.Append("the harness will write it to this absolute path:\n\n");
+        text.Append('`').Append(verdictOutPath).Append("`\n\n");
+        text.Append("If your final message carries no such block, or the block does not parse, or it ");
+        text.Append("carries no boolean `pass`, NO verdict file is written and the guardrail FAILS.\n\n");
     }
 
     /// <summary>
