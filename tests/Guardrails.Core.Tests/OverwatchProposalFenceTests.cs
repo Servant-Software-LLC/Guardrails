@@ -17,10 +17,12 @@ namespace Guardrails.Core.Tests;
 /// wrote "a false-positive permission-wall escalation on an attempt that actually SUCCEEDED". The harness
 /// had the answer in a local variable and dropped it over three backticks.</para>
 ///
-/// <para><b>The line these tests hold.</b> Leniency stops at unwrapping. <see cref="Unfenced_Prose_StaysNull"/>
-/// is the counterweight: a judge that answered in prose has NOT produced a verdict, and advisory-never-gates
-/// means null is the correct outcome there. Without that test the natural "fix" is to go hunting for the
-/// first <c>{</c> in the body, which would start manufacturing verdicts out of a model thinking out loud.</para>
+/// <para><b>The line these tests hold.</b> Leniency now recovers a JSON object wherever it appears in the
+/// message (plan 28 §3.3, via the shared <c>PromptJsonExtractor</c>), so the narrowness bound is no longer
+/// "only a fenced block parses" — it is "only a well-SHAPED verdict parses, wherever it appears".
+/// <see cref="Unfenced_ProseMentioningANonVerdictObject_StaysNull"/> is the counterweight: a stray object
+/// recovered from prose that does not carry the required <c>diagnosis</c> string is still not a verdict, so
+/// the overwatcher cannot manufacture one out of a model thinking out loud about something else entirely.</para>
 /// </summary>
 public sealed class OverwatchProposalFenceTests
 {
@@ -76,16 +78,15 @@ public sealed class OverwatchProposalFenceTests
     }
 
     /// <summary>
-    /// The counterweight, and the reason the fix strips rather than searches. Prose that MENTIONS a JSON
-    /// object is not a verdict. If this ever goes green because someone "improved" the extractor into a
-    /// scanner, the overwatcher has started inventing verdicts from a model's thinking-out-loud — a far
-    /// worse failure than the one being fixed, and a silent one.
+    /// The counterweight, now that leniency recovers a bare object from prose (plan 28 §3.3):
+    /// <c>TryParse</c> requires a <c>diagnosis</c> string, so a stray object recovered from prose that
+    /// merely mentions unrelated JSON is still not a verdict.
     /// </summary>
     [Fact]
-    public void Unfenced_Prose_StaysNull()
+    public void Unfenced_ProseMentioningANonVerdictObject_StaysNull()
     {
         Assert.Null(OverwatchProposal.TryParse(
-            "I looked at the logs and I think the answer is " + Body + " but I am not certain."));
+            "I checked the config, it had {\"maxTurns\": 50} in it."));
     }
 
     /// <summary>A fence around something that is not JSON at all is still no verdict.</summary>
@@ -96,8 +97,8 @@ public sealed class OverwatchProposalFenceTests
     }
 
     /// <summary>
-    /// Blank and absent stay null — unchanged behavior, pinned here because <c>Unfence</c> now runs first
-    /// and a trim-then-parse could plausibly turn one of these into an exception rather than a null.
+    /// Blank and absent stay null — unchanged behavior, pinned here because the shared extractor now runs
+    /// first and a trim-then-parse could plausibly turn one of these into an exception rather than a null.
     /// </summary>
     [Theory]
     [InlineData(null)]

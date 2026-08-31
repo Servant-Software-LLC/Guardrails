@@ -10,10 +10,10 @@ namespace Guardrails.Core.Prompts;
 /// at run time is a harness error.
 ///
 /// Each config block becomes one runner instance carrying that block's <c>command</c>, and the
-/// block's <c>kind</c> (SSOT §9, issue #224) selects the runner CLASS. Only
-/// <see cref="ClaudePromptRunner"/> is implemented in this stage; a kind with no implementation
-/// FAILS construction rather than being served by Claude (see <c>CreateRunner</c>). Adding a CLI
-/// is a new class plus one arm of that switch — the seam is here, not in the harness.
+/// block's <c>kind</c> (SSOT §9, issue #224) selects the runner CLASS —
+/// <see cref="ClaudePromptRunner"/> and <see cref="OpenAiCompatPromptRunner"/> today. A kind with no
+/// implementation FAILS construction rather than being served by Claude (see <c>CreateRunner</c>).
+/// Adding a provider is a new class plus one arm of that switch — the seam is here, not in the harness.
 /// </summary>
 public sealed class PromptRunnerRegistry
 {
@@ -60,8 +60,23 @@ public sealed class PromptRunnerRegistry
         runner.Kind switch
         {
             PromptRunnerKind.Claude => new ClaudePromptRunner(runner.Name, runner.Command, processRunner),
+            PromptRunnerKind.OpenAiCompat => new OpenAiCompatPromptRunner(runner.Name, runner, SharedHttpClient),
             _ => throw new InvalidOperationException(UnimplementedKindMessage(runner))
         };
+
+    /// <summary>
+    /// The ONE <see cref="HttpClient"/> every <c>openai-compat</c> block shares. One instance per block
+    /// would leak a connection pool per block, which is the documented HttpClient misuse; the endpoint
+    /// is a per-REQUEST fact, so nothing about a block belongs on the client.
+    ///
+    /// <para><b><see cref="System.Threading.Timeout.InfiniteTimeSpan"/> is deliberate, not an omission.</b>
+    /// <see cref="OpenAiCompatPromptRunner"/> bounds every turn itself, with two different clocks that
+    /// this one property cannot express: <c>PromptInvocation.Timeout</c> bounds DURATION and
+    /// <c>PromptInvocation.StallBound</c> bounds SILENCE. Leaving the framework default in place would
+    /// impose a third, invisible 100-second cap — long local generations would die as a bare
+    /// <c>TaskCanceledException</c> attributed to neither bound, which is the silent direction.</para>
+    /// </summary>
+    private static readonly HttpClient SharedHttpClient = new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
 
     /// <summary>
     /// The actionable failure for a kind with no runner class: WHICH block, WHICH kind (in the wire

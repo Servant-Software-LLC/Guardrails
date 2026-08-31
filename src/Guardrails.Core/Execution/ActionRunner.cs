@@ -168,7 +168,14 @@ internal sealed class ActionRunner
         // a Claude Code PreToolUse hook, on TOP of the write-scope CHECK's post-hoc diff (the INNER
         // boundary, unaffected). Injected ONLY for a real segment worktree (worktreeRoot non-null);
         // never for serial/shared-workspace mode, where there is no isolated tree to contain writes to.
-        if (isWorktreeMode)
+        //
+        // ...and never for a block whose runner offers no Write/Edit/MultiEdit/NotebookEdit/Bash tool
+        // for the hook to police (plan 28 §3.6). The kind read is the DISPATCH target's below, not the
+        // settings block's, because these ExtraArgs are handed to that instance: conditioning on the
+        // other one could drop the boundary for a file-writing runner whenever the two differ. This is
+        // not a weakening — NeedsContainmentHook answers TRUE for every kind but the ones registered as
+        // tool-less, so a future writing runner inherits the boundary rather than silently losing it.
+        if (isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook((route?.Runner ?? runnerConfig).Kind))
         {
             string settingsPath = WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!);
             settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", settingsPath] };
@@ -185,6 +192,7 @@ internal sealed class ActionRunner
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
+            Role = PromptRole.Action,
             WorkingDirectory = workspace,
             PlanDirectory = _plan.PlanDirectory,
             Environment = actionEnv,

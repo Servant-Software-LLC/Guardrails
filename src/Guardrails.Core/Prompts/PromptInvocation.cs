@@ -14,10 +14,23 @@ public sealed record PromptInvocation
     /// <summary>The fully composed prompt text (body + appended harness sections), delivered via stdin.</summary>
     public required string ComposedPrompt { get; init; }
 
-    /// <summary>cwd for the runner process — the resolved workspace.</summary>
+    /// <summary>What this prompt is FOR. Set by the harness at every call site; a runner may refuse a
+    /// role its class cannot honestly serve (SSOT §9).</summary>
+    public required PromptRole Role { get; init; }
+
+    /// <summary>
+    /// cwd for the runner process — the resolved workspace. Empty is legal and means "no cwd"
+    /// (issue #381), NOT "abort" — an advisory caller with no workspace to run in (e.g.
+    /// <see cref="CriticalityJudge"/>) leaves this empty rather than crashing.
+    /// </summary>
     public required string WorkingDirectory { get; init; }
 
-    /// <summary>The plan folder root — granted to the runner via <c>--add-dir</c> so it can reach state/verdict paths.</summary>
+    /// <summary>
+    /// The plan folder root — granted to the runner via <c>--add-dir</c> so it can reach state/verdict
+    /// paths. Empty is legal and means "no plan dir" (issue #381), NOT "abort" — an advisory caller
+    /// with no plan dir to grant (e.g. <see cref="CriticalityJudge"/>) leaves this empty rather than
+    /// crashing.
+    /// </summary>
     public required string PlanDirectory { get; init; }
 
     /// <summary>The §5.1 environment variables for this prompt process.</summary>
@@ -41,7 +54,12 @@ public sealed record PromptInvocation
     /// </summary>
     public TimeSpan? StallBound { get; init; }
 
-    /// <summary>Absolute path the raw runner output stream is teed to (<c>claude-stream.jsonl</c>).</summary>
+    /// <summary>
+    /// Absolute path the raw runner output stream is teed to (<c>claude-stream.jsonl</c>). Empty is
+    /// legal and means "don't write a stream log" (issue #381), NOT "abort" — an advisory caller that
+    /// wants no raw debug tee (e.g. <see cref="CriticalityJudge"/>) leaves this empty rather than
+    /// crashing.
+    /// </summary>
     public required string StreamLogPath { get; init; }
 
     /// <summary>

@@ -91,6 +91,7 @@ public sealed class NeedsHumanTriage
         var invocation = new PromptInvocation
         {
             ComposedPrompt = prompt,
+            Role = PromptRole.Advisory,
             WorkingDirectory = workspace,
             PlanDirectory = planDirectory,
             // Empty ON PURPOSE: triage is an advisory READER, so it gets no state channel and no
@@ -145,13 +146,21 @@ public sealed class NeedsHumanTriage
     /// diagnosis distilled from <c>ghIssueTitle</c> (tool problems) or <c>analysis</c> (local
     /// problems). No-op when the result is not structured (no <c>diagnosis</c> field) so the summary
     /// gracefully falls back. Best-effort: a malformed result or write hiccup is swallowed — the
-    /// sidecar is purely advisory, exactly like the rest of triage.
+    /// sidecar is purely advisory, exactly like the rest of triage. Recovers the JSON via the shared
+    /// <see cref="PromptJsonExtractor"/> (plan 28 §3.3) so a weaker model's prose-wrapped result still
+    /// produces a sidecar, not just a strict bare-object reply.
     /// </summary>
     private static void WriteTriageSidecar(string taskLogDir, string resultText)
     {
+        string? candidate = PromptJsonExtractor.Extract(resultText);
+        if (candidate is null)
+        {
+            return;
+        }
+
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(resultText);
+            using JsonDocument doc = JsonDocument.Parse(candidate);
             JsonElement root = doc.RootElement;
 
             if (root.ValueKind != JsonValueKind.Object

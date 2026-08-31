@@ -325,6 +325,7 @@ public sealed class CriticalityJudge
     private PromptInvocation BuildInvocation(CriticalityGateContext context) => new()
     {
         ComposedPrompt = BuildAssessmentPrompt(context),
+        Role = PromptRole.Advisory,
         WorkingDirectory = string.Empty,
         PlanDirectory = string.Empty,
         Environment = new Dictionary<string, string>(StringComparer.Ordinal),

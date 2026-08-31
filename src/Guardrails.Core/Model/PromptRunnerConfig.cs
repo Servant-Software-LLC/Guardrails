@@ -1,3 +1,6 @@
+using System.Text.Json;
+using Guardrails.Core.Prompts;
+
 namespace Guardrails.Core.Model;
 
 /// <summary>
@@ -104,6 +107,46 @@ public sealed record PromptRunnerConfig
     /// </summary>
     public PromptRunnerOverrides? GuardrailOverrides { get; init; }
 
+    /// <summary>
+    /// The openai-compat base URL (plan 28 §4, issue #223) — REQUIRED for
+    /// <see cref="PromptRunnerKind.OpenAiCompat"/>, an absolute http/https URL (GR2065). Null = the key
+    /// was absent, which is every other kind, or a malformed block ahead of <c>guardrails validate</c>.
+    /// </summary>
+    public string? Endpoint { get; init; }
+
+    /// <summary>
+    /// The model's context window in tokens (plan 28 §4/§6.1) — REQUIRED for
+    /// <see cref="PromptRunnerKind.OpenAiCompat"/>, must be at least 1 (GR2065). Null = the key was
+    /// absent. The runner's own before/after overflow checks (§6.1) are this field's only readers.
+    /// </summary>
+    public int? ContextTokens { get; init; }
+
+    /// <summary>
+    /// The NAME of an env var holding a bearer token for the openai-compat endpoint (plan 28 §4) —
+    /// NEVER the token itself: <c>guardrails.json</c> is committed and hashed into
+    /// <c>PlanDefinitionHash</c>, which keys the review attestation. Null = no auth header is sent.
+    /// </summary>
+    public string? ApiKeyEnv { get; init; }
+
+    /// <summary>
+    /// A verbatim request-body passthrough map for the openai-compat wire protocol (plan 28 §4) — the
+    /// HTTP sibling of <see cref="PromptRunnerSettings.Env"/>. Merged into the outgoing JSON body by
+    /// the runner; a top-level key that shadows a harness-owned field (<c>model</c>, <c>messages</c>,
+    /// <c>stream</c>, <c>stream_options</c>, <c>tools</c>, <c>max_tokens</c>) is GR2065, not a runtime
+    /// throw. Values are held as raw <see cref="JsonElement"/> so a nested knob (e.g.
+    /// <c>options.num_ctx</c>) round-trips untouched. Null = the key was absent.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonElement>? Wire { get; init; }
+
+    /// <summary>
+    /// OPERATOR-FACING TEXT ONLY (plan 28 §6.2) — <c>ollama</c> | <c>llama.cpp</c> | <c>mlx</c> |
+    /// <c>lm-studio</c> | <c>vllm</c>. Selects the model-not-found remedy SENTENCE and nothing else: it
+    /// never selects a code path, never changes a request, and is absent from
+    /// <see cref="PromptRunnerKinds.ServesRoles"/>, the containment rules and the wire body. Null = the
+    /// neutral remedy sentence naming the model and the endpoint.
+    /// </summary>
+    public string? Engine { get; init; }
+
     /// <summary>The effective settings for a prompt of the given kind (base, or base + guardrail overrides).</summary>
     public PromptRunnerSettings EffectiveSettings(bool isGuardrail) =>
         isGuardrail && GuardrailOverrides is not null
@@ -184,10 +227,12 @@ public sealed record PromptRunnerOverrides
 }
 
 /// <summary>
-/// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224). Only
-/// <see cref="Claude"/> has a concrete runner — the others are the seam #223 fills. Declaring one of
-/// them is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction still
-/// refuses it, but as the BACKSTOP rather than the gate (see <see cref="PromptRunnerKinds.Implemented"/>).
+/// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224).
+/// <see cref="Claude"/> and <see cref="OpenAiCompat"/> have concrete runners; <see cref="Codex"/>,
+/// <see cref="OpenRouter"/> and <see cref="Local"/> remain RESERVED NAMES (plan 28 §3.1). Declaring one
+/// of those is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction
+/// still refuses it, but as the BACKSTOP rather than the gate (see
+/// <see cref="PromptRunnerKinds.Implemented"/>).
 /// </summary>
 public enum PromptRunnerKind
 {
@@ -209,7 +254,8 @@ public enum PromptRunnerKind
     /// #223 fills, and it deliberately spans BOTH a loopback local endpoint and a cloud
     /// OpenAI-compatible API: that is precisely why the DoR's provider-kind "weak" fallback (§4.1) is
     /// VERIFIER-ONLY and may never be used for actor ordering — this kind cannot tell the two apart.
-    /// No concrete runner yet (#223).
+    /// Served by <see cref="OpenAiCompatPromptRunner"/> (#223), for the <see cref="PromptRole.Guardrail"/>
+    /// and <see cref="PromptRole.Advisory"/> roles only — see <see cref="PromptRunnerKinds.ServesRoles"/>.
     /// </summary>
     OpenAiCompat
 }
@@ -231,7 +277,8 @@ public static class PromptRunnerKinds
     /// dispatch switch, which is the runtime backstop. Two places state the same fact, so a test pins
     /// them together rather than letting them drift.
     /// </summary>
-    public static IReadOnlyList<PromptRunnerKind> Implemented { get; } = [PromptRunnerKind.Claude];
+    public static IReadOnlyList<PromptRunnerKind> Implemented { get; } =
+        [PromptRunnerKind.Claude, PromptRunnerKind.OpenAiCompat];
 
     /// <summary>The recognised wire tokens, in declaration order — for diagnostic messages.</summary>
     public static IReadOnlyList<PromptRunnerKind> All { get; } =
@@ -246,27 +293,108 @@ public static class PromptRunnerKinds
     /// same shape as <see cref="Implemented"/> right above it, and read by <c>guardrails providers init</c>
     /// (SSOT §9.7) to decide whether it may add blocks or must degrade to annotating the ones already there.
     ///
-    /// <para><b>EMPTY, and that is the whole of v1's behaviour rather than a gap.</b> Only
-    /// <see cref="PromptRunnerKind.Claude"/> is implemented at all, and the Claude CLI exposes no model
-    /// list (settled OD-E) — so there is nothing to enumerate anywhere. The <c>openai-compat</c>
-    /// <c>GET /v1/models</c> surface arrives with its runner in #223, which adds that kind here and
-    /// supplies the enumerator; nothing else about <c>providers init</c> moves.</para>
+    /// <para><b><see cref="PromptRunnerKind.OpenAiCompat"/> is here because the LISTING ENDPOINT is what
+    /// this member describes</b> (plan 28 §7). The kind's blocks declare an <c>endpoint</c>, and
+    /// <c>GET {endpoint}/models</c> is a real, near-universal surface this build now speaks: the pre-DAG
+    /// endpoint preflight reads it to assert every declared model is present before a token is spent.
+    /// <see cref="PromptRunnerKind.Claude"/> stays out — the Claude CLI exposes no model list at all
+    /// (settled OD-E) — so <c>providers init</c> still takes its "could not enumerate" path for a
+    /// Claude-only registry, exactly as before.</para>
+    ///
+    /// <para><b>Enumerable is not the same as invented.</b> This member answers <i>can this kind be
+    /// ASKED?</i>, and nothing about it licenses writing a model id no provider reported: a registry entry
+    /// is a ROUTING TARGET, not documentation (SSOT §9.7, DoR §4.3 ruling 2). Its first reader is the
+    /// pre-DAG preflight; <c>providers init</c> has no <c>openai-compat</c> enumerator wired yet, so for
+    /// such a block it neither adds a block nor emits the "could not enumerate" note — the generator half
+    /// of plan 28 §12 item 10 is still to land.</para>
     ///
     /// <para><b>This is a list, not a seam.</b> There is deliberately no <c>IModelEnumerator</c> stub to
     /// fill: an interface with no implementation is dead code that cannot be tested, and the generator
     /// needs exactly one fact from this file — <i>can this kind be enumerated?</i> — which a list answers
     /// honestly today.</para>
     /// </summary>
-    public static IReadOnlyList<PromptRunnerKind> ModelEnumerable { get; } = [];
+    public static IReadOnlyList<PromptRunnerKind> ModelEnumerable { get; } = [PromptRunnerKind.OpenAiCompat];
 
     /// <summary>
-    /// True when this build can ask <paramref name="kind"/> for its model list. FALSE FOR EVERY KIND in
-    /// v1 — which is what routes <c>providers init</c> down its "could not enumerate" path, where it
-    /// annotates the blocks already present, says plainly that it added none, and exits 0. It never
-    /// synthesises a model id: a registry entry is a ROUTING TARGET, not documentation, so a fabricated
-    /// or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3 ruling 2).
+    /// True when this build can ask <paramref name="kind"/> for its model list — <c>openai-compat</c>
+    /// (<c>GET {endpoint}/models</c>) and nothing else. False for <see cref="PromptRunnerKind.Claude"/>,
+    /// which is what routes <c>providers init</c> down its "could not enumerate" path for a Claude-only
+    /// registry, where it annotates the blocks already present, says plainly that it added none, and exits
+    /// 0. It never synthesises a model id: a registry entry is a ROUTING TARGET, not documentation, so a
+    /// fabricated or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3
+    /// ruling 2).
     /// </summary>
     public static bool HasModelEnumeration(PromptRunnerKind kind) => ModelEnumerable.Contains(kind);
+
+    /// <summary>Every role — what an agent CLI that can write files and run commands serves.</summary>
+    private static readonly IReadOnlySet<PromptRole> AllRoles =
+        new HashSet<PromptRole> { PromptRole.Action, PromptRole.Guardrail, PromptRole.Advisory };
+
+    /// <summary>
+    /// The two roles a read-only HTTP verifier can honestly serve (plan 28 §3.2: v1 is a verifier, not
+    /// an actor) — no <see cref="PromptRole.Action"/>, because a runner with no write tool and no shell
+    /// cannot produce work.
+    /// </summary>
+    private static readonly IReadOnlySet<PromptRole> VerifierRoles =
+        new HashSet<PromptRole> { PromptRole.Guardrail, PromptRole.Advisory };
+
+    /// <summary>No role at all — a reserved kind with no runner class serves nothing.</summary>
+    private static readonly IReadOnlySet<PromptRole> NoRoles = new HashSet<PromptRole>();
+
+    /// <summary>
+    /// Which <see cref="PromptRole"/>s a real, constructed runner of this kind actually accepts — a
+    /// statement of fact about the BUILD, never a config key (plan 28 §3.5). A <c>roles:</c> key on the
+    /// block would invite an operator to DECLARE a capability the assembly does not have; the operator
+    /// declares preference (<c>routing</c>, <c>strength</c>), the assembly declares capability.
+    ///
+    /// <para>This is the SINGLE source the runner itself consults, so the fact and the refusal cannot
+    /// drift: <see cref="OpenAiCompatPromptRunner"/> reads this set and refuses anything outside it,
+    /// which is what lets the tests pin the answer BY CONSTRUCTION — build the real runner, hand it a
+    /// real invocation of each role, and watch it proceed or refuse — rather than by reading back the
+    /// same field the check reads, which would be an echo of itself.</para>
+    ///
+    /// <para>A kind with no implementation serves NOTHING rather than throwing: this answers a question
+    /// about the build, and "which roles does a kind we cannot construct serve?" has an honest answer.
+    /// The refusal for such a kind belongs to <see cref="Implemented"/> (GR2044) and to
+    /// <see cref="PromptRunnerRegistry"/>'s dispatch backstop, and duplicating it here would give the
+    /// same mistake two different failure shapes.</para>
+    /// </summary>
+    public static IReadOnlySet<PromptRole> ServesRoles(PromptRunnerKind kind) => kind switch
+    {
+        PromptRunnerKind.Claude => AllRoles,
+        PromptRunnerKind.OpenAiCompat => VerifierRoles,
+        _ => NoRoles
+    };
+
+    /// <summary>
+    /// True when this kind's runner is an agent whose file writes need the SSOT §9.4 containment hook
+    /// (plan 28 §3.5/§3.6). The hook polices <c>Write</c>/<c>Edit</c>/<c>MultiEdit</c>/<c>NotebookEdit</c>/
+    /// <c>Bash</c> tool calls; a runner that offers none of them has nothing for it to police, and
+    /// generating a Claude <c>settings.json</c> to pass as a CLI flag to an HTTP client is litter, not
+    /// containment. Conditioning the splice on this is what makes the runner's own <c>--settings</c>
+    /// refusal a TRUE backstop — reachable only when the splice and this fact disagree.
+    ///
+    /// <para><b>An unlisted kind gets TRUE, and the default direction is deliberate.</b> A future
+    /// file-writing runner whose author forgets to register it here inherits the boundary rather than
+    /// silently losing it; the wrong answer is then a hook that polices nothing, not an agent writing
+    /// outside its worktree unobserved.</para>
+    /// </summary>
+    public static bool NeedsContainmentHook(PromptRunnerKind kind) => kind != PromptRunnerKind.OpenAiCompat;
+
+    /// <summary>
+    /// True when this kind's runner has a write tool and so gets the shipped verdict-file contract
+    /// (<i>"you MUST end by writing your verdict as a JSON object to this absolute path"</i>); false when
+    /// it can only TRANSCRIBE — emit the verdict as the last fenced <c>```json</c> block of its final
+    /// message, for the harness to write (plan 28 §6.4). The composer reads this ONE boolean and emits
+    /// one instruction or the other, never both, so the weakest model in the system is never holding two
+    /// opposite instructions — and it learns a CAPABILITY, never a vendor name, which is what keeps the
+    /// SSOT §9 quarantine intact.
+    ///
+    /// <para>An unlisted kind gets TRUE for the same reason as
+    /// <see cref="NeedsContainmentHook"/>: a runner that CAN write files and was never registered here
+    /// would otherwise be told to transcribe, and the verdict it wrote to the path would be ignored.</para>
+    /// </summary>
+    public static bool WritesFiles(PromptRunnerKind kind) => kind != PromptRunnerKind.OpenAiCompat;
 
     /// <summary>The implemented kinds as a comma-separated quoted list, for diagnostic messages.</summary>
     public static string ImplementedTokenList => string.Join(", ", Implemented.Select(k => $"'{Token(k)}'"));

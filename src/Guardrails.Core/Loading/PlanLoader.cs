@@ -427,7 +427,19 @@ public sealed class PlanLoader
             Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
             Specialization = ReadSpecialization(name, raw.Specialization, configPath, diagnostics),
             Routing = ReadRouting(name, raw.Routing, configPath, diagnostics),
-            GuardrailOverrides = overrides
+            GuardrailOverrides = overrides,
+
+            // The openai-compat block config surface (plan 28 §4, issue #223). Bound directly, same as
+            // Effort/MaxOutputTokens above — shape/range validation (absolute-URL endpoint,
+            // contextTokens >= 1, wire's harness-owned-field check) is GR2065, a validator-time concern,
+            // not the loader's.
+            Endpoint = raw.Endpoint,
+            ContextTokens = raw.ContextTokens,
+            ApiKeyEnv = raw.ApiKeyEnv,
+            Wire = raw.Wire is null
+                ? null
+                : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
+            Engine = raw.Engine
         };
     }
 
@@ -1119,12 +1131,24 @@ public sealed class PlanLoader
 
         (string? tier, TierOrigin tierOrigin) = ResolveTier(rawAction?.Tier, defaultTier);
 
+        ActionKind kind = KindFor(actionPath);
+
         return new ActionDefinition
         {
             Path = actionPath,
-            Kind = KindFor(actionPath),
+            Kind = kind,
             Args = rawAction?.Args ?? [],
-            Runner = rawAction?.Runner,
+            // The runner PIN, resolved at load from the two places a human may write one, in the same
+            // order ActionRunner reads them at run time: `task.json action.runner` first, then the action
+            // PROMPT's own front-matter `runner:` (plan 28 §3.7). Folding the second one HERE is what
+            // makes it visible to PlanValidator at all — GR2066's fourth route was previously readable
+            // only mid-DAG, when the block had already been handed a task's work. Precedence does not
+            // move: task.json still wins, and a fold that produced anything other than what
+            // `task.Action.Runner ?? promptFile.Frontmatter.Runner` already resolves to would be
+            // reporting on a run that is not the one about to happen. Prompt actions only — a SCRIPT
+            // action has no front-matter and no runner.
+            Runner = rawAction?.Runner ??
+                     (kind == ActionKind.Prompt ? PromptFrontmatterRunner(actionPath) : null),
             MaxTurns = rawAction?.MaxTurns,
             // Bound VERBATIM (no trim/nullify): a present-but-blank value (e.g. "   ") must reach the
             // validator's GR2030 check faithfully, the same "preserve the malformed signal" doctrine
@@ -1431,11 +1455,7 @@ public sealed class PlanLoader
     /// </summary>
     private static GuardrailDefinition ApplyPromptFrontmatter(GuardrailDefinition guardrail)
     {
-        string content;
-        try { content = File.ReadAllText(guardrail.Path); }
-        catch (IOException) { return guardrail; }
-
-        string? frontmatter = ExtractFrontmatter(content);
+        string? frontmatter = ReadFrontmatter(guardrail.Path);
         if (frontmatter is null)
             return guardrail;
 
@@ -1451,6 +1471,45 @@ public sealed class PlanLoader
                 : string.IsNullOrWhiteSpace(scope) ? null : scope.Trim().ToLowerInvariant(),
             Tier = tier is null || tier.Length == 0 ? guardrail.Tier : tier
         };
+    }
+
+    /// <summary>
+    /// The YAML front-matter block of the <c>.prompt.md</c> file AT <paramref name="path"/> — null when
+    /// the file cannot be read or carries no well-formed block. The ONE on-disk front-matter reader in
+    /// this loader, and deliberately so (plan 28 §3.7): both folds go through it — a prompt GUARDRAIL's
+    /// <c>scope</c>/<c>tier</c> (<see cref="ApplyPromptFrontmatter"/>) and a prompt ACTION's
+    /// <c>runner</c> (<see cref="PromptFrontmatterRunner"/>) — so there is no second, subtly different
+    /// parser for the two sites to drift apart on. An unreadable file is silently "no front-matter": the
+    /// IO error is other checks' to report, never this one's to double-report.
+    /// </summary>
+    private static string? ReadFrontmatter(string path)
+    {
+        string content;
+        try { content = File.ReadAllText(path); }
+        catch (IOException) { return null; }
+
+        return ExtractFrontmatter(content);
+    }
+
+    /// <summary>
+    /// A prompt ACTION's own front-matter <c>runner:</c> pin, or null when it declares none (plan 28
+    /// §3.7). Folded onto <see cref="ActionDefinition.Runner"/> by <see cref="ResolveAction"/> BELOW the
+    /// task's own <c>action.runner</c>, mirroring the run-time chain <c>ActionRunner</c> already applies
+    /// (<c>task.Action.Runner ?? promptFile.Frontmatter.Runner</c>) — so the fold moves no precedence; it
+    /// only makes a pin the validator previously could not see visible to it (GR2066's fourth route).
+    ///
+    /// <para>An empty or whitespace-only value reads as ABSENT, because that is what the run-time reader
+    /// yields for it: <c>PromptFileParser</c> deserializes a valueless <c>runner:</c> to a null scalar.
+    /// A fold that disagreed with the runner about what "no pin" means would be a second source of truth
+    /// for the very thing it exists to report.</para>
+    /// </summary>
+    private static string? PromptFrontmatterRunner(string actionPath)
+    {
+        if (ReadFrontmatter(actionPath) is not { } frontmatter)
+            return null;
+
+        string? runner = ParseFrontmatterScalar(frontmatter, "runner");
+        return string.IsNullOrWhiteSpace(runner) ? null : runner;
     }
 
     /// <summary>

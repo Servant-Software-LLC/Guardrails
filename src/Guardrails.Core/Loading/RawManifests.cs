@@ -135,6 +135,32 @@ internal sealed class RawPromptRunner
     public RawPromptRunnerRouting? Routing { get; set; }
 
     public RawPromptRunnerOverrides? GuardrailOverrides { get; set; }
+
+    // The openai-compat block config surface (plan 28 §4, issue #223). All five OPTIONAL, null = the
+    // key was absent — additive, so no config written before this kind existed changes by a byte.
+    // Shape/range validation (absolute http/https endpoint, contextTokens >= 1, wire's
+    // harness-owned-field check, all four keys rejected on a non-openai-compat block) is GR2065 — the
+    // loader only binds. Bound directly (not raw JsonElement) because each has its own dedicated range
+    // check downstream, the same posture MaxOutputTokens and Effort already take.
+
+    // Absolute http/https base URL. REQUIRED for kind openai-compat.
+    public string? Endpoint { get; set; }
+
+    // The model's context window in tokens. REQUIRED for kind openai-compat, must be >= 1.
+    public int? ContextTokens { get; set; }
+
+    // The NAME of an env var holding a bearer token — never the token itself (SSOT §4: this file is
+    // committed and hashed into PlanDefinitionHash).
+    public string? ApiKeyEnv { get; set; }
+
+    // A verbatim request-body passthrough map (the HTTP sibling of Env). Bound as a map of top-level
+    // key to raw JSON so a nested value (e.g. "options": { "num_ctx": ... }) round-trips untouched and
+    // GR2065 can name a top-level key that shadows a harness-owned field.
+    public Dictionary<string, JsonElement>? Wire { get; set; }
+
+    // OPERATOR-FACING TEXT ONLY (plan 28 §6.2): selects the model-not-found remedy sentence. Never
+    // selects a code path or changes a request — see PromptRunnerConfig.Engine.
+    public string? Engine { get; set; }
 }
 
 /// <summary>

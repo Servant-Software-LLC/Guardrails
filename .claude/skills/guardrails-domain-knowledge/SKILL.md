@@ -858,6 +858,27 @@ tiering as a working feature.
   counted independently -- and naming the REQUESTED id only where `requestedModel` recorded a disagreement.
   It is ADDITIVE to the total-cost and per-tier lines, and **absent entirely** on a run where no attempt
   recorded a model, so a deterministic-only plan's report is unchanged. Wire detail: SSOT section 9.
+- **`openai-compat` runner (v1 local inference, #223, SSOT section 9.8).** A second implemented
+  runner kind, named after the **protocol** not the engine -- Ollama, llama.cpp, MLX (`mlx_lm.server`
+  or LM Studio's MLX engine), LM Studio and vLLM all speak it, so none of them needs a new kind.
+  `local`, `codex` and `openrouter` remain reserved names. **v1 is a VERIFIER, not an actor:** it
+  serves the `Guardrail` and `Advisory` roles only, offers a fixed read-only tool set
+  (`Read`/`Glob`/`Grep`), and refuses an `Action` invocation loudly. `PromptRole` is the required
+  `PromptInvocation` field that makes that refusal possible; `ServesRoles`/`NeedsContainmentHook`/
+  `WritesFiles` are facts about the BUILD, never config keys -- pinned by CONSTRUCTION (build the
+  real runner, assert accept/refuse), never by reading a field the runner itself reads. **The
+  reachability rule:** the block is reachable by exactly two human acts -- a judge guardrail's
+  frontmatter `runner:` pin, or naming it as an `Advisory` reserved profile (`overwatch` or
+  `ai-triage`). `GR2066` errors the five `Action` routes; `GR2065` checks the block schema;
+  `GR2067` warns on undeclared `strength` and on an unreachable block. **The false green this
+  closes (plan section 6.6):** an OpenAI-compatible server can accept a `tools` array, call none,
+  and still return an immaculate `{"pass": true}` -- nothing on the wire distinguishes
+  "considered the tools and needed none" from "does not implement tools." The pre-DAG preflight
+  probes tool capability per (endpoint, model) before any real spend, and at runtime a
+  `Guardrail`-role invocation that completes with an empty `tool_calls` on a verdict-bearing call
+  fails the attempt rather than being allowed to transcribe one -- a verifier that read nothing has
+  verified nothing. **Judge spend is recorded but NOT folded into `JournalCost.Total`** -- actor
+  spend and verifier spend are two numbers on purpose. Full contract: SSOT section 9.8.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.

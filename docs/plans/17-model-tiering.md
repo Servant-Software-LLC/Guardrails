@@ -596,6 +596,13 @@ fields, and report cost as absent (tokens only) unless its API provides one. Whe
 GR2044's supported set grows — no other contract moves. Its internals (auth, streaming,
 endpoint probing) are #223's own design space.
 
+**This seam has since shipped — see `docs/plans/28-local-inference-runner.md`.** That plan is where
+#223 was actually designed and built: the full block schema (`endpoint`/`contextTokens`/`apiKeyEnv`/
+`wire`/`engine`), the role gate (`ServesRoles`/`NeedsContainmentHook`/`WritesFiles`), the
+`ContextOverflow` failure taxonomy, the pre-DAG endpoint + tool-capability preflight, and the
+`providers check` dialect verb. The normative record of what shipped lives in SSOT §9.8, not here —
+this section is kept for its own historical reasoning, not as the current spec of the runner.
+
 ## 5. The tier model (#225)  [v1]
 
 **Ruling (D7): the tier enum is `easy | medium | hard` — final for v1.** Closed, lowercase,
@@ -1653,7 +1660,7 @@ now means.
 | Code | Shipped name | Sev | Scope | DoR reserved as | Meaning as shipped |
 |---|---|---|---|---|---|
 | GR2043 | `InvalidTierValue` | error | **v1** | GR2045 `UnrecognizedTier` | a declared difficulty tier is not one of `easy`/`medium`/`hard`. Matched VERBATIM — no trimming, no case-folding — so `"hard "` is reported rather than silently accepted (the GR2030 preserve-the-malformed-signal doctrine); an absent tier is never flagged. **Narrower than reserved:** the shipped check covers **two** sites — `task.json action.tier` and the plan-wide `tiering.defaultTier` — not the four this DoR specified (§13.3) |
-| GR2044 | `InvalidPromptRunnerKind` | error | **v1** | GR2043 `UnsupportedRunnerKind` | a `promptRunners.<name>.kind` is present but names no recognised runner kind; the message NAMES the offending value. The loader falls the block back to the `claude` default **only** so the rest of validation still reports, never so the run proceeds. **Narrower than reserved:** a RECOGNISED-but-unimplemented kind is *not* this code — it loads clean and fails at registry construction with an actionable message (charter §A.2 — the backstop, not the gate) |
+| GR2044 | `InvalidPromptRunnerKind` | error | **v1** | GR2043 `UnsupportedRunnerKind` | a `promptRunners.<name>.kind` is present but names no recognised runner kind, **or names a kind that is recognised but not implemented in this build**; the message NAMES the offending value. The loader falls the block back to the `claude` default **only** so the rest of validation still reports, never so the run proceeds. **Updated by plan 28 (#223):** a RECOGNISED-but-unimplemented kind is no longer left to the registry-construction throw alone (that throw is now the BACKSTOP, unreachable unless the gate and the build disagree) — `guardrails validate` itself reports it as this same GR2044, an honest halt at validate time. `kind: "local"` gets its own redirect in that message, pointing the operator at `openai-compat` — the wire protocol every locally-hosted engine this build serves (Ollama, llama.cpp, LM Studio, vLLM, MLX) actually speaks, since `local` itself has no implementation (plan 28 §3.1, §9.8). `claude` and `openai-compat` are the two implemented kinds as of plan 28; `codex`/`openrouter`/`local` remain reserved names |
 | GR2045 | `InvalidRunnerAxis` | error | **v1** | GR2049 `MalformedModelAxis` | one of the three per-block model axes is malformed (§4.1): `costly` not a bool, `strength` not an integer or below 1, or `specialization` outside the enum. One diagnostic per malformed axis, naming the axis and its value; an absent axis is never flagged |
 | GR2046 | `RetiredRoutingRank` | warning | **v1** | GR2054 `RetiredRoutingRank` | a `promptRunners.<name>.routing` block still carries the RETIRED `rank` key (§4.2, settled OD-F). The key is IGNORED. A warning rather than an error so a config mid-migration keeps loading — and rather than silence, because accepting `rank` quietly is exactly how a migrated config's ordering would change with nobody told. **Name matched; only the number moved** |
 

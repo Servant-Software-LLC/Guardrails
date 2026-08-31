@@ -178,7 +178,14 @@ internal sealed class GuardrailRunner
         string stagingVerdictPath = PromptOutputStaging.PrepareStagingPath(
             effectiveWorkspaceRoot, task.Id, attemptFolder, verdictPath);
 
-        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, stagingVerdictPath, actionStdoutPath, isWorktreeMode);
+        // §6.4: the verdict contract branches on ONE capability of the block this invocation will
+        // actually execute on — can its runner write files? A runner that cannot is told to TRANSCRIBE
+        // (emit the verdict as the last fenced JSON block; the harness writes it) instead of being handed
+        // a "you MUST write this file" instruction it has no tool to obey. `judgeBlock` is the block the
+        // dispatch below resolves to, so the contract and the runner can never disagree.
+        string composed = PromptComposer.ComposeGuardrail(
+            promptFile.Body, snapshotPath, stagingVerdictPath, actionStdoutPath, isWorktreeMode,
+            PromptRunnerKinds.WritesFiles(judgeBlock.Kind));
         AtomicFile.WriteAllText(Path.Combine(logDir, $"composed-prompt.{Sanitize(guardrail.Name)}.md"), composed);
 
         var guardrailEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
@@ -212,7 +219,16 @@ internal sealed class GuardrailRunner
 
         // Worktree containment hook (issue #199/#192) for a prompt GUARDRAIL: same OUTER boundary as
         // a prompt action — a verifier prompt is still an agent that can Write/Edit/Bash.
-        if (isWorktreeMode)
+        //
+        // ...unless the block's runner offers none of those tools (plan 28 §3.6). The hook polices
+        // Write/Edit/MultiEdit/NotebookEdit/Bash tool calls (SSOT §9.4); generating a Claude
+        // settings.json and passing it as a CLI flag to a runner that has no argv and no write tool is
+        // litter, not containment. This is not a weakening: NeedsContainmentHook answers TRUE for every
+        // kind but the ones registered as tool-less, so a future file-writing runner inherits the
+        // boundary rather than silently losing it — and with the condition here, the runner's own
+        // `--settings` refusal becomes a TRUE backstop, reachable only when this splice and that build
+        // fact disagree, which is a harness bug worth throwing on.
+        if (isWorktreeMode && PromptRunnerKinds.NeedsContainmentHook(judgeBlock.Kind))
         {
             string guardrailSettingsPath = WorktreeContainmentHook.WriteHookFiles(
                 logDir, worktreeRoot!, $"guardrail-{Sanitize(guardrail.Name)}");
@@ -222,6 +238,7 @@ internal sealed class GuardrailRunner
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
+            Role = PromptRole.Guardrail,
             WorkingDirectory = workspace,
             PlanDirectory = _plan.PlanDirectory,
             Environment = guardrailEnv,
@@ -262,7 +279,7 @@ internal sealed class GuardrailRunner
         return (
             result,
             !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal),
-            ToAttemptJudge(judge, route));
+            ToAttemptJudge(judge, route, promptResult));
     }
 
     /// <summary>
@@ -282,7 +299,11 @@ internal sealed class GuardrailRunner
     /// <param name="judge">The resolution that graded this pass.</param>
     /// <param name="actor">The §6 actor route the judge was resolved AGAINST — null on the revalidate
     /// path, where there is no action attempt and therefore nothing for the judge to be weaker THAN.</param>
-    private static Journal.AttemptJudge ToAttemptJudge(JudgeResolution judge, TierResolution? actor) => new()
+    /// <param name="promptResult">The judge's own invocation result (plan 28 §11 finding 3) — its
+    /// <see cref="PromptResult.CostUsd"/>/<see cref="PromptResult.Usage"/> are the verifier's spend,
+    /// carried onto the journal alongside the actor's and never folded into it.</param>
+    private static Journal.AttemptJudge ToAttemptJudge(
+        JudgeResolution judge, TierResolution? actor, PromptResult promptResult) => new()
     {
         Runner = judge.RunnerName,
         Kind = judge.Kind is { } kind ? PromptRunnerKinds.Token(kind) : null,
@@ -293,7 +314,14 @@ internal sealed class GuardrailRunner
         // NOT optional: recording a real `false` is a measurement ("a judge resolved and no bump was
         // needed"), where an absent key would be indistinguishable from "no judge resolved at all".
         Bumped = judge.Bumped,
-        Advisory = DescribeAdvisory(actor, judge)
+        Advisory = DescribeAdvisory(actor, judge),
+        // Verifier spend (§11 finding 3) — recorded beside the actor's, never folded into
+        // JournalCost.Total. Absent stays absent: a runner reporting no cost/usage must not be recorded
+        // as a claimed zero.
+        CostUsd = promptResult.CostUsd,
+        Usage = promptResult.Usage is { } usage
+            ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+            : null
     };
 
     /// <summary>

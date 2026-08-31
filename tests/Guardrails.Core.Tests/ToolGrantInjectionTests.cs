@@ -54,6 +54,7 @@ public sealed class ToolGrantInjectionTests
     private static PromptInvocation Invocation(params string[] declaredTools) => new()
     {
         ComposedPrompt = "prompt",
+        Role = PromptRole.Action,
         WorkingDirectory = "/work",
         PlanDirectory = "/plan",
         Environment = new Dictionary<string, string>(),
