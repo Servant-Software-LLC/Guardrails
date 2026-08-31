@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=c0796bcede373c22057be12bd330aab2caf3d67875af9a3f363348570b300888 -->
+<!-- guardrails:graph v1 source-sha256=753c0b3d147be01051cdd4028e5ada051292fd49bc3a60efd6c90d75609a7b63 -->
 
 ```mermaid
 flowchart TD
@@ -17,6 +17,7 @@ flowchart TD
     task_02_preserve_on_escalation_path_gr_0["01-build-passes"]:::guardrail
     task_02_preserve_on_escalation_path_gr_1["02-escalation-preserve-tests-pass"]:::guardrail
     task_02_preserve_on_escalation_path_gr_2["03-shipped-salvage-suites-unmoved"]:::guardrail
+    task_02_preserve_on_escalation_path_gr_3["04-salvage-section-is-internal"]:::guardrail
   end
   style task_02_preserve_on_escalation_path fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_carry_salvage_forward_to_prompts["03-carry-salvage-forward-to-prompts"]

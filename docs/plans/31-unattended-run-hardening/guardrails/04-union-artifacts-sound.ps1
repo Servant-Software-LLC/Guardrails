@@ -37,9 +37,11 @@
 #          line names these files first.
 #
 # Baseline note (#478): the "if present" half of a union-safe conditional is EXPECTED to be nonzero on
-#          arrival. Measured on master @1490d2a: of the 16 paths below, 13 exist and are non-empty and
-#          marker-free; 3 do not exist yet and take the `continue` branch (HandoffScopeCoverage.cs,
-#          LivePlanEditWatch.cs, and both EscalationSalvageTests.cs files - all created by this plan).
+#          arrival. Measured on master @1490d2a: of the 23 paths below, 16 exist and are non-empty and
+#          marker-free; 7 do not exist yet and take the `continue` branch - the four new test files
+#          (both EscalationSalvageTests.cs, HandoffScopeCoverageTests.cs, LivePlanEditWatchTests.cs,
+#          PlanEditedDuringRunTests.cs) plus HandoffScopeCoverage.cs and LivePlanEditWatch.cs, all
+#          created by this plan.
 #          Nonzero-on-arrival is the NAMED reason this clause is exempt from the zero-baseline rule.
 $ErrorActionPreference = 'Continue'
 

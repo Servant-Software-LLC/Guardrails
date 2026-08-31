@@ -1,4 +1,4 @@
-# 31 — Unattended-run hardening: cheap escalations, unsatisfiable plans, and edits during a live run
+| 7 | **GR2069** | the four `Loading/…` files, every one reachable, but no single task holds all four: `21-implement-reachability-gate` holds THREE (`PlanLoader.cs`, `PlanValidator.cs`, `DiagnosticCodes.cs`) and lacks `RawManifests.cs`, which only `09-add-openai-block-config-surface` writes |# 31 — Unattended-run hardening: cheap escalations, unsatisfiable plans, and edits during a live run
 
 **Status:** reviewed-quality draft, for inline review as a draft PR before any breakdown.
 **Issues:** #554, #553, #545 (part 3 only — parts 1 and 2 shipped in `1952c9b`).
@@ -360,6 +360,14 @@ diagnostics** fires — and they are separate codes, not two messages under one 
 Evaluated over plan 28's **56** `writeScope` entries across 30 tasks. Not a projection — the rules of
 §4.3–§4.5, run.
 
+> **Read plan 28's own table before using this as an oracle.** Plan 28 §13 has **four** columns —
+> `| # | Agent | filesTouched | Deliverable |` — and **no `writeScope` column**; the five-column shape
+> with the pinned-`writeScope` column is **plan 31's own**, introduced here (§13). So a candidate's
+> coverage in plan 28 is resolved against the `writeScope` arrays in
+> `docs/plans/28-local-inference-runner/tasks/*/task.json`, not against a column in that document. The
+> check itself never needed the extra column — it reads the plan folder for scopes and the document
+> only for the table — but a reader reconstructing this hand-run from the wrong shape will not find it.
+
 | Row | Code | Detail |
 |---|---|---|
 | 1 | silent | `00-land-the-required-role-seam` covers both `Prompts/PromptInvocation.cs` and `tests/**` |
@@ -368,7 +376,7 @@ Evaluated over plan 28's **56** `writeScope` entries across 30 tasks. Not a proj
 | 4 | **GR2069** | five `Prompts/…` / `Model/…` files, all reachable, no single task holds all five |
 | 5 | silent | covered by `17-implement-kind-aware-harness` |
 | 6 | silent | covered by `09-add-openai-block-config-surface` |
-| 7 | **GR2069** | the four `Loading/…` files, reachable across tasks 09 and 21, no single task holds all four |
+| 7 | **GR2069** | the four `Loading/…` files, every one reachable, but no single task holds all four: `21-implement-reachability-gate` holds **three** (`PlanLoader.cs`, `PlanValidator.cs`, `DiagnosticCodes.cs`) and lacks `RawManifests.cs`, which only `09-add-openai-block-config-surface` writes |
 | 8 | silent | `Cli/Commands/**` **dropped as unresolvable** (§4.4); the remaining `Model/PromptRunnerConfig.cs` is covered |
 | 9 | silent | `Journal/**` resolves via the `**/` arm; `JournalTierSpend.cs` via the suffix arm |
 | 10 | **GR2069** | two `docs/…` and two `.claude/…` paths, reachable, split across tasks |
@@ -436,10 +444,10 @@ to be blunt; GR2069's carries the confirm framing without dragging GR2068 down t
 WARNING GR2069 [28-local-inference-runner] handoff row 7 ("The block schema, the frontmatter fold,
   GR2065-GR2067, kind-aware GR2009"): every path this row names is writable by some task, but no
   SINGLE task can write all four.
-      Loading/PlanLoader.cs       -> 09-add-openai-block-config-surface
+      Loading/PlanLoader.cs       -> 09-add-openai-block-config-surface, 21-implement-reachability-gate
       Loading/RawManifests.cs     -> 09-add-openai-block-config-surface
-      Loading/PlanValidator.cs    -> 21-wire-preflight-and-providers-check
-      Loading/DiagnosticCodes.cs  -> 21-wire-preflight-and-providers-check
+      Loading/PlanValidator.cs    -> 19-implement-block-diagnostics, 21-implement-reachability-gate
+      Loading/DiagnosticCodes.cs  -> 19-implement-block-diagnostics, 21-implement-reachability-gate
   A row deliberately split across tasks WILL trigger this, and that is expected - this is a CONFIRM,
   not a finding of fault. What to check: each half of this row must be reachable by the task that
   implements THAT half. Plan 28 halted twice on exactly this shape - a task told to deliver an
@@ -469,10 +477,13 @@ that is wrong is worse than none.
 
 ### 4.9 Regression pins
 
-1. **The row-7 catch — GR2069** (real, run 3). A row naming four files where the row's own implementing
-   task holds only two ⇒ **GR2069**, naming each path and the task that covers it. Asserting `GR2068`
-   here is the mis-keying this pin exists to catch: `PlanLoader.cs` was reachable by task 21, so the row
-   was never unreachable.
+1. **The row-7 catch — GR2069** (real, run 3). A row naming four files where **no single task holds all
+   four** ⇒ **GR2069**, naming each path and the task(s) that cover it. In the real plan-28 folder the
+   nearest task, `21-implement-reachability-gate`, holds **three** of the four and lacks
+   `RawManifests.cs` (which only `09-add-openai-block-config-surface` writes); the fixture only needs to
+   reproduce *some* such shortfall, not that exact 3-of-4 split. Asserting `GR2068` here is the
+   mis-keying this pin exists to catch: every one of the four paths **is** writable by some task, so the
+   row was never unreachable.
 2. **The row-1 catch, both directions — GR2069** (real, run 1). A row naming a concrete path and
    `tests/**`, where no single task holds both ⇒ **GR2069**; add `tests/**` to that task's `writeScope`
    ⇒ **silent**. The second half is what proves the check measures coverage rather than merely counting paths.

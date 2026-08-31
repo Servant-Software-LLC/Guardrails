@@ -25,6 +25,13 @@
 #          HandoffRowSplitAcrossTasks ......... 0    (expected: this task adds it)
 #          'CURRENT next-free code: GR2070' ... 0    (expected: this task advances the marker to it)
 #          '"GR2060"' / '"GR2061"' / '"GR2054"' 0 each  (expected: healthy bans, must STAY 0)
+#          'GR10xx' .......................... 3    (NONZERO ON ARRIVAL, and that is correct: the
+#                                                    ladder note already exists. This clause is a
+#                                                    DO-NOT-DELETE ratchet, not a "make it appear"
+#                                                    floor - its whole job is to notice a restatement
+#                                                    being dropped while the GR20xx line is edited.
+#                                                    That is the named reason it is exempt from the
+#                                                    zero-baseline rule, #478.)
 #          For reference the marker reads 'CURRENT next-free code: GR2068' today (count 1), which is
 #          precisely what this task must change.
 $ErrorActionPreference = 'Continue'
@@ -43,8 +50,16 @@ if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
 
 $raw = Get-Content -Raw -LiteralPath $full     # NEVER matched against directly, never reassigned
 # Comments are NOT stripped here, deliberately and against the usual rule: the next-free marker IS a
-# comment, and it is one of the two things this guardrail exists to check. The other clauses are all
-# `const string X = "GRnnnn";` declarations, whose shape a comment cannot fake.
+# comment, and both it and the GR10xx ladder note are things this guardrail exists to check.
+#
+# The COST of that choice, stated rather than glossed: a comment CAN satisfy the `const string X =
+# "GRnnnn";` clauses. Commenting out a real declaration, or writing the declaration's text inside a
+# comment, passes them. An earlier revision of this header claimed "a comment cannot fake" that shape;
+# it can, and only the fact that comments are kept makes it possible. Two things bound the residual:
+# guardrail 01 builds the project, so a commented-out constant that anything references is a compile
+# error there; and guardrail 02 runs the pins, which need the codes to actually be emitted. This
+# guardrail's own contribution is the marker, the ladder and the reserved gaps - the three facts no
+# compiler and no test can see - and for those, keeping comments is the only way to see them at all.
 $code = $raw
 
 # ACCUMULATE (#478): one distinguishable message per clause, dumped once at the end.

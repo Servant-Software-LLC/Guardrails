@@ -62,8 +62,18 @@ if ($scan.Length -ne $raw.Length) {
     exit 1
 }
 
-# Returns the ORIGINAL text of the named method's body, or $null when the method is not found or its
-# braces do not balance. Offsets come from $scan; the slice comes from $raw.
+# Returns BOTH slices of the named method's body, or $null when the method is not found or its braces
+# do not balance. Offsets come from $scan; the two slices are taken at the SAME offsets from $scan
+# (comments blanked, literal braces neutralized) and from $raw (untouched).
+#
+# Returning both is load-bearing, and returning only .Raw was a measured BLOCKER: the required clauses
+# below match a diagnostic code, and read against raw source a single COMMENT inside pin 1's body -
+# `// the split condition here is GR2069, per plan 31 section 4.6` - satisfied the clause while the
+# assertion still read d.Code == "GR2068". The guardrail flipped from exit 1 to exit 0 and printed
+# "pins 1 and 2 both assert GR2069". A string literal did it too. That is not self-correcting
+# downstream: task 05 requires this suite green, cannot edit the test, and its cheapest route to green
+# would be to implement HandoffScopeCoverage so a SPLIT row emits GR2068 - inverted semantics on a
+# fully green run.
 function Get-MethodBody([string]$name) {
     $sig = [regex]::Match($scan, '(?<![A-Za-z0-9_])' + [regex]::Escape($name) + '\s*\(')
     if (-not $sig.Success) { return $null }
@@ -74,7 +84,10 @@ function Get-MethodBody([string]$name) {
         if     ($scan[$i] -eq '{') { $depth++ }
         elseif ($scan[$i] -eq '}') {
             $depth--
-            if ($depth -eq 0) { return $raw.Substring($open, $i - $open + 1) }
+            if ($depth -eq 0) {
+                $len = $i - $open + 1
+                return @{ Scan = $scan.Substring($open, $len); Raw = $raw.Substring($open, $len) }
+            }
         }
     }
     return $null
@@ -99,11 +112,19 @@ foreach ($p in $mustKeyGr2069) {
         $failures += "$($p.Pin): no method named '$($p.Name)' with a balanced body was found in $rel. The census (guardrail 02) pins this exact name; the two must agree."
         continue
     }
-    # -cmatch: the diagnostic codes are case-sensitive tokens, and a case-insensitive clause would
-    # accept 'gr2069' in prose.
-    if ($body -cnotmatch 'GR2069') {
-        $extra = if ($body -cmatch 'GR2068') { " Its body names GR2068 instead - that is the mis-keying." } else { "" }
-        $failures += "$($p.Pin): its body never names GR2069.$extra $($p.Why) A pin keyed to GR2068 here is red today, green never, and reads in review as the acceptance criterion being met."
+    # Read .Scan (comments BLANKED), not .Raw - a comment naming the code satisfied this clause and
+    # flipped the guardrail green over a body still asserting GR2068 (see Get-MethodBody's header).
+    # And require the QUOTED token: a bare prose mention of GR2069 in a surviving string is not an
+    # assertion. String-literal TEXT survives into .Scan (only braces inside literals are
+    # neutralized), so a real `d.Code == "GR2069"` still matches.
+    #
+    # There is deliberately NO ban on GR2068 appearing in these bodies. A good author may strengthen
+    # pin 1 with `Assert.DoesNotContain(diagnostics, d => d.Code == "GR2068")` - the codes are
+    # mutually exclusive per row (pin 3a), so that is a CORRECT assertion, and banning it would
+    # false-red the better implementation.
+    if ($body.Scan -cnotmatch '"GR2069"') {
+        $extra = if ($body.Scan -cmatch '"GR2068"') { " Its body asserts the quoted GR2068 and never the quoted GR2069 - that is the mis-keying." } else { "" }
+        $failures += "$($p.Pin): its body never asserts the quoted token ""GR2069"".$extra $($p.Why) A pin keyed to GR2068 here is red today, green never, and reads in review as the acceptance criterion being met. Naming GR2069 in a comment does NOT satisfy this - the assertion has to carry it."
     }
 }
 

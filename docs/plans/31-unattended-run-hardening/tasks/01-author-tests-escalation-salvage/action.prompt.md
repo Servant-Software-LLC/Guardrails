@@ -80,7 +80,7 @@ provider (`TaskBase = "0000..."`), which makes the whole salvage path a no-op - 
 against the fake would pass with the feature entirely absent (plan section 7). Build a real temp git repo and
 run a real segment.
 
-Encode these eight behaviours, one test each, with these EXACT method names:
+Encode these NINE behaviours, one test each, with these EXACT method names (I9 is an inserted pin - see below):
 
 | # | Method name | Behaviour |
 |---|---|---|

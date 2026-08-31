@@ -70,7 +70,7 @@ Encode these nine pins, with these EXACT method names:
 
 | Pin | Method name | What it asserts |
 |---|---|---|
-| 1 | `Row7WhoseOwningTaskHoldsOnlyTwoOfFourPaths_EmitsGR2069NamingTheCoveringTask` | **REAL, plan-28 run 3.** A row naming four `Loading/…` files where the row's own implementing task holds only two ⇒ **`GR2069`**, naming each path and the task that covers it. Asserting `GR2068` here is the mis-keying this pin exists to catch: `PlanLoader.cs` was reachable by task 21, so the row was never unreachable. |
+| 1 | `Row7WhoseOwningTaskHoldsOnlyTwoOfFourPaths_EmitsGR2069NamingTheCoveringTask` | **REAL, plan-28 run 3.** A row naming four `Loading/` files where **no single task holds all four** ⇒ **`GR2069`**, naming each path and the task(s) that cover it. In the real plan-28 folder the nearest task, **`21-implement-reachability-gate`**, holds **three** of the four and lacks `RawManifests.cs`, which only `09-add-openai-block-config-surface` writes; your fixture needs **some** such shortfall, not that exact 3-of-4 split — which is why the method name's "OnlyTwoOfFour" is a **label, not a specification**. Keep the name (three guardrails and the census pin it); do not reshape the fixture to match it. Asserting `GR2068` here is the mis-keying this pin exists to catch: every one of the four paths **is** writable by some task, so the row was never unreachable. |
 | 2 | `Row1WithoutTheTestGlobEmitsGR2069_AndIsSilentOnceTheGlobIsAdded` | **REAL, plan-28 run 1.** A row naming a concrete path and `tests/**` where no single task holds both ⇒ **`GR2069`**; then add `tests/**` to that task's `writeScope` ⇒ **silent**. **Both directions in one test.** The second half is what proves the check measures COVERAGE rather than counting paths. |
 | 3 | `ConcretePathNoTaskCanWrite_EmitsGR2068WithNoSuggestedCorrection` | **REAL, plan-28 row 3.** A cell naming a concrete file no `writeScope` entry matches, while a same-named file exists at a DIFFERENT path ⇒ **`GR2068`**, with **no suggested correction** (a suggestion that is wrong is worse than none). |
 | 3a | `AnUnreachableRowEmitsGR2068AndNoGR2069` | The codes are **mutually exclusive per row**, asserted on the same diagnostic list. Without this, an implementation that emits both for every broken row makes silencing GR2069 useless. |
@@ -102,6 +102,12 @@ State that expectation in an XML doc comment on the method so the next reader ca
 accident. Again: no guardrail can verify this property for you.
 
 ### Fixture realism
+
+**Plan 28's own §13 table has FOUR columns — `| # | Agent | filesTouched | Deliverable |` — and NO
+`writeScope` column.** The five-column shape with a pinned-`writeScope` column is plan 31's own. So
+resolve coverage against the `writeScope` arrays in
+`docs/plans/28-local-inference-runner/tasks/*/task.json`, never against a column in that document; if
+you go looking for one you will not find it.
 
 Pins 1, 2 and 3 are **the real plan-28 rows**, not invented shapes. Read
 `docs/plans/28-local-inference-runner.md` section 13 and `docs/plans/28-local-inference-runner/tasks/*/task.json`

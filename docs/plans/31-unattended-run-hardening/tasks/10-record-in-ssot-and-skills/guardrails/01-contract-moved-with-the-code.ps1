@@ -26,8 +26,9 @@
 #
 # MEASURED BASELINES on master @1490d2a, against the exact subject each clause scans (#478) - every
 #          required token is 0, which is the correct shape for a task that has not run:
-#            SSOT: GR2068 0 | GR2069 0 | HandoffPathUnreachable 0 | HandoffRowSplitAcrossTasks 0 |
-#                  plan-edit 0 | LivePlanEditWatch 0 | restrictToScope 0
+#            SSOT: the GR2068 row shape 0 | the GR2069 row shape 0 | HandoffPathUnreachable 0 |
+#                  HandoffRowSplitAcrossTasks 0 | plan-edit 0 | restrictToScope 0 |
+#                  LivePlanEditWatch 0 | #556 0 | #557 0
 #            domain-knowledge SKILL.md: GR2068 0 | GR2069 0 | plan-edit 0
 #            architect agent: GR2068 0 | GR2069 0   (NOTE `filesTouched` already measures 2 there, so
 #                  it is deliberately NOT one of the required tokens - a clause on it would be
@@ -65,10 +66,22 @@ $targets = @(
     @{
         Rel      = 'docs/plans/02-schemas-and-contracts.md'
         Required = @(
-            @{ Token = 'GR2068'
-               Why   = 'section 12 item 7 adds a section 9.6 row for it. Precedent in this same table: the shipped `GR2067` row.' },
-            @{ Token = 'GR2069'
-               Why   = 'section 12 item 7 adds a second section 9.6 row. It is GR2069, not GR2068, that catches BOTH plan-28 failures, so a document naming only one of them names the wrong one.' },
+            # ROW-SHAPE anchored, not bare-token: a bare 'GR2068' presence floor is satisfied by one
+            # appended prose line, which is exactly the cheapest wrong implementation of a
+            # documentation task (measured: three appended TODO-style lines took the whole guardrail
+            # from exit 1 to exit 0). The section 9.6 table's own shape is the discriminator, and the
+            # shipped GR2067 row is the sibling precedent an author is already writing against:
+            #   | `GR2067` | warning | `OpenAiCompatWeakOrUnreachable` (plan 28 section 7, issue #223) - ...
+            @{ Pattern = '\|\s*`GR2068`\s*\|\s*warning\s*\|'
+               Token   = 'a section 9.6 table ROW for GR2068'
+               Why     = 'section 12 item 7 adds one, and it must be a ROW in that table rather than a mention in prose - the row is what a reader looks the code up in. Follow the shipped `GR2067` row''s shape exactly: | `GR2068` | warning | `HandoffPathUnreachable` - ... Both codes are warnings in v1 because RunCommand refuses to run a plan whose validation emits any error.' },
+            @{ Pattern = '\|\s*`GR2069`\s*\|\s*warning\s*\|'
+               Token   = 'a section 9.6 table ROW for GR2069'
+               Why     = 'section 12 item 7 adds a second row. It is GR2069, not GR2068, that catches BOTH plan-28 failures, so a document carrying only one of these rows carries the wrong one.' },
+            @{ Token = '#556'
+               Why   = 'section 12 item 6(a) names it: the mid-run-edited task records the POST-edit hash and a later resume compares equal. That known limitation must carry its follow-on issue number, or the next reader cannot find where it is being fixed.' },
+            @{ Token = '#557'
+               Why   = 'section 12 item 6(b) and section 5.3 name it: the plan-wide re-baseline is a WORKAROUND for WaveBreakdownInvoker''s unbounded write authority, not a fix. Recording the workaround without its issue number turns a tracked hole into a permanent one.' },
             @{ Token = 'HandoffPathUnreachable'
                Why   = 'the section 9.6 row names the constant beside its code, exactly as the `GR2067` row names `OpenAiCompatWeakOrUnreachable`.' },
             @{ Token = 'HandoffRowSplitAcrossTasks'
@@ -114,10 +127,14 @@ foreach ($t in $targets) {
         continue
     }
     foreach ($r in $t.Required) {
-        # -cmatch: these are code identifiers and diagnostic codes, case-SENSITIVE. A
-        # case-insensitive clause would accept 'gr2068' in prose.
-        if ($doc.Text -cnotmatch [regex]::Escape($r.Token)) {
-            $failures += "$($t.Rel) does not mention '$($r.Token)' outside an HTML comment. $($r.Why)"
+        # A clause carries EITHER a Pattern (a shape - used where a bare token would be a presence
+        # floor an appended prose line satisfies) or a Token (a literal). -cmatch throughout: these
+        # are code identifiers and diagnostic codes, case-SENSITIVE, and a case-insensitive clause
+        # would accept 'gr2068' in prose.
+        $pattern = if ($r.ContainsKey('Pattern')) { $r.Pattern } else { [regex]::Escape($r.Token) }
+        $what    = if ($r.ContainsKey('Pattern')) { $r.Token }   else { "'$($r.Token)'" }
+        if ($doc.Text -cnotmatch $pattern) {
+            $failures += "$($t.Rel) does not carry $what outside an HTML comment. $($r.Why)"
         }
     }
 }

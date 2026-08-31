@@ -101,9 +101,12 @@ P1, P3 and P5 must FAIL against the stubs.
 
 ### Windows-Git test portability (#116)
 
-`PlanEditedDuringRunTests` drives real runs over real git repositories. Mirror an existing sibling that
-already does this correctly - `tests/Guardrails.Integration.Tests/RetrySalvageTests.cs` builds real
-repos and declares the shared `HostRepoCleanlinessGuard` fixture at the foot of that file; reuse it via
+`PlanEditedDuringRunTests` drives real runs over real git repositories, and **P2 needs a WAVED plan
+that actually reaches a JIT breakdown checkpoint** - a plain repo fixture cannot produce one. Mirror
+the siblings that already build exactly that: **`tests/Guardrails.Integration.Tests/WaveBreakdownRunTests.cs`**
+and **`tests/Guardrails.Integration.Tests/WaveJitCheckpointRunTests.cs`**. They are the fixtures to copy
+for P2. For the plain-repo mechanics the other pins need, `tests/Guardrails.Integration.Tests/RetrySalvageTests.cs`
+declares the shared `HostRepoCleanlinessGuard` fixture at the foot of that file; reuse it via
 `IClassFixture<HostRepoCleanlinessGuard>` rather than inventing a new one, and do NOT author a new
 shared fixture file (it would be outside your `writeScope`). Whatever helper you write inline must:
 

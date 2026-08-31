@@ -5,7 +5,7 @@
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key - the name of the directory this task.json lives in, NOT the stableId. The
   harness REJECTS a fragment keyed by anything else (every attempt), so:
-  `{ "09-record-in-ssot-and-skills": { "someKey": "someValue" } }`.
+  `{ "10-record-in-ssot-and-skills": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working

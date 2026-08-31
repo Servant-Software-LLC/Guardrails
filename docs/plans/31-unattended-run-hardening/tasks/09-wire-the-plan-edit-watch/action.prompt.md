@@ -48,7 +48,18 @@ if `Poll()` still throws, task 08 did not land and this is a `needsHuman`, not s
 Make `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` pass - P1 through P5 - without
 editing it.
 
-### 1. The two poll sites - `Scheduler.cs`
+### 1. Construct the watch INSIDE the Scheduler - not at the composition root
+
+**`SchedulerFactory.cs` is OUTSIDE your `writeScope`, and this is the one place the house rule points
+the wrong way.** That file states the convention that the Scheduler's collaborators are constructed at
+the composition root, and all twelve of them are - so the reflex is to add a thirteenth there and pass
+it in. Do **not**: that is an out-of-scope write, and it fails this task on attempt one. Construct
+`LivePlanEditWatch` **inside the Scheduler**, from the `PlanDefinition` the Scheduler already holds.
+Nothing depends on the seam being injectable here - `ProductionWiringTests.cs` asserts only on
+`GitWorktreeProvider` and the re-verifier, so internal construction breaks no existing wiring test, and
+the watch has no substitutable behaviour any test needs to fake.
+
+### 2. The two poll sites - `Scheduler.cs`
 
 `Poll()` is called by the **Scheduler**, on the scheduler's own thread, at two boundaries that already
 exist: **task dispatch** and **task settle**. **No new thread, no lock, no daemon.**
@@ -60,28 +71,38 @@ dollars per attempt. The price is timeliness: the warning appears at the next sc
 instantly, and a single long task retrying alone can delay it by one attempt. That is accepted (section
 11 risk 3).
 
-### 2. The FIVE plan-wide re-baseline hooks - `Scheduler.cs`
+### 3. The five harness writers - which is SIX call sites, not five
 
 The Scheduler calls **`Rebaseline()` - plan-wide, NO task ids** - after each of:
 
 1. a **JIT wave breakdown attempt** (`WaveBreakdownInvoker`);
 2. **`BreakdownInventory.Revert`** (moves attempt-created files to `rejected/` and restores pre-existing
    ones from snapshot);
-3. **`SweepIncompleteTrailingTaskFolders`** (moves incomplete task folders to `rejected/tasks/`);
+3. **`SweepIncompleteTrailingTaskFolders`** - **and this one fires from TWO places.** Plan §5.3, §13
+   and the list above all read as though it were one, and it is not:
+   - **`Scheduler.cs:1484`** - the post-invoke sweep, the obvious one;
+   - **`Scheduler.cs:1999`** - the cancel/fault cleanup inside `LeaveWaveLoadable`.
+   Re-baselining only after the first leaves the **fault path blind**: a cancelled or faulted wave
+   sweeps task folders into `rejected/tasks/`, the watch sees its own harness's deletions on the next
+   `Poll()`, and reports them to the operator as edits they did not make. That is a mechanism failing
+   silently in the direction that *looks fine* - the exact defect class this whole plan exists to
+   close. **Locate both by symbol** (the line numbers have moved); wire both.
 4. **`Scheduler.QuarantineWholeTasksFolder`** (moves a wave's ENTIRE `tasks/` directory to
    `rejected/tasks`, with a catch branch that hard-deletes it recursively);
 5. a **`TryResolveDrift` that RESOLVED** - and note it is **not** pre-DAG on a waved plan:
    `TryResolveDrift` has one call site, inside `DrainAsync`, which the wave loop calls **once per
    wave**, so its destructive `git reset --hard` fires mid-run.
 
+**The rule is one `Rebaseline()` per CALL SITE, not per writer.** Count the sites, not the names.
+
 **Plan-wide, not per-task**, because three of the five have authority over files outside the unit they
 nominally act on - so a per-task re-baseline would leave the watch reporting the harness's own writes
 as operator edits, and an advisory that fires on the harness's own writes stops being read.
 
-**Only the FIRST of the five has a pin (P2). The other four are unpinned in plan 31 and unguarded
-here** - no mechanical check can bind a `Rebaseline` call to the writer it is meant to follow, because
+**Only the JIT-breakdown writer has a pin (P2). The other four writers - across FIVE further call
+sites - are unpinned in plan 31 and unguarded here** - no mechanical check can bind a `Rebaseline` call to the writer it is meant to follow, because
 all five writer symbols already appear in `Scheduler.cs` for their own reasons. Getting them right is
-on you, and a reviewer will read them. Do not treat a green guardrail as evidence all five landed.
+on you, and a reviewer will read them. Do not treat a green guardrail as evidence all SIX call sites landed.
 
 **Say what this is: a workaround for #557, not a fix.** Re-baselining plan-wide is only necessary
 because `WaveBreakdownInvoker` has plan-wide write authority it should not have - a Claude subprocess
@@ -95,7 +116,7 @@ and returns an in-memory decision; `FileEdit`/`TaskFieldEdit`/`Denylist` have no
 (grep `OverwatchFixClassifier.cs` for "v1-inert"). A sixth hook there would be dead code, and the pin
 written against it was deleted for testing an unreachable state.
 
-### 3. The two tokens - `DecisionEntry.cs`
+### 4. The two tokens - `DecisionEntry.cs`
 
 There is **no new `IRunObserver` event.** `DecisionRecorded(DecisionEntry)` already exists, is rendered
 by **both** operator surfaces (`ConsoleRunObserver` for `--no-ui`, `LiveRunObserver` for the live
@@ -133,7 +154,7 @@ that file. `observed` is neither token, so a `plan-edit` entry cannot suppress `
 cannot reach `ExitCodes.ProceededUnreviewed` (P3). Do not add a `Boundary` branch there;
 `RunOutcomePolicy.cs` is outside your `writeScope` precisely so this stays true.
 
-### 4. `RunReport.Observations` - `RunReport.cs`
+### 5. `RunReport.Observations` - `RunReport.cs`
 
 `RunReport.Decision` is **singular** (`DecisionEntry?`) and means *the pre-DAG drift decision this run
 took*. A run can produce **N** plan-edit observations. Rather than widen that field - which would touch
@@ -146,7 +167,7 @@ public IReadOnlyList<DecisionEntry> Observations { get; init; } = [];
 Additive and defaulted, so no existing consumer changes. The split is meaningful rather than
 convenient: `Decision` is something the harness **decided**, `Observations` are things it **noticed**.
 
-### 5. The end-of-run rendering - `RunCommand.cs`
+### 6. The end-of-run rendering - `RunCommand.cs`
 
 The rendered text must state all three section 5.1 consequences and **overstate none**. "Your edit was
 ignored" is FALSE - action prompts and guardrail scripts ARE re-read per attempt. Section 5.4 carries
@@ -173,7 +194,8 @@ when one file appears under several task ids.
 `src/Guardrails.Core/Execution/Scheduler.cs`, `src/Guardrails.Core/Execution/DecisionEntry.cs`,
 `src/Guardrails.Core/Execution/RunReport.cs` and `src/Guardrails.Cli/Commands/RunCommand.cs`. After this
 task completes, the harness runs a `git diff` check and rejects any edit outside these paths -
-including `LivePlanEditWatch.cs` (task 08's), `HashText.cs`, `TaskDefinitionFiles.cs`,
+including `SchedulerFactory.cs` (construct the watch inside the Scheduler instead - see section 1),
+`LivePlanEditWatch.cs` (task 08s), `HashText.cs`, `TaskDefinitionFiles.cs`,
 `RunOutcomePolicy.cs`, any observer or decorator, any test file, and the `.csproj`. An out-of-scope
 edit fails the task immediately and consumes a retry. Do NOT edit the authored tests: make them pass by
 fixing the implementation, and if a test is genuinely wrong or incompatible, write
