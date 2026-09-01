@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Guardrails.Core.Graph;
@@ -39,6 +40,21 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
     private readonly Overwatch? _overwatch;
     private readonly Func<TimeSpan, CancellationToken, Task> _transientDelay;
+
+    /// <summary>
+    /// The set of <c>(runner, model)</c> pairs already resolved this run (plan 30 §3.4) — keyed on the
+    /// SAME recorded form <see cref="BuildProvenance"/> writes to <see cref="Journal.AttemptProvenance.Model"/>
+    /// (<see cref="PromptExecutionSupport.ResolvedModelForDisplay"/>'s output), so two routes that both
+    /// name no model collapse onto the one sentinel key rather than counting as different routes.
+    ///
+    /// <para>One <see cref="TaskExecutor"/> serves the whole run and parallel workers call into it
+    /// concurrently, so a plain <see cref="HashSet{T}"/> with a check-then-add would let two simultaneous
+    /// first attempts on one route both observe "not present" and both record cold. A
+    /// <see cref="ConcurrentDictionary{TKey,TValue}"/>'s <c>TryAdd</c> is the atomic first-writer-wins
+    /// primitive that makes exactly one attempt per route cold per run, even under a race — which of the
+    /// two racers wins is unspecified and acceptable.</para>
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _invokedRoutes = new(StringComparer.Ordinal);
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -1664,9 +1680,24 @@ public sealed class TaskExecutor : ITaskExecutor
 
         ToolGrantResolution? grants = ResolveToolGrants(task);
 
+        // Warmth (plan 30 §3.4): absent for a script attempt (no route resolved, so "cold" would be a
+        // false first-invocation penalty on work that invoked no model), else true on every attempt
+        // after the first this run resolves against this exact (runner, model) pair. Keyed on `model`
+        // (the RECORDED form, already computed above) rather than the raw `route.Model`, so two routes
+        // that both name no model collapse onto the one sentinel key instead of counting as different
+        // first invocations.
+        bool? routeWarm = null;
+        if (route is not null)
+        {
+            string routeKey = $"{route.RunnerName}|{model}";
+            bool cold = _invokedRoutes.TryAdd(routeKey, 0);
+            routeWarm = !cold;
+        }
+
         return new Journal.AttemptProvenance
         {
             Model = model,
+            RouteWarm = routeWarm,
             // The registry KEY the route selected, and that block's `kind` as its WIRE TOKEN (§12.4 —
             // the journal is read by tooling that never links against this assembly, so the token is the
             // contract, not the enum name). Kind is absent when the name resolved to no block, which is
