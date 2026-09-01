@@ -36,10 +36,14 @@ $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 # Discriminating (#455 companion (a)): 'WaveExecutedDefinitionHashTests' is contained by nothing else in
-# this project. Note the containment runs the OTHER way - this class CONTAINS stage 1's
-# 'ExecutedDefinitionHashTests', which is why stages 1 and 4 must namespace-qualify their filter and
-# this one need not. The shipped 'WaveDefinitionHashTests' is a different, shorter name and is NOT
-# selected here: it must keep passing untouched, and stage 9's guardrail runs it separately.
+# this project, so the BARE class term is correct here and needs no prefix. Note the containment runs the
+# OTHER way - this class CONTAINS stage 1's 'ExecutedDefinitionHashTests', which is why stages 1 and 4
+# must qualify THEIR filter as 'Guardrails.Core.Tests.ExecutedDefinitionHashTests' (the '.' separator
+# breaks the containment against 'Guardrails.Core.Tests.WaveExecutedDefinitionHashTests') and this one
+# need not. Both classes declare the FLAT namespace `Guardrails.Core.Tests` despite living in the
+# Journal/ folder - see this task's prompt for the CS0234 hazard that forces it. The shipped
+# 'WaveDefinitionHashTests' is a different, shorter name and is NOT selected here: it must keep passing
+# untouched, and stage 9's guardrail runs it separately.
 $filter = 'FullyQualifiedName~WaveExecutedDefinitionHashTests'
 
 # THE MANIFEST: each pin -> the test method name the ACTION PROMPT PINNED for it. A BARE STRING means
