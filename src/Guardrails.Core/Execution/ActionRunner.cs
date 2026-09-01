@@ -403,6 +403,29 @@ internal sealed record ActionRun
     public Journal.AttemptUsage? Usage { get; init; }
 
     /// <summary>
+    /// The prompt attempt's turn count (plan 30 §3.4) — <see cref="PromptResult.NumTurns"/> carried one
+    /// hop further — or null for a script action and for a runner that reported none. Rides HERE, beside
+    /// <see cref="CostUsd"/> and <see cref="Usage"/>, for the same reason those two do: it is a fact an
+    /// attempt learns from the runner AFTER launch, which makes this record its only route to
+    /// <c>run.json</c>.
+    /// <para><see cref="PromptResult.NumTurns"/> already exists and already carries the runner's turn
+    /// count; this is the hop where it currently dies — <see cref="FromPrompt"/> copies
+    /// <see cref="CostUsd"/>, <see cref="Usage"/> and <see cref="ObservedModel"/> but drops
+    /// <c>NumTurns</c> on the floor. Adding this member widens the shape only: the copy is a later
+    /// task's work, not this one's.</para>
+    /// </summary>
+    public int? Turns { get; init; }
+
+    /// <summary>
+    /// Milliseconds the action itself ran (plan 30 §3.4), or null when unmeasured — the ACTION half of
+    /// <see cref="Journal.AttemptSegments"/>, whose GUARDRAIL half is
+    /// <see cref="GuardrailRunResult.GuardrailMs"/>. Rides HERE, beside <see cref="CostUsd"/> and
+    /// <see cref="Usage"/>, for the same reason those two do: it is a fact an attempt learns AFTER
+    /// launch (the clock), which makes this record its only route to <c>run.json</c>.
+    /// </summary>
+    public long? ActionMs { get; init; }
+
+    /// <summary>
     /// The model the RUNNER reported itself running on (#349) — <see cref="PromptResult.ObservedModel"/>
     /// carried one hop further — or null for a script action and for a runner that echoed none.
     /// <para>It rides HERE, beside <see cref="CostUsd"/> and <see cref="Usage"/>, because the three are the
@@ -414,6 +437,14 @@ internal sealed record ActionRun
     /// substitutes, or nothing named a model at all and the CLI picked for itself.</para>
     /// </summary>
     public string? ObservedModel { get; init; }
+
+    /// <summary>
+    /// The provider-reported model fingerprint (plan 30 §3.3) — <see cref="PromptResult.ModelDigest"/>
+    /// carried one hop further — or null for a script action and for a runner that echoed none. Rides
+    /// HERE, beside <see cref="ObservedModel"/>, because the two are the same kind of datum reported by
+    /// the same runner at the same time.
+    /// </summary>
+    public string? ModelDigest { get; init; }
 
     public string? NeedsHumanQuestion { get; init; }
 
@@ -521,12 +552,24 @@ internal sealed record ActionRun
             Usage = result.Usage is { } usage
                 ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
                 : null,
+            // Plan 30 §3.4: the turn count the harness already computes and prints, carried the same way
+            // CostUsd is — a straight member copy, nothing recomputed and nothing defaulted. This is the
+            // hop where it died: PromptResult.NumTurns reached here and went no further. ABSENT stays
+            // absent — a runner that reported no turn count leaves this null, because `0` turns would
+            // CLAIM a model was invoked and took none.
+            Turns = result.NumTurns,
             // #349: the model the runner reported itself running on, carried the same way CostUsd is —
             // a straight member copy, nothing recomputed and nothing defaulted. ABSENT stays absent: a
             // runner that echoed no model must leave this null, because the fold onto the attempt's
             // provenance treats null as "learned nothing" and keeps the resolved route (or its
             // "(cli default)" sentinel) exactly as it stood at launch.
             ObservedModel = result.ObservedModel,
+            // Plan 30 §3.3: the provider-reported fingerprint, carried the same way ObservedModel is —
+            // a straight member copy, nothing recomputed and nothing defaulted. ABSENT stays absent for
+            // the same reason: the fold onto the attempt's provenance treats null as "learned nothing",
+            // and a fabricated digest would make two different quantizations of one model look like one
+            // sample.
+            ModelDigest = result.ModelDigest,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,

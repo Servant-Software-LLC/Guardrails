@@ -938,7 +938,7 @@ tiering as a working feature.
   lines**. The SSOT section 2 canonical block therefore shows every tiering key `null` on purpose -- it is
   what gets copied.
 
-## Local telemetry corpus (Phase 0 -- SSOT section 15, issues #533 / #535)
+## Local telemetry corpus (Phase 0 + Phase 1 -- SSOT section 15, issues #533 / #535 / #548)
 
 The measurement companion to model tiering. Tiering decides which model serves a task; the corpus is
 where the evidence for that decision accumulates. Every other spend surface (`JournalTierSpend`, the run
@@ -975,9 +975,34 @@ summary) is **per-run and dies with the run** -- this is the grain above, spanni
   and no verdict; attempts-to-green never renders without abandonment rate over the same denominator.
 - **Opt-out** is `GUARDRAILS_TELEMETRY=off`, checked inside the store so the verb and run-end ingest
   cannot disagree. Collection is ON by default. `guardrails telemetry purge` empties the corpus.
+- **The row shape changed (Phase 1, SSOT 15.2).** Thirteen columns added -- `bucket`, `modelDigest`,
+  `turns`, `actionMs`, `guardrailMs`, `routeWarm`, `host`, `os`, `cpuCount`, `totalMemoryBytes`,
+  `maxParallelism`, `harnessVersion`, `skillVersion` -- and `schemaVersion` is now **2**: a row's version
+  says which shape it is.
+- **The bucket is real now (SSOT 15.2a, 15.5).** Six values, verbatim: `test-authoring`,
+  `implementation`, `structural`, `code+tests`, `documentation`, `no-write`. Computed from the task's
+  `writeScope` roots and guardrail archetypes -- NEVER from the task's name or id;
+  `TaskFingerprintBucket.Classify`'s signature takes no task identity at all, so reading the bucket off
+  the name is not merely discouraged, the compiler cannot allow it. `(unbucketed)` still renders forever
+  for a row predating the column (the corpus is append-only) -- honest, not a regression.
+- **Model digest and route warmth (SSOT 15.2a).** `AttemptProvenance.modelDigest` / `.routeWarm` ride the
+  provenance rather than the attempt record directly, the same placement `AttemptJudge` uses, so both
+  reach the serial AND the worktree settle path (worktree is the DEFAULT mode). A Claude row's digest is
+  PERMANENTLY null -- the Claude CLI stream carries a model tag and no fingerprint at all; an
+  openai-compat row carries one only when the engine volunteers `system_fingerprint`. Null means the
+  provider exposed none, never that the harness lost it.
+- **The attempt envelope (SSOT 15.2, 15.2a).** `AttemptRecord.turns` and `.segments` (`actionMs` /
+  `guardrailMs`) -- the same null-is-not-zero rule as `costUsd` above: a runner that reported nothing must
+  not make the corpus assert the attempt took no time.
+- **`telemetry census` (SSOT 15.5a, issue #577).** Splits the corpus rows naming no model into the
+  task-grain sentinel and script-action attempts (both correct BY CONSTRUCTION) versus a genuine
+  recording gap. Reads PLAN FOLDERS, never the corpus -- a corpus row cannot be joined back to the
+  `task.json` that says whether the action was a script. **Phase 1 owns the census only: the fix for the
+  recording gap is #577's own issue**, not something this phase closes.
 
-Phases 1-3 of the epic (instrumentation gaps, the replay bench, model graduation) are **open under #533**
--- do not describe them as shipped.
+Phase 1 (#548) shipped the bucket, the model digest, route warmth, the attempt envelope, the run
+environment record and `telemetry census` above. Phases 2-3 of the epic (the replay bench, model
+graduation) remain **open under #533** -- do not describe them as shipped.
 
 ## Multi-wave plans (nested layout, M2 v1 -- SSOT section 14)
 

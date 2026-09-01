@@ -13,7 +13,7 @@ namespace Guardrails.Core.Telemetry;
 public sealed record TelemetryRow
 {
     /// <summary>The current row shape. Bump whenever a field is added, renamed, or reinterpreted.</summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>The shape of this row — see <see cref="CurrentSchemaVersion"/>.</summary>
     public required int SchemaVersion { get; init; }
@@ -71,4 +71,66 @@ public sealed record TelemetryRow
 
     /// <summary>The repo this attempt ran in — a recorded dimension, never a pooling key (charter §9).</summary>
     public required string Repo { get; init; }
+
+    /// <summary>
+    /// The task's fingerprint bucket (plan 30 §3.2) — a fact about the task's <c>writeScope</c> roots and
+    /// guardrail archetypes at attempt time (e.g. <c>test-authoring</c>, <c>implementation</c>,
+    /// <c>structural</c>, <c>code+tests</c>, <c>documentation</c>, <c>no-write</c>), never a fact read off
+    /// the task's name — the report's own legend forbids that reading. Null for a row written before this
+    /// column existed, or if the bucket could not be classified. What it does NOT claim: it says nothing
+    /// about the task's difficulty, which is <see cref="Tier"/>, a separate column.
+    /// </summary>
+    public string? Bucket { get; init; }
+
+    /// <summary>
+    /// The provider's model digest (plan 30 §3.3) — distinct from <see cref="Model"/>'s tag: its whole
+    /// purpose is to catch a provider that swaps the weights under a stable tag, so a re-quantized local
+    /// model must not be pooled with the original as one sample. A Claude row's digest is PERMANENTLY
+    /// null — the Claude CLI stream carries a model tag and no fingerprint at all;
+    /// <c>ClaudeStreamParser</c> extracts <c>num_turns</c>, usage, cost and <c>model</c>, nothing else. An
+    /// <c>openai-compat</c> row carries a digest only where the engine volunteers
+    /// <c>system_fingerprint</c>, which many do not. Null therefore means "the provider exposed none", NOT
+    /// "the harness lost it".
+    /// </summary>
+    public string? ModelDigest { get; init; }
+
+    /// <summary>Turns the attempt used, or null when the runner never reported it (charter §6 null-versus-zero; §15.2).</summary>
+    public int? Turns { get; init; }
+
+    /// <summary>The action phase's wall time in milliseconds, or null when it was never measured.</summary>
+    public long? ActionMs { get; init; }
+
+    /// <summary>The guardrail phase's wall time in milliseconds, or null when it was never measured.</summary>
+    public long? GuardrailMs { get; init; }
+
+    /// <summary>
+    /// True when the attempt's route resolved warm, false when it resolved cold. Null means no route
+    /// resolved at all — a script attempt — which is a different claim from <c>false</c> ("the route was
+    /// cold").
+    /// </summary>
+    public bool? RouteWarm { get; init; }
+
+    /// <summary>The machine hostname the attempt ran on, or null when never recorded.</summary>
+    public string? Host { get; init; }
+
+    /// <summary>The operating system the attempt ran on, or null when never recorded.</summary>
+    public string? Os { get; init; }
+
+    /// <summary>The machine's logical CPU count, or null when never recorded.</summary>
+    public int? CpuCount { get; init; }
+
+    /// <summary>
+    /// The machine's total memory in bytes, or null when never recorded — the unified memory that
+    /// distinguishes what quantization a given model tag actually ran at on Apple silicon.
+    /// </summary>
+    public long? TotalMemoryBytes { get; init; }
+
+    /// <summary>The effective concurrency the run used, or null when never recorded.</summary>
+    public int? MaxParallelism { get; init; }
+
+    /// <summary>The harness version that produced this row, or null when never recorded.</summary>
+    public string? HarnessVersion { get; init; }
+
+    /// <summary>The skill version the attempt ran under, or null when never recorded.</summary>
+    public string? SkillVersion { get; init; }
 }

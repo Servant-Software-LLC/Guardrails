@@ -234,7 +234,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordAttempt(
         string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
-        string? definitionHash = null, string? definitionHashAtSettle = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -249,7 +249,12 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2: the task-fingerprint bucket, same null-preserves-prior-value rule as the
+                // hashes above. The bucket is TASK grain — both its inputs (writeScope, guardrail
+                // archetypes) are constant across a task's own retries — so a later call passing nothing
+                // must never CLEAR what an earlier attempt of the same task recorded.
+                Bucket = bucket ?? entry.Bucket
             };
 
             UpdateTask(taskId, updated);
@@ -287,7 +292,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordSettle(
         string taskId, TaskStatus status, long? mergeSequence = null, string? definitionHash = null,
-        string? definitionHashAtSettle = null)
+        string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -297,7 +302,9 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Status = status,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2 — see RecordAttempt: null preserves the prior bucket, never clears it.
+                Bucket = bucket ?? entry.Bucket
             };
             UpdateTask(taskId, updated);
 
@@ -321,6 +328,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// forwarder, every Scheduler call would silently dispatch to the interface's NO-OP default instead of the
     /// real implementation above. Widening the interface itself belongs to the task that wires a caller to
     /// actually pass <c>definitionHashAtSettle</c> (plan 32 §6.3/§15); until then this keeps dispatch correct.
+    /// Plan 30 §3.2's optional <c>bucket</c> parameter widened the public overload again for the same
+    /// reason and is covered by the same forwarder — every parameter it does not name simply defaults.
     /// </summary>
     void Execution.ISchedulerJournal.RecordSettle(
         string taskId, TaskStatus status, long? mergeSequence, string? definitionHash) =>
@@ -337,7 +346,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordSettleWithAttempt(
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
-        string? definitionHash = null, string? definitionHashAtSettle = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -350,7 +359,9 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Attempts = attempts,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2 — see RecordAttempt: null preserves the prior bucket, never clears it.
+                Bucket = bucket ?? entry.Bucket
             };
             UpdateTask(taskId, updated);
 
@@ -366,10 +377,22 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
-    /// <summary>See <see cref="Execution.ISchedulerJournal.RecordSettle"/>'s forwarder above — same reason.</summary>
+    /// <summary>
+    /// See <see cref="Execution.ISchedulerJournal.RecordSettle"/>'s forwarder above — same reason.
+    /// <para>
+    /// Plan 30 §3.2 widened the INTERFACE member with an optional <c>bucket</c>, so this forwarder is
+    /// re-arity'd to match it (an explicit implementation whose signature matches no interface member is
+    /// a hard CS0539, not a silently-defaulted argument). The bucket is forwarded BY NAME because the
+    /// two parameter lists do not line up: the interface member has no <c>definitionHashAtSettle</c>, so
+    /// the bucket sits one position earlier there than on the public overload below — a positional
+    /// forward would land it in <c>definitionHashAtSettle</c>, which compiles silently and stamps a
+    /// bucket string into a hash field while every worktree run journals no bucket at all.
+    /// </para>
+    /// </summary>
     void Execution.ISchedulerJournal.RecordSettleWithAttempt(
-        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash) =>
-        RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash);
+        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash,
+        string? bucket) =>
+        RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash, bucket: bucket);
 
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)
@@ -567,6 +590,32 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             // field, put it back.
             JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
             _document = current with { Delivery = delivery };
+            Persist();
+        }
+    }
+
+    /// <summary>
+    /// Record the machine, concurrency and version profile probed once for this run (plan 30 §3.4,
+    /// <see cref="RunEnvironmentProbe"/>) — called by the CLI at run START, right after
+    /// <see cref="LoadOrCreate"/> resolves the run id and BEFORE the Scheduler's own, LATER
+    /// <see cref="LoadOrCreate"/> (reached when it builds the executor) — that ordering is load-bearing:
+    /// a stamp placed after the second load would be silently overwritten by a document read before the
+    /// stamp existed.
+    /// <para>
+    /// RE-READS FROM DISK FIRST, exactly like <see cref="RecordDelivery"/> and for the same reason: this
+    /// call site's in-memory document happens to be current, but every document-level recorder on this
+    /// type follows the re-read-first shape so a future call site moved later — where staleness would
+    /// actually matter — inherits the safe behavior for free rather than needing to re-derive it.
+    /// </para>
+    /// </summary>
+    public void RecordEnvironment(RunEnvironment environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+
+        lock (_gate)
+        {
+            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+            _document = current with { Environment = environment };
             Persist();
         }
     }

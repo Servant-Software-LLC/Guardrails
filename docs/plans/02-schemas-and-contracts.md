@@ -6880,10 +6880,13 @@ token-bound.
 
 ## 15. Local telemetry corpus (`~/.guardrails/telemetry/`) — design of record `model-evidence-and-graduation.charter.md`, issues #533 / #535
 
-> **Status: LANDED (Phase 0, #535).** The corpus, the ETL from `state/run.json`, the guardrail-failed
-> classifier, the stratified report, the `guardrails telemetry` verb and run-end ingest. Phases 1–3 of the
-> epic (closing the instrumentation gaps, the replay bench, model graduation) remain **open under #533**
-> and are NOT described here — this section documents only what exists.
+> **Status: LANDED (Phase 0, #535, and Phase 1, #548).** The corpus, the ETL from `state/run.json`, the
+> guardrail-failed classifier, the stratified report, the `guardrails telemetry` verb and run-end ingest
+> (Phase 0) — and, as of Phase 1, the task-fingerprint bucket (§15.2a, §15.5), the model digest and route
+> warmth (§15.2a), the attempt envelope of turns and segmented durations (§15.2, §15.2a), the run
+> environment record (§15.2a) and the `telemetry census` verb (§15.5a). Phases 2–3 of the epic (the replay
+> bench, model graduation) remain **open under #533** and are NOT described here — this section documents
+> only what exists.
 
 **What it is.** A durable, **machine-local** record of what each task attempt cost, how long it took,
 which model ran it, and whether the gate passed — accumulated **across runs, plans and repos**, so
@@ -6917,6 +6920,14 @@ Every row carries `schemaVersion` (the corpus outlives any one build, so a row m
 is), `runId`, `taskId`, `attempt`, `startedAt`, `endedAt`, `outcome`, `repo`, and the resolved route:
 `model`, `runner`, `kind`, `tier`, `tierSource`, `effort`.
 
+**`schemaVersion` is 2 as of plan 30 Phase 1 (#548).** Phase 1 added thirteen columns: the
+task-fingerprint bucket `bucket` (§15.2a, §15.5), the provider's model digest `modelDigest` (§15.2a), the
+attempt envelope `turns` / `actionMs` / `guardrailMs`, route warmth `routeWarm`, and the run-environment
+profile `host` / `os` / `cpuCount` / `totalMemoryBytes` / `maxParallelism` / `harnessVersion` /
+`skillVersion` (§15.2a). The version bump matters because a corpus that silently mixed two row shapes
+under one version number would be unreadable by a later analysis — the version is what lets a reader tell
+"this row predates the column" apart from "this row's value is genuinely absent".
+
 **A `TelemetryRow`'s `costUsd`, `inputTokens` and `outputTokens` are independently nullable, and null
 means "never reported" — which is not the claim zero makes.** A costless local provider reports volume
 and no money; a runner that reports no usage reports money and no volume. Writing `0` where the source
@@ -6924,11 +6935,53 @@ reported nothing makes the corpus assert that a run cost nothing when in fact no
 later reader can tell the two apart. This is the same null-versus-zero distinction `JournalTierSpend`
 already draws, and it is the rule most likely to be "simplified" away by a later implementer.
 
+**The same rule governs `turns`, `actionMs` and `guardrailMs`.** All three are independently nullable, and
+null means the runner never reported the figure — not that the attempt took zero turns or zero
+milliseconds. A runner that reported nothing must not make the corpus assert the attempt took no time:
+writing `0` in place of an unmeasured duration would tell a later reader the action or guardrail phase was
+instantaneous, a claim about the world nobody actually made.
+
 **The route fields are recorded as VERBATIM STRINGS, never as enums the corpus re-validates.** The corpus
 is an ARCHIVE: its job is to record what the journal said, not to have an opinion about it. A `kind` typed
 as an enum would reject — or worse, silently drop — the first row from a provider registered after this
 code was written, which is precisely the provider the corpus exists to evaluate. `JournalTierSpend` sets
 the same precedent one level up, reporting a rung this build does not recognise rather than discarding it.
+
+### 15.2a Journal members and their grain (plan 30 §3.2–§3.4)
+
+Phase 1's facts are journaled at three different grains, and the grain is the fact a reader cannot
+recover from a field list alone:
+
+- **The task-fingerprint bucket** (`TaskJournalEntry.bucket`) rides the TASK entry, not the attempt: both
+  inputs the classifier reads — `writeScope` roots and guardrail archetypes — are fixed at task-definition
+  time, so the bucket is constant across a task's own retries within one run.
+- **The model digest and route warmth** (`AttemptProvenance.modelDigest`, `AttemptProvenance.routeWarm`)
+  ride the attempt's `AttemptProvenance`, not `AttemptRecord` directly.
+- **The turn count and the segmented durations** (`AttemptRecord.turns` and `AttemptRecord.segments` — the
+  new `AttemptSegments` record, `actionMs` / `guardrailMs`) ride the `AttemptRecord` itself — the
+  asymmetric case. `AttemptSegments` hangs off `AttemptRecord` rather than off `AttemptProvenance`, so
+  unlike the digest and route-warmth members above it needs its OWN carrier on `Execution.PendingAttempt`
+  (the `PendingAttempt.Turns` / `.Segments` members task `04-extend-the-transport-record-shape` adds) to
+  reach the worktree settle path, rather than getting there for free the way the provenance members do.
+- **The run environment** (`JournalDocument.environment` — host, OS, CPU count, total memory, resolved
+  parallelism, harness and skill versions) rides the journal DOCUMENT once per run: every one of those
+  facts is identical for every task the run touches.
+
+**Why the digest and route warmth ride the provenance rather than the record.** `AttemptRecord.Provenance`
+is the only member that already rides `Execution.PendingAttempt`, and therefore reaches BOTH
+record-construction paths — the serial `AttemptJournaler` and `Scheduler.RecordSucceededSettle`, which is
+the DEFAULT worktree mode. A member hung directly off `AttemptRecord` lands in serial mode and silently
+vanishes in worktree mode unless `PendingAttempt` grows a carrier of its own — exactly the asymmetry that
+makes the turn count and `AttemptSegments` above the exception rather than the rule. `JournalModel.cs`
+documents this trap in place on both the digest/route-warmth members and on `AttemptRecord.Turns`'s own
+doc comment; this section cites it rather than re-deriving it.
+
+**The provider reality behind `modelDigest`, so a null there is not read as a bug.** A Claude row's digest
+is permanently null: the Claude CLI stream carries a model TAG and no fingerprint at all —
+`ClaudeStreamParser` extracts `num_turns`, usage, cost and `model`, and nothing else. An `openai-compat`
+row carries a digest only where the engine volunteers `system_fingerprint`, which many engines do not.
+Null therefore means "the provider exposed none", never "the harness lost it" — a future reader who does
+not find this written down will read the nulls as a defect and go looking for one that is not there.
 
 ### 15.3 Ingest
 
@@ -6992,7 +7045,56 @@ The constraints are the point, and they are structural rather than conventions a
 - **Attempts-to-green never renders without abandonment rate over the same denominator.** Averaging
   attempts over successes only flatters exactly the model that gives up.
 - **A costless provider reports time and volume, never a fabricated `$0`** (§15.2).
-- **Two model fingerprints never pool**, even under the same model string.
+- **Two model fingerprints never pool**, even under the same model string — as of Phase 1 this is
+  operative rather than aspirational. The fingerprint folds in `modelDigest` when the row carries one
+  (`kind/runner/model@digest`), so a re-quantized model under a stable tag no longer pools with its
+  predecessor. A row with no digest fingerprints exactly as it always has, so no existing corpus row's
+  stratum moves.
+
+**The fingerprint bucket, named.** The task-fingerprint bucket is one of six values, verbatim as the
+harness writes them: `test-authoring`, `implementation`, `structural`, `code+tests`, `documentation`,
+`no-write` (§15.2a; plan 30 §3.2). **A bucket is a fact about a task's write surface and guardrail shape,
+never one read off its name or description** — the report's own legend states this constraint, and
+`TaskFingerprintBucket.Classify`'s signature enforces it structurally: it takes only `writeScope` and
+`guardrails`, never a task id or name, so reading the bucket off the name is not merely discouraged, it is
+impossible for the compiler to allow. **`(unbucketed)` is not a defect and does not go away.** The corpus
+is append-only and never rewritten, so a row written before the bucket column existed — or one whose
+write surface matched no rule — renders `(unbucketed)` forever. That is honest, not a regression, and the
+report's own legend states it as such.
+
+**The pre-fix era boundary.** A row started before **2026-08-31 00:00 UTC** predates BOTH §3.1's
+provenance-on-failed-attempts fix (#532, commit `3129919`) and the corpus-isolation fix (#547, commit
+`6229643`): a failed attempt before that instant recorded no provenance at all, so every routed stratum
+read 100% first-pass by survivorship, not by merit (§2 of plan 30). `guardrails telemetry report`
+excludes every row whose `startedAt` predates the boundary from the stratified table — never rewritten,
+never backfilled, just not counted — and states the boundary date and the excluded row count in its own
+legend. Backfilling was rejected as unbounded work against unknown yield (the run journals may not carry
+provenance for every era either); re-baselining (archiving the corpus and starting clean) was rejected as
+discarding real spend history to fix an attribution problem. Both remain available later; a documented
+boundary forecloses neither.
+
+### 15.5a `telemetry census`
+
+`guardrails telemetry census <plan-folder-or-directory>` (plan 30 §3.3a, issue #577) answers a question
+`telemetry report` cannot: of the corpus rows that name no model, how many are that way for a reason that
+is not a defect? It splits every row naming no model into three categories — the once-per-task
+`Attempt = 0` sentinel (names no model by construction: it carries only the declared tier and its
+source), a script-action attempt (a script invokes no model, so there is nothing to attribute), and a
+**recording gap** — a prompt-action attempt journaled with no provenance naming a model, the one category
+that is a genuine defect.
+
+**It reads plan folders, and never the corpus.** A `TelemetryRow` carries `runId`, `taskId` and `repo` (a
+directory name, not a path, §15.1) and nothing that joins back to the `task.json` that says whether the
+action was a script — so the census reads `state/run.json` beside `tasks/<id>/task.json` at the source,
+counting the rows `TelemetryIngest.Ingest` would write from the same journal without ever opening a
+corpus file. It takes no `--corpus-root`, on purpose: a verb with no reason to touch the operator's real
+corpus should have no path that lets it.
+
+**Phase 1 owns the census only — the recording gap's fix is #577's own issue.** The census measures the
+attribution gap; it does not close it. That boundary is deliberate: reading the census's own
+recording-gap number as a bug this plan failed to fix would be exactly the wrong lesson, since closing an
+unscoped defect was never Phase 1's job — the split had to exist first so "close it" could have a defined
+scope at all.
 
 ### 15.6 Opt-out and purge
 

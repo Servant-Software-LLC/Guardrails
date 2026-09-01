@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
@@ -63,6 +64,13 @@ internal sealed class GuardrailRunner
         CancellationToken cancellationToken,
         string? worktreeRoot = null)
     {
+        // Plan 30 §3.4: the GUARDRAIL half of the attempt's segmented duration, measured HERE rather than
+        // at a call site. TaskExecutor calls this method from TWO places — the ordinary attempt pass and
+        // the re-verify path (RevalidateAsync) — so a clock wrapped around one call would report the
+        // phase honestly there and silently report nothing at the other. The pass owns its own clock, so
+        // every caller gets the measurement for free and none can forget to take it.
+        var clock = Stopwatch.StartNew();
+
         var results = new List<GuardrailResult>(task.Guardrails.Count);
         bool anyFailed = false;
         bool timedOut = false;
@@ -100,7 +108,18 @@ internal sealed class GuardrailRunner
             }
         }
 
-        return new GuardrailRunResult { Results = results, AnyFailed = anyFailed, TimedOut = timedOut, Judge = judge };
+        // The pass ran, so its elapsed time is a MEASUREMENT — including the degenerate task that
+        // declares no guardrails at all, where a pass over zero checks genuinely took ~no time. What the
+        // §15.2 null-versus-zero rule forbids is the opposite move: reporting a number for a phase that
+        // never ran, which is why the attempt's ACTION half stays null at every settle above the runner.
+        return new GuardrailRunResult
+        {
+            Results = results,
+            AnyFailed = anyFailed,
+            TimedOut = timedOut,
+            Judge = judge,
+            GuardrailMs = clock.ElapsedMilliseconds
+        };
     }
 
     private async Task<(GuardrailResult Result, bool TimedOut, Journal.AttemptJudge? Judge)> RunScriptGuardrailAsync(
@@ -422,6 +441,15 @@ internal sealed record GuardrailRunResult
     public required IReadOnlyList<GuardrailResult> Results { get; init; }
     public required bool AnyFailed { get; init; }
     public required bool TimedOut { get; init; }
+
+    /// <summary>
+    /// Milliseconds the guardrail suite itself ran (plan 30 §3.4), or null when unmeasured — the
+    /// GUARDRAIL half of <see cref="Journal.AttemptSegments"/>, whose ACTION half is
+    /// <see cref="ActionRun.ActionMs"/>. Exposed as a member rather than left a local inside the runner
+    /// for the same reason <see cref="Judge"/> below is: a datum the harness computes and never
+    /// publishes is structurally dead.
+    /// </summary>
+    public long? GuardrailMs { get; init; }
 
     /// <summary>
     /// The §6.5 VERIFIER route that graded this pass (DoR §12.4) — the first PROMPT guardrail's

@@ -130,6 +130,18 @@ public sealed record PromptResult
     public string? ObservedModel { get; init; }
 
     /// <summary>
+    /// The provider-reported model fingerprint (plan 30 §3.3), mined from the runner's own output
+    /// stream on the same terms as <see cref="ObservedModel"/> immediately above — never derived from
+    /// the model the harness requested, and never invented when the runner echoes none. Rides HERE,
+    /// beside <see cref="ObservedModel"/>, because the two are the same kind of fact: what the runner
+    /// itself reported after the attempt ran.
+    /// <para>Provider reality, not a harness gap: the Claude CLI stream carries a model TAG and no
+    /// fingerprint at all, so this is PERMANENTLY null for a Claude-run attempt (see
+    /// <see cref="Journal.AttemptProvenance.ModelDigest"/>, which restates this one hop further).</para>
+    /// </summary>
+    public string? ModelDigest { get; init; }
+
+    /// <summary>
     /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
     /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
     /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever

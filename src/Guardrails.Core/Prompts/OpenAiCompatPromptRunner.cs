@@ -330,6 +330,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         var messages = new List<WireMessage> { new("user", invocation.ComposedPrompt) };
         var transcriptText = new StringBuilder();
         string? observedModel = null;
+        string? modelDigest = null;
         PromptUsage? totalUsage = null;
         int completedTurns = 0;
 
@@ -352,6 +353,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     NumTurns = completedTurns,
                     Usage = totalUsage,
                     ObservedModel = observedModel,
+                    ModelDigest = modelDigest,
                     FailureKind = PromptFailureKind.MaxTurns,
                     Summary =
                         $"reached the turn cap ({invocation.Settings.MaxTurns}) on '{Name}' " +
@@ -374,7 +376,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 });
 
                 return ContextOverflowResult(
-                    completedTurns, totalUsage, observedModel,
+                    completedTurns, totalUsage, observedModel, modelDigest,
                     $"REFUSED BEFORE SENDING on turn {completedTurns + 1}: the request would need about " +
                     $"{CeilDiv(promptChars, PessimisticCharsPerToken)} prompt tokens " +
                     $"(a deliberately pessimistic ceil({promptChars} chars / {PessimisticCharsPerToken})) plus " +
@@ -394,13 +396,15 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 {
                     NumTurns = completedTurns,
                     Usage = totalUsage,
-                    ObservedModel = failure.ObservedModel ?? observedModel
+                    ObservedModel = failure.ObservedModel ?? observedModel,
+                    ModelDigest = failure.ModelDigest ?? modelDigest
                 };
             }
 
             StreamedTurn turn = outcome.Turn!;
             completedTurns++;
             observedModel ??= turn.ObservedModel;
+            modelDigest ??= turn.ModelDigest;
             totalUsage = AddUsage(totalUsage, turn.Usage);
             if (turn.Content.Length > 0)
             {
@@ -428,7 +432,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     });
 
                     return ContextOverflowResult(
-                        completedTurns, totalUsage, observedModel,
+                        completedTurns, totalUsage, observedModel, modelDigest,
                         $"THE SERVER TRUNCATED THE PROMPT on turn {completedTurns}: {promptChars} chars were sent " +
                         $"but {endpoint} reported only {reported.InputTokens} prompt tokens, below the optimistic " +
                         $"floor of {optimisticFloor} (floor({promptChars} / {OptimisticCharsPerToken})). " +
@@ -459,6 +463,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     NumTurns = completedTurns,
                     Usage = totalUsage,
                     ObservedModel = observedModel,
+                    ModelDigest = modelDigest,
                     FailureKind = PromptFailureKind.OutputCap,
                     Summary =
                         $"the response hit the output cap (finish_reason \"length\") after " +
@@ -483,6 +488,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                         NumTurns = completedTurns,
                         Usage = totalUsage,
                         ObservedModel = observedModel,
+                        ModelDigest = modelDigest,
                         FailureKind = PromptFailureKind.Error,
                         Summary =
                             $"a GUARDRAIL invocation on block '{Name}' ({model} at {endpoint}) completed WITHOUT " +
@@ -515,6 +521,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     NumTurns = completedTurns,
                     Usage = totalUsage,
                     ObservedModel = observedModel,
+                    ModelDigest = modelDigest,
                     FailureKind = PromptFailureKind.None,
                     Summary =
                         $"completed in {completedTurns} turn(s) on '{model}' at {endpoint}" +
@@ -574,6 +581,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                     NumTurns = completedTurns,
                     Usage = totalUsage,
                     ObservedModel = observedModel,
+                    ModelDigest = modelDigest,
                     FailureKind = PromptFailureKind.Error,
                     Summary =
                         $"ABORTED after {consecutiveDenials} consecutive REFUSED tool calls on block '{Name}' " +
@@ -836,6 +844,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         var wholeBody = new StringBuilder();
         string? finishReason = null;
         string? observedModel = null;
+        string? modelDigest = null;
         PromptUsage? usage = null;
         bool sawSseFrame = false;
 
@@ -868,7 +877,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
 
                 sawSseFrame = true;
                 streamLog?.WriteLine(payload);
-                ApplyChunk(payload, content, toolCalls, ref finishReason, ref observedModel, ref usage);
+                ApplyChunk(payload, content, toolCalls, ref finishReason, ref observedModel, ref modelDigest, ref usage);
             }
         }
 
@@ -876,7 +885,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         {
             string body = wholeBody.ToString();
             streamLog?.WriteLine(body);
-            ApplyWholeCompletion(body, content, toolCalls, ref finishReason, ref observedModel, ref usage);
+            ApplyWholeCompletion(body, content, toolCalls, ref finishReason, ref observedModel, ref modelDigest, ref usage);
         }
 
         return new StreamedTurn(
@@ -884,6 +893,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
             [.. toolCalls.Values.Select(a => a.Build())],
             finishReason,
             observedModel,
+            modelDigest,
             usage);
     }
 
@@ -894,6 +904,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         SortedDictionary<int, ToolCallAccumulator> toolCalls,
         ref string? finishReason,
         ref string? observedModel,
+        ref string? modelDigest,
         ref PromptUsage? usage)
     {
         if (ParseObject(payload) is not { } chunk)
@@ -902,6 +913,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         }
 
         observedModel ??= ReadString(chunk, "model");
+        modelDigest ??= ReadString(chunk, "system_fingerprint");
         usage = ReadUsage(chunk) ?? usage;
 
         if (chunk["choices"] is not JsonArray choices)
@@ -932,6 +944,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         SortedDictionary<int, ToolCallAccumulator> toolCalls,
         ref string? finishReason,
         ref string? observedModel,
+        ref string? modelDigest,
         ref PromptUsage? usage)
     {
         if (ParseObject(body) is not { } root)
@@ -940,6 +953,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         }
 
         observedModel ??= ReadString(root, "model");
+        modelDigest ??= ReadString(root, "system_fingerprint");
         usage = ReadUsage(root) ?? usage;
 
         if (root["choices"] is not JsonArray choices)
@@ -2143,13 +2157,14 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// invalidates the pre-DAG preflight skip, because that file is folded into both hashes.
     /// </summary>
     private static PromptResult ContextOverflowResult(
-        int completedTurns, PromptUsage? usage, string? observedModel, string detail) => new()
+        int completedTurns, PromptUsage? usage, string? observedModel, string? modelDigest, string detail) => new()
     {
         Completed = false,
         IsError = true,
         NumTurns = completedTurns,
         Usage = usage,
         ObservedModel = observedModel,
+        ModelDigest = modelDigest,
         FailureKind = PromptFailureKind.ContextOverflow,
         Summary =
             detail + " REMEDY, cheapest first: shrink this task's inputs (fewer or smaller files in the prompt, " +
@@ -2275,6 +2290,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         IReadOnlyList<CompletedToolCall> ToolCalls,
         string? FinishReason,
         string? ObservedModel,
+        string? ModelDigest,
         PromptUsage? Usage);
 
     /// <summary>Either a classified failure or a completed turn — never both.</summary>

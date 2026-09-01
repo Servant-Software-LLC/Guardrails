@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
+using Guardrails.Core.Telemetry;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Core.Execution;
@@ -25,6 +26,58 @@ internal sealed class AttemptJournaler
     {
         _stateManager = stateManager;
         _journal = journal;
+    }
+
+    /// <summary>
+    /// Plan 30 §3.2: the task's fingerprint bucket, derived from the two structural facts the task
+    /// already carries — its <c>writeScope</c> roots and its guardrail archetypes — and NEVER from its
+    /// name (<see cref="TaskFingerprintBucket.Classify"/> is handed no task identity at all, so the
+    /// report legend's "a bucket is a fact about a task, never one read off its name" is a compile-time
+    /// property rather than a convention).
+    /// <para>
+    /// Every journal call below stamps it, INCLUDING every failure path — not just the succeeded settle.
+    /// §2 measured that provenance landing on successes alone made each stratum read 100% first-pass by
+    /// construction, which is survivorship rather than a measurement; a bucket populated only on success
+    /// would reproduce that defect one grain down, hiding a hard bucket's failures from the bucket
+    /// itself. <c>null</c> (an off-switch <c>writeScope</c>, or a write surface no rule matches) is a
+    /// legitimate result and is passed through unchanged — the corpus reader renders it
+    /// <c>(unbucketed)</c>.
+    /// </para>
+    /// </summary>
+    private static string? BucketFor(TaskNode task) =>
+        TaskFingerprintBucket.Classify(task.WriteScope, task.Guardrails);
+
+    /// <summary>
+    /// Plan 30 §3.4: this attempt's two measured phases — the action's wall time
+    /// (<see cref="ActionRun.ActionMs"/>) and the guardrail pass's
+    /// (<see cref="GuardrailRunResult.GuardrailMs"/>) — or <c>null</c> when NEITHER was measured.
+    /// <para>
+    /// <paramref name="guardrails"/> is null at every settle that fires BETWEEN the two phases: the
+    /// needs-human short-circuit, both permission walls, and the action-failed / staging /
+    /// harness-write / write-scope failures all report "guardrails skipped". The HALF-populated record
+    /// they get — an action time, an absent guardrail time — is the honest one, and withholding the
+    /// action segment merely because its sibling is missing would discard a measurement that was
+    /// actually taken. Only when neither phase ran is the whole object absent, and it is absent rather
+    /// than a pair of nulls: an <see cref="AttemptSegments"/> of two nulls CLAIMS a measurement was
+    /// taken and came back empty, which is the same false claim <see cref="AttemptRecord.CostUsd"/>
+    /// refuses when it distinguishes a null from a recorded <c>0</c>.
+    /// </para>
+    /// <para>
+    /// Each carrying <c>TaskExecutor</c> call site decides what it holds and calls this; the recorders
+    /// below take the answer as a parameter rather than reaching for it, because whether a
+    /// <see cref="GuardrailRunResult"/> exists at all is a property of the SITE, not of the method —
+    /// <see cref="Cancelled"/> alone is reached from a pre-attempt site with no action, a mid-attempt
+    /// site with an action and no guardrail pass, and a post-guardrail site with both.
+    /// </para>
+    /// </summary>
+    internal static AttemptSegments? SegmentsFor(ActionRun action, GuardrailRunResult? guardrails = null)
+    {
+        long? actionMs = action.ActionMs;
+        long? guardrailMs = guardrails?.GuardrailMs;
+
+        return actionMs is null && guardrailMs is null
+            ? null
+            : new AttemptSegments { ActionMs = actionMs, GuardrailMs = guardrailMs };
     }
 
     public AttemptResult CompleteSucceededOrInvalidFragment(
@@ -66,7 +119,8 @@ internal sealed class AttemptJournaler
                         Guardrails = guardrails.Results,
                         Summary = reason
                     },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, turns: action.Turns,
+                    segments: SegmentsFor(action, guardrails));
             }
 
             mergeSequence = reserved;
@@ -82,6 +136,13 @@ internal sealed class AttemptJournaler
             CostUsd = action.CostUsd,
             // #475: the tokens axis travels with its cost sibling, wherever the cost goes.
             Usage = action.Usage,
+            // Plan 30 §3.4: and so does the turn count — same carrier, same rule, on every path the
+            // cost travels rather than on the success settle alone.
+            Turns = action.Turns,
+            // Plan 30 §3.4: the only recorder that receives BOTH phases, so it builds the pair itself
+            // from what it already has rather than being handed one — the same reason it reads CostUsd
+            // and Turns off the action above instead of taking them as parameters.
+            Segments = SegmentsFor(action, guardrails),
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -89,7 +150,8 @@ internal sealed class AttemptJournaler
         // later resume compares the current definition against it and halts on drift instead of skipping.
         // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad);
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
+            bucket: BucketFor(task));
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can
@@ -215,6 +277,20 @@ internal sealed class AttemptJournaler
             // #475: WITHOUT this line the value the record above sets reaches serial runs only — the
             // settle path builds its own AttemptRecord from this object, never from the journaller.
             Usage = action.Usage,
+            // Plan 30 §3.4: without this line the turn count 12-record-the-turn-count journals on the
+            // serial record above reaches serial runs only, and worktree is the DEFAULT mode — so the
+            // column would be empty for the majority of real rows while every run stayed green.
+            Turns = action.Turns,
+            // Plan 30 §3.4: same loss, one member over — the action and guardrail durations would be
+            // measured on this attempt, printed once and then discarded at the settle boundary. Built
+            // by the SAME helper the serial record above calls, so the two paths cannot disagree about
+            // what "neither phase measured" means.
+            Segments = SegmentsFor(action, guardrails),
+            // Plan 30 §3.2: without this the worktree settle has no bucket to hand its recorder, so
+            // every default-mode task entry renders `(unbucketed)` in the corpus report. Computed by
+            // the SAME BucketFor the serial path uses — a second classification site here would be a
+            // second answer, free to disagree with the journalled one without either looking wrong.
+            Bucket = BucketFor(task),
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -250,7 +326,9 @@ internal sealed class AttemptJournaler
         IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
         decimal? costUsd = null,
         AttemptUsage? usage = null,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        int? turns = null,
+        AttemptSegments? segments = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -273,9 +351,26 @@ internal sealed class AttemptJournaler
             // recorded)` and each stratum keeps only its own successes — so first-pass rates read 100%
             // by construction and per-model cost understates each model by exactly its failure rate.
             Provenance = provenance,
+            // Plan 30 §3.4: and the turn count, which §2's survivorship finding puts on exactly this
+            // path. A count recorded only where an attempt CONVERGED would populate the column on the
+            // successes and leave it empty on the failures a first-pass-rate comparison is trying to
+            // measure — the #532 defect one column over. It arrives as a parameter rather than off an
+            // ActionRun because this method takes none: the caller holds the action, exactly as it does
+            // for `costUsd`/`usage` above.
+            Turns = turns,
+            // Plan 30 §3.4: and what the attempt COST IN TIME before it went red — §2's finding is
+            // exactly this shape, and this is the path it is about (ten of plan 27's twenty-three
+            // attempts settled here). An attempt that burned twenty minutes and then failed its
+            // guardrails is the evidence a cost comparison is missing; recorded on the success settle
+            // alone, the durations would describe only the attempts that converged. Five of this
+            // method's call sites report "guardrails skipped" and pass an ACTION-only pair — see
+            // SegmentsFor on why a half-populated record is the honest one there.
+            Segments = segments,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
+        _journal.RecordAttempt(
+            task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
+            bucket: BucketFor(task));
 
         return new AttemptResult(result, feedbackPath, Outcome: outcome);
     }
@@ -341,9 +436,13 @@ internal sealed class AttemptJournaler
             // cost money are journaled separately and now carry their route. Resolving the route here
             // just to fill the field would be a SECOND derivation of a decision this code insists must
             // have exactly one (TaskExecutor: "One resolution, two consumers").
+            // Plan 30 §3.4: and NO Turns, on the same reasoning — null says no model was invoked,
+            // whereas `0` would claim one was invoked and took no turns. NO Segments either: there is no
+            // ActionRun in scope at the ExecuteAsync call site, and neither phase of an attempt that was
+            // never launched has a duration to report.
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -380,7 +479,8 @@ internal sealed class AttemptJournaler
         IReadOnlyList<string> options,
         string? kind = null,
         AttemptProvenance? provenance = null,
-        SalvageRef? salvage = null)
+        SalvageRef? salvage = null,
+        AttemptSegments? segments = null)
     {
         string feedback =
             $"# Task '{task.Id}' needs a human\n\n" +
@@ -404,6 +504,14 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: a paid attempt also burned TURNS, and `needs-human` is an outcome real
+            // run.json rows carry — leaving it null here would blank the column on precisely the halts
+            // a reader is trying to compare against the converged attempts.
+            Turns = action.Turns,
+            // Plan 30 §3.4: and the TIME it burned before it asked. This settle short-circuits on the
+            // state-out signal, above the guardrail pass, so the caller's pair carries ActionMs with
+            // GuardrailMs absent — the half-populated record described on SegmentsFor.
+            Segments = segments,
             // #532: a needs-human attempt is a PAID attempt — this one carries action.CostUsd right
             // above — so it must say which model was paid.
             Provenance = provenance,
@@ -412,7 +520,7 @@ internal sealed class AttemptJournaler
             // hand-builds a kind cannot write an unrecognised token into run.json.
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -478,13 +586,17 @@ internal sealed class AttemptJournaler
             Attempt = attemptNumber,
             StartedAt = startedAt,
             EndedAt = DateTimeOffset.UtcNow,
-            // Nothing ran: no process exited, and nothing was spent.
+            // Nothing ran: no process exited, nothing was spent, and (plan 30 §3.4) no turns were
+            // taken — so Turns stays absent rather than reading `0`, which would claim a model was
+            // invoked and did nothing. Segments is absent for the same reason and one step earlier:
+            // this settles ABOVE the runner call, so neither phase has begun and there is no
+            // ActionRun in scope to read a duration from.
             ActionExitCode = null,
             Outcome = AttemptOutcome.NoRoute,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -510,7 +622,8 @@ internal sealed class AttemptJournaler
         string logDir,
         ActionRun action,
         PermissionWallDecision decision,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        AttemptSegments? segments = null)
     {
         Directory.CreateDirectory(logDir);
         string feedback = RetryPolicy.ForPermissionWall(task, decision.StructuralPaths, decision.RepeatedPaths);
@@ -530,11 +643,16 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.PermissionDenied,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: the wall stopped the work AFTER the turns were spent, so they are recorded.
+            Turns = action.Turns,
+            // Plan 30 §3.4: and after the action's clock had run. Both of this method's call sites halt
+            // before any guardrail does, so the pair they build is ActionMs-only.
+            Segments = segments,
             // #532: the wall stopped the WORK, not the billing — the model ran and was paid.
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -571,7 +689,8 @@ internal sealed class AttemptJournaler
         string feedback,
         IReadOnlyList<GuardrailResult> guardrailResults,
         IReadOnlyList<FailedGuardrail> failedGuardrails,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        AttemptSegments? segments = null)
     {
         Directory.CreateDirectory(logDir);
         AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
@@ -586,11 +705,19 @@ internal sealed class AttemptJournaler
             FailedGuardrails = failedGuardrails,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: same as every other paid halt — the attempt ran, so its turns are recorded.
+            Turns = action.Turns,
+            // Plan 30 §3.4: and BOTH durations, not just the action's. This method takes no
+            // GuardrailRunResult, but its call site holds one — the guardrails demonstrably ran and
+            // failed there, which is the whole reason #329 reports this halt as guardrail-failed — so
+            // the guardrail half arrives in the pair the caller builds. Reading only the ActionRun in
+            // hand here would silently record GuardrailMs = null on a path that measured it.
+            Segments = segments,
             // #532: same as every other paid halt — the model that ran is the model that is billed.
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -652,9 +779,12 @@ internal sealed class AttemptJournaler
             // #532: deliberately NO Provenance, and no CostUsd on this record either — the action never
             // ran (that is the whole point of a preflight gate), so no model was chosen and none was
             // billed. A route here would name a model that did nothing.
+            // Plan 30 §3.4: no Turns either, and no Segments. This fires BEFORE the attempt loop exists,
+            // so there is no ActionRun in scope to read either one from — the mechanical form of the
+            // same honesty rule. A duration here would time a phase that never started.
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -672,7 +802,9 @@ internal sealed class AttemptJournaler
         ProcessResult actionResult,
         decimal? costUsd,
         AttemptUsage? usage = null,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        int? turns = null,
+        AttemptSegments? segments = null)
     {
         var record = new AttemptRecord
         {
@@ -683,6 +815,16 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.Cancelled,
             CostUsd = costUsd,
             Usage = usage,
+            // Plan 30 §3.4: decided at the CALL SITE, never here — the two mid-attempt cancels in
+            // RunAttemptAsync have an ActionRun in hand and pass its turn count; the pre-attempt cancel
+            // inside the transient backoff passes nothing, for the same reason it passes costUsd: null.
+            // One method, two honest answers.
+            Turns = turns,
+            // Plan 30 §3.4: same split, and it goes one grain finer — the two mid-attempt cancels do not
+            // agree with EACH OTHER either. The earlier one fires right after the action returns and
+            // passes an ActionMs-only pair; the later one fires after the guardrail pass and passes
+            // both; the pre-attempt cancel passes nothing at all.
+            Segments = segments,
             // #532: a cancel mid-attempt can still have spent real money before the token tripped.
             // Null here is honest for the pre-attempt cancel in ExecuteAsync, where no route was
             // resolved and no model ran — see the note at that call site.
@@ -691,7 +833,7 @@ internal sealed class AttemptJournaler
         };
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {

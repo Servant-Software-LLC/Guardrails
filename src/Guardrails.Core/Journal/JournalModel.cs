@@ -114,6 +114,24 @@ public sealed record JournalDocument
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DeliverySection? Delivery { get; init; }
 
+    /// <summary>
+    /// OPTIONAL machine, concurrency and version profile probed ONCE for the whole run (plan 30 §3.4) —
+    /// host, OS, CPU count, total memory, resolved parallelism, and the harness/skill versions the run
+    /// executed under. DOCUMENT grain, not per-task or per-attempt: every one of these facts is identical
+    /// for every task this run touches, so it is recorded once here rather than repeated on every
+    /// <see cref="TaskJournalEntry"/> or <see cref="AttemptRecord"/>. Additive and backward-compatible on
+    /// the same terms as <see cref="PlanPreflights"/> — absent (never <c>null</c> noise) on a run that
+    /// probed none of this.
+    /// <para>
+    /// <b>Mechanical hazard.</b> This member's name shadows <c>System.Environment</c> within
+    /// <see cref="JournalDocument"/>'s scope. That is safe today — this file uses
+    /// <c>System.Environment</c> nowhere — but do not "fix" the shadow by renaming the member, and do not
+    /// introduce a <c>System.Environment</c> use into this record.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RunEnvironment? Environment { get; init; }
+
     // NOTE (issue #419): the Windows short-junction root is NO LONGER journaled. It was the field that made
     // the junction durable RUN STATE (forcing a resume onto the same .a..z letter and a sweep as the only
     // reclaim), which is the leak #407/#419 chased. The junction is now a process-scoped cwd alias
@@ -383,6 +401,23 @@ public sealed record TaskJournalEntry
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DefinitionHashAtSettle { get; init; }
 
+    /// <summary>
+    /// The task's fingerprint bucket (plan 30 §3.2) — <c>test-authoring</c> | <c>implementation</c> |
+    /// <c>structural</c> | <c>code+tests</c> | <c>documentation</c> | <c>no-write</c>, derived from two
+    /// things the harness already holds at attempt time: the task's <c>writeScope</c> roots and its
+    /// guardrail archetypes. TASK grain, not attempt grain: both inputs are constant across the task's own
+    /// retries within one run, so this hangs off <see cref="TaskJournalEntry"/> beside
+    /// <see cref="DefinitionHash"/> rather than being repeated on every <see cref="AttemptRecord"/>.
+    /// <para>
+    /// The report's own legend states the constraint this field exists to satisfy: <i>"a bucket is a fact
+    /// about a task, never one read off its name."</i> It is never derived from the task's id or
+    /// description. OPTIONAL and additive — absent (never <c>null</c> noise) until the harness computes
+    /// one, and on every journal written before this field existed.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Bucket { get; init; }
+
     /// <summary>Attempt records in attempt order (1-based).</summary>
     public IReadOnlyList<AttemptRecord> Attempts { get; init; } = [];
 }
@@ -436,6 +471,36 @@ public sealed record AttemptRecord
     public AttemptUsage? Usage { get; init; }
 
     /// <summary>
+    /// OPTIONAL count of agent turns this attempt used (plan 30 §3.4) — the figure the plan names as
+    /// "computed, printed and discarded today". Attempt-grain envelope fact, so it hangs DIRECTLY off
+    /// <see cref="AttemptRecord"/> rather than off <see cref="Provenance"/> — the exposed case, unlike
+    /// <see cref="AttemptProvenance.ModelDigest"/>/<see cref="AttemptProvenance.RouteWarm"/> above: a member
+    /// declared only here reaches the serial <c>AttemptJournaler</c> path but silently VANISHES from
+    /// <c>Scheduler.RecordSucceededSettle</c> (the DEFAULT worktree mode) unless
+    /// <c>Execution.PendingAttempt</c> also carries a matching member — see
+    /// <see cref="Execution.PendingAttempt.Usage"/>'s doc comment for the worked example of exactly this
+    /// defect and its fix. Task <c>04-extend-the-transport-record-shape</c> adds the
+    /// <c>PendingAttempt.Turns</c>/<c>Segments</c> carriers and task
+    /// <c>16-carry-phase1-facts-through-the-worktree-settle</c> wires them; until then, a value recorded
+    /// here in worktree mode does not reach the journal. Additive and backward-compatible: absent (never
+    /// <c>null</c> noise) for a script attempt, a runner that reports no turn count, and in every older
+    /// journal.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Turns { get; init; }
+
+    /// <summary>
+    /// OPTIONAL segmented wall-clock duration for this attempt (plan 30 §3.4) — how much of the elapsed
+    /// time the action itself ran versus the guardrail suite that graded it (<see cref="AttemptSegments"/>).
+    /// Attempt-grain envelope fact; hangs directly off <see cref="AttemptRecord"/> on the same terms, and
+    /// carries the same worktree-mode exposure, as <see cref="Turns"/> — see that member's comment.
+    /// Additive and backward-compatible: absent (never <c>null</c> noise) for a script attempt, a runner
+    /// that reports no segment timings, and in every older journal.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptSegments? Segments { get; init; }
+
+    /// <summary>
     /// OPTIONAL agent-asserted classification of a <c>needs-human</c> attempt (SSOT §7/§9, issue #485):
     /// <c>blocked-work</c> ("I cannot complete this work") or <c>defective-guardrail</c> ("this check is
     /// itself wrong"). Absent means UNCLASSIFIED — the harness invents no default. Journaled because
@@ -459,6 +524,60 @@ public sealed record AttemptUsage
 
     /// <summary>Output (completion) tokens the attempt produced.</summary>
     public int OutputTokens { get; init; }
+}
+
+/// <summary>
+/// Segmented wall-clock duration for one attempt (plan 30 §3.4) — how much of the attempt's elapsed time
+/// the ACTION itself ran versus the GUARDRAILS that graded it, so a slow attempt can be read as "the
+/// action was slow" or "the guardrail suite was slow" instead of one undifferentiated span.
+/// <para>
+/// Every member is nullable for the §15.2 null-versus-zero reason <see cref="AttemptRecord.CostUsd"/>
+/// already draws: a runner that reported nothing must not make the journal assert the segment took no
+/// time. <c>0</c> is a measurement; absent is an absence.
+/// </para>
+/// </summary>
+public sealed record AttemptSegments
+{
+    /// <summary>Milliseconds the action itself ran, when measured.</summary>
+    public long? ActionMs { get; init; }
+
+    /// <summary>Milliseconds the guardrail suite ran, when measured.</summary>
+    public long? GuardrailMs { get; init; }
+}
+
+/// <summary>
+/// The machine, concurrency and version profile probed once for a whole run (plan 30 §3.4,
+/// <see cref="JournalDocument.Environment"/>): the host and OS the run executed on, its CPU/memory
+/// envelope, the parallelism the harness actually resolved, and the harness/skill versions in play —
+/// context a per-attempt or per-task figure cannot carry on its own, since it is identical across every
+/// task in the run.
+/// <para>
+/// Every member is nullable for the same §15.2 reason as <see cref="AttemptSegments"/>: a runner that
+/// probed nothing must not make the journal assert a zeroed machine.
+/// </para>
+/// </summary>
+public sealed record RunEnvironment
+{
+    /// <summary>The machine's hostname, when probed.</summary>
+    public string? Host { get; init; }
+
+    /// <summary>The operating system description, when probed.</summary>
+    public string? Os { get; init; }
+
+    /// <summary>The machine's logical CPU count, when probed.</summary>
+    public int? CpuCount { get; init; }
+
+    /// <summary>The machine's total physical memory in bytes, when probed.</summary>
+    public long? TotalMemoryBytes { get; init; }
+
+    /// <summary>The concurrency the harness actually resolved for this run, when applicable.</summary>
+    public int? MaxParallelism { get; init; }
+
+    /// <summary>The Guardrails harness version this run executed under, when known.</summary>
+    public string? HarnessVersion { get; init; }
+
+    /// <summary>The skill version (plan-breakdown / guardrails-review) this run executed under, when known.</summary>
+    public string? SkillVersion { get; init; }
 }
 
 /// <summary>
@@ -540,6 +659,52 @@ public sealed record AttemptProvenance
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RequestedModel { get; init; }
+
+    /// <summary>
+    /// The provider-reported model fingerprint (plan 30 §3.3) — a DIFFERENT fact from the model TAG beside
+    /// it. Its entire purpose is that a re-quantized local model under a stable tag is a different subject
+    /// and must not be pooled with the original as one sample (charter §5 model drift); the tag alone
+    /// cannot distinguish them.
+    /// <para>
+    /// <b>Provider reality, and null does not mean the harness lost it.</b> A Claude row's digest is
+    /// PERMANENTLY null: the Claude CLI stream carries a model TAG and no fingerprint at all —
+    /// <see cref="Prompts.ClaudeStreamParser"/> extracts <c>num_turns</c>, usage, cost and <c>model</c>,
+    /// and nothing else. This is a provider fact, not a gap awaiting a fix. An <c>openai-compat</c> row
+    /// carries a digest only where the engine volunteers <c>system_fingerprint</c>; many engines do not.
+    /// Therefore null means <i>"the provider exposed none"</i>, never <i>"the harness lost it"</i>.
+    /// </para>
+    /// <para>
+    /// Register copied from <see cref="RequestedModel"/> (#349) — a second field beside <see cref="Model"/>
+    /// earning its place by carrying a fact <see cref="Model"/> cannot: the request there, the fingerprint
+    /// here.
+    /// </para>
+    /// <para>
+    /// <b>Placement is mechanical, not cosmetic (D32).</b> This rides <see cref="AttemptProvenance"/>
+    /// rather than <see cref="AttemptRecord"/> for the same reason <see cref="AttemptJudge"/> does — see
+    /// the placement note on <see cref="Judge"/> below. <see cref="AttemptRecord.Provenance"/> is the only
+    /// member that already rides <c>Execution.PendingAttempt</c>, and therefore reaches BOTH
+    /// record-construction paths — the serial <c>AttemptJournaler</c> AND
+    /// <c>Scheduler.RecordSucceededSettle</c>, the DEFAULT worktree mode. A member hung directly off the
+    /// attempt record lands in serial mode and silently vanishes in worktree mode.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ModelDigest { get; init; }
+
+    /// <summary>
+    /// Whether the attempt's resolved route was already WARM (plan 30 §3.4) when it launched. <c>bool?</c>
+    /// rather than <c>bool</c> for the same class of reason <see cref="TierSource"/> is nullable: "not
+    /// known" is not "cold", and a script action resolved no route at all, so there is nothing to report.
+    /// Absent — never <c>false</c> by default — on any attempt where warm/cold was not determined.
+    /// <para>
+    /// Placement is mechanical, on the same D32 terms as <see cref="ModelDigest"/> immediately above: it
+    /// rides <see cref="AttemptProvenance"/> because that is the shape that reaches both the serial
+    /// journaler and the worktree-mode settle path — see <see cref="ModelDigest"/>'s comment for the full
+    /// argument.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? RouteWarm { get; init; }
 
     /// <summary>
     /// The name of the <c>promptRunners</c> block the attempt resolved to (SSOT §7 / DoR §12.4) — the
