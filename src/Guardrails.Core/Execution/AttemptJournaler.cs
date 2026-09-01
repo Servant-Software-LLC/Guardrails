@@ -86,7 +86,7 @@ internal sealed class AttemptJournaler
                         Guardrails = guardrails.Results,
                         Summary = reason
                     },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, turns: action.Turns);
             }
 
             mergeSequence = reserved;
@@ -102,6 +102,9 @@ internal sealed class AttemptJournaler
             CostUsd = action.CostUsd,
             // #475: the tokens axis travels with its cost sibling, wherever the cost goes.
             Usage = action.Usage,
+            // Plan 30 §3.4: and so does the turn count — same carrier, same rule, on every path the
+            // cost travels rather than on the success settle alone.
+            Turns = action.Turns,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -271,7 +274,8 @@ internal sealed class AttemptJournaler
         IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
         decimal? costUsd = null,
         AttemptUsage? usage = null,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        int? turns = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -294,6 +298,13 @@ internal sealed class AttemptJournaler
             // recorded)` and each stratum keeps only its own successes — so first-pass rates read 100%
             // by construction and per-model cost understates each model by exactly its failure rate.
             Provenance = provenance,
+            // Plan 30 §3.4: and the turn count, which §2's survivorship finding puts on exactly this
+            // path. A count recorded only where an attempt CONVERGED would populate the column on the
+            // successes and leave it empty on the failures a first-pass-rate comparison is trying to
+            // measure — the #532 defect one column over. It arrives as a parameter rather than off an
+            // ActionRun because this method takes none: the caller holds the action, exactly as it does
+            // for `costUsd`/`usage` above.
+            Turns = turns,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(
@@ -364,6 +375,8 @@ internal sealed class AttemptJournaler
             // cost money are journaled separately and now carry their route. Resolving the route here
             // just to fill the field would be a SECOND derivation of a decision this code insists must
             // have exactly one (TaskExecutor: "One resolution, two consumers").
+            // Plan 30 §3.4: and NO Turns, on the same reasoning — null says no model was invoked,
+            // whereas `0` would claim one was invoked and took no turns.
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
@@ -427,6 +440,10 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: a paid attempt also burned TURNS, and `needs-human` is an outcome real
+            // run.json rows carry — leaving it null here would blank the column on precisely the halts
+            // a reader is trying to compare against the converged attempts.
+            Turns = action.Turns,
             // #532: a needs-human attempt is a PAID attempt — this one carries action.CostUsd right
             // above — so it must say which model was paid.
             Provenance = provenance,
@@ -501,7 +518,9 @@ internal sealed class AttemptJournaler
             Attempt = attemptNumber,
             StartedAt = startedAt,
             EndedAt = DateTimeOffset.UtcNow,
-            // Nothing ran: no process exited, and nothing was spent.
+            // Nothing ran: no process exited, nothing was spent, and (plan 30 §3.4) no turns were
+            // taken — so Turns stays absent rather than reading `0`, which would claim a model was
+            // invoked and did nothing.
             ActionExitCode = null,
             Outcome = AttemptOutcome.NoRoute,
             LogDir = relativeLogDir,
@@ -553,6 +572,8 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.PermissionDenied,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: the wall stopped the work AFTER the turns were spent, so they are recorded.
+            Turns = action.Turns,
             // #532: the wall stopped the WORK, not the billing — the model ran and was paid.
             Provenance = provenance,
             LogDir = relativeLogDir
@@ -609,6 +630,8 @@ internal sealed class AttemptJournaler
             FailedGuardrails = failedGuardrails,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
+            // Plan 30 §3.4: same as every other paid halt — the attempt ran, so its turns are recorded.
+            Turns = action.Turns,
             // #532: same as every other paid halt — the model that ran is the model that is billed.
             Provenance = provenance,
             LogDir = relativeLogDir
@@ -675,6 +698,8 @@ internal sealed class AttemptJournaler
             // #532: deliberately NO Provenance, and no CostUsd on this record either — the action never
             // ran (that is the whole point of a preflight gate), so no model was chosen and none was
             // billed. A route here would name a model that did nothing.
+            // Plan 30 §3.4: no Turns either. This fires BEFORE the attempt loop exists, so there is no
+            // ActionRun in scope to read one from — the mechanical form of the same honesty rule.
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
@@ -695,7 +720,8 @@ internal sealed class AttemptJournaler
         ProcessResult actionResult,
         decimal? costUsd,
         AttemptUsage? usage = null,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        int? turns = null)
     {
         var record = new AttemptRecord
         {
@@ -706,6 +732,11 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.Cancelled,
             CostUsd = costUsd,
             Usage = usage,
+            // Plan 30 §3.4: decided at the CALL SITE, never here — the two mid-attempt cancels in
+            // RunAttemptAsync have an ActionRun in hand and pass its turn count; the pre-attempt cancel
+            // inside the transient backoff passes nothing, for the same reason it passes costUsd: null.
+            // One method, two honest answers.
+            Turns = turns,
             // #532: a cancel mid-attempt can still have spent real money before the token tripped.
             // Null here is honest for the pre-attempt cancel in ExecuteAsync, where no route was
             // resolved and no model ran — see the note at that call site.

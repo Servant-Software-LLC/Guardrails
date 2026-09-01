@@ -552,6 +552,12 @@ internal sealed record ActionRun
             Usage = result.Usage is { } usage
                 ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
                 : null,
+            // Plan 30 §3.4: the turn count the harness already computes and prints, carried the same way
+            // CostUsd is — a straight member copy, nothing recomputed and nothing defaulted. This is the
+            // hop where it died: PromptResult.NumTurns reached here and went no further. ABSENT stays
+            // absent — a runner that reported no turn count leaves this null, because `0` turns would
+            // CLAIM a model was invoked and took none.
+            Turns = result.NumTurns,
             // #349: the model the runner reported itself running on, carried the same way CostUsd is —
             // a straight member copy, nothing recomputed and nothing defaulted. ABSENT stays absent: a
             // runner that echoed no model must leave this null, because the fold onto the attempt's
