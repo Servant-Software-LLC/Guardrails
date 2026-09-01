@@ -206,7 +206,7 @@ public sealed class SchedulerWaveExecutionTests
             "#!/bin/sh\n# edited\nexit 0\n");
 
         // Run 2 with autonomyPolicy=auto: the drifted completed wave-1 is rewound + re-run.
-        PlanDefinition autoPlan = plan with { Config = plan.Config with { AutonomyPolicy = AutonomyPolicy.Auto } };
+        PlanDefinition autoPlan = b.Load().Plan! with { Config = plan.Config with { AutonomyPolicy = AutonomyPolicy.Auto } };
         var e2 = new WaveFakeExecutor();
         RunJournal j2 = RunJournal.LoadOrCreate(autoPlan);
         RunReport r2 = await NewScheduler(autoPlan, e2, j2, new RecordingWorktreeProvider()).RunAsync(autoPlan, Ct);
@@ -266,9 +266,10 @@ public sealed class SchedulerWaveExecutionTests
 
         // Run 2 under the default prompt policy, NON-interactive: a real wave drift would halt; a pending
         // future-wave edit must NOT — it just runs.
+        PlanDefinition plan2 = b.Load().Plan!;
         var e2 = new WaveFakeExecutor();
-        RunJournal j2 = RunJournal.LoadOrCreate(plan);
-        RunReport r2 = await NewScheduler(plan, e2, j2, new RecordingWorktreeProvider()).RunAsync(plan, Ct);
+        RunJournal j2 = RunJournal.LoadOrCreate(plan2);
+        RunReport r2 = await NewScheduler(plan2, e2, j2, new RecordingWorktreeProvider()).RunAsync(plan2, Ct);
 
         Assert.True(r2.AllSucceeded);
         Assert.Null(r2.WaveHalt);
