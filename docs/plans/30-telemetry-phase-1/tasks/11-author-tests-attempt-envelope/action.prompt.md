@@ -89,6 +89,148 @@ is faked; the runner interface is where the fake stops.
 Assert on the journal document (`RunJournal.Document.Tasks[<id>].Attempts[…]`) — the durable surface a
 reader actually strata on.
 
+### The POSITIVE CONTROL — prove each fixture REACHES its recorder before you trust its red
+
+**Read this before you write a single `[Fact]`. It is the likeliest way this task ships broken while
+every check is green.**
+
+A red row cannot, by itself, tell these two apart:
+
+- **the feature is missing** — nothing populates `Turns`/`Segments` yet, which is the red this task
+  wants; and
+- **the fixture never reached the recorder it names** — the task settled down some other road, the
+  attempt the test indexed was never written, and every assertion read a record that was not there.
+
+Both are red. This task's census sees red and this task goes **GREEN**. The break then surfaces at
+`12-record-the-turn-count` / `12a-segment-the-attempt-durations` — where this test file is **outside
+the writeScope**, so no retry there can repair it and the run halts at `needs-human` with no remedy any
+agent is permitted to apply. That exclusion is deliberate (it is what stops an implementation task
+rewriting the tests that judge it), which is exactly why the fixture has to be right *here*. **You are
+the only task that can prevent it.**
+
+The exposure is not theoretical. Behaviours **7, 13 and 14** — the mid-attempt cancel and the
+structural-wall halt — have **no precedent fixture anywhere in this repo**: nothing in
+`tests/Guardrails.Core.Tests` drives a scheduler run to either recorder today, so you are writing those
+fixtures from the source rather than adapting a working one.
+
+**There is a decoy, and it is what you will find first.**
+`tests/Guardrails.Core.Tests/SchedulerTests.cs`'s `Cancellation_DrainsCleanly_UnstartedTasksReportedCancelled`
+is the top hit for "Scheduler + `CancellationTokenSource`" and it is **not** a precedent for behaviours
+7 or 14: it runs a `FakeExecutor : ITaskExecutor` and a `FakeJournal`, so no `TaskExecutor` runs, no
+`AttemptJournaler` is called, and **no `AttemptRecord` is ever written**. Adapting it puts you in
+exactly the state this section exists to prevent — a fixture that cancels cleanly and journals nothing,
+whose every assertion then reads a record that was never there. Your precedent is
+`ExecutedDefinitionHashTests`' `RunSerialAsync`, which builds a real `TaskExecutor` and a real
+`RunJournal`.
+
+**The rule.** For every distinct fixture SHAPE in this file, assert a **positive control FIRST**, ahead
+of the assertion the row exists for: something that is true **today**, read off the **same journalled
+record** the row will later read, and **independent of `Turns` and `Segments`**. *A row whose red could
+equally mean "my fixture never ran" is not evidence.*
+
+There are two DIFFERENT claims here and conflating them is how this goes wrong. A **road** control
+proves the attempt settled through the recorder this row names. A **connectivity** control proves a
+runner-reported fact travelled from the stub to the journal. You need the road control on every row;
+connectivity is a bonus that cannot substitute for it.
+
+**A. The ROAD controls — required, in this order, at the top of every method body:**
+
+1. **The attempt EXISTS** — the task's `Attempts` list is non-empty and the index you read is in range.
+   Assert this FIRST, always: a record that never landed reads as a null exactly like a correct one,
+   and every control below indexes into that list.
+2. **`Outcome` is the expected token** — required on **all** rows driven through a run, not only the
+   ones whose sections below happen to name it (4, 5, 11, 12, 7, 14, 6, 15). Rows 1, 8 and 9 settle
+   `Succeeded` and rows 3 and 10 settle `guardrail-failed`; assert it there too.
+3. **The row's own discriminator, wherever `Outcome` is not enough.** Three cases, and they are the
+   whole point of this list:
+   - **Behaviour 13** — `StructuralWallHalt` records the SAME `guardrail-failed` string as the ordinary
+     failed attempt, so the discriminator is the halt DECISION: exactly ONE attempt on a
+     `defaultRetries: 2` plan, plus a non-empty `FailedGuardrails`. Already pinned below.
+   - **Behaviours 8 and 9** — the guardrail phase must be proven to have RUN, and a successful attempt
+     records nothing that says so (`FailedGuardrails` is empty on success, by design). Assert it off
+     the `RunReport` the run returns: the task's `TaskResult.Guardrails` list is non-empty and the
+     expected guardrail `Name` is present and `Passed`. (A sentinel file the fixture's guardrail script
+     writes, asserted for existence, is an equally good control if you prefer it.) **Without this,
+     behaviour 9 is the sharpest trap in this file**: a fixture whose guardrail slot is empty or whose
+     script silently no-ops settles `Succeeded`, every other control passes, the `GuardrailMs`
+     assertion reds for the "right-looking" reason — and at task 12a a `GuardrailMs` timed off an
+     EMPTY guardrail loop turns it green while proving nothing.
+   - **Behaviour 10** — `FailedGuardrails` non-empty, so a fixture that passed its guardrails cannot
+     masquerade as the failure path.
+
+**B. The CONNECTIVITY control — add it wherever a model ran:**
+
+4. **The stub's own reported facts arrived on that record.** Have the stub return a *distinctive*
+   `CostUsd` (e.g. `0.4242m`) and a `Usage` with distinctive token counts, then assert both off the
+   journalled `AttemptRecord`, AFTER the road controls above. `CostUsd` and `Usage` ride `ActionRun`
+   from `ActionRun.FromPrompt` into the journal on **the exact road `Turns` will ride**, so a match
+   proves the road is connected and only the datum is absent. It is available on every carrying
+   recorder — the serial success settle (`CompleteSucceededOrInvalidFragment`), `FailedAttempt`,
+   `NeedsHuman`, `PermissionWall`, `StructuralWallHalt` and the mid-attempt `Cancelled` all journal
+   `action.CostUsd` / `action.Usage` today. **It is NOT a road control**: every one of those recorders
+   journals the same two fields, so a fixture that meant `permission-denied` and actually settled
+   `action-failed` satisfies it identically. That is exactly why A comes first.
+
+**Where control 4 is not available** — three fixtures invoke no model, so no runner-reported fact can
+arrive and demanding one would be demanding a fabricated number:
+
+- `AScriptAction_RecordsNoTurnCount` drives a **script** action, so the stub `IPromptRunner` is never
+  invoked. Its controls are A1, A2 (`Succeeded`) and `ActionExitCode == 0`. **Do not try to make that
+  exit code "distinctive" by having the script exit non-zero** — a failing script action settles
+  `AttemptOutcome.ActionFailed` through `FailedAttempt` and moves the row off the recorder it names.
+  On this row the exit code separates `0` from `null` and nothing more; A1 and A2 carry the weight.
+- `ATaskPreflightFailure_RecordsNoTurnCount` / `...RecordsNoSegments` — no action ran at all. A1 plus
+  A2 (`task-preflight-failed`) are the control, as this prompt already pins below.
+- `APreAttemptCancel_RecordsNoSegments` — **A2 does not apply here and asserting it would be
+  self-deception.** This row calls `AttemptJournaler.Cancelled` directly, and that method hard-codes
+  `Outcome = AttemptOutcome.Cancelled`, so an outcome assertion is an assertion on a value the test
+  itself caused — the very hollow shape this task's census names first. On this one row the ONLY
+  control that carries information is A1: the record you passed in actually reached
+  `RunJournal.Document`. Assert that, and nothing decorative around it.
+
+**Then prove it by running, before you call the task done.** `dotnet test` is available to you. It
+writes only build output (`bin/`, `obj/`), which is gitignored and therefore invisible to the
+harness's `git diff` scope check. **Root every fixture's temp plan folder under
+`Path.GetTempPath()`, never inside the repository** — a fixture that writes its plan folder into the
+working tree is the one realistic way this task trips its own scope check. The named precedent
+already does this; copy it.
+
+```
+dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --filter "(FullyQualifiedName~AttemptTurnsTests|FullyQualifiedName~AttemptSegmentsTests)"
+```
+
+Read the failure message of **every red row**. For each, confirm the assertion that produced the red is
+the `Turns` / `Segments` assertion — **not** a road or connectivity control. A red that fired on a
+control is a **broken fixture**, not the intended TDD red: fix the fixture and re-run. Put the controls
+FIRST in each method body precisely so this is legible at a glance — the failure message then names the
+fixture rather than the field.
+
+**The four exempt rows produce no red, so this step cannot see them.** Their bodies are the one part of
+this file nothing at all can check — not this run, not the census, not the compile gate. Re-read those
+four bodies by eye against the `Assert.Null` table below before you finish.
+
+**Bound the loop: at most TWO fixture-repair cycles per row.** This task has 75 turns for one large
+file, sixteen tests and three from-scratch fixtures; an open-ended repair loop is how it runs out of
+budget mid-file and gets re-authored from feedback. If a row's control still fails after two honest
+attempts at its fixture, stop and escalate that row with
+`{"needsHuman": {"question": "<row name>: <what the control asserted, and what it observed instead>", "kind": "blocked-work"}}`.
+An escalation naming the row is worth far more than a fixture you could not verify.
+
+**Never buy the red by deleting the control.** If a positive control fails, the fixture did not reach
+the recorder the row names, and removing or loosening the control to get the "expected" red would
+manufacture exactly the undetectable defect this section exists to prevent — and it would ship, because
+this task's census and this task's compile check would both stay green. Fix the fixture. If you cannot
+make a fixture reach its recorder, that is a `needsHuman` with `"kind": "blocked-work"` naming the row
+and what you observed instead — not a red to be accepted.
+
+State in your closing summary, per red row, which assertion produced its red. That sentence is the
+receipt that this check was actually performed.
+
+**Why this earns its paragraphs.** It is the same *"prove the negative case actually bites"* discipline
+that caught four green-but-inert verifications in this plan today, applied one level up. A guardrail
+that cannot fail proves nothing; a test whose red has two possible causes proves half of what it
+appears to.
+
 ### The pinned behaviours
 
 Encode **exactly these sixteen**, each as a `[Fact]` with **exactly the method name given**, in the
@@ -291,7 +433,52 @@ the record actually reached the journal before asserting the null off it.
 four declared exemptions in this task's census (`Expect = 'Executed'` rather than `Failed`), and their
 job is to STAY green through tasks 12 and 12a. Do not contrive them into failing.
 
-**Duration assertions: lower bounds only.** An upper bound tighter than the attempt's own wall time is
+#### Every exempt row must carry an `Assert.Null` on its OWN named member
+
+This one is load-bearing, because `Expect = 'Executed'` is a deliberately weaker claim than `Failed`.
+`Failed` is a claim about a test's BODY — it could only be red if the assertion actually bit.
+`Executed` is a claim about the test's EXISTENCE only: that a method of that name ran and was not
+`[Skip]`ped. So `Assert.True(true)` inside a method named `APreAttemptCancel_RecordsNoSegments`
+satisfies this task's census **and** passes at task 12a — which is precisely the coverage that row
+exists to deny, since it is the row guarding against a **fabricated zero** on the pre-attempt
+cancellation path. No check anywhere in this plan can see that body; only this instruction can.
+
+Each of the four therefore asserts a null on the member its **name** claims:
+
+| exempt test method | the assertion it must carry |
+|---|---|
+| `AScriptAction_RecordsNoTurnCount` | `Assert.Null(attempt.Turns)` |
+| `ATaskPreflightFailure_RecordsNoTurnCount` | `Assert.Null(attempt.Turns)` |
+| `ATaskPreflightFailure_RecordsNoSegments` | `Assert.Null(attempt.Segments)` |
+| `APreAttemptCancel_RecordsNoSegments` | `Assert.Null(attempt.Segments)` |
+
+Per **task 03's** pinned shape, `Turns` is `int?` and `Segments` is a nullable reference to a
+`public sealed record AttemptSegments`, so `Assert.Null` is correct on both. That repo build is
+`TreatWarningsAsErrors`, and `Assert.Null` on a nullable value type is already used at
+`tests/Guardrails.Core.Tests/ClaudeStreamParserTests.cs:76`. If task 03 in fact shipped a shape where
+`Assert.Null` does not compile cleanly, that is an upstream shape gap — escalate it under
+`"kind": "blocked-work"`; do not fight the analyzer, and do not weaken the assertion to get past it.
+
+**Assert on the member itself, never on a sub-member.** `Assert.Null(attempt.Segments!.ActionMs)` is
+satisfied by an `AttemptSegments` whose two members are both null — still a CLAIM that a measurement
+was taken and came back empty — and it throws a `NullReferenceException` on the *correct* null besides.
+
+Each of these four assertions still comes AFTER that row's positive control, for the reason the
+positive-control section gives: a null read off an attempt that never happened passes vacuously.
+
+**And `attempt` must be a record READ BACK OFF THE JOURNAL — never one the test constructed.** The
+table above names a member and an assertion; it does not name where the record comes from, and the
+cheapest way to satisfy all three lines is a hand-built `new AttemptRecord { … }` with `Segments` left
+unset. That is the hollow shape this task's census names first, it is green forever, and no check in
+this plan can see it. For the two `ATaskPreflightFailure_*` rows and `AScriptAction_RecordsNoTurnCount`
+the record comes from `RunJournal.Document.Tasks[<id>].Attempts` after a real serial run. For
+`APreAttemptCancel_RecordsNoSegments` it comes from the same place after the direct
+`AttemptJournaler.Cancelled` call — the record is read BACK off `RunJournal.Document`, which is the
+only part of that row that can fail and therefore the only part carrying any information.
+
+### Duration assertions — lower bounds, and the one envelope bound
+
+An upper bound tighter than the attempt's own wall time is
 how a duration test flakes on a loaded CI box, and a flaky guardrail teaches an agent to re-run rather
 than to fix. Assert:
 

@@ -193,14 +193,25 @@ to the state-out path. Do not work around it with either of the two moves below.
 Each of these reaches green today and detonates later. Neither is acceptable, and neither is a matter of
 taste.
 
-- **Casting at the call site.** `((Journal.RunJournal)_journal).RecordSettleWithAttempt(…, pending.Bucket)`
-  compiles, satisfies guardrail 03's argument-list clause, and passes this task's entire suite — because
-  that suite drives the journaller directly and never constructs a `Scheduler`. It then throws
-  `InvalidCastException` the first time a `Scheduler` is built over a journal that is not a `RunJournal`,
-  which is every fake in the test suite and every future implementation of the seam. You would find out
-  at the terminal gate, dozens of tasks downstream, with the cause buried in this one. The interface field
-  exists precisely so the scheduler does not know its journal's concrete type; a cast deletes that and
-  buys nothing the widening does not give you honestly. **Do not write a cast here.**
+- **Casting at the call site.** `((Journal.RunJournal)_journal).RecordSettleWithAttempt(…, bucket: pending.Bucket)`
+  compiles, satisfies guardrail 03's argument-list clause, and passes this task's entire suite.
+
+  **Read WHY it passes, because the obvious reason is wrong and an earlier draft of this bullet gave it.**
+  It is *not* that the suite never constructs a `Scheduler`: it does.
+  `TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots` builds a real one — that is the
+  whole reason that test exists. The cast survives it because that fixture hands the `Scheduler` a real
+  `Journal.RunJournal`, so the cast is exactly the one cast that succeeds. **A green behaviour 5 is
+  therefore not evidence that a cast here is safe**, and neither is a green suite: the several in-repo
+  `ISchedulerJournal` fakes under `tests/Guardrails.Core.Tests` (grep `: ISchedulerJournal`) never reach
+  this line at all, because their `TaskResult`s carry no `PendingAttempt` and the settle takes the
+  attempt-less `RecordSettle` fallback before the cast is ever evaluated.
+
+  So the cast throws `InvalidCastException` the first time a `Scheduler` over a non-`RunJournal` journal
+  reaches an attempt-carrying success settle — every future fake that models attempts, and every future
+  implementation of the seam. You would find out at the terminal gate, dozens of tasks downstream, with
+  the cause buried in this one. The interface field exists precisely so the scheduler does not know its
+  journal's concrete type; a cast deletes that and buys nothing the widening does not give you honestly.
+  **Do not write a cast here.**
 
 - **Adding a SECOND, wider overload to the interface instead of widening the existing member.** Subtler
   and worse. `RunJournal`'s public method matches neither the old member nor the new one, so it
@@ -231,19 +242,29 @@ wrote against the public overload's parameter list, argument by argument, and fo
 ## Guardrail 03 is a source-shape check, and it is one of only two in this plan
 
 `guardrails/03-both-settle-records-set-every-phase1-member.ps1` reads `Scheduler.cs` as TEXT and
-asserts that the initializer and the recorder call above really do read `pending`. It exists because
-the property is a fact about **two construction sites agreeing**, which no test can observe without
-driving the entire scheduler through a real worktree provider. Everything else in this plan was
-demoted to a test under the #468 gate; this survived it.
+asserts that the initializer and the recorder call above really do read `pending`.
 
-It is the SECOND line of defence. The first is
-`tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs`, which
+**It is the SECOND line of defence, and its residue is much narrower than earlier drafts of this section
+claimed.** The first line is `tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs`, which
 `15-author-tests-worktree-settle-carries-phase1` authored and which guardrail 02 runs. Four of its five
 tests cover the journaller half; the fifth drives a **real** `Scheduler` (real `RunJournal`,
-`RecordingWorktreeProvider`, no git) and asserts the bucket and the definition hash landed in their own
-journal fields. So the argument BINDING is covered behaviourally and the guardrail's residue is
-narrower than it looks: what only it can see is whether the initializer READ `Turns` and `Segments` off
-`pending` rather than recomputing them — a test sees the value, never its provenance.
+`RecordingWorktreeProvider`, no git) and asserts, on the journal entry that run produced, the bucket and
+the definition hash in their own task-grain fields **and** `Turns` and `Segments` on the journalled
+`AttemptRecord` — with distinctive values. So the omission of any one of those lines is caught
+behaviourally, at rung 1 of the #468 order.
+
+That leaves guardrail 03 one property that nothing else can hold: **the NAMED-ARGUMENT FORM.** A future
+reorder of `bucket` and `definitionHash` on `ISchedulerJournal` would silently swap a positional call
+here while this file's text never changed, and **a correct reorder is invisible to a passing test** — a
+green test only ever proves today's binding is right. It also still holds three smaller things: the
+forbidden `TaskFingerprintBucket` clause (the bucket is the only Phase-1 member you *could* recompute at
+this site, since the settle receives a `TaskNode`), the `Usage`/`Provenance` regression clauses, and the
+one-construction-site equality.
+
+**What it does NOT hold, and no longer claims to:** whether the initializer read `Turns` and `Segments`
+off `pending` rather than recomputing them. `RecordSucceededSettle` has no `ActionRun` and no
+`GuardrailRunResult` in scope — **there is nothing there to recompute them from.** The only defect
+available for those two is omission, and behaviour 5 sees an omission as a null.
 
 **If guardrail 03 reports something absent that you can see is present, read its message before
 escalating.** It strips comments and string literals before matching, so a member named only in a

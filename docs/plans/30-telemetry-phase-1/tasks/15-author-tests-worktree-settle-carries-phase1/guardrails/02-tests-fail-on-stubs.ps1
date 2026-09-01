@@ -35,11 +35,19 @@
 #          The FIFTH row - 'TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots' - is
 #          the only one that drives the real Scheduler, and it is the ONE test in this file whose
 #          PendingAttempt is legitimately constructed by the test itself. That is not the hollow shape:
-#          the object is the INPUT to the code under test, and the assertion is about which JOURNAL FIELD
-#          the Scheduler's recorder call put each value in. It is red today because nothing passes a
-#          bucket to that call at all, so TaskJournalEntry.Bucket comes back null. Its failure text below
-#          is therefore DIFFERENT from rows 1-3: telling this author "you probably constructed a
-#          PendingAttempt yourself" would be advice to break the test.
+#          the object is the INPUT to the code under test, and the assertion is about what the Scheduler
+#          DID with it - which JOURNAL FIELD each value came out in, and whether it came out at all. It is
+#          red today three times over: nothing passes a bucket to the recorder call (TaskJournalEntry.
+#          Bucket is null) and the scheduler's own AttemptRecord initializer reads neither Turns nor
+#          Segments off pending (both null on the journalled attempt). Its failure text below is therefore
+#          DIFFERENT from rows 1-3: telling this author "you probably constructed a PendingAttempt
+#          yourself" would be advice to break the test.
+#
+#          Its name is deliberately NOT changed to mention turns and segments. The added assertions are
+#          about the SAME journal write by the SAME settle drive - they do not split into a sixth
+#          behaviour - and this manifest, the action prompt's table, task 16's action.prompt.md and task
+#          16's 03-both-settle-records-set-every-phase1-member.ps1 all quote the name verbatim. A rename
+#          that missed one of them would read there as an ABSENT behaviour.
 #
 # WHY THESE ARE TESTS AND NOT A SOURCE-SHAPE CHECK (the #468 demotion order, worked): the property
 #          "ValidateFragmentForSettle populates the carrier" is observable at RUNTIME - AttemptJournaler
@@ -51,12 +59,23 @@
 #          settle, and two shipped fixtures already drive the real Scheduler with NO git and NO processes
 #          (tests/Guardrails.Core.Tests/SchedulerWaveExecutionTests.cs and
 #          tests/Guardrails.Core.Tests/Execution/ExecutedDefinitionDivergenceTests.cs, both over a
-#          RecordingWorktreeProvider). So row 5 observes, behaviourally, the one thing a source-shape
-#          check cannot: which journal field a value landed in. What genuinely resists a test is
-#          PROVENANCE OF A VALUE - whether the initializer READ Turns and Segments off pending or
-#          recomputed them here. A test sees the number, not where it came from. THAT is what task 16's
-#          03-both-settle-records-set-every-phase1-member.ps1 carries, and it is one of only two
-#          source-shape guardrails in this plan. These tests are the FIRST line of defence.
+#          RecordingWorktreeProvider). Row 5 therefore observes, behaviourally, both halves of that
+#          settle: which journal FIELD a value landed in, and whether the attempt-grain members landed on
+#          the journalled record at all.
+#
+#          A SECOND RETRACTION, and it is the one that keeps coming back. Earlier drafts said the residue
+#          a test cannot reach is PROVENANCE OF A VALUE - whether the initializer READ Turns and Segments
+#          off pending or recomputed them here. That is not a defect that exists at this site.
+#          RecordSucceededSettle receives (TaskNode task, TaskResult result, long mergeSequence,
+#          string? definitionHash): there is NO ActionRun and NO GuardrailRunResult in scope, so there is
+#          nothing here to recompute those two members FROM. The available defect is OMISSION, and row 5
+#          sees an omission as a null where it asserted 7. Rung 1 of #468 reaches it.
+#          What no test can express is a PARAMETER REORDER THAT HAS NOT HAPPENED YET - swap `bucket` and
+#          `definitionHash` on ISchedulerJournal and a positional call in Scheduler.cs swaps with them
+#          while that file's text never changes, which a green test cannot distinguish from correctness.
+#          Requiring the NAMED form is what makes that reorder incapable of binding wrongly in silence,
+#          and THAT is the narrower thing task 16's 03-both-settle-records-set-every-phase1-member.ps1
+#          uniquely holds. These tests are the FIRST line of defence.
 #
 # The prompt<->manifest agreement is NOT mechanically enforced (GR2026 is blind to a hashtable read
 #          through Where-Object). The five names below were read side by side with this task's
@@ -82,7 +101,7 @@ $manifest = [ordered]@{
     'the worktree PendingAttempt carries the turn count'      = 'TheWorktreePendingAttempt_CarriesTheTurnCount'
     'the worktree PendingAttempt carries the segments'        = 'TheWorktreePendingAttempt_CarriesTheSegments'
     'both settle paths set every Phase-1 attempt member'      = 'EveryPhase1AttemptMemberSetOnTheSerialRecord_IsAlsoSetOnTheWorktreeRecord'
-    'the real settle journals bucket and hash in own slots'   = 'TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots'
+    'the real settle journals bucket, hash, turns and segments in their own slots' = 'TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -132,7 +151,7 @@ foreach ($behaviour in $manifest.Keys) {
     }
     $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
     if ($name -eq 'TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots') {
-        $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. This row is the SLOT test and it is the ONE test in this file whose PendingAttempt the test itself constructs - that is correct here, so do NOT rewrite it to obtain one from the journaller. It must drive the REAL Scheduler (a plan built and loaded with WavePlanBuilder, a real RunJournal.LoadOrCreate, a RecordingWorktreeProvider, observer IRunObserver.Null, reVerifier null) with a fake ITaskExecutor whose successful TaskResult sets DeferredSettle = true AND carries a PendingAttempt - both shipped fixtures (SchedulerWaveExecutionTests, Execution/ExecutedDefinitionDivergenceTests) leave PendingAttempt null, which makes the settle take the attempt-less RecordSettle fallback and the recorder call under test never run. Green here means the assertion never reached the journal entry, or it is one-sided: nothing passes a bucket to RecordSettleWithAttempt on this tree, so TaskJournalEntry.Bucket must come back null. Give the PendingAttempt Bucket = 'implementation' and take the expected hash from the TaskNode's DefinitionHashAtLoad (sha256:-prefixed), then assert BOTH directions - Bucket is the bucket and NOT the hash, DefinitionHash is the hash and NOT the bucket. Equal-looking placeholders, or a one-sided non-null check, both pass under a swapped slot. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. This row is the SLOT test and it is the ONE test in this file whose PendingAttempt the test itself constructs - that is correct here, so do NOT rewrite it to obtain one from the journaller. It must drive the REAL Scheduler (a plan built and loaded with WavePlanBuilder, a real RunJournal.LoadOrCreate, a RecordingWorktreeProvider, observer IRunObserver.Null, reVerifier null) with a fake ITaskExecutor whose successful TaskResult sets DeferredSettle = true AND carries a PendingAttempt - both shipped fixtures (SchedulerWaveExecutionTests, Execution/ExecutedDefinitionDivergenceTests) leave PendingAttempt null, which makes the settle take the attempt-less RecordSettle fallback and the recorder call under test never run. It has to be red THREE times over on this tree, so green here means it reached none of the three: nothing passes a bucket to RecordSettleWithAttempt (TaskJournalEntry.Bucket must come back null), and the scheduler's own AttemptRecord initializer reads neither Turns nor Segments off pending (both must come back null on the journalled attempt). Give the PendingAttempt Bucket = 'implementation', Turns = 7 and Segments = ActionMs 1234 / GuardrailMs 56, and take the expected hash from the TaskNode's DefinitionHashAtLoad (sha256:-prefixed). Then assert, at TASK grain on the journal entry, BOTH directions - Bucket is the bucket and NOT the hash, DefinitionHash is the hash and NOT the bucket - and at ATTEMPT grain on the single record in entry.Attempts, that Turns is 7 and Segments.ActionMs / Segments.GuardrailMs are 1234 and 56. The attempt-grain half is the only assertion in this plan that Turns and Segments reach a WORKTREE journal record: behaviour 4 compares the serial record against the PendingAttempt carrier, and neither of those is the record the scheduler builds. Equal-looking placeholders, or a one-sided non-null check, both pass under a swapped slot. ('NotExecuted' = [Fact(Skip=...)].)"
     }
     elseif ($name -eq 'EveryPhase1AttemptMemberSetOnTheSerialRecord_IsAlsoSetOnTheWorktreeRecord') {
         $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. This is almost certainly the VACUOUS IMPLICATION: nothing sets a Phase-1 member on EITHER settle path yet, so 'for every member set on the serial record, assert it is also set on the worktree record' quantifies over an empty set and passes while asserting nothing. Write the TWO-SIDED assertion instead - for each of the three NAMED Phase-1 carriers (PendingAttempt.Turns, .Segments, .Bucket), assert the serial side carries a non-null value AND the worktree side carries one, taking the counterpart from Journal.AttemptRecord for Turns and Segments and from Journal.TaskJournalEntry for Bucket. Name the three as ordinary member access; do NOT try to discover them by reflection, since nothing marks a member as a Phase-1 carrier. ('NotExecuted' = [Fact(Skip=...)].)"

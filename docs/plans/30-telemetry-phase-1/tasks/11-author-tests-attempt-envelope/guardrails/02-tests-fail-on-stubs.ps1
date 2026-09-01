@@ -81,6 +81,28 @@
 #          attempt EXISTS and its Outcome is 'task-preflight-failed' BEFORE asserting the null - but this
 #          census cannot see that, which is why the shape is named here for a reviewer.
 #
+#          WHAT 'Executed' CAN AND CANNOT SEE - read this before mistaking an exemption for full
+#          coverage. Expect='Executed' is DELIBERATELY WEAKER than Expect='Failed'. 'Failed' is a claim
+#          about the test's BODY: it could only have been red if the assertion actually bit. 'Executed'
+#          is a claim about the test's EXISTENCE only - a method of that name ran and was not [Skip]ped.
+#          So a tautological body - Assert.True(true) - inside a method named
+#          'APreAttemptCancel_RecordsNoSegments' satisfies THIS census and then passes at task 12a too,
+#          which is exactly the coverage that row exists to deny (it is the row guarding against a
+#          FABRICATED ZERO on the pre-attempt cancellation path). Nothing mechanical can close that gap
+#          from here: the assertion lives in a C# body and this guardrail reads a TRX.
+#
+#          WHAT COMPENSATES - all three at instruction level, in this task's action.prompt.md:
+#            (a) each exempt row is REQUIRED to carry an Assert.Null on the member its NAME claims -
+#                Turns for the two turn-count rows; Segments (the member ITSELF, never its ActionMs,
+#                which an AttemptSegments of two nulls would satisfy) for the two segment rows;
+#            (b) each asserts its POSITIVE CONTROL first - the attempt exists and its Outcome is the
+#                expected token - so the null cannot pass vacuously off a record that never landed;
+#            (c) all four STAY in this manifest through tasks 12 and 12a, so a later deletion surfaces
+#                as a census failure rather than as silence.
+#          A REVIEWER of this file must therefore read the four exempt bodies by eye. That is the trade
+#          this exemption buys, and it is worth it: the alternative was demanding red from a test that
+#          is CORRECTLY green, which teaches an agent to contrive a failure.
+#
 #          The other twelve rows are red on today's tree: ActionRun.FromPrompt discards
 #          PromptResult.NumTurns, GuardrailRunner has no stopwatch at all, and nothing constructs an
 #          AttemptSegments anywhere - so any test asserting a turn count or a segment ARRIVED on the
@@ -216,4 +238,9 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Output "Per-test red census: all $($manifest.Count) enumerated behaviours are bound to a pinned test observed at its declared outcome."
+# Said on the GREEN path on purpose. A red row proves an assertion failed; it does NOT prove the
+# fixture reached the recorder the row names - a fixture that settled down another road is red for the
+# wrong reason and reads identically here. That is the action prompt's POSITIVE-CONTROL requirement,
+# which this census cannot see, and it is the one gap a passing census must not be read as covering.
+Write-Output "NOTE: red here means an assertion failed - NOT that the fixture reached the recorder its row names. Whether each red fired on the Turns/Segments assertion rather than on a positive control is the action prompt's requirement, and is not observable from a TRX."
 exit 0

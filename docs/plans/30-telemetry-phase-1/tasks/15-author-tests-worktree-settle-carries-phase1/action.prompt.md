@@ -108,7 +108,13 @@ runner's TRX; a differently-named test reads as an absent behaviour.
 | 2 | …carries the attempt's turn count | `TheWorktreePendingAttempt_CarriesTheTurnCount` |
 | 3 | …carries the action and guardrail segment durations | `TheWorktreePendingAttempt_CarriesTheSegments` |
 | 4 | the AGREEMENT test: every Phase-1 attempt member is set on BOTH settle paths, member by member | `EveryPhase1AttemptMemberSetOnTheSerialRecord_IsAlsoSetOnTheWorktreeRecord` |
-| 5 | the SLOT test: a real worktree settle journals the bucket and the definition hash into their OWN fields | `TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots` |
+| 5 | the SLOT test: a real worktree settle journals the bucket and the definition hash into their OWN task-grain fields, **and** carries `Turns` and `Segments` onto the `AttemptRecord` it journals | `TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots` |
+
+**Row 5's method name is deliberately unchanged even though the behaviour grew.** The extra assertions
+are about the SAME journal write by the SAME settle drive — they do not split into a second behaviour, and
+the name still pins the sharpest property it carries (the slot discrimination). Do not rename it: the name
+is quoted verbatim by this task's `02-tests-fail-on-stubs.ps1` manifest and by task 16's prompt and
+guardrail 03, and a rename that misses one of them reads there as an absent behaviour.
 
 ### Behaviour 4 is the one that carries the plan's real invariant — write it carefully
 
@@ -153,9 +159,9 @@ implication.
 
 ### Behaviour 5 is the SLOT test — it is the only one that drives a real Scheduler, and it must
 
-Behaviours 1–4 all stop at the journaller: they prove the carrier is POPULATED. Behaviour 5 proves the
-next thing, which nothing else in this plan proves — that the scheduler hands the carried value to the
-**right parameter**.
+Behaviours 1–4 all stop at the journaller: they prove the carrier is POPULATED. Behaviour 5 proves the two
+things nothing else in this plan proves — that the scheduler hands each carried value to the **right
+parameter**, and that the values it carries land on the record the worktree settle actually journals.
 
 **The defect it pins.** Task 16 widens `ISchedulerJournal.RecordSettleWithAttempt` with a
 `string? bucket = null` parameter, landing it **directly beside** the existing `string? definitionHash`.
@@ -200,29 +206,60 @@ the attempt-less `RecordSettle` fallback. **Your result must carry one** — `Pe
 `public sealed record` in `Guardrails.Core.Execution` (`required` members: `Attempt`, `StartedAt`,
 `LogDir`) — or the recorder call under test never runs.
 
-**Distinguishable values are the whole point.** Give the `PendingAttempt` a bucket that could never be
-mistaken for a hash — `Bucket = "implementation"` — and take the expected definition hash from the
-loaded plan itself: `plan.Tasks` is an `IReadOnlyList<TaskNode>`, and the node's `DefinitionHashAtLoad`
-is the `sha256:`-prefixed string `SettleAsync` passes down to `RecordSucceededSettle`. Assert it is
-non-null and `sha256:`-prefixed first, so a fixture that silently produced no hash cannot make the
-comparison below vacuous. Two placeholders that look alike would both still "match" under a slot slip,
-and the test would pass while the fields were swapped.
+**Distinguishable values are the whole point, for every member this test carries.** Give the
+`PendingAttempt` values that cannot be mistaken for one another, for defaults, or for anything the
+scheduler could plausibly produce on its own:
 
-Then assert **both directions**, on the journal entry the run produced — key it off that same
-`TaskNode.Id`, which on a waved plan is wave-qualified (`wave-01-scaffold/01-config`), never the bare
-folder name (`journal.Document.Tasks[task.Id]`; `journal.RecordedDefinitionHash(task.Id)` reads the same
-field):
+| member | value | why THIS value |
+|---|---|---|
+| `Bucket` | `"implementation"` | a word — it could never be mistaken for a hash |
+| `Turns` | `7` | not `0`, not `1`, and not either segment value |
+| `Segments` | an `AttemptSegments` with `ActionMs = 1234` and `GuardrailMs = 56` | two ADJACENT `long?` members of one record: `1234` and `56` cannot be swapped without the assertion noticing, and neither is a real elapsed time |
+
+(`AttemptSegments` is `Guardrails.Core.Journal.AttemptSegments`, task 03's record — qualify it however
+your file's usings require.)
+
+and take the expected definition hash from the loaded plan itself: `plan.Tasks` is an
+`IReadOnlyList<TaskNode>`, and the node's `DefinitionHashAtLoad` is the `sha256:`-prefixed string
+`SettleAsync` passes down to `RecordSucceededSettle`. Assert it is non-null and `sha256:`-prefixed first,
+so a fixture that silently produced no hash cannot make the comparison below vacuous. Two placeholders
+that look alike would both still "match" under a slot slip, and the test would pass while the fields were
+swapped.
+
+Then assert on the journal entry the run produced — key it off that same `TaskNode.Id`, which on a waved
+plan is wave-qualified (`wave-01-scaffold/01-config`), never the bare folder name
+(`journal.Document.Tasks[task.Id]`; `journal.RecordedDefinitionHash(task.Id)` reads the same field).
+
+**TASK grain — on the entry itself, and assert BOTH DIRECTIONS:**
 
 - `Bucket` is `"implementation"` — and is NOT the definition hash;
 - `DefinitionHash` is the task's `DefinitionHashAtLoad` — and is NOT `"implementation"`.
 
-State in a comment that the two-sided form is deliberate: asserting only that each field is non-null, or
-only one of the two directions, is satisfied by a swap.
+**ATTEMPT grain — on the record the settle journalled.** `TaskJournalEntry.Attempts` is an
+`IReadOnlyList<AttemptRecord>` and `RecordSettleWithAttempt` APPENDS to it, so assert it holds exactly ONE
+element first (an empty list then fails as "the settle journalled no attempt record at all" rather than as
+an index crash whose message names nothing), then on `Attempts[0]`:
+
+- `Turns` is `7`;
+- `Segments` is non-null, its `ActionMs` is `1234`, and its `GuardrailMs` is `56`.
+
+**The attempt-grain half is not decoration — it is the ONLY assertion in this plan that `Turns` and
+`Segments` reach a worktree JOURNAL RECORD.** Behaviour 4 compares the serial `AttemptRecord` against the
+`PendingAttempt` carrier; neither side of that comparison is the record `Scheduler.RecordSucceededSettle`
+builds. Without these lines the carrier-to-worktree-record hop is held by a text clause in task 16's
+`03-both-settle-records-set-every-phase1-member.ps1` and by nothing that ever runs.
+
+**Red today, for the same reason the bucket is.** That initializer does not read `Turns` or `Segments` off
+`pending` on this tree, so both come back null against a `7` and a `1234`. Task 16 adds those two lines.
+
+State in a comment that the two-sided form at task grain is deliberate: asserting only that each field is
+non-null, or only one of the two directions, is satisfied by a swap. State in a comment that the three
+attempt-grain values are distinctive on purpose, for the same reason.
 
 **This test constructs its own `PendingAttempt`, and that does NOT make it hollow** — read the next
 section before you conclude otherwise. The hollow shape is asserting about *the object you just built*.
-This test asserts about what the **Scheduler** did with it: which journal field the value came out in.
-The input is a fixture; the subject is the settle.
+This test asserts about what the **Scheduler** did with it: which journal field each value came out in,
+and whether it came out at all. The input is a fixture; the subject is the settle.
 
 ### All five must be RED
 
@@ -234,21 +271,34 @@ object it just built is hollow — it passes today, it passes forever, and this 
 it. Each of those four must obtain its `PendingAttempt` from `AttemptJournaler.ValidateFragmentForSettle`.
 
 Behaviour **5** is the stated exception, for the reason given above: its `PendingAttempt` is the INPUT to
-the code under test, not the thing asserted on. It is red today because no bucket reaches the journal
-entry at all — `TaskJournalEntry.Bucket` comes back null — and it goes green only when task 16 has
-widened the interface and bound the argument by name.
+the code under test, not the thing asserted on. It is red today three times over — no bucket reaches the
+journal entry at all (`TaskJournalEntry.Bucket` comes back null), and neither `Turns` nor `Segments`
+reaches the journalled `AttemptRecord`. It goes green only when task 16 has widened the interface, bound
+the bucket argument by name, and read both attempt members off `pending`.
 
 ### Where the two lines of defence sit
 
-Behaviours 1–4 are the journaller half: the carrier is populated. Behaviour 5 is the settle half for the
-**bucket**: the carried value reaches its own journal field.
+Behaviours 1–4 are the journaller half: the carrier is populated. Behaviour 5 is the settle half — the
+carried values reach the journal, in their own fields at task grain and on the journalled attempt record
+at attempt grain.
 
-What neither can reach is whether `Scheduler.RecordSucceededSettle`'s own
-`new Journal.AttemptRecord { … }` initializer READS `Turns` and `Segments` off `pending` rather than
-recomputing them — a test sees the value, not where it came from. That residue is task 16's source-shape
-guardrail `03-both-settle-records-set-every-phase1-member.ps1`, which is one of only two source-shape
-checks in this entire plan. **These tests are the FIRST line of defence and that guardrail is the
-second** — which is the right order.
+**An earlier draft of this section said the tests could not see whether that settle READ `Turns` and
+`Segments` off `pending` rather than recomputing them, and handed that residue to task 16's source-shape
+guardrail. That was wrong. It is corrected here rather than softened.** `RecordSucceededSettle` receives
+`(TaskNode task, TaskResult result, long mergeSequence, string? definitionHash)` — **no `ActionRun`, no
+`GuardrailRunResult`**. There is nothing at that site to recompute a turn count or a segment duration
+FROM, so the defect actually available for those two members is OMISSION — and behaviour 5 sees an
+omission as a null where it asserted `7`. That is rung 1 of the #468 demotion order, and it is strictly
+stronger than a text scan: the test reads the journalled value, the scan reads only the text.
+
+What no test can express is a **parameter reorder that has not happened yet.** If `bucket` and
+`definitionHash` are ever declared in the other order on `ISchedulerJournal`, a POSITIONAL call in
+`Scheduler.cs` swaps with them while that file's text never changes — and a green test only ever proves
+that TODAY's binding is right. Requiring the NAMED form `bucket: pending.Bucket` makes that reorder
+incapable of binding wrongly in silence. **That** — not provenance-of-a-value — is what task 16's
+`03-both-settle-records-set-every-phase1-member.ps1` uniquely holds, and it is a narrower claim than this
+section used to make. **These tests are the FIRST line of defence and that guardrail is the second** —
+which is still the right order.
 
 **Do NOT implement the carrying.** `src/Guardrails.Core/Execution/AttemptJournaler.cs` and
 `src/Guardrails.Core/Execution/Scheduler.cs` are outside this task's writeScope and belong to
