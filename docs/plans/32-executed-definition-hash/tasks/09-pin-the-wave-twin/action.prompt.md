@@ -64,6 +64,21 @@ then the wave `guardrails/**`, then `preflights/**`, then `brief.md`, with the s
 separators. Read `WaveDefinitionHash.Compute` and mirror it; do not invent a new framing. This is the wave
 level of section 5.5's no-op property, and the whole reason this plan owes no migration wave.
 
+> **The one place that instruction and the pinned-fold instruction pull apart - resolve it THIS way.**
+> The disk form inlines the wave-gate file **BODIES** (it appends each gate file's content into the
+> builder). `WaveNode.DefinitionHashAtLoad` is a **SHA of** those bodies. Folding a hash where the disk
+> form folds bodies produces a **different digest**, so "fold the wave's capture" and "reproduce the disk
+> framing exactly" cannot both be satisfied literally - and getting it wrong makes every completed wave
+> read as drifted on the next resume.
+>
+> **Resolve it by capturing the fold TEXT, not a digest of it**: have `WaveNode.DefinitionHashAtLoad`
+> hold the wave-gate portion of the builder's input verbatim (or capture the whole wave hash at
+> `WaveNode` construction and stamp that), so the pinned fold appends the same bytes the disk form
+> appends. Either shape works; what does not work is folding a SHA into a position the disk form fills
+> with bodies. Guardrail 02 runs the six shipped resume tests, so this fails loud rather than silently -
+> but it fails after two full `dotnet test` runs, on the most turn-expensive task in the plan, so decide
+> it before you write the fold rather than after.
+
 **Beware a false reassurance:** the two wave-drift **positive** tests (the ones that assert a drift IS
 reported) would still pass if the fold were wrong, because any mismatch reads as drift. A green on those
 is not evidence.

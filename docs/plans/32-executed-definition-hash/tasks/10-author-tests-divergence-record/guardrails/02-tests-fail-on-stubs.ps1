@@ -23,6 +23,19 @@
 #       still differs from disk. A whole-surface gate turns it red, and section 6.2 calls a gate that
 #       blocks delivery on an editor artifact "disabled within a week, and then the real signal is gone
 #       too".
+#   P16b APreExistingEditorArtifact_LeavesTheRunGreenAndDelivering is the OTHER SIDE of that tripwire,
+#       and it exists because P16 alone cannot see the reachable half. P16's artifact appears MID-RUN, so
+#       it is absent from the load-time map and present in the settle walk - an implementation that
+#       filters ONLY the settle side still passes it. An artifact present AT LOAD is the case that bites:
+#       filtered on one side only, its label is in BEFORE and not in AFTER, reads as VANISHED, and blocks
+#       delivery on a run nobody edited. A .DS_Store already in the checkout, an operator's .swp, a
+#       .orig/.rej from any pre-run git operation - all reachable, none requiring anyone to touch the
+#       plan folder at all. Green today, green after, declared exemption for the same reason P16 is.
+#
+#   THREE OF FIVE EXEMPT now, and the ratio is worth defending rather than shrugging at: this file
+#       carries TWO defect pins (P12, P15) and THREE silence/regression pins (P10, P16, P16b). A silence
+#       pin is green on both sides by definition - that IS its content, not a weakness in it. If a later
+#       edit wants a FOURTH exemption, re-read section 6.7 before adding it.
 #   Both assert Expect='Executed' (present in the TRX, not [Skip]ped). They stay IN the manifest: a
 #   dropped row and an oversight look identical from the outside.
 #
@@ -55,6 +68,7 @@ $manifest = [ordered]@{
     'P15 the gate reads the PIN, not the watch moving baseline'               = 'ADivergenceIsReported_EvenAfterTheWatchAlreadyReportedAndReBaselined'
     'P10 an unedited run gains no key and no decision (full list)'            = @{ Name = 'AnUneditedRun_WritesNoDivergenceKeyAndNoDivergenceDecision'; Expect = 'Executed' }
     'P16 the gate is QUIETER than the recorded hash'                          = @{ Name = 'AStrayEditorArtifactMidRun_LeavesTheRunGreenAndDelivering'; Expect = 'Executed' }
+    'P16b the gate filters the LOAD side too, not just the settle walk'      = @{ Name = 'APreExistingEditorArtifact_LeavesTheRunGreenAndDelivering'; Expect = 'Executed' }
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "gr32-divergence-census-$PID"
@@ -131,5 +145,5 @@ if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Output "  - $_" }
     exit 1
 }
-Write-Output "Census clean: all $($manifest.Count) pins are bound to a pinned test with the declared outcome (2 Failed, 2 declared-exempt Executed)."
+Write-Output "Census clean: all $($manifest.Count) pins are bound to a pinned test with the declared outcome (2 Failed, 3 declared-exempt Executed)."
 exit 0

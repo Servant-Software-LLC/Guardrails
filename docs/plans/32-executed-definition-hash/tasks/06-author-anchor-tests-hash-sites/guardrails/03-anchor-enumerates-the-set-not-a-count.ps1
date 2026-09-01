@@ -16,6 +16,17 @@
 #          ("every Compute occurrence in src maps to a known row") that catches Risk 6's seventh site
 #          added later by someone who has not read the document.
 #
+#          AND IT CATCHES THE HOLLOW ANCHOR, which is the failure a non-authoring review MEASURED against
+#          an earlier draft of this file. A class holding three string[] arrays of the right shape and a
+#          single [Fact] asserting Assert.Equal(Sites.Length, Sites.Distinct().Count()) exited ZERO. Every
+#          token clause above was satisfied - the eight members, the five files, the four zero-occurrence
+#          files, the shape anchors - because they are all just STRINGS IN AN ARRAY, and nothing required
+#          the test to open a file, walk a directory, or name the hasher. That retires Risk 6's
+#          repo-lifetime tripwire AND stage 9's ninth-call-site check in one move, and it is likely rather
+#          than theoretical: NO test in this repo reads src/**/*.cs as text today, so an implementer
+#          transfers the row-array half of the existing anchor idiom - which is exactly the half a hollow
+#          test satisfies. The five clauses below require the test to actually READ SOMETHING.
+#
 # WHY A SOURCE-SHAPE CHECK AND NOT A TEST (the #468 demotion order, worked): the property is "this test
 #          asserts a SET rather than a COUNT". A test cannot assert that about itself, and its OUTCOME is
 #          identical either way - which is precisely why the count form survived two review rounds. There
@@ -31,6 +42,14 @@
 #          exist yet - n/a, file created by this task - so every clause below measures nothing today. The
 #          ambient-vocabulary test still applies and passes: none of the eight member names is a
 #          namespace, a using, or a base type, so each is discriminating once the file exists.
+#
+#          The five READS-SOMETHING clauses are the exception worth naming, because they are the ONLY
+#          clauses here whose tokens could plausibly be ambient in a test file. Each was checked against
+#          that risk: 'TaskDefinitionHash' is the type under anchor and appears in no using or namespace
+#          this file needs; 'EnumerateFiles|GetFiles' and 'ReadAllText|ReadAllLines' are System.IO calls
+#          no row-array test has any reason to make; 'RepoRoot|TestPaths|CallerFilePath' is the repo's own
+#          root-resolution idiom; and the "src/ path literal is the subject directory itself. A test that
+#          carries all five is reading source. A test that carries none is the measured hollow anchor.
 $ErrorActionPreference = 'Continue'
 
 $ws = $env:GUARDRAILS_WORKSPACE
@@ -119,6 +138,35 @@ if ($code -cnotmatch '\bPlanLoader\b') {
 # the anchor test itself; a weak clause here would be worse than none, because it would sit exactly where
 # a reviewer looks for evidence.
 
+# --- REQUIRED: the test READS SOMETHING ---------------------------------------------------------------
+# MEASURED, not reasoned: without these five clauses a class of three string[] arrays and one
+# Assert.Equal(Sites.Length, Sites.Distinct().Count()) exits ZERO against this guardrail. Every token
+# clause above is satisfied by strings in an array. These five are what make the difference between an
+# anchor test and a list of names that happens to be shaped like one.
+#
+# Reads $code (comments gone, string literals INTACT) - load-bearing, because the path literal and the
+# member names this anchor pins ARE string literals; stripping them would make every clause here
+# unsatisfiable, the mirror dead-end #470 warns about at the required polarity.
+$readsSomething = [ordered]@{
+    '\bTaskDefinitionHash\b' =
+        "never names TaskDefinitionHash. The anchor's whole subject is where that call is made; a test that cannot name it is matching row strings against each other, not against src/."
+    '\b(RepoRoot|TestPaths|CallerFilePath)\b' =
+        "resolves no repo root (expected RepoRoot, TestPaths or CallerFilePath). The repo's anchor idiom resolves the root from the test file's OWN CallerFilePath - never AppContext.BaseDirectory, never a walk-up search for .git. Without a root the test cannot address src/ at all."
+    '\b(EnumerateFiles|GetFiles)\b' =
+        "enumerates no files. Anchor 1's SECOND direction - every TaskDefinitionHash.Compute occurrence anywhere in src maps to a known row - is the one that catches Risk 6's seventh site added later, and it is impossible without walking the tree. A test asserting only that the eight KNOWN rows are present is the useless half."
+    '\b(ReadAllText|ReadAllLines)\b' =
+        "reads no file contents. Every anchor in section 9 is a claim about the TEXT of src/ - the call sites, the declaration shape, the no-disk-fallback line check, the clone check. None of them can be evaluated without reading a file."
+    '"src[/\\]' =
+        'contains no "src/ path literal. The subject of every anchor is the src tree; a test that never addresses it is anchoring nothing. (Both separators are accepted - the repo builds these paths with Path.Combine and with literals.)'
+}
+foreach ($pattern in $readsSomething.Keys) {
+    # -cmatch: C# identifiers are case-SENSITIVE and PowerShell -match is not, so a case-insensitive
+    # require-present clause false-GREENS on text C# would never compile (taxonomy 3).
+    if ($code -cnotmatch $pattern) {
+        $failures += "$rel $($readsSomething[$pattern]) MEASURED: a class of three string[] arrays and one Assert.Equal(Sites.Length, Sites.Distinct().Count()) passes every OTHER clause in this guardrail and exits 0. These five clauses exist because that mutant was run, not because a hollow anchor seemed possible."
+    }
+}
+
 # --- FORBIDDEN: a bare COUNT assertion ---------------------------------------------------------------
 # Reads $scan (comments AND string literals gone), so a comment explaining WHY a count is forbidden -
 # which a good implementer will want to write, and which this plan asks for - cannot trip the ban, and
@@ -149,5 +197,5 @@ if ($failures.Count -gt 0) {
     Write-Output "This test is the only artifact in the plan whose value is repo-lifetime rather than run-lifetime (Risk 6: a seventh site added later by someone who has not read this document). A count cannot carry that; a named set can."
     exit 1
 }
-Write-Output "Anchor shape sound: all eight sites named by file and member, the four zero-occurrence files named, the three shape anchors present, and no count-shaped assertion."
+Write-Output "Anchor shape sound: all eight sites named by file and member, the four zero-occurrence files named, the shape anchors present, the test actually reads src/ (root, enumeration, file read, path literal, hasher named), and no count-shaped assertion."
 exit 0

@@ -84,7 +84,7 @@ if ($code -ne 0) {
     # #179: re-emit the failure DETAIL at the END so the WHY reaches the halt feedback, not just [FAIL] names.
     Write-Output ""
     Write-Output "=== Pre-existing failures in Guardrails.Core.Tests (detail re-emitted) ==="
-    foreach ($line in ($log -split "r?n")) {
+    foreach ($line in ($log -split "\r?\n")) {
         if ($line -match '^\s*(\[FAIL\]|Failed\s|Error Message:|Expected:|Actual:|\s+at\s)') {
             Write-Output $line
         }

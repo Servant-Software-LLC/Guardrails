@@ -38,7 +38,7 @@ Create **`tests/Guardrails.Core.Tests/Execution/ExecutedDefinitionDivergenceTest
 - Class **`ExecutedDefinitionDivergenceTests`** - **pinned; the guardrails filter on it**. `public sealed
   class`, `IDisposable` for its temp-dir fixture.
 
-Four `[Fact]`s, with these **EXACT** method names:
+Five `[Fact]`s, with these **EXACT** method names:
 
 | Pin | Method name | Behaviour |
 |---|---|---|
@@ -46,6 +46,7 @@ Four `[Fact]`s, with these **EXACT** method names:
 | **P15** | `ADivergenceIsReported_EvenAfterTheWatchAlreadyReportedAndReBaselined` | The **provenance** discriminator. **RED today.** See below - this is the most important pin in the file. |
 | **P10** | `AnUneditedRun_WritesNoDivergenceKeyAndNoDivergenceDecision` | An unedited run's `run.json` gains **no** new key and **no** new `decisions[]` entry - asserted on the **FULL** lists, never on the absence of one token. **DECLARED EXEMPTION.** |
 | **P16** | `AStrayEditorArtifactMidRun_LeavesTheRunGreenAndDelivering` | A mid-run stray editor artifact (`.DS_Store`) under a task's `guardrails/` leaves the run **green and delivering**, while that task's **recorded** hash still differs from disk. **DECLARED EXEMPTION.** |
+| **P16b** | `APreExistingEditorArtifact_LeavesTheRunGreenAndDelivering` | The **other side** of the same tripwire. An artifact that is **already present when the plan loads** - a `.DS_Store` in the checkout, a `.swp`, a `.orig` - with **nobody editing anything** during the run, leaves the run **green and delivering**. **DECLARED EXEMPTION.** |
 
 ### P15 is the pin that decides whether this plan shipped or something else did
 
@@ -77,9 +78,9 @@ other wave's `WaveNode`, `TaskNode`s and pins ride through unchanged (section 7)
 it falls out of pinning at `TaskNode` construction, and it is what makes the negative half meaningful
 rather than vacuous.
 
-### Two DECLARED EXEMPTIONS
+### Three DECLARED EXEMPTIONS
 
-P10 and P16 are **silence** pins: true today, and they must **stay** true. A correct test is GREEN on this
+P10, P16 and P16b are **silence** pins: true today, and they must **stay** true. A correct test is GREEN on this
 tree, so demanding red would demand a correct implementation fail. The census asserts they **executed**
 (present, not `[Skip]`ped). Write them; do not skip them.
 
@@ -91,6 +92,15 @@ tree, so demanding red would demand a correct implementation fail. The census as
   editor artifact **is** part of a task's recorded definition - and must stay that way. The **gate**
   compares the ignore-list-filtered surface; the **recorded hash** keeps the full one. Both halves in one
   test.
+- **P16b** is the half P16 structurally cannot cover, and it is the **reachable** one. P16's artifact
+  appears **mid-run**, so it is absent from the load-time map and present in the settle walk - an
+  implementation that filters **only the settle side** passes P16 while being broken. An artifact present
+  **at load** is the case that bites: filtered on one side only, its label sits in *before* and not in
+  *after*, reads as a **vanished** label, and blocks delivery on a run **nobody edited**. Every trigger is
+  ordinary - a `.DS_Store` already in the checkout, an operator's `.swp` from opening a guardrail to read
+  it, a `.orig`/`.rej` from any pre-run git operation. Build the fixture with the artifact **already in
+  the task's `guardrails/` folder before the run starts**, edit nothing, and assert the run is green and
+  delivers.
 
 ### NAME NO API MEMBER THIS PLAN HAS NOT WRITTEN YET
 

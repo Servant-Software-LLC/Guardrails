@@ -35,8 +35,15 @@
 #          src/Guardrails.Cli/Commands/RunCommand.cs, case-SENSITIVE (#478):
 #            DefinitionHashAtSettle      0   this stage's deliverable (the condition it branches on)
 #            ConfirmSafeDriftIfInteractive  present   EXPECTED nonzero - the member that renders the
-#                                            options. A tests-untouched REGRESSION clause: the branch must
-#                                            still be there afterwards, refusing rather than deleted.
+#                                            options, and the REGION the condition clause is scoped to.
+#                                            A tests-untouched REGRESSION clause: the branch must still be
+#                                            there afterwards, refusing rather than deleted.
+#            DefinitionHashAtSettle INSIDE
+#            that member                 0   this stage's deliverable, and scoped rather than file-wide
+#                                            ON PURPOSE (W5): stage 15 has four other deliverables in this
+#                                            ~2000-line file, at least two of which plausibly name the
+#                                            divergence record, so a file-wide clause would be satisfied
+#                                            by a use that has nothing to do with the drift prompt.
 #            RecordDriftAccepted         1   EXPECTED nonzero - the [a] handler's call. The refusal is a
 #                                            branch AROUND it for one class of task, never its removal:
 #                                            ordinary between-runs drift-accept is UNCHANGED (section 12),
@@ -68,15 +75,35 @@ $code = [regex]::Replace($code, '(?m)//[^\r\n]*', ' ')       # // and /// line c
 # ACCUMULATE (#478): one distinguishable message per clause, dumped once.
 $failures = @()
 
-# --- REQUIRED: the refusal is CONDITIONED on the divergence record ---------------------------------
-# -cmatch: C# identifiers are case-SENSITIVE and PowerShell -match is not (taxonomy 3).
-if ($code -cnotmatch '\bDefinitionHashAtSettle\b') {
-    $failures += "$rel never reads DefinitionHashAtSettle. Section 6.6: 'The condition is cheap and needs no new state - a task whose journal entry carries definitionHashAtSettle is BY CONSTRUCTION one that ran a definition it does not match, and accepting its current disk hash is never sound.' Without that condition the refusal is either absent or unconditional, and an unconditional refusal changes [a] for ORDINARY between-runs drift too, which section 12 puts explicitly out of scope."
+# --- Member regions, so the condition is bound to the BRANCH and not merely to the FILE (W5) --------
+# The first version of this clause was a file-wide token check on a ~2000-line file, and stage 15 has FOUR
+# other deliverables in it - the halt render, the terminal-gate fix, the delivery reason, the advisory -
+# at least two of which plausibly mention the divergence record for their own reasons. A file-wide hit
+# would then satisfy a clause about the drift PROMPT while the prompt itself was untouched. Same region
+# cutter as stage 5's sibling check, including the reason it cuts at the opening brace: a head window
+# matched a CALL inside another member's body there and returned the wrong region entirely.
+$declStarts = [regex]::Matches($code, '(?m)^    (?:public|private|internal|protected)\b')
+$regions    = @()
+for ($i = 0; $i -lt $declStarts.Count; $i++) {
+    $start = $declStarts[$i].Index
+    $end   = if ($i + 1 -lt $declStarts.Count) { $declStarts[$i + 1].Index } else { $code.Length }
+    $regions += ,$code.Substring($start, $end - $start)
 }
 
-# --- REQUIRED: the branch that renders the options still exists -------------------------------------
-if ($code -cnotmatch '\bConfirmSafeDriftIfInteractive\b') {
-    $failures += "$rel no longer declares ConfirmSafeDriftIfInteractive. That is the member rendering the [y] / [a] / [N] options; the refusal is a branch INSIDE it, never its deletion. Removing the prompt entirely would take the [y] rewind and the [N] abort with it - remediations section 7.2 owns and this plan does not touch."
+$promptRegion = $null
+foreach ($region in $regions) {
+    $brace = [regex]::Match($region, '(?m)^    \{')
+    $sig   = if ($brace.Success) { $region.Substring(0, $brace.Index) } else { $region }
+    if ($sig -cmatch '\bConfirmSafeDriftIfInteractive\s*[(<]') { $promptRegion = $region; break }
+}
+
+# --- REQUIRED: the refusal is CONDITIONED on the divergence record, INSIDE the prompt ---------------
+# -cmatch: C# identifiers are case-SENSITIVE and PowerShell -match is not (taxonomy 3).
+if ($null -eq $promptRegion) {
+    $failures += "$rel declares no ConfirmSafeDriftIfInteractive member. That is the branch rendering the [y] / [a] / [N] options; the refusal is a condition INSIDE it, never its deletion. Removing the prompt would take the [y] rewind and the [N] abort with it - remediations section 7.2 owns and this plan does not touch."
+}
+elseif ($promptRegion -cnotmatch '\bDefinitionHashAtSettle\b') {
+    $failures += "$rel mentions DefinitionHashAtSettle nowhere inside ConfirmSafeDriftIfInteractive. Section 6.6: 'The condition is cheap and needs no new state - a task whose journal entry carries definitionHashAtSettle is BY CONSTRUCTION one that ran a definition it does not match, and accepting its current disk hash is never sound.' A hit ELSEWHERE in this file does not bind the refusal to the branch: stage 15 has four other deliverables here, at least two of which plausibly name the divergence record for their own reasons, so a file-wide check would go green on a prompt that was never touched. Without the condition IN THE BRANCH the refusal is either absent or unconditional, and an unconditional refusal changes [a] for ORDINARY between-runs drift too, which section 12 puts explicitly out of scope."
 }
 
 # --- REQUIRED: the accept HANDLER survives, because ordinary drift-accept is unchanged --------------
@@ -100,5 +127,5 @@ if ($failures.Count -gt 0) {
     Write-Output "A branch, not a deletion: [a] stays exactly as it is for an ordinary between-runs edit, and is refused only for a task whose journal entry carries definitionHashAtSettle. That field is stage 12's; stage 13 is what writes it."
     exit 1
 }
-Write-Output "Drift-accept refusal present: conditioned on the divergence record, inside the surviving prompt, with the accept handler intact for ordinary drift and the remedy named."
+Write-Output "Drift-accept refusal present: the divergence record is read INSIDE ConfirmSafeDriftIfInteractive, the accept handler is intact for ordinary drift, and the remedy is named."
 exit 0

@@ -69,8 +69,18 @@ $failures = @()
 
 # --- REQUIRED: the gate calls the ONE shared predicate ---------------------------------------------
 # -cmatch: C# identifiers are case-SENSITIVE and PowerShell -match is not (taxonomy 3).
-if ($code -cnotmatch '\bIsEditorArtifact\s*\(') {
+# TWO call sites, not one, and the floor is the whole point of this clause. The gate filters BOTH the
+# load-time map AND the settle walk (section 6.3): the capture is UNFILTERED, so an implementation that
+# filters only the recompute leaves every artifact present AT LOAD in the BEFORE map and absent from
+# the AFTER map - it reads as a VANISHED label and blocks delivery on a run nobody edited. P16 cannot
+# see it (its artifact appears mid-run, so it is absent from both maps); P16b is the behavioural pin
+# that can, and this is its structural half.
+$calls = [regex]::Matches($code, '\bIsEditorArtifact\s*\(').Count
+if ($calls -lt 1) {
     $failures += "$rel never calls IsEditorArtifact. Section 6.2 requires the gate and the plan-edit watch to share ONE ignore predicate, and stage 5 promoted it to internal static for exactly this. If the call does not compile, stage 5's promotion did not land - ESCALATE with needsHuman rather than inlining the list, which is the escape section 15.2 says every other pressure points at."
+}
+elseif ($calls -lt 2) {
+    $failures += "$rel calls IsEditorArtifact exactly ONCE. The gate must filter BOTH sides before diffing - the load-time map from stage 3 AND the settle walk - because the capture is UNFILTERED (section 5.2: the predicate is private until stage 5, which is downstream of stage 3, so filtering at capture would force a second copy of the ignore list). One call means only the settle walk is filtered, and then every artifact ALREADY PRESENT AT LOAD sits in the BEFORE map and not in the AFTER map: it reads as a VANISHED label and BLOCKS DELIVERY on a run nobody edited - a .DS_Store already in the checkout, an operator's .swp, a .orig/.rej from any pre-run git operation. That is section 13's 'disabled within a week' arriving through the one door P16 cannot watch, because P16's artifact appears MID-RUN and is absent from both maps. P16b is the behavioural pin that fails when this clause does."
 }
 
 # --- REQUIRED: the gate diffs the PER-FILE map, not two aggregates ----------------------------------
@@ -123,5 +133,5 @@ if ($failures.Count -gt 0) {
     Write-Output "The gate compares the IGNORE-LIST-FILTERED surface; the RECORDED hash keeps the full one. HashText.cs is outside this task's writeScope precisely so those two cannot be conflated - filtering what the hash COVERS would move every recorded definition hash in every plan."
     exit 1
 }
-Write-Output "Gate wiring sound: it calls the one shared ignore predicate, diffs the per-file map, names no ignore pattern of its own, and all four read sites still recompute from disk."
+Write-Output "Gate wiring sound: it filters BOTH sides through the one shared ignore predicate, diffs the per-file map, names no ignore pattern of its own, and all four read sites still recompute from disk."
 exit 0

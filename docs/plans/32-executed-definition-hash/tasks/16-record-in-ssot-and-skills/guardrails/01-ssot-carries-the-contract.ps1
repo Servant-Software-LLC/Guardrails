@@ -36,6 +36,32 @@
 #          NOTHING: invisible text, not thin prose. This file carries 4 comment openers today, all real.
 #          FENCED CODE BLOCKS ARE NOT STRIPPED: a fence RENDERS, and section 14's edits 1, 5 and 7 land
 #          INSIDE jsonc fences, so stripping fences would delete the very text this check demands.
+#
+# MEASURED BASELINES on design/32-executed-definition-hash @4a308ab, against
+#          docs/plans/02-schemas-and-contracts.md, with each clause's own case sensitivity (#478). Run
+#          against the RAW file; every hit below was then checked for where it lives, because this
+#          guardrail matches COMMENT-STRIPPED text and a hit inside an HTML comment would not count:
+#            definitionHashAtSettle          0   this stage's deliverable (case-SENSITIVE)
+#            DefinitionHashAtLoad            0   this stage's deliverable (case-SENSITIVE)
+#            ExecutedDefinitionDivergence    0   this stage's deliverable (case-SENSITIVE)
+#            RecordDriftAccepted             0   this stage's deliverable - section 14 item 7's ONE
+#                                                reachable exception. Zero today is exactly why the item
+#                                                is easy to skip: nothing in the document currently hints
+#                                                that the exception exists.
+#            reads recompute from disk       0   this stage's deliverable (case-INSENSITIVE: prose)
+#            partially LIVE                  1   EXPECTED nonzero - a RETENTION clause, not a delivery.
+#                                                Section 14 item 2 REPLACES that bullet in its entirety
+#                                                and the replacement KEEPS the phrase, so this clause
+#                                                asserts the boundary call survived the rewrite rather
+#                                                than being deleted with the accepted-limitation text it
+#                                                used to introduce. Green before and after, by design.
+#            #556                            2   EXPECTED nonzero - the same shape. Both occurrences are
+#                                                plan 31's own boundary calls naming this issue as the
+#                                                fix; the clause asserts the citation is still there
+#                                                after a rewrite that touches the paragraphs around it.
+#          THE TWO NONZERO ROWS ARE THE ONLY RETENTION CLAUSES HERE, and they are named as such rather
+#          than left to look like ordinary required-present clauses that happen to be pre-satisfied. A
+#          reviewer re-measuring them should get 1 and 2, not 0.
 $ErrorActionPreference = 'Continue'
 
 $ws = $env:GUARDRAILS_WORKSPACE

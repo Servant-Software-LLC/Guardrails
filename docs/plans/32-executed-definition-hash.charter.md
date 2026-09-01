@@ -246,7 +246,7 @@ expression in `src/` (`PlanLoader.cs:1061`, inside `LoadTask` declared at `:1011
 ```csharp
 // TaskNode.cs — both captured by the loader from the bytes it just read.
 public string? DefinitionHashAtLoad { get; init; }                                // FULL surface, aggregate. The journal records THIS.
-public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }  // FILTERED, per file. The GATE diffs THIS.
+public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }  // UNFILTERED, per file. The GATE filters BOTH sides and diffs THIS.
 ```
 
 **Two captures, not one — and the second is not optional.** An adversarial pass found that a single
@@ -258,6 +258,24 @@ different file sets (wrong on any task carrying an editor artifact), abandon §6
 `.DS_Store`, or drive the gate off `LivePlanEditWatch`'s moving baseline (P15). **So the map lands in stage
 3, with the aggregate** — not discovered at stage 13 by an agent whose `writeScope` cannot reach
 `TaskNode.cs`.
+
+**The map is captured UNFILTERED, and the FILTERING happens at the gate — corrected here rather than left
+to a breakdown note.** An earlier revision of this section said the map was captured *filtered*, which is
+not buildable in the order §15 sequences the stages: the ignore predicate is
+`LivePlanEditWatch.IsEditorArtifact`, `private` until **stage 5**, and stage 5 is *downstream* of stage 3
+because it needs stage 3's pin before it can stamp it. Filtering at capture would therefore force a
+**second copy of the ignore list** into `PlanLoader.cs` — the exact escape §15.2 says every pressure on this
+plan points at, and the one that silently un-decides §6.2.
+
+So: **stage 3 captures the full per-file map; stage 13 applies the one shared predicate to BOTH sides
+before diffing.** The verdict is identical, because the filter is a pure function of the file name —
+filtering a map at capture time and filtering both maps at compare time remove the same labels. What it
+buys is that the predicate has exactly one call path and one home, which is what §6.2 actually asks for.
+**Both sides, not just the settle walk:** filtering only the recompute would leave every artifact already
+present at LOAD in the *before* map and absent from the *after* map, reading as a vanished label — so a
+`.DS_Store`, or a `.orig`/`.rej` left by any pre-run git operation, would block delivery on a run nobody
+edited. That is §13's "disabled within a week" arriving through the one door P16 cannot see, which is why
+§6.7 carries **P16b** beside P16.
 
 **Cost.** A handful of entries per task — `task.json`, one action file, each guardrail/preflight script and
 sidecar; on this repo's own plans typically 3–8 short strings, held for the life of the run.
@@ -582,8 +600,17 @@ an editor artifact they differ with nobody having edited anything:
 
 | | Value | Cost |
 |---|---|---|
-| before | `task.DefinitionFilesAtLoad` — filtered, per file, captured at load (§5.2) | free |
-| after | the same filtered per-file walk over `TaskDefinitionFiles.Enumerate`, at settle | one file walk |
+| before | `task.DefinitionFilesAtLoad` — per file, captured **unfiltered** at load (§5.2), **filtered here** | free |
+| after | the same per-file walk over `TaskDefinitionFiles.Enumerate`, at settle, **filtered here** | one file walk |
+
+> **The gate filters BOTH sides, and that is not a detail.** The capture is unfiltered (§5.2 says why: the
+> predicate is private until stage 5, which is downstream of stage 3), so the gate applies
+> `LivePlanEditWatch.IsEditorArtifact` to the load-time map **and** to the settle walk before comparing.
+> Filtering only the settle side leaves any artifact present **at load** in the *before* map and absent
+> from the *after* map — it reads as a **vanished label**, and the run is blocked on a `.DS_Store`, a
+> `.swp`, or a `.orig`/`.rej` from any pre-run git operation, with nobody having edited anything. P16
+> cannot see that (its artifact appears mid-run, so it is absent from both maps and correctly ignored);
+> **P16b** is the pin that can.
 
 The **verdict** is "some label's hash moved, or a label appeared or vanished." That is also exactly the
 breakdown §6.2 requires the gate to report, so the diff is not extra work done for the check — it *is* the
@@ -757,6 +784,15 @@ this plan's to relitigate.
   `guardrails/` leaves the run **green and delivering** while that task's *recorded* hash still differs
   from disk. This is the shipped `StrayDsStoreInTargetGuardrails` assertion, and it must survive this plan
   unchanged — it is the only thing standing between the delivery gate and being muted within a week.
+- **P16b — the gate filters the LOAD side too, not just the settle walk.** P16's artifact appears
+  **mid-run**, so it is absent from the load-time map and present in the settle walk; an implementation
+  that filters only the settle side still passes it. The reachable failure it cannot see is an artifact
+  present **at load** — a `.DS_Store` already in the checkout, a `.swp` from an operator who opened a
+  guardrail to read it, a `.orig`/`.rej` from any pre-run git operation. Filtered on one side only, that
+  label is in *before* and not in *after*, reads as **vanished**, and blocks delivery on a run nobody
+  edited. So: **a task carrying a pre-existing editor artifact leaves the run green and delivering.** It
+  is green today and must stay green, exactly as P16 is — a declared exemption, not a defect pin — and
+  together the two make the gate's quietness a two-sided property rather than a one-sided one.
 - **P13 — the work survives.** After a divergence halt, the diverged task's integration commit is on the
   plan branch and its journal entry reads `succeeded`. Nothing is discarded, and the branch stays
   Part-C-corroborable (§6.3).

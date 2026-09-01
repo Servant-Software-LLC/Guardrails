@@ -60,6 +60,9 @@ $scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')      # C# 11 raw strings
 $scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')     # verbatim strings
 $scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')     # ordinary strings
 
+# Matched as an INVOCATION, tolerating the Journal. prefix and whitespace - not one literal spelling.
+$callPattern = '(?:\bJournal\s*\.\s*)?\bTaskDefinitionHash\s*\.\s*Compute\s*\('
+
 # ACCUMULATE (#478): one distinguishable message per clause, dumped once.
 $failures = @()
 
@@ -80,6 +83,20 @@ if ($code -cnotmatch '\bDefinitionHashAtLoad\b') {
 # --- FORBIDDEN: no coalescing fallback -------------------------------------------------------------
 if ($scan -cmatch 'DefinitionHashAtLoad\s*(\?\?|\?\?=)') {
     $failures += "$rel coalesces off a pin. Section 5.2's rule is the same at wave level as at task level: a null pin records a null hash, with no fallback to disk at any write site, ever. A '?? Compute(...)' tail is behaviourally identical for every node the loader built - which in production is all of them - so it passes every behavioural pin while restoring the defect for anything else."
+}
+
+# --- FORBIDDEN: a private helper that reaches disk BETWEEN the members above (W6) ------------------
+# The region cutter above starts a new region at every 4-space access modifier, so a NEW private helper
+# is its own region and neither write-site clause sees it. A helper spelled
+#     if (task.DefinitionHashAtLoad is { } pin) { return pin; }
+#     return TaskDefinitionHash.Compute(task);
+# passes every clause above: both write-site regions are clean, and there is no '??' anywhere. The
+# file-wide COUNT is what closes it - it is not an adequacy floor (dotnet.md forbids those), it is an
+# EQUALITY against a set this plan enumerates by file and member, and stage 6's committed anchor test
+# asserts the same set repo-wide and for keeps.
+$total = [regex]::Matches($scan, $callPattern).Count
+if ($total -ne 1) {
+    $failures += "$rel contains $total TaskDefinitionHash.Compute call site(s); after this stage there must be exactly 1 (the disk form task fold - section 4.3 row 11). A HIGHER count means a call reappeared somewhere the per-member clauses above do not look - most likely a new private helper holding an 'if (pin is not null) return pin; return Compute(task);' fallback, which every other clause in this file passes because both write-site regions are clean and there is no coalescing operator. A LOWER count means a READ site lost its recompute. Section 4.3 enumerates the surviving sites by file AND member; stage 6's anchor test pins the same set repo-wide."
 }
 
 if ($failures.Count -gt 0) {

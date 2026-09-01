@@ -148,6 +148,20 @@ if ($code -cnotmatch '\bDefinitionHashAtLoad\b') {
     $failures += "$rel never mentions DefinitionHashAtLoad. Removing the Compute calls from the two write sites is only half the change: both must STAMP the load-time pin. If they stamp nothing, every worktree settle records a null hash and the plan has silenced definition drift rather than fixed it."
 }
 
+# --- FORBIDDEN: a private helper that reaches disk BETWEEN the members above (W6) ------------------
+# The region cutter above starts a new region at every 4-space access modifier, so a NEW private helper
+# is its own region and neither write-site clause sees it. A helper spelled
+#     if (task.DefinitionHashAtLoad is { } pin) { return pin; }
+#     return TaskDefinitionHash.Compute(task);
+# passes every clause above: both write-site regions are clean, and there is no '??' anywhere. The
+# file-wide COUNT is what closes it - it is not an adequacy floor (dotnet.md forbids those), it is an
+# EQUALITY against a set this plan enumerates by file and member, and stage 6's committed anchor test
+# asserts the same set repo-wide and for keeps.
+$total = [regex]::Matches($scan, $callPattern).Count
+if ($total -ne 4) {
+    $failures += "$rel contains $total TaskDefinitionHash.Compute call site(s); after this stage there must be exactly 4 (the four READ sites, with W2 and W3 now stamping the pin). A HIGHER count means a call reappeared somewhere the per-member clauses above do not look - most likely a new private helper holding an 'if (pin is not null) return pin; return Compute(task);' fallback, which every other clause in this file passes because both write-site regions are clean and there is no coalescing operator. A LOWER count means a READ site lost its recompute. Section 4.3 enumerates the surviving sites by file AND member; stage 6's anchor test pins the same set repo-wide."
+}
+
 if ($failures.Count -gt 0) {
     Write-Output ""
     Write-Output "=== writes read the pin, reads read disk: $($failures.Count) problem(s) in $rel ==="

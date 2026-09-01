@@ -33,6 +33,21 @@
 #          text, not thin prose - so a '<!-- TODO: document the divergence gate here -->' would otherwise
 #          discharge this entire check. FENCED CODE BLOCKS ARE NOT STRIPPED: a fence renders, and a token
 #          documented inside a usage fence is legitimate house style.
+#
+# MEASURED BASELINES on design/32-executed-definition-hash @4a308ab, against
+#          .claude/skills/guardrails-domain-knowledge/SKILL.md, with each clause's own case sensitivity
+#          (#478):
+#            DefinitionHashAtLoad            0   this stage's deliverable (case-SENSITIVE)
+#            definitionHashAtSettle          0   this stage's deliverable (case-SENSITIVE)
+#            held from load                  0   this stage's deliverable (case-INSENSITIVE: prose)
+#            re-?read per attempt            0   this stage's deliverable (case-INSENSITIVE: prose)
+#            reads recompute from disk       0   this stage's deliverable (case-INSENSITIVE: prose)
+#            does not deliver | delivery is
+#            blocked | blocks delivery       0   this stage's deliverable (case-INSENSITIVE: prose)
+#          EVERY ROW IS ZERO, and that is worth stating rather than leaving implicit: this skill carries
+#          three occurrences of 'definitionHash' today but says nothing at all about WHEN the value is
+#          captured, which is the whole content of section 14 item 8. There are no retention clauses in
+#          this file - nothing here is pre-satisfied, so every failure is a real gap.
 $ErrorActionPreference = 'Continue'
 
 $ws = $env:GUARDRAILS_WORKSPACE

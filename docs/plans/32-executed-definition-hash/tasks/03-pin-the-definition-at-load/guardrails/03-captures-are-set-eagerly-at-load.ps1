@@ -37,6 +37,11 @@
 #            DefinitionFilesAtLoad              0   this task's deliverable
 #            TaskDefinitionFiles                0   this task's deliverable
 #            Lazy<                              0   forbidden-present
+#            .DS_Store / Thumbs.db / .swp /
+#            .orig / .rej                       0   forbidden-present, one clause each. This stage is
+#                                                   where the pressure to inline a second copy of the
+#                                                   ignore list is highest, because the predicate that
+#                                                   would do the filtering is still private here.
 #            with { ... Directory = / Action =  0   forbidden-present. The two existing clones (:949
 #                                                   DependsOn, :952 Tasks) rebind neither, which is what
 #                                                   makes section 5.2's "both captures ride through"
@@ -100,6 +105,14 @@ if ($code -cnotmatch '\bTaskDefinitionFiles\b') {
 if ($scan -cmatch 'DefinitionHashAtLoad\s*(\?\?|\?\?=)' -or $scan -cmatch 'DefinitionFilesAtLoad\s*(\?\?|\?\?=)') {
     $failures += "$rel coalesces off one of the captures. A '?? TaskDefinitionHash.Compute(task)' tail is what section 5.2 calls THE CHEAPEST WRONG IMPLEMENTATION OF THIS ENTIRE PLAN: it reads like defensive coding, passes every behavioural pin in this plan, and silently restores the defect for any node the loader did not build. A null pin records a null hash - there is no fallback to disk at any site, ever."
 }
+foreach ($pattern in @('.DS_Store', 'Thumbs.db', '.swp', '.orig', '.rej')) {
+    # Reads $code, NOT $scan: the patterns ARE string literals, so stripping literals would make this ban
+    # unfireable by construction - the mirror of #470's dead-end at the forbidden polarity. A comment
+    # explaining that the list lives elsewhere is stripped and therefore safe; a literal in code is not.
+    if ($code -cmatch [regex]::Escape($pattern)) {
+        $failures += "$rel names the ignore pattern '$pattern'. That is a SECOND COPY of the editor-artifact list, and this is the stage where the pressure to write one is HIGHEST: section 5.2 originally described DefinitionFilesAtLoad as the FILTERED map, and the only predicate that could filter it - LivePlanEditWatch.IsEditorArtifact - is still PRIVATE at this point, because stage 5 promotes it and stage 5 is DOWNSTREAM of you. So the map is captured UNFILTERED and stage 13 filters BOTH sides at diff time; that is why your prompt says so and why the plan now says so too. If you believe filtering has to happen here, ESCALATE with needsHuman - do NOT inline the list. Section 15.2 names exactly this escape as the one that silently un-decides section 6.2."
+    }
+}
 if ($scan -cmatch '\bLazy\s*<') {
     $failures += "$rel uses Lazy<>. Section 11: a Lazy, a ??=, or a computed property that reads disk on access passes every test that does not edit inside the exact window, and silently restores the defect. Both captures are computed EAGERLY, at construction, from the bytes the loader is reading."
 }
@@ -117,5 +130,5 @@ if ($failures.Count -gt 0) {
     Write-Output "src/Guardrails.Core/Hashing/HashText.cs and src/Guardrails.Core/Journal/TaskDefinitionFiles.cs are OUTSIDE this task's writeScope, deliberately: changing the file set or the framing would move every recorded definition hash in every plan (section 11). CALL them; never change them."
     exit 1
 }
-Write-Output "Eager capture sound: one construction site, both pins assigned at load from the same enumeration, no fallback, no Lazy, no identity-rebinding clone."
+Write-Output "Eager capture sound: one construction site, both pins assigned at load from the same enumeration, no fallback, no Lazy, no second copy of the ignore list, no identity-rebinding clone."
 exit 0

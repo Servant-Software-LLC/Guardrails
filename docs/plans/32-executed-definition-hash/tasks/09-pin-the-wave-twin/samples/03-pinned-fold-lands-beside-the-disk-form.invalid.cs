@@ -16,8 +16,8 @@ namespace Guardrails.Core.Journal;
 /// </summary>
 public static class WaveDefinitionHash
 {
-    private const char Unit = '';
-    private const char Record = '';
+    private const char Unit = '\u001F';
+    private const char Record = '\u001E';
 
     /// <summary>
     /// The DISK form. UNCHANGED by plan 32: every READ site depends on it recomputing from the bytes on
