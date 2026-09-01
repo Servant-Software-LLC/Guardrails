@@ -1,0 +1,14 @@
+{
+  "description": "Author section 5.8's wave pins P7a and P7b - the wave hash changes iff a constituent task hash changes, and a mid-run wave-gate edit leaves the stamped wave hash unmoved - reconstructing the expected fold independently rather than calling the production function",
+  "dependsOn": [
+    "05-stamp-the-pin-worktree"
+  ],
+  "stableId": "p32t08",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Journal/WaveExecutedDefinitionHashTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

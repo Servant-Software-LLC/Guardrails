@@ -1,5 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Guardrails.Core.Hashing;
+using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Loading;
@@ -814,7 +818,15 @@ public sealed class PlanLoader
                 Directory = path,
                 Tasks = waveTasks,
                 Preflights = LoadGuardrailsFromFolder(Path.Combine(path, PreflightsDirName), diagnostics, enforceCatches: true),
-                Guardrails = LoadGuardrailsFromFolder(Path.Combine(path, GuardrailsDirName), diagnostics, enforceCatches: true)
+                Guardrails = LoadGuardrailsFromFolder(Path.Combine(path, GuardrailsDirName), diagnostics, enforceCatches: true),
+
+                // Plan 32-executed-definition-hash §5.4: the wave twin of the task-level pin below, taken
+                // EAGERLY here — the wave's own gate folders and optional brief as they are RIGHT NOW, from
+                // the same read the tasks above were built from. Write site W5 (the wave-completion stamp)
+                // folds this with each task's capture; nothing recomputes it from disk later. Unlike the
+                // task pin this needs no post-construction `with`, because the gate surface is addressed by
+                // the wave DIRECTORY and nothing on the node.
+                DefinitionHashAtLoad = WaveDefinitionHash.GateDefinitionOf(path)
             });
         }
 
@@ -1058,7 +1070,7 @@ public sealed class PlanLoader
         IReadOnlyList<GuardrailDefinition> preflights =
             LoadGuardrailsFromFolder(Path.Combine(taskFolder, PreflightsDirName), diagnostics, enforceCatches: true);
 
-        return new TaskNode
+        var node = new TaskNode
         {
             Id = taskId,
             WaveDir = waveDir,
@@ -1079,6 +1091,48 @@ public sealed class PlanLoader
             Guardrails = guardrails,
             Preflights = preflights
         };
+
+        // Plan 32-executed-definition-hash §5.2: TaskDefinitionHash.Compute needs a fully-built node
+        // (it reads node.Directory and the RESOLVED node.Action.Path), so the pin cannot be set inside
+        // the object initializer above. Both captures are read by the harness from the bytes read HERE,
+        // at load — never recomputed from disk at any later write site.
+        return node with
+        {
+            DefinitionHashAtLoad = TaskDefinitionHash.Compute(node),
+            DefinitionFilesAtLoad = CaptureDefinitionFilesAtLoad(node),
+        };
+    }
+
+    /// <summary>
+    /// Fold <see cref="TaskDefinitionFiles.Enumerate"/> — the SAME enumeration
+    /// <see cref="TaskDefinitionHash.Compute"/> folds — into a per-file hash map at load time (plan
+    /// 32-executed-definition-hash §5.2): the UNFILTERED surface a later settle-time gate filters and
+    /// diffs. Each entry's hash is built the same way <c>LivePlanEditWatch.TryHashFile</c> builds one
+    /// (append into a fresh <see cref="StringBuilder"/> via <see cref="HashText.AppendFile"/>, then
+    /// SHA-256 the result), so the two per-file surfaces can never disagree about the same file. An
+    /// unreadable entry is skipped, never thrown — the loader stays total, exactly as <see cref="HashText"/>
+    /// and the watch already handle it.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> CaptureDefinitionFilesAtLoad(TaskNode task)
+    {
+        var files = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach ((string label, string absolutePath) in TaskDefinitionFiles.Enumerate(task))
+        {
+            try
+            {
+                var builder = new StringBuilder();
+                HashText.AppendFile(builder, label, absolutePath);
+                byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+                files[label] = Convert.ToHexString(hash).ToLowerInvariant();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Skip, don't throw: the loader must stay total even when one definition file is
+                // transiently locked or unreadable.
+            }
+        }
+
+        return files;
     }
 
     /// <summary>

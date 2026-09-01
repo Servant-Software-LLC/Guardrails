@@ -586,8 +586,9 @@ public sealed class TaskExecutor : ITaskExecutor
         };
         // §7.2 (#274 Part A): a revalidate that flips the task to succeeded also stamps its definition
         // hash, so a subsequent resume detects a later definition edit rather than skipping stale.
+        // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, definitionHash: TaskDefinitionHash.Compute(task));
+            task.Id, record, JournalTaskStatus.Succeeded, definitionHash: task.DefinitionHashAtLoad);
 
         var ok = new TaskResult
         {

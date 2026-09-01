@@ -1,0 +1,15 @@
+{
+  "description": "Land section 14's eight SSOT edits and the matching execution-semantics update in guardrails-domain-knowledge, in the same change-set as the code they describe",
+  "dependsOn": [
+    "15-render-the-divergence-halt"
+  ],
+  "stableId": "p32t16",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

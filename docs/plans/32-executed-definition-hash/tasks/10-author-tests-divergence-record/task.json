@@ -1,0 +1,14 @@
+{
+  "description": "Author milestone C's Core pins - P12's two-sided JIT-breakdown pin, P15's provenance discriminator proving the gate reads the PIN and not the watch's moving baseline, and the P10/P16 silence pins asserted on the full decisions list",
+  "dependsOn": [
+    "05-stamp-the-pin-worktree"
+  ],
+  "stableId": "p32t10",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/ExecutedDefinitionDivergenceTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

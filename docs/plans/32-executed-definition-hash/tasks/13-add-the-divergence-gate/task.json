@@ -1,0 +1,17 @@
+{
+  "description": "The settle-time divergence gate - the ignore-list-filtered per-file map diff at every successful settle, the RunReport record carrying both hashes and the moved files, and the ONE added term in AllSucceeded that blocks delivery",
+  "dependsOn": [
+    "09-pin-the-wave-twin",
+    "11-author-tests-delivery-gate",
+    "12-add-the-divergence-record"
+  ],
+  "stableId": "p32t13",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RunReport.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

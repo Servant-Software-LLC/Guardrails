@@ -179,9 +179,19 @@ public sealed record RunReport
     /// not HALT at a run-level boundary. The halt guards matter for a WAVED plan whose halt leaves no
     /// non-green task in the report — e.g. an unauthored next wave (SSOT §14.4) contributes zero tasks, so
     /// a plain per-task check would read "all succeeded" for a run that actually stopped. A halted /
-    /// aborted / definition-drifted run is never "all succeeded".
+    /// aborted / definition-drifted / definition-diverged run is never "all succeeded".
+    ///
+    /// <para><b>The SINGLE predicate that gates delivery, the green summary and the exit code</b>, which is
+    /// why <see cref="ExecutedDefinitionDivergence"/> (issue #556) lands here as ONE added conjunct rather
+    /// than as a second gate of its own: no new delivery path is introduced, so the blast radius of a
+    /// delivery-gate change stays one expression — the lesson of #457, where a SECOND gate that ran AFTER
+    /// delivery was the defect. Every consumer inherits the term for free: the Scheduler's <c>deliverable</c>
+    /// and <see cref="WhollyGreenButUndelivered"/>, the legacy in-Scheduler terminal integration gate, the
+    /// CLI's terminal plan-guardrail phase, <see cref="DeliveryPendingTerminalGate"/>, worktree retention,
+    /// and the exit-code and summary rendering.</para>
     /// </summary>
-    public bool AllSucceeded => !HasDefinitionDrift && !HasWaveHalt && !Aborted && Tasks.All(t => t.IsGreen);
+    public bool AllSucceeded => !HasDefinitionDrift && !HasWaveHalt && !Aborted
+                             && !HasExecutedDefinitionDivergence && Tasks.All(t => t.IsGreen);
 
     /// <summary>True when at least one task failed or was blocked.</summary>
     public bool AnyFailed => Tasks.Any(t => !t.IsGreen);
@@ -334,6 +344,31 @@ public sealed record RunReport
 
     /// <summary>True when the run halted at a wave boundary (see <see cref="WaveHalt"/>).</summary>
     public bool HasWaveHalt => WaveHalt is not null;
+
+    /// <summary>
+    /// Non-null when at least one task SETTLED against a definition that had moved on disk since this run
+    /// loaded it (SSOT §7.2, issue #556): the settle-time executed-definition divergence gate. A sibling of
+    /// <see cref="DefinitionDrift"/> rather than a widening of it — drift is a PRE-DAG resume finding about a
+    /// task that already succeeded in an EARLIER run, this is an IN-RUN finding about work this run just did.
+    ///
+    /// <para><b>Why an in-run gate exists at all.</b> Stamping the load-time pin makes the NEXT RESUME
+    /// honest, and <i>a run that goes green to completion never resumes</i> — so with <c>mergeOnSuccess</c>
+    /// defaulting ON (#340) an unattended run with a mid-run plan-folder edit would deliver the
+    /// stale-definition work and print a green summary, with the correctly-pinned hash never read by
+    /// anybody.</para>
+    ///
+    /// <para><b>What it never does.</b> It never refuses the settle, never cancels in-flight work and never
+    /// stops dispatch. The attempt ran, the guardrails passed, the fragment merged: discarding that would
+    /// repeat #554's defect, and in worktree mode the integration commit lands BEFORE the journal settle, so
+    /// a commit carrying a <c>Guardrails-Task:</c> trailer whose journal said "not succeeded" is exactly the
+    /// present-but-uncorroborated state Part C rule 3 refuses to rewind past — a remediation strictly worse
+    /// than the bug. The run drains to completion (every later task carries its own pin and its own check)
+    /// and only <see cref="AllSucceeded"/> goes false, which blocks DELIVERY.</para>
+    /// </summary>
+    public ExecutedDefinitionDivergenceReport? ExecutedDefinitionDivergence { get; init; }
+
+    /// <summary>True when a task settled against a definition that had moved (see <see cref="ExecutedDefinitionDivergence"/>).</summary>
+    public bool HasExecutedDefinitionDivergence => ExecutedDefinitionDivergence is not null;
 }
 
 /// <summary>The kind of wave-boundary halt a WAVED run stopped at (SSOT §14, #254 M2b).</summary>
@@ -498,7 +533,63 @@ public sealed record DriftedTask
     public string? Note { get; init; }
 }
 
-/// <summary>One drifted definition file in a <see cref="DriftedTask"/>'s Tier-2 breakdown (§7.2).</summary>
+/// <summary>
+/// The issue #556 settle-time executed-definition divergence halt (SSOT §7.2): every task this run settled
+/// whose definition files had MOVED ON DISK since the run loaded them, so the certified work was verified
+/// against a definition that is no longer there.
+///
+/// <para><b>The comparison surface is deliberately NARROWER than the recorded hash.</b>
+/// <c>HashText.EnumerateFolderFiles</c> globs <c>"*"</c> and filters nothing, so an editor or OS artifact IS
+/// part of a task's recorded definition — and must stay that way, since changing that file set would move
+/// every recorded definition hash in every plan. The GATE instead compares the ignore-list-filtered surface
+/// (the one <see cref="LivePlanEditWatch"/> already speaks to humans through), so it fires only when a REAL
+/// definition file moved: <c>task.json</c>, the action file, a guardrail or preflight script or sidecar.
+/// A stray artifact leaves the run green and delivering, and remains what it is today: a resume-time drift
+/// condition §7.2 already owns. A delivery gate that blocked an overnight run on a stray editor file would
+/// be disabled within a week, and then the real signal would be gone too (#229).</para>
+/// </summary>
+public sealed record ExecutedDefinitionDivergenceReport
+{
+    /// <summary>The diverged tasks, in settle order.</summary>
+    public required IReadOnlyList<DivergedTask> Tasks { get; init; }
+}
+
+/// <summary>
+/// One task that settled against a definition that had already moved on disk (§7.2, #556). Carries BOTH
+/// hashes — what the attempt EXECUTED and what is on disk now — plus which definition files moved, so the
+/// halt is actionable without a git round-trip and names the same set the next resume's
+/// <see cref="DefinitionDriftReport"/> will.
+/// </summary>
+public sealed record DivergedTask
+{
+    /// <summary>The diverged task's id.</summary>
+    public required string TaskId { get; init; }
+
+    /// <summary>
+    /// The <c>sha256:</c>-prefixed definition hash captured at PLAN LOAD — the bytes the attempt actually
+    /// executed against, and the value the journal entry records for this settle.
+    /// </summary>
+    public required string HashAtLoad { get; init; }
+
+    /// <summary>
+    /// The <c>sha256:</c>-prefixed definition hash of the FULL on-disk surface at the moment of the settle —
+    /// the same file set <see cref="HashAtLoad"/> covers, read again. Durably recorded as the journal
+    /// entry's <c>definitionHashAtSettle</c>.
+    /// </summary>
+    public required string HashAtSettle { get; init; }
+
+    /// <summary>
+    /// Which definition files moved, over the IGNORE-LIST-FILTERED surface: the gate's whole verdict, not a
+    /// decoration on it. Never empty — an empty diff is the gate staying silent.
+    /// </summary>
+    public IReadOnlyList<ChangedDefinitionFile> MovedFiles { get; init; } = [];
+}
+
+/// <summary>
+/// One definition file that moved: the Tier-2 breakdown of a <see cref="DriftedTask"/> (§7.2) and the
+/// per-file verdict of a <see cref="DivergedTask"/> (#556). One shape for both, deliberately — §6.6's
+/// "C is A's finding delivered one run earlier" is only true if the two halts speak the same vocabulary.
+/// </summary>
 public sealed record ChangedDefinitionFile
 {
     /// <summary>The file's path relative to the task folder (e.g. <c>guardrails/03-covers.ps1</c>, <c>action.prompt.md</c>).</summary>

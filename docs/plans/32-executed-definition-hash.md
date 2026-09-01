@@ -90,6 +90,25 @@ Then D: the SSOT and the domain-knowledge skill, in the same change (invariant 4
 
 ## 4. The mechanism, corrected
 
+```mermaid
+graph TD
+  L["plan load<br/>task.json read ONCE"] --> N["TaskNode in memory<br/>(the definition that RUNS)"]
+  N --> A["attempt executes<br/>the LOADED definition"]
+  E["human edits task.json<br/>MID-RUN"] -.->|"never reaches the run"| N
+  E ==>|"changes the bytes on disk"| D[("task.json on disk")]
+  A --> S{"settle"}
+  S -->|"TODAY: Compute(task)<br/>reads CURRENT DISK"| D
+  S ==>|"stamps the POST-EDIT hash"| J["journal + Guardrails-Task-Hash trailer"]
+  J --> R["later resume<br/>compares disk vs stored"]
+  R --> Q["they MATCH -> no drift reported<br/>SILENT FALSE GREEN"]
+  S -.->|"THIS PLAN: read the pin<br/>captured at load"| N
+```
+
+> **Warning:** **The blend is what hides it.** The recorded hash is computed over both liveness classes at once. For the
+> held-from-load half it records bytes that were never executed; for the re-read-per-attempt half it records
+> bytes that *were*. One hash, two opposite meanings, and the result is indistinguishable from a correct
+> record — which is why no resume can flag it and why this defect has no surface today.
+
 ### 4.1 The asymmetry, stated once
 
 The plan folder has **two liveness classes**, and nothing in the codebase says so:
@@ -120,8 +139,10 @@ and it is the *serial-mode* settle, while plan 28's motivating overnight run was
 | W5 | `src/Guardrails.Core/Execution/Scheduler.cs:689` | wave completion, via `WaveDefinitionHash.Compute(wave)` | the wave journal entry **and** the `Guardrails-Wave:` marker commit |
 | **W6** | `src/Guardrails.Core/Journal/RunJournal.cs:482-497` — `RecordDriftAccepted` | operator drift-accept (`[a]`) | **overwrites** `tasks[].definitionHash` with a value sourced from `DefinitionDriftProbe.cs:69` — **current disk** |
 
-**W6 is the one nobody had counted, and it matters twice.** It is a *write* fed by what §4.3 classifies as
-a *read*, so it escapes both lists. Its consequences are handled in §6.6 and §14 rather than waved at:
+**W6 is the one nobody had counted, and it escaped for a structural reason worth naming.** It calls no
+hash function at all — it is a *write* whose value is handed to it by a site §4.3 classifies as a *read*
+(`DefinitionDriftProbe.Evaluate`). Any enumeration built by searching for `TaskDefinitionHash.Compute`
+misses it by construction, which is how the first draft and the first adversarial pass both lost it. Its consequences are handled in §6.6 and §14 rather than waved at:
 the SSOT sentence "never the current on-disk bytes" needs its exception stated, and the `[a]` branch is
 one keystroke from re-creating exactly the lie this plan removes.
 
@@ -129,24 +150,42 @@ W2 is the one that matters most and the one the issue does not name. The trailer
 `Scheduler.cs:3953` → `handle.DefinitionHash` → `GitWorktreeProvider.cs:176` → `TrailerMessage` →
 `GitWorktreeProvider.cs:355`.
 
-### 4.3 The READ sites, which must NOT change
+### 4.3 The full call-site taxonomy — and the rule, corrected
 
-Six sites recompute from **current disk**, which is exactly right — they are the comparison half of the
-drift check, and comparing a pin against a pin would compare nothing.
+An earlier draft split the sites into a WRITE table and a READ table, said *"reads recompute from disk;
+writes read the pin,"* and built §9's guardrail on that split. **The split was wrong**: three sites listed
+as READ are durable *writes* of a disk-computed hash, so the sentence was false as written and the
+guardrail derived from it under-counted. The honest rule:
 
-| Site | Path | What it reads for |
-|---|---|---|
-| R1 | `Scheduler.cs:2520` | the resume drift pre-pass (§7.2) |
-| R2 | `Scheduler.cs:2758` | Part C auto-resolve old→new audit rows |
-| R3 | `Scheduler.cs:3429` | the answer-file anti-stale key at dispatch (§7.2 / #361) |
-| R4 | `Scheduler.cs:533`, `:3505` | the wave-drift compare and wave answer key |
-| R4b | `Scheduler.cs:1506`, `:1916` | wave-checkpoint and review-gate escalation records (durable writes of a disk-read value — §4.4) |
-| R5 | `Cli/Commands/DryRun.cs:173`, `Cli/Commands/DefinitionDriftProbe.cs:69` | the `--dry-run` preview and the pre-run probe |
-| R6 | `State/RunReset.cs:480`, `Review/ReviewMarker.cs:176`, `:260`, `RunCommand.cs:1280` | reset audit rows and the review marker's key |
+> **Reads recompute from disk. Writes of the EXECUTED-DEFINITION RECORD read the pin.**
+> Every other durable write of a hash is a different record with its own contract, enumerated below and
+> deliberately left on disk.
 
-**The whole architecture in one line: reads recompute from disk; writes read the pin.** Getting this
-backwards at even one site restores the defect there, which is why §10 makes it a deterministic guardrail
-rather than a review note.
+There are **12** `TaskDefinitionHash.Compute` call sites in `src/` today. All 12, with what each becomes:
+
+| # | Site | Member | Role | After |
+|---|---|---|---|---|
+| 1 | `AttemptJournaler.cs` | `CompleteSucceededOrInvalidFragment` | **W1** — executed-definition record (serial) | **pin** |
+| 2 | `Scheduler.cs` | `SettleAsync` | **W2** — executed-definition record + trailer (worktree, the default) | **pin** |
+| 3 | `Scheduler.cs` | `SettleGreenIfWorktreeAsync` | **W3** — trailer only | **pin** |
+| 4 | `TaskExecutor.cs` | `RevalidateAsync` | **W4** — executed-definition record (`revalidate`) | **pin** |
+| 5 | `Scheduler.cs` | `DetectDefinitionDrift` | READ — the resume drift pre-pass | disk |
+| 6 | `Scheduler.cs` | `BuildResolvedTasks` | READ — Part C audit rows | disk |
+| 7 | `Scheduler.cs` | `ConsumePendingAnswers` | READ — answer-file anti-stale key | disk |
+| 8 | `DryRun.cs` | `IsDrifted` | READ — `--dry-run` preview | disk |
+| 9 | `DefinitionDriftProbe.cs` | `Evaluate` | READ — the pre-run probe | disk |
+| 10 | `RunReset.cs` | `SafeComputeHash` | READ — reset audit rows | disk |
+| 11 | `WaveDefinitionHash.cs` | `Compute` | READ — the disk form's task fold | disk |
+| 12 | `Scheduler.cs` | `ClassifyTaskGateAsync` | **durable WRITE of a disk value** — the escalation record's anti-stale binding (§4.4) | **disk, deliberately** |
+
+**So the post-fix count is 8**, not the six an earlier draft derived by counting only the READ table — it
+omitted #11 and #12, which appeared in neither. That number is load-bearing: §9's anchor test enumerates
+exactly this set.
+
+Two further durable writes of a disk-computed hash exist at **wave** granularity and are equally
+deliberate: `Scheduler`'s wave-checkpoint and review-gate escalation records, via
+`WaveDefinitionHash.Compute`. And one write is fed by a read — **W6**, `RecordDriftAccepted` — which is
+why it escaped both tables in the first draft (§4.2).
 
 ### 4.4 Also considered, and deliberately NOT changed
 
@@ -175,6 +214,12 @@ rather than a review note.
 
 ## 5. Milestones A and B — pin at load, stamp the pin
 
+| Candidate | What it does | Verdict |
+|---|---|---|
+| **(1) Stamp the bytes actually executed** — capture at load, journal the pin | The record finally describes what ran, so a later resume compares against a truthful baseline | **Adopted (milestones A + B).** Smallest change that makes the record honest |
+| **(2) Re-read `task.json` per attempt** — match the action prompt's liveness | Removes the asymmetry by making everything live | **Rejected (§5.7).** Makes DAG shape mutable mid-run; the hazards it opens are larger than the one it closes |
+| **(3) Detect the divergence and act on it** | Compares the pin against disk at settle and blocks delivery | **Adopted (milestone C) — and REQUIRED, not a companion.** (1) alone only surfaces on a *resume*, and a green run never resumes, so with `mergeOnSuccess` default-on the false green **ships** |
+
 ### 5.1 The rule
 
 > **A stamped definition hash is computed from a snapshot taken no later than the moment the harness
@@ -185,14 +230,47 @@ is fixed then and the in-memory `TaskNode` is what the attempt runs against.
 
 ### 5.2 Why the pin lives on `TaskNode`, and why that dissolves the hard part
 
-`TaskNode` is a `sealed record`, every property `init`-only, constructed at exactly **one** expression
-(`return new TaskNode { … }`, `PlanLoader.cs:1061`, inside `LoadTask` declared at `:1011`), never mutated.
-So:
+`TaskNode` is a `sealed record` with every property `init`-only and exactly **one** `new TaskNode`
+expression in `src/` (`PlanLoader.cs:1061`, inside `LoadTask` declared at `:1011`). So:
 
 ```csharp
-// TaskNode.cs — captured by the loader from the bytes it just read.
-public string? DefinitionHashAtLoad { get; init; }
+// TaskNode.cs — both captured by the loader from the bytes it just read.
+public string? DefinitionHashAtLoad { get; init; }                                // FULL surface, aggregate. The journal records THIS.
+public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }  // UNFILTERED, per file. The GATE filters BOTH sides and diffs THIS.
 ```
+
+**Two captures, not one — and the second is not optional.** An adversarial pass found that a single
+aggregate string cannot serve milestone C at all: §6.2 decides the gate compares the *ignore-list-filtered*
+surface while the journal records the *full* one, and §6.3 requires the gate to name **which files moved**.
+A per-file diff needs per-file load-time state, and one hash carries none. An implementation handed only
+`DefinitionHashAtLoad` has exactly three ways out and all three are worse than the defect: compare two
+different file sets (wrong on any task carrying an editor artifact), abandon §6.2 and block deliveries on a
+`.DS_Store`, or drive the gate off `LivePlanEditWatch`'s moving baseline (P15). **So the map lands in stage
+3, with the aggregate** — not discovered at stage 13 by an agent whose `writeScope` cannot reach
+`TaskNode.cs`.
+
+**The map is captured UNFILTERED, and the FILTERING happens at the gate — corrected here rather than left
+to a breakdown note.** An earlier revision of this section said the map was captured *filtered*, which is
+not buildable in the order §15 sequences the stages: the ignore predicate is
+`LivePlanEditWatch.IsEditorArtifact`, `private` until **stage 5**, and stage 5 is *downstream* of stage 3
+because it needs stage 3's pin before it can stamp it. Filtering at capture would therefore force a
+**second copy of the ignore list** into `PlanLoader.cs` — the exact escape §15.2 says every pressure on this
+plan points at, and the one that silently un-decides §6.2.
+
+So: **stage 3 captures the full per-file map; stage 13 applies the one shared predicate to BOTH sides
+before diffing.** The verdict is identical, because the filter is a pure function of the file name —
+filtering a map at capture time and filtering both maps at compare time remove the same labels. What it
+buys is that the predicate has exactly one call path and one home, which is what §6.2 actually asks for.
+**Both sides, not just the settle walk:** filtering only the recompute would leave every artifact already
+present at LOAD in the *before* map and absent from the *after* map, reading as a vanished label — so a
+`.DS_Store`, or a `.orig`/`.rej` left by any pre-run git operation, would block delivery on a run nobody
+edited. That is §13's "disabled within a week" arriving through the one door P16 cannot see, which is why
+§6.7 carries **P16b** beside P16.
+
+**Cost.** A handful of entries per task — `task.json`, one action file, each guardrail/preflight script and
+sidecar; on this repo's own plans typically 3–8 short strings, held for the life of the run.
+`PlanDefinitionHash` already walks and hashes the identical enumeration at load for every plan, so the walk
+is a cost the harness already pays; only the retention is new, and it is bounded by the plan's size.
 
 **One construction mechanic, named here so it is not discovered at implementation time.**
 `TaskDefinitionHash.Compute(task)` needs a fully-built node — it reads `task.Directory` and the *resolved*
@@ -230,6 +308,15 @@ re-baselining problem that `LivePlanEditWatch` had to solve with six call sites:
 
 There is **no re-pin hook list to maintain and no way to forget one**. This is the design's main claim, and
 it is a structural argument rather than a checklist.
+
+**One correction, because an earlier draft overstated it.** "One construction site, no `with`-clone
+anywhere" is **false**: `PlanLoader.QualifyWaveDependencies` clones both (`PlanLoader.cs:949`,
+`task with { DependsOn = qualified }`, and `:952`, `wave with { Tasks = … }`). The conclusion survives — a
+record `with`-expression copies every property it does not name, so both captures ride through, and that
+clone rebinds only `DependsOn`, which lives *inside* `task.json` and is therefore already inside the hash.
+But the premise had to be corrected rather than left standing, and it sharpens the real requirement: **a
+clone that rebound `Directory` or `Action` would carry a pin describing a different folder.** Neither does
+today, and §9's anchor test pins that too.
 
 **Zero plumbing at the write sites.** All five already hold the `TaskNode` (or the `WaveNode`) whose hash
 they are stamping — `AttemptJournaler.CompleteSucceededOrInvalidFragment(TaskNode task, …)`,
@@ -415,11 +502,15 @@ The remaining pins:
   - **P6a (Core, cheap).** Load a plan, capture the pin, mutate `task.json` on disk, then invoke the drift
     pre-pass **without re-loading**. It must see the **post-edit** hash. This is a direct assertion that
     R1 recomputes, and it is the only form that separates a pinned read site from a disk one at all.
-  - **P6b (waved, the reachable production shape).** `DrainAsync` runs the pre-pass **once per wave**
-    (`Scheduler.cs:740`; the code comment at `:749-751` says so explicitly), so on a waved plan the
-    pre-pass genuinely fires **mid-run**. An edit landing after the run's load and before wave N's drain
-    must still produce `DefinitionDrift` for an earlier wave's settled task. A flat fixture cannot express
-    this; the pin is a waved one.
+  - **P6b (waved, the reachable production shape) — REPAIRED, the first version was unsatisfiable.** An
+    earlier draft asked for drift on *an earlier wave's* settled task. That cannot happen: `DrainAsync` is
+    called per wave with **that wave's tasks only** (`Scheduler.cs:632-635`,
+    `DrainAsync(plan, wave.Tasks, waveGraph, …)`) and `DetectDefinitionDrift` iterates exactly that list,
+    so nothing re-checks an earlier wave within one run. The scenario that *is* reachable and *does*
+    discriminate: **a task in wave N, settled green in a PREVIOUS run, whose definition is edited after
+    this run's load and before wave N's drain.** Its pin and its recorded hash are both the pre-edit value,
+    so a pinned read site sees a match and waves it through while a disk read halts. That needs a waved,
+    two-run fixture.
 - **P7 — the wave levels do not drift apart (§5.4). TWO legs, because one covers half of milestone B.**
   - **P7a — the task fold.** Editing one constituent task's `task.json` mid-run changes the wave's
     recorded hash *iff* it changes that task's recorded hash.
@@ -492,23 +583,42 @@ whose gate turned that test red would have been wrong.
 
 ### 6.3 What C does
 
-At every successful settle — W1 through W4 — the harness already holds both numbers:
+At every successful settle — W1 through W4 — the gate diffs **two per-file maps over the same filtered
+surface**. It never compares two aggregates, and in particular it never compares the full-surface
+`DefinitionHashAtLoad` against a filtered recompute — those hash different file sets, so on a task carrying
+an editor artifact they differ with nobody having edited anything:
 
 | | Value | Cost |
 |---|---|---|
-| `pin` | `task.DefinitionHashAtLoad` (full surface) | free |
-| `disk` | the **filtered** recompute over `TaskDefinitionFiles.Enumerate` | one file walk |
+| before | `task.DefinitionFilesAtLoad` — per file, captured **unfiltered** at load (§5.2), **filtered here** | free |
+| after | the same per-file walk over `TaskDefinitionFiles.Enumerate`, at settle, **filtered here** | one file walk |
 
-The comparison is per-file over the filtered surface, which the gate needs anyway to report *which* files
-moved. On any non-ignored file differing:
+> **The gate filters BOTH sides, and that is not a detail.** The capture is unfiltered (§5.2 says why: the
+> predicate is private until stage 5, which is downstream of stage 3), so the gate applies
+> `LivePlanEditWatch.IsEditorArtifact` to the load-time map **and** to the settle walk before comparing.
+> Filtering only the settle side leaves any artifact present **at load** in the *before* map and absent
+> from the *after* map — it reads as a **vanished label**, and the run is blocked on a `.DS_Store`, a
+> `.swp`, or a `.orig`/`.rej` from any pre-run git operation, with nobody having edited anything. P16
+> cannot see that (its artifact appears mid-run, so it is absent from both maps and correctly ignored);
+> **P16b** is the pin that can.
+
+The **verdict** is "some label's hash moved, or a label appeared or vanished." That is also exactly the
+breakdown §6.2 requires the gate to report, so the diff is not extra work done for the check — it *is* the
+check. On a non-empty diff:
 
 1. **Record `succeeded` with the pin** — as milestone A does, unconditionally.
-2. **Record `definitionHashAtSettle: <disk>`** on the journal entry — a new **optional** field, absent
-   when the two agree, so an unedited run's `run.json` is byte-identical.
+2. **Record `definitionHashAtSettle`** on the journal entry — a new **optional** field carrying the
+   full-surface hash at settle. **Its presence is driven by the GATE VERDICT, never by hash inequality.**
+   That distinction is load-bearing and an earlier draft got it wrong three different ways in three
+   sections: keyed on inequality, a stray `.DS_Store` writes the field on a green, delivering run — and
+   §6.6's `[a]`-refusal then keys off it and fires for ordinary artifact drift, which §12 puts explicitly
+   out of scope. Gate fired ⇒ field present. Gate silent ⇒ field absent, and an unedited run's `run.json`
+   is byte-identical.
 3. **Append one decision entry** — `boundary: "definition-divergence"`, `decision: "halted"`
-   (`DecisionTokens.Halted`, already defined at `DecisionEntry.cs:98`) — naming the task and, per task,
-   which definition files moved, computed by diffing the same `TaskDefinitionFiles.Enumerate` surface.
-4. **Set `RunReport.ExecutedDefinitionDivergence`** — a report record, sibling of `DefinitionDrift`.
+   (`DecisionTokens.Halted`, already defined at `DecisionEntry.cs:98`) — naming the task and which
+   definition files moved, straight from the map diff.
+4. **Set `RunReport.ExecutedDefinitionDivergence`** — a report record, sibling of `DefinitionDrift`,
+   carrying **both** per-task hashes and the moved-file list (P15).
 
 ### 6.4 What C deliberately does NOT do — and the two things it must never be
 
@@ -552,39 +662,46 @@ time,** because "one term" is only a small change if nothing downstream is surpr
 
 | Consumer | Effect on a divergence run | Verdict |
 |---|---|---|
-| `Scheduler.cs:892` — `deliverable` | no merge to the user's branch | **the intended one** (P9) |
-| `Scheduler.cs:927` — `WhollyGreenButUndelivered` | the "you forgot to merge" banner does **not** fire | **correct** — it would be the wrong banner. The divergence halt renders instead, and §9 asserts on its string precisely so the run does not go quiet |
-| `Scheduler.cs:480` — the **legacy** in-Scheduler terminal integration gate (flat plans with no `<plan>/guardrails/`, §3.3) | not run | **accepted, same reasoning as the row below** — a pre-delivery soundness re-check with no delivery to gate |
-| `RunCommand.cs:547/554/614` — the terminal plan-guardrail gate | **not evaluated** | **accepted, and named.** Consistent with how a failed run behaves today, but it does cost the operator the whole-repo soundness verdict on an otherwise-green run. The alternative — evaluating a gate whose result cannot change the outcome — spends real money for a number nobody acts on |
+| `Scheduler`'s `deliverable` | no merge to the user's branch | **the intended one** (P9) |
+| `Scheduler`'s `WhollyGreenButUndelivered` | the "you forgot to merge" banner does **not** fire | **correct** — it would be the wrong banner. The divergence halt renders instead, and §9 asserts on its string precisely so the run does not go quiet |
+| The **legacy** in-Scheduler terminal integration gate (flat plans with no `<plan>/guardrails/`, §3.3) | not run | **accepted, same reasoning as the row below** — a pre-delivery soundness re-check with no delivery to gate |
+| `RunCommand`'s `willEvaluateTerminalGate` / `planGuardrailsPassed` — the terminal plan-guardrail gate | **not evaluated** | **accepted, and named.** Consistent with how a failed run behaves today, but it does cost the operator the whole-repo soundness verdict on an otherwise-green run. The alternative — evaluating a gate whose result cannot change the outcome — spends real money for a number nobody acts on |
 | `RunReport.DeliveryPendingTerminalGate` (#457) | stays false; no deferred-delivery path is entered | **correct** — the two were already documented as never both set |
-| `WorktreeReclaim.cs:148` | task worktrees are **retained** | **correct and desirable** — the same forensic retention every halted run gets; the operator inspecting a divergence wants the segments |
-| `RunCommand.cs:958/966` — exit code and summary | exit **2**, halt summary instead of the green one | **the intended one** |
+| `WorktreeReclaim`'s retention predicate | task worktrees are **retained** | **correct and desirable** — the same forensic retention every halted run gets; the operator inspecting a divergence wants the segments |
+| `RunCommand`'s exit-code and summary rendering | exit **2**, halt summary instead of the green one | **the intended one** |
 
 **Exit 2**, following `DefinitionDrift`'s precedent (§7.2) — actionable / needs-human, never exit 1, which
 is reserved for infrastructure faults.
 
 **But NOT rendered where `DefinitionDrift` is rendered.** An earlier draft said so and it was a concrete
-wrong answer. `RunCommand.cs:899-903` is a **pre-DAG early return**, correct for drift precisely because
-*"nothing ran and no logs were written"* (`:895-898`). A divergence run executed every task. Returning
-there would skip `WriteDurableFinalSite` (`:909`), `IngestRunTelemetry` (`:917`, #535), `PrintSummary`
-(`:919`) and `PrintStaticIndexLink` (`:922`) — discarding the logs, telemetry and summary for a run that
-did thirty tasks' worth of work. The divergence halt renders in the **normal end-of-run path**, after the
-summary, and changes only the exit code and the headline.
+wrong answer. `DefinitionDrift` returns from a **pre-DAG early return** in `RunCommand`, correct for drift
+precisely because nothing ran and no logs were written. A divergence run executed every task. Returning
+there would skip `WriteDurableFinalSite`, `IngestRunTelemetry` (#535), `PrintSummary` and
+`PrintStaticIndexLink` — discarding the logs, telemetry and summary for a run that did thirty tasks' worth
+of work. The divergence halt renders in the **normal end-of-run path**, after the summary, changing only
+the exit code and the headline.
+
+> **Every `RunCommand.cs` reference in this document names a MEMBER, never a line.** An earlier draft's
+> five line numbers were all stale within hours — two pointing at a different member — because a
+> concurrent change to §12 of the SSOT shifted that file underneath them. The members named here
+> (`RenderPlanEditWarning`, `DescribeDelivery`, `planGuardrailsPassed`, `willEvaluateTerminalGate`) are
+> stable; the line numbers were not, and a handoff that sends an agent to the wrong member is worse than
+> one that sends it to a file.
 
 **Three consequences of the `AllSucceeded` term that are corrections, not inheritances** (§6.5's table
 lists all seven; these three are the ones that need work rather than acceptance):
 
-1. **`planGuardrailsPassed` short-circuits to `true`** — `RunCommand.cs:558` is
+1. **`planGuardrailsPassed` short-circuits to `true`** — `RunCommand`'s `planGuardrailsPassed` is
    `!report.AllSucceeded || await PlanGuardrailPhase.EvaluateAsync(...)`. So a divergence run does not
-   merely skip the terminal gate; it records that the gate **passed**. Stage 12 must make the divergence
+   merely skip the terminal gate; it records that the gate **passed**. Stage 15 must make the divergence
    case report the gate as *not evaluated*, never as passed.
-2. **`DescribeDelivery`'s durable reason becomes self-contradicting** — `RunCommand.cs:1628-1634` would
+2. **`DescribeDelivery`'s durable reason becomes self-contradicting** — `RunCommand.DescribeDelivery` would
    write *"the run was not wholly green, so delivery was never attempted"* into `run.json` for a run whose
    `tasks{}` shows every task `succeeded`. That record exists (#542) so an unattended pipeline with no
    console has a machine-readable answer; a wrong one is worse than none. It needs its own reason string.
 3. **The `*** WORK NOT DELIVERED ***` banner is suppressed** — `WhollyGreenButUndelivered`
-   (`Scheduler.cs:934`) goes false. That is correct *only* because the divergence halt replaces it. If
-   stage 12 renders nothing, the run goes quiet, which is the failure this plan exists to prevent, one
+   (computed in `Scheduler`'s `BuildReport`) goes false. That is correct *only* because the divergence halt replaces it. If
+   stage 15 renders nothing, the run goes quiet, which is the failure this plan exists to prevent, one
    level up. §9 asserts on the rendered string for exactly this reason.
 
 ### 6.6 The two halts agree — and the `[a]` branch that would break the agreement
@@ -599,14 +716,14 @@ message points at §7.2's. An implementation in which the two disagree about the
 pin P11.
 
 **Except for one branch, which this plan must close because it creates the traffic through it.** That
-interactive halt offers `[y] / [a] / [N]` (`RunCommand.cs:1193`), and `[a]` — presented as the cheap option
+interactive halt offers `[y] / [a] / [N]`, and `[a]` — presented as the cheap option
 — calls `RecordDriftAccepted` (W6), which **overwrites the recorded hash with current disk and does not
 re-run the task**. Reached from a divergence halt, that is one keystroke from re-creating precisely the lie
 #556 is about: a journal saying the task was built against the new definition when it was built against
 the old one. It is worse than the original defect, because it also **un-corroborates the plan branch** —
 the task's commit still carries the old `Guardrails-Task-Hash:` trailer while the journal now carries the
-new hash, so `SafeSuffixEvaluator.cs:245-247` refuses any later Part C rewind covering that task and steers
-the operator to a full `guardrails reset -y`. (The comment at `:242-244` asserts *"the recorded value does
+new hash, so `SafeSuffixEvaluator`'s trailer-corroboration rule refuses any later Part C rewind covering that task and steers
+the operator to a full `guardrails reset -y`. (Its own comment asserts *"the recorded value does
 not move through a drift."* `RecordDriftAccepted` moves it — a pre-existing inaccuracy, surfaced here.)
 
 **Decided: `[a]` is REFUSED for divergence-originated drift.** The condition is cheap and needs no new
@@ -645,16 +762,27 @@ this plan's to relitigate.
   P4, P5, P9, P11 and P13, because a single mid-run edit lands after both. The discriminator is a **retry**:
   run a task that fails once, edit `task.json` between attempt 1 and attempt 2, and assert the recorded
   hash still equals the **run-start** value. An attempt-start capture records the post-edit hash and fails.
-- **P15 — the gate reads the pin, not the watch.** Milestone C is fully satisfiable without ever comparing
-  pin to disk: drive `ExecutedDefinitionDivergence` from `LivePlanEditWatch`'s already-collected
-  `PlanEdit`s and P9, P10, P11, P12 and P13 all pass. The design would ship with the watch's *moving*
-  baseline standing in for the pin — a different mechanism wearing this plan's name. The pin: the
-  divergence report carries **both** hashes, and `definitionHashAtSettle` equals the filtered recompute at
-  settle. A watch-driven implementation has no second hash to report.
+- **P15 — the gate's DECISION comes from the pin, not the watch.** Milestone C is fully satisfiable
+  without ever consulting `DefinitionFilesAtLoad`: drive `ExecutedDefinitionDivergence` from
+  `LivePlanEditWatch`'s already-collected `PlanEdit`s and P9 through P13 all pass, shipping the watch's
+  **moving** baseline under this plan's name. **Asserting the report's payload is not enough** — a
+  watch-driven implementation can populate both hash fields from the watch's own before/after snapshot and
+  satisfy a payload pin exactly. The pin must discriminate on **provenance**: after a mid-run edit that
+  `Poll()` has ALREADY reported and re-baselined on (so the watch holds the post-edit bytes and will never
+  report that file again), the settling task must **still** diverge. Only a pinned baseline survives that.
 - **P16 — the gate is quieter than the recorded hash** (§6.2). A mid-run stray `.DS_Store` under a task's
   `guardrails/` leaves the run **green and delivering** while that task's *recorded* hash still differs
   from disk. This is the shipped `StrayDsStoreInTargetGuardrails` assertion, and it must survive this plan
   unchanged — it is the only thing standing between the delivery gate and being muted within a week.
+- **P16b — the gate filters the LOAD side too, not just the settle walk.** P16's artifact appears
+  **mid-run**, so it is absent from the load-time map and present in the settle walk; an implementation
+  that filters only the settle side still passes it. The reachable failure it cannot see is an artifact
+  present **at load** — a `.DS_Store` already in the checkout, a `.swp` from an operator who opened a
+  guardrail to read it, a `.orig`/`.rej` from any pre-run git operation. Filtered on one side only, that
+  label is in *before* and not in *after*, reads as **vanished**, and blocks delivery on a run nobody
+  edited. So: **a task carrying a pre-existing editor artifact leaves the run green and delivering.** It
+  is green today and must stay green, exactly as P16 is — a declared exemption, not a defect pin — and
+  together the two make the gate's quietness a two-sided property rather than a one-sided one.
 - **P13 — the work survives.** After a divergence halt, the diverged task's integration commit is on the
   plan branch and its journal entry reads `succeeded`. Nothing is discarded, and the branch stays
   Part-C-corroborable (§6.3).
@@ -770,35 +898,60 @@ Each bullet closes a specific wrong-but-passing implementation.
   (P6). Without this, the cheapest passing implementation pins the read sites too and silences drift
   entirely.
 - **`TaskDefinitionHash.Compute` output has not moved** (P8), byte-pinned on a fixture.
-**The three structural guardrails — REWRITTEN, because the obvious forms are all satisfied by the
-UNFIXED tree.** An adversarial pass tried each and broke it; the drafts and their defeats are recorded
-because the defeats are the specification:
+**The tripwire — a SOURCE-READING ANCHOR TEST, not a plan-folder guardrail.** Two rounds of adversarial
+review broke three successive drafts, and the defeats are the specification:
 
-| Draft guardrail | What defeats it |
+| Draft | What defeats it |
 |---|---|
-| *"`handle.DefinitionHash = Journal.TaskDefinitionHash.Compute` matches zero times in `src/`"* | It matches **once today** — `Scheduler.cs:3676` — and **zero** times at W1, W2 and W4, because `Scheduler.cs:3953` hoists to a local, `AttemptJournaler.cs:91` has no `Journal.` prefix, and `TaskExecutor.cs:590` uses a named argument. Fixing only W3 turns it green with the defect intact in serial mode, `revalidate`, **and the default worktree settle** |
-| *"the write-site expressions read `.DefinitionHashAtLoad`"* | Satisfied verbatim by `public string DefinitionHashAtLoad => TaskDefinitionHash.Compute(this);` — every site reads the identifier, the defect is 100% intact, and every behavioral pin that does not sequence an edit inside the settle window still passes |
-| *"no `Lazy<>`, no `??=`"* | An expression-bodied property is neither. So is `get { _pin ??= …; }` rewritten as an `if` |
+| *"`handle.DefinitionHash = Journal.TaskDefinitionHash.Compute` matches zero times in `src/`"* | It matches **once today** — `SettleGreenIfWorktreeAsync` — and **zero** times at W1, W2 and W4, because `SettleAsync` hoists to a local, `AttemptJournaler` has no `Journal.` prefix, and `TaskExecutor` uses a named argument. Fixing only W3 turns it green with the defect intact in serial mode, `revalidate`, **and the default worktree settle** |
+| *"the write-site expressions read `.DefinitionHashAtLoad`"* | Satisfied verbatim by `public string DefinitionHashAtLoad => TaskDefinitionHash.Compute(this);` — every site reads the identifier, the defect is 100% intact |
+| *"`TaskDefinitionHash.Compute(` appears exactly N times"* | **Two separate defects.** The derivation gave **6** against a true **8** (§4.3 — it omitted `WaveDefinitionHash.Compute` and `ClassifyTaskGateAsync`, which appeared in neither of the old tables). And a bare count is a **tautology magnet**: an agent that meets a wrong number under retry pressure runs the grep and writes down whatever it says — installing the exact anti-pattern in the guardrail whose job is to prevent one |
 
-The three that replace them, each checking a **shape** rather than a spelling:
+**All three shared a deeper flaw: they were plan-folder guardrails, which evaporate when the run ends.**
+Risk 6's hazard — *"a seventh site added later by someone who has not read this document"* — is
+repo-lifetime. A guard living only inside this plan's task folder cannot address it.
 
-- **A type guardrail on the declaration.** `TaskNode.cs` must contain **zero** occurrences of
-  `TaskDefinitionHash`, and `DefinitionHashAtLoad` must be declared as an auto-property with no body. A
-  property that cannot mention the hash function cannot compute it lazily, whatever the syntax. Same for
-  `WaveNode.cs` and `WaveDefinitionHash`.
-- **A per-site positive count.** `TaskDefinitionHash.Compute(` appears **exactly `N`** times in `src/`,
-  with `N` the READ-site count from §4.3 — and each of `AttemptJournaler.cs`, `TaskExecutor.cs` contains
-  **zero**. Counting the reads rather than pattern-matching the writes is what makes a sixth write site
-  written any way at all fail the build.
-- **No fallback to disk on a null pin** (§5.2). No line in `src/` may contain both `DefinitionHashAtLoad`
-  and `Compute(`. This is the **cheapest wrong implementation of the whole plan** — it reads like
-  defensive coding and survives every behavioral pin.
+So the tripwire is a **committed anchor test**, following the repo's own idiom (`SeamDoctrineAnchorTests`,
+`ModelAppropriatenessDoctrineAnchorTests`): it reads `src/` as text and asserts the **enumerated SET** of
+`TaskDefinitionHash.Compute` call sites — **file + enclosing member**, never a bare count. A set is
+self-documenting, fails informatively ("`Scheduler.SettleAsync` is calling Compute again"), and cannot be
+satisfied by writing down whatever the grep says.
+
+**The set it pins, exactly — 8 sites** (§4.3's table, minus the four that become pins):
+
+| File | Member | Why it stays on disk |
+|---|---|---|
+| `Scheduler.cs` | `DetectDefinitionDrift` | the resume drift pre-pass |
+| `Scheduler.cs` | `BuildResolvedTasks` | Part C audit rows |
+| `Scheduler.cs` | `ConsumePendingAnswers` | answer-file anti-stale key |
+| `Scheduler.cs` | `ClassifyTaskGateAsync` | escalation record binding (§4.4) |
+| `DryRun.cs` | `IsDrifted` | `--dry-run` preview |
+| `DefinitionDriftProbe.cs` | `Evaluate` | the pre-run probe |
+| `RunReset.cs` | `SafeComputeHash` | reset audit rows |
+| `WaveDefinitionHash.cs` | `Compute` | the disk form's task fold |
+
+And **zero** in `AttemptJournaler.cs`, `TaskExecutor.cs`, `TaskNode.cs`, `WaveNode.cs`.
+
+Three more anchors in the same test, each closing a hole no behavioral pin reaches:
+
+- **The declaration shape.** `TaskNode.cs` and `WaveNode.cs` contain **zero** occurrences of
+  `TaskDefinitionHash` / `WaveDefinitionHash`, and every capture is a bodiless auto-property. A property
+  that cannot name the hash function cannot compute it lazily in any syntax — which is what defeats the
+  expression-bodied form that beat draft 2.
+- **No fallback to disk.** No line in `src/` contains both `DefinitionHashAtLoad` and `Compute(`. A
+  `?? Compute(task)` is the **cheapest wrong implementation of this entire plan**: it reads like defensive
+  coding and survives every behavioral pin.
+- **No identity-rebinding clone.** No `with`-expression on a `TaskNode` may rebind `Directory` or `Action`
+  (§5.2) — that would carry a pin describing a different folder.
+
+**Because §11 forbids implementation stages from writing `tests/**`, this needs its own test-authoring
+row** — stage 6 in §15.
 
 **Milestone B — the wave twin**
 
 - P7: the wave's stamped hash equals a fold over its tasks' **stamped** hashes, so §7.2/§14.5's
   *"the levels cannot drift apart"* is true rather than aspirational.
-- The wave **READ** sites (`Scheduler.cs:533`, `:3505`, `ReviewMarker.cs:260`, `RunCommand.cs:1258`) still
+- The wave **READ** sites (§4.3, plus `ReviewMarker` and `RunCommand`'s wave-drift confirm) still
   compute from current disk; the wave-drift halt and `mark-reviewed` are unchanged.
 
 **Milestone C — the divergence gate**
@@ -814,7 +967,7 @@ The three that replace them, each checking a **shape** rather than a spelling:
 - **P16: the gate is quieter than the hash.** The shipped `StrayDsStoreInTargetGuardrails` `AllSucceeded`
   assertion survives untouched. An implementation whose gate compares the full surface turns it red, and
   that is the whole check on §6.2.
-- **The terminal gate reports NOT EVALUATED, never PASSED** (`RunCommand.cs:558` short-circuits
+- **The terminal gate reports NOT EVALUATED, never PASSED** (`RunCommand`'s `planGuardrailsPassed` short-circuits
   `planGuardrailsPassed` to `true`), and `run.json`'s delivery reason does not say "not wholly green" for a
   run whose every task is `succeeded`.
 - **`[a]` is refused for a divergence-originated drift** (§6.6) — asserted on the prompt's rendered options.
@@ -880,7 +1033,7 @@ absence:
   the loud post-summary banner (#340/#542) says so. Read to the end of the output and check
   `git branch --no-merged master` before claiming this shipped.
 
-**Sizing.** Fourteen stages — six test-authoring, seven implementation, one documentation. **No new source
+**Sizing.** Sixteen stages — eight test-authoring, seven implementation, one documentation. **No new source
 file.** No stage touches more than four files, and the `Scheduler.cs` edits are each a small number of
 expression-level changes at sites this design names by line. Nothing needs model tiering, local inference
 or network access.
@@ -890,7 +1043,7 @@ five files and every one of C's concerns at once — the structural over-scope f
 and the sharper half of #378: a fan-in sink whose every guardrail miss re-runs the whole change, and whose
 first real exercise of every integration path lands in one action that cannot fix the cross-file bug it
 finds. Since this plan is itself run unattended, **a cheap retry is worth more than a tidy table.** C is
-now split by collaborator — the record (stage 11), the gate (stage 12), the rendering (stage 13) — each
+now split by collaborator — the record (stage 12), the gate (stage 13), the rendering (stage 15) — each
 verifiable on its own.
 
 ---
@@ -901,7 +1054,7 @@ verifiable on its own.
   the harness *records and delivers*; #557 changes what an agent is *allowed to write*. Absorbing it would
   put a containment change inside a contract change, which is the mistake plan 31 refused to make in the
   other direction.
-- **The plan-edit watch's blindness to JIT-authored waves** (§5.3, fourth point). A real gap in #545 part 3
+- **The plan-edit watch's blindness to JIT-authored waves — #568** (§5.3, fourth point). A real gap in #545 part 3
   as shipped; filed separately (§16). It is one component's wiring, not this contract.
 - **Re-reading `task.json` per attempt** — candidate (2), rejected with reasons (§5.7). Not deferred;
   decided against.
@@ -911,7 +1064,7 @@ verifiable on its own.
 - **An ignore list on `HashText.EnumerateFolderFiles`.** Plan 31 §14's open migration question, still open,
   still unfunded. This plan is designed so it does not have to be answered (§5.5), and §6.2's filtered gate
   is deliberately NOT that change: it filters what the *gate compares*, never what the *hash covers*.
-- **Containing `GUARDRAILS_TASK_DIR`** (Risk 0). Every action and guardrail is handed the main checkout's
+- **Containing `GUARDRAILS_TASK_DIR` — #569** (Risk 0). Every action and guardrail is handed the main checkout's
   task-folder path (`TaskExecutor.cs:511`, `:2029`), outside the segment worktree and therefore invisible to
   the write-scope check. Real, and it belongs with #557's containment work.
 - **Changing `RecordDriftAccepted`'s behavior for an ordinary between-runs edit** (§6.6). Only the
@@ -1146,18 +1299,23 @@ rule, and the divergence gate's effect on delivery and exit code.
 
 ## 15. Implementation handoff
 
-Sequenced; each stage green before the next. Stages 1–6 are **milestone A**, 7–8 **milestone B**, 9–13
-**milestone C**, and 14 the SSOT.
+Sequenced; each stage green before the next. Stages 1–7 are **milestone A**, 8–9 **milestone B**, 10–15
+**milestone C**, and 16 the SSOT.
 
-> **Every stage from 2 to 12 runs a FILTERED test guardrail, not the full suite.** Stage 2 re-baselines
-> `PlanEditedDuringRunTests` to the final contract, so that file is legitimately RED for eleven stages.
-> Stage 13 is the first to carry an unfiltered `tests-pass`. This is the shipped idiom (plan 31 stage 8's
-> *"the filtered Core `tests-pass`"*), stated here because getting it wrong makes every intermediate stage
-> fail on a file it is forbidden to touch.
+> **Filtered test guardrails, and the ONE test that may never be filtered out.** Stage 2 re-baselines two
+> of `PlanEditedDuringRunTests`' methods to the final contract, so that file carries red until its
+> implementer lands; stages 3–12 therefore run **filtered** `tests-pass` guardrails, the shipped idiom
+> (plan 31 stage 8's *"the filtered Core `tests-pass`"*). Stage 15 carries the first unfiltered one.
+>
+> **§15.4 is the exception and it is not optional.** `AStrayDsStoreMidRun_...` — called in §15.1 "this
+> design's own tripwire" and in §6.7 "the only thing standing between the delivery gate and being muted
+> within a week" — must be **inside stage 13's filter**, the one stage that can trip it (§15.4). An earlier draft
+> filtered it out, which is precisely why the three-line wrong implementation of §6.3 survived every other
+> pin.
 
-> **`RunJournal.cs` in stage 11 is not padding — it closes a real #553-class defect this table had, and one
+> **`RunJournal.cs` in stage 12 is not padding — it closes a real #553-class defect this table had, and one
 > neither GR2068 nor GR2069 would have reported.**
-> Stage 11 was originally written as *"`RunReport.cs`, `DecisionEntry.cs`, `JournalModel.cs`,
+> Stage 12 was originally written as *"`RunReport.cs`, `DecisionEntry.cs`, `JournalModel.cs`,
 > `Scheduler.cs` — the divergence detection, `definitionHashAtSettle`, the token, the `AllSucceeded`
 > term."* Tracing where `definitionHashAtSettle` is actually *written* found `RunJournal.RecordAttempt` /
 > `RecordSettle` / `RecordSettleWithAttempt` (`RunJournal.cs:235`, `:287`, `:322`), in a file **no row's
@@ -1170,70 +1328,116 @@ Sequenced; each stage green before the next. Stages 1–6 are **milestone A**, 7
 `/plan-breakdown`, not a suggestion: across every plan folder in this repo — re-counted at `e835817`,
 **299 `task.json` files, 508 `writeScope` entries** — **zero** contain a glob. The `filesTouched` column
 and the `writeScope` array are the **same list**, per row, so this table is self-covering under
-GR2068/GR2069 (§15.2).
+GR2068/GR2069 (§15.3).
 
 | # | Agent | filesTouched | `writeScope` (verbatim) | Deliverable |
 |---|---|---|---|---|
 | 1 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Journal/ExecutedDefinitionHashTests.cs` | the same path | P1 (serial), P5, P8, P14. **No assertion names a new API member** — each computes `TaskDefinitionHash.Compute(task)` before the edit and compares against the journal — so these compile on today's tree and fail on it, with no stub stage. Guardrails: `build-passes`, then `tests-fail-on-stubs` (observed RED). |
-| 2 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` | the same path | **Re-baseline the four shipped plan-31 assertions this plan inverts** (§15.1) — authored to the FINAL contract, so the file is RED from here until stage 13. This stage exists because without it the plan has no green path: stage 5 turns `:207-208` red on a file no other row may write, and §11 forbids the only cheap escape. The four edits are specified there, not left to an agent under retry pressure. Guardrails: `build-passes`, then `tests-fail-on-stubs`. |
-| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/TaskNode.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs` | the same two paths | `TaskNode.DefinitionHashAtLoad`, computed **eagerly** at the single `new TaskNode` expression (`PlanLoader.cs:1061`, inside `LoadTask` declared at `:1011`). Carries the §9 **type** guardrail: `TaskNode.cs` contains zero occurrences of `TaskDefinitionHash` and the property is a bodiless auto-property. |
-| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/AttemptJournaler.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs` | the same two paths | Write sites **W1** (`AttemptJournaler.cs:91`, the serial settle) and **W4** (`TaskExecutor.cs:590`, the `revalidate` synthetic settle) stamp the pin. Carries the §9 per-file zero-count guardrail for both files. |
-| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/Scheduler.cs` | the same path | Write sites **W2** (`:3953`, the worktree B1 deferred settle — journal + trailer) and **W3** (`:3676`, trailer only) stamp the pin. **Every READ site in this file is left alone** (`:2520`, `:2758`, `:3429`, `:533`, `:3505`) — the deliverable's hardest half, and the one P6a exists to check. Carries the §9 per-site positive-count guardrail. |
-| 6 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/MidRunDefinitionEditTests.cs` | the same path | P2, P3, P6a, P6b on a **real git segment**. P6b is a **waved** fixture — `DrainAsync` runs the drift pre-pass once per wave (`Scheduler.cs:740`), which is the only production shape that separates a pinned read site from a disk one (§5.8). |
-| 7 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Journal/WaveExecutedDefinitionHashTests.cs` | the same path | P7a and P7b. The expected fold is reconstructed independently — **never** by calling the production pinned function, which would be an echo-judge green by construction (§5.8). |
-| 8 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/WaveNode.cs`, `src/Guardrails.Core/Journal/WaveDefinitionHash.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs`, `src/Guardrails.Core/Execution/Scheduler.cs` | the same four paths | `WaveNode.DefinitionHashAtLoad` (gate folders + `brief.md`, captured at construction); the pinned fold **alongside** the unchanged disk-reading `Compute(wave)`; write site **W5** (`Scheduler.cs:689`) stamps the pin. The wave READ sites `:533`, `:1506`, `:1916`, `:3505`, `ReviewMarker.cs:176`/`:260` and `RunCommand.cs:1280` are untouched. |
-| 9 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Execution/ExecutedDefinitionDivergenceTests.cs` | the same path | P10, P12, P15, P16 — the **silence** pins, asserted on the **full** decisions list, plus P15 (the report carries both hashes, which a watch-driven implementation cannot) and P16 (the gate is quieter than the hash). P12 is ONE two-sided pin, not five; §6.7 does the reachability analysis rather than delegating it. |
-| 10 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/DivergenceDeliveryGateTests.cs` | the same path | P9, P11, P13 end-to-end — **P9 is milestone C's acceptance criterion** — plus the two §6.5 corrections: the terminal gate must report *not evaluated*, never *passed*, and `run.json`'s delivery reason must not say "not wholly green" for a run whose every task is `succeeded`. Guardrails: `build-passes`, then `tests-fail-on-stubs`. |
-| 11 | `guardrails-harness-developer` | `src/Guardrails.Core/Journal/JournalModel.cs`, `src/Guardrails.Core/Journal/RunJournal.cs`, `src/Guardrails.Core/Execution/DecisionEntry.cs` | the same three paths | **The record.** `TaskEntry.DefinitionHashAtSettle` (beside `JournalModel.cs:374`), its write path through `RunJournal.RecordAttempt` / `RecordSettle` / `RecordSettleWithAttempt` (`:235`, `:287`, `:322`) as an **optional** parameter, and the `definition-divergence` boundary token (`DecisionEntry.cs`, beside `plan-edit` at `:440`). Pure data shape; unit-verifiable with no run. |
-| 12 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunReport.cs`, `src/Guardrails.Core/Execution/Scheduler.cs` | the same two paths | **The gate.** The **filtered** pin-vs-disk comparison at settle (§6.2), sharing the ignore predicate extracted in stage 5's file; `RunReport.ExecutedDefinitionDivergence` + `HasExecutedDefinitionDivergence`; **the one added term in `AllSucceeded`** (`RunReport.cs:184`). No new delivery path (§6.5). |
-| 13 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | the same path | The halt rendered in the **normal end-of-run path** — never the `:899-903` pre-DAG early return, which would discard this run's logs, telemetry and summary (§6.5) — **exit 2**; the terminal-gate *not-evaluated* fix at `:558`; the `DescribeDelivery` reason at `:1628-1634`; and the `[a]` refusal for divergence-originated drift at `:1193` (§6.6). Carries the full `tests-pass`. Commit body carries a literal `Fixes #556`. |
-| 14 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | the same two paths | §14's edits, items 1–8. |
+| 2 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` | the same path | **Re-baseline the shipped plan-31 assertions milestone A inverts** — §15.1 rows 1–2 ONLY. The three that depend on the CLI advisory string move to stage 14, paired with the stage that changes that string. Without this stage the plan has no green path: stage 5 turns `:209` red on a file no other row may write. Guardrails: `build-passes`, then `tests-fail-on-stubs`. |
+| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/TaskNode.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs` | the same two paths | **Both captures** (§5.2): `DefinitionHashAtLoad` (full-surface aggregate, what the journal records) **and** `DefinitionFilesAtLoad` (the filtered per-file map the gate diffs), computed eagerly at the single `new TaskNode` (`PlanLoader.cs:1061`). The map is NOT deferrable to milestone C — stage 13's `writeScope` cannot reach this file. |
+| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/AttemptJournaler.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs` | the same two paths | Write sites **W1** (`AttemptJournaler.CompleteSucceededOrInvalidFragment`) and **W4** (`TaskExecutor.RevalidateAsync`) stamp the pin. |
+| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/Scheduler.cs`, `src/Guardrails.Core/Execution/LivePlanEditWatch.cs` | the same two paths | Write sites **W2** (`SettleAsync`) and **W3** (`SettleGreenIfWorktreeAsync`) stamp the pin; **every READ site in `Scheduler.cs` is left alone** (§4.3). Also promotes `LivePlanEditWatch.IsEditorArtifact` from `private static` to `internal static` so §6.2's gate can share the one ignore predicate — the extraction has no other legal home (§15.3), and leaving it unowned is the pressure that makes an implementer skip the ignore list. |
+| 6 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/ExecutedDefinitionHashAnchorTests.cs` | the same path | **The repo-lifetime tripwire** (§9): a committed source-reading anchor test asserting the enumerated **SET** of 8 `TaskDefinitionHash.Compute` call sites by file + member, the two declaration-shape anchors, and the no-disk-fallback / no-identity-rebinding-clone anchors. Follows `SeamDoctrineAnchorTests`. **A bare count is forbidden** — it is a tautology magnet an agent resolves by writing down whatever the grep says. |
+| 7 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/MidRunDefinitionEditTests.cs` | the same path | P2, P3, P6a, P6b on a **real git segment**. P6b is a **waved, two-run** fixture: a wave-N task settled green in a previous run, edited after this run's load and before wave N's drain (§5.8) — the only reachable shape that separates a pinned read site from a disk one. |
+| 8 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Journal/WaveExecutedDefinitionHashTests.cs` | the same path | P7a and P7b. The expected fold is reconstructed independently — **never** by calling the production pinned function, which would be an echo-judge green by construction (§5.8). |
+| 9 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/WaveNode.cs`, `src/Guardrails.Core/Journal/WaveDefinitionHash.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs`, `src/Guardrails.Core/Execution/Scheduler.cs` | the same four paths | `WaveNode.DefinitionHashAtLoad` (gate folders + `brief.md`, captured at construction); the pinned fold **alongside** the unchanged disk-reading `Compute(wave)`; write site **W5** (`Scheduler.cs:689`) stamps the pin. The wave READ sites (§4.3) are untouched. |
+| 10 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Execution/ExecutedDefinitionDivergenceTests.cs` | the same path | P10, P12, P15, P16 — the **silence** pins on the full decisions list, plus P15's **provenance** discriminator (a re-baselined watch must still diverge) and P16 (the gate is quieter than the hash). P12 is ONE two-sided pin; §6.7 does the reachability analysis. Guardrails: `build-passes`, then `tests-fail-on-stubs`. |
+| 11 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/DivergenceDeliveryGateTests.cs` | the same path | P9, P11, P13 end-to-end — **P9 is milestone C's acceptance criterion** — plus the two §6.5 corrections: the terminal gate must report *not evaluated*, never *passed*, and `run.json`'s delivery reason must not say the run was not wholly green when every task is `succeeded`. Guardrails: `build-passes`, then `tests-fail-on-stubs`. |
+| 12 | `guardrails-harness-developer` | `src/Guardrails.Core/Journal/JournalModel.cs`, `src/Guardrails.Core/Journal/RunJournal.cs`, `src/Guardrails.Core/Execution/DecisionEntry.cs` | the same three paths | **The record.** `TaskEntry.DefinitionHashAtSettle` (beside `JournalModel.cs:374`), **written on the GATE VERDICT, never on hash inequality** (§6.3); its path through `RunJournal.RecordAttempt` / `RecordSettle` / `RecordSettleWithAttempt` as an **optional** parameter; the `definition-divergence` boundary token. Pure data shape; unit-verifiable with no run. |
+| 13 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunReport.cs`, `src/Guardrails.Core/Execution/Scheduler.cs` | the same two paths | **The gate.** The **filtered per-file map diff** at settle (§6.3), using stage 5's shared ignore predicate; `RunReport.ExecutedDefinitionDivergence` carrying both hashes and the moved-file list; **the one added term in `AllSucceeded`**. No new delivery path (§6.5). **Its test guardrail must NOT filter out P16** (§15.4). |
+| 14 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` | the same path | **§15.1 rows 3–5** — the three assertions in `TheRenderedText_CarriesAllThreeSection51Consequences` that depend on the CLI advisory string, authored RED immediately before the stage that changes it rather than eleven stages earlier. |
+| 15 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | the same path | The halt rendered in the **normal end-of-run path**, **exit 2**; `RenderPlanEditWarning`'s advisory text corrected (§15.1); the terminal-gate *not-evaluated* fix at `planGuardrailsPassed`; `DescribeDelivery`'s reason; and the `[a]` refusal for divergence-originated drift (§6.6). Carries the full unfiltered `tests-pass`. Commit body carries a literal `Fixes #556`. |
+| 16 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | the same two paths | §14's edits, items 1–8. |
 
-> **Overlapping write scopes, and why each is expected.** `PlanLoader.cs` is claimed by stages 3 and 8;
-> `Scheduler.cs` by stages 5, 8 and 12. Overlap serializes those tasks, which costs nothing because this
+> **Overlapping write scopes, and why each is expected.** `PlanLoader.cs` is claimed by stages 3 and 9;
+> `Scheduler.cs` by stages 5, 9 and 13. Overlap serializes those tasks, which costs nothing because this
 > plan is strictly sequential, and `WriteScope.OverlappingWriteScopeHint` already documents the hint as a
 > WEAK signal. `Scheduler.cs`'s three claims are three *different, named* expression sites — W2/W3 (stage
-> 5), W5 (stage 8), the settle-time comparison (stage 12) — not three attempts at the same surface.
-> `PlanEditedDuringRunTests.cs` is claimed by stage 2 alone; `MidRunDefinitionEditTests.cs` by stage 6 alone.
+> 5), W5 (stage 9), the settle-time comparison (stage 13) — not three attempts at the same surface.
+> `PlanEditedDuringRunTests.cs` is claimed by stages **2 and 14**, deliberately (§15.1): the split is what
+> pairs the advisory string with its assertions instead of stranding them twelve stages apart.
 
 > **Closing keywords are not optional (#547's lesson).** A `fix(#556):` conventional-commit **scope is not
-> a closing keyword**. Stage 13 must carry a literal `Fixes #556` line in the commit body, and the PR body
+> a closing keyword**. Stage 15 must carry a literal `Fixes #556` line in the commit body, and the PR body
 > must repeat it.
 
-> **`.claude/` writes need `stagingOutputs`.** Stage 14 touches `.claude/skills/**`; in worktree mode a
+> **`.claude/` writes need `stagingOutputs`.** Stage 16 touches `.claude/skills/**`; in worktree mode a
 > task action cannot write under `.claude/` directly (SSOT §3.5 / §9). It must declare `stagingOutputs`,
 > and its `writeScope` gates the post-move destinations.
 
-### 15.1 Stage 2 — the exact re-baseline of `PlanEditedDuringRunTests`
+### 15.1 The re-baseline of `PlanEditedDuringRunTests` — all five assertions, split across two stages
 
 Specified here rather than delegated, because an agent that meets a red assertion it is forbidden to
-rewrite will find the cheapest green, and §11's prohibitions are prose it can reason around.
+rewrite will find the cheapest green. For a section justified by that sentence, imprecision is
+self-defeating — so tests are named by **method**, not by the `MidRunWrite` enum value the fixture happens
+to pass, and every anchor is re-checked.
 
-`tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` shipped with plan 31 (`9bc285c`) and
-encodes **today's** contract — that a mid-run plan-folder edit is advisory and inert. This plan makes it
-gating. Four assertions move, in two tests:
+`tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` shipped with plan 31 and encodes **today's**
+contract: that a mid-run plan-folder edit is advisory and inert. This plan makes it gating. **Five
+assertions move, across three test methods** — an earlier draft found four across two and missed
+`TheRenderedText_CarriesAllThreeSection51Consequences` entirely.
 
-| Test | Line | Today | After, and why |
-|---|---|---|---|
-| `StrayDsStoreInTargetGuardrails` | `:207-208` | `Assert.NotEqual(hashAtStart, recorded)` — the recorded hash **moved** because `HashText` filters nothing | `Assert.Equal(hashAtStart, recorded)`. The recorded hash is now the **load-time pin**, and `hashAtStart` is computed from the same bytes at the same moment. **This one flips at stage 5**, in milestone A |
-| `StrayDsStoreInTargetGuardrails` | `:190` | `Assert.True(report.AllSucceeded)` | **UNCHANGED, and it is this plan's most important inherited assertion.** §6.2's filtered gate is what keeps it true. An implementation whose gate compares the full surface turns it red — which is the design's own tripwire (P16) |
-| `ModifyTargetGuardrail` | `:77` | `Assert.True(report.AllSucceeded)` for a mid-run **guardrail-script** edit | `Assert.False(...)`. A guardrail script is a real definition file, so the gate fires. **Flips at stage 12** |
-| `ModifyTargetGuardrail` | `:161`, `:167` | `Assert.Equal(ExitCodes.Success, exit)`, `Assert.True(delivery!.Delivered)` | exit **2**, `Delivered == false`, work retained on the plan branch. **Flip at stage 13** |
+| # | Test method | Line | Today | After, and why | Stage |
+|---|---|---|---|---|---|
+| 1 | `AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStillChanges` | `:209` | `Assert.NotEqual(hashAtStart, recorded)` | `Assert.Equal(...)`. The recorded hash is now the load-time pin, and `hashAtStart` is the same bytes at the same moment | **2** |
+| 2 | `AGuardrailEditedMidRun_EmitsExactlyOneObservedPlanEditDecision` | `:77` | `Assert.True(report.AllSucceeded)` for a mid-run **guardrail-script** edit | `Assert.False(...)`. A guardrail script is a real definition file, so the gate fires | **2** |
+| 3 | `ARunCarryingOnlyAPlanEditObservation_FastForwardsAndExitsZero` | `:161`, `:167` | `Assert.Equal(ExitCodes.Success, exit)`, `Assert.True(delivery!.Delivered)` | exit **2**, `Delivered == false`, work retained on the plan branch. The method name itself no longer describes the behavior and is renamed | **2** |
+| 4 | `TheRenderedText_CarriesAllThreeSection51Consequences` | `:251` | `Assert.Contains("post-edit", advisory)` | The advisory says the **post-edit** hash is recorded. After this plan the **pre-edit** hash is recorded, so the string and the assertion both invert | **14** |
+| 5 | `TheRenderedText_CarriesAllThreeSection51Consequences` | `:257` | `Assert.Contains("Nothing was halted", advisory)` | On a real definition edit something **is** halted. See below — this is the one that would have cost a run | **14** |
 
-**The comment at `:204-206` is not a comment — it is the SSOT's reasoning, and it must be re-derived, not
-deleted.** It currently reads: *"HashText enumerates `"*"` and filters nothing, so the artifact IS part of
-the definition — and must stay that way. Moving the ignore list into HashText would move every recorded
-definition hash in every plan."* Every word of that stays true (§4.4, §5.5). What changes is the sentence
-it supports: the artifact is still part of the recorded definition, and is now **deliberately outside the
-in-run gate's comparison surface** (§6.2). The rewritten comment says both halves, and stage 2's guardrail
-asserts the file still contains the `HashText`-filters-nothing rationale — so an agent cannot resolve the
-red by deleting the reasoning along with the assertion.
+**Why rows 4-5 are stage 14 and not stage 2, and why that split is the whole point.** Both assert on text
+emitted by `RunCommand.RenderPlanEditWarning` — the literal `"Nothing was halted and nothing was re-run."`. Only stage 15 may write `RunCommand.cs`; only a test-authoring stage may write
+`PlanEditedDuringRunTests.cs`. An earlier draft put every rewrite in stage 2 and the string fix in the
+**last** stage, which carries the first unfiltered `tests-pass` — twelve stages apart, with the red landing
+on the one stage that cannot fix it.
 
-**What stage 2 must NOT do:** delete a test, rename it, mark it skipped, or narrow it to the passing half.
-Its guardrails: the file's test-method count is unchanged, and `[Fact]`/`[Theory]` attribute count is
-unchanged.
+**And the stall was not the worst outcome.** The cheapest green leaves rows 4 and 5 **passing**: an
+implementer who never touches the advisory ships a harness that prints
 
-### 15.2 Hand-run of GR2068 / GR2069 against this table
+> `Nothing was halted and nothing was re-run.`
+
+beside `exit 2` and a blocked delivery — a message that is now false, on the exact surface this plan exists
+to make honest, in the product whose thesis is that nothing is marked done unverified. Pairing the string
+and its assertions into one author-tests → implement pair (stages 14, 15) is what removes that option.
+
+**The `:204-206` comment is not a comment — it is the SSOT's reasoning, and it must be re-derived, not
+deleted.** It reads: *"HashText enumerates `"*"` and filters nothing, so the artifact IS part of the
+definition — and must stay that way. Moving the ignore list into HashText would move every recorded
+definition hash in every plan."* Every word stays true (§4.4, §5.5). What changes is the sentence it
+supports: the artifact is still part of the recorded definition, and is now deliberately **outside the
+in-run gate's comparison surface** (§6.2). Stage 2's guardrail asserts the file still carries that
+rationale, so the red cannot be resolved by deleting the reasoning along with the assertion.
+
+**What stages 2 and 14 must NOT do:** delete a test, mark one skipped, or narrow it to its passing half.
+Guardrail: the file's `[Fact]` count is unchanged (5) across both stages.
+
+**One assertion that must NOT move, and it is this design's own tripwire.**
+`AStrayDsStoreMidRun_...` at `:190` asserts `report.AllSucceeded` is **true** for a mid-run `.DS_Store`.
+§6.2's filtered gate is what keeps it true. An implementation whose gate compares the full surface turns it
+red — which is P16, and why §15.4 forbids filtering P16 out.
+
+### 15.2 The ignore predicate needs a legal home — stage 5 gives it one
+
+§6.2 says the gate and the watch share one ignore predicate. `IsEditorArtifact` is **`private static` inside
+`LivePlanEditWatch.cs`**, which appeared in no row's `writeScope`; `HashText` and `TaskDefinitionFiles` are
+forbidden by §11 (touching either moves every recorded hash in every plan), and so is a new source file.
+Every one of those pressures points at the same escape — **skip the ignore list** — which silently
+un-decides §6.2, the sharpest call in this document.
+
+**Decided: stage 5 owns `LivePlanEditWatch.cs` and promotes the predicate to `internal static`.** That is
+the smallest change that gives it a home: no new file, no move, no behavior change to the watch, and the
+one place the list lives stays the one place a future pattern gets added. Stage 5 already owns the other
+half of the seam (`Scheduler.cs`), so the row stays deliverable by a single task.
+
+**Row 5 has ZERO margin, and that is worth knowing before `/plan-breakdown` touches it.** Measured against
+the real check: `Scheduler.cs` is owned by tasks {5, 9, 13}, `LivePlanEditWatch.cs` by **{5} alone**, and
+the intersection is exactly {5}. Every other row in §15 tolerates a scope edit; this one does not. **If
+stage 5 loses either entry from its `writeScope`, row 5 splits and GR2069 fires immediately** — and the
+failure it would be reporting is real, not cosmetic: the two halves of one seam handed to two tasks, with
+the ignore predicate on one side of the boundary and its only consumer on the other. Do not "tidy" this row
+by moving `LivePlanEditWatch.cs` elsewhere.
+
+### 15.3 Hand-run of GR2068 / GR2069 against this table
 
 Run against `HandoffScopeCoverage.cs` as authored at `4495653` (its only commit; merged to master in
 `9bc285c`). Extraction takes **backticked spans in the
@@ -1245,37 +1449,48 @@ when **one** task covers **every** candidate.
 | Row | Candidates | Anchor root | Covering tasks | Verdict |
 |---|---|---|---|---|
 | 1 | 1 | `tests` | {1} | clean |
-| 2 | 1 | `tests` | {2} | clean |
-| 3 | 2 | `src` | {3}, {3} | clean |
+| 2 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (2) covers it** |
+| 3 | 2 | `src` | `TaskNode.cs`→{3}, `PlanLoader.cs`→{3,9} | clean — task 3 covers both |
 | 4 | 2 | `src` | {4}, {4} | clean |
-| 5 | 1 (`Scheduler.cs`) | `src` | {5, 8, 12} | clean — **one task (5) covers every candidate** |
+| 5 | 2 (`Scheduler.cs`, `LivePlanEditWatch.cs`) | `src` | {5,9,13}, {5} | clean — **task 5 covers BOTH** |
 | 6 | 1 | `tests` | {6} | clean |
 | 7 | 1 | `tests` | {7} | clean |
-| 8 | 4 | `src` | {8} for all four | clean |
-| 9 | 1 | `tests` | {9} | clean |
+| 8 | 1 | `tests` | {8} | clean |
+| 9 | 4 | `src` | {9}, {9}, `PlanLoader.cs`→{3,9}, `Scheduler.cs`→{5,9,13} | clean — task 9 covers all four |
 | 10 | 1 | `tests` | {10} | clean |
-| 11 | 3 | `src` | {11} for all three | clean |
-| 12 | 2 | `src` | {12} for both | clean |
-| 13 | 1 | `src` | {13} | clean |
-| 14 | 2 | `docs`, `.claude` | {14}, {14} | clean |
+| 11 | 1 | `tests` | {11} | clean |
+| 12 | 3 | `src` | {12} for all three | clean |
+| 13 | 2 | `src` | `RunReport.cs`→{13}, `Scheduler.cs`→{5,9,13} | clean — task 13 covers both |
+| 14 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (14) covers it** |
+| 15 | 1 | `src` | {15} | clean |
+| 16 | 2 | `docs`, `.claude` | {16}, {16} | clean |
 
-**Predicted: GR2068 ×0, GR2069 ×0.** Fourteen rows, fourteen tasks, `filesTouched` == `writeScope` per row.
+**Predicted: GR2068 ×0, GR2069 ×0.** Sixteen rows, sixteen tasks, `filesTouched` == `writeScope` per row.
+
+**Two rows now share a file deliberately, and neither trips GR2069.** Rows 2 and 14 both name
+`PlanEditedDuringRunTests.cs` (§15.1's split). GR2069 asks whether **some single** task covers **all** of a
+row's candidates — not whether a candidate is uniquely owned — and each row names exactly that one path,
+which its own task covers. Row 5 is the sharper case: it names two paths and **task 5 owns both**, which is
+what keeps the ignore-predicate extraction (§15.2) inside a single deliverable instead of splitting it.
 
 **Measured, not only reasoned — and the measurement is the point.** The installed `guardrails` 1.12.0 does
 **not** contain `HandoffScopeCoverage` (the feature postdates that tag), so running it would have produced a
 **false zero**. The check was built from `src/` at `e835817` and run against a fixture reproducing this
-table as fourteen real `task.json` files, each `writeScope` parsed straight out of its `filesTouched` cell
-so no transcription could diverge. **Result: GR2068 ×0, GR2069 ×0**, with the only diagnostic being the
-fixture's own missing review attestation (GR2025).
+table as real `task.json` files, each `writeScope` parsed straight out of its `filesTouched` cell so no
+transcription could diverge. **Result: GR2068 ×0, GR2069 ×0**, with the only diagnostic being the
+fixture's own missing review attestation (GR2025). **That measurement was taken on the 14-row precursor of
+this table**; the re-cut to 16 rows adds two rows and one shared path, changes no path root, and preserves
+one-task-per-row — it is re-run below rather than assumed.
 
 A zero is worthless unless the check can fire, so three things were established rather than assumed:
 
 - **Two controls fire.** A row naming `src/Guardrails.Core/Nonexistent/Bogus.cs` produces GR2068; a row
   naming `TaskNode.cs` + `RunCommand.cs` produces GR2069, attributing both owning tasks by id.
-- **A 14-probe sweep.** Replacing each row's real paths with same-directory near-misses, one row at a time,
-  fires exactly the expected rows — including the shared-path fan-out (`Scheduler.cs` → rows 5, 8, 12;
-  `PlanLoader.cs` → rows 3, 8). **The hand-run table above matches the measurement row for row**, row 5's
-  covering set `{5, 8, 12}` included.
+- **A per-row probe sweep.** Replacing each row's real paths with same-directory near-misses, one row at a
+  time, fires exactly the expected rows — including the shared-path fan-out. On the 14-row precursor that
+  matched the hand-run row for row; the 16-row re-cut is re-verified the same way, with the new expected
+  fan-out `Scheduler.cs` → rows 5, 9, 13; `PlanLoader.cs` → rows 3, 9;
+  `PlanEditedDuringRunTests.cs` → rows 2, 14.
 - **The other tables are provably invisible, three ways.** For §15.1 and §6.5 — the two tables densest in
   backticked paths and `:NNN` refs — deleting the table leaves the output byte-identical; injecting an
   unreachable path into its first data cell yields zero; and the same injection **with only the first
@@ -1285,44 +1500,71 @@ A zero is worthless unless the check can fire, so three things were established 
 
 Three things that would have broken it, checked explicitly rather than assumed:
 
-- **Row 5's shared `Scheduler.cs`.** GR2069 asks whether **some single** task covers **all** of a row's
-  candidates, not whether a candidate is uniquely owned. Row 5 names one path; task 5 covers it; clean.
-  Multiple owners (`{5, 8, 12}`) are irrelevant to the predicate — confirmed by the sweep.
+- **Row 5's two paths, and the shared `Scheduler.cs`.** Task 5's `writeScope` holds both
+  `Scheduler.cs` and `LivePlanEditWatch.cs`, so one task covers every candidate in the row. That
+  `Scheduler.cs` is *also* owned by tasks 9 and 13 is irrelevant to the predicate.
 - **Backticked paths in the `Deliverable` column** — `AttemptJournaler.cs:91`, `RunReport.cs:184`,
   `PlanLoader.cs:1061`, and the `:NNNN` line references. `Candidates()` is called on `row.FilesTouched`
   **only**, so nothing outside that cell is extracted. Confirmed against `HandoffScopeCoverage.cs:169`.
 - **Other tables in this document.** The check scans **every** markdown table whose header normalizes to
-  `filestouched`. §3, §4.2, §4.3, §6.5, §7, §9, §10, §15.1, §15.2 and §16.1 carry tables; none has that column, so
-  none is treated as a handoff table. §15.2's own header row (`Row | Candidates … | Verdict`) does not
-  match either, nor does §15.1's (`Test | Line | Today | After, and why`).
+  `filestouched`. This document carries **16 tables** and **exactly one** has that column — the §15 handoff
+  table. The two worth naming are the dense ones: **§4.3**'s twelve-row call-site table
+  (`# | Site | Member | Role | After`), now the densest collection of backticked paths in the document, and
+  **§15.1**'s assertion table (`# | Test method | Line | Today | After, and why | Stage`), which carries
+  `:NNN` refs. Neither header matches — verified below rather than reasoned.
+
+---
+
+### 15.4 The one test guardrail that may not be filtered
+
+Stages 3–12 run filtered `tests-pass` guardrails (§15's blockquote), because §15.1's re-baseline leaves
+`PlanEditedDuringRunTests` legitimately red until stage 15. **Stage 13's filter must nonetheless INCLUDE
+`AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStillChanges`.**
+
+Stage 13 is the stage that builds the gate. It is therefore the only stage whose implementation can turn
+that test red — by comparing the full surface instead of the filtered one (§6.3), which is a three-line
+wrong implementation that passes P9 through P15 and every other guardrail in this plan. Filtering it out of
+the one stage that can trip it is why an earlier draft's tripwire caught nothing.
+
+Concretely: stage 13's `tests-pass` guardrail runs the Core divergence suite **plus** that single
+integration method by name. Its other four methods stay filtered out until stage 15.
 
 ---
 
 ## 16. Decisions this plan leaves to the maintainer
 
-1. **Reopen #556.** Auto-closed at `1490d2a` by plan 31's doc commit (§2). Mechanical, no judgment needed —
-   named here so it is not forgotten.
-2. **File the plan-edit watch's JIT-wave blindness** (§5.3, §12). `Scheduler.cs:143` builds
-   `LivePlanEditWatch` from the run-start `plan`; `SpliceAuthoredWave` returns a new `PlanDefinition` and
-   the field is never rebased, so a JIT-authored wave's tasks are invisible to the #545-part-3 warning and
-   `LivePlanEditWatch.cs:95-100`'s adopt-silently branch appears unreachable in production. Found while
-   evaluating reuse for this design; **not** verified against the test suite, which is why it is a filing
-   rather than a claim. It is a gap in what shipped today, and it belongs to #545's component, not to this
-   contract.
-3. **Whether the divergence gate should eventually stop dispatch** (§6.4, Risk 2). Declined for v1 with
-   reasons. It becomes worth revisiting only if a real run is observed paying materially for post-divergence
-   work — which is a measurement nobody has yet, and YAGNI until then.
-4. **File the `GUARDRAILS_TASK_DIR` escape** (Risk 0, §12). `TaskExecutor.cs:511` and `:2029` hand every
-   action and guardrail the main checkout's task-folder path, outside the segment worktree and therefore
-   invisible to the write-scope check. Today it silently moves a recorded hash; after this plan it halts a
-   run. Belongs with #557's containment work, and should be filed against it rather than left in this
-   document.
-5. **Sequencing against the concurrent #552 work.** At the time of writing, `C:\DevAI\Guardrails` carried
-   uncommitted changes from another session — the log-server gate (#552), including edits to SSOT **§12.1
-   and §12.2**. Those are disjoint from this plan's §7, §7.2 and §14.5 edits, and every anchor quoted in
-   §14 was re-verified against the working tree afterwards. The one practical consequence: **stage 14 and
-   that work will both touch `02-schemas-and-contracts.md`**, so whichever lands second rebases. Named
-   here so it is a scheduling note rather than a merge surprise.
+> **Note:** **Review round 1 is settled.** All three questions below were answered on 2026-09-01 and each answer
+> matched the recommended lean. Both filings the reviewer asked for have been made, and §12 now cites them:
+>
+> - the plan-edit watch's JIT-wave blindness → **#568**
+> - the `GUARDRAILS_TASK_DIR` containment escape → **#569**
+> - stopping dispatch on divergence → deferred to v2, unchanged (Risk 2)
+>
+> One correction found while filing: the watch is constructed at `Scheduler.cs:346`, not `:143` as an
+> earlier draft of the question said. The mechanism is unaffected — `_planEditWatch` is assigned exactly
+> once, so it never rebases after `SpliceAuthoredWave` — but the anchor is now the member, not the line.
+
+> **Note:** **#556 has been reopened.** It was auto-closed at `1490d2a` by plan 31's own doc commit, whose body read
+> *"deliberately does not fix:"* followed by the issue number — GitHub's parser matches the bare word `fix`
+> and binds it across the newline, and the negation is invisible to it. Nothing to decide; recorded so the
+> history reads correctly.
+
+**Q: The plan-edit watch is blind to JIT-authored waves — file it against #545, or fold it into this plan?** — Answered: File it against #545's component
+_Question — id: `jit-wave-watch-blindness`; mode: `single`; target: `human`; options: `File it against #545's component`, `Fold it into this plan`, `Leave it recorded here only`; recommended: `File it against #545's component`_
+_Why: Scheduler.cs:143 builds LivePlanEditWatch from the run-start plan; SpliceAuthoredWave returns a NEW PlanDefinition and the field is never rebased, so a JIT-authored wave's tasks are invisible to the #545-part-3 warning, and LivePlanEditWatch.cs:95-100's adopt-silently branch looks unreachable in production. It is a gap in what shipped this morning, in #545's component, not in this contract - folding it in would mix a second defect into a drift-contract change, which is the exact reason plan 31 refused to absorb #556. Stated as a filing rather than a claim: it was found while evaluating reuse and has NOT been verified against the test suite._
+
+**Q: Should the divergence gate eventually stop dispatch, rather than only blocking delivery?** — Answered: Defer to v2 - revisit only on measured evidence
+_Question — id: `gate-stops-dispatch`; mode: `single`; target: `human`; options: `Defer to v2 - revisit only on measured evidence`, `Build it in this plan`, `Rule it out permanently`; recommended: `Defer to v2 - revisit only on measured evidence`_
+_Why: Declined for v1 in Risk 2 with reasons. Stopping dispatch mid-run means killing in-flight tasks and reasoning about partially-settled state, against a benefit nobody has measured: the cost of the work a run does AFTER a divergence it has already detected. That measurement does not exist yet. Ruling it out permanently would discard a real option on no more evidence than building it would._
+
+**Q: GUARDRAILS_TASK_DIR hands every action the MAIN checkout's task folder, outside the segment worktree - where does that get fixed?** — Answered: File against #557's containment work
+_Question — id: `task-dir-escape`; mode: `single`; target: `human`; options: `File against #557's containment work`, `Fold into this plan`, `File as its own issue`; recommended: `File against #557's containment work`_
+_Why: TaskExecutor.cs:511 and :2029 hand every action and guardrail a path outside the segment worktree, so writes there are invisible to the write-scope check. TODAY that silently moves a recorded hash; AFTER this plan it halts a run - so this plan makes an existing hole louder rather than creating one, which is an argument for fixing it beside #557's containment work rather than inside a drift-contract change. Worth your judgment because the severity changes on the day this ships._
+
+> **Note:** **The #552 sequencing note is resolved.** It warned that this plan's stage 16 and the concurrent
+> log-server work would both touch `02-schemas-and-contracts.md`, so whichever landed second would rebase.
+> #552 has since merged (`bbc5e4f`, released in v1.13.0), so stage 16 rebases against merged master and
+> there is no open collision. Every §14 anchor was re-verified against the working tree after that merge.
 
 **One question deliberately NOT reopened:** whether `HashText.EnumerateFolderFiles` gets an ignore list
 (plan 31 §14). This plan is designed so that question does not have to be answered — it changes *when* the
@@ -1339,14 +1581,38 @@ the fixes are the least obvious parts of the design and a reviewer should attack
 
 | # | The defect in the first draft | Where it is fixed |
 |---|---|---|
-| 1 | The plan had **no green path**: milestone A turns four shipped assertions in `PlanEditedDuringRunTests` red, on a file no row could write, with §11 forbidding the only cheap escape | §15.1 + a new stage 2 |
+| 1 | The plan had **no green path**: milestone A turns shipped assertions in `PlanEditedDuringRunTests` red, on a file no row could write, with §11 forbidding the only cheap escape | §15.1 + stages 2 and 14 |
 | 2 | **P6 — called "the single most important pin" — was a tautology**: it passed with the read sites fully pinned, i.e. against the catastrophic wrong fix it existed to catch | §5.8, P6a + P6b |
 | 3 | All three **structural guardrails were already satisfied by the unfixed tree**, and one by an expression-bodied property that keeps the defect 100% intact | §9, rewritten as shape checks |
 | 4 | **"Provably inert on an unedited run" was false.** A stray `.DS_Store` would have blocked an overnight run's delivery — disproved by a *shipped test* | §6.2 (the filtered gate), §13 |
 | 5 | A **sixth write site** — `RecordDriftAccepted` — was missed, and the remediation this design recommends routes the operator one keystroke from re-creating the defect | §4.2 (W6), §6.6, §14 item 7 |
-| 6 | The `AllSucceeded` term **silently reports the terminal gate as PASSED**, writes a self-contradicting delivery reason, and the specified render location would have discarded the run's logs and telemetry | §6.5, §6.6, stage 13 |
+| 6 | The `AllSucceeded` term **silently reports the terminal gate as PASSED**, writes a self-contradicting delivery reason, and the specified render location would have discarded the run's logs and telemetry | §6.5, §6.6, stage 15 |
 
-It also confirmed, by attack, four things the design gets right and a reviewer need not re-derive: CRLF
-normalization cannot move a hash (`HashText.cs:26-27`); guardrail verdict files land under `logs/`, not
-beside the scripts; the harness-generated `.gitignore` is at the plan root and outside the hashed surface;
-and `TaskNode` genuinely has one construction site with no `with`-clone anywhere in `src/`.
+**A SECOND, non-authoring pass then found five more — all in the implementability layer, and it credited
+the diagnosis and milestone A's mechanism as right.** Its headline: *milestone C as specified could not be
+built from what milestone A produced.* Also fixed above:
+
+| # | The defect | Where it is fixed |
+|---|---|---|
+| 7 | **The gate had nothing to diff.** §6.3 said the harness "already holds both numbers," but the pin was a full-surface aggregate and the gate needs a *filtered per-file* comparison — and a per-file diff needs per-file load-time state one string cannot carry. Every escape route led back to abandoning §6.2 | §5.2 (`DefinitionFilesAtLoad`), §6.3, stage 3 |
+| 8 | **The count guardrail was a tautology magnet with a wrong number** (6 against a true 8), and all three structural guardrails were plan-folder guardrails that evaporate when the run ends — against a repo-lifetime hazard | §9 (a committed anchor test asserting the enumerated SET), stage 6 |
+| 9 | **The advisory string and its assertions were twelve stages apart**, and the cheapest green shipped a harness printing *"Nothing was halted and nothing was re-run"* beside `exit 2` and a blocked delivery | §15.1, stages 2 + 14 |
+| 10 | **P6b was unsatisfiable** — `DrainAsync` runs per wave with that wave's tasks only, so nothing re-checks an earlier wave within one run | §5.8 (a waved, two-run fixture) |
+| 11 | **The shared ignore predicate had no legal home**, and every pressure pointed at skipping the ignore list — silently un-deciding §6.2 | §15.2, stage 5 |
+
+Plus four smaller ones: `definitionHashAtSettle` had three contradictory specs (now gate-verdict-driven,
+§6.3); P15 pinned a payload a watch-driven implementation could fake (now pins provenance, §6.7); the
+READ/WRITE taxonomy misclassified three durable writes (§4.3); and every `RunCommand.cs` line reference was
+stale, two pointing at a different member — those are now located by member name.
+
+**Confirmed right by attack, and a reviewer need not re-derive:** CRLF normalization cannot move a hash
+(`HashText.cs:26-27`); guardrail verdict files land under `logs/`, not beside the scripts; and the
+harness-generated `.gitignore` is at the plan root, outside the hashed surface. **One earlier "confirmed"
+item was withdrawn:** §16.1 previously said `TaskNode` has *"no `with`-clone anywhere in `src/`."* False —
+`PlanLoader.cs:949` and `:952` both clone. The conclusion survives (init-only properties ride through a
+`with`) but the premise did not, and §5.2 now states the real requirement: no clone may rebind `Directory`
+or `Action`.
+
+<!-- charter: answers-sha256=none -->
+
+<!-- charter: plan-sha256=713392a4122088213862987f5edcac8ffe138ad48269d5c0c3c0d0bf1df925e0 -->

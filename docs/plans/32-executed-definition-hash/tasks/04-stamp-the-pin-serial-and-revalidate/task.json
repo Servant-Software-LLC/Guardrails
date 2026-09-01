@@ -1,0 +1,17 @@
+{
+  "description": "Write sites W1 and W4 - AttemptJournaler.CompleteSucceededOrInvalidFragment and TaskExecutor.RevalidateAsync - stamp the load-time pin instead of recomputing the hash from current disk, with no fallback",
+  "dependsOn": [
+    "01-author-tests-executed-hash",
+    "02-rebaseline-plan-edit-hash-assertions",
+    "03-pin-the-definition-at-load"
+  ],
+  "stableId": "p32t04",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

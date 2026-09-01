@@ -55,4 +55,26 @@ public sealed record WaveNode
     /// carry ≥1 real integration re-run, GR2028 per wave). Empty when the folder is absent.
     /// </summary>
     public IReadOnlyList<GuardrailDefinition> Guardrails { get; init; } = [];
+
+    /// <summary>
+    /// The wave's OWN half of its definition surface — <c>guardrails/**</c>, then <c>preflights/**</c>, then
+    /// the optional <c>brief.md</c> — captured EAGERLY by the loader from the SAME bytes it read to build
+    /// this node (plan 32-executed-definition-hash §5.4, issue #556). The twin of
+    /// <see cref="TaskNode.DefinitionHashAtLoad"/> one level up: the definition the wave actually RAN
+    /// against, so a mid-run edit to a gate script never reaches the wave-completion stamp. Write site W5
+    /// (the journal wave entry and the <c>Guardrails-Wave:</c> marker commit) folds THIS value; there is no
+    /// fallback to disk at that write site, ever. Null only for a <see cref="WaveNode"/> the loader did not
+    /// construct.
+    ///
+    /// <para><b>It holds the labeled-segment TEXT, not a digest — and that is load-bearing, not an
+    /// oversight.</b> The disk-reading form of <see cref="Journal.WaveDefinitionHash"/> inlines each gate
+    /// file's BODY into its builder, and only the wave-completion WRITE is pinned: the wave-drift COMPARE on
+    /// the next resume is still a disk recompute (§5.4 keeps <c>Compute(wave)</c> unchanged for every READ).
+    /// The two must therefore be BYTE-IDENTICAL on an unedited tree, or every completed wave reads as
+    /// drifted on the very next resume. Folding a SHA into the position the disk form fills with bodies
+    /// produces a different digest, so this capture holds exactly the bytes that position needs. The
+    /// property name is <see cref="TaskNode.DefinitionHashAtLoad"/>'s for symmetry across the two levels
+    /// (§5.4 names it), which is the one place that name and its contents pull apart.</para>
+    /// </summary>
+    public string? DefinitionHashAtLoad { get; init; }
 }

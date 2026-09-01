@@ -1,0 +1,14 @@
+{
+  "description": "Render the divergence halt in the NORMAL end-of-run path at exit 2, correct the plan-edit advisory to the pre-edit contract, report the terminal gate as not-evaluated rather than passed, give the delivery record its own reason, and refuse the drift-accept option for a divergence-originated drift",
+  "dependsOn": [
+    "14-rebaseline-advisory-assertions"
+  ],
+  "stableId": "p32t15",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Re-baseline section 15.1 rows 3-5 - the exit code, the delivery record and the two advisory-string assertions - authored RED immediately before the stage that changes that string, rather than eleven stages earlier",
+  "dependsOn": [
+    "13-add-the-divergence-gate"
+  ],
+  "stableId": "p32t14",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

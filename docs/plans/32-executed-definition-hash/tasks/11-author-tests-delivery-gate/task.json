@@ -1,0 +1,14 @@
+{
+  "description": "Author milestone C's acceptance criterion end-to-end - P9 (a green run with a mid-run edit does NOT deliver and exits 2), P11 (the in-run report and the next resume name the same task set), P13 (the work survives on the plan branch), plus the terminal-gate not-evaluated and delivery-reason corrections",
+  "dependsOn": [
+    "05-stamp-the-pin-worktree"
+  ],
+  "stableId": "p32t11",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/DivergenceDeliveryGateTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

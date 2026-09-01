@@ -1,0 +1,14 @@
+{
+  "description": "Author the repo-lifetime tripwire - a committed source-reading anchor test asserting the enumerated SET of the eight surviving TaskDefinitionHash.Compute call sites by file and enclosing member, plus the declaration-shape, no-disk-fallback and no-identity-rebinding-clone anchors",
+  "dependsOn": [
+    "05-stamp-the-pin-worktree"
+  ],
+  "stableId": "p32t06",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ExecutedDefinitionHashAnchorTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

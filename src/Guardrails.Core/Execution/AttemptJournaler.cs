@@ -87,8 +87,9 @@ internal sealed class AttemptJournaler
         };
         // §7.2 (#274 Part A): stamp the task's definition hash on the serial-mode success settle, so a
         // later resume compares the current definition against it and halts on drift instead of skipping.
+        // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, TaskDefinitionHash.Compute(task));
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad);
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can

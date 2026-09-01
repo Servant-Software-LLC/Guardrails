@@ -1,0 +1,14 @@
+{
+  "description": "Author section 5.8's integration pins on a real git segment - P2 for the worktree write sites, P3 for the Guardrails-Task-Hash trailer, and P6a/P6b proving the READ sites still recompute from current disk",
+  "dependsOn": [
+    "04-stamp-the-pin-serial-and-revalidate"
+  ],
+  "stableId": "p32t07",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/MidRunDefinitionEditTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

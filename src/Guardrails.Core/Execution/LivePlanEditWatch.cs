@@ -218,8 +218,11 @@ public sealed class LivePlanEditWatch
     }
 
     /// <summary>True for the editor/OS artifacts the watch drops before comparing — and ONLY here, never in
-    /// <see cref="HashText"/> (see the class remarks for why that distinction is load-bearing).</summary>
-    private static bool IsEditorArtifact(string absolutePath)
+    /// <see cref="HashText"/> (see the class remarks for why that distinction is load-bearing).
+    /// <para><c>internal</c> rather than <c>private</c> (plan 32-executed-definition-hash §6.2/§15.2) so the
+    /// settle-time divergence gate filters through this same predicate: one home for the list, so a future
+    /// pattern cannot reach one reporting surface and miss the other.</para></summary>
+    internal static bool IsEditorArtifact(string absolutePath)
     {
         string name = Path.GetFileName(absolutePath);
         return IgnoredFileNames.Any(n => string.Equals(name, n, StringComparison.OrdinalIgnoreCase))
