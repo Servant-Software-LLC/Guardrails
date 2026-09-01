@@ -36,17 +36,24 @@ namespace Guardrails.Cli.Commands;
 /// class doc ("insufficient evidence as a first-class output, not a blank cell") — and to print the
 /// stratum's model tag verbatim.</para>
 ///
-/// <para><b>Two honest gaps in the row→sample mapping, stated rather than papered over.</b>
-/// <see cref="TelemetryReport.Build"/> takes samples whose stratification identity is already settled,
-/// but <see cref="TelemetryRow"/>'s schema records neither a model digest nor a task-fingerprint
-/// bucket. So: (a) <see cref="TelemetryReportSample.ModelFingerprint"/> is composed from the route the
-/// corpus DOES record (<c>kind/runner/model</c>), which means a provider that silently swaps the
-/// weights under a stable tag (charter §5 "model drift") is not distinguishable here — a gap in the
-/// row schema, not a claim this report makes; and (b) every sample sits in the single explicit
-/// <see cref="UnbucketedBucket"/> stratum, because charter §4.2 says a task fingerprint is a fact
-/// about the task and never an opinion read off its label — with no bucket in the corpus, refusing to
-/// invent one is the only honest option. Both are named in the report's own legend so a reader is
-/// never left inferring a rigour the data does not have.</para>
+/// <para><b>The row→sample mapping's two facts, now sourced rather than gapped (plan 30 §3.2/§3.3).</b>
+/// <see cref="TelemetryReportSample.ModelFingerprint"/> folds in the row's model digest when it carries
+/// one (<c>kind/runner/model@digest</c>), so two quantizations of the same model tag never pool as one
+/// sample — §3.4's reason this is not hypothetical: the same tag genuinely runs different weights on a
+/// 64GB box than on a 128GB one. A row with no digest fingerprints exactly as it always has
+/// (<c>kind/runner/model</c>), so no existing corpus row's stratum moves. A digest is a PROVIDER fact to
+/// state, not a harness gap to apologize for: a Claude row's digest is permanently null (the Claude CLI
+/// stream carries a model tag and no fingerprint at all), and an <c>openai-compat</c> row carries one
+/// only where the engine volunteers <c>system_fingerprint</c>, which many do not — null there means the
+/// provider exposed none, not that this report lost it. And
+/// <see cref="TelemetryReportSample.FingerprintBucket"/> now sources the corpus's own
+/// <see cref="TelemetryRow.Bucket"/> column (task-grain row preferred, first-attempt row as fallback,
+/// <see cref="UnbucketedBucket"/> only when neither carries one — the same chain
+/// <see cref="TelemetryRow.Tier"/> already uses, because both are task-grain facts). The corpus is
+/// append-only and never rewritten, so a row written before plan 30 §3.2's bucket column existed renders
+/// <see cref="UnbucketedBucket"/> forever — honest, not a regression. Both are named in the report's own legend, alongside the
+/// BOUNDARY row that states which corpus era the table below even covers, so a reader is never left
+/// inferring a rigour the data does not have.</para>
 /// </summary>
 public static class TelemetryCommand
 {
@@ -62,8 +69,22 @@ public static class TelemetryCommand
     /// <summary>The reserved attempt sentinel the ETL writes the once-per-task row on (tasks 05/06).</summary>
     private const int TaskGrainAttempt = 0;
 
-    /// <summary>The one bucket every sample falls into until the corpus records a real one — see the class doc.</summary>
+    /// <summary>The bucket a row renders when neither its task-grain nor its attempt row carries one — see the class doc.</summary>
     private const string UnbucketedBucket = "(unbucketed)";
+
+    /// <summary>
+    /// The first UTC midnight after both plan 30 §3.1's provenance fix (#532, commit <c>3129919</c>,
+    /// 2026-08-30 17:58 UTC) and the corpus-isolation fix (#547, commit <c>6229643</c>, 2026-08-30 18:06
+    /// UTC) were on master. A row whose <see cref="TelemetryRow.StartedAt"/> predates this instant
+    /// predates both fixes: a failed attempt then recorded no provenance at all, so every routed stratum
+    /// read 100% first-pass by survivorship, not by merit (plan 30 §2). Such rows are excluded from the
+    /// stratified table — never rewritten, never backfilled, just not counted — because a bare magic date
+    /// in a filter is unreadable in six months and this one has a derivation worth keeping.
+    /// </summary>
+    private static readonly DateTimeOffset EraBoundary = new(2026, 8, 31, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>The literal date <see cref="EraBoundary"/> renders as, in the legend and in receipts.</summary>
+    private const string EraBoundaryLabel = "2026-08-31";
 
     /// <summary>Stand-ins for facts the corpus row simply does not carry. Never a guess at the real value.</summary>
     private const string UnstatedTier = "(unstated)";
@@ -361,24 +382,39 @@ public static class TelemetryCommand
         io.Out.WriteLine();
         io.Out.WriteLine($"Corpus root: {corpusRoot}");
 
-        IReadOnlyList<TelemetryReportSample> samples = ToSamples(rows);
+        List<TelemetryRow> eraRows = rows.Where(r => r.StartedAt >= EraBoundary).ToList();
+        int excludedByEraBoundary = rows.Count - eraRows.Count;
+
+        IReadOnlyList<TelemetryReportSample> samples = ToSamples(eraRows);
         if (samples.Count == 0)
         {
-            io.Out.WriteLine(
-                "The corpus holds no attempt yet, so there is nothing to report. Populate it with "
-                + "`guardrails telemetry ingest <plan-folder>`.");
+            if (rows.Count > 0 && eraRows.Count == 0)
+            {
+                // Rows exist, but every one of them predates the boundary — a materially different
+                // claim from an empty corpus, and the "nothing to report" sentence below would be false.
+                io.Out.WriteLine(
+                    $"Every row in the corpus predates the {EraBoundaryLabel} era boundary (see BOUNDARY "
+                    + $"in the legend below), so there is nothing to report: {rows.Count} row(s) excluded.");
+            }
+            else
+            {
+                io.Out.WriteLine(
+                    "The corpus holds no attempt yet, so there is nothing to report. Populate it with "
+                    + "`guardrails telemetry ingest <plan-folder>`.");
+            }
+
             return ExitCodes.Success;
         }
 
         TelemetryReport report = TelemetryReport.Build(samples);
 
         io.Out.WriteLine(
-            $"{samples.Count} task(s) over {rows.Count} row(s); minimum n for a verdict: "
+            $"{samples.Count} task(s) over {eraRows.Count} row(s); minimum n for a verdict: "
             + $"{TelemetryReport.DefaultMinimumSampleSize}.");
         io.Out.WriteLine();
 
         RenderTable(report, io);
-        RenderLegend(unreadableLines, io);
+        RenderLegend(unreadableLines, excludedByEraBoundary, io);
 
         return ExitCodes.Success;
     }
@@ -432,7 +468,11 @@ public static class TelemetryCommand
                 // attempt's provenance); the attempt row is the fallback for a corpus whose task row
                 // is missing, never a second opinion when it is present.
                 Tier = taskRow?.Tier ?? first.Tier ?? UnstatedTier,
-                FingerprintBucket = UnbucketedBucket,
+
+                // Same chain as Tier immediately above, and for the same reason: the task-grain row is
+                // the task-grain fact, and the attempt row is a fallback for a corpus whose task row is
+                // missing — never a second opinion when it is present.
+                FingerprintBucket = taskRow?.Bucket ?? first.Bucket ?? UnbucketedBucket,
 
                 FirstAttemptSucceeded = first.Attempt == 1 && first.Outcome == SucceededOutcomeToken,
 
@@ -447,15 +487,22 @@ public static class TelemetryCommand
     }
 
     /// <summary>
-    /// The strongest model identity the corpus actually carries: the resolved route
-    /// <c>kind/runner/model</c>. It is NOT a digest — see the class doc — so a component the row left
-    /// null is spelled <c>?</c> rather than silently collapsed, and a row with no route at all (a script
-    /// attempt) says so.
+    /// The strongest model identity the corpus carries: the resolved route <c>kind/runner/model</c>, plus
+    /// <c>@</c><see cref="TelemetryRow.ModelDigest"/> when the row carries one — see the class doc for why
+    /// a digest is a provider fact, not a gap. A row with no digest fingerprints exactly as it always has,
+    /// so no existing corpus row's stratum moves. A component the row left null is spelled <c>?</c>
+    /// rather than silently collapsed, and a row with no route at all (a script attempt) says so.
     /// </summary>
-    private static string Fingerprint(TelemetryRow row) =>
-        row.Kind is null && row.Runner is null && row.Model is null
-            ? NoRouteRecorded
-            : $"{row.Kind ?? "?"}/{row.Runner ?? "?"}/{row.Model ?? "?"}";
+    private static string Fingerprint(TelemetryRow row)
+    {
+        if (row.Kind is null && row.Runner is null && row.Model is null)
+        {
+            return NoRouteRecorded;
+        }
+
+        string route = $"{row.Kind ?? "?"}/{row.Runner ?? "?"}/{row.Model ?? "?"}";
+        return row.ModelDigest is { } digest ? $"{route}@{digest}" : route;
+    }
 
     /// <summary>
     /// Render the report as a fixed-width table. Column widths are measured over the headers and the
@@ -571,24 +618,46 @@ public static class TelemetryCommand
     }
 
     /// <summary>
-    /// Say out loud what the columns do and do not mean. The two gaps named here (no digest behind the
-    /// fingerprint, no real bucket) are the difference between a report a reader can trust and one they
-    /// would over-read; the cost note is charter §6's null-versus-zero distinction, which is invisible in
-    /// a table cell unless the table says it.
+    /// Say out loud what the columns do and do not mean, and which corpus era the table above even
+    /// covers. FINGERPRINT and BUCKET are re-worded from their original gap-stating sentences now that
+    /// the corpus supplies both (plan 30 §3.2/§3.3), but the caveats survive re-wording rather than being
+    /// dropped: FINGERPRINT still says what a null digest does and does not mean, and BUCKET still names
+    /// the <see cref="UnbucketedBucket"/> sentinel and why a row can render it forever. BOUNDARY is new:
+    /// the table above is already filtered to the post-boundary era, and a reader who does not know that
+    /// would over-read the first-pass rate as merit rather than survivorship (plan 30 §2). The cost note
+    /// is charter §6's null-versus-zero distinction, which is invisible in a table cell unless the table
+    /// says it.
     /// </summary>
-    private static void RenderLegend(int unreadableLines, IConsoleIo io)
+    private static void RenderLegend(int unreadableLines, int excludedByEraBoundary, IConsoleIo io)
     {
         io.Out.WriteLine();
         io.Out.WriteLine("  N            tasks in the stratum. A stratum below the minimum renders no verdict at all.");
-        io.Out.WriteLine("  FINGERPRINT  kind/runner/model, as the corpus records it. The corpus stores no model");
-        io.Out.WriteLine("               digest, so a provider that swaps the weights under a stable tag is NOT");
-        io.Out.WriteLine("               distinguished here (charter §5 model drift) — a gap in the row schema.");
-        io.Out.WriteLine($"  BUCKET       {UnbucketedBucket} for every task: the corpus records no task-fingerprint");
-        io.Out.WriteLine("               bucket, and a bucket is a fact about a task, never one read off its name.");
+        io.Out.WriteLine("  FINGERPRINT  kind/runner/model, plus @digest when the row carries a model digest — so a");
+        io.Out.WriteLine("               provider that swaps the weights under a stable tag (charter §5 model drift),");
+        io.Out.WriteLine("               or the same model tag run at two quantizations (plan 30 §3.4), never pools");
+        io.Out.WriteLine("               as one sample. A Claude row's digest is always null (the CLI stream carries");
+        io.Out.WriteLine("               a model tag and no fingerprint); an openai-compat row carries one only where");
+        io.Out.WriteLine("               the engine emits system_fingerprint — null there means the provider exposed");
+        io.Out.WriteLine("               none, not that this report lost it.");
+        io.Out.WriteLine($"  BUCKET       the task's fingerprint bucket, sourced from the corpus row. {UnbucketedBucket}");
+        io.Out.WriteLine("               means the row predates plan 30 §3.2's bucket column — the corpus is");
+        io.Out.WriteLine("               append-only and never rewritten, so that row renders this way forever.");
         io.Out.WriteLine("  MED/P90      attempts-to-green, over the tasks that ever went green; ABANDONED is the");
         io.Out.WriteLine("               share of the WHOLE stratum that never did — read the two together.");
         io.Out.WriteLine($"  COST         \"{CostNotReported}\" means no attempt in the stratum ever reported a cost.");
         io.Out.WriteLine("               That is not the same claim as $0.00.");
+        io.Out.WriteLine($"  BOUNDARY     {EraBoundaryLabel} — the table above excludes every row started before this");
+        io.Out.WriteLine("               date. A failed attempt before it recorded no provenance at all, so every");
+        io.Out.WriteLine("               routed stratum read 100% first-pass by survivorship, not by merit — the");
+        io.Out.WriteLine("               excluded rows remain in the corpus, just not counted here.");
+
+        if (excludedByEraBoundary > 0)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                $"  {excludedByEraBoundary} corpus row(s) predate the {EraBoundaryLabel} era boundary and are "
+                + "excluded from every figure above.");
+        }
 
         if (unreadableLines > 0)
         {
