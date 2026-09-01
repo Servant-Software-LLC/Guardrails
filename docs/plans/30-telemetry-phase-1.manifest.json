@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "charterVersion": "0.26.0",
+  "plan": "30-telemetry-phase-1.charter.md",
+  "planSha256": "77eb2bb5308379a319bbe983cb9f28bb78193f936648329c59a97e5ee9951c45",
+  "answers": null,
+  "answersSha256": null,
+  "handoff": "30-telemetry-phase-1.md",
+  "handoffSha256": "d3bf17a76dde65b8a76f035a4cb2684c60d4f9c74b6f51fc855180b16f8c4d6b",
+  "malformedQuestions": 0,
+  "gate": {
+    "flagPassed": true,
+    "needsHuman": false,
+    "exitCode": 0,
+    "blockers": [],
+    "unmatchedAnswerIds": []
+  },
+  "questions": [
+    {
+      "id": "prefix-corpus-era",
+      "title": "92 older failed rows carry no provenance and 447 of 587 name no usable model. What happens to the pre-fix corpus?",
+      "sourceLine": 68,
+      "answered": true,
+      "answer": [
+        "Document a boundary date and filter before it"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "577-ownership",
+      "title": "Does Phase 1 OWN closing the model-attribution gap (#577), or only the census that scopes it?",
+      "sourceLine": 77,
+      "answered": true,
+      "answer": [
+        "Phase 1 owns the census only; the fix is its own issue"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "model-digest-scope",
+      "title": "#223 has SHIPPED, so this section\u0027s own trigger has fired \u2014 is the model digest in Phase 1 scope now?",
+      "sourceLine": 169,
+      "answered": true,
+      "answer": [
+        "Yes - bring it into Phase 1"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "unified-memory-fact",
+      "title": "Is the incoming Mac Studio really the TIGHTER box than the 128GB MacBook? The plan\u0027s reasoning depends on it.",
+      "sourceLine": 213,
+      "answered": true,
+      "answer": [
+        "Yes - 64GB Mac Studio, tighter than the MacBook"
+      ],
+      "answerSource": "inline"
+    }
+  ]
+}
