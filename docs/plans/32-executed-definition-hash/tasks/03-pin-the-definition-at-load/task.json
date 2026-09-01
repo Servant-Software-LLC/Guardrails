@@ -1,0 +1,12 @@
+{
+  "description": "Capture both load-time definition pins on TaskNode - the full-surface aggregate the journal records and the per-file map the divergence gate diffs - eagerly at the loader's single new TaskNode, with no lazy evaluation and no fallback to disk",
+  "dependsOn": [],
+  "stableId": "p32t03",
+  "writeScope": [
+    "src/Guardrails.Core/Model/TaskNode.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

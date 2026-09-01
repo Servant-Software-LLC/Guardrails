@@ -1,0 +1,18 @@
+{
+  "description": "The wave twin - WaveNode carries its own load-time capture, a pinned fold lands beside the unchanged disk-reading Compute(wave), and write site W5 at wave completion stamps the pin so the task and wave levels cannot drift apart",
+  "dependsOn": [
+    "06-author-anchor-tests-hash-sites",
+    "08-author-tests-wave-executed-hash"
+  ],
+  "stableId": "p32t09",
+  "writeScope": [
+    "src/Guardrails.Core/Model/WaveNode.cs",
+    "src/Guardrails.Core/Journal/WaveDefinitionHash.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

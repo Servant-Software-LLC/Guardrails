@@ -1,0 +1,16 @@
+{
+  "description": "Write sites W2 and W3 - Scheduler.SettleAsync and SettleGreenIfWorktreeAsync, the DEFAULT execution mode - stamp the load-time pin while every Scheduler READ site keeps recomputing from disk; and give the editor-artifact ignore predicate its one internal home",
+  "dependsOn": [
+    "03-pin-the-definition-at-load",
+    "07-author-tests-mid-run-definition-edit"
+  ],
+  "stableId": "p32t05",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/LivePlanEditWatch.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

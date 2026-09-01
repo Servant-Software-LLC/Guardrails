@@ -1,0 +1,12 @@
+{
+  "description": "Re-baseline section 15.1 rows 1-2 of the shipped PlanEditedDuringRunTests to the post-fix contract - the recorded hash becomes the load-time pin, and a mid-run guardrail-script edit stops the run being wholly green - without deleting, skipping or narrowing any of its five facts",
+  "dependsOn": [],
+  "stableId": "p32t02",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

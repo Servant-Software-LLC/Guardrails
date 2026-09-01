@@ -1,0 +1,15 @@
+{
+  "description": "The durable record - an optional TaskJournalEntry.DefinitionHashAtSettle omitted from JSON when null, its path through the three RunJournal recorders as an optional parameter, and the definition-divergence boundary token",
+  "dependsOn": [
+    "10-author-tests-divergence-record"
+  ],
+  "stableId": "p32t12",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs",
+    "src/Guardrails.Core/Execution/DecisionEntry.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

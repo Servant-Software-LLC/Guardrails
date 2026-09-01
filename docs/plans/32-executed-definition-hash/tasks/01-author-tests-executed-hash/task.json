@@ -1,0 +1,12 @@
+{
+  "description": "Author section 5.8's Core pins for the task-level executed-definition hash - P1 in serial mode, P14's between-attempts discriminator, and the P5/P8 no-op and byte-pin regressions - naming no API member this plan has not yet written",
+  "dependsOn": [],
+  "stableId": "p32t01",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Journal/ExecutedDefinitionHashTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}
