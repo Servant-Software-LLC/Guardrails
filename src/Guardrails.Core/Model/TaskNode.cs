@@ -86,6 +86,31 @@ public sealed record TaskNode
     /// list is a validation error (<see cref="Loading.DiagnosticCodes.StagingOutputsInvalid"/>).
     /// </summary>
     public IReadOnlyList<StagingOutput>? StagingOutputs { get; init; }
+
+    /// <summary>
+    /// The task's SHA-256 <c>TaskDefinitionHash</c> (<see cref="Journal.TaskDefinitionHash"/>) captured
+    /// EAGERLY by the loader, from the SAME bytes it just read to build this node (plan
+    /// 32-executed-definition-hash §5.1/§5.2, issue #556). This is the definition the attempt actually
+    /// RUNS against; a mid-run edit to <c>task.json</c> on disk never reaches it. Every write of the
+    /// executed-definition record stamps THIS value — never a fresh <c>Compute(task)</c> call against
+    /// current disk. Null only for a <c>TaskNode</c> the loader did not construct; there is no fallback to
+    /// disk at any write site, ever — a null pin records a null hash (SSOT §7.2: recorded hash absent ⇒
+    /// "unknown — assume unchanged" ⇒ match).
+    /// </summary>
+    public string? DefinitionHashAtLoad { get; init; }
+
+    /// <summary>
+    /// The UNFILTERED per-file map over <see cref="Journal.TaskDefinitionFiles.Enumerate"/> — the same
+    /// enumeration <see cref="DefinitionHashAtLoad"/> folds — keyed by each entry's own label
+    /// (<c>task.json</c>, <c>action:&lt;relative path&gt;</c>, and the <c>guardrails/**</c> /
+    /// <c>preflights/**</c> entries) with that one file's hash as the value, captured EAGERLY alongside
+    /// <see cref="DefinitionHashAtLoad"/> (plan 32-executed-definition-hash §5.2). Editor/OS artifacts
+    /// (e.g. <c>.DS_Store</c>) are present here exactly as they are in the hash; filtering them is the
+    /// settle-time gate's job, applied to both sides of its diff, so the ignore predicate has exactly one
+    /// home instead of a second copy living here. Null only for a <c>TaskNode</c> the loader did not
+    /// construct.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? DefinitionFilesAtLoad { get; init; }
 }
 
 /// <summary>
