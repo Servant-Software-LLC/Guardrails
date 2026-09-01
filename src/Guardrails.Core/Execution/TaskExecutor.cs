@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Io;
@@ -553,6 +554,14 @@ public sealed class TaskExecutor : ITaskExecutor
                 FailedGuardrails = failed
                     .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
                     .ToList(),
+                // Plan 30 §3.4: a revalidate runs NO action — the human's in-place fix is the "attempt" —
+                // so the ACTION half is absent and only the guardrail pass, which genuinely ran and was
+                // measured inside GuardrailRunner, is recorded. Half-populated on purpose, and the same
+                // shape the in-between attempt settles carry with the halves swapped. Null-guarded rather
+                // than assumed: AttemptSegments must never be built out of two nulls.
+                Segments = guardrails.GuardrailMs is { } failedMs
+                    ? new AttemptSegments { GuardrailMs = failedMs }
+                    : null,
                 LogDir = relativeLogDir,
                 Provenance = JudgeOnlyProvenance(guardrails.Judge)
             };
@@ -581,6 +590,10 @@ public sealed class TaskExecutor : ITaskExecutor
             EndedAt = DateTimeOffset.UtcNow,
             ActionExitCode = null,
             Outcome = AttemptOutcome.Succeeded,
+            // Plan 30 §3.4: the guardrail half only, for the reason given at the failed sibling above.
+            Segments = guardrails.GuardrailMs is { } okMs
+                ? new AttemptSegments { GuardrailMs = okMs }
+                : null,
             LogDir = relativeLogDir,
             Provenance = JudgeOnlyProvenance(guardrails.Judge)
         };
@@ -749,9 +762,23 @@ public sealed class TaskExecutor : ITaskExecutor
         string? worktreeRootForHook = IsRealGitSegment(worktree) ? worktree.WorktreePath : null;
         // `route` is the SAME object the provenance above was built from (#201): the model recorded and
         // the model run are one resolution, read twice.
+        //
+        // Plan 30 §3.4: the ACTION half of the attempt's segmented duration is MEASURED here, around the
+        // call, and never read back off the returned ProcessResult — ActionRun.AsProcessResult sets
+        // `Duration = TimeSpan.Zero` for a prompt action deliberately (it synthesizes that result for the
+        // log artifacts and has no child-process clock to report), so reading it would hand every prompt
+        // attempt a confident `0`: a wrong number wearing a measurement's clothes. The guardrail half is
+        // measured inside GuardrailRunner for the mirror-image reason — see the clock there.
+        var actionClock = Stopwatch.StartNew();
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
             logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+        actionClock.Stop();
+
+        // The local is REASSIGNED, exactly as `provenance` is below: ActionRun is immutable and a `with`
+        // whose result is discarded changes nothing. Folded onto the run itself rather than kept as a
+        // local because every settle below reads its facts off this object.
+        action = action with { ActionMs = actionClock.ElapsedMilliseconds };
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
@@ -842,9 +869,12 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (cancellationToken.IsCancellationRequested)
         {
+            // Plan 30 §3.4: the EARLIER of the two mid-attempt cancels. The action ran and was timed;
+            // no guardrail has, so the pair is ActionMs-only — a half-populated record, not a gap.
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
-                action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns);
+                action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action));
         }
 
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
@@ -860,7 +890,8 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.NeedsHuman(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, question,
                 action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance,
-                salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber));
+                salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber),
+                segments: AttemptJournaler.SegmentsFor(action));
         }
 
         // --- permission wall observation (issues #86 / #104 / #325) ----------------------
@@ -923,7 +954,8 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             return _journaler.PermissionWall(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action,
-                new PermissionWallDecision(true, [], wall.RepeatedPaths), provenance: provenance);
+                new PermissionWallDecision(true, [], wall.RepeatedPaths), provenance: provenance,
+                segments: AttemptJournaler.SegmentsFor(action));
         }
 
         if (!action.Succeeded)
@@ -941,7 +973,7 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 return _journaler.PermissionWall(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall,
-                    provenance: provenance);
+                    provenance: provenance, segments: AttemptJournaler.SegmentsFor(action));
             }
 
             // Compose signal-specific feedback so a retry CHANGES BEHAVIOR rather than re-hitting the
@@ -1001,7 +1033,11 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = summary
                 },
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                turns: action.Turns);
+                turns: action.Turns,
+                // Plan 30 §3.4: the action ran (badly, or into a timeout / turn cap) and its clock is
+                // real — that is precisely the cost §2 is missing. The summaries above all say
+                // "guardrails skipped", so the guardrail half is honestly absent.
+                segments: AttemptJournaler.SegmentsFor(action));
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
@@ -1030,7 +1066,9 @@ public sealed class TaskExecutor : ITaskExecutor
                         Summary = $"staging move failed: {moveResult.FailureReason}"
                     },
                     costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                    turns: action.Turns);
+                    turns: action.Turns,
+                    // The staging move runs BETWEEN the two phases, so this is another action-only pair.
+                    segments: AttemptJournaler.SegmentsFor(action));
             }
         }
 
@@ -1102,7 +1140,10 @@ public sealed class TaskExecutor : ITaskExecutor
                         }
                     },
                     costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                    turns: action.Turns);
+                    turns: action.Turns,
+                    // Same in-between position as the staging failure above: action measured, no
+                    // guardrail reached.
+                    segments: AttemptJournaler.SegmentsFor(action));
             }
         }
 
@@ -1150,7 +1191,10 @@ public sealed class TaskExecutor : ITaskExecutor
                         Summary = $"write-scope violation: {offendingList}"
                     },
                     costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                    turns: action.Turns);
+                    turns: action.Turns,
+                    // The write-scope check runs BEFORE the task's own guardrails, so this is the last
+                    // of the four action-only pairs.
+                    segments: AttemptJournaler.SegmentsFor(action));
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -1214,9 +1258,12 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (cancellationToken.IsCancellationRequested)
         {
+            // Plan 30 §3.4: the LATER mid-attempt cancel — downstream of the guardrail pass, so unlike
+            // its sibling above it carries BOTH halves. Same method, a different answer, decided here.
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
-                action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns);
+                action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action, guardrails));
         }
 
         if (guardrails.AnyFailed)
@@ -1259,10 +1306,14 @@ public sealed class TaskExecutor : ITaskExecutor
                 // guardrail failure whose wall was RECOVERED (a detour), not a wall failure — the consult is
                 // scoped to real wall halts. The wall is already disclosed as secondary context in the
                 // summary and the feedback, so no diagnosis is lost.
+                // Plan 30 §3.4: BOTH halves. The method itself receives only the ActionRun, but the
+                // guardrails ran and failed right here — that is what this halt reports — so the
+                // GuardrailRunResult in scope supplies the second half rather than leaving it null.
                 return _journaler.StructuralWallHalt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
-                    summary, wallFeedback, guardrails.Results, failedList, provenance: provenance);
+                    summary, wallFeedback, guardrails.Results, failedList, provenance: provenance,
+                    segments: AttemptJournaler.SegmentsFor(action, guardrails));
             }
 
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
@@ -1299,7 +1350,11 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Plan 30 §2: the guardrail-failed path is the one the survivorship finding is ABOUT —
                 // ten of plan 27's twenty-three attempts settled here carrying nothing attributable.
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                turns: action.Turns);
+                turns: action.Turns,
+                // §3.4, and the same sentence one column over: an attempt that burned twenty minutes
+                // before going red is the cost a per-model comparison cannot see today. Both phases ran
+                // here, so both are recorded.
+                segments: AttemptJournaler.SegmentsFor(action, guardrails));
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
