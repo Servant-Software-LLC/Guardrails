@@ -277,6 +277,20 @@ internal sealed class AttemptJournaler
             // #475: WITHOUT this line the value the record above sets reaches serial runs only — the
             // settle path builds its own AttemptRecord from this object, never from the journaller.
             Usage = action.Usage,
+            // Plan 30 §3.4: without this line the turn count 12-record-the-turn-count journals on the
+            // serial record above reaches serial runs only, and worktree is the DEFAULT mode — so the
+            // column would be empty for the majority of real rows while every run stayed green.
+            Turns = action.Turns,
+            // Plan 30 §3.4: same loss, one member over — the action and guardrail durations would be
+            // measured on this attempt, printed once and then discarded at the settle boundary. Built
+            // by the SAME helper the serial record above calls, so the two paths cannot disagree about
+            // what "neither phase measured" means.
+            Segments = SegmentsFor(action, guardrails),
+            // Plan 30 §3.2: without this the worktree settle has no bucket to hand its recorder, so
+            // every default-mode task entry renders `(unbucketed)` in the corpus report. Computed by
+            // the SAME BucketFor the serial path uses — a second classification site here would be a
+            // second answer, free to disagree with the journalled one without either looking wrong.
+            Bucket = BucketFor(task),
             LogDir = relativeLogDir,
             Provenance = provenance
         };

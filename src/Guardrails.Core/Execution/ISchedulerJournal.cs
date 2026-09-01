@@ -87,10 +87,20 @@ public interface ISchedulerJournal
     /// SSOT §7, which shows a succeeded task with a populated <c>attempts[]</c>. Default delegates to
     /// <see cref="RecordSettle"/> for fakes that do not model attempts; <see cref="Journal.RunJournal"/>
     /// provides the real impl that also appends the attempt.
+    /// <para>
+    /// Plan 30 §3.2: <paramref name="bucket"/> is the task's fingerprint bucket, TASK grain rather than
+    /// attempt grain (it is constant across a task's own retries within one run), so it rides this
+    /// recorder's parameter list rather than <paramref name="attempt"/>. The <c>Scheduler</c> holds its
+    /// journal as THIS interface, so the parameter had to land here and not only on
+    /// <see cref="Journal.RunJournal"/>'s public overload — plan 32 left the member narrow on purpose and
+    /// named the task that wires a real caller as the one to widen it. It is optional so every existing
+    /// call site keeps compiling, and null is passed through by the real recorder as "leave the recorded
+    /// bucket alone", never as "clear it".
+    /// </para>
     /// </summary>
     void RecordSettleWithAttempt(
         string taskId, Journal.AttemptRecord attempt, Journal.TaskStatus status, long? mergeSequence = null,
-        string? definitionHash = null) =>
+        string? definitionHash = null, string? bucket = null) =>
         RecordSettle(taskId, status, mergeSequence, definitionHash);
 
     /// <summary>

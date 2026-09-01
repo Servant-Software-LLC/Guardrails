@@ -4482,10 +4482,25 @@ public sealed class Scheduler
             CostUsd = pending.CostUsd,
             // #475: the tokens axis travels beside its cost sibling on THIS path too — the default one.
             Usage = pending.Usage,
+            // Plan 30 §3.4: the turn count and the two segment durations, READ off the carrier and never
+            // derived here — this member holds no ActionRun and no GuardrailRunResult, so the only defect
+            // available to these two lines is omission, and an omission would leave the columns empty on
+            // the path most runs take while the run and the suite both stayed green.
+            Turns = pending.Turns,
+            Segments = pending.Segments,
             LogDir = pending.LogDir,
             Provenance = pending.Provenance
         };
-        _journal.RecordSettleWithAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash);
+        // Plan 30 §3.2: the bucket is TASK grain (constant across a task's own retries), so it is declared
+        // on TaskJournalEntry rather than on the record above and travels through the recorder instead.
+        // NAMED, never positional: `bucket` and `definitionHash` are both string? and adjacent on the
+        // widened member, so a positional slip binds the bucket to the definition hash and COMPILES — which
+        // drops the bucket AND stamps a bucket string into the field a resume's drift check compares and
+        // the #322 safe-suffix rewind corroborates a Guardrails-Task-Hash: trailer against. Named binding
+        // is by parameter name, so it also survives anyone later declaring the two in the other order.
+        _journal.RecordSettleWithAttempt(
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash,
+            bucket: pending.Bucket);
     }
 
     /// <summary>

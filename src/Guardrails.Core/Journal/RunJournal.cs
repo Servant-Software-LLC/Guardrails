@@ -377,10 +377,22 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
-    /// <summary>See <see cref="Execution.ISchedulerJournal.RecordSettle"/>'s forwarder above — same reason.</summary>
+    /// <summary>
+    /// See <see cref="Execution.ISchedulerJournal.RecordSettle"/>'s forwarder above — same reason.
+    /// <para>
+    /// Plan 30 §3.2 widened the INTERFACE member with an optional <c>bucket</c>, so this forwarder is
+    /// re-arity'd to match it (an explicit implementation whose signature matches no interface member is
+    /// a hard CS0539, not a silently-defaulted argument). The bucket is forwarded BY NAME because the
+    /// two parameter lists do not line up: the interface member has no <c>definitionHashAtSettle</c>, so
+    /// the bucket sits one position earlier there than on the public overload below — a positional
+    /// forward would land it in <c>definitionHashAtSettle</c>, which compiles silently and stamps a
+    /// bucket string into a hash field while every worktree run journals no bucket at all.
+    /// </para>
+    /// </summary>
     void Execution.ISchedulerJournal.RecordSettleWithAttempt(
-        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash) =>
-        RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash);
+        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash,
+        string? bucket) =>
+        RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash, bucket: bucket);
 
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)
