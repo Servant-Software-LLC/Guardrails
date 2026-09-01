@@ -4,6 +4,7 @@ using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 using Guardrails.Core.Telemetry;
 using Spectre.Console;
@@ -313,6 +314,19 @@ public static class RunCommand
         // paths), and re-allocated FRESH each run — a resume takes any free .a..z letter, since git
         // canonicalized the link away and the deterministic segment subpath resolves the same tree under it.
         bool worktreeMode = SchedulerFactory.WouldUseWorktreeMode(probe.Plan);
+
+        // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
+        // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
+        // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):
+        // a stamp placed after the second load would be silently overwritten by a document read before the
+        // stamp existed. MaxParallelism records the EFFECTIVE concurrency, not the configured one — derived
+        // from the same WouldUseWorktreeMode predicate the Scheduler's own no-provider clamp is keyed on
+        // (ParallelismClampedNoProvider), so the two can never disagree.
+        journal.RecordEnvironment(RunEnvironmentProbe.Probe(
+            maxParallelism: worktreeMode ? probe.Plan.Config.MaxParallelism : 1,
+            harnessVersion: GuardrailsVersion.Current,
+            skillVersion: ResolveInstalledSkillVersion()));
+
         WorktreeJunctionSetup? worktreeSetup = worktreeMode
             ? PrepareWorktreeJunction(probe.Plan, runId, io.Out)
             : null;
@@ -720,6 +734,49 @@ public static class RunCommand
                 WorktreeReclaim.ReclaimRootsOnExit(probe.Plan.Workspace, exitRoot, io.Out);
             }
         }
+    }
+
+    /// <summary>
+    /// The installed skill version for the run-environment record (plan 30 §3.4): the first bundled
+    /// skill (<c>plan-breakdown</c> / <c>guardrails-review</c> / <c>guardrails-domain-knowledge</c> — read
+    /// from beside the running tool, same as <see cref="VersionWithDriftAction"/>'s drift check) found
+    /// installed under the user-level or project-level <c>.claude/skills</c> scan root, in that order.
+    /// Reuses <see cref="SkillVersionReport.Build"/> — the shipped locate-and-read pipeline over
+    /// <see cref="SkillFrontmatter.ReadGuardrailsVersion"/> — rather than re-walking paths by hand. Null
+    /// when no bundled-skills folder ships with this build, or nothing is installed, or nothing installed
+    /// carries a version: a null skill version is a true and useful answer ("no skill installed"), never
+    /// fabricated.
+    /// </summary>
+    private static string? ResolveInstalledSkillVersion()
+    {
+        string bundledSkillsDir = Path.Combine(AppContext.BaseDirectory, "skills");
+        if (!Directory.Exists(bundledSkillsDir))
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> knownSkillNames = Directory
+            .EnumerateDirectories(bundledSkillsDir)
+            .Select(Path.GetFileName)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
+            .ToList();
+
+        if (knownSkillNames.Count == 0)
+        {
+            return null;
+        }
+
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        IReadOnlyList<string> scanRoots =
+        [
+            Path.Combine(userProfile, ".claude", "skills"),
+            Path.Combine(Directory.GetCurrentDirectory(), ".claude", "skills")
+        ];
+
+        return SkillVersionReport.Build(GuardrailsVersion.Current, knownSkillNames, scanRoots)
+            .Select(status => status.InstalledVersion)
+            .FirstOrDefault(version => version is not null);
     }
 
     /// <summary>

@@ -594,6 +594,32 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record the machine, concurrency and version profile probed once for this run (plan 30 §3.4,
+    /// <see cref="RunEnvironmentProbe"/>) — called by the CLI at run START, right after
+    /// <see cref="LoadOrCreate"/> resolves the run id and BEFORE the Scheduler's own, LATER
+    /// <see cref="LoadOrCreate"/> (reached when it builds the executor) — that ordering is load-bearing:
+    /// a stamp placed after the second load would be silently overwritten by a document read before the
+    /// stamp existed.
+    /// <para>
+    /// RE-READS FROM DISK FIRST, exactly like <see cref="RecordDelivery"/> and for the same reason: this
+    /// call site's in-memory document happens to be current, but every document-level recorder on this
+    /// type follows the re-read-first shape so a future call site moved later — where staleness would
+    /// actually matter — inherits the safe behavior for free rather than needing to re-derive it.
+    /// </para>
+    /// </summary>
+    public void RecordEnvironment(RunEnvironment environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+
+        lock (_gate)
+        {
+            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+            _document = current with { Environment = environment };
+            Persist();
+        }
+    }
+
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 
     /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>

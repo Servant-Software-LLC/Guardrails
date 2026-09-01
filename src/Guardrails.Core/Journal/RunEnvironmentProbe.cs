@@ -13,8 +13,44 @@ namespace Guardrails.Core.Journal;
 /// </summary>
 public static class RunEnvironmentProbe
 {
-    public static RunEnvironment Probe(int maxParallelism, string? harnessVersion, string? skillVersion)
+    public static RunEnvironment Probe(int maxParallelism, string? harnessVersion, string? skillVersion) =>
+        new()
+        {
+            Host = TryGetHost(),
+            Os = TryGetOs(),
+            CpuCount = TryGetCpuCount(),
+            TotalMemoryBytes = TryGetTotalMemoryBytes(),
+            MaxParallelism = maxParallelism,
+            HarnessVersion = harnessVersion,
+            SkillVersion = skillVersion
+        };
+
+    /// <summary>Each machine fact is probed independently so one failing call (e.g. a sandboxed
+    /// environment denying <see cref="Environment.MachineName"/>) leaves that single member absent
+    /// rather than losing the whole record — the probe itself must never throw.</summary>
+    private static string? TryGetHost()
     {
-        throw new NotImplementedException();
+        try { return Environment.MachineName; }
+        catch { return null; }
+    }
+
+    private static string? TryGetOs()
+    {
+        try { return Environment.OSVersion.ToString(); }
+        catch { return null; }
+    }
+
+    private static int? TryGetCpuCount()
+    {
+        try { return Environment.ProcessorCount; }
+        catch { return null; }
+    }
+
+    /// <summary>On Apple silicon this is the unified memory pool (plan 30 §3.4) — see
+    /// <see cref="RunEnvironment.TotalMemoryBytes"/> for why the member is named this way.</summary>
+    private static long? TryGetTotalMemoryBytes()
+    {
+        try { return GC.GetGCMemoryInfo().TotalAvailableMemoryBytes; }
+        catch { return null; }
     }
 }
