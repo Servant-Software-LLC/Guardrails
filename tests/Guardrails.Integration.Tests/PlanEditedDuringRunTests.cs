@@ -74,8 +74,10 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
         (RunReport report, RunJournal journal, RecordingObserver observer) =
             await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
 
-        Assert.True(report.AllSucceeded,
-            "the mid-run edit appends a comment AFTER `exit 0`, so every task must still be green; got " +
+        Assert.False(report.AllSucceeded,
+            "a guardrails/*.ps1 script is a real definition file (not an editor artifact), so the mid-run " +
+            "edit diverges the settled definition from the one recorded at load and the run must be " +
+            "reported NOT green; got " +
             string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
         // The edit really landed on the real plan folder (not on a segment worktree's copy of it).
@@ -203,10 +205,14 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
         // ── Half 2: the same run's recorded TaskDefinitionHash STILL CHANGED ─────────────────────
         // HashText enumerates "*" and filters nothing, so the artifact IS part of the definition — and
         // must stay that way. Moving the ignore list into HashText would move every recorded definition
-        // hash in every plan, and a moved definition hash is a drift HALT on the next resume.
+        // hash in every plan, and a moved definition hash is a drift HALT on the next resume. What DOES
+        // change here: the recorded hash is now the load-time PIN, and the in-run gate that decides
+        // whether THIS run stays green compares only the ignore-list-filtered surface (§6.2) — so the
+        // artifact stays part of the definition it always was, without moving what settle records. The
+        // recorded hash must therefore equal hashAtStart exactly, unmoved by the stray file.
         string? recorded = journal.RecordedDefinitionHash(Target);
         Assert.NotNull(recorded);
-        Assert.NotEqual(hashAtStart, recorded);
+        Assert.Equal(hashAtStart, recorded);
     }
 
     // ── P5 — the rendered text carries all three §5.1 consequences ───────────────────────────────
