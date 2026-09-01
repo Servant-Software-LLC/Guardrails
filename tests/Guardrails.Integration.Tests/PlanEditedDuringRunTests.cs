@@ -7,6 +7,7 @@ using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
+using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Integration.Tests;
 
@@ -27,10 +28,12 @@ namespace Guardrails.Integration.Tests;
 ///     fire the watch. (The earlier revision's pin was written against an overwatcher FIX — which
 ///     <c>OverwatchFixClassifier</c> marks <c>v1-inert</c>, so it tested an unreachable state and would
 ///     have passed with the whole feature absent.)</item>
-///   <item><b>P3</b> — outcome inertness, asserted on the EXIT CODE and the DELIVERY RECORD rather than on
-///     the <c>SuppressesDelivery</c> predicate: <c>observed</c> is neither <c>proceeded-best-guess</c> nor
-///     <c>proceeded-unreviewed</c>, so a run carrying only an observation still delivers and still exits
-///     <c>0</c>, not <c>5</c>.</item>
+///   <item><b>P3</b> — plan 32 §6.7's P9/P13, restated on THIS fixture: a guardrail script is a real
+///     definition file, so the same edit that produces the <c>plan-edit</c> observation ALSO diverges the
+///     target task's settle (§5.3's shared-enumeration invariant — the watch and the gate fold the identical
+///     file set, and only ever disagree about WHEN, never about WHAT). The run halts at exit <c>2</c>
+///     (actionable/needs-human, never <c>1</c>) and does not deliver — but the work is not thrown away
+///     (§6.4): the target still settles <c>succeeded</c>.</item>
 ///   <item><b>P4</b> — the ignore-list pin, both halves in ONE run: the watch is silent on a stray
 ///     <c>.DS_Store</c> while that same run's recorded <c>TaskDefinitionHash</c> still CHANGES. That is
 ///     what makes the watch quieter than the hash BY DESIGN rather than by accident.</item>
@@ -55,6 +58,9 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
 
     /// <summary>The literal §5.4 headline the end-of-run rendering opens with.</summary>
     private const string RenderedHeadline = "PLAN FOLDER EDITED";
+
+    /// <summary>Plan 32 §6.3's <c>decisions[]</c> boundary for the settle-time divergence halt.</summary>
+    private const string DivergenceBoundary = "definition-divergence";
 
     private static readonly bool Ps = OperatingSystem.IsWindows();
 
@@ -136,41 +142,67 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
         Assert.Empty(PlanEditEntries(journal));
     }
 
-    // ── P3 — outcome inertness, on the exit code and the delivery record ─────────────────────────
+    // ── P3 — plan 32 §6.7's P9/P13 on this fixture: halts at exit 2, does not deliver, work retained ─
 
+    /// <summary>
+    /// Renamed from <c>ARunCarryingOnlyAPlanEditObservation_FastForwardsAndExitsZero</c> (plan 32 §15.1 row
+    /// 3, guardrail 02's census matches on this exact name). Before this plan an observed-but-inert plan
+    /// edit fast-forwarded the user's branch and exited 0. After it, <see cref="MidRunWrite.ModifyTargetGuardrail"/>
+    /// is a REAL definition file — inside both the watch's file set AND the divergence gate's comparison
+    /// surface (§5.3) — so the same mid-run edit that produces the <c>plan-edit</c> observation also diverges
+    /// <see cref="Target"/>'s settle. The run therefore halts (§6.7 P9): exit <b>2</b>, delivery <b>blocked</b>,
+    /// the user's branch untouched — while the settle itself is never refused (§6.4, §6.7 P13), so the work
+    /// is retained rather than discarded.
+    /// </summary>
     [Fact]
-    public async Task ARunCarryingOnlyAPlanEditObservation_FastForwardsAndExitsZero()
+    public async Task ARunCarryingOnlyAPlanEditObservation_HaltsWithExitTwoAndDoesNotDeliver()
     {
         using var repo = new TempGitRepo("gr-pedr-p3");
         string initialHead = repo.HeadSha();
         string originalBranch = repo.CurrentBranch();
         string planDir = CreateMidRunEditPlan(repo.RepoPath, MidRunWrite.ModifyTargetGuardrail);
 
-        (int exit, _) = await RunViaCliAsync("run", planDir, "--no-ui", "--no-log-server");
+        (int exit, string output) = await RunViaCliAsync("run", planDir, "--no-ui", "--no-log-server");
 
         // ── The observation is CREATED by this run (which is what makes the pin red on the stubs) ─
         IReadOnlyList<DecisionEntry> decisions = DecisionsOf(planDir);
         DecisionEntry observation = Assert.Single(decisions, d => d.Boundary == "plan-edit");
         Assert.Equal("observed", observation.Decision);
 
-        // "…and nothing else": no other decision was recorded, so the outcome below is attributable to
-        // the plan-edit observation alone rather than to some other boundary having stayed silent.
-        Assert.DoesNotContain(decisions, d => d.Boundary != "plan-edit");
+        // "…and the divergence that same edit causes, and nothing beyond those two": the plan-edit watch
+        // and the settle-time gate fold the identical file set (§5.3), so on THIS fixture the observation
+        // never travels alone — an implementation that records one without the other has decoupled the two
+        // surfaces the plan requires to agree.
+        DecisionEntry divergence = Assert.Single(decisions, d => d.Boundary == DivergenceBoundary);
+        Assert.Contains(Target, divergence.Subject);
+        Assert.DoesNotContain(decisions, d => d.Boundary is not "plan-edit" and not DivergenceBoundary);
 
-        // ── Inert on the OUTCOME: exit 0, not 5 ─────────────────────────────────────────────────
+        // ── GATED on the OUTCOME: exit 2, never 1 (1 is reserved for infrastructure faults, §6.5) ──
         // Asserted on the exit code, not on RunOutcomePolicy.SuppressesDelivery — the predicate is the
         // implementation of the claim, not the claim.
-        Assert.Equal(ExitCodes.Success, exit);
-        Assert.NotEqual(ExitCodes.ProceededUnreviewed, exit);
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+        Assert.NotEqual(ExitCodes.HarnessError, exit);
 
-        // ── Inert on DELIVERY: the run still fast-forwards ───────────────────────────────────────
+        // ── BLOCKED on DELIVERY: the run does not fast-forward (§6.7 P9) ─────────────────────────
         DeliverySection? delivery = JournalOf(planDir).Delivery;
         Assert.NotNull(delivery);
-        Assert.True(delivery!.Delivered,
-            "a plan-edit observation must not suppress delivery; reason recorded: " + delivery.Reason);
-        Assert.Equal(DeliveryOutcome.FastForwarded, delivery.Outcome);
-        Assert.NotEqual(initialHead, repo.HeadSha());
+        Assert.False(delivery!.Delivered,
+            "a mid-run edit to a real definition file must suppress delivery (§6.7 P9); reason recorded: " +
+            delivery.Reason);
+        Assert.Equal(DeliveryOutcome.NotAttempted, delivery.Outcome);
+        // §6.5 correction 2: every task actually succeeded, so the pre-existing "not wholly green" reason
+        // would be self-contradicting on a divergence run. It needs its own reason string.
+        Assert.DoesNotContain("not wholly green", delivery.Reason ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(initialHead, repo.HeadSha());
         Assert.Equal(originalBranch, repo.CurrentBranch());
+
+        // ── RETAINED, not discarded (§6.4, §6.7 P13): the settle was never refused ───────────────
+        Assert.True(JournalOf(planDir).Tasks.TryGetValue(Target, out TaskJournalEntry? targetEntry),
+            $"'{Target}' has no journal entry at all — its settle was discarded rather than blocked from " +
+            "delivery.\n" + output);
+        Assert.True(targetEntry!.Status == JournalTaskStatus.Succeeded,
+            $"'{Target}' must still SETTLE succeeded on a divergence run (§6.4: record the success, block " +
+            $"the delivery), but its journal status is '{targetEntry.Status}'.\n" + output);
     }
 
     // ── P4 — quieter than the hash BY DESIGN (DECLARED EXEMPTION) ────────────────────────────────
@@ -234,33 +266,41 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
         // the run output cannot stand in for a consequence the message failed to state.
         string advisory = output[start..];
 
-        // The task and the file the operator actually edited.
+        // The task and the file the operator actually edited — i.e. WHICH definition file moved (§9's
+        // first required fact for the operator, named on the exact same fixture the divergence gate fires
+        // on: guardrails/01-check is both the watch's subject and the gate's moved-file entry).
         Assert.Contains(Target, advisory, StringComparison.Ordinal);
         Assert.Contains(GuardrailLabel, advisory.Replace('\\', '/'), StringComparison.Ordinal);
 
-        // ── Consequence 1 — what the edit REACHES (§5.1 rows 1-2) ───────────────────────────────
+        // ── Consequence 1 — what the edit REACHES (§5.1 rows 1-2; §9's third fact, re-read half) ──
         // Action prompts and guardrail scripts are re-read PER ATTEMPT, so the edit applies from the next
         // attempt onward. This is why "your edit was ignored" would be false.
         Assert.Contains("re-read", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("attempt", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("your edit was ignored", advisory, StringComparison.OrdinalIgnoreCase);
 
-        // ── Consequence 2 — what it does NOT reach (§5.1 row 3) ─────────────────────────────────
+        // ── Consequence 2 — what it does NOT reach (§5.1 row 3; §9's third fact, held-from-load half) ─
         // task.json (writeScope, dependsOn, retries, maxTurns) and the DAG were loaded at run start.
         Assert.Contains("task.json", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("writeScope", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DAG", advisory, StringComparison.Ordinal);
 
-        // ── Consequence 3 — the POST-edit hash is recorded at settle (§5.1 row 4) ────────────────
-        // So a later resume will NOT flag this as drift — the quiet false green #556 owns, which the
-        // message must disclose rather than leave the operator to discover.
-        Assert.Contains("post-edit", advisory, StringComparison.OrdinalIgnoreCase);
+        // ── Consequence 3 — the PRE-edit (pinned) hash is what settled, not the post-edit bytes ────
+        // (§5.1 row 4, INVERTED by plan 32 — this is §9's second required fact: the task ran the bytes it
+        // was PINNED to at load, not the operator's edit. That is what closes the false green #556 owns
+        // rather than merely disclosing it: a later resume compares current disk against the pin and DOES
+        // flag a genuine mid-run edit as drift, where today's shipped text claims the opposite.
+        Assert.Contains("pre-edit", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("resume", advisory, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("drift", advisory, StringComparison.OrdinalIgnoreCase);
 
-        // Never a halt: the workflow this advisory exists to protect is "fix a defective guardrail while
-        // the rest of the DAG runs" (§5.4).
-        Assert.Contains("Nothing was halted", advisory, StringComparison.OrdinalIgnoreCase);
+        // A real definition-file edit now HALTS this run (plan 32 §6.3/§6.5) — the old claim that nothing
+        // was halted is exactly the half-true message §9 says must never ship: "Nothing was halted" would
+        // sit beside a blocked delivery and an exit-2 halt on the very surface this plan exists to make
+        // honest. The task is never re-executed by this halt (§6.4), so that half of the old sentence is
+        // not asserted away — only the "nothing was halted" half is false now.
+        Assert.Contains("halted", advisory, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("nothing was halted", advisory, StringComparison.OrdinalIgnoreCase);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────
