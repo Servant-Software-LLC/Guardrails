@@ -1,0 +1,13 @@
+{
+  "description": "Author the failing Core tests for the route-warmth flag - whether this attempt was the first invocation of its resolved runner and model within this run - and pin the definition the plan leaves open",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape"
+  ],
+  "stableId": "p30t13",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/RouteWarmthTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

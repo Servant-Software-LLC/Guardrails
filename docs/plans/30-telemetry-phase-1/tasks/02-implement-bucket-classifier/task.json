@@ -1,0 +1,13 @@
+{
+  "description": "Implement TaskFingerprintBucket.Classify so section 3.2's six bucket rules hold, filling logic over the throwing stub without touching the authored tests",
+  "dependsOn": [
+    "01-author-tests-bucket-classifier"
+  ],
+  "stableId": "p30t02",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TaskFingerprintBucket.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

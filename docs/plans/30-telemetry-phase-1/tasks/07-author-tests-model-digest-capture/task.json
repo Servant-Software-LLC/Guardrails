@@ -1,0 +1,13 @@
+{
+  "description": "Author the failing Core tests that the openai-compat runner lifts a wire system_fingerprint onto PromptResult.ModelDigest, and that a response carrying none leaves it null rather than fabricating one",
+  "dependsOn": [
+    "04-extend-the-transport-record-shape"
+  ],
+  "stableId": "p30t07",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Prompts/ModelDigestCaptureTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

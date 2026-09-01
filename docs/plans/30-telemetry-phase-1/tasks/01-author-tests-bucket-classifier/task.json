@@ -1,0 +1,12 @@
+{
+  "description": "Author the failing Core tests for section 3.2's six-bucket task-fingerprint classifier, plus the minimal throwing stub they compile against - nine pinned behaviours including the two null-versus-empty writeScope cases",
+  "dependsOn": [],
+  "stableId": "p30t01",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Telemetry/TaskFingerprintBucketTests.cs",
+    "src/Guardrails.Core/Telemetry/TaskFingerprintBucket.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

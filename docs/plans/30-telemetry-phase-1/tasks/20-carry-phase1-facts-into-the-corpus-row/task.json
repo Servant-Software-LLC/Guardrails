@@ -1,0 +1,14 @@
+{
+  "description": "Map every Phase-1 journal fact onto the corpus row at BOTH TelemetryIngest construction sites - the task-grain sentinel and the per-attempt row",
+  "dependsOn": [
+    "19-author-tests-row-carries-phase1-facts"
+  ],
+  "stableId": "p30t20",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryIngest.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

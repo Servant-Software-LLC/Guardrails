@@ -1,0 +1,24 @@
+{
+  "description": "Land the section 15 contract edits for the Phase-1 row and journal shape, the era boundary and the census verb, in the same change-set as the code they describe",
+  "dependsOn": [
+    "06-journal-the-bucket-serial",
+    "10-fold-the-digest-into-the-provenance",
+    "12-record-the-turn-count",
+    "12a-segment-the-attempt-durations",
+    "14-record-whether-the-route-was-warm",
+    "16-carry-phase1-facts-through-the-worktree-settle",
+    "18-record-the-run-environment",
+    "20-carry-phase1-facts-into-the-corpus-row",
+    "22-render-the-bucket-digest-and-era-boundary",
+    "24-implement-the-attribution-census"
+  ],
+  "stableId": "p30t25",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

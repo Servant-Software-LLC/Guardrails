@@ -1,0 +1,15 @@
+{
+  "description": "Set the route-warmth flag when the provenance is built, from the set of runner-and-model pairs this run has already invoked",
+  "dependsOn": [
+    "12a-segment-the-attempt-durations",
+    "13-author-tests-route-warmth"
+  ],
+  "stableId": "p30t14",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

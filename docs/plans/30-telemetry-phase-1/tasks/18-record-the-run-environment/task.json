@@ -1,0 +1,17 @@
+{
+  "description": "Implement the run-environment probe and call it once where the run journal is created, passing the effective concurrency and the harness and skill versions the CLI already resolves",
+  "dependsOn": [
+    "17-author-tests-run-environment",
+    "06-journal-the-bucket-serial"
+  ],
+  "stableId": "p30t18",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/RunEnvironmentProbe.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

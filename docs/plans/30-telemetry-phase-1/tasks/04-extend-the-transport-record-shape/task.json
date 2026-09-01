@@ -1,0 +1,17 @@
+{
+  "description": "Add the carrier member for every Phase-1 attempt fact at each hop between the prompt runner and the journal - PromptResult, ActionRun, GuardrailRunResult and PendingAttempt - so a later task cannot deliver a datum on the serial path and silently drop it on the worktree one",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape"
+  ],
+  "stableId": "p30t04",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/PromptInvocation.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs",
+    "tests/Guardrails.Core.Tests/Execution/TransportShapeTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

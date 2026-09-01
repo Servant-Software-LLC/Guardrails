@@ -1,0 +1,16 @@
+{
+  "description": "Time the action and the guardrail phase and journal both segments, on the serial settle and every failure path",
+  "dependsOn": [
+    "12-record-the-turn-count"
+  ],
+  "stableId": "p30t12a",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

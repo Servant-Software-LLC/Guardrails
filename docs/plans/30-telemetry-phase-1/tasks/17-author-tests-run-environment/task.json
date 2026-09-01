@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests for the run-environment record - host, OS, CPU count, physical memory, effective concurrency and the harness and skill versions - probed once per run",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape"
+  ],
+  "stableId": "p30t17",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs",
+    "src/Guardrails.Core/Journal/RunEnvironmentProbe.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

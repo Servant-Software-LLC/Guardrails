@@ -1,0 +1,13 @@
+{
+  "description": "Author the failing Integration tests that the report renders a real bucket, folds the model digest into the fingerprint so two quantizations never pool, and states the pre-fix corpus boundary date it filters on",
+  "dependsOn": [
+    "04a-extend-the-corpus-row-shape"
+  ],
+  "stableId": "p30t21",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Commands/TelemetryReportPhase1Tests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "description": "Add the thirteen Phase-1 columns to the corpus row and bump its schema version, so the row shape exists before any task asserts on it and no author-tests task has to be compile-red",
+  "dependsOn": [],
+  "stableId": "p30t04a",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryRow.cs",
+    "tests/Guardrails.Core.Tests/Telemetry/CorpusRowShapeTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

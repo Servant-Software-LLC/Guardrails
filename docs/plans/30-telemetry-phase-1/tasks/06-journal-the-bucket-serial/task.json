@@ -1,0 +1,15 @@
+{
+  "description": "Thread the task-fingerprint bucket through RunJournal's three recorders and compute it in AttemptJournaler from the TaskNode every one of its methods already receives, so the serial settle and every failure path journal it",
+  "dependsOn": [
+    "05-author-tests-bucket-journaled"
+  ],
+  "stableId": "p30t06",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/RunJournal.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

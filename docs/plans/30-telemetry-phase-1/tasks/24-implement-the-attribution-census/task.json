@@ -1,0 +1,17 @@
+{
+  "description": "Implement the model-attribution census over plan folders and expose it as a telemetry verb, so the fraction of unattributed rows that is a real recording gap is a measured number rather than an estimate",
+  "dependsOn": [
+    "22-render-the-bucket-digest-and-era-boundary",
+    "23-author-tests-attribution-census"
+  ],
+  "stableId": "p30t24",
+  "writeScope": [
+    "src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs",
+    "src/Guardrails.Cli/Commands/TelemetryCommand.cs",
+    "tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

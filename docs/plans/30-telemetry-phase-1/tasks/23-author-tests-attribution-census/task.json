@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests for the model-attribution census - the three-way split of the corpus rows that name no model into task-grain sentinels, script actions and a genuine recording gap",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape"
+  ],
+  "stableId": "p30t23",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Telemetry/AttributionCensusTests.cs",
+    "src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

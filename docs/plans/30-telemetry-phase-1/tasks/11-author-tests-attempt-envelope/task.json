@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests that an attempt records its turn count and its action and guardrail durations - the numbers the harness computes today, prints once and discards",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape",
+    "04-extend-the-transport-record-shape"
+  ],
+  "stableId": "p30t11",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/AttemptEnvelopeTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

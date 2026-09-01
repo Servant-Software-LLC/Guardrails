@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests that every Phase-1 journal fact reaches the corpus row on both grains, and that the schema version says the row shape changed",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape",
+    "04a-extend-the-corpus-row-shape"
+  ],
+  "stableId": "p30t19",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Telemetry/Phase1TelemetryRowTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

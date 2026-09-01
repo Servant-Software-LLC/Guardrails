@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests that the worktree settle - the DEFAULT execution mode, which builds its own AttemptRecord and never consults the journaller - carries the bucket, the turn count and the segment durations",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape",
+    "04-extend-the-transport-record-shape"
+  ],
+  "stableId": "p30t15",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs"
+  ],
+  "action": {
+    "tier": "hard"
+  }
+}

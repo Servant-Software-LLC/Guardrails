@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests that a runner-reported model digest reaches the attempt's journalled provenance through the same fold that already replaces the route model with the observed one",
+  "dependsOn": [
+    "03-extend-the-journal-record-shape",
+    "04-extend-the-transport-record-shape"
+  ],
+  "stableId": "p30t09",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Execution/ModelDigestProvenanceTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

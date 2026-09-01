@@ -1,0 +1,14 @@
+{
+  "description": "Author the failing Core tests that a task's fingerprint bucket reaches its journal entry through the serial settle and every failure path, computed from the task's own writeScope and guardrails rather than its name",
+  "dependsOn": [
+    "02-implement-bucket-classifier",
+    "03-extend-the-journal-record-shape"
+  ],
+  "stableId": "p30t05",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Journal/TaskBucketJournalTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

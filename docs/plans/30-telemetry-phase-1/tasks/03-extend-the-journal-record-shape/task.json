@@ -1,0 +1,12 @@
+{
+  "description": "Add every Phase-1 journal member in one place - the task bucket, the model digest, route warmth, turns, segmented durations and the run environment - so no later task has to widen JournalModel.cs and collide with a sibling",
+  "dependsOn": [],
+  "stableId": "p30t03",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "tests/Guardrails.Core.Tests/Journal/Phase1JournalShapeTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

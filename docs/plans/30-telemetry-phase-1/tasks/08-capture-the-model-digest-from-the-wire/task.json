@@ -1,0 +1,13 @@
+{
+  "description": "Read system_fingerprint beside the model field the openai-compat runner already lifts off a chunk and a whole completion, and carry it onto PromptResult.ModelDigest",
+  "dependsOn": [
+    "07-author-tests-model-digest-capture"
+  ],
+  "stableId": "p30t08",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

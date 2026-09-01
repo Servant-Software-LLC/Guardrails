@@ -1,0 +1,16 @@
+{
+  "description": "Carry PromptResult.ModelDigest onto ActionRun and fold it into the attempt provenance at the site that already folds the observed model, so the digest reaches run.json on both settle paths",
+  "dependsOn": [
+    "08-capture-the-model-digest-from-the-wire",
+    "09-author-tests-digest-reaches-the-provenance"
+  ],
+  "stableId": "p30t10",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

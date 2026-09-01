@@ -1,0 +1,14 @@
+{
+  "description": "Source the report's bucket column from the row, fold the model digest into the model fingerprint, and filter and state the documented pre-fix era boundary",
+  "dependsOn": [
+    "21-author-tests-report-and-era-boundary"
+  ],
+  "stableId": "p30t22",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/TelemetryCommand.cs"
+  ],
+  "action": {
+    "tier": "medium",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "description": "Stop discarding the turn count at ActionRun.FromPrompt and journal it on the serial settle and every failure path",
+  "dependsOn": [
+    "10-fold-the-digest-into-the-provenance",
+    "11-author-tests-attempt-envelope",
+    "06-journal-the-bucket-serial"
+  ],
+  "stableId": "p30t12",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Set the Phase-1 carriers on the PendingAttempt the worktree settle is built from, and read them at the scheduler's own AttemptRecord construction, so nothing lands in serial mode alone",
+  "dependsOn": [
+    "12a-segment-the-attempt-durations",
+    "14-record-whether-the-route-was-warm",
+    "15-author-tests-worktree-settle-carries-phase1"
+  ],
+  "stableId": "p30t16",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "tier": "hard",
+    "maxTurns": 75
+  }
+}
