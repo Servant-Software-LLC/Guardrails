@@ -1,8 +1,15 @@
-# catches: an implementation whose behaviour deviates from the four behaviours THIS task pair owns - the
+# catches: an implementation whose behaviour deviates from the five behaviours THIS task pair owns - the
 #          bucket, the turn count and the segment durations actually reaching the PendingAttempt the
-#          worktree settle is built from, and the two settle paths AGREEING member by member. The
-#          agreement test is the sharpest of the four: a fix applied to one carrier and forgotten on the
-#          other passes the three single-member tests for the two it did set and is caught only there.
+#          worktree settle is built from; the two settle paths AGREEING member by member; and a REAL
+#          worktree settle journalling the bucket and the definition hash into their OWN fields. The
+#          agreement test is the sharpest of the first four: a fix applied to one carrier and forgotten
+#          on the other passes the three single-member tests for the two it did set and is caught only
+#          there. The FIFTH is the one that reaches THIS task's Site 2 and Site 3 - it drives the real
+#          Scheduler over a real RunJournal, so it is what catches an argument bound to the wrong
+#          parameter: `bucket` and `definitionHash` are both string? and adjacent, so a positional slip
+#          compiles, drops the bucket AND stamps a bucket string into the definition hash that a resume's
+#          drift check compares. Guardrail 03 sees the SHAPE of that call; only this test sees which
+#          journal field the value came out in.
 #
 # CENSUS FORM - SUITE-LEVEL, and it is a DELIBERATE ASYMMETRY with tasks 03, 04 and 04a, recorded here so
 #          a reader comparing the two does not read it as an oversight. Those three run a FORWARD
@@ -15,7 +22,7 @@
 #          The test file - tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs - was
 #          authored by 15-author-tests-worktree-settle-carries-phase1 and is OUTSIDE this task's
 #          writeScope, so the harness's write-scope check rejects any edit to it outright. And task 15's
-#          own 02-tests-fail-on-stubs.ps1 already bound all four enumerated behaviours to their pinned
+#          own 02-tests-fail-on-stubs.ps1 already bound all five enumerated behaviours to their pinned
 #          method names and observed each one EXECUTING (Failed) on the pre-implementation tree, so the
 #          names are proven present and non-hollow before this task begins. What is left to certify HERE
 #          is only that those same tests now pass - which the exit code plus the executed-count guard

@@ -26,7 +26,15 @@
 #          `Scheduler.RecordSucceededSettle` is `private`; there is no seam.
 #          It is the SECOND line of defence. The FIRST is
 #          tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs (task 15), which guardrail
-#          02 runs, and which covers the journaller half behaviourally.
+#          02 runs. Four of its five tests cover the journaller half behaviourally; the fifth
+#          (TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots) DOES drive this
+#          settle - a real Scheduler over a real RunJournal with RecordingWorktreeProvider and a fake
+#          executor whose result carries a PendingAttempt, exactly as SchedulerWaveExecutionTests and
+#          Execution/ExecutedDefinitionDivergenceTests already do. So "no test can reach this method" is
+#          FALSE for the recorder call's ARGUMENT BINDING and true only for the initializer's member set:
+#          a behavioural test can see WHICH JOURNAL FIELD a value landed in, and cannot see whether the
+#          Turns/Segments values it observes came off `pending` or were recomputed here. That is the
+#          residue these clauses carry, and it is why they stay.
 #          It ships with a committed .valid/.invalid pair in ../samples/.
 #
 # TWO-VARIABLE STRIP: $raw is NEVER matched against and never reassigned. $code has comments removed.
@@ -46,10 +54,47 @@
 #            Turns = pending.Turns          0   this task's deliverable
 #            Segments = pending.Segments    0   this task's deliverable
 #            RecordSettleWithAttempt(       1   EXPECTED nonzero - the recorder call the bucket rides.
-#            pending.Bucket                 0   this task's deliverable, and it is matched ONLY inside
-#                                               that call's argument list - see the clause's own comment
-#                                               for why a method-wide match is defeated by a discard.
+#            bucket: pending.Bucket         0   this task's deliverable. Matched ONLY inside that call's
+#                                               argument list (a method-wide match is defeated by a
+#                                               discard) and ONLY in the NAMED form - see the note below.
+#            definitionHash in that call    1   EXPECTED nonzero - it is already passed today. The clause
+#                                               is about it STILL being passed once a second string?
+#                                               parameter lands beside it.
 #            TaskFingerprintBucket          0   forbidden-present: the bucket is READ here, never recomputed
+#
+# WHY THE BUCKET CLAUSE REQUIRES THE NAMED FORM, and why no clause here opens ISchedulerJournal.cs.
+#          On the widened member, `definitionHash` and `bucket` are BOTH `string?` and ADJACENT, so every
+#          confusion between the two COMPILES. Two are real, and both were reproduced by mutating the
+#          sample and running this script:
+#            (A) POSITIONAL SLIP - `RecordSettleWithAttempt(task.Id, record, status, mergeSequence,
+#                pending.Bucket)`. It costs two things at once: the bucket is dropped, so every worktree
+#                run renders (unbucketed) - the exact section 3.2 defect - AND TaskJournalEntry.
+#                DefinitionHash is stamped with a BUCKET STRING, which is what a resume's drift check
+#                compares and what #322's safe-suffix rewind corroborates a Guardrails-Task-Hash: trailer
+#                against (a trailered commit whose hash is not recorded is REFUSED).
+#            (B) DECLARATION REORDER - the two parameters declared the other way round on
+#                ISchedulerJournal, with the call text in this file byte-identical. The arguments swap and
+#                nothing in Scheduler.cs changes, so no amount of reading THIS file finds it.
+#          A NAMED argument binds by parameter name regardless of declaration order, so requiring
+#          `bucket: pending.Bucket` does not merely DETECT (B) - it makes (B) INCAPABLE OF SWAPPING
+#          SILENTLY. Precisely: with the bucket named, a reorder either binds correctly by name, or - if
+#          `bucket` were reordered into the slot the positional `definitionHash` argument occupies - the
+#          compiler rejects the call outright (CS1744, a named argument for a parameter already given
+#          positionally), which guardrail 01's build catches. Silence is the failure mode that matters
+#          here, and the named form removes it. That is why there is deliberately NO clause here reading
+#          src/Guardrails.Core/Execution/ISchedulerJournal.cs: a second file to keep in sync, to police an
+#          ordering the call can no longer be silently wrong about, would buy nothing. The companion
+#          `definitionHash` clause closes (A)'s other half - the dropped argument.
+#          NOTE what that companion clause does NOT do: it asserts the argument is PRESENT, not that its
+#          VALUE is right - `definitionHash: null` would satisfy it. Values are the behavioural test's
+#          job, below.
+#          This is NOT an unannounced style rule: this task's action.prompt.md MANDATES the named form at
+#          Site 2 and gives this same reason, so an implementation that follows the prompt passes.
+#          These clauses assert the ARGUMENTS are present and correctly bound; what asserts the VALUES
+#          actually land in their own journal fields is behavioural and belongs to task 15 -
+#          TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots drives a real settle
+#          through a real Scheduler (real RunJournal + RecordingWorktreeProvider, no git) with a bucket
+#          and a definition hash that cannot be mistaken for one another.
 #
 # ACCUMULATE (#478): one distinguishable message per clause, dumped once at the end.
 $ErrorActionPreference = 'Continue'
@@ -173,11 +218,13 @@ if ($null -ne $member) {
     #
     # SCOPED TO THE CALL, not to the method, and that narrowing is the whole strength of this clause.
     # A method-wide match for `pending.Bucket` is satisfied by a DISCARD - `_ = pending.Bucket;` - which
-    # reads the member, passes a method-wide grep, and delivers nothing. Nor would the behavioural tests
-    # notice: task 15's tests assert on the PendingAttempt the journaller builds, which is the OTHER side
-    # of this hand-off. That combination is the cheapest wrong implementation of this task, so the span
-    # matched is the recorder call's own argument list - from the invocation to the statement's
-    # semicolon, which admits a multi-line argument list without admitting the rest of the method.
+    # reads the member, passes a method-wide grep, and delivers nothing. That is the cheapest wrong
+    # implementation of this task, so the span matched is the recorder call's own argument list - from
+    # the invocation to the statement's semicolon, which admits a multi-line argument list without
+    # admitting the rest of the method.
+    #
+    # NAMED, not positional: see the header note. `bucket` sits beside `definitionHash`, both `string?`,
+    # so a positional argument is one slot away from stamping a bucket into the definition-hash field.
     $call = [regex]::Match($member, '\bRecordSettleWithAttempt\s*\(')
     if (-not $call.Success) {
         $failures += "RecordSucceededSettle no longer calls RecordSettleWithAttempt. That is the recorder which journals the attempt record and the settle TOGETHER, and it is the only one carrying the task-grain bucket parameter - which THIS task adds to the ISchedulerJournal member, on top of the RunJournal recorders 06-journal-the-bucket-serial widened. Falling back to the attempt-less RecordSettle here would drop the whole attempt record, not merely the bucket."
@@ -187,8 +234,15 @@ if ($null -ne $member) {
         # grow a function is a defect waiting to happen.
         $semi    = $member.IndexOf(';', $call.Index)
         $argList = if ($semi -lt 0) { $member.Substring($call.Index) } else { $member.Substring($call.Index, $semi - $call.Index) }
-        if ($argList -cnotmatch 'pending\s*\.\s*Bucket') {
-            $failures += "RecordSucceededSettle does not pass pending.Bucket to RecordSettleWithAttempt. The bucket is a TASK-grain fact declared on TaskJournalEntry, so it does NOT go in the AttemptRecord initializer (that would not compile) - it goes through the recorder's own optional bucket parameter. Reading the member somewhere else in the method does not deliver it: this clause matches the CALL's argument list precisely because a discard would satisfy anything looser, and task 15's tests only cover the journaller's side of this hand-off. Without it, a worktree run's task entry carries no bucket and the corpus report renders (unbucketed) for the majority of real runs."
+        if ($argList -cnotmatch 'bucket\s*:\s*pending\s*\.\s*Bucket') {
+            $failures += "RecordSucceededSettle does not pass the bucket to RecordSettleWithAttempt as the NAMED argument 'bucket: pending.Bucket'. The bucket is a TASK-grain fact declared on TaskJournalEntry, so it does NOT go in the AttemptRecord initializer (that would not compile) - it goes through the recorder's own optional bucket parameter, and this task's action prompt mandates the named form at Site 2. Two reasons, and neither is style. First, 'bucket' and 'definitionHash' are BOTH string? and ADJACENT on the widened member, so a POSITIONAL argument that slips one slot compiles silently and costs two facts at once: the bucket is dropped (every worktree run renders (unbucketed) - the exact section 3.2 defect) AND TaskJournalEntry.DefinitionHash is stamped with a bucket string, which is what a resume's drift check compares and what the #322 safe-suffix rewind corroborates a Guardrails-Task-Hash: trailer against. Second, a named argument binds by parameter NAME, so it stays correct even if someone later declares the two parameters in the other order on ISchedulerJournal - a reordering that would silently swap two positional arguments while this file's text never changed. Reading pending.Bucket somewhere else in the method does not deliver it either: this clause matches the CALL's argument list precisely because a discard would satisfy anything looser."
+        }
+        # REQUIRED, REGRESSION: definitionHash must STILL be passed. The mutant this closes is the other
+        # half of the positional slip above - a call that hands pending.Bucket to definitionHash's slot
+        # and drops definitionHash entirely. The clause above sees only the bucket argument, so without
+        # this one that mutant satisfies the whole script. \b so definitionHashAtSettle does not count.
+        if ($argList -cnotmatch '\bdefinitionHash\b') {
+            $failures += "RecordSucceededSettle's RecordSettleWithAttempt call no longer passes definitionHash. That argument is not this plan's work - it is #274 Part A's, already shipped - but adding a second string? parameter beside it is exactly when it goes missing: a positional call that puts pending.Bucket where definitionHash used to sit compiles, drops the bucket, and leaves TaskJournalEntry.DefinitionHash null or holding a bucket string. That field is what a resume's drift check compares and what the #322 safe-suffix rewind corroborates a commit's Guardrails-Task-Hash: trailer against - a trailered commit whose hash is not recorded is REFUSED - so losing it here does not fail loudly, it makes a later rewind refuse work it should have kept. Pass BOTH: definitionHash and bucket: pending.Bucket. (definitionHashAtSettle is a different parameter and does not satisfy this.)"
         }
     }
 }
@@ -219,5 +273,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output "Worktree settle sound: RecordSucceededSettle's AttemptRecord initializer reads Turns, Segments, Usage and Provenance off pending, the task-grain bucket travels through the recorder call, nothing is recomputed here, and there is exactly one such construction site."
+Write-Output "Worktree settle sound: RecordSucceededSettle's AttemptRecord initializer reads Turns, Segments, Usage and Provenance off pending; the task-grain bucket travels through the recorder call as the NAMED argument bucket: pending.Bucket, beside a definitionHash that is still passed; nothing is recomputed here; and there is exactly one such construction site."
 exit 0

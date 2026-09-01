@@ -104,6 +104,28 @@ As authored, the initializer carries `Attempt`, `StartedAt`, `EndedAt`, `ActionE
   **`RecordSettleWithAttempt`** and pass **`pending.Bucket`** — the value the journaller already computed
   at Site 1 and carried across the settle boundary for you. **Nothing is computed at this site.**
 
+  **Pass it as the NAMED argument `bucket: pending.Bucket`, never positionally.** Guardrail 03 requires
+  the named form, and here is why it is a correctness rule rather than a style rule. Site 3 lands
+  `string? bucket` **directly beside** the existing `string? definitionHash` on the interface member. Two
+  adjacent parameters of the same type mean every confusion between them **compiles**:
+
+  ```csharp
+  // WRONG, and it compiles: one argument short, so the bucket binds to definitionHash.
+  _journal.RecordSettleWithAttempt(
+      task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, pending.Bucket);
+  ```
+
+  That single slip costs **two** facts, and neither fails loudly. The bucket is dropped, so every
+  worktree run's task entry carries none and the corpus report renders `(unbucketed)` — the exact §3.2
+  defect this task exists to close. **And** `TaskJournalEntry.DefinitionHash` is stamped with a bucket
+  string; that field is what a resume's drift check compares and what the #322 safe-suffix rewind
+  corroborates a commit's `Guardrails-Task-Hash:` trailer against — a trailered commit whose hash is not
+  recorded is **refused** — so the damage surfaces later, as a rewind discarding work it should have kept.
+
+  A named argument binds by parameter **name**, so it also stays correct if anyone ever declares those
+  two parameters in the other order. Keep passing `definitionHash` as well: guardrail 03 has a clause for
+  each, precisely because dropping one is how the other ends up in the wrong slot.
+
 Whatever `AttemptJournaler.cs` uses to CLASSIFY a bucket stays in `AttemptJournaler.cs`. Do not name that
 classifier type anywhere in `Scheduler.cs`: guardrail 03 fails on its bare presence in this file, on
 purpose, because a second computation site is a second answer. The scheduler's job here is to carry a
@@ -195,8 +217,16 @@ its arity stops short of the bucket, the value defaults back to `null` on the wa
 run journals no bucket and the corpus report renders `(unbucketed)` for the majority of real runs — the
 exact defect section 3.2 exists to close, surviving a fully green run and a fully green suite. Guardrail
 03 cannot see it: that check reads `Scheduler.cs` and nothing else. Guardrail 01's build catches the
-CS0539. **Nothing catches a bucket forwarded into the wrong parameter** — so before you move on, read the
-forwarder you wrote against the public overload's parameter list, argument by argument.
+CS0539.
+
+What catches a bucket forwarded into the WRONG parameter is a test, not a guardrail:
+`TheWorktreeSettle_JournalsTheBucketAndTheDefinitionHashInTheirOwnSlots` in task 15's
+`WorktreeSettlePhase1Tests` drives a real `Scheduler` over a real `RunJournal` and asserts the bucket and
+the definition hash each came out in their **own** journal field, with values that cannot be mistaken for
+one another. Guardrail 02 runs it. So a positional forward that lands the bucket in
+`definitionHashAtSettle` fails this task — but it fails with a red test, several minutes after the build
+went green, and the message will name a null bucket rather than your forwarder. Read the forwarder you
+wrote against the public overload's parameter list, argument by argument, and forward by name.
 
 ## Guardrail 03 is a source-shape check, and it is one of only two in this plan
 
@@ -208,7 +238,12 @@ demoted to a test under the #468 gate; this survived it.
 
 It is the SECOND line of defence. The first is
 `tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs`, which
-`15-author-tests-worktree-settle-carries-phase1` authored and which guardrail 02 runs.
+`15-author-tests-worktree-settle-carries-phase1` authored and which guardrail 02 runs. Four of its five
+tests cover the journaller half; the fifth drives a **real** `Scheduler` (real `RunJournal`,
+`RecordingWorktreeProvider`, no git) and asserts the bucket and the definition hash landed in their own
+journal fields. So the argument BINDING is covered behaviourally and the guardrail's residue is
+narrower than it looks: what only it can see is whether the initializer READ `Turns` and `Segments` off
+`pending` rather than recomputing them — a test sees the value, never its provenance.
 
 **If guardrail 03 reports something absent that you can see is present, read its message before
 escalating.** It strips comments and string literals before matching, so a member named only in a
@@ -234,10 +269,40 @@ Write only to these four paths, and only for the reason given:
 | path | what this task changes there |
 |---|---|
 | `src/Guardrails.Core/Execution/AttemptJournaler.cs` | Site 1 — three new lines in `ValidateFragmentForSettle`'s `new PendingAttempt` initializer |
-| `src/Guardrails.Core/Execution/Scheduler.cs` | Site 2 — `Turns` and `Segments` into `RecordSucceededSettle`'s `new Journal.AttemptRecord` initializer, and `pending.Bucket` into the `RecordSettleWithAttempt` call |
+| `src/Guardrails.Core/Execution/Scheduler.cs` | Site 2 — `Turns` and `Segments` into `RecordSucceededSettle`'s `new Journal.AttemptRecord` initializer, and `bucket: pending.Bucket` (NAMED) into the `RecordSettleWithAttempt` call, beside the `definitionHash` it already passes |
 | `src/Guardrails.Core/Execution/ISchedulerJournal.cs` | Site 3 — one optional `string? bucket = null` parameter on the existing `RecordSettleWithAttempt` member |
 | `src/Guardrails.Core/Journal/RunJournal.cs` | Site 3 — the explicit `ISchedulerJournal.RecordSettleWithAttempt` forwarder ONLY, re-arity'd to match and forwarding the bucket by name. Nothing else in this file. |
 
 After this task completes, the harness runs a `git diff` check and rejects any edit outside those paths —
 including changes to other production files, the authored test file, or the `.csproj`. An out-of-scope
 edit fails the task immediately and consumes a retry.
+
+## Why this task is four files, and why GR2042 is accepted rather than split
+
+`guardrails validate` warns **GR2042** on this task: `maxTurns 75` co-occurring with a four-path
+`writeScope`. That warning is correct and the split was considered and declined. The reasons are
+recorded here because the first version of this rationale was WRONG, and a wrong reason is worse than
+none.
+
+**The wrong reason, retracted:** that all four files are one atomic compile unit. They are not.
+CS0539 binds only `ISchedulerJournal.cs` to `RunJournal.cs` — those two genuinely cannot land apart.
+The other two are separable: setting the carriers on the `PendingAttempt` needs only members task 04
+already shipped, and the Scheduler call site is gated by an OPTIONAL parameter, so the widening
+compiles with zero callers. A compiling split does exist.
+
+**The actual reasons:**
+
+1. **A split here without splitting task 15 is a #455 forward deadlock.** Task 15 authors ONE test
+   class, and guardrail 02 filters on it. Half of a split task 16 could not go green until the other
+   half had run — a deadlock neither `validate` nor `graph --check` can see, because the cycle is
+   between a task and a sibling's test corpus rather than between tasks.
+2. **There is no retry cost for GR2042 to bound.** The whole change is roughly eight lines across the
+   four files. GR2042 exists because a guardrail miss re-runs an oversized action; re-running eight
+   lines is not that.
+3. **The alternative split is forbidden by this repo's own precedent.** It would widen an interface
+   with no caller passing the new argument — exactly what `RunJournal.cs`'s shipped comment on the
+   `RecordSettle` forwarder rules out: *"widening the interface itself belongs to the task that wires
+   a caller to actually pass it."* This task is that task.
+
+Treat the warning as read and dispositioned. Do NOT try to shrink the `writeScope` to silence it —
+dropping any of the four is how the bucket silently stops arriving.

@@ -21,19 +21,20 @@
 # WHY THE #175 DUPLICATE-DEFINITION SUB-CHECK IS OMITTED, and it is a decision rather than an oversight:
 #          that check exists for two COLLIDING SIBLINGS - branches cut from a common base that each
 #          append the same new definition to different regions, which a 3-way merge keeps twice with no
-#          textual marker. This plan has SEVEN multi-writer paths and NONE is a colliding pair, because
+#          textual marker. This plan has NINE multi-writer paths and NONE is a colliding pair, because
 #          every one of them is serialized by a directed dependsOn path. That was verified MECHANICALLY
 #          over the emitted folder - a reachability sweep across all twenty-six dependsOn arrays,
 #          asserting that for every path written by two or more tasks, one of each pair reaches the
 #          other - not read off the numbering by eye:
-#            src/Guardrails.Core/Telemetry/TaskFingerprintBucket.cs       - tasks 01, 02
-#            src/Guardrails.Core/Execution/ActionRunner.cs                - tasks 04, 10, 12
-#            src/Guardrails.Core/Execution/GuardrailRunner.cs             - tasks 04, 12a
-#            src/Guardrails.Core/Execution/AttemptJournaler.cs            - tasks 06, 12, 12a, 16
-#            src/Guardrails.Core/Execution/TaskExecutor.cs                - tasks 10, 12, 12a, 14
-#            src/Guardrails.Core/Journal/RunJournal.cs                    - tasks 06, 16, 18
-#            src/Guardrails.Cli/Commands/TelemetryCommand.cs              - tasks 22, 24
-#            src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs  - tasks 23, 24
+#            src/Guardrails.Cli/Commands/TelemetryCommand.cs             - tasks 22, 24
+#            src/Guardrails.Core/Execution/ActionRunner.cs               - tasks 04, 10, 12
+#            src/Guardrails.Core/Execution/AttemptJournaler.cs           - tasks 06, 12, 12a, 16
+#            src/Guardrails.Core/Execution/GuardrailRunner.cs            - tasks 04, 12a
+#            src/Guardrails.Core/Execution/TaskExecutor.cs               - tasks 10, 12, 12a, 14
+#            src/Guardrails.Core/Journal/RunEnvironmentProbe.cs          - tasks 17, 18
+#            src/Guardrails.Core/Journal/RunJournal.cs                   - tasks 06, 16, 18
+#            src/Guardrails.Core/Telemetry/TaskFingerprintBucket.cs      - tasks 01, 02
+#            src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs - tasks 23, 24
 #          Every later writer's segment base therefore already contains the earlier writer's merged
 #          output, so none can add a definition blind. The residual - a CS0101 arriving some other way -
 #          is caught by 01-solution-builds, whose failure line names these files first.
@@ -118,7 +119,7 @@ if ($failures.Count -gt 0) {
     Write-Output "=== union soundness: $($failures.Count) problem(s) on the merged bytes ==="
     $failures | ForEach-Object { Write-Output "  - $_" }
     Write-Output ""
-    Write-Output "Resolve the merge on the named file(s). Do NOT delete a contribution to make the markers go away - the six multi-writer paths in this plan are serialized by dependsOn precisely so this should not happen; a marker here means that ordering was violated or an AI-merge misresolved."
+    Write-Output "Resolve the merge on the named file(s). Do NOT delete a contribution to make the markers go away - the nine multi-writer paths in this plan are serialized by dependsOn precisely so this should not happen; a marker here means that ordering was violated or an AI-merge misresolved."
     exit 1
 }
 

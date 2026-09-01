@@ -51,8 +51,12 @@ internal sealed partial class Scheduler
         // Plan 30 §3.2: the bucket is a TASK-grain fact, so it rides the task entry rather than the
         // attempt record - and therefore travels through the recorder's own parameter. The value was
         // computed once, in the journaller, and is READ here; recomputing it would be a second answer.
+        // NAMED, not positional: the bucket sits beside definitionHash and both are string?, so a
+        // positional argument one slot out compiles, drops the bucket, and stamps a bucket string into
+        // the definition hash a resume compares and a safe-suffix rewind corroborates against.
         _journal.RecordSettleWithAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash, pending.Bucket);
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash,
+            bucket: pending.Bucket);
     }
 
     /// <summary>
