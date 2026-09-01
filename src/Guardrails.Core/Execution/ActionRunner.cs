@@ -558,6 +558,12 @@ internal sealed record ActionRun
             // provenance treats null as "learned nothing" and keeps the resolved route (or its
             // "(cli default)" sentinel) exactly as it stood at launch.
             ObservedModel = result.ObservedModel,
+            // Plan 30 §3.3: the provider-reported fingerprint, carried the same way ObservedModel is —
+            // a straight member copy, nothing recomputed and nothing defaulted. ABSENT stays absent for
+            // the same reason: the fold onto the attempt's provenance treats null as "learned nothing",
+            // and a fabricated digest would make two different quantizations of one model look like one
+            // sample.
+            ModelDigest = result.ModelDigest,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,
