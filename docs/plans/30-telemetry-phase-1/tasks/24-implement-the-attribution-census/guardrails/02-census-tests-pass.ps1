@@ -8,11 +8,14 @@
 #          reaches, which a source grep for the registration call cannot tell from a real one.
 #
 # TWO INVOCATIONS, ONE FAILURE LIST, and the reason is structural rather than stylistic: this pair owns
-#          test classes in TWO DIFFERENT PROJECTS - AttributionCensusTests in Guardrails.Core.Tests
-#          (task 23's, made green here) and TelemetryCensusCommandTests in Guardrails.Integration.Tests
-#          (authored by this task). A single `dotnet test` over the solution would run every other suite
-#          in both projects and turn an unrelated red into this task's failure; a single project run
-#          would silently certify half the pair. So each project is run with its OWN class-scoped filter,
+#          test classes in TWO DIFFERENT PROJECTS - AttributionCensusTests in Guardrails.Core.Tests and
+#          TelemetryCensusCommandTests in Guardrails.Integration.Tests. BOTH are authored by task 23 and
+#          proved RED there; BOTH are outside THIS task's writeScope, so the only way to move either is
+#          to fix the implementation or the registration. A single `dotnet test` over the solution would
+#          run every other suite in both projects and turn an unrelated red into this task's failure; a
+#          single project run would silently certify half the pair (and it is the CLI half that would go
+#          unchecked, which is where a verb registered somewhere the shipped root never reaches hides).
+#          So each project is run with its OWN class-scoped filter,
 #          its OWN culture pin and its OWN executed-count guard, and the results ACCUMULATE (#179) into
 #          one list dumped at the end - so ONE attempt learns about both halves instead of discovering
 #          the second only after fixing the first.
@@ -21,12 +24,18 @@
 #          trait-only filter asserts the state of every test in the plan, so this task could not go green
 #          until a task that DEPENDS on it had run (a deadlock validate and graph --check cannot see,
 #          #455). This plan introduces no trait at all, so both are shape 3: the class term alone.
-#          'AttributionCensusTests' was checked against all 197 existing Core test class names and
-#          'TelemetryCensusCommandTests' against all 150 existing Integration ones, plus every other
-#          class this plan authors: each is a substring of none of them, so both filters are
+#          MEASURED 2026-09-01, not carried forward: 'AttributionCensusTests' was checked against all
+#          200 distinct class names declared in Guardrails.Core.Tests and 'TelemetryCensusCommandTests'
+#          against all 152 in Guardrails.Integration.Tests - helper classes INCLUDED, the conservative
+#          superset, since an FQN substring filter does not know which classes carry tests. Plus every
+#          other class this plan authors. Each term is a substring of none of them, so both filters are
 #          discriminating. In particular TelemetryCensusCommandTests does not overlap the shipped
 #          TelemetryCommandTests / TelemetryCommandWiringTests, which are longer-established names that
 #          do not CONTAIN it.
+#          NO ALTERNATION is needed or used: the two classes live in different PROJECTS, so each gets a
+#          single-class filter of its own. If one ever does need an alternation, VSTest takes a BARE
+#          pipe - an escaped one matches nothing, exits 0 and reports zero tests, which is a silent
+#          green the executed-count guard below exists to catch.
 #
 #          Re-emits the assertion/exception lines at the END so they reach the harness retry-feedback
 #          tail (#179): default `dotnet test` prints them mid-run and ends with only [FAIL] <name>. With
@@ -51,7 +60,7 @@ $runs = @(
     [ordered]@{
         Project = 'tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj'
         Filter  = 'FullyQualifiedName~TelemetryCensusCommandTests'
-        Fix     = "Fix the verb registration in src/Guardrails.Cli/Commands/TelemetryCommand.cs (or the test file, which IS in this task's writeScope). If TelemetryVerbCensus_IsReachableFromTheCommandFactory is the failure, the leaf is not reachable from the root CommandFactory.BuildRootCommand builds: add it inside TelemetryCommand.Create beside BuildIngestLeaf/BuildReportLeaf/BuildPurgeLeaf, located by that TEXT rather than by a line number - task 22 edited this file before you."
+        Fix     = "Fix the verb registration and its rendering in src/Guardrails.Cli/Commands/TelemetryCommand.cs - do NOT edit tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs, which task 23 authored and proved RED and which is outside this task's writeScope, so an edit to it would fail the write-scope check. If TelemetryVerbCensus_IsReachableFromTheCommandFactory is the failure, the leaf is not reachable from the root CommandFactory.BuildRootCommand builds: add it inside TelemetryCommand.Create beside BuildIngestLeaf/BuildReportLeaf/BuildPurgeLeaf, located by that TEXT rather than by a line number - task 22 edited this file before you. If Census_PrintsTheThreeWaySplit is the failure, the verb is registered but its output does not carry all four numbers each beside a label naming its category: read that test's class doc, which states which assertions are the contract and which rendering choices are yours."
     }
 )
 

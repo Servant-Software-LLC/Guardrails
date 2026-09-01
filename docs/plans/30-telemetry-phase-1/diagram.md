@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=38a16318428649f3d00aa1bcb61f0cfda98e51e8e514cfedd3b9899a606248ea -->
+<!-- guardrails:graph v1 source-sha256=b5db13b8c6460ec88978cf1340c783676f80add6879661d07c471ee0b3f00524 -->
 
 ```mermaid
 flowchart TD
@@ -189,6 +189,7 @@ flowchart TD
   task_14_record_whether_the_route_was_warm --> task_16_carry_phase1_facts_through_the_worktree_settle
   task_14_record_whether_the_route_was_warm --> task_25_record_in_ssot_and_skills
   task_15_author_tests_worktree_settle_carries_phase1 --> task_16_carry_phase1_facts_through_the_worktree_settle
+  task_16_carry_phase1_facts_through_the_worktree_settle --> task_18_record_the_run_environment
   task_16_carry_phase1_facts_through_the_worktree_settle --> task_25_record_in_ssot_and_skills
   task_17_author_tests_run_environment --> task_18_record_the_run_environment
   task_18_record_the_run_environment --> task_25_record_in_ssot_and_skills

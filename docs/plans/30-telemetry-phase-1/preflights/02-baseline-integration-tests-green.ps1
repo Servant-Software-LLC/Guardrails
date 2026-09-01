@@ -8,7 +8,7 @@
 #          pre-existing red in one of those three would be misattributed to task 22 or 24, burn its
 #          whole retry budget, and end at needs-human with its own deliverable complete (#181).
 #
-# SCOPE: the EXISTING Integration tests only, via an FQN exclusion of the two Integration test classes
+# SCOPE: the EXISTING Integration tests only, via an FQN exclusion of the three Integration test classes
 #        THIS plan authors. A whole-project `dotnet test` here would hit the #165/#176 compile-coupling
 #        trap the moment task 21 lands its intentionally-red tests. The exclusion is written as
 #        FullyQualifiedName!~<Class>, NOT as a shared plan-wide trait: this plan introduces no trait at
@@ -33,7 +33,7 @@
 #        every existing Integration test class name, harvested as
 #        `grep -rho "class [A-Za-z0-9_]*Tests" tests/Guardrails.Integration.Tests --include=*.cs | sort -u`
 #        (135 distinct names on master @d87c766; the method is written out because the number moves and
-#        a bare count cannot be re-checked). Both excluded names matched ZERO of them. In particular
+#        a bare count cannot be re-checked). All three excluded names matched ZERO of them. In particular
 #        neither swallows the shipped `TelemetryCommandTests` - `!~` excludes names CONTAINING the term,
 #        and `TelemetryCommandTests` does not contain `TelemetryCensusCommandTests` - so all three
 #        shipped telemetry suites stay IN this baseline, which is the point of the paragraph above.
@@ -42,7 +42,7 @@
 #        so it is green-on-arrival BY DESIGN - the class Step 7.0a exempts. MEASURED on master @d87c766,
 #        unfiltered: 1062 passing, 0 failing, 4 SKIPPED (Total 1066), in 10m24s. The four skipped tests
 #        are why the guard below is keyed on Passed+Failed and never on 'Total:' - a Total-keyed guard
-#        would count them and could certify a fully-skipped run as green. The two excluded classes do
+#        would count them and could certify a fully-skipped run as green. The three excluded classes do
 #        not exist yet, so the filter drops nothing today and the executed count equals that 1062.
 #        Note the runtime: this preflight costs about ten minutes before the DAG starts, and the
 #        terminal 03-integration-suite-passes gate costs the same again at the end. That is the price of
@@ -60,10 +60,11 @@ if (-not (Test-Path $project)) {
     exit 1
 }
 
-# The two Integration test classes this plan authors: task 21 -> TelemetryReportPhase1Tests;
-# task 24 -> TelemetryCensusCommandTests.
+# The three Integration test classes this plan authors: task 21 -> TelemetryReportPhase1Tests;
+# task 23 -> TelemetryCensusCommandTests; task 17 -> RunEnvironmentJournalTests.
 $filter = 'FullyQualifiedName!~TelemetryReportPhase1Tests' +
-          '&FullyQualifiedName!~TelemetryCensusCommandTests'
+          '&FullyQualifiedName!~TelemetryCensusCommandTests' +
+          '&FullyQualifiedName!~RunEnvironmentJournalTests'
 
 # NO -v q on a TEST command: it deletes the Error Message/Expected/Actual/Stack Trace block the re-emit
 # below exists to surface, defeating #179 by the flag alone.

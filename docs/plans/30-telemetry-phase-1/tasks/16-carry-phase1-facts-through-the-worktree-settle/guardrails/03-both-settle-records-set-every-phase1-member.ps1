@@ -180,7 +180,7 @@ if ($null -ne $member) {
     # semicolon, which admits a multi-line argument list without admitting the rest of the method.
     $call = [regex]::Match($member, '\bRecordSettleWithAttempt\s*\(')
     if (-not $call.Success) {
-        $failures += "RecordSucceededSettle no longer calls RecordSettleWithAttempt. That is the recorder which journals the attempt record and the settle TOGETHER, and it is the only one carrying the task-grain bucket parameter 06-journal-the-bucket-serial added. Falling back to the attempt-less RecordSettle here would drop the whole attempt record, not merely the bucket."
+        $failures += "RecordSucceededSettle no longer calls RecordSettleWithAttempt. That is the recorder which journals the attempt record and the settle TOGETHER, and it is the only one carrying the task-grain bucket parameter - which THIS task adds to the ISchedulerJournal member, on top of the RunJournal recorders 06-journal-the-bucket-serial widened. Falling back to the attempt-less RecordSettle here would drop the whole attempt record, not merely the bucket."
     }
     else {
         # NOT $args: that is a PowerShell automatic variable, and shadowing it in a script that may later

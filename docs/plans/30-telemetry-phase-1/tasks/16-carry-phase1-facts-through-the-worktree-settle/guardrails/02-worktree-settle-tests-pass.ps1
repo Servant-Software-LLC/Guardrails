@@ -4,6 +4,29 @@
 #          agreement test is the sharpest of the four: a fix applied to one carrier and forgotten on the
 #          other passes the three single-member tests for the two it did set and is caught only there.
 #
+# CENSUS FORM - SUITE-LEVEL, and it is a DELIBERATE ASYMMETRY with tasks 03, 04 and 04a, recorded here so
+#          a reader comparing the two does not read it as an oversight. Those three run a FORWARD
+#          PER-TEST census: each enumerated behaviour must be found in the runner's own TRX observed
+#          'Passed'. They need one because they are COLLAPSED pairs - the same agent authors the tests
+#          AND the implementation, so a test deleted, renamed or [Skip]ped is a live route to green, and
+#          only a per-test census closes it.
+#
+#          This pair is SPLIT, and that route is closed by a different mechanism rather than left open.
+#          The test file - tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs - was
+#          authored by 15-author-tests-worktree-settle-carries-phase1 and is OUTSIDE this task's
+#          writeScope, so the harness's write-scope check rejects any edit to it outright. And task 15's
+#          own 02-tests-fail-on-stubs.ps1 already bound all four enumerated behaviours to their pinned
+#          method names and observed each one EXECUTING (Failed) on the pre-implementation tree, so the
+#          names are proven present and non-hollow before this task begins. What is left to certify HERE
+#          is only that those same tests now pass - which the exit code plus the executed-count guard
+#          below answers at suite grain.
+#
+#          The cost of the asymmetry, stated rather than glossed: the guard below keys on Passed+Failed,
+#          so it catches a FULLY skipped class but would not name a single test [Skip]ped between the two
+#          tasks by some route other than an edit to that file. That residue is accepted deliberately -
+#          closing it would duplicate task 15's four-name manifest in a second place that could then
+#          drift from it, and a drifted manifest is a worse failure than the one it would cover.
+#
 #          The --filter names this pair's OWN test class, never a plan-wide trait - a trait-only filter
 #          asserts the state of every test in the plan, so this task could not go green until a task that
 #          DEPENDS on it had run (a deadlock validate and graph --check cannot see, #455). This plan

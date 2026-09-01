@@ -59,6 +59,21 @@
 #          43,387 bytes of fenced content across 26 blocks - much of section 7's wire example among them
 #          - so a fence-stripping clause would reject a correct document written in its own style.
 #
+# THIS IS A LOWER BOUND, and naming it is part of the check. Every clause below is required-present
+#          over PROSE. What it proves: each token is PRESENT in the text a reader actually sees (HTML
+#          comments are stripped first, so it cannot be discharged by invisible text). What it does NOT
+#          prove, and cannot: that the prose around each token is correct, complete, in the right
+#          section, consistent with the code that shipped, or even coherent. A single appended line of
+#          bare tokens takes this script to exit 0.
+#          That is the CORRECT rung for a documentation target rather than a hole to be patched with a
+#          longer pattern: no regex can prove a document EXPLAINS something, and a clause that demanded
+#          a sentence would be demanding this document speak the plan's language instead of its own -
+#          which is exactly what the harness contract tells every agent not to do. So the division of
+#          labour is stated rather than assumed: this guardrail makes an OMISSION impossible to ship
+#          silently; whether each fact is stated truly, and where a reader will meet it, is the HUMAN'S
+#          read at review. Do not read a green here as "the SSOT is correct" - read it as "the SSOT
+#          mentions all ten things, and is now worth reading."
+#
 # MEASURED BASELINES on master @d87c766, against docs/plans/02-schemas-and-contracts.md, with each
 #          clause's own case sensitivity (#478). Measured on the COMMENT-STRIPPED text, which is what
 #          the clauses below match:

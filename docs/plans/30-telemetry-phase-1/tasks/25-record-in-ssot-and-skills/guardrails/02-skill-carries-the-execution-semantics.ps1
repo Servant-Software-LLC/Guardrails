@@ -48,6 +48,21 @@
 #          fence renders, this file documents wire shapes inside fences as house style, and stripping
 #          them would reject a correct document written the way this one already is.
 #
+# THIS IS A LOWER BOUND, and naming it is part of the check. Every clause below is required-present
+#          over PROSE. What it proves: each token is PRESENT in the text an agent actually reads (HTML
+#          comments are stripped first, so it cannot be discharged by invisible text). What it does NOT
+#          prove, and cannot: that the prose around each token is correct, complete, in the right
+#          section, consistent with the code that shipped, or even coherent. A single appended line of
+#          bare tokens takes this script to exit 0.
+#          That is the CORRECT rung for a documentation target rather than a hole to be patched with a
+#          longer pattern: no regex can prove a document EXPLAINS something, and a clause that demanded
+#          a sentence would be demanding this file speak the plan's language instead of its own - which
+#          is exactly what the harness contract tells every agent not to do. So the division of labour
+#          is stated rather than assumed: this guardrail makes an OMISSION impossible to ship silently;
+#          whether each fact is stated truly, and in the section an agent will meet it in, is the
+#          HUMAN'S read at review. Do not read a green here as "the skill is correct" - read it as "the
+#          skill mentions all seven things, and is now worth reading."
+#
 # MEASURED BASELINES on master @d87c766, against .claude/skills/guardrails-domain-knowledge/SKILL.md,
 #          with each clause's own case sensitivity (#478). Measured on the COMMENT-STRIPPED text:
 #            (?i)modelDigest                 0   this task's deliverable

@@ -91,9 +91,9 @@ reader actually strata on.
 
 ### The pinned behaviours
 
-Encode **exactly these six**, each as a `[Fact]` with **exactly the method name given**, in the class
-named. The names are pinned because this task's guardrail binds each behaviour to its method name in
-the runner's TRX; a differently-named test reads as an absent behaviour.
+Encode **exactly these twelve**, each as a `[Fact]` with **exactly the method name given**, in the
+class named. The names are pinned because this task's guardrail binds each behaviour to its method name
+in the runner's TRX; a differently-named test reads as an absent behaviour.
 
 #### class `AttemptTurnsTests`
 
@@ -102,24 +102,97 @@ the runner's TRX; a differently-named test reads as an absent behaviour.
 | 1 | a prompt action's reported turn count reaches the attempt record | `APromptActionsTurnCount_ReachesTheAttemptRecord` |
 | 2 | a script action records NO turn count — **null, never 0** | `AScriptAction_RecordsNoTurnCount` |
 | 3 | an attempt that FAILED still records its turn count | `AFailedAttempt_StillRecordsItsTurnCount` |
+| 4 | a `needs-human` attempt still records its turn count | `ANeedsHumanAttempt_StillRecordsItsTurnCount` |
+| 5 | a `permission-denied` attempt still records its turn count | `APermissionWallAttempt_StillRecordsItsTurnCount` |
+| 6 | a task-preflight failure records NO turn count — **null, never 0** | `ATaskPreflightFailure_RecordsNoTurnCount` |
 
 #### class `AttemptSegmentsTests`
 
 | # | behaviour | test method name (VERBATIM) |
 |---|---|---|
-| 4 | the action phase's elapsed time reaches `AttemptRecord.Segments.ActionMs` | `TheActionsElapsedTime_ReachesTheAttemptSegments` |
-| 5 | the guardrail phase's elapsed time reaches `AttemptRecord.Segments.GuardrailMs` | `TheGuardrailsElapsedTime_ReachesTheAttemptSegments` |
-| 6 | an attempt that FAILED still records both segments | `AFailedAttempt_StillRecordsItsSegments` |
+| 7 | the action phase's elapsed time reaches `AttemptRecord.Segments.ActionMs` | `TheActionsElapsedTime_ReachesTheAttemptSegments` |
+| 8 | the guardrail phase's elapsed time reaches `AttemptRecord.Segments.GuardrailMs` | `TheGuardrailsElapsedTime_ReachesTheAttemptSegments` |
+| 9 | an attempt that FAILED still records both segments | `AFailedAttempt_StillRecordsItsSegments` |
+| 10 | a `needs-human` attempt still records its action segment | `ANeedsHumanAttempt_StillRecordsItsActionSegment` |
+| 11 | a `permission-denied` attempt still records its action segment | `APermissionWallAttempt_StillRecordsItsActionSegment` |
+| 12 | a task-preflight failure records NO segments at all | `ATaskPreflightFailure_RecordsNoSegments` |
 
 **Behaviour 2 draws the null-versus-zero line, and it is the same one `TelemetryRow.CostUsd` already
 draws.** A script runs no turns; that is *not applicable*, and `0` would be a CLAIM that a model was
 invoked and took no turns. Assert `Turns` is null on a script attempt.
 
-**Behaviours 3 and 6 are section 2's survivorship lesson made operative.** Drive a real failure — a
+**Behaviours 3 and 9 are section 2's survivorship lesson made operative.** Drive a real failure — a
 task whose guardrail script exits non-zero, with the retry budget set to 0 — and assert the failed
 attempt record still carries its envelope. If the envelope only survives success, the corpus will
 report the turn cost of the attempts that worked and nothing about the ones that burned the budget,
 which is the exact bias section 2 measured.
+
+### Behaviours 4/5 and 10/11 — the OTHER failure outcomes, and why one per class is not enough
+
+`AttemptJournaler` has **nine** independent `new AttemptRecord` sites, one per outcome, each called
+directly from `TaskExecutor`. Nothing funnels through `FailedAttempt`. So a suite that proves the
+envelope survives *guardrail-failed* proves nothing about the other seven failure outcomes — and
+`needs-human` is not hypothetical: real `run.json` rows in the corpus carry `"outcome":"needs-human"`,
+so it is one of the rows a first-pass-rate comparison will actually read.
+
+The two pinned here are the two that both hold an `ActionRun` at their call site AND appear in the real
+corpus. **Each is pinned in BOTH classes on purpose:** tasks 12 and 12a filter on their own class
+alone, so an outcome pinned only in `AttemptTurnsTests` leaves the same outcome's *segments* unbound,
+and vice versa. That asymmetry is exactly the silent half-fix these pins exist to prevent.
+
+Driving them:
+
+- **`needs-human`** — the stub runner writes `{"needsHuman": {"question": "...", "kind":
+  "blocked-work"}}` to the state-out path it is handed (read
+  `invocation.Environment["GUARDRAILS_STATE_OUT"]`) and returns an ordinary completed `PromptResult`.
+  `ActionRunner` parses that fragment into the `NeedsHumanSignal`, and `TaskExecutor` short-circuits to
+  `AttemptJournaler.NeedsHuman` before any guardrail runs.
+- **`permission-denied`** — the stub returns a `PromptResult` with `BlockedWritePaths` carrying a
+  `.claude/` path (a `.claude/` wall is *structural*, which halts on ONE attempt — no repeat needed)
+  and a non-success terminal result, so `action.Succeeded` is false. `TaskExecutor` settles via
+  `AttemptJournaler.PermissionWall`.
+
+**Assert the OUTCOME as well as the datum.** Each of these four tests must first assert the attempt it
+read has `Outcome` `AttemptOutcome.NeedsHuman` (`"needs-human"` on the wire) /
+`AttemptOutcome.PermissionDenied` (`"permission-denied"`) respectively, and only then assert the turn
+count or the segment. Without that, a fixture that quietly settled some other way would let the test
+read a different record — or the wrong attempt — and still look like it proved something.
+
+**Segments on these two paths are HALF-populated, and that is correct.** Both outcomes settle before
+any guardrail runs, so `GuardrailMs` is legitimately null there while `ActionMs` is real. Behaviours 10
+and 11 therefore assert `Segments` is non-null and `ActionMs` is at least the stub's known delay, and
+**must not** assert anything about `GuardrailMs` — an assertion that both members are present on these
+paths would be a test demanding a fabricated number.
+
+### Behaviours 6 and 12 — the DELIBERATE NULL, and why the suite needs one
+
+Three of the nine recorders — `RateLimitExhausted`, `NoRoute` and `TaskPreflightFailed` — plus the
+pre-attempt one of `Cancelled`'s three call sites fire where the caller holds no `ActionRun`. There the
+honest record is `null` — **never `0`, and never an `AttemptSegments` with both members null**, which
+would be a CLAIM that a measurement was taken and came back empty. It is the same null-versus-zero line
+`TelemetryRow.CostUsd` draws in its own doc-comment: *"or null when the runner never reported a cost —
+NOT the same claim as a recorded `0`."*
+
+Pinning only the carrying half would leave tasks 12 and 12a free to satisfy every green check by
+defaulting the uninstructed recorders to `0` or to a zeroed record. Behaviours 6 and 12 bind the other
+half, so the implementation cannot silently choose.
+
+`TaskPreflightFailed` is the cleanest one to drive and needs no routing configuration: give the fixture
+task a `tasks/<id>/preflights/` check whose script exits non-zero (the same
+`OperatingSystem.IsWindows()` script shape the rest of the fixture already uses). The preflight gate
+fires *before* the attempt loop, so no action runs at all — the stub runner is never even invoked — and
+the journal still records one attempt, with outcome `task-preflight-failed`.
+
+Assert that attempt exists, that its `Outcome` is `AttemptOutcome.TaskPreflightFailed`
+(`"task-preflight-failed"` on the wire), and then that `Turns` is null (behaviour 6) / `Segments` is
+null (behaviour 12). **Asserting the attempt's existence and outcome
+first is what stops these two from being vacuously green**: a fixture whose preflight never fired would
+otherwise let a null read as a pass.
+
+**Both of these are GREEN on today's tree and that is expected** — nothing populates `Turns` or
+`Segments` yet, so a *correct* null assertion already holds. They are declared exemptions in this
+task's census (`Expect = 'Executed'` rather than `Failed`), and their job is to STAY green through
+tasks 12 and 12a. Do not contrive them into failing.
 
 **Duration assertions: lower bounds only.** An upper bound tighter than the attempt's own wall time is
 how a duration test flakes on a loaded CI box, and a flaky guardrail teaches an agent to re-run rather

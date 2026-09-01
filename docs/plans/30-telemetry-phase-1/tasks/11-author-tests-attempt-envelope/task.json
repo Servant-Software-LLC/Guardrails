@@ -9,6 +9,7 @@
     "tests/Guardrails.Core.Tests/Execution/AttemptEnvelopeTests.cs"
   ],
   "action": {
-    "tier": "medium"
+    "tier": "medium",
+    "maxTurns": 75
   }
 }

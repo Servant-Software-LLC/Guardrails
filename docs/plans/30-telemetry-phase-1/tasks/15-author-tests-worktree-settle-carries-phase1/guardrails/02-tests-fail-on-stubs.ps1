@@ -12,6 +12,16 @@
 #          throwing stub, which is precisely why the census below is per-test rather than suite-level:
 #          with a throwing stub every honest test is red for free, and here each one has to earn it.
 #
+# CENSUS FORM, and it is a DELIBERATE ASYMMETRY with tasks 03, 04 and 04a - recorded here so a reader
+#          comparing the two does not read it as an oversight. Those three run a FORWARD per-test census
+#          (each enumerated behaviour must be found in the runner's own TRX observed 'Passed'). This one
+#          is the RED per-test census: same family, opposite polarity, because at THIS point in the pair
+#          a 'Passed' row IS the failure - the implementation does not exist yet. There is no forward
+#          per-test census anywhere in this pair: the forward half for these four behaviours is task 16's
+#          02-worktree-settle-tests-pass.ps1, which is deliberately SUITE-LEVEL rather than per-test, and
+#          which states its own reason in its header. Read the two headers together before changing
+#          either.
+#
 # NO EXEMPTIONS, and the fourth row is the one that needed the argument. All four behaviours assert that
 #          a Phase-1 carrier is populated on a tree where nothing populates any of them, so every honest
 #          test here is red. The fourth -
@@ -102,7 +112,7 @@ foreach ($behaviour in $manifest.Keys) {
     }
     $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
     if ($name -eq 'EveryPhase1AttemptMemberSetOnTheSerialRecord_IsAlsoSetOnTheWorktreeRecord') {
-        $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. This is almost certainly the VACUOUS IMPLICATION: nothing sets a Phase-1 member on EITHER settle path yet, so 'for every member set on the serial record, assert it is also set on the worktree record' quantifies over an empty set and passes while asserting nothing. Write the TWO-SIDED assertion instead - for each Phase-1 carrier reflected off PendingAttempt (Turns, Segments, Bucket), assert the serial side carries a non-null value AND the worktree side carries one, resolving each counterpart on Journal.AttemptRecord or, for Bucket, on Journal.TaskJournalEntry. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. This is almost certainly the VACUOUS IMPLICATION: nothing sets a Phase-1 member on EITHER settle path yet, so 'for every member set on the serial record, assert it is also set on the worktree record' quantifies over an empty set and passes while asserting nothing. Write the TWO-SIDED assertion instead - for each of the three NAMED Phase-1 carriers (PendingAttempt.Turns, .Segments, .Bucket), assert the serial side carries a non-null value AND the worktree side carries one, taking the counterpart from Journal.AttemptRecord for Turns and Segments and from Journal.TaskJournalEntry for Bucket. Name the three as ordinary member access; do NOT try to discover them by reflection, since nothing marks a member as a Phase-1 carrier. ('NotExecuted' = [Fact(Skip=...)].)"
     }
     else {
         $failures += "$behaviour -> '$name' is $seen on the pre-implementation tree, not Failed. Nothing sets PendingAttempt.Bucket, .Turns or .Segments yet, so a test that OBTAINS its PendingAttempt from AttemptJournaler.ValidateFragmentForSettle and asserts the carrier is populated cannot pass. Green here means the test never obtained one - most likely it constructed a PendingAttempt itself and asserted about the object it just built, which passes today and forever. ('NotExecuted' = [Fact(Skip=...)].)"

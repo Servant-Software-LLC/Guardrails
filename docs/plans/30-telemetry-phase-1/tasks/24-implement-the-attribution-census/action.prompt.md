@@ -114,54 +114,51 @@ Do NOT add a `--corpus-root` option to this verb (it reads no corpus), and do NO
 `report` or `purge` verbs, their options, or the report's rendering — **section 5 of the plan puts "any
 change to the report's honesty rules" out of scope**, and task 22 owns the report's Phase-1 rendering.
 
-## Task 3 — `tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs`
+## You author NO tests. Both classes already exist, red, and both are outside your `writeScope`
 
-Class **`TelemetryCensusCommandTests`**, `public sealed`, carrying `[Trait("Category", "ModelEvidence")]`,
-with exactly two `[Fact]`s under **exactly these names** (this task's guardrail binds to them):
+`23-author-tests-attribution-census` authored **both** test classes and proved **both** RED, in two
+different projects. **Read both files before you write a line** — they are the specification, and this
+prompt is a summary of them:
+
+| project | class (file) | why it is red today |
+|---|---|---|
+| `tests/Guardrails.Core.Tests` | `AttributionCensusTests` (`Telemetry/AttributionCensusTests.cs`) | `Census` throws `NotImplementedException` |
+| `tests/Guardrails.Integration.Tests` | `TelemetryCensusCommandTests` (`Commands/TelemetryCensusCommandTests.cs`) | `telemetry census` is not a registered verb yet |
+
+The Integration pair binds these two method names, and your guardrail asserts both go green:
 
 | behaviour | test method name (VERBATIM) |
 |---|---|
 | `telemetry census` is reachable through the REAL root command the shipped binary builds | `TelemetryVerbCensus_IsReachableFromTheCommandFactory` |
 | the verb prints the three-way split over a real plan folder on disk | `Census_PrintsTheThreeWaySplit` |
 
-`tests/Guardrails.Integration.Tests/Commands/TelemetryCommandWiringTests.cs` is the exact precedent for
-the first: it invokes through `CommandFactory.BuildRootCommand` — **the real root `Program.cs` builds,
-not a hand-built one** — because a registration that never reaches the shipped root leaves the binary
-without the verb while a source grep still passes. Copy that shape.
+The first invokes through `CommandFactory.BuildRootCommand` — **the real root `Program.cs` builds, not a
+hand-built one** — so a registration that never reaches the shipped root fails it, even though a source
+grep for the registration call would pass. That is why your registration must go inside
+`TelemetryCommand.Create` beside its three shipped siblings and nowhere else.
 
-`TelemetryCorpusIsolation` is a `[ModuleInitializer]` covering the whole Integration assembly, so
-nothing here has to opt in to corpus isolation; it is already in force. That is not a licence to touch
-the corpus — the census does not read one.
+The second pins a **contract, not a wording**: it composes a fixture whose four numbers are all
+different and requires each number to appear beside a label naming its category, matched
+case-insensitively on the stems `task-grain`, `script` and `recording gap`. Column widths, ordering,
+punctuation and any banner line are yours to choose. **Read the class doc — it states exactly which
+assertions are the contract and which would be over-reach**, so you can render freely inside that line
+instead of guessing at it.
 
-### This test class is a DECLARED exemption to the TDD authorship split — and here is the honest reason
+**Neither file is in your `writeScope`, and that is the whole point of this pair.** An edit to either
+fails the write-scope check and burns a retry. Make them pass by fixing the implementation and the
+registration. If a test is genuinely wrong or incompatible with section 3.3a, emit
+`{"needsHuman": {"question": "<why>", "kind": "blocked-work"}}` to the state-out path rather than
+changing it.
 
-Every other test class in this plan is authored by a task that proves it RED before an implementation
-task makes it green. This one is authored **here, by the implementing task**, and is gated FORWARD
-(guardrail 02 asserts it passes) rather than as a red census. Two reasons, and one honest limit:
-
-- `Census_PrintsTheThreeWaySplit` asserts on **rendered output**, and this task decides that rendering.
-  A test authored before the rendering exists would pin a wording nobody had designed yet, which is the
-  same mistake section 5 warns about from the other direction.
-- The class lives in a **third project** that task 23's `writeScope` and its red-census guardrail (which
-  runs the Core project only) do not reach.
-- **The limit, stated rather than hidden:** `TelemetryVerbCensus_IsReachableFromTheCommandFactory`
-  *could* have been authored red — it passes literal argv tokens and compiles against today's tree, and
-  the shipped `TelemetryCommandWiringTests` is exactly that shape. It is kept beside its sibling rather
-  than split into a task of its own. So this pair's anti-tautology is weaker than a stub-based one: a
-  hollow assertion here is caught by review, not by a red census. Write both tests so they would fail if
-  the verb were unregistered or printed nothing.
-
-**Do NOT edit `tests/Guardrails.Core.Tests/Telemetry/AttributionCensusTests.cs`.** Make it pass by
-fixing the implementation. If a test is genuinely wrong or incompatible with section 3.3a, emit
-`{"needsHuman": "<why>"}` to the state-out path rather than changing it — that file is outside your
-`writeScope` and an edit to it fails the write-scope check and burns a retry.
+If the rendering the Integration test requires is genuinely impossible to produce honestly — for
+instance because a category cannot be labelled without asserting something the census does not know —
+that is a `needsHuman`, not a licence to reword the test.
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs`,
-`src/Guardrails.Cli/Commands/TelemetryCommand.cs` and
-`tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs`. After this task completes,
-the harness runs a `git diff` check and rejects any edit outside these paths — including the authored
-Core test file, `TelemetryIngest.cs`, `TelemetryRow.cs`, `CommandFactory.cs`, or any `.csproj`. An
-out-of-scope edit fails the task immediately and consumes a retry. If you hit a problem caused by
-something missing in another file, do NOT edit that file — write
-`{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+`src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs` and
+`src/Guardrails.Cli/Commands/TelemetryCommand.cs`. After this task completes, the harness runs a
+`git diff` check and rejects any edit outside these two paths — including **either** authored test file,
+`TelemetryIngest.cs`, `TelemetryRow.cs`, `CommandFactory.cs`, or any `.csproj`. An out-of-scope edit
+fails the task immediately and consumes a retry. If you hit a problem caused by something missing in
+another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path
+and stop.

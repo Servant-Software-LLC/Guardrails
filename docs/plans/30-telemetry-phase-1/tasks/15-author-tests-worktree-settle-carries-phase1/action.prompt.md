@@ -114,16 +114,30 @@ runner's TRX; a differently-named test reads as an absent behaviour.
 Drive **both** entry points with the SAME inputs (the same `TaskNode`, the same `ActionRun`, the same
 `GuardrailRunResult`), then compare what each produced, member by member.
 
-**Enumerate the members by REFLECTION, not by hardcoding three names.** For each Phase-1 carrier
-declared on `PendingAttempt` (`Turns`, `Segments`, `Bucket`), resolve its counterpart at the journal
-grain — on `Journal.AttemptRecord` where one exists, otherwise on `Journal.TaskJournalEntry`
-(**`Bucket` lives on `TaskJournalEntry`, not on `AttemptRecord`** — it is a TASK-grain fact, constant
-across a task's own retries within one run, so the test must look in both places). Then assert, for
-each name, that **both** sides carry a non-null value.
+**Name the three carriers explicitly, in the test, as ordinary member access — do NOT enumerate them by
+reflection.** The list is `PendingAttempt.Turns`, `PendingAttempt.Segments` and `PendingAttempt.Bucket`,
+and each has a counterpart at the journal grain: `Turns` and `Segments` on `Journal.AttemptRecord`, and
+**`Bucket` on `Journal.TaskJournalEntry`, NOT on `AttemptRecord`** — it is a TASK-grain fact, constant
+across a task's own retries within one run, so the test must look in both places. Assert, for each of
+the three, that **both** sides carry a non-null value, in a form whose failure message names the member
+(three named pairs, or one loop over three literal rows — either is fine, so long as a failure tells the
+reader WHICH member is missing on WHICH side).
 
-Reflection is not decoration here. A Phase-1 member added to `PendingAttempt` by a later plan is
-covered by this test the day it is declared, without anyone remembering to extend a list — which is the
-difference between an invariant and a snapshot.
+**The list is hand-maintained. Say so in the comment, as a fact — do not dress it up as an invariant.**
+Nothing in this codebase marks a member as a "Phase-1 carrier": there is no attribute, no marker
+interface, no naming convention. So reflection over `PendingAttempt`'s properties cannot tell `Turns`
+(a Phase-1 carrier) from `LogDir` or `CostUsd` (not one), and each carrier's counterpart lives on a
+different type with no mechanical link back to it — there is nothing to enumerate. A by-name lookup
+would also make **absent** and **present but null** indistinguishable: a member renamed out from under
+the test would read as an unset value and send the next reader to the wrong file, which is the
+hollow-test failure this pair exists to catch. Ordinary member access is bound at compile time and
+cannot fail that way — a rename becomes a build error, which is the feedback you want.
+
+So the comment states the truth: these three names are maintained by hand; whoever declares a fourth
+Phase-1 carrier adds it here; and what catches a carrier declared with no counterpart is
+`03-extend-the-journal-record-shape`'s and `04-extend-the-transport-record-shape`'s shape censuses,
+together with sections 3.2 and 3.4 of the plan. **Do not write a comment claiming this test covers
+members nobody has declared yet** — it would not be true, and the next reader would trust it.
 
 **Assert BOTH sides non-null, not an implication.** The name reads like an implication ("everything set
 on the serial record is also set on the worktree record"), and the implication form is **vacuously

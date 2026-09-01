@@ -8,7 +8,9 @@
   "stableId": "p30t16",
   "writeScope": [
     "src/Guardrails.Core/Execution/AttemptJournaler.cs",
-    "src/Guardrails.Core/Execution/Scheduler.cs"
+    "src/Guardrails.Core/Execution/ISchedulerJournal.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
   ],
   "action": {
     "tier": "hard",

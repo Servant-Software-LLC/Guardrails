@@ -11,20 +11,46 @@
 #          way AttemptRecord.Usage shipped structurally dead with every guardrail green (#475). The
 #          prompt pins a real serial run whose only fake is a stub IPromptRunner.
 #
-# ONE DECLARED EXEMPTION, stated here because the census's own failure text points a retry agent back at
-#          this header: 'AScriptAction_RecordsNoTurnCount' asserts that a SCRIPT attempt records a null
-#          turn count. Nothing populates AttemptRecord.Turns on today's tree, so every attempt's Turns is
-#          already null and a CORRECT test for the script case is GREEN before the capture lands.
-#          Demanding red there would demand a correct test fail. The row therefore asserts
-#          Expect='Executed' (it ran, and was not [Skip]ped) and stays IN the manifest: a dropped row and
-#          an oversight look identical. Its job is to STAY green through task 12, which threads the turn
-#          count and could just as easily default a script attempt to 0 - and 0 is a CLAIM that a model
-#          was invoked and took no turns, the same null-versus-zero line TelemetryRow.CostUsd draws.
+# PER-OUTCOME COVERAGE is why this census carries twelve rows and not six. AttemptJournaler has NINE
+#          independent `new AttemptRecord` sites, one per outcome, each called DIRECTLY from
+#          TaskExecutor - nothing funnels through FailedAttempt. A suite proving the envelope survives
+#          guardrail-failed therefore proves nothing about the other seven failure outcomes, and
+#          `needs-human` is not hypothetical: real run.json rows in the corpus carry
+#          "outcome":"needs-human". The needs-human and permission-denied rows are pinned in BOTH classes
+#          on purpose - tasks 12 and 12a filter on their own class alone, so an outcome pinned only in
+#          AttemptTurnsTests leaves that outcome's SEGMENTS unbound, and vice versa. That asymmetry is the
+#          silent half-fix these rows exist to prevent.
 #
-#          The other five rows are red on today's tree: ActionRun.FromPrompt discards PromptResult.NumTurns,
+# THREE DECLARED EXEMPTIONS, stated here because the census's own failure text points a retry agent back
+#          at this header. All three assert a DELIBERATE NULL, and all three are GREEN on today's tree
+#          because nothing populates AttemptRecord.Turns or .Segments yet - so a CORRECT null assertion
+#          already holds, and demanding red would demand that a correct test fail. Each asserts
+#          Expect='Executed' (it ran, and was not [Skip]ped) and stays IN the manifest: a dropped row and
+#          an oversight look identical.
+#
+#            - 'AScriptAction_RecordsNoTurnCount' - a SCRIPT attempt records a null turn count. Its job is
+#              to STAY green through task 12, which threads the count and could just as easily default a
+#              script attempt to 0.
+#            - 'ATaskPreflightFailure_RecordsNoTurnCount' and 'ATaskPreflightFailure_RecordsNoSegments' -
+#              AttemptJournaler.TaskPreflightFailed fires BEFORE the attempt loop and its caller holds no
+#              ActionRun at all, so null is the honest record. Without these two rows the census would bind
+#              only the CARRYING half, leaving tasks 12/12a free to satisfy every green check by defaulting
+#              the uninstructed recorders to 0 (or to an AttemptSegments with both members null, which is a
+#              CLAIM that a measurement was taken and came back empty). These bind the other half so the
+#              implementation cannot silently choose.
+#
+#          0 is a CLAIM that a model was invoked and took no turns - the same null-versus-zero line
+#          TelemetryRow.CostUsd draws in its own doc-comment.
+#
+#          The exempt rows have their own hollow shape, sharper than the general one above: a null read
+#          off an attempt that never happened passes vacuously. The prompt pins the fix - assert the
+#          attempt EXISTS and its Outcome is 'task-preflight-failed' BEFORE asserting the null - but this
+#          census cannot see that, which is why the shape is named here for a reviewer.
+#
+#          The other nine rows are red on today's tree: ActionRun.FromPrompt discards PromptResult.NumTurns,
 #          GuardrailRunner has no stopwatch at all, and nothing constructs an AttemptSegments anywhere -
 #          so any test asserting a turn count or a segment ARRIVED on the journalled record must fail
-#          until tasks 12 and 12a land.
+#          until tasks 12 and 12a land, whichever outcome's record it reads.
 #
 # TWO CLASSES, one file, one census. The turn count and the segment durations are implemented by two
 #          DIFFERENT tasks, each filtering on its own class, so the pinned names are split across
@@ -33,7 +59,7 @@
 #          never `\|`, which dotnet test reads as a literal backslash and matches nothing while exiting 0.
 #
 # The prompt<->manifest agreement is NOT mechanically enforced (GR2026 is blind to a hashtable read
-#          through Where-Object). The six names below were read side by side with this task's
+#          through Where-Object). The twelve names below were read side by side with this task's
 #          action.prompt.md tables, which pin each one VERBATIM.
 #
 # Culture pin: this census reads the TRX (schema tokens, NOT localized), so the guard does not depend on
@@ -50,14 +76,24 @@ $filter = '(FullyQualifiedName~AttemptTurnsTests|FullyQualifiedName~AttemptSegme
 
 # THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
 $manifest = [ordered]@{
+    # --- class AttemptTurnsTests (task 12 filters on this class alone) ---------------------------------
     'a prompt action turn count reaches the attempt record'      = 'APromptActionsTurnCount_ReachesTheAttemptRecord'
     'a failed attempt still records its turn count'              = 'AFailedAttempt_StillRecordsItsTurnCount'
+    'a needs-human attempt still records its turn count'         = 'ANeedsHumanAttempt_StillRecordsItsTurnCount'
+    'a permission-wall attempt still records its turn count'     = 'APermissionWallAttempt_StillRecordsItsTurnCount'
+    # --- class AttemptSegmentsTests (task 12a filters on this class alone) -----------------------------
     'the action elapsed time reaches the attempt segments'       = 'TheActionsElapsedTime_ReachesTheAttemptSegments'
     'the guardrail elapsed time reaches the attempt segments'    = 'TheGuardrailsElapsedTime_ReachesTheAttemptSegments'
     'a failed attempt still records both segments'               = 'AFailedAttempt_StillRecordsItsSegments'
-    # DECLARED EXEMPTION - see this file's header. Nothing sets Turns today, so a script attempt's null is
-    # already true and a CORRECT test is green. Assert it RAN, never that it failed.
+    'a needs-human attempt still records its action segment'     = 'ANeedsHumanAttempt_StillRecordsItsActionSegment'
+    'a permission-wall attempt still records its action segment' = 'APermissionWallAttempt_StillRecordsItsActionSegment'
+    # --- the three DELIBERATE-NULL rows - see this file's header -----------------------------------
+    # Nothing sets Turns or Segments today, so these nulls are already true and a CORRECT test is green.
+    # Assert each RAN, never that it failed. They bind the honest-null half of the contract, without which
+    # tasks 12/12a could satisfy every green check by defaulting the uninstructed recorders to 0.
     'a script action records no turn count (null, never 0)'      = @{ Name = 'AScriptAction_RecordsNoTurnCount'; Expect = 'Executed' }
+    'a task-preflight failure records no turn count'             = @{ Name = 'ATaskPreflightFailure_RecordsNoTurnCount'; Expect = 'Executed' }
+    'a task-preflight failure records no segments at all'        = @{ Name = 'ATaskPreflightFailure_RecordsNoSegments'; Expect = 'Executed' }
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"

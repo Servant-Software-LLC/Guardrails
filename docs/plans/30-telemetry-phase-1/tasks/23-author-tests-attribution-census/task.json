@@ -6,9 +6,11 @@
   "stableId": "p30t23",
   "writeScope": [
     "tests/Guardrails.Core.Tests/Telemetry/AttributionCensusTests.cs",
-    "src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs"
+    "src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs",
+    "tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs"
   ],
   "action": {
-    "tier": "hard"
+    "tier": "hard",
+    "maxTurns": 75
   }
 }

@@ -87,8 +87,13 @@ Your call site is at run START, where this instance's document IS current — bu
 siblings are written anyway. The next person to move the call site is not going to re-derive the
 argument.
 
-**This is the only change you make to this file.** `06-journal-the-bucket-serial` widened three
-recorders in it before this task ran; read what it did, do not undo it, and do not tidy anything.
+**This is the only change you make to this file.** TWO tasks edit `RunJournal.cs` before this one, and
+this task now `dependsOn` both so that all three writers are strictly ordered rather than concurrent:
+`06-journal-the-bucket-serial` widened three recorders in it, and
+`16-carry-phase1-facts-through-the-worktree-settle` reworked the explicit-interface forwarder when
+`ISchedulerJournal.RecordSettleWithAttempt` grew its optional `bucket` parameter. **Read what both did
+before you write a line.** You are adding a recorder on top of a signature that has stopped moving — do
+not undo either change, and do not tidy anything.
 
 ### 3. Call it once, where the run journal is created — `src/Guardrails.Cli/Commands/RunCommand.cs`
 
@@ -132,10 +137,23 @@ that. The probe stays in Core and the CLI supplies what only the CLI knows.
 **Once per run.** The record describes the machine and the run, not the attempt. Do not stamp it per
 task, per attempt or per wave.
 
+**The ordering above is OBSERVED, not merely described.**
+`17-author-tests-run-environment` also authored
+`tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs`, one `[Fact]` named
+`AfterARealRun_RunJsonCarriesANonNullEnvironmentHost`. It drives a real `guardrails run` through
+`CommandFactory.BuildRootCommand` and then reads `state/run.json` **back off disk** with
+`JournalReader.Read(RunJournal.PathFor(planDir))`, requiring a non-null `Environment` whose `Host` is
+non-empty. That is exactly the "silently lost" failure above: get the stamp on the wrong side of the
+second `RunJournal.LoadOrCreate` and the Core probe tests still pass while this one goes red. Your
+guardrail runs it, in its own project. **The file is outside your `writeScope`** — read it, do not
+edit it.
+
 ## Do not do these
 
-- **Do NOT edit the tests.** `tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs` is outside
-  this task's writeScope; an edit there fails the write-scope check and burns a retry. If a test is
+- **Do NOT edit the tests.** BOTH
+  `tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs` and
+  `tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs` are outside this task's
+  writeScope; an edit to either fails the write-scope check and burns a retry. If a test is
   genuinely wrong, write `{"needsHuman": {"question": "<why>", "kind": "blocked-work"}}` to the
   state-out path.
 - **Do NOT change `Probe`'s signature.** A pinned test asserts the concurrency it records is the one it

@@ -82,7 +82,7 @@ which makes this record their only route to `run.json`", which is the register `
 **do not add a second one.** `ActionRun.Turns` is the hop where it currently DIES:
 `ActionRun.FromPrompt` (`ActionRunner.cs:504-539`) copies `CostUsd`, `Usage` and `ObservedModel` and
 drops `NumTurns` on the floor. Adding the member is this task; making `FromPrompt` copy into it is
-task `12-record-turns-and-segments-serial`.
+task `12-record-the-turn-count`.
 
 **Do NOT set any of these members at any construction site.** This task widens the SHAPE only:
 `FromPrompt`, `FromScript`, `ValidateFragmentForSettle`, `GuardrailRunner.RunAsync` and every other

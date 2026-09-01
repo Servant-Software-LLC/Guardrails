@@ -9,7 +9,7 @@
     "src/Guardrails.Core/Execution/AttemptJournaler.cs"
   ],
   "action": {
-    "tier": "medium",
+    "tier": "hard",
     "maxTurns": 75
   }
 }

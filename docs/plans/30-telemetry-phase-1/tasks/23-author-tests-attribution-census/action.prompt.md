@@ -51,7 +51,16 @@ If while writing these tests you find the exact site where attribution is being 
 
 ## Task
 
-Author **two** files, and only these two.
+Author **three** files, and only these three: the stub, the Core tests, and the Integration tests for
+the CLI verb `24-implement-the-attribution-census` will register.
+
+**Why the Integration class is authored HERE and not by task 24.** Task 24 writes the `telemetry
+census` verb. A test authored by the same task that writes the thing it tests has no red half — nothing
+ever observes it failing, so a hollow assertion (`exit == 0`, or an output check that passes over an
+empty string) is indistinguishable from a real one, and the file is not write-scope protected against
+the task that could most cheaply weaken it. So you author it red, and task 24 makes it green without
+being able to touch it. Both of your test classes are censused RED by this task's own guardrail, each
+in its own project.
 
 ### 1. `src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs` — the minimal stub
 
@@ -159,7 +168,10 @@ shape). Be fault-tolerant the same way `TryIngestPlanFolder` is — it catches e
 rather than aborting the scan. **Do not catch bare `Exception`**: the point of that narrow filter is
 that a bug in the census still throws.
 
-### How every test must be written
+### How every test in THIS file must be written
+
+(The Integration pair in section 3 drives the CLI instead of calling `Census` directly; its own rule is
+stated there.)
 
 Every test must **invoke `TelemetryAttributionCensus.Census` and assert on its return value.** A test
 that builds a fixture and asserts something about the fixture without calling `Census` is hollow: it
@@ -175,15 +187,68 @@ on disk, and a fake would let the implementation pass while the real directory w
 intentional; not compiling is a mistake to fix. All seven fail: the stub throws unconditionally, so
 there are no exemptions in this pair.
 
-**Do NOT write the CLI verb or an Integration test here.** `telemetry census` and
-`tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs` belong to task 24 and are
-outside your `writeScope`.
+### 3. `tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs` — the failing CLI tests
+
+Class **`TelemetryCensusCommandTests`**, `public sealed`, in namespace
+`Guardrails.Integration.Tests.Commands`, carrying `[Trait("Category", "ModelEvidence")]`, with exactly
+two `[Fact]`s under **exactly these names** (both this task's guardrail and task 24's bind to them):
+
+| behaviour | test method name (VERBATIM) |
+|---|---|
+| `telemetry census` is reachable through the REAL root command the shipped binary builds | `TelemetryVerbCensus_IsReachableFromTheCommandFactory` |
+| the verb prints the three-way split over a real plan folder on disk | `Census_PrintsTheThreeWaySplit` |
+
+`tests/Guardrails.Integration.Tests/Commands/TelemetryCommandWiringTests.cs` is the exact precedent, and
+it is a sibling in the same folder — read it first. It invokes through `CommandFactory.BuildRootCommand`
+— **the real root `Program.cs` builds, not a hand-built one** — because a registration that never
+reaches the shipped root leaves the binary without the verb while a source grep still passes. Copy that
+shape, and pass literal argv tokens (`"telemetry", "census", <folder>`) so the test compiles against
+today's tree with no `census` symbol in it.
+
+**Why both are RED here, and it is not the same reason as the Core seven.** The Core tests are red
+because `Census` throws. These two are red because **`telemetry census` is not a registered verb yet** —
+task 24 registers it — so the real root command cannot reach it and cannot print anything. Both are red
+at RUN time, not at compile time: nothing in this file names a type that does not exist yet.
+
+**Build the fixture on disk, the same way section 2's tests do** — `state/run.json` written through
+`JournalJson.Options`, plus `tasks/<id>/task.json` and a real action file beside it. Do NOT drive a real
+`guardrails run` to produce it: the census's subject is what is on disk, and a run would make this test
+depend on the whole harness to prove one verb prints one table.
+
+`TelemetryCorpusIsolation` is a `[ModuleInitializer]` covering the whole Integration assembly, so
+nothing here has to opt in to corpus isolation; it is already in force. That is not a licence to touch
+the corpus — the census reads plan folders and no corpus at all.
+
+#### `Census_PrintsTheThreeWaySplit` pins a CONTRACT, not a wording — and here is where the line is
+
+You are authoring this test before the rendering exists, so it must constrain what task 24 has to
+PRINT without dictating how task 24 words it. Draw the line like this:
+
+- **Compose the fixture so the four numbers are all DIFFERENT** — for instance 1 task-grain row, 2
+  script-action rows and 3 recording-gap rows, giving a total of 6. This is the load-bearing half: with
+  distinct numbers, a verb that prints one aggregate figure three times, or prints the total in place of
+  a category, FAILS. With 1/1/1 fixtures it would pass, and the test would certify nothing.
+- **Assert each of the four numbers appears in the output, and appears next to a label naming its
+  category** — match the label case-INSENSITIVELY and on a stem the census's own vocabulary already
+  uses (`task-grain`, `script`, `recording gap`), never on a full sentence. Say in a comment that the
+  stems are the contract and the surrounding prose is task 24's to choose.
+- **Do NOT assert on column widths, ordering, punctuation, colour, or a banner line.** Those are
+  task 24's rendering decisions, and pinning them here would be exactly the mistake section 5 warns
+  about from the other direction.
+
+Say all of that in the class doc, so the next reader knows which assertions are the contract and which
+would be over-reach.
+
+**Do NOT write the CLI verb here.** `src/Guardrails.Cli/Commands/TelemetryCommand.cs` belongs to task 24
+and is outside your `writeScope`; an edit to it fails the write-scope check and burns a retry. You
+author the tests that the verb must satisfy — not the verb.
 
 **Scope boundary (harness-enforced):** Write only to
-`tests/Guardrails.Core.Tests/Telemetry/AttributionCensusTests.cs` and
-`src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs` (the stub file). After this task
+`tests/Guardrails.Core.Tests/Telemetry/AttributionCensusTests.cs`,
+`src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs` (the stub file) and
+`tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs`. After this task
 completes, the harness runs a `git diff` check and rejects any edit outside these paths — including
-changes to other production files, neighbouring test files, `TelemetryIngest.cs`, `TelemetryRow.cs`, or
-the `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a
-compile error caused by a missing symbol in another file, do NOT edit that file — write
-`{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+changes to other production files, `TelemetryCommand.cs`, neighbouring test files, `TelemetryIngest.cs`,
+`TelemetryRow.cs`, or any `.csproj`. An out-of-scope edit fails the task immediately and consumes a
+retry. If you hit a compile error caused by a missing symbol in another file, do NOT edit that file —
+write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.

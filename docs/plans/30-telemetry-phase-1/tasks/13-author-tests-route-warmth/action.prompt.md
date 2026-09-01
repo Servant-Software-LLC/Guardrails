@@ -86,9 +86,10 @@ that is a mistake to fix, not the intended TDD red.
 ## Where the value will come from (authoring-time state — verify it before you rely on it)
 
 Everything in this section describes the tree **as it stood when this prompt was written**. Tasks
-`10-fold-the-digest-into-the-provenance` and `12-record-turns-and-segments-serial` both edit
-`TaskExecutor.cs` before this task runs, so **grep for the markers named here; never trust a line
-number, and re-read what you find before asserting on it.**
+`10-fold-the-digest-into-the-provenance`, `12-record-the-turn-count` and
+`12a-segment-the-attempt-durations` all edit `TaskExecutor.cs`, and any of them may land before this
+task runs, so **grep for the markers named here; never trust a line number, and re-read what you find
+before asserting on it.**
 
 - **`TaskExecutor.BuildProvenance`** — grep for `BuildProvenance(`. A `private` instance method on
   `TaskExecutor` with the signature

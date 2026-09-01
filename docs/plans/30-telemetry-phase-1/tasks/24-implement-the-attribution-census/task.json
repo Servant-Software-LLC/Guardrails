@@ -7,8 +7,7 @@
   "stableId": "p30t24",
   "writeScope": [
     "src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs",
-    "src/Guardrails.Cli/Commands/TelemetryCommand.cs",
-    "tests/Guardrails.Integration.Tests/Commands/TelemetryCensusCommandTests.cs"
+    "src/Guardrails.Cli/Commands/TelemetryCommand.cs"
   ],
   "action": {
     "tier": "hard",

@@ -43,7 +43,16 @@ which is why the member is named `TotalMemoryBytes` rather than anything more sp
 
 ## Task
 
-Author **two** files, and only these two.
+Author **three** files, and only these three: the stub, the Core tests for the probe, and one
+Integration test that the record the probe produces actually **survives to `state/run.json`**.
+
+**Why the third file exists.** The probe is one hop of three. Seven of this plan's thirteen new facts
+cross `probe -> RunJournal -> run.json`, and the Core tests in section 2 stop at the first hop: they
+prove the probe returns the right record, and would keep passing if nothing ever persisted it.
+`18-record-the-run-environment`'s own prompt names the failure exactly — *"a stamp placed the other way
+round would be silently lost"*, because `RunJournal.LoadOrCreate` is called at two independent sites on
+a real run and the second overwrites a document written before the stamp. Nothing observes that today.
+Section 3 is the observation.
 
 ### 1. `src/Guardrails.Core/Journal/RunEnvironmentProbe.cs` — the minimal stub
 
@@ -129,7 +138,7 @@ null" is a real behaviour, not a defensive nicety. Assert both directions in the
 passed in comes back on the record, and a `null` passed in comes back as `null` — never as an empty
 string and never as a fabricated default.
 
-### All four tests must be RED, and there are no exemptions
+### All four of THESE tests must be RED, and there are no exemptions
 
 The stub throws `NotImplementedException` unconditionally, so **every honest test here fails**. Every
 test must actually **call `RunEnvironmentProbe.Probe` and assert on the record it returns**. A test
@@ -143,13 +152,66 @@ Nothing in this repo reads `Environment.MachineName`, `Environment.ProcessorCoun
 `Environment.OSVersion` or `GC.GetGCMemoryInfo()` today — a repo-wide grep returns zero hits — so there
 is no house style for you to match here, and no existing helper to reuse. Do not go looking for one.
 
+### 3. `tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs` — the round-trip test
+
+Class **`RunEnvironmentJournalTests`**, `public sealed`, in namespace
+`Guardrails.Integration.Tests.Journal` (the namespace its sibling
+`tests/Guardrails.Integration.Tests/Journal/DeliveryRecordTests.cs` already uses), carrying
+`[Trait("Category", "ModelEvidence")]`, with exactly ONE `[Fact]` under **exactly this name** — this
+task's guardrail and task 18's both bind to it:
+
+| behaviour | test method name (VERBATIM) |
+|---|---|
+| after a real run, the plan's `state/run.json` carries a non-null `environment.host` | `AfterARealRun_RunJsonCarriesANonNullEnvironmentHost` |
+
+**Model it on `tests/Guardrails.Integration.Tests/RunEndTelemetryIngestTests.cs`** — note the path: that
+file sits at the ROOT of the Integration project, not under `Commands/`. **Read it before you write
+anything.** It already does every mechanical thing you need:
+
+- builds a throwaway plan with `ScriptPlanBuilder` (`using var plan = new ScriptPlanBuilder().AddTask("01-a");`),
+- drives a REAL run through `CommandFactory.BuildRootCommand(io)` — the actual composition root
+  `Program.cs` builds, never a hand-built one — with `"run", plan.PlanDir, "--no-ui", "--no-log-server"`,
+- and reads the journal back **off disk** afterwards with
+  `JournalReader.Read(RunJournal.PathFor(plan.PlanDir))` (its private `RunId` helper is exactly that
+  one line — copy the idiom, not the helper).
+
+Corpus isolation is already in force and you must not opt in to it by hand:
+`tests/Guardrails.Integration.Tests/TelemetryCorpusIsolation.cs` is a `[ModuleInitializer]` covering the
+whole assembly, so a real run started here writes its telemetry to a per-process temp corpus and never
+to the operator's `~/.guardrails/telemetry/`. Do not set `GUARDRAILS_TELEMETRY_CORPUS_ROOT` yourself and
+do not disable collection.
+
+**What the test asserts, and the order matters:**
+
+1. the run exits `ExitCodes.Success` — a BASELINE, not the point (it is already true today);
+2. **the load-bearing assertion:** the document read back from `state/run.json` has a **non-null
+   `Environment`** whose **`Host` is non-null and non-empty**.
+
+**Read it back from the FILE.** Never assert against a `RunJournal` instance the test is holding, a
+`JournalDocument` it built, or a `RunEnvironment` it constructed — any of those would pass while
+`state/run.json` on disk carried nothing, which is the precise failure this test exists to observe.
+`JournalReader.Read` deserializes the file, so a value that never got serialized comes back null.
+
+**Why it is RED today, and why that reason is different from the four above.** The Core tests are red
+because `Probe` throws. This one is red because **nothing stamps the environment onto the journal at
+all** — `18-record-the-run-environment` adds the recorder and the call site. So a real run completes
+normally, `state/run.json` is written, and its `Environment` is null. Compiling is required: `Environment`
+is a member `03-extend-the-journal-record-shape` already added to `JournalDocument`, so nothing here
+names a type that does not exist.
+
+**The hollow shape this one invites, named so you avoid it:** asserting only that the run exited zero,
+or only that `state/run.json` exists. Both are already true on this tree, both read as coverage, and
+both would let task 18 stamp the environment in the wrong order — the "silently lost" failure its own
+prompt describes — without anything going red. The `Host` assertion is the entire value of the test.
+
 **Scope boundary (harness-enforced):** Write only to
-`tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs` and
-`src/Guardrails.Core/Journal/RunEnvironmentProbe.cs` (the stub file). After this task completes, the
-harness runs a `git diff` check and rejects any edit outside these paths — including changes to
-other production files (notably `JournalModel.cs`, which belongs to task 03), neighbouring test files,
-or the `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a
-compile error caused by a missing symbol in another file — for instance if `RunEnvironment` does not
-carry a member you expected — do NOT edit that file: write
-`{"needsHuman": {"question": "<what is missing>", "kind": "blocked-work"}}` to the state-out path and
-stop.
+`tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs`,
+`src/Guardrails.Core/Journal/RunEnvironmentProbe.cs` (the stub file) and
+`tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs`. After this task completes,
+the harness runs a `git diff` check and rejects any edit outside these paths — including changes to
+other production files (notably `JournalModel.cs`, which belongs to task 03, and `RunJournal.cs` /
+`RunCommand.cs`, which belong to task 18), neighbouring test files, or any `.csproj`. An out-of-scope
+edit fails the task immediately and consumes a retry. If you hit a compile error caused by a missing
+symbol in another file — for instance if `RunEnvironment` does not carry a member you expected — do NOT
+edit that file: write `{"needsHuman": {"question": "<what is missing>", "kind": "blocked-work"}}` to the
+state-out path and stop.

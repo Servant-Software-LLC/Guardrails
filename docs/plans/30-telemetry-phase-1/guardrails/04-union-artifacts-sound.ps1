@@ -31,7 +31,7 @@
 #            src/Guardrails.Core/Execution/GuardrailRunner.cs             - tasks 04, 12a
 #            src/Guardrails.Core/Execution/AttemptJournaler.cs            - tasks 06, 12, 12a, 16
 #            src/Guardrails.Core/Execution/TaskExecutor.cs                - tasks 10, 12, 12a, 14
-#            src/Guardrails.Core/Journal/RunJournal.cs                    - tasks 06, 18
+#            src/Guardrails.Core/Journal/RunJournal.cs                    - tasks 06, 16, 18
 #            src/Guardrails.Cli/Commands/TelemetryCommand.cs              - tasks 22, 24
 #            src/Guardrails.Core/Telemetry/TelemetryAttributionCensus.cs  - tasks 23, 24
 #          Every later writer's segment base therefore already contains the earlier writer's merged
@@ -39,8 +39,8 @@
 #          is caught by 01-solution-builds, whose failure line names these files first.
 #
 # Baseline note (#478): the "if present" half of a union-safe conditional is EXPECTED to be nonzero on
-#          arrival. Of the 34 paths below, the 17 shipped ones exist and are non-empty and marker-free
-#          today; the 17 this plan CREATES take the `continue` branch until their task integrates.
+#          arrival. Of the 36 paths below, the 18 shipped ones exist and are non-empty and marker-free
+#          today; the 18 this plan CREATES take the `continue` branch until their task integrates.
 #          Nonzero-on-arrival is the NAMED reason this clause is exempt from the zero-baseline rule.
 $ErrorActionPreference = 'Continue'
 
@@ -48,8 +48,8 @@ $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
 # Every path any task in this plan writes, derived MECHANICALLY from the twenty-six writeScopes by
-# reading each task.json - not transcribed by hand. 34 distinct paths: 17 already exist on master and
-# 17 are created by this plan (those take the `continue` branch until their task integrates).
+# reading each task.json - not transcribed by hand. 36 distinct paths: 18 already exist on master and
+# 18 are created by this plan (those take the `continue` branch until their task integrates).
 $paths = @(
     'tests/Guardrails.Core.Tests/Telemetry/TaskFingerprintBucketTests.cs',
     'src/Guardrails.Core/Telemetry/TaskFingerprintBucket.cs',
@@ -70,10 +70,12 @@ $paths = @(
     'tests/Guardrails.Core.Tests/Execution/WorktreeSettlePhase1Tests.cs',
     'src/Guardrails.Core/Execution/RunReport.cs',
     'tests/Guardrails.Core.Tests/Execution/TransportShapeTests.cs',
+    'src/Guardrails.Core/Execution/ISchedulerJournal.cs',
     'src/Guardrails.Core/Execution/Scheduler.cs',
     'tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs',
     'src/Guardrails.Core/Journal/RunEnvironmentProbe.cs',
     'src/Guardrails.Cli/Commands/RunCommand.cs',
+    'tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs',
     'tests/Guardrails.Core.Tests/Telemetry/CorpusRowShapeTests.cs',
     'tests/Guardrails.Core.Tests/Telemetry/Phase1TelemetryRowTests.cs',
     'src/Guardrails.Core/Telemetry/TelemetryRow.cs',

@@ -1,14 +1,16 @@
 {
-  "description": "Author the failing Core tests for the run-environment record - host, OS, CPU count, physical memory, effective concurrency and the harness and skill versions - probed once per run",
+  "description": "Author the failing tests for the run-environment record - host, OS, CPU count, physical memory, effective concurrency and the harness and skill versions - probed once per run, plus the Integration test that the record survives the probe -> RunJournal -> run.json round trip",
   "dependsOn": [
     "03-extend-the-journal-record-shape"
   ],
   "stableId": "p30t17",
   "writeScope": [
     "tests/Guardrails.Core.Tests/Journal/RunEnvironmentTests.cs",
-    "src/Guardrails.Core/Journal/RunEnvironmentProbe.cs"
+    "src/Guardrails.Core/Journal/RunEnvironmentProbe.cs",
+    "tests/Guardrails.Integration.Tests/Journal/RunEnvironmentJournalTests.cs"
   ],
   "action": {
-    "tier": "medium"
+    "tier": "medium",
+    "maxTurns": 75
   }
 }
