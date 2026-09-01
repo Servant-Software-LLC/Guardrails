@@ -62,7 +62,25 @@ other honesty rule is working, which is exactly what makes a reader trust the on
 
 ## 3. Scope
 
-### 3.1 Provenance on failed attempts (#532) — the only item that blocks the others
+### 3.1 Provenance on failed attempts (#532) — SHIPPED 2026-09-01
+
+> **STATUS: DONE, and its own acceptance test is met.** Merged as `3129919` *("a failed attempt now
+> says which model it was billed on")*. This section is kept as the record of what was asked and why,
+> not as remaining work.
+>
+> **The acceptance below was "the report changing, not the field appearing" — verified against the
+> live corpus:** 48 failed rows now carry provenance where **zero** did before. Counted 2026-09-01
+> over 587 rows.
+>
+> **One residue the acceptance did not cover, recorded rather than left to be rediscovered:** the fix
+> is forward-only. 92 older failed rows still carry no provenance, so any analysis over the *full*
+> corpus history remains skewed unless filtered by date or tool version. Deciding what to do about
+> the pre-fix era — backfill, re-baseline, or a documented boundary — belongs with #577, which owns
+> the wider model-attribution gap.
+>
+> #532 itself stays OPEN for a **different** gap (the harness-write disposition), which was never
+> what this section was about.
+
 
 Journal `provenance` on **every** attempt record, not only succeeded ones. The route resolves at
 `TaskExecutor.cs:648-654`, **before the action runs**, so it is known for a failed attempt exactly as
