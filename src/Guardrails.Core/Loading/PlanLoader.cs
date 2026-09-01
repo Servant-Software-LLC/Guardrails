@@ -818,7 +818,15 @@ public sealed class PlanLoader
                 Directory = path,
                 Tasks = waveTasks,
                 Preflights = LoadGuardrailsFromFolder(Path.Combine(path, PreflightsDirName), diagnostics, enforceCatches: true),
-                Guardrails = LoadGuardrailsFromFolder(Path.Combine(path, GuardrailsDirName), diagnostics, enforceCatches: true)
+                Guardrails = LoadGuardrailsFromFolder(Path.Combine(path, GuardrailsDirName), diagnostics, enforceCatches: true),
+
+                // Plan 32-executed-definition-hash §5.4: the wave twin of the task-level pin below, taken
+                // EAGERLY here — the wave's own gate folders and optional brief as they are RIGHT NOW, from
+                // the same read the tasks above were built from. Write site W5 (the wave-completion stamp)
+                // folds this with each task's capture; nothing recomputes it from disk later. Unlike the
+                // task pin this needs no post-construction `with`, because the gate surface is addressed by
+                // the wave DIRECTORY and nothing on the node.
+                DefinitionHashAtLoad = WaveDefinitionHash.GateDefinitionOf(path)
             });
         }
 
