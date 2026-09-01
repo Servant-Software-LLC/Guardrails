@@ -234,7 +234,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordAttempt(
         string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
-        string? definitionHash = null, string? definitionHashAtSettle = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -249,7 +249,12 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2: the task-fingerprint bucket, same null-preserves-prior-value rule as the
+                // hashes above. The bucket is TASK grain — both its inputs (writeScope, guardrail
+                // archetypes) are constant across a task's own retries — so a later call passing nothing
+                // must never CLEAR what an earlier attempt of the same task recorded.
+                Bucket = bucket ?? entry.Bucket
             };
 
             UpdateTask(taskId, updated);
@@ -287,7 +292,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordSettle(
         string taskId, TaskStatus status, long? mergeSequence = null, string? definitionHash = null,
-        string? definitionHashAtSettle = null)
+        string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -297,7 +302,9 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Status = status,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2 — see RecordAttempt: null preserves the prior bucket, never clears it.
+                Bucket = bucket ?? entry.Bucket
             };
             UpdateTask(taskId, updated);
 
@@ -321,6 +328,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// forwarder, every Scheduler call would silently dispatch to the interface's NO-OP default instead of the
     /// real implementation above. Widening the interface itself belongs to the task that wires a caller to
     /// actually pass <c>definitionHashAtSettle</c> (plan 32 §6.3/§15); until then this keeps dispatch correct.
+    /// Plan 30 §3.2's optional <c>bucket</c> parameter widened the public overload again for the same
+    /// reason and is covered by the same forwarder — every parameter it does not name simply defaults.
     /// </summary>
     void Execution.ISchedulerJournal.RecordSettle(
         string taskId, TaskStatus status, long? mergeSequence, string? definitionHash) =>
@@ -337,7 +346,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordSettleWithAttempt(
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
-        string? definitionHash = null, string? definitionHashAtSettle = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null, string? bucket = null)
     {
         lock (_gate)
         {
@@ -350,7 +359,9 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Attempts = attempts,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
-                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
+                // Plan 30 §3.2 — see RecordAttempt: null preserves the prior bucket, never clears it.
+                Bucket = bucket ?? entry.Bucket
             };
             UpdateTask(taskId, updated);
 

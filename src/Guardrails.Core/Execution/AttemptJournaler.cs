@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
+using Guardrails.Core.Telemetry;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Core.Execution;
@@ -26,6 +27,25 @@ internal sealed class AttemptJournaler
         _stateManager = stateManager;
         _journal = journal;
     }
+
+    /// <summary>
+    /// Plan 30 §3.2: the task's fingerprint bucket, derived from the two structural facts the task
+    /// already carries — its <c>writeScope</c> roots and its guardrail archetypes — and NEVER from its
+    /// name (<see cref="TaskFingerprintBucket.Classify"/> is handed no task identity at all, so the
+    /// report legend's "a bucket is a fact about a task, never one read off its name" is a compile-time
+    /// property rather than a convention).
+    /// <para>
+    /// Every journal call below stamps it, INCLUDING every failure path — not just the succeeded settle.
+    /// §2 measured that provenance landing on successes alone made each stratum read 100% first-pass by
+    /// construction, which is survivorship rather than a measurement; a bucket populated only on success
+    /// would reproduce that defect one grain down, hiding a hard bucket's failures from the bucket
+    /// itself. <c>null</c> (an off-switch <c>writeScope</c>, or a write surface no rule matches) is a
+    /// legitimate result and is passed through unchanged — the corpus reader renders it
+    /// <c>(unbucketed)</c>.
+    /// </para>
+    /// </summary>
+    private static string? BucketFor(TaskNode task) =>
+        TaskFingerprintBucket.Classify(task.WriteScope, task.Guardrails);
 
     public AttemptResult CompleteSucceededOrInvalidFragment(
         TaskNode task,
@@ -89,7 +109,8 @@ internal sealed class AttemptJournaler
         // later resume compares the current definition against it and halts on drift instead of skipping.
         // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
-            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad);
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
+            bucket: BucketFor(task));
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can
@@ -275,7 +296,9 @@ internal sealed class AttemptJournaler
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
+        _journal.RecordAttempt(
+            task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
+            bucket: BucketFor(task));
 
         return new AttemptResult(result, feedbackPath, Outcome: outcome);
     }
@@ -343,7 +366,7 @@ internal sealed class AttemptJournaler
             // have exactly one (TaskExecutor: "One resolution, two consumers").
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -412,7 +435,7 @@ internal sealed class AttemptJournaler
             // hand-builds a kind cannot write an unrecognised token into run.json.
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -484,7 +507,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir,
             Provenance = provenance
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -534,7 +557,7 @@ internal sealed class AttemptJournaler
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -590,7 +613,7 @@ internal sealed class AttemptJournaler
             Provenance = provenance,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -654,7 +677,7 @@ internal sealed class AttemptJournaler
             // billed. A route here would name a model that did nothing.
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
@@ -691,7 +714,7 @@ internal sealed class AttemptJournaler
         };
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending);
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending, bucket: BucketFor(task));
 
         return new AttemptResult(new TaskResult
         {
