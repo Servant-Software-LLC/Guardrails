@@ -533,15 +533,30 @@ public static class RunCommand
                     diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
                 }
 
-                bool planGuardrailsPassed = !report.AllSucceeded
-                    || await PlanGuardrailPhase
-                        .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
-                        .ConfigureAwait(false);
+                // Issue #556 (plan 32 §6.5 correction 1) — NOT EVALUATED is a third state, and it is not
+                // "passed". The expression below used to be `!report.AllSucceeded || await EvaluateAsync(…)`,
+                // so every run that never reached the gate recorded that the gate PASSED. For an ordinary
+                // failed run that short-circuit is harmless shorthand — nothing downstream turns on it. For an
+                // executed-definition DIVERGENCE run it is a verdict that never happened, on a run whose every
+                // task settled `succeeded`, in the one change whose whole purpose is that the harness stops
+                // claiming verifications it did not perform. So this is a TRI-STATE: true = passed,
+                // false = failed, null = NOT EVALUATED. Only the divergence case is ever null, so every other
+                // run is byte-identical to before (`is true` / `is false` on a non-null bool? is the bool).
+                // The gate is deliberately not RUN either: evaluating a gate whose result cannot change the
+                // outcome spends real money for a number nobody acts on (§6.5).
+                bool? planGuardrailsPassed = report.HasExecutedDefinitionDivergence
+                    ? null
+                    : !report.AllSucceeded
+                      || await PlanGuardrailPhase
+                          .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
+                          .ConfigureAwait(false);
 
                 if (willEvaluateTerminalGate)
                 {
-                    diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed); // settle the bracket badge
-                    if (planGuardrailsPassed)
+                    // willEvaluateTerminalGate implies report.AllSucceeded, which implies no divergence — so
+                    // the tri-state is never null in here.
+                    diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed is true); // settle the bracket badge
+                    if (planGuardrailsPassed is true)
                     {
                         io.Out.WriteLine("Terminal Gate: passed.");
                     }
@@ -559,7 +574,7 @@ public static class RunCommand
                 // consumer reads: the exit-code mapping for a halted delivery (HookRejected /
                 // DirtyWorkingTree / Conflict), the final static pages, the #340 notices, and the #407
                 // reclaim predicate.
-                if (report.DeliveryPendingTerminalGate && planGuardrailsPassed)
+                if (report.DeliveryPendingTerminalGate && planGuardrailsPassed is true)
                 {
                     report = scheduler.CompleteDeferredDelivery(report, cancellationToken);
                 }
@@ -593,7 +608,7 @@ public static class RunCommand
                 // run ended — including the terminal-gate-failure early return.
                 RenderPlanEditWarning(report, io.Out);
 
-                if (report.AllSucceeded && !planGuardrailsPassed)
+                if (report.AllSucceeded && planGuardrailsPassed is false)
                 {
                     PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
                     return ExitCodes.TaskFailed;
@@ -606,8 +621,12 @@ public static class RunCommand
                 // a journal write must never flip a run's verdict this late.
                 try
                 {
+                    // `is not false` rather than `?? true`: the parameter is consumed as "did the terminal
+                    // gate REFUSE?", and a gate that was never evaluated did not refuse. The divergence run's
+                    // own reason branch inside DescribeDelivery is reached first, so a NOT-EVALUATED gate
+                    // never reaches the terminal-gate wording either way.
                     journal.RecordDelivery(
-                        DescribeDelivery(report, planGuardrailsPassed, probe.Plan.PlanDirectory));
+                        DescribeDelivery(report, planGuardrailsPassed is not false, probe.Plan.PlanDirectory));
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
                 {
@@ -620,7 +639,7 @@ public static class RunCommand
                 // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
                 // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                 // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
-                RenderUndeliveredWorkWarning(report, planGuardrailsPassed, probe.Plan.PlanDirectory, io.Out);
+                RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
 
                 // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
                 // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
@@ -639,7 +658,7 @@ public static class RunCommand
                 // A removes it here for a green-delivered run, and the `junctionLifetime` Dispose (below) is
                 // then a no-op. For a resumable outcome A is skipped and `junctionLifetime` removes just the
                 // link, leaving the root for the resume.
-                bool terminalGreen = WorktreeReclaim.ShouldReclaimOnCompletion(report, planGuardrailsPassed);
+                bool terminalGreen = WorktreeReclaim.ShouldReclaimOnCompletion(report, planGuardrailsPassed is true);
                 if (terminalGreen && worktreeMode && realWorktreeRootForRun is { } completedRoot)
                 {
                     WorktreeReclaim.CleanupCompletedRun(
@@ -904,6 +923,25 @@ public static class RunCommand
         // The "all tasks" static page link at run END (alongside the post-mortem logs pointer).
         PrintStaticIndexLink(logsRoot, io);
 
+        // Issue #556 — the executed-definition divergence halt (plan 32 §6.5). Rendered HERE, in the NORMAL
+        // end-of-run path AFTER the summary, and deliberately NOT at the DefinitionDrift early return above:
+        // that return is correct for drift precisely because nothing ran and no logs were written, whereas a
+        // divergence run EXECUTED EVERY TASK. Returning there would skip WriteDurableFinalSite,
+        // IngestRunTelemetry (#535), PrintSummary and PrintStaticIndexLink — discarding the logs, telemetry
+        // and summary of a run that did the whole plan's work. So this changes only the HEADLINE; the exit
+        // code follows from AllSucceeded's new term (§6.5's consumer table) and lands on ExitCodes.TaskFailed
+        // (2 — actionable/needs-human) below, never 1, which is reserved for infrastructure faults.
+        //
+        // It is placed BEFORE the abort / wave-halt / cancelled branches rather than competing with them:
+        // each of those still prints its own headline last and keeps its own exit code, and the divergence
+        // block is additive on the runs that carry both. The run this plan exists for — every task green,
+        // delivery blocked — reaches none of them, and would otherwise go completely QUIET, since
+        // AllSucceeded going false also suppresses the "*** WORK NOT DELIVERED ***" banner.
+        if (report.ExecutedDefinitionDivergence is { } divergence)
+        {
+            PrintExecutedDefinitionDivergence(divergence, plan, io);
+        }
+
         // Issue #150 — honest halt for an infrastructure fault. The scheduler returned an ABORTED
         // report instead of throwing; render a one-line diagnostic + remedy as the headline, write
         // the FULL exception to the run logs (a dev tool keeps the detail, just not as the headline),
@@ -1158,21 +1196,64 @@ public static class RunCommand
             ? $"rewind the plan branch ({drift.Decision.RemovedCommitCount} commit(s)) and re-run {drift.SafeSet.Count} task(s)"
             : $"reset and re-run {drift.SafeSet.Count} task(s)";
 
+        // Issue #556 (plan 32 §6.6) — [a] is REFUSED for a DIVERGENCE-ORIGINATED drift, and this is the
+        // branch that would otherwise re-create the exact lie #556 is about. [a] calls RecordDriftAccepted,
+        // which OVERWRITES the recorded hash with current disk and does NOT re-run the task; reached from a
+        // divergence halt that leaves the journal saying the task was built against the new definition when
+        // it was built against the old one. It is worse than the original defect, because it also
+        // UN-CORROBORATES the plan branch: the task's commit still carries the old Guardrails-Task-Hash:
+        // trailer while the journal now carries the new hash, so SafeSuffixEvaluator's trailer-corroboration
+        // rule refuses any later Part C rewind covering that task and steers the operator to a full
+        // `guardrails reset -y`.
+        //
+        // The condition needs NO new state: a task whose journal entry carries definitionHashAtSettle (§6.3)
+        // is BY CONSTRUCTION one that ran a definition it does not match, and accepting its current disk hash
+        // is never sound. Computed over drift.Drifted — precisely the entries [a] would re-baseline below.
+        //
+        // [a]'s behaviour for an ORDINARY between-runs edit is UNCHANGED (§12): that trade is already
+        // reviewed and is not this change's to relitigate. So this is a branch AROUND the accept handler for
+        // one class of task, never its removal.
+        string folder = Path.GetFileName(
+            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        List<string> divergenceOriginated = drift.Drifted
+            .Where(d => journal.Document.Tasks.TryGetValue(d.TaskId, out Core.Journal.TaskJournalEntry? entry)
+                        && entry.DefinitionHashAtSettle is not null)
+            .Select(d => d.TaskId)
+            .ToList();
+        bool acceptOffered = divergenceOriginated.Count == 0;
+
         io.Out.WriteLine();
         io.Out.WriteLine($"  [y] {rewind}.");
-        io.Out.WriteLine(
-            $"  [a] ACCEPT the drift and continue: re-baseline the drifted task(s) WITHOUT re-running them, "
-            + $"then finish the {remaining} task(s) that remain.");
-        io.Out.WriteLine(
-            "      The delivered artifact then predates its own definition - a real trade, recorded in");
-        io.Out.WriteLine(
-            "      decisions[] and named in the run report, because nothing else would show it afterwards.");
+        if (acceptOffered)
+        {
+            io.Out.WriteLine(
+                $"  [a] ACCEPT the drift and continue: re-baseline the drifted task(s) WITHOUT re-running them, "
+                + $"then finish the {remaining} task(s) that remain.");
+            io.Out.WriteLine(
+                "      The delivered artifact then predates its own definition - a real trade, recorded in");
+            io.Out.WriteLine(
+                "      decisions[] and named in the run report, because nothing else would show it afterwards.");
+        }
+        else
+        {
+            io.Out.WriteLine(
+                $"  [a] is NOT offered here. {divergenceOriginated.Count} of these task(s) settled against a definition that had");
+            io.Out.WriteLine(
+                "      ALREADY moved during their own run, so accepting the current hash would record a");
+            io.Out.WriteLine(
+                "      verification that never happened - and would leave their plan-branch trailer");
+            io.Out.WriteLine(
+                "      uncorroborated, so a later scoped rewind refuses and only a full reset gets you out.");
+            io.Out.WriteLine(
+                $"      Re-run them instead:  guardrails reset {folder} {string.Join(" ", divergenceOriginated)}");
+        }
+
         io.Out.WriteLine("  [N] abort - change nothing and stop.");
-        io.Out.Write("Choose [y/a/N] ");
+        io.Out.Write(acceptOffered ? "Choose [y/a/N] " : "Choose [y/N] ");
 
         string answer = (Console.ReadLine() ?? "").Trim();
 
-        if (answer.Equals("a", StringComparison.OrdinalIgnoreCase))
+        if (acceptOffered && answer.Equals("a", StringComparison.OrdinalIgnoreCase))
         {
             foreach (DefinitionDriftProbe.DriftedEntry d in drift.Drifted)
             {
@@ -1209,10 +1290,32 @@ public static class RunCommand
             // only way forward is a BYTE-EXACT restore. Say that, because a semantic revert hits this same
             // halt and looks like the harness ignoring the fix.
             io.Out.WriteLine();
+            if (!acceptOffered && answer.Equals("a", StringComparison.OrdinalIgnoreCase))
+            {
+                // The operator typed the option that was withdrawn above. Say so, rather than letting the
+                // generic abort read as if the keystroke was simply not understood (#556 §6.6).
+                io.Out.WriteLine(
+                    "[a] was refused: re-baselining a task that settled against a definition it does not match");
+                io.Out.WriteLine(
+                    "would record a verification that never happened.");
+            }
+
             io.Out.WriteLine("Aborted — nothing was changed (definition-drift halt, SSOT §7.2).");
             io.Out.WriteLine("  This run CANNOT resume while the drifted definition(s) differ. To get moving:");
-            io.Out.WriteLine(
-                "    - re-run and answer [a] to accept the drift and finish the remaining task(s); or");
+            if (acceptOffered)
+            {
+                io.Out.WriteLine(
+                    "    - re-run and answer [a] to accept the drift and finish the remaining task(s); or");
+            }
+            else
+            {
+                // Do not advertise a route that was just refused above (#556 §6.6).
+                io.Out.WriteLine(
+                    $"    - guardrails reset {folder} {string.Join(" ", divergenceOriginated)} — re-run the task(s) that settled");
+                io.Out.WriteLine(
+                    "      against a definition that had already moved; or");
+            }
+
             io.Out.WriteLine(
                 "    - re-run and answer [y] to rewind and rebuild the re-run set; or");
             io.Out.WriteLine(
@@ -1509,6 +1612,85 @@ public static class RunCommand
         }
     }
 
+    /// <summary>
+    /// Render the issue #556 executed-definition divergence halt (plan 32 §6.5/§9): one or more tasks
+    /// SETTLED against a definition that had already moved on disk, so the run is green on every task and
+    /// still must not deliver.
+    ///
+    /// <para><b>It names all three facts an operator needs</b>, because this is the one place a half-true
+    /// message actively misleads: (1) WHICH definition files moved — the gate's own map diff, not a
+    /// re-derivation; (2) that the attempt ran the <b>pinned</b> bytes, the ones its guardrails actually
+    /// verified, so the journal records no verification that did not happen; and (3) that <c>task.json</c> and
+    /// the DAG are held from LOAD for the whole run while action prompts and guardrail scripts are RE-READ per
+    /// attempt — the asymmetry that makes "your edit was ignored" false.</para>
+    ///
+    /// <para><b>It carries no remediation vocabulary of its own.</b> §6.6: <i>"C is A's finding delivered one
+    /// run earlier"</i> — the next run's §7.2 drift pre-pass halts on exactly this task set with exactly these
+    /// paths, so naming a fourth one here would invent a remedy the other halt does not honour.</para>
+    /// </summary>
+    private static void PrintExecutedDefinitionDivergence(
+        Core.Execution.ExecutedDefinitionDivergenceReport divergence, Core.Model.PlanDefinition plan, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        string folder = Path.GetFileName(
+            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        int count = divergence.Tasks.Count;
+        string taskWord = count == 1 ? "task" : "tasks";
+
+        output.WriteLine();
+        output.WriteLine(
+            $"DEFINITION MOVED DURING THIS RUN — halting; {count} {taskWord} settled against a definition that");
+        output.WriteLine("had already changed on disk (SSOT §7.2, issue #556).");
+        output.WriteLine("Nothing was discarded: each task below settled 'succeeded' and its work is retained.");
+        output.WriteLine("Nothing was delivered: the end-of-run merge to your branch did not run.");
+
+        foreach (Core.Execution.DivergedTask t in divergence.Tasks)
+        {
+            output.WriteLine();
+            output.WriteLine($"  {t.TaskId}");
+            output.WriteLine(
+                $"    definition hash: {ShortHash(t.HashAtLoad)} (executed) -> {ShortHash(t.HashAtSettle)} (on disk at settle)");
+
+            if (t.MovedFiles.Count > 0)
+            {
+                output.WriteLine("    moved files:");
+                foreach (Core.Execution.ChangedDefinitionFile f in t.MovedFiles)
+                {
+                    output.WriteLine($"      - {f.Path}  {f.Change}{FormatDelta(f)}");
+                }
+            }
+        }
+
+        output.WriteLine();
+        output.WriteLine("What actually ran:");
+        output.WriteLine(
+            "  - Each task above ran the PINNED definition — the bytes as this run loaded them, which are the");
+        output.WriteLine(
+            "    bytes its guardrails verified. That pinned hash is what the journal records, so nothing claims");
+        output.WriteLine(
+            "    a verification against the definition now on disk.");
+        output.WriteLine(
+            "  - task.json (writeScope, dependsOn, retries, maxTurns) and the DAG are HELD FROM LOAD for the");
+        output.WriteLine(
+            "    whole run. An action prompt and a guardrail script are RE-READ on every attempt, so an edit to");
+        output.WriteLine(
+            "    either was already in force from that task's next attempt onward — it was not ignored.");
+
+        if (plan.PlanGuardrails.Count > 0)
+        {
+            output.WriteLine(
+                "  - The terminal plan-guardrail gate was NOT EVALUATED: its verdict could not change this");
+            output.WriteLine(
+                "    outcome, so it was not spent. It is not recorded as passed.");
+        }
+
+        output.WriteLine();
+        output.WriteLine("Remediation — the next run reports this same set as definition drift (SSOT §7.2):");
+        output.WriteLine($"  guardrails run {folder} --autonomy auto    — rewind the plan branch past the drifted set + re-run");
+        output.WriteLine($"  guardrails reset {folder} <taskId>...      — scoped reset of only the task(s) above + descendants");
+        output.WriteLine($"  guardrails reset {folder} -y               — full correct rebuild (always sound)");
+    }
+
     /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display (e.g. <c>sha256:a6bee1…</c>).</summary>
     private static string ShortHash(string hash)
     {
@@ -1607,15 +1789,26 @@ public static class RunCommand
         // The merge-back never ran. WHY is the part a later reader cannot reconstruct, and the ordering here
         // matters: the undelivered flag is the case that strands work, so it is reported ahead of the
         // reasons that merely mean there was nothing to deliver.
+        // Issue #556 (plan 32 §6.5 correction 2): the divergence case needs its OWN reason and gets it ahead
+        // of the generic non-green one, which would otherwise write "the run was not wholly green" into
+        // run.json for a run whose tasks{} shows every task `succeeded` — a record that contradicts the
+        // document it is written into. #542 exists so an unattended pipeline with no console has a
+        // machine-readable answer, and a wrong one is worse than none. It names no plan branch, for the same
+        // reason serial mode does not: in serial mode there is no plan branch to send anyone to.
         string reason = report.WhollyGreenButUndelivered
             ? $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
               + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
-            : !terminalGatePassed
-                ? "the terminal gate did not pass, so delivery was never attempted and the work stayed on the plan branch"
-                : !report.AllSucceeded
-                    ? "the run was not wholly green, so delivery was never attempted"
-                    : "no separate plan branch was in play (serial mode), so there was nothing pending delivery — "
-                      + "the work is already in your checkout";
+            : report.ExecutedDefinitionDivergence is { } divergence
+                ? $"{divergence.Tasks.Count} task(s) settled against a definition that had already moved on "
+                  + "disk, so delivery was blocked (issue #556); every task succeeded and its verified work "
+                  + "is retained, but it was verified against bytes that are no longer there — re-run to "
+                  + "rebuild against the current definition"
+                : !terminalGatePassed
+                    ? "the terminal gate did not pass, so delivery was never attempted and the work stayed on the plan branch"
+                    : !report.AllSucceeded
+                        ? "the run was not wholly green, so delivery was never attempted"
+                        : "no separate plan branch was in play (serial mode), so there was nothing pending delivery — "
+                          + "the work is already in your checkout";
 
         return new DeliverySection
         {
@@ -1692,15 +1885,20 @@ public static class RunCommand
     /// third of the three surfaces the observation reaches (live/<c>--no-ui</c> and the durable
     /// <c>decisions[]</c> are the other two, both through the shipped <c>DecisionRecorded</c> event).
     ///
-    /// <para><b>A WARNING that never halts.</b> Halting would destroy the exact workflow this exists to
-    /// support — fixing a defective guardrail while the rest of the DAG runs — so the text says plainly that
-    /// nothing was halted and nothing was re-run.</para>
+    /// <para><b>The advisory itself still halts nothing</b> — it is a rendering, and the workflow it exists to
+    /// support (fixing a defective guardrail while the rest of the DAG runs) is untouched. What changed with
+    /// issue #556 is what it may CLAIM: a task that settles after a real definition edit now diverges, so the
+    /// run is halted and its delivery blocked by the settle-time gate. The shipped sentence <i>"Nothing was
+    /// halted and nothing was re-run."</i> would sit beside <c>exit 2</c> and a blocked delivery, so the halt
+    /// half is stated from <see cref="RunReport.HasExecutedDefinitionDivergence"/> and the re-run half — which
+    /// is still true, in both branches — is kept.</para>
     ///
     /// <para><b>It must state all three §5.1 consequences and overstate none.</b> "Your edit was ignored" is
     /// FALSE: action prompts and guardrail scripts ARE re-read per attempt, and only <c>task.json</c> and the
-    /// DAG were frozen at load. The third consequence — the settling task records the POST-edit definition
-    /// hash, so a later resume will not flag it as drift — is a quiet false green this plan does NOT fix
-    /// (issue #556); disclosing it is the whole reason a half-true message would be worse than none.</para>
+    /// DAG were frozen at load. The third consequence INVERTED with issue #556: the settling task records its
+    /// PRE-edit definition hash — the pin it actually ran and was verified against — so a later resume DOES
+    /// flag this as drift. Saying so is the whole point; the old text disclosed a false green this plan has
+    /// since closed.</para>
     ///
     /// <para>Each observation's <c>Detail</c> is already grouped BY FILE by
     /// <see cref="PlanEditDecisions.Observed"/>, so a single action script shared by N tasks prints once
@@ -1748,7 +1946,6 @@ public static class RunCommand
             }
         }
 
-        output.WriteLine("  Nothing was halted and nothing was re-run.");
         output.WriteLine(
             "  What your edit reaches: a task's action prompt and its guardrail scripts are re-read on every");
         output.WriteLine(
@@ -1758,11 +1955,35 @@ public static class RunCommand
         output.WriteLine(
             "    loaded when this run started; edits to those apply only to a later run.");
         output.WriteLine(
-            "  The quiet consequence: each task above records its POST-edit definition hash when it settles,");
+            "  What gets recorded: each task above records its PRE-edit definition hash when it settles - the");
         output.WriteLine(
-            "    so a later resume will NOT flag this as drift (issue #556 owns that false green; this run");
+            "    bytes its guardrails actually verified, never the ones you just wrote. A later resume");
         output.WriteLine(
-            "    only warns about it).");
+            "    compares current disk against that pinned hash and DOES report this as drift (issue #556).");
+
+        // Issue #556 (plan 32 §15.1 rows 4-5). The shipped sentence here was "Nothing was halted and nothing
+        // was re-run." Both halves inverted with this plan: the PRE-edit hash is recorded now (above), and a
+        // task that settles after a real definition edit HALTS the run. Printing the old sentence beside
+        // exit 2 and a blocked delivery would be a false claim on the exact surface this change exists to make
+        // honest. The re-run half stays true and is still said, in whichever branch applies.
+        if (report.HasExecutedDefinitionDivergence)
+        {
+            output.WriteLine(
+                "  What was halted: task(s) that settled after your edit ran a definition that had already");
+            output.WriteLine(
+                "    moved, so this run is HALTED and its verified work is held back from delivery - see the");
+            output.WriteLine(
+                "    block above. Nothing was re-run and nothing was discarded.");
+        }
+        else
+        {
+            output.WriteLine(
+                "  What happens next: no task settled against the edited definition in this run, so it was not");
+            output.WriteLine(
+                "    halted and nothing was re-run - but the next run's drift pre-pass compares current disk");
+            output.WriteLine(
+                "    against those pinned hashes and halts there instead (SSOT §7.2).");
+        }
     }
 
     /// <summary>
