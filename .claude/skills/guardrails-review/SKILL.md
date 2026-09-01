@@ -61,6 +61,13 @@ carrier (#474). Noting all five candidate sets here avoids re-reading every scri
 infrastructure, and treating them as scenery is precisely what let a BLOCKER through `validate`,
 `graph --check` and a full review pass (#474; §4 has the mechanics).
 
+**And while you read each ACTION PROMPT, build a list of every structural claim it makes about the
+codebase (#578)** — an enumeration (*"there are N sites"*, *"the sites are `A` and `B`"*), a routing claim
+(*"`A` funnels through `B`"*), an exclusivity claim (*"the only caller"*), or a named location
+(*"`File.cs:123`"*, *"the `Foo` method in `Bar.cs`"*). §2's #578 probe EXECUTES that list one command at a
+time; collecting it here costs nothing beyond the read you are already doing, and rebuilding it afterwards
+means re-reading every prompt in the plan.
+
 **Get the breakdown report's `Seam ledger (#382)` in front of you NOW, before the pass** — §2's
 passing-but-blind probe audits it row by row and then re-derives it from the folder, and there is no
 `validate` check behind it. It lives in the Step 7.4 breakdown report, not in the plan folder, so in a
@@ -1071,6 +1078,74 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   it as a **half-applied fix**: the two are companions for the same re-discovery risk, not independent
   bullets, so fixing only one leaves the other half of the risk unaddressed.
 <!-- END ADDED PROBE #203/#204 -->
+<!-- BEGIN ADDED PROBE #578 — unverified structural claim a prompt makes about the codebase -->
+- **Unverified structural claim about the codebase (#578)**: an action prompt routinely asserts FACTS
+  about the tree it is about to change, and **nothing in the harness can check one**. The claim is prose;
+  the code it describes sits outside every guardrail's subject; and when the claim is wrong the task is
+  implemented **faithfully against a false map**, every guardrail passes, and the defect ships green.
+  Measured across plans 30, 31 and 32 this is the **dominant failure mode** — every halt and near-miss was
+  a defect in the *instructions*, not in the checks, and six of seven were invisible to every guardrail in
+  the plan. No `validate` diagnostic backs it and none is proposed — deliberately, because nothing here is
+  statically decidable and a mechanical gate would look rigorous while certifying nothing. So
+  **this probe is the only gate**, alongside `plan-breakdown`'s authoring rule upstream of it.
+
+  **Take the §1 claim list and EXECUTE it, claim by claim.** The reason this is a probe rather than advice
+  is that these claims are almost always **one command from falsifiable**:
+
+  | Shape | Reads like | Executed by |
+  |---|---|---|
+  | **Enumeration** | "there are N sites", "the sites are `A` and `B`" | `grep -c` / `rg -n` for the construct — then COUNT, don't skim |
+  | **Routing** | "`A` funnels through `B`", "everything goes via `X`" | grep the construct `B` supposedly owns; a funnel means **one** site and every other path calling into it |
+  | **Exclusivity** | "the only caller", "the single construction site", "nothing else does this" | the same grep, read for the **second** hit |
+  | **Location** | "`File.cs:123`", "around line N", "the `Foo` method in `Bar.cs`" | `sed -n '123p'` / open the symbol |
+
+  The three measured instances cost **one command each**: plan 30's was `grep -c 'new AttemptRecord'`,
+  which returns **9** against a prompt calling one of them *"the shared failure recorder that the other
+  outcome methods funnel through"*; plan 31's was `sed -n '1383p'`, and the cited line called something
+  else entirely; plan 32's was a `dotnet build`. That last one is a **fifth shape worth naming** — a
+  prompt that DICTATES a construct rather than describing one (*"mirror `X`"*, *"declare it in namespace
+  `N`"*) makes a claim the **language** decides, and compiling the shape the prompt dictates is how you
+  execute it. Plan 32's instructed namespace shadowed a production one and could not compile; the sibling
+  file the prompt named as the model documented that hazard verbatim in its own header.
+
+  **Record a verdict per claim. All three are reportable outcomes:**
+  - **verified** — you ran the command and it agrees. Name the command in the Step 6 report. A claim
+    marked verified with no command beside it is a claim someone *re-read*.
+  - **corrected** — the command disagrees. This is a **finding in the §6 table** like any other, subject
+    to the same per-finding approval — the pass does not quietly edit prompts. Its **fix column carries
+    the rewrite into the executable form** (`plan-breakdown` Step 6, #578) — *"grep this file for `X` and
+    cover every hit"*, ready to paste — and **not a fresher list**: replacing "the sites are A and B" with
+    "the sites are A, B and C" re-arms the same trap on the next edit to that file.
+  - **unverifiable-and-reworded** — the claim is about a state that does not exist yet (a sibling's
+    not-yet-run output, a service that isn't up) or costs more to settle than the task is worth. It then
+    must not stand as a fact, and the fix column carries it reworded as a **pointer** the run-time agent
+    resolves (*"grep for `X` to establish the caller set before you change its signature"*). Reword, never
+    delete — the pointer is the useful half, and deleting it sends the agent in blind.
+
+  **Severity.** **BLOCKER** when the claim is load-bearing for the deliverable *and* no guardrail in the
+  plan can see it wrong — the plan-30 shape exactly: a prompt naming 2 of 9 recorders, an implementation
+  faithful to it, a `--filter` selecting only that task's own tests, a green terminal gate, and `turns` /
+  `segments` shipped null on precisely the failure outcomes the metric exists to compare. **WEAK** when
+  the claim is merely navigational and the agent's first grep corrects it — still report the correction:
+  the correction costs turns, and a regeneration re-emits the same false sentence.
+
+  **This probe's own commands are subject to §2b's zero-match rule (#500).** A `grep -c` that returns 0 or
+  1 *because it never opened the file* is byte-identical to one that read every byte, and you will write
+  the result down as verified. Before trusting a count, run the **same invocation** against the same
+  subject for a literal you have already read out of that file and confirm the hit. The failure
+  generalises past zero matches, which is why the control and not the flag is the rule: a checker that
+  prints `ok` on input it never parsed, and a mutation whose `sed` anchor matched nothing, both come back
+  green while doing nothing. (This clause is scoped to **this probe's own commands**. The general form —
+  *an ad-hoc verification is not reportable until its negative case has been observed to bite* — is
+  **#580**, filed, not yet doctrine; do not read it as already binding on the rest of the pass.)
+
+  **Relation to the #203/#204 probe above — the same defect on a different clock.** #203 covers a claim
+  that was TRUE when written and goes stale because an earlier-wave sibling edits the file first; it keys
+  on **wave placement**. This probe covers a claim that was **FALSE when written**, about code that
+  already exists and that no task in the plan touches — so wave placement gates nothing and #203's trigger
+  never fires. Run this one on **every** prompt, in a flat plan as much as a waved one. The **location**
+  shape is where the two overlap, and there #203's durable-marker fix is the right fix.
+<!-- END ADDED PROBE #578 -->
 <!-- BEGIN ADDED PROBE #193 — orphaned pre-existing golden swept in by a broad tests-pass filter -->
 - **Orphaned golden swept in by a broad `tests-pass` `--filter` (#193)**: the **runtime** analogue of
   the #176 transitive-compilation probe. There the trap is compile-time (a test compiles a type a
@@ -1962,6 +2037,14 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
 - **whether the seam ledger was available to this pass at all** (#382). A ledger **not produced** to the
   review is an unchecked gap and says so; a ledger whose bolded `Seam ledger (#382)` **heading is absent**
   is a finding in the table. Do not report either as the other.
+- **every structural claim a prompt makes about the codebase, WITH the command that settled it** (#578) —
+  one line per claim: the prompt, the claim verbatim, the **command you ran**, its output, and the verdict
+  (verified / corrected / unverifiable-and-reworded). The command is a required column, not decoration: a
+  claim marked verified from a re-read and one settled by a `grep -c` are indistinguishable in the
+  transcript, and the re-read is what shipped the measured defect. Name any claim you judged too expensive
+  to execute as an **unchecked gap**, and say whether it was reworded as a pointer. *"The prompts in this
+  plan make no structural claims"* is a fine answer and is stated; silence is not — this is the pass's
+  only gate on the plan's dominant failure mode.
 
 Then ask: **"Apply fixes?"** — per-finding approval, never bulk-silent. If a finding
 concerns a guardrail the human added or edited (check `git log`/`git diff` if the
@@ -2125,6 +2208,7 @@ finding remains unaddressed.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). No such guardrail carries a QUIET flag on its TEST command (`-v q`/`-v quiet` on `dotnet test`): measured, it suppresses the entire `Error Message:`/`Expected:`/`Actual:`/`Stack Trace:` block, so even a correct re-emit tails out test names only — WEAK, and quiet belongs on `dotnet build`. The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every explicit **"do NOT …"** statement in a task's action prompt has a matching structural guardrail (a negative assertion, #176, for an excluded keyword/scenario; a regex-lock on load-bearing text surviving verbatim, or a count/forbidden-construct scan for a banned approach/shape) — or the breakdown report states explicitly that the forbidden behavior is not structurally checkable. WEAK when the prohibition is merely uncovered by an otherwise-deterministic suite; **BLOCKER** when the task's OTHER guardrail is empirical/statistical (a "run N times, assert it always passes" flake check) and the forbidden shortcut would make THAT guardrail EASIER to pass rather than harder — the perverse-incentive case (#221).
+- [ ] (#578) Every structural claim an action prompt makes about the codebase was **EXECUTED, not read** — enumeration ("there are N sites" / "the sites are `A` and `B`"), routing ("`A` funnels through `B`"), exclusivity ("the only caller"), location (`File.cs:123`), and a DICTATED construct the language decides ("declare it in namespace `N`" → compile it). The report carries one line per claim with the command, its output and a verdict (verified / corrected / unverifiable-and-reworded). **BLOCKER** when the claim is load-bearing and no guardrail in the plan can see it wrong (the measured case: a prompt naming 2 of 9 recorders, faithfully implemented, whole run green); **WEAK** when merely navigational. A correction rewrites the prompt into the **executable form** ("grep for `X` and cover every hit"), never into a fresher list. Every command carried a **POSITIVE CONTROL** (#500) — a low or zero count from a search that never opened its subject reads exactly like a verified claim. Distinct from #203/#204, which keys on wave placement and covers a claim that goes stale; this one covers a claim that was false when written.
 - [ ] Every task whose prompt references an **earlier-wave sibling's** code was checked for a stale line-number pointer and an unhedged "here's how it currently works" claim (#203/#204): a cited line number into a file the earlier task will still modify is WEAK/BLOCKER (durable marker instead); an unhedged architecture claim about the sibling's not-yet-run implementation is WEAK/BLOCKER (caveat it as authoring-time state, verify before relying on it). Cross-check the paired `maxTurns: 75` bump (Step 4a's fourth archetype) — flag a **half-applied fix** if only one of the two companion rules was applied.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).

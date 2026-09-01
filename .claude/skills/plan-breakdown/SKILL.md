@@ -1797,6 +1797,62 @@ Per `references/schemas.md`, exactly:
   > No test project exists and no framework was specified. Do NOT assume one. Write
   > `{"needsHuman": "No test framework found — which should <TestProject> use: xUnit,
   > NUnit, or MSTest?"}` to the state-out path and stop.
+- **Prefer the EXECUTABLE form over the enumerated one — ship the command that finds the sites, not
+  the list you found (#578).** An action prompt makes **structural claims about the codebase**:
+  *"there are N sites"*, *"`A` funnels through `B`"*, *"the only caller"*, *"at `File.cs:123`"*.
+  **Nothing checks them.** The claim is prose, the code it describes is outside every guardrail's
+  subject, and a task implemented **faithfully against a false map** passes every check in its plan and
+  ships green. Across plans 30–32 this was the dominant failure mode — every halt and near-miss was a
+  defect in the instructions, not in the checks.
+  - **Write the command:**
+    > Grep this file for `_journal.RecordAttempt(` and cover **every** hit.
+  - **Not the gloss that pre-answers it:**
+    > Grep for `new AttemptRecord` to find every construction site … `CompleteSucceededOrInvalidFragment`
+    > (the serial success settle) and `FailedAttempt` (the shared failure recorder that the other outcome
+    > methods funnel through).
+
+  Both are from the SAME plan (30). The first (task 06) was correct. The second (task 12, with 12a
+  inheriting the same map and naming no sites at all) was false — and note it **carried the right
+  command**: the enumeration that follows pre-answers the grep, so the agent has no reason to actually
+  run one. `grep -c 'new AttemptRecord'` returns **9**, in nine methods, seven of them called
+  **directly** from `TaskExecutor` (`NeedsHuman`, `PermissionWall`, `StructuralWallHalt`,
+  `RateLimitExhausted`, `NoRoute`, `TaskPreflightFailed`, `Cancelled`); nothing funnels. Implemented faithfully it
+  would have recorded the new fields on **2 of 9** outcomes — null on exactly the failure outcomes a
+  first-pass-rate comparison depends on — with every guardrail in the plan green. **The enumerating form
+  is more helpful when right and silently wrong when stale**, and it goes stale as the code moves with
+  nothing watching.
+  - **If you state a count anyway, you MUST have run the command, the command ships beside the count, and
+    the prompt names the GREP as the authority.** A measured enumeration genuinely beats a bare pointer;
+    what is forbidden is an **unmeasured** one — and a measured one arriving without its command is
+    unmeasured to everyone downstream. Three parts, all load-bearing. The compliant hedged form (the
+    repaired plan-30 task 12, verbatim):
+    > **Count the recorders yourself before you edit anything. Grep for `new AttemptRecord` in this
+    > file.** At authoring time it returned **nine hits, in nine different methods** — there is no shared
+    > recorder here, and nothing funnels. … If your grep returns a different number, **trust the grep**,
+    > cover what it found, and say so in your summary.
+
+    Drop the third part and a stale count silently outranks the tree, which is the whole defect.
+  - **The rewrites, by claim shape:**
+
+    | Claim shape | Enumerated (avoid) | Executable (write this) |
+    |---|---|---|
+    | Enumeration | "the sites are `A` and `B`" | "grep for `X`; cover **every** hit" |
+    | Routing | "`A` funnels through `B`" | "`B` is one recorder — grep for `X` and establish the real caller set before assuming a single funnel" |
+    | Exclusivity | "the only caller of `X`" | "grep for `X` to establish the caller set before you change its signature" |
+    | Location | "`File.cs:123`", "around line N" | the durable marker — next bullet (#203) |
+
+  - **The line-number rule below is this rule's LOCATION case; this rule is its generalization.** #203
+    forbids a line number for code an earlier-wave sibling will touch first — stale on arrival **by
+    construction**. A routing or an enumeration claim rots the same way and for the same reason (the code
+    moves, the sentence does not), and it needs **no sibling task** to rot: the plan-30 claim was false on
+    the day it was written, about code no task in the plan had touched. So apply **this** rule to every
+    prompt in every plan, flat or waved, and layer #203's wave-placement trigger on top where a sibling is
+    involved. **A location claim and a routing claim are the same defect in different coats.**
+  - **No `validate` check backs this, deliberately (#578).** The claims are prose; their correct and
+    incorrect forms are textually identical; nothing here is statically decidable. A mechanical gate would
+    look rigorous and certify nothing — the exact defect this repo keeps filing issues about. The two
+    gates are this authoring rule and `/guardrails-review`'s #578 probe, which EXECUTES every claim that
+    survives. **Surface that probe in the Step 7.4 report.**
 - **Durable markers over line numbers; caveat any "here's how it currently works" claim about a
   not-yet-run sibling (#203).** This fires whenever a **later-wave task's** prompt references code
   an **earlier-wave task in the same plan** will create or modify before the later task actually
@@ -2055,7 +2111,12 @@ Per `references/schemas.md`, exactly:
    justifications, any flagged non-executable plan content, and the **Step 7.0d author-time
    smoke-test outcome** (which script guardrails were EXECUTED against valid + invalid samples,
    and which were deferred as not-runnable-at-author-time with the reason, #302). **Then the
-   source-shape ledger (#468) — one line per source-shape guardrail that survived the demotion gate:**
+   structural-claim line (#578)** — for every action prompt that states a fact about the codebase (an
+   enumeration, a routing or exclusivity claim, a location), name the claim and the **command you RAN** to
+   establish it; a prompt that only ships a command and asserts nothing needs no line, and *"no prompt in
+   this plan states a structural claim"* is a fine answer, stated rather than left silent. Then surface
+   the matching probe: *"`/guardrails-review` #578 — every structural claim a prompt makes about the code
+   is EXECUTED, not read."* **Then the source-shape ledger (#468) — one line per source-shape guardrail that survived the demotion gate:**
    the guardrail, the property it asserts, and **why no test could carry it** (why the property is
    unobservable at runtime). A source-shape check over implementation source with no such line is a
    self-review finding — loop back to Step 4 and demote it or justify it. Name the committed
@@ -3796,6 +3857,7 @@ authority for every path/signature the new wave references.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->
+- [ ] (#578) No action prompt states an **unmeasured** structural claim about the codebase. Where a prompt points at a set of code sites it ships the **command** ("grep this file for `X` and cover every hit") rather than the list — and where it states a count, a routing/exclusivity claim or a location as fact, this pass RAN the command, the command sits in the prompt beside the claim, and the prompt names **the grep, not the number**, as the authority when they disagree. A command followed by a gloss that pre-answers it is the enumerated form wearing a command (the measured plan-30 defect), not a compliance. Line-number pointers take the #203 durable-marker fix — that is this rule's location case, and this rule applies to flat plans and to code no task touches, where #203's wave trigger never fires. The claims and the commands that established them are in the Step 7.4 report, with the `/guardrails-review` #578 probe surfaced. **No `validate` check backs this, deliberately** — the claims are prose and nothing about them is statically decidable.
 - [ ] (#94/#204) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring, OR integrates with/extends/describes a same-plan sibling's not-yet-landed implementation) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a). (#203) A task referencing an earlier-wave sibling's code also gets durable-marker + architecture-caveat prompt text (Step 6) — the two are companion fixes for the same situation, not independent bullets.
 - [ ] (#116) Every author-tests task that builds a real git repo reuses a Windows-safe shared `TempGitRepo` fixture (strips read-only before delete, recreates `git rm`/`git mv`-pruned dirs, rolls back via `git reset --hard`, normalizes `core.autocrlf`) OR carries the Windows-Git portability directive; the fixture is authored once and reused, not re-discovered per task (Step 5a; `stacks/dotnet.md §11`).
 - [ ] (#101 / #191) Every PROMPT task whose primary deliverable is a file under `.claude/` (NEW or EXISTING file) carries the verbatim `needsHarnessWrite` escape-hatch instruction in its `action.prompt.md`; AND when the target subdirectory is NEW, it also has a directory-seed SCRIPT task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the injected instruction, seed, and affected path reported (Step 5b). (SCRIPT actions writing `.claude/` are exempt.)

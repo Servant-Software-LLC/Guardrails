@@ -752,8 +752,29 @@ at run time — no new gate type). The **headless/autonomous path is UNAFFECTED*
 Charter's *flattened* plain-markdown `charter handoff` output, never parses `:::`, never loads
 `charter-format`. Procedure in `plan-breakdown` Step 0c.
 
-**Two authoring/review disciplines the skills enforce (know these when touching plan-breakdown /
+**Authoring/review disciplines the skills enforce (know these when touching plan-breakdown /
 guardrails-review):**
+- **A structural claim a PROMPT makes about the code is a claim, not a fact (#578).** An
+  `action.prompt.md` routinely asserts something about the tree it is about to change -- *"there are N
+  construction sites"*, *"`A` funnels through `B`"*, *"the only caller"*, *"at `File.cs:123`"*. **No
+  mechanism in the harness can check one.** The claim is prose, the code it describes sits outside every
+  guardrail's subject, and when the claim is wrong the task is implemented FAITHFULLY against a false map,
+  every guardrail passes, and the defect ships GREEN. Measured across plans 30-32 this was the **dominant
+  failure mode**: every halt and near-miss was a defect in the instructions rather than in the checks, and
+  six of seven were invisible to every guardrail in the plan. The motivating instance called one of
+  **nine** `new AttemptRecord` sites *"the shared failure recorder that the other outcome methods funnel
+  through"*, and would have shipped Phase-1 `turns`/`segments` null on exactly the failure outcomes a
+  first-pass-rate comparison comes from. **No `validate` lint, deliberately** -- the same reasoning as
+  #382 point 5 below: the claim's correct and incorrect forms are textually identical and nothing about it
+  is statically decidable, so a mechanical gate would look rigorous and certify nothing. Two gates
+  instead, and they are the whole of it: `plan-breakdown` Step 6 authors the **executable form** (ship the
+  command that finds the sites -- *"grep this file for `X` and cover every hit"* -- not the list you
+  found; a stated count carries the command that measured it and names the grep, not the number, as the
+  authority), and `/guardrails-review` **EXECUTES** every surviving claim -- one command each: `grep -c`
+  for an enumeration, `sed -n '<N>p'` for a location, a `dotnet build` for a construct the prompt DICTATES
+  and the language decides. **Generalizes #203** from a LOCATION claim under a wave-placement trigger to
+  any location-or-routing claim in any plan: #203's goes stale, this one was false the day it was written,
+  about code no task in the plan touched.
 - **Drive-the-real-seam / passing-but-blind (#382).** A per-task TDD guardrail that injects a FAKE of an
   in-process seam the real run drives (an `IPromptRunner`, the executor, the scheduler, a factory) can go
   GREEN over a component that is broken through the real composition root -- a green light over a broken
