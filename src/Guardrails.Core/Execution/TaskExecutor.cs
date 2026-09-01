@@ -783,12 +783,24 @@ public sealed class TaskExecutor : ITaskExecutor
         // model anywhere. A SCRIPT attempt ran no model and (in serial mode) has no provenance object to
         // fold onto, so it is skipped rather than given an object of nulls — the same discipline the
         // judge fold applies to a null provenance.
-        if (provenance is { } launched && action.ObservedModel is { } observedModel)
+        // Plan 30 §3.3 (#548): the digest rides the SAME fold, extended rather than duplicated (a
+        // second `with` against this local would discard the Model/RequestedModel fold above it —
+        // records are immutable, so only the LAST assignment to `provenance` survives). The guard
+        // widens to admit a runner that reported a digest with no observed model tag: gating this
+        // block on ObservedModel alone would skip the fold entirely and lose that digest. When
+        // ObservedModel is absent, `observedModel` below is null, so Model and RequestedModel fall
+        // through to their launch-time values unchanged — silence about the model stays silence,
+        // exactly as before this fold existed at all.
+        string? observedModel = action.ObservedModel;
+        if (provenance is { } launched && (observedModel is { } || action.ModelDigest is { }))
         {
             provenance = launched with
             {
-                Model = observedModel,
-                RequestedModel = launched.Model == observedModel ? null : launched.Model
+                Model = observedModel ?? launched.Model,
+                RequestedModel = observedModel is { } && launched.Model != observedModel
+                    ? launched.Model
+                    : launched.RequestedModel,
+                ModelDigest = action.ModelDigest ?? launched.ModelDigest
             };
 
             // Re-mirror it, for the reason the judge fold re-mirrors below: on the guardrail-FAILED path
