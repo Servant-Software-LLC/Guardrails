@@ -36,6 +36,17 @@ namespace Guardrails.Core.Telemetry;
 /// <c>guardrail-failed:staging-move-failure</c>, <c>guardrail-failed:undifferentiated</c>. No new
 /// column: <see cref="TelemetryRow.Outcome"/> is already documented as a wire TOKEN, not a closed enum
 /// string, so a refined token is still a truthful outcome.</para>
+///
+/// <para><b>Phase-1 facts split across the two grains (plan 30 sections 3.2/3.3/3.4).</b>
+/// <see cref="TelemetryRow.Bucket"/> (a TASK fact, constant across a task's own retries within one run)
+/// and the <see cref="JournalDocument.Environment"/> columns (a RUN fact) are written on BOTH the
+/// task-grain sentinel and every attempt row, since the same value holds for every row of the task or of
+/// the run respectively. <see cref="TelemetryRow.ModelDigest"/>, <see cref="TelemetryRow.RouteWarm"/>,
+/// <see cref="TelemetryRow.Turns"/>, <see cref="TelemetryRow.ActionMs"/> and
+/// <see cref="TelemetryRow.GuardrailMs"/> are ATTEMPT facts and go only on the attempt row, for the same
+/// reason <see cref="TelemetryRow.Model"/> and <see cref="TelemetryRow.CostUsd"/> already do not appear
+/// on the task row: a task row summarizing several attempts cannot carry one attempt's route or turn
+/// count without inventing a number nobody measured.</para>
 /// </summary>
 public static class TelemetryIngest
 {
@@ -57,6 +68,7 @@ public static class TelemetryIngest
             AttemptRecord firstAttempt = task.Attempts[0];
             AttemptRecord lastAttempt = task.Attempts[^1];
             AttemptProvenance? declaredProvenance = firstAttempt.Provenance;
+            RunEnvironment? environment = journal.Environment;
 
             corpusStore.Append(new TelemetryRow
             {
@@ -69,7 +81,15 @@ public static class TelemetryIngest
                 Outcome = TaskStatusToken(task.Status),
                 Tier = declaredProvenance?.Tier,
                 TierSource = TierSourceToken(declaredProvenance?.TierSource),
-                Repo = repo
+                Repo = repo,
+                Bucket = task.Bucket,
+                Host = environment?.Host,
+                Os = environment?.Os,
+                CpuCount = environment?.CpuCount,
+                TotalMemoryBytes = environment?.TotalMemoryBytes,
+                MaxParallelism = environment?.MaxParallelism,
+                HarnessVersion = environment?.HarnessVersion,
+                SkillVersion = environment?.SkillVersion
             });
 
             foreach (AttemptRecord attempt in task.Attempts)
@@ -94,7 +114,20 @@ public static class TelemetryIngest
                     CostUsd = attempt.CostUsd,
                     InputTokens = attempt.Usage?.InputTokens,
                     OutputTokens = attempt.Usage?.OutputTokens,
-                    Repo = repo
+                    Repo = repo,
+                    Bucket = task.Bucket,
+                    Host = environment?.Host,
+                    Os = environment?.Os,
+                    CpuCount = environment?.CpuCount,
+                    TotalMemoryBytes = environment?.TotalMemoryBytes,
+                    MaxParallelism = environment?.MaxParallelism,
+                    HarnessVersion = environment?.HarnessVersion,
+                    SkillVersion = environment?.SkillVersion,
+                    ModelDigest = provenance?.ModelDigest,
+                    RouteWarm = provenance?.RouteWarm,
+                    Turns = attempt.Turns,
+                    ActionMs = attempt.Segments?.ActionMs,
+                    GuardrailMs = attempt.Segments?.GuardrailMs
                 });
             }
         }
