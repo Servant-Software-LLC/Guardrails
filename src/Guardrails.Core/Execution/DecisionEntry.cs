@@ -521,3 +521,18 @@ public static class PlanEditDecisions
         return prefix + (body.Length <= 8 ? body : body[..8]);
     }
 }
+
+/// <summary>
+/// The <c>boundary</c> for the settle-time executed-definition divergence halt (SSOT §7.2, plan 32 §6.3): a
+/// task's on-disk definition moved underneath work already executed against its load-time pin. The
+/// <c>decision</c> on such an entry is always the shipped <see cref="DecisionTokens.Halted"/> — this
+/// boundary defines no decision token of its own.
+/// </summary>
+public static class ExecutedDefinitionDivergenceDecisions
+{
+    /// <summary>
+    /// The <c>boundary</c> token for a settle-time executed-definition divergence halt — additive alongside
+    /// <c>drift</c> / <c>wave</c> / <c>task</c> / <c>plan-edit</c> (SSOT §7.2).
+    /// </summary>
+    public const string Boundary = "definition-divergence";
+}
