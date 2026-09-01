@@ -45,6 +45,55 @@ public static class TaskFingerprintBucket
         IReadOnlyList<string>? writeScope,
         IReadOnlyList<GuardrailDefinition> guardrails)
     {
-        throw new NotImplementedException();
+        if (writeScope is null)
+        {
+            return null;
+        }
+
+        if (writeScope.Count == 0)
+        {
+            return NoWrite;
+        }
+
+        bool hasSrc = writeScope.Any(IsSrcRoot);
+        bool hasTests = writeScope.Any(IsTestsRoot);
+        bool hasDocs = writeScope.Any(IsDocsRoot);
+        bool hasOther = writeScope.Any(root => !IsSrcRoot(root) && !IsTestsRoot(root) && !IsDocsRoot(root));
+
+        if (hasSrc && hasTests)
+        {
+            return CodePlusTests;
+        }
+
+        if (hasDocs && !hasSrc && !hasTests && !hasOther)
+        {
+            return Documentation;
+        }
+
+        if (hasSrc && !hasTests && !hasDocs && !hasOther)
+        {
+            return guardrails.Any(IsTestsPassGuardrail) ? Implementation : Structural;
+        }
+
+        if (hasTests && !hasSrc && !hasDocs && !hasOther)
+        {
+            return guardrails.Any(IsTddRedGuardrail) ? TestAuthoring : Structural;
+        }
+
+        return null;
     }
+
+    private static bool IsSrcRoot(string root) => root.StartsWith("src/", StringComparison.Ordinal);
+
+    private static bool IsTestsRoot(string root) => root.StartsWith("tests/", StringComparison.Ordinal);
+
+    private static bool IsDocsRoot(string root) =>
+        root.StartsWith("docs/", StringComparison.Ordinal) || root.StartsWith(".claude/", StringComparison.Ordinal);
+
+    private static bool IsTddRedGuardrail(GuardrailDefinition guardrail) =>
+        guardrail.Name.Contains("tests-fail-on-stubs", StringComparison.Ordinal) ||
+        guardrail.Name.Contains("tests-fail-on-current-code", StringComparison.Ordinal);
+
+    private static bool IsTestsPassGuardrail(GuardrailDefinition guardrail) =>
+        guardrail.Name.Contains("tests-pass", StringComparison.Ordinal);
 }
