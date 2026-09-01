@@ -8,10 +8,20 @@ using Guardrails.Core.Telemetry;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails telemetry ingest|report|purge</c> — the operator surface over the local
+/// <c>guardrails telemetry ingest|report|census|purge</c> — the operator surface over the local
 /// model-evidence telemetry corpus (charter §9, <c>model-evidence-and-graduation</c> #535):
 /// <c>ingest</c> backfills corpus rows from a plan folder's <c>state/run.json</c> through the journal
-/// ETL, <c>report</c> renders the stratified corpus report, and <c>purge</c> empties the corpus.
+/// ETL, <c>report</c> renders the stratified corpus report, <c>census</c> splits the rows that name no
+/// model into the two categories that are correct by construction and the one that is a defect, and
+/// <c>purge</c> empties the corpus.
+///
+/// <para><b><c>census</c> is the one verb here that touches no corpus at all</b> (plan 30 §3.3a, issue
+/// #577), which is why it is the one verb with no <c>--corpus-root</c> option. It answers from the PLAN
+/// FOLDERS: a corpus row carries <c>runId</c>, <c>taskId</c> and <c>repo</c> and no plan-folder path, so
+/// it cannot be joined back to the <c>task.json</c> that says whether the action was a script — and a
+/// census that reached the corpus at all could write to the operator's real one. It measures the
+/// attribution gap and deliberately does not repair it: §3.3a decided Phase 1 owns the split and the fix
+/// ships as #577.</para>
 ///
 /// <para>Every subcommand runs over the REAL <c>Guardrails.Core.Telemetry</c> collaborators
 /// (<see cref="TelemetryIngest"/>, <see cref="TelemetryCorpusStore"/>, <see cref="TelemetryReport"/>,
@@ -115,6 +125,7 @@ public static class TelemetryCommand
         var command = new Command("telemetry", "Work with the local model-evidence telemetry corpus.");
         command.Add(BuildIngestLeaf(io));
         command.Add(BuildReportLeaf(io));
+        command.Add(BuildCensusLeaf(io));
         command.Add(BuildPurgeLeaf(io));
         return command;
     }
@@ -171,6 +182,33 @@ public static class TelemetryCommand
         command.Add(corpusRootOption);
 
         command.SetAction(parseResult => RunReport(parseResult.GetValue(corpusRootOption), io));
+
+        return command;
+    }
+
+    /// <summary>
+    /// <c>telemetry census &lt;folder&gt;</c> — the same folder argument <c>ingest</c> takes, and
+    /// deliberately NO <c>--corpus-root</c>: this verb reads plan folders and no corpus (see the class
+    /// doc), so an option pointing at one would advertise a dependency it does not have and hand it a
+    /// path it must never write to.
+    /// </summary>
+    private static Command BuildCensusLeaf(IConsoleIo io)
+    {
+        var folderArgument = FolderArgument.Create(
+            "Path to a plan folder (contains state/run.json), or a directory of plan folders, to census "
+            + "model attribution over. A folder with no journal is a reported no-op, not an error.");
+
+        var command = new Command(
+            "census",
+            "Split the rows that name no model into task-grain sentinels, script actions and the "
+            + "recording gap.");
+        command.Add(folderArgument);
+
+        command.SetAction(parseResult =>
+        {
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
+            return RunCensus(folder, io);
+        });
 
         return command;
     }
@@ -674,6 +712,183 @@ public static class TelemetryCommand
 
     private static string Money(decimal? cost) =>
         cost is { } value ? "$" + value.ToString("0.00##", CultureInfo.InvariantCulture) : CostNotReported;
+
+    // --- census -----------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The model-attribution census (plan 30 §3.3a, issue #577): print the three-way split of the rows
+    /// that name no model, plus the per-plan breakdown, over <paramref name="planFolder"/> — one plan
+    /// folder or a directory of them, told apart by <see cref="TelemetryAttributionCensus.Census"/> the
+    /// same way <see cref="RunIngest"/> tells them apart.
+    ///
+    /// <para><b>Success even when part of the folder could not be classified.</b> An unreadable
+    /// <c>task.json</c> and a folder with no journal are REPORTED (below the split, by name) and counted
+    /// in no category — the census still produced a complete measurement with its omissions stated, which
+    /// is the whole of what §3.3a asks for. That is why this verb does not borrow <c>ingest</c>'s
+    /// nonzero exit: a failed ingest means rows that should be in the corpus are not, whereas nothing here
+    /// was ever going to be written. The one nonzero exit is a folder that does not exist, which is a
+    /// mistake in the command rather than a finding about the data.</para>
+    /// </summary>
+    private static int RunCensus(string planFolder, IConsoleIo io)
+    {
+        if (!Directory.Exists(planFolder))
+        {
+            io.Error.WriteLine($"No such folder: '{planFolder}'.");
+            io.Error.WriteLine(
+                "`telemetry census` takes a plan folder (one containing state/run.json) or a directory of "
+                + "plan folders. It reads journals and task definitions that already exist; it reads no "
+                + "corpus and writes nothing.");
+            return ExitCodes.HarnessError;
+        }
+
+        AttributionCensusResult census = TelemetryAttributionCensus.Census(planFolder);
+
+        io.Out.WriteLine();
+        io.Out.WriteLine($"Model-attribution census over \"{planFolder}\" (plan 30 §3.3a, issue #577).");
+        io.Out.WriteLine();
+
+        RenderCensusSplit(census, io);
+        RenderCensusPlans(census, io);
+        RenderCensusOmissions(census, io);
+        RenderCensusLegend(io);
+
+        return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// The headline: the total naming no model, the three categories under it, and the fraction that is
+    /// the actual deliverable — <c>recording gap / total</c>, the number §3.3a says "close it" has no
+    /// defined scope without. Each category is printed on its OWN line beside its own label, because a
+    /// single aggregate figure is exactly what this census exists to stop being quoted.
+    /// </summary>
+    private static void RenderCensusSplit(AttributionCensusResult census, IConsoleIo io)
+    {
+        (string Label, int Value)[] split =
+        [
+            ("rows naming no model (total)", census.TotalRowsNamingNoModel),
+            ("  task-grain sentinel rows", census.TaskGrainRows),
+            ("  script-action rows", census.ScriptActionRows),
+            ("  recording-gap rows", census.RecordingGapRows)
+        ];
+
+        int labelWidth = split.Max(entry => entry.Label.Length);
+
+        foreach ((string label, int value) in split)
+        {
+            io.Out.WriteLine($"  {label.PadRight(labelWidth)}  {value.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        io.Out.WriteLine();
+        io.Out.WriteLine(
+            census.TotalRowsNamingNoModel == 0
+                ? "  Nothing here names no model, so there is no fraction to state."
+                : $"  The recording gap is {census.RecordingGapRows} of {census.TotalRowsNamingNoModel} rows "
+                    + $"naming no model ({Percent((double)census.RecordingGapRows / census.TotalRowsNamingNoModel)}); "
+                    + "the rest name none by construction.");
+    }
+
+    /// <summary>
+    /// The same split per plan folder, rendered through the report table's own
+    /// <see cref="MeasureColumns"/>/<see cref="Line"/> so both tables in this file line up the same way.
+    /// A folder is identified by NAME and never by path — SSOT §15.1, the rule
+    /// <see cref="AttributionCensusPlan.PlanFolder"/> already carries.
+    /// </summary>
+    private static void RenderCensusPlans(AttributionCensusResult census, IConsoleIo io)
+    {
+        io.Out.WriteLine();
+
+        if (census.Plans.Count == 0)
+        {
+            // Never a bare "nothing found": every folder that produced no rows is listed immediately
+            // below with the reason it produced none, so an unreadable journal is never mistaken for a
+            // plan that simply never ran.
+            io.Out.WriteLine("  No plan folder here was censused; the list below says why, folder by folder.");
+            return;
+        }
+
+        string[] headers = ["PLAN", "TOTAL", "TASK-GRAIN", "SCRIPT", "RECORDING GAP"];
+
+        List<string[]> rows = census.Plans
+            .OrderBy(plan => plan.PlanFolder, StringComparer.OrdinalIgnoreCase)
+            .Select(plan => new[]
+            {
+                plan.PlanFolder,
+                plan.TotalRowsNamingNoModel.ToString(CultureInfo.InvariantCulture),
+                plan.TaskGrainRows.ToString(CultureInfo.InvariantCulture),
+                plan.ScriptActionRows.ToString(CultureInfo.InvariantCulture),
+                plan.RecordingGapRows.ToString(CultureInfo.InvariantCulture)
+            })
+            .ToList();
+
+        int[] widths = MeasureColumns(headers, rows, []);
+
+        io.Out.WriteLine("  " + Line(headers, widths));
+        foreach (string[] cells in rows)
+        {
+            io.Out.WriteLine("  " + Line(cells, widths));
+        }
+    }
+
+    /// <summary>
+    /// What the census could NOT classify, named. A census that quietly omitted this would be the same
+    /// failure its three categories exist to prevent, one level up: the numbers above would look like a
+    /// measurement of everything, and the reader would have no way to see what was left out or how much
+    /// of it there was.
+    /// </summary>
+    private static void RenderCensusOmissions(AttributionCensusResult census, IConsoleIo io)
+    {
+        if (census.UnreadableDefinitions.Count > 0)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                $"  {census.UnreadableDefinitions.Count} task definition(s) could not be read. Their attempt "
+                + "rows are counted in NONE of the");
+            io.Out.WriteLine(
+                "  categories above — recorded, never guessed at:");
+
+            foreach (string definition in census.UnreadableDefinitions)
+            {
+                io.Out.WriteLine($"    {definition}");
+            }
+        }
+
+        if (census.SkippedFolders.Count > 0)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine($"  {census.SkippedFolders.Count} folder(s) contributed no rows:");
+
+            foreach (string folder in census.SkippedFolders)
+            {
+                io.Out.WriteLine($"    {folder}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Say out loud what each category means and — as load-bearing as the numbers — what the census does
+    /// NOT claim: that it counts rows the ETL would write rather than rows read back from a corpus, that
+    /// an attributed attempt is outside it entirely, and that it measures the gap without repairing it
+    /// (§3.3a: Phase 1 owns the split, the fix ships as #577). Same posture as the report's own legend:
+    /// a reader is never left inferring a rigour the data does not have.
+    /// </summary>
+    private static void RenderCensusLegend(IConsoleIo io)
+    {
+        io.Out.WriteLine();
+        io.Out.WriteLine("  task-grain     the ETL's once-per-task sentinel row. It carries the declared tier and that");
+        io.Out.WriteLine("                 tier's source and never a model, so it names none BY CONSTRUCTION.");
+        io.Out.WriteLine("  script         an attempt of a task whose action is a script. A script invokes no model, so");
+        io.Out.WriteLine("                 there is no attribution to record — correct by construction too.");
+        io.Out.WriteLine("  recording gap  an attempt of a task whose action is a prompt, journalled with no model. THE");
+        io.Out.WriteLine("                 ONE category that is a defect, and the whole of what #577 is scoped by.");
+        io.Out.WriteLine("  NOT COUNTED    an attempt that NAMES a model is outside the census: in no category and not");
+        io.Out.WriteLine("                 in the total. So the three categories sum to the total, exactly.");
+        io.Out.WriteLine("  READ FROM      the plan folders, never the corpus — a corpus row cannot be joined back to");
+        io.Out.WriteLine("                 the task.json that says whether the action was a script. These are the rows");
+        io.Out.WriteLine("                 the ETL would write from these journals, counted at the source.");
+        io.Out.WriteLine("  MEASURES ONLY  plan 30 §3.3a — Phase 1 owns the split, and the repair ships as #577. The");
+        io.Out.WriteLine("                 provenance fix (#532) is forward-only, so an older plan folder is mostly");
+        io.Out.WriteLine("                 measuring history; this says how much of it, not that it is closed.");
+    }
 
     // --- purge ------------------------------------------------------------------------------------
 
