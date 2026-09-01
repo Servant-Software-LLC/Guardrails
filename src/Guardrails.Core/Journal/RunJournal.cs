@@ -234,7 +234,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordAttempt(
         string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
-        string? definitionHash = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null)
     {
         lock (_gate)
         {
@@ -248,7 +248,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
-                DefinitionHash = definitionHash ?? entry.DefinitionHash
+                DefinitionHash = definitionHash ?? entry.DefinitionHash,
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
             };
 
             UpdateTask(taskId, updated);
@@ -285,7 +286,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// mergeSequence is set. Called by the Scheduler under the integration lock (B1 step 3).
     /// </summary>
     public void RecordSettle(
-        string taskId, TaskStatus status, long? mergeSequence = null, string? definitionHash = null)
+        string taskId, TaskStatus status, long? mergeSequence = null, string? definitionHash = null,
+        string? definitionHashAtSettle = null)
     {
         lock (_gate)
         {
@@ -294,7 +296,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = status,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
-                DefinitionHash = definitionHash ?? entry.DefinitionHash
+                DefinitionHash = definitionHash ?? entry.DefinitionHash,
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
             };
             UpdateTask(taskId, updated);
 
@@ -311,6 +314,19 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// <see cref="Execution.ISchedulerJournal"/> still declares <see cref="RecordSettle"/> at its pre-plan-32
+    /// 4-parameter arity, and the Scheduler calls it through that interface-typed field. Adding
+    /// <paramref name="definitionHashAtSettle"/>'s optional 5th parameter to the public overload above changed
+    /// its arity, which stops it matching the interface's default-bodied member — without this explicit
+    /// forwarder, every Scheduler call would silently dispatch to the interface's NO-OP default instead of the
+    /// real implementation above. Widening the interface itself belongs to the task that wires a caller to
+    /// actually pass <c>definitionHashAtSettle</c> (plan 32 §6.3/§15); until then this keeps dispatch correct.
+    /// </summary>
+    void Execution.ISchedulerJournal.RecordSettle(
+        string taskId, TaskStatus status, long? mergeSequence, string? definitionHash) =>
+        RecordSettle(taskId, status, mergeSequence, definitionHash);
+
+    /// <summary>
     /// Record the successful settle of a worktree task (issue #196): append <paramref name="attempt"/>
     /// to the task's attempt list AND set Status + MergeSequence atomically. The worktree success path
     /// defers the attempt record to this settle (serial mode records inline via
@@ -321,7 +337,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// </summary>
     public void RecordSettleWithAttempt(
         string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
-        string? definitionHash = null)
+        string? definitionHash = null, string? definitionHashAtSettle = null)
     {
         lock (_gate)
         {
@@ -333,7 +349,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 Status = status,
                 Attempts = attempts,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
-                DefinitionHash = definitionHash ?? entry.DefinitionHash
+                DefinitionHash = definitionHash ?? entry.DefinitionHash,
+                DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle
             };
             UpdateTask(taskId, updated);
 
@@ -348,6 +365,11 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             Persist();
         }
     }
+
+    /// <summary>See <see cref="Execution.ISchedulerJournal.RecordSettle"/>'s forwarder above — same reason.</summary>
+    void Execution.ISchedulerJournal.RecordSettleWithAttempt(
+        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence, string? definitionHash) =>
+        RecordSettleWithAttempt(taskId, attempt, status, mergeSequence, definitionHash);
 
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)

@@ -373,6 +373,16 @@ public sealed record TaskJournalEntry
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DefinitionHash { get; init; }
 
+    /// <summary>
+    /// The task's full-surface definition hash recomputed at settle-time by the executed-definition
+    /// divergence gate (SSOT §7.2, plan 32 §6.3), present ONLY when that gate FIRED on this settle — never
+    /// merely because it differs from <see cref="DefinitionHash"/>. OPTIONAL and additive: an unedited run
+    /// OMITS it (serialized only when non-null via <see cref="JsonIgnoreAttribute"/>), so a settle the gate
+    /// had nothing to say about gains no new key at all.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefinitionHashAtSettle { get; init; }
+
     /// <summary>Attempt records in attempt order (1-based).</summary>
     public IReadOnlyList<AttemptRecord> Attempts { get; init; } = [];
 }
