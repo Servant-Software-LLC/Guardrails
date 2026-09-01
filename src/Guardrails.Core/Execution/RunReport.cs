@@ -138,6 +138,36 @@ public sealed record PendingAttempt
     /// </summary>
     public Journal.AttemptUsage? Usage { get; init; }
 
+    /// <summary>
+    /// The attempt's turn count (plan 30 §3.4), on the same terms as <see cref="Usage"/> immediately
+    /// above: <see cref="Journal.AttemptRecord.Turns"/> is declared but this record was not, so a value
+    /// the journaller would set reaches SERIAL runs only — <c>Scheduler.RecordSucceededSettle</c> builds
+    /// its OWN <see cref="Journal.AttemptRecord"/> from THIS object and never consults the journaller,
+    /// and worktree is the DEFAULT mode. This member's counterpart at the next hop is
+    /// <see cref="Journal.AttemptRecord.Turns"/>.
+    /// </summary>
+    public int? Turns { get; init; }
+
+    /// <summary>
+    /// The attempt's segmented wall-clock duration (plan 30 §3.4), on the same terms as
+    /// <see cref="Turns"/> immediately above and <see cref="Usage"/> before it: the worktree settle
+    /// builds its own <see cref="Journal.AttemptRecord"/> from this object without consulting the
+    /// journaller, so this is the fact's only route to a worktree-mode <c>run.json</c>. This member's
+    /// counterpart at the next hop is <see cref="Journal.AttemptRecord.Segments"/>.
+    /// </summary>
+    public Journal.AttemptSegments? Segments { get; init; }
+
+    /// <summary>
+    /// The task's fingerprint bucket (plan 30 §3.2), on the same "settle builds its own record and never
+    /// consults the journaller" terms as <see cref="Turns"/> and <see cref="Segments"/> above — but TASK
+    /// grain, not attempt grain: this member's counterpart at the next hop is
+    /// <see cref="Journal.TaskJournalEntry.Bucket"/>, NOT a member of <see cref="Journal.AttemptRecord"/>.
+    /// It rides this attempt-grained record anyway because the worktree settle
+    /// (<c>Scheduler.RecordSucceededSettle</c>) is the only place the scheduler learns anything about the
+    /// task at settle time.
+    /// </summary>
+    public string? Bucket { get; init; }
+
     /// <summary>This attempt's log dir, relative to the plan dir (SSOT §7/§8).</summary>
     public required string LogDir { get; init; }
 
