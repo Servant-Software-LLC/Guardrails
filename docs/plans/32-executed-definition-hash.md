@@ -90,6 +90,25 @@ Then D: the SSOT and the domain-knowledge skill, in the same change (invariant 4
 
 ## 4. The mechanism, corrected
 
+```mermaid
+graph TD
+  L["plan load<br/>task.json read ONCE"] --> N["TaskNode in memory<br/>(the definition that RUNS)"]
+  N --> A["attempt executes<br/>the LOADED definition"]
+  E["human edits task.json<br/>MID-RUN"] -.->|"never reaches the run"| N
+  E ==>|"changes the bytes on disk"| D[("task.json on disk")]
+  A --> S{"settle"}
+  S -->|"TODAY: Compute(task)<br/>reads CURRENT DISK"| D
+  S ==>|"stamps the POST-EDIT hash"| J["journal + Guardrails-Task-Hash trailer"]
+  J --> R["later resume<br/>compares disk vs stored"]
+  R --> Q["they MATCH -> no drift reported<br/>SILENT FALSE GREEN"]
+  S -.->|"THIS PLAN: read the pin<br/>captured at load"| N
+```
+
+> **Warning:** **The blend is what hides it.** The recorded hash is computed over both liveness classes at once. For the
+> held-from-load half it records bytes that were never executed; for the re-read-per-attempt half it records
+> bytes that *were*. One hash, two opposite meanings, and the result is indistinguishable from a correct
+> record — which is why no resume can flag it and why this defect has no surface today.
+
 ### 4.1 The asymmetry, stated once
 
 The plan folder has **two liveness classes**, and nothing in the codebase says so:
@@ -194,6 +213,12 @@ why it escaped both tables in the first draft (§4.2).
 ---
 
 ## 5. Milestones A and B — pin at load, stamp the pin
+
+| Candidate | What it does | Verdict |
+|---|---|---|
+| **(1) Stamp the bytes actually executed** — capture at load, journal the pin | The record finally describes what ran, so a later resume compares against a truthful baseline | **Adopted (milestones A + B).** Smallest change that makes the record honest |
+| **(2) Re-read `task.json` per attempt** — match the action prompt's liveness | Removes the asymmetry by making everything live | **Rejected (§5.7).** Makes DAG shape mutable mid-run; the hazards it opens are larger than the one it closes |
+| **(3) Detect the divergence and act on it** | Compares the pin against disk at settle and blocks delivery | **Adopted (milestone C) — and REQUIRED, not a companion.** (1) alone only surfaces on a *resume*, and a green run never resumes, so with `mergeOnSuccess` default-on the false green **ships** |
 
 ### 5.1 The rule
 
@@ -993,7 +1018,7 @@ verifiable on its own.
   the harness *records and delivers*; #557 changes what an agent is *allowed to write*. Absorbing it would
   put a containment change inside a contract change, which is the mistake plan 31 refused to make in the
   other direction.
-- **The plan-edit watch's blindness to JIT-authored waves** (§5.3, fourth point). A real gap in #545 part 3
+- **The plan-edit watch's blindness to JIT-authored waves — #568** (§5.3, fourth point). A real gap in #545 part 3
   as shipped; filed separately (§16). It is one component's wiring, not this contract.
 - **Re-reading `task.json` per attempt** — candidate (2), rejected with reasons (§5.7). Not deferred;
   decided against.
@@ -1003,7 +1028,7 @@ verifiable on its own.
 - **An ignore list on `HashText.EnumerateFolderFiles`.** Plan 31 §14's open migration question, still open,
   still unfunded. This plan is designed so it does not have to be answered (§5.5), and §6.2's filtered gate
   is deliberately NOT that change: it filters what the *gate compares*, never what the *hash covers*.
-- **Containing `GUARDRAILS_TASK_DIR`** (Risk 0). Every action and guardrail is handed the main checkout's
+- **Containing `GUARDRAILS_TASK_DIR` — #569** (Risk 0). Every action and guardrail is handed the main checkout's
   task-folder path (`TaskExecutor.cs:511`, `:2029`), outside the segment worktree and therefore invisible to
   the write-scope check. Real, and it belongs with #557's containment work.
 - **Changing `RecordDriftAccepted`'s behavior for an ordinary between-runs edit** (§6.6). Only the
@@ -1472,29 +1497,38 @@ integration method by name. Its other four methods stay filtered out until stage
 
 ## 16. Decisions this plan leaves to the maintainer
 
-1. **Reopen #556.** Auto-closed at `1490d2a` by plan 31's doc commit (§2). Mechanical, no judgment needed —
-   named here so it is not forgotten.
-2. **File the plan-edit watch's JIT-wave blindness** (§5.3, §12). `Scheduler.cs:143` builds
-   `LivePlanEditWatch` from the run-start `plan`; `SpliceAuthoredWave` returns a new `PlanDefinition` and
-   the field is never rebased, so a JIT-authored wave's tasks are invisible to the #545-part-3 warning and
-   `LivePlanEditWatch.cs:95-100`'s adopt-silently branch appears unreachable in production. Found while
-   evaluating reuse for this design; **not** verified against the test suite, which is why it is a filing
-   rather than a claim. It is a gap in what shipped today, and it belongs to #545's component, not to this
-   contract.
-3. **Whether the divergence gate should eventually stop dispatch** (§6.4, Risk 2). Declined for v1 with
-   reasons. It becomes worth revisiting only if a real run is observed paying materially for post-divergence
-   work — which is a measurement nobody has yet, and YAGNI until then.
-4. **File the `GUARDRAILS_TASK_DIR` escape** (Risk 0, §12). `TaskExecutor.cs:511` and `:2029` hand every
-   action and guardrail the main checkout's task-folder path, outside the segment worktree and therefore
-   invisible to the write-scope check. Today it silently moves a recorded hash; after this plan it halts a
-   run. Belongs with #557's containment work, and should be filed against it rather than left in this
-   document.
-5. **Sequencing against the concurrent #552 work.** At the time of writing, `C:\DevAI\Guardrails` carried
-   uncommitted changes from another session — the log-server gate (#552), including edits to SSOT **§12.1
-   and §12.2**. Those are disjoint from this plan's §7, §7.2 and §14.5 edits, and every anchor quoted in
-   §14 was re-verified against the working tree afterwards. The one practical consequence: **stage 16 and
-   that work will both touch `02-schemas-and-contracts.md`**, so whichever lands second rebases. Named
-   here so it is a scheduling note rather than a merge surprise.
+> **Note:** **Review round 1 is settled.** All three questions below were answered on 2026-09-01 and each answer
+> matched the recommended lean. Both filings the reviewer asked for have been made, and §12 now cites them:
+>
+> - the plan-edit watch's JIT-wave blindness → **#568**
+> - the `GUARDRAILS_TASK_DIR` containment escape → **#569**
+> - stopping dispatch on divergence → deferred to v2, unchanged (Risk 2)
+>
+> One correction found while filing: the watch is constructed at `Scheduler.cs:346`, not `:143` as an
+> earlier draft of the question said. The mechanism is unaffected — `_planEditWatch` is assigned exactly
+> once, so it never rebases after `SpliceAuthoredWave` — but the anchor is now the member, not the line.
+
+> **Note:** **#556 has been reopened.** It was auto-closed at `1490d2a` by plan 31's own doc commit, whose body read
+> *"deliberately does not fix:"* followed by the issue number — GitHub's parser matches the bare word `fix`
+> and binds it across the newline, and the negation is invisible to it. Nothing to decide; recorded so the
+> history reads correctly.
+
+**Q: The plan-edit watch is blind to JIT-authored waves — file it against #545, or fold it into this plan?** — Answered: File it against #545's component
+_Question — id: `jit-wave-watch-blindness`; mode: `single`; target: `human`; options: `File it against #545's component`, `Fold it into this plan`, `Leave it recorded here only`; recommended: `File it against #545's component`_
+_Why: Scheduler.cs:143 builds LivePlanEditWatch from the run-start plan; SpliceAuthoredWave returns a NEW PlanDefinition and the field is never rebased, so a JIT-authored wave's tasks are invisible to the #545-part-3 warning, and LivePlanEditWatch.cs:95-100's adopt-silently branch looks unreachable in production. It is a gap in what shipped this morning, in #545's component, not in this contract - folding it in would mix a second defect into a drift-contract change, which is the exact reason plan 31 refused to absorb #556. Stated as a filing rather than a claim: it was found while evaluating reuse and has NOT been verified against the test suite._
+
+**Q: Should the divergence gate eventually stop dispatch, rather than only blocking delivery?** — Answered: Defer to v2 - revisit only on measured evidence
+_Question — id: `gate-stops-dispatch`; mode: `single`; target: `human`; options: `Defer to v2 - revisit only on measured evidence`, `Build it in this plan`, `Rule it out permanently`; recommended: `Defer to v2 - revisit only on measured evidence`_
+_Why: Declined for v1 in Risk 2 with reasons. Stopping dispatch mid-run means killing in-flight tasks and reasoning about partially-settled state, against a benefit nobody has measured: the cost of the work a run does AFTER a divergence it has already detected. That measurement does not exist yet. Ruling it out permanently would discard a real option on no more evidence than building it would._
+
+**Q: GUARDRAILS_TASK_DIR hands every action the MAIN checkout's task folder, outside the segment worktree - where does that get fixed?** — Answered: File against #557's containment work
+_Question — id: `task-dir-escape`; mode: `single`; target: `human`; options: `File against #557's containment work`, `Fold into this plan`, `File as its own issue`; recommended: `File against #557's containment work`_
+_Why: TaskExecutor.cs:511 and :2029 hand every action and guardrail a path outside the segment worktree, so writes there are invisible to the write-scope check. TODAY that silently moves a recorded hash; AFTER this plan it halts a run - so this plan makes an existing hole louder rather than creating one, which is an argument for fixing it beside #557's containment work rather than inside a drift-contract change. Worth your judgment because the severity changes on the day this ships._
+
+> **Note:** **The #552 sequencing note is resolved.** It warned that this plan's stage 16 and the concurrent
+> log-server work would both touch `02-schemas-and-contracts.md`, so whichever landed second would rebase.
+> #552 has since merged (`bbc5e4f`, released in v1.13.0), so stage 16 rebases against merged master and
+> there is no open collision. Every §14 anchor was re-verified against the working tree after that merge.
 
 **One question deliberately NOT reopened:** whether `HashText.EnumerateFolderFiles` gets an ignore list
 (plan 31 §14). This plan is designed so that question does not have to be answered — it changes *when* the
@@ -1542,3 +1576,7 @@ item was withdrawn:** §16.1 previously said `TaskNode` has *"no `with`-clone an
 `PlanLoader.cs:949` and `:952` both clone. The conclusion survives (init-only properties ride through a
 `with`) but the premise did not, and §5.2 now states the real requirement: no clone may rebind `Directory`
 or `Action`.
+
+<!-- charter: answers-sha256=none -->
+
+<!-- charter: plan-sha256=713392a4122088213862987f5edcac8ffe138ad48269d5c0c3c0d0bf1df925e0 -->

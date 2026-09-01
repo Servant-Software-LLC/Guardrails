@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "charterVersion": "0.26.0",
+  "plan": "32-executed-definition-hash.charter.md",
+  "planSha256": "713392a4122088213862987f5edcac8ffe138ad48269d5c0c3c0d0bf1df925e0",
+  "answers": null,
+  "answersSha256": null,
+  "handoff": "32-executed-definition-hash.md",
+  "handoffSha256": "b19451182ed6024c9c955dbfbcd6dc38055683c097f3101f9a25e5225f5bfa1b",
+  "malformedQuestions": 0,
+  "gate": {
+    "flagPassed": true,
+    "needsHuman": false,
+    "exitCode": 0,
+    "blockers": [],
+    "unmatchedAnswerIds": []
+  },
+  "questions": [
+    {
+      "id": "jit-wave-watch-blindness",
+      "title": "The plan-edit watch is blind to JIT-authored waves \u2014 file it against #545, or fold it into this plan?",
+      "sourceLine": 1531,
+      "answered": true,
+      "answer": [
+        "File it against #545\u0027s component"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "gate-stops-dispatch",
+      "title": "Should the divergence gate eventually stop dispatch, rather than only blocking delivery?",
+      "sourceLine": 1540,
+      "answered": true,
+      "answer": [
+        "Defer to v2 - revisit only on measured evidence"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "task-dir-escape",
+      "title": "GUARDRAILS_TASK_DIR hands every action the MAIN checkout\u0027s task folder, outside the segment worktree - where does that get fixed?",
+      "sourceLine": 1549,
+      "answered": true,
+      "answer": [
+        "File against #557\u0027s containment work"
+      ],
+      "answerSource": "inline"
+    }
+  ]
+}
