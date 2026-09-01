@@ -45,9 +45,10 @@ $ErrorActionPreference = 'Continue'
 $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
-# Every path any task in this plan writes, derived mechanically from the sixteen writeScopes.
+# Every path any task in this plan writes, derived mechanically from the seventeen writeScopes.
 $paths = @(
     'tests/Guardrails.Core.Tests/Journal/ExecutedDefinitionHashTests.cs',
+    'tests/Guardrails.Core.Tests/SchedulerWaveExecutionTests.cs',
     'tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs',
     'src/Guardrails.Core/Model/TaskNode.cs',
     'src/Guardrails.Core/Loading/PlanLoader.cs',
