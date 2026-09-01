@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -104,6 +105,14 @@ public sealed class Scheduler
     // (RunReport.Observations). Each is ALSO already durable in decisions[] and already emitted live;
     // this is the report's copy. Written under _gate by PollPlanEdits.
     private readonly List<DecisionEntry> _planEditObservations = [];
+
+    // #556 (§6.3): the settle-time executed-definition divergences this run detected, in settle order — a
+    // task that SETTLED against a definition whose files had already moved on disk. Each is ALSO already
+    // durable in decisions[] and already emitted live; this is the report's copy, and BuildReport turns a
+    // non-empty list into RunReport.ExecutedDefinitionDivergence, whose single AllSucceeded term blocks the
+    // delivery. Written under _gate by CheckExecutedDefinitionDivergence, which runs from the parallel
+    // worker loop.
+    private readonly List<DivergedTask> _executedDefinitionDivergences = [];
 
     public Scheduler(
         PlanDefinition plan,
@@ -430,6 +439,260 @@ public sealed class Scheduler
             return _planEditObservations.Count == 0 ? [] : _planEditObservations.ToArray();
         }
     }
+
+    /// <summary>
+    /// <b>The settle-time executed-definition divergence gate</b> (SSOT §7.2, issue #556), run at every
+    /// SUCCESSFUL settle. Stamping the load-time pin makes the next RESUME honest; this makes THIS run
+    /// honest, which is the only thing that helps a run that finishes green and therefore never resumes.
+    ///
+    /// <para><b>It diffs two per-file MAPS over the same filtered surface, never two aggregates.</b> Before
+    /// is <see cref="TaskNode.DefinitionFilesAtLoad"/>, captured by the loader from the bytes it read; after
+    /// is the same per-file walk taken now. Comparing the full-surface pin against a filtered recompute
+    /// would hash two different file sets, so a task merely CARRYING an editor artifact would differ with
+    /// nobody having edited anything. The verdict — "some label's hash moved, or a label appeared or
+    /// vanished" — is also exactly what the halt has to report, so the diff is not extra work done for the
+    /// check: it IS the check.</para>
+    ///
+    /// <para><b>Both sides are filtered, and that is not a detail.</b> The load-time capture is deliberately
+    /// UNFILTERED (§5.2), so filtering only the settle walk would leave any artifact present AT LOAD in the
+    /// before map and absent from the after map — it would read as a VANISHED label and block delivery on a
+    /// run nobody edited: a Finder metadata file already in the checkout, an editor swap file from opening a
+    /// guardrail to READ it, a merge leftover from any pre-run git operation. Both sides therefore run
+    /// through <see cref="LivePlanEditWatch.IsEditorArtifact"/> — ONE home for the ignore list, so a future
+    /// pattern cannot reach one reporting surface and miss the other.</para>
+    ///
+    /// <para><b>Silent for anything that is not a completed success.</b> A non-succeeded settle certifies
+    /// nothing, and a resume SKIP never reaches here at all (the drain settles those directly). A node with
+    /// no pin — one the loader did not build — records nothing and recomputes nothing: there is no fallback
+    /// to disk at any write site, ever.</para>
+    /// </summary>
+    private void CheckExecutedDefinitionDivergence(TaskNode task, TaskResult result)
+    {
+        if (result.Outcome != TaskOutcome.Succeeded
+            || task.DefinitionHashAtLoad is not { } hashAtLoad
+            || task.DefinitionFilesAtLoad is not { } filesAtLoad)
+        {
+            return;
+        }
+
+        DefinitionSurface? atSettle = ReadDefinitionSurfaceNow(task);
+        if (atSettle is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<ChangedDefinitionFile> moved =
+            DiffDefinitionSurfaces(FilterEditorArtifacts(filesAtLoad), atSettle.Files);
+        if (moved.Count == 0)
+        {
+            return;
+        }
+
+        var diverged = new DivergedTask
+        {
+            TaskId = task.Id,
+            HashAtLoad = hashAtLoad,
+            HashAtSettle = atSettle.Hash,
+            MovedFiles = moved
+        };
+
+        lock (_gate)
+        {
+            _executedDefinitionDivergences.Add(diverged);
+        }
+
+        // The durable half of §6.3, in the order the record has to be written: the settle already stamped
+        // `succeeded` WITH THE PIN (that is unconditional — the settle is never refused), and the on-disk
+        // value goes beside it as `definitionHashAtSettle`. Its presence is driven by THIS GATE'S VERDICT,
+        // never by hash inequality: a stray editor artifact moves the recorded hash relative to disk without
+        // the gate firing, and a field written on inequality would appear on a green, delivering run.
+        RecordDefinitionHashAtSettle(task.Id, atSettle.Hash);
+
+        DecisionEntry entry = ExecutedDefinitionDivergenceDecision(diverged);
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+    }
+
+    /// <summary>
+    /// One task's definition surface as it is on disk RIGHT NOW: the full-surface aggregate (what
+    /// <c>definitionHashAtSettle</c> records) and the ignore-list-filtered per-file map (what the diff
+    /// compares). One walk produces both, which is the whole cost of the gate.
+    ///
+    /// <para><b>Why the aggregate is folded here rather than obtained from the hasher.</b> The two are the
+    /// same string by construction — each file's segment appended by
+    /// <see cref="Hashing.HashText.AppendFile"/>, in <see cref="Journal.TaskDefinitionFiles.Enumerate"/>
+    /// order, SHA-256'd with the <c>sha256:</c> prefix — because both fold the SAME primitive over the SAME
+    /// enumeration; that is also exactly how <c>LivePlanEditWatch.TryHashFile</c> and the loader's own
+    /// per-file capture stay in step with the hash without duplicating its file set. Folding it beside the
+    /// per-file hashes costs one walk instead of two, and keeps this a READ of current disk rather than a
+    /// new stamping site for the executed-definition record — which is the pin, and only ever the pin.</para>
+    ///
+    /// <para>Null when the surface cannot be read right now (a share-lock, an indexer, a vanished folder):
+    /// unreadable is UNKNOWN, never "the definition moved". A partially-read walk would be worse than
+    /// silence — it would halt a delivery on a transient lock.</para>
+    /// </summary>
+    private static DefinitionSurface? ReadDefinitionSurfaceNow(TaskNode task)
+    {
+        var aggregate = new StringBuilder();
+        var files = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        try
+        {
+            foreach ((string label, string absolutePath) in Journal.TaskDefinitionFiles.Enumerate(task))
+            {
+                var segment = new StringBuilder();
+                Hashing.HashText.AppendFile(segment, label, absolutePath);
+
+                // The RECORDED hash keeps the full unfiltered surface — an artifact is part of a task's
+                // definition today and must stay that way, or every recorded hash in every plan moves.
+                aggregate.Append(segment);
+
+                // The GATE is quieter. Filtered on the LABEL, which is the only key the load-time map has:
+                // both sides must key on the SAME string, or a file filtered on one side alone reads as a
+                // label that appeared or vanished.
+                if (LivePlanEditWatch.IsEditorArtifact(label))
+                {
+                    continue;
+                }
+
+                files[label] = Sha256Hex(segment.ToString());
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        return new DefinitionSurface("sha256:" + Sha256Hex(aggregate.ToString()), files);
+    }
+
+    /// <summary>
+    /// The load-time map with the editor/OS artifacts dropped — the same predicate, the same key, applied to
+    /// the side that was captured UNFILTERED because the ignore list lives in exactly one place and that
+    /// place was not reachable from the loader.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> FilterEditorArtifacts(
+        IReadOnlyDictionary<string, string> filesAtLoad)
+    {
+        var kept = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, string> file in filesAtLoad)
+        {
+            if (!LivePlanEditWatch.IsEditorArtifact(file.Key))
+            {
+                kept[file.Key] = file.Value;
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>
+    /// What moved between the definition the task EXECUTED and the one on disk at its settle, in enumeration
+    /// order (added/modified first, then the labels that vanished, in their old order) — the same vocabulary
+    /// the resume-time drift breakdown reports, so the two halts read alike.
+    /// </summary>
+    private static IReadOnlyList<ChangedDefinitionFile> DiffDefinitionSurfaces(
+        IReadOnlyDictionary<string, string> before, IReadOnlyDictionary<string, string> after)
+    {
+        var moved = new List<ChangedDefinitionFile>();
+
+        foreach (KeyValuePair<string, string> file in after)
+        {
+            if (!before.TryGetValue(file.Key, out string? old))
+            {
+                moved.Add(new ChangedDefinitionFile { Path = AsDefinitionPath(file.Key), Change = "added" });
+            }
+            else if (!string.Equals(old, file.Value, StringComparison.Ordinal))
+            {
+                moved.Add(new ChangedDefinitionFile { Path = AsDefinitionPath(file.Key), Change = "modified" });
+            }
+        }
+
+        foreach (KeyValuePair<string, string> file in before)
+        {
+            if (!after.ContainsKey(file.Key))
+            {
+                moved.Add(new ChangedDefinitionFile { Path = AsDefinitionPath(file.Key), Change = "removed" });
+            }
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// The enumeration label as a PATH. <c>task.json</c>, <c>guardrails/…</c> and <c>preflights/…</c> already
+    /// read as task-folder-relative paths; the action file's label carries an <c>action:</c> prefix that does
+    /// not, so it is dropped rather than printed at an operator who is about to go and open the file.
+    /// </summary>
+    private static string AsDefinitionPath(string label)
+    {
+        const string actionPrefix = "action:";
+        return label.StartsWith(actionPrefix, StringComparison.Ordinal) ? label[actionPrefix.Length..] : label;
+    }
+
+    /// <summary>
+    /// Record the on-disk hash at settle beside the pin the settle already stamped (SSOT §7.2
+    /// <c>definitionHashAtSettle</c>). Nulls for the other fields PRESERVE what the settle wrote — the status
+    /// stays <c>succeeded</c>, the merge sequence and the recorded pin are untouched — so this adds the new
+    /// field and changes nothing else. Written only when the journal is the real
+    /// <see cref="Journal.RunJournal"/>: a unit-test fake models neither the field nor the durable document,
+    /// exactly as the autonomy detail stream is written.
+    /// </summary>
+    private void RecordDefinitionHashAtSettle(string taskId, string hashAtSettle)
+    {
+        if (_journal is not Journal.RunJournal runJournal)
+        {
+            return;
+        }
+
+        runJournal.RecordSettle(
+            taskId, JournalTaskStatus.Succeeded, mergeSequence: null, definitionHash: null,
+            definitionHashAtSettle: hashAtSettle);
+    }
+
+    /// <summary>
+    /// The ONE <c>decisions[]</c> entry a divergence appends (§6.3): the <c>definition-divergence</c>
+    /// boundary with the shipped <see cref="DecisionTokens.Halted"/> token, naming the task and — straight
+    /// from the map diff, at no extra cost — which definition files moved.
+    /// </summary>
+    private DecisionEntry ExecutedDefinitionDivergenceDecision(DivergedTask diverged)
+    {
+        var lines = new List<string>
+        {
+            $"{diverged.TaskId}: executed {ShortHash(diverged.HashAtLoad)}, "
+            + $"on disk at settle {ShortHash(diverged.HashAtSettle)}"
+        };
+        lines.AddRange(diverged.MovedFiles.Select(f => $"{f.Change,-8}  {f.Path}"));
+
+        return new DecisionEntry
+        {
+            Boundary = ExecutedDefinitionDivergenceDecisions.Boundary,
+            Policy = AutonomyPolicies.Token(_plan.Config.AutonomyPolicy),
+            Decision = DecisionTokens.Halted,
+            Subject = diverged.TaskId,
+            Headline = $"Definition of '{diverged.TaskId}' moved on disk while it was running: "
+                       + $"{diverged.MovedFiles.Count} definition file(s) — the task was verified against the "
+                       + "definition loaded at run start, so this run does not deliver",
+            Detail = string.Join("\n", lines)
+        };
+    }
+
+    /// <summary>The report's copy of this run's divergences, read under <see cref="_gate"/>.</summary>
+    private ExecutedDefinitionDivergenceReport? ExecutedDefinitionDivergenceSnapshot()
+    {
+        lock (_gate)
+        {
+            return _executedDefinitionDivergences.Count == 0
+                ? null
+                : new ExecutedDefinitionDivergenceReport { Tasks = _executedDefinitionDivergences.ToArray() };
+        }
+    }
+
+    private static string Sha256Hex(string text) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+
+    /// <summary>One task's on-disk definition surface: the FULL-surface aggregate and the FILTERED per-file map.</summary>
+    private sealed record DefinitionSurface(string Hash, IReadOnlyDictionary<string, string> Files);
 
     /// <summary>
     /// A FLAT plan: ONE drain over every task, then the legacy terminal integration gate (§3.3, when no
@@ -3751,6 +4014,14 @@ public sealed class Scheduler
             }
         }
 
+        // #556 §6.3 — the settle-time divergence gate, on the FINAL settled result and therefore once per
+        // task, whichever settle produced it: serial mode (the executor already journaled), the worktree B1
+        // deferred settle, or a #550 re-drive adopted a moment ago. It never refuses the settle, never
+        // cancels in-flight work and never stops dispatch — the run drains to completion and only DELIVERY
+        // stops, because every later task carries its own pin and its own check, so nothing after a
+        // divergence goes undetected and killing workers would discard paid work for no correctness gain.
+        CheckExecutedDefinitionDivergence(task, result);
+
         var newlyReady = new List<TaskEnvelope>();
         var newlyBlocked = new List<TaskResult>();
 
@@ -4325,11 +4596,16 @@ public sealed class Scheduler
         // Every report this run produces — green, halted, cancelled — comes through here, so the terminal
         // surface of the plan-edit advisory is carried on ALL of them (plan 31 §5.4). An operator who edited
         // the plan folder during a run that then halted for an unrelated reason still needs to be told.
+        //
+        // The #556 divergence rides the same seam and for a sharper reason: it is what makes AllSucceeded
+        // false, so a report built anywhere that missed it would be a report that DELIVERS a run the gate
+        // already found a divergence in.
         return new RunReport
         {
             Tasks = results,
             Cancelled = cancelled,
-            Observations = PlanEditObservationsSnapshot()
+            Observations = PlanEditObservationsSnapshot(),
+            ExecutedDefinitionDivergence = ExecutedDefinitionDivergenceSnapshot()
         };
     }
 
