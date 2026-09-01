@@ -424,6 +424,15 @@ internal sealed record GuardrailRunResult
     public required bool TimedOut { get; init; }
 
     /// <summary>
+    /// Milliseconds the guardrail suite itself ran (plan 30 §3.4), or null when unmeasured — the
+    /// GUARDRAIL half of <see cref="Journal.AttemptSegments"/>, whose ACTION half is
+    /// <see cref="ActionRun.ActionMs"/>. Exposed as a member rather than left a local inside the runner
+    /// for the same reason <see cref="Judge"/> below is: a datum the harness computes and never
+    /// publishes is structurally dead.
+    /// </summary>
+    public long? GuardrailMs { get; init; }
+
+    /// <summary>
     /// The §6.5 VERIFIER route that graded this pass (DoR §12.4) — the first PROMPT guardrail's
     /// resolution, already in the journal's own shape so the caller folds it onto the attempt's
     /// provenance verbatim.
