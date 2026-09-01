@@ -45,10 +45,22 @@ if (-not (Test-Path $project)) {
     exit 1
 }
 
-# Stage 7 -> MidRunDefinitionEditTests; stage 11 -> DivergenceDeliveryGateTests. PlanEditedDuringRun
-# Tests is NOT excluded - see the block comment above.
+# Stage 7 -> MidRunDefinitionEditTests; stage 11 -> DivergenceDeliveryGateTests.
+#
+# RESUME CORRECTION. The block comment above argues PlanEditedDuringRunTests must stay INSIDE this
+# baseline, and its goal is right: proving P16's AStrayDsStoreMidRun_ green BEFORE the DAG is what
+# makes a later red attributable to the new gate. But its stated premise - "this preflight runs ONCE,
+# pre-DAG, against the STARTING bytes, where stage 2 has not run" - is FALSE ON A RESUME. The pre-DAG
+# phase re-runs whenever PlanHash moves, and by then stage 2 HAS landed and merged. It reddens
+# AGuardrailEditedMidRun_ deliberately (the post-gate contract, true only once stage 13 ships), so
+# this baseline halted a correct run on a red the plan itself created. MEASURED: 1 failed / 1049
+# passed, that method alone.
+#
+# So exclude the ONE METHOD stage 2 inverts, not the class. P16's AStrayDsStoreMidRun_ stays inside
+# the baseline and keeps doing the job the block comment describes.
 $filter = 'FullyQualifiedName!~MidRunDefinitionEditTests' +
-          '&FullyQualifiedName!~DivergenceDeliveryGateTests'
+          '&FullyQualifiedName!~DivergenceDeliveryGateTests' +
+          '&FullyQualifiedName!~AGuardrailEditedMidRun_EmitsExactlyOneObservedPlanEditDecision'
 
 # NO -v q on a TEST command (#462/#179).
 $log = & dotnet test $project --nologo --filter $filter 2>&1 | Out-String

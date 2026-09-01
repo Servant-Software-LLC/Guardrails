@@ -1043,7 +1043,7 @@ absence:
   the loud post-summary banner (#340/#542) says so. Read to the end of the output and check
   `git branch --no-merged master` before claiming this shipped.
 
-**Sizing.** Sixteen stages — eight test-authoring, seven implementation, one documentation. **No new source
+**Sizing.** Seventeen stages — nine test-authoring, seven implementation, one documentation. (The seventeenth was added after a run halted at stage 13; §15.1a records why.) **No new source
 file.** No stage touches more than four files, and the `Scheduler.cs` edits are each a small number of
 expression-level changes at sites this design names by line. Nothing needs model tiering, local inference
 or network access.
@@ -1310,7 +1310,8 @@ rule, and the divergence gate's effect on delivery and exit code.
 ## 15. Implementation handoff
 
 Sequenced; each stage green before the next. Stages 1–7 are **milestone A**, 8–9 **milestone B**, 10–15
-**milestone C**, and 16 the SSOT.
+**milestone C**, 16 the SSOT, and **17 a fixture re-baseline milestone C forces** (§15.1a) — a root, like
+stage 2, that stage 13 depends on.
 
 > **Filtered test guardrails, and the ONE test that may never be filtered out.** Stage 2 re-baselines two
 > of `PlanEditedDuringRunTests`' methods to the final contract, so that file carries red until its
@@ -1358,6 +1359,7 @@ GR2068/GR2069 (§15.3).
 | 14 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/PlanEditedDuringRunTests.cs` | the same path | **§15.1 rows 3–5** — the three assertions in `TheRenderedText_CarriesAllThreeSection51Consequences` that depend on the CLI advisory string, authored RED immediately before the stage that changes it rather than eleven stages earlier. |
 | 15 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | the same path | The halt rendered in the **normal end-of-run path**, **exit 2**; `RenderPlanEditWarning`'s advisory text corrected (§15.1); the terminal-gate *not-evaluated* fix at `planGuardrailsPassed`; `DescribeDelivery`'s reason; and the `[a]` refusal for divergence-originated drift (§6.6). Carries the full unfiltered `tests-pass`. Commit body carries a literal `Fixes #556`. |
 | 16 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | the same two paths | §14's edits, items 1–8. |
+| 17 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/SchedulerWaveExecutionTests.cs` | the same path | **Added after a run halted at stage 13 (§15.1a).** Two shipped wave-resume fixtures model a resume as a second scheduler run over the **same in-memory plan**, so run 2's `TaskNode`s carry pins from before the fixture's own on-disk edit and the settle-time gate correctly reports a divergence. Run 2 gets its own `b.Load().Plan!`, as a real resume does. **Every assertion untouched.** A ROOT (`dependsOn: []`, like stage 2), and **stage 13 `dependsOn` it** so the fixture is correct before the gate lands. |
 
 > **Overlapping write scopes, and why each is expected.** `PlanLoader.cs` is claimed by stages 3 and 9;
 > `Scheduler.cs` by stages 5, 9 and 13. Overlap serializes those tasks, which costs nothing because this
@@ -1474,8 +1476,9 @@ when **one** task covers **every** candidate.
 | 14 | 1 (`PlanEditedDuringRunTests.cs`) | `tests` | {2, 14} | clean — **one task (14) covers it** |
 | 15 | 1 | `src` | {15} | clean |
 | 16 | 2 | `docs`, `.claude` | {16}, {16} | clean |
+| 17 | 1 | `tests` | {17} | clean |
 
-**Predicted: GR2068 ×0, GR2069 ×0.** Sixteen rows, sixteen tasks, `filesTouched` == `writeScope` per row.
+**Predicted: GR2068 ×0, GR2069 ×0.** Seventeen rows, seventeen tasks, `filesTouched` == `writeScope` per row. Row 17 was added later (§15.1a) and re-checked the same way: one candidate, anchor root `tests`, covered by task 17 alone.
 
 **Two rows now share a file deliberately, and neither trips GR2069.** Rows 2 and 14 both name
 `PlanEditedDuringRunTests.cs` (§15.1's split). GR2069 asks whether **some single** task covers **all** of a

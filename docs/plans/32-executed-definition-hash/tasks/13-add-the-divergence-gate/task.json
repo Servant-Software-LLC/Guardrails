@@ -3,7 +3,8 @@
   "dependsOn": [
     "09-pin-the-wave-twin",
     "11-author-tests-delivery-gate",
-    "12-add-the-divergence-record"
+    "12-add-the-divergence-record",
+    "17-rebaseline-wave-resume-fixture"
   ],
   "stableId": "p32t13",
   "writeScope": [

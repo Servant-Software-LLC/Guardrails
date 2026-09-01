@@ -16,12 +16,28 @@ $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 # NAMESPACE-QUALIFIED, and it is not decoration (#455 companion (a)): stage 8's class
-# 'WaveExecutedDefinitionHashTests' CONTAINS the substring 'ExecutedDefinitionHashTests', so the bare
-# class term would silently widen to select stage 8's file too once it lands - and stage 8's tests are
-# legitimately RED until stage 9, which would fail this stage for a reason it cannot fix. The namespace
-# prefix breaks the containment because stage 8's FQN reads ...Journal.WaveExecutedDefinitionHashTests.
-# This is the SAME string stage 1's inverse census uses; copy it verbatim, never re-derive it.
-$filter = 'FullyQualifiedName~Guardrails.Core.Tests.Journal.ExecutedDefinitionHashTests'
+# 'WaveExecutedDefinitionHashTests' CONTAINS the substring 'ExecutedDefinitionHashTests', so a BARE class
+# term would silently widen to select stage 8's file too once it lands. The FQN prefix is what breaks the
+# containment - 'Guardrails.Core.Tests.WaveExecutedDefinitionHashTests' does NOT contain
+# 'Guardrails.Core.Tests.ExecutedDefinitionHashTests', because the '.' separator sits between the prefix
+# and the 'Wave'. Verified against every other class this plan authors and every existing class in the
+# project.
+#
+# THE PREFIX IS 'Guardrails.Core.Tests', NOT 'Guardrails.Core.Tests.Journal' - and that is a CORRECTION
+# made after a run halted here with a defective-guardrail escalation. The file lives in the Journal/
+# FOLDER, but declaring `namespace Guardrails.Core.Tests.Journal` anywhere in this assembly introduces a
+# `Journal` member under `Guardrails.Core.Tests`, which then WINS the enclosing-namespace walk over the
+# production `Guardrails.Core.Journal` for every unqualified `Journal.X` reference in the assembly. Three
+# files break with CS0234, all outside task 01's write scope: OverwatchNoVerdictTests.cs:355
+# (`Journal.TaskStatus.Running`), the shared helper WavePlanBuilder.cs, and - the part that makes this
+# unarguable - Journal/JudgeSpendRecordingTests.cs, the sibling task 01's prompt says to MIRROR, whose
+# own header comment at :9-14 documents this exact hazard verbatim and names OverwatchNoVerdictTests.cs.
+# Folder and namespace are deliberately decoupled in that folder; this filter follows the namespace.
+#
+# Stage 8's tests are legitimately RED until stage 9, so widening onto them would fail THIS stage for a
+# reason it cannot fix. This is the SAME string stage 1's inverse census uses; copy it verbatim, never
+# re-derive it.
+$filter = 'FullyQualifiedName~Guardrails.Core.Tests.ExecutedDefinitionHashTests'
 
 # NO -v q on a TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block, leaving
 # only the [FAIL] line for the re-emit below to find - defeating #179 by the flag alone (#462).
@@ -50,7 +66,7 @@ if ($testExit -ne 0) {
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
 if ($ran -lt 1) {
-    Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The filter '$filter' matched no tests, is malformed, or every match is [Skip]ped. Check it against the class stage 1 actually authored: namespace Guardrails.Core.Tests.Journal, class ExecutedDefinitionHashTests."
+    Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The filter '$filter' matched no tests, is malformed, or every match is [Skip]ped. Check it against the class stage 1 actually authored: namespace Guardrails.Core.Tests (FLAT - the file is in the Journal/ folder but the namespace is not nested, because nesting it shadows the production Guardrails.Core.Journal for the whole assembly), class ExecutedDefinitionHashTests."
     exit 1
 }
 Write-Output "Serial write sites verified: $ran pins executed, none failed."

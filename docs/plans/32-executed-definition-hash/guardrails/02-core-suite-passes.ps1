@@ -8,10 +8,25 @@
 #                                        every read; a red here means the pinned form REPLACED it rather
 #                                        than landing beside it, which also re-stales every wave review
 #                                        marker keyed on it.
-#            SchedulerWaveExecutionTests - the wave RESUME path. The wave-drift COMPARE still recomputes
-#                                        from disk while the WRITE is now pinned, so the two must be
-#                                        byte-identical on an unedited tree. If they are not, every
-#                                        completed wave reads as drifted on the next resume.
+#            SchedulerWaveExecutionTests - the wave RESUME path, and it can go red for TWO UNRELATED
+#                                        reasons. Say which before debugging, or the trail is cold:
+#                                        (a) STAGE 9 - the wave-drift COMPARE still recomputes from disk
+#                                            while the WRITE is now pinned, so the two must be
+#                                            byte-identical on an unedited tree. If they are not, every
+#                                            completed wave reads as drifted on the next resume, and the
+#                                            failures cluster on the wave-drift tests as a GROUP;
+#                                        (b) STAGE 13 + STAGE 17 - exactly TWO of its methods
+#                                            (WaveDrift_CompletedWaveChanged_AutoPolicy_RewindsAndReRuns_
+#                                            WithWaveBoundaryDecision and PendingFutureWaveEdit_IsNotDrift_
+#                                            RunsNormally) modelled a resume as a second scheduler run over
+#                                            the SAME in-memory plan, so run 2's nodes carried pins from
+#                                            before the fixture's own on-disk edit and the settle-time gate
+#                                            correctly reported a divergence. Stage 17 re-baselines those
+#                                            two to load run 2's plan from disk, as a real resume does. If
+#                                            ONLY those two are red, this is (b) and stage 17 did not land
+#                                            or was reverted - NOT a fold mismatch.
+#                                        The discriminator is the SET: (a) is a group of wave-drift
+#                                        failures, (b) is exactly those two names and nothing else.
 #          It also carries this plan's own two Core deliverables - ExecutedDefinitionHashAnchorTests (the
 #          repo-lifetime call-site tripwire) and ExecutedDefinitionDivergenceTests (the silence and
 #          provenance pins).
@@ -41,7 +56,7 @@ if ($testExit -ne 0) {
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "the Core suite is red on the merged HEAD. If the failures are in TaskDefinitionHashTests or WaveDefinitionHashTests, a recorded hash MOVED - section 5.5's no-op property is broken and this plan now owes the repo-wide drift wave it was designed to avoid; restore the bytes rather than editing the suite. If they are in SchedulerWaveExecutionTests, the pinned wave fold is not byte-identical to the disk fold, so every completed wave reads as drifted on resume."
+    Write-Output "the Core suite is red on the merged HEAD. If the failures are in TaskDefinitionHashTests or WaveDefinitionHashTests, a recorded hash MOVED - section 5.5's no-op property is broken and this plan now owes the repo-wide drift wave it was designed to avoid; restore the bytes rather than editing the suite. If they are in SchedulerWaveExecutionTests, read WHICH ones before assuming a cause - there are two, and they are unrelated. EXACTLY TWO methods red (WaveDrift_CompletedWaveChanged_AutoPolicy_RewindsAndReRuns_WithWaveBoundaryDecision and PendingFutureWaveEdit_IsNotDrift_RunsNormally) means stage 17's fixture re-baseline did not land or was reverted: those two modelled a resume as a second run over the SAME in-memory plan, so run 2 carried pins from before the fixture's own on-disk edit and the settle-time gate correctly reported a divergence. Fix the fixture, not the gate. A GROUP of wave-drift failures instead means the stage 9 pinned wave fold is not byte-identical to the disk fold, so every completed wave reads as drifted on resume."
     exit 1
 }
 

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=e54d765260918f8c34621d31722f324efb4c34e146e82666d9ca883d2a3a960d -->
+<!-- guardrails:graph v1 source-sha256=3e8174358e54b0ab4ccbeb95bd249b702b1e3809e9aaa863f42d9ad81ec03cfa -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -197,6 +197,12 @@
     task_16_record_in_ssot_and_skills_gr_1["02-skill-carries-the-execution-semantics"]:::guardrail
   end
   style task_16_record_in_ssot_and_skills fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_17_rebaseline_wave_resume_fixture["17-rebaseline-wave-resume-fixture"]
+    task_17_rebaseline_wave_resume_fixture_gr_0["01-build-passes"]:::guardrail
+    task_17_rebaseline_wave_resume_fixture_gr_1["02-run-two-loads-its-own-plan"]:::guardrail
+    task_17_rebaseline_wave_resume_fixture_gr_2["03-wave-resume-tests-still-pass"]:::guardrail
+  end
+  style task_17_rebaseline_wave_resume_fixture fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-core-suite-passes"]:::guardrail
@@ -207,6 +213,7 @@
   plan_preflights --> task_01_author_tests_executed_hash
   plan_preflights --> task_02_rebaseline_plan_edit_hash_assertions
   plan_preflights --> task_03_pin_the_definition_at_load
+  plan_preflights --> task_17_rebaseline_wave_resume_fixture
   task_01_author_tests_executed_hash --> task_04_stamp_the_pin_serial_and_revalidate
   task_02_rebaseline_plan_edit_hash_assertions --> task_04_stamp_the_pin_serial_and_revalidate
   task_03_pin_the_definition_at_load --> task_04_stamp_the_pin_serial_and_revalidate
@@ -226,6 +233,7 @@
   task_13_add_the_divergence_gate --> task_14_rebaseline_advisory_assertions
   task_14_rebaseline_advisory_assertions --> task_15_render_the_divergence_halt
   task_15_render_the_divergence_halt --> task_16_record_in_ssot_and_skills
+  task_17_rebaseline_wave_resume_fixture --> task_13_add_the_divergence_gate
   task_16_record_in_ssot_and_skills --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
@@ -275,11 +283,14 @@
   click task_15_render_the_divergence_halt_gr_2 href "tasks/15-render-the-divergence-halt/guardrails/03-accept-is-refused-for-divergence.ps1" "03-accept-is-refused-for-divergence" _blank
   click task_16_record_in_ssot_and_skills_gr_0 href "tasks/16-record-in-ssot-and-skills/guardrails/01-ssot-carries-the-contract.ps1" "01-ssot-carries-the-contract" _blank
   click task_16_record_in_ssot_and_skills_gr_1 href "tasks/16-record-in-ssot-and-skills/guardrails/02-skill-carries-the-execution-semantics.ps1" "02-skill-carries-the-execution-semantics" _blank
+  click task_17_rebaseline_wave_resume_fixture_gr_0 href "tasks/17-rebaseline-wave-resume-fixture/guardrails/01-build-passes.ps1" "01-build-passes" _blank
+  click task_17_rebaseline_wave_resume_fixture_gr_1 href "tasks/17-rebaseline-wave-resume-fixture/guardrails/02-run-two-loads-its-own-plan.ps1" "02-run-two-loads-its-own-plan" _blank
+  click task_17_rebaseline_wave_resume_fixture_gr_2 href "tasks/17-rebaseline-wave-resume-fixture/guardrails/03-wave-resume-tests-still-pass.ps1" "03-wave-resume-tests-still-pass" _blank
   click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
   click plan_guardrails_1 href "guardrails/02-core-suite-passes.ps1" "02-core-suite-passes" _blank
   click plan_guardrails_2 href "guardrails/03-integration-suite-passes.ps1" "03-integration-suite-passes" _blank
   click plan_guardrails_3 href "guardrails/04-union-artifacts-sound.ps1" "Union invariant: every file this plan produces is, IF present, non-empty and conflict-marker-free" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_01_author_tests_executed_hash":"tasks/01-author-tests-executed-hash/","task_02_rebaseline_plan_edit_hash_assertions":"tasks/02-rebaseline-plan-edit-hash-assertions/","task_03_pin_the_definition_at_load":"tasks/03-pin-the-definition-at-load/","task_04_stamp_the_pin_serial_and_revalidate":"tasks/04-stamp-the-pin-serial-and-revalidate/","task_05_stamp_the_pin_worktree":"tasks/05-stamp-the-pin-worktree/","task_06_author_anchor_tests_hash_sites":"tasks/06-author-anchor-tests-hash-sites/","task_07_author_tests_mid_run_definition_edit":"tasks/07-author-tests-mid-run-definition-edit/","task_08_author_tests_wave_executed_hash":"tasks/08-author-tests-wave-executed-hash/","task_09_pin_the_wave_twin":"tasks/09-pin-the-wave-twin/","task_10_author_tests_divergence_record":"tasks/10-author-tests-divergence-record/","task_11_author_tests_delivery_gate":"tasks/11-author-tests-delivery-gate/","task_12_add_the_divergence_record":"tasks/12-add-the-divergence-record/","task_13_add_the_divergence_gate":"tasks/13-add-the-divergence-gate/","task_14_rebaseline_advisory_assertions":"tasks/14-rebaseline-advisory-assertions/","task_15_render_the_divergence_halt":"tasks/15-render-the-divergence-halt/","task_16_record_in_ssot_and_skills":"tasks/16-record-in-ssot-and-skills/"}</script>
+<script type="application/json" id="task-folder-targets">{"task_01_author_tests_executed_hash":"tasks/01-author-tests-executed-hash/","task_02_rebaseline_plan_edit_hash_assertions":"tasks/02-rebaseline-plan-edit-hash-assertions/","task_03_pin_the_definition_at_load":"tasks/03-pin-the-definition-at-load/","task_04_stamp_the_pin_serial_and_revalidate":"tasks/04-stamp-the-pin-serial-and-revalidate/","task_05_stamp_the_pin_worktree":"tasks/05-stamp-the-pin-worktree/","task_06_author_anchor_tests_hash_sites":"tasks/06-author-anchor-tests-hash-sites/","task_07_author_tests_mid_run_definition_edit":"tasks/07-author-tests-mid-run-definition-edit/","task_08_author_tests_wave_executed_hash":"tasks/08-author-tests-wave-executed-hash/","task_09_pin_the_wave_twin":"tasks/09-pin-the-wave-twin/","task_10_author_tests_divergence_record":"tasks/10-author-tests-divergence-record/","task_11_author_tests_delivery_gate":"tasks/11-author-tests-delivery-gate/","task_12_add_the_divergence_record":"tasks/12-add-the-divergence-record/","task_13_add_the_divergence_gate":"tasks/13-add-the-divergence-gate/","task_14_rebaseline_advisory_assertions":"tasks/14-rebaseline-advisory-assertions/","task_15_render_the_divergence_halt":"tasks/15-render-the-divergence-halt/","task_16_record_in_ssot_and_skills":"tasks/16-record-in-ssot-and-skills/","task_17_rebaseline_wave_resume_fixture":"tasks/17-rebaseline-wave-resume-fixture/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

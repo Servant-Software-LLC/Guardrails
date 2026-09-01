@@ -33,7 +33,18 @@ a silent false green that no later resume can detect.
 
 Create **`tests/Guardrails.Core.Tests/Journal/ExecutedDefinitionHashTests.cs`**.
 
-- Namespace **`Guardrails.Core.Tests.Journal`** (mirror the sibling `Journal/JudgeSpendRecordingTests.cs`).
+- Namespace **`Guardrails.Core.Tests`** - **FLAT, not `Guardrails.Core.Tests.Journal`, even though the
+  file lives in the `Journal/` folder.** This is not a style preference and it is not negotiable:
+  declaring `namespace Guardrails.Core.Tests.Journal` **anywhere in this assembly** introduces a
+  `Journal` member under `Guardrails.Core.Tests`, which then **wins the enclosing-namespace walk** over
+  the production `Guardrails.Core.Journal` for every unqualified `Journal.X` reference in the project.
+  **Three files break with CS0234, all outside your `writeScope`**: `OverwatchNoVerdictTests.cs:355`
+  (`Journal.TaskStatus.Running`), the shared helper `WavePlanBuilder.cs`, and
+  `Journal/JudgeSpendRecordingTests.cs` itself. **Read that last one's header comment at lines 9-14
+  before you write a line** - it is the sibling in the same folder, it declares the flat namespace, and
+  it documents this exact hazard verbatim, naming `OverwatchNoVerdictTests.cs` and stating the fix is out
+  of write scope. Folder and namespace are deliberately decoupled here. The guardrail's `--filter` is
+  `FullyQualifiedName~Guardrails.Core.Tests.<ThisClass>`, which matches the flat form.
 - Class **`ExecutedDefinitionHashTests`** - **pinned; the guardrails filter on it**. `public sealed class`,
   `IDisposable` for its temp-dir fixture.
 

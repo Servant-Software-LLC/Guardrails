@@ -1,0 +1,11 @@
+{
+  "description": "Re-baseline the two shipped wave-resume fixtures that model a resume as a SECOND run over the SAME in-memory plan - run 2 must load its own plan from disk, as a real resume does, with every assertion untouched",
+  "dependsOn": [],
+  "stableId": "p32t17",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/SchedulerWaveExecutionTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
+}

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=e54d765260918f8c34621d31722f324efb4c34e146e82666d9ca883d2a3a960d -->
+<!-- guardrails:graph v1 source-sha256=3e8174358e54b0ab4ccbeb95bd249b702b1e3809e9aaa863f42d9ad81ec03cfa -->
 
 ```mermaid
 flowchart TD
@@ -99,6 +99,12 @@ flowchart TD
     task_16_record_in_ssot_and_skills_gr_1["02-skill-carries-the-execution-semantics"]:::guardrail
   end
   style task_16_record_in_ssot_and_skills fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_17_rebaseline_wave_resume_fixture["17-rebaseline-wave-resume-fixture"]
+    task_17_rebaseline_wave_resume_fixture_gr_0["01-build-passes"]:::guardrail
+    task_17_rebaseline_wave_resume_fixture_gr_1["02-run-two-loads-its-own-plan"]:::guardrail
+    task_17_rebaseline_wave_resume_fixture_gr_2["03-wave-resume-tests-still-pass"]:::guardrail
+  end
+  style task_17_rebaseline_wave_resume_fixture fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-core-suite-passes"]:::guardrail
@@ -109,6 +115,7 @@ flowchart TD
   plan_preflights --> task_01_author_tests_executed_hash
   plan_preflights --> task_02_rebaseline_plan_edit_hash_assertions
   plan_preflights --> task_03_pin_the_definition_at_load
+  plan_preflights --> task_17_rebaseline_wave_resume_fixture
   task_01_author_tests_executed_hash --> task_04_stamp_the_pin_serial_and_revalidate
   task_02_rebaseline_plan_edit_hash_assertions --> task_04_stamp_the_pin_serial_and_revalidate
   task_03_pin_the_definition_at_load --> task_04_stamp_the_pin_serial_and_revalidate
@@ -128,6 +135,7 @@ flowchart TD
   task_13_add_the_divergence_gate --> task_14_rebaseline_advisory_assertions
   task_14_rebaseline_advisory_assertions --> task_15_render_the_divergence_halt
   task_15_render_the_divergence_halt --> task_16_record_in_ssot_and_skills
+  task_17_rebaseline_wave_resume_fixture --> task_13_add_the_divergence_gate
   task_16_record_in_ssot_and_skills --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
