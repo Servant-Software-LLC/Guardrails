@@ -3673,7 +3673,8 @@ public sealed class Scheduler
                 // Non-deferred: executor already handled journal; just integrate the segment. Stamp the
                 // definition hash onto the handle so the integration commit still carries the
                 // Guardrails-Task-Hash: trailer (§7.2) — the executor already recorded the journal hash.
-                handle.DefinitionHash = Journal.TaskDefinitionHash.Compute(task);
+                // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
+                handle.DefinitionHash = task.DefinitionHashAtLoad;
                 provider.Integrate(handle, integ, CancellationToken.None);
             }
 
@@ -3948,9 +3949,10 @@ public sealed class Scheduler
 
         // §7.2 (#274 Part A): the task's definition hash, stamped onto BOTH the integration commit's
         // Guardrails-Task-Hash: trailer (via the handle for FF, the CommitStagedMerge param for non-FF)
-        // AND the journal entry (RecordSucceededSettle) — computed once, under the integration lock,
-        // from the current on-disk definition. This is what a later resume compares against.
-        string definitionHash = Journal.TaskDefinitionHash.Compute(task);
+        // AND the journal entry (RecordSucceededSettle) — one value onto both surfaces. This is what a
+        // later resume compares against.
+        // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
+        string? definitionHash = task.DefinitionHashAtLoad;
         handle.DefinitionHash = definitionHash;
 
         // B1 step 1: merge fragment into state.json BEFORE the git commit.
