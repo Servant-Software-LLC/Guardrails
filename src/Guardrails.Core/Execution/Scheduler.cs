@@ -686,7 +686,14 @@ public sealed class Scheduler
             }
 
             // 7. Wave-completion marker commit (decision E) + journal the wave complete (SSOT §14.5).
-            string waveHash = Journal.WaveDefinitionHash.Compute(wave);
+            // W5 (plan 32-executed-definition-hash §5.4, #556): the wave-level WRITE of the executed
+            // definition — both the journal entry and the Guardrails-Wave: marker commit — stamps the
+            // PINNED fold, so a mid-run edit to a constituent task or to this wave's own gate folders
+            // cannot certify a definition that never ran. Every wave-level READ in this file still calls
+            // the disk-reading Compute(wave): the wave-drift compare (:533), the JIT checkpoint's and the
+            // review gate's escalation records, and the wave-proceed answer key. On an unedited tree the
+            // two forms are byte-identical, which is what keeps that compare quiet on the next resume.
+            string waveHash = Journal.WaveDefinitionHash.ComputeFromPins(wave);
             string? markerSha = _worktreeProvider is { } wpc && integ is { } integC
                 ? wpc.CommitWaveMarker(integC, wave.Dir, waveHash, cancellationToken)
                 : null;
