@@ -71,7 +71,7 @@ other honesty rule is working, which is exactly what makes a reader trust the on
   "options": ["Document a boundary date and filter before it", "Backfill from the run journals where the answer survives", "Re-baseline - archive the corpus and start clean", "Leave it and let analyses mix eras"],
   "recommended": "Document a boundary date and filter before it",
   "rationale": "The §3.1 fix is forward-only, so history stays skewed. Documenting a boundary is honest, costs nothing, and is reversible - a backfill can still happen later. Backfilling first sounds better but the run journals may not carry provenance for every era either, so it is unbounded work against unknown yield. Re-baselining throws away 587 rows of real spend history to fix an attribution problem. The one option that is genuinely bad is the last: an analysis that silently mixes a pre-fix and post-fix era is exactly the flattering-numbers failure this whole plan exists to prevent.",
-  "target": "human" }
+  "target": "human", "answer": ["Document a boundary date and filter before it"] }
 :::
 
 :::question
@@ -80,7 +80,7 @@ other honesty rule is working, which is exactly what makes a reader trust the on
   "options": ["Phase 1 owns closing it", "Phase 1 owns the census only; the fix is its own issue", "Leave #577 entirely outside this plan"],
   "recommended": "Phase 1 owns the census only; the fix is its own issue",
   "rationale": "The bucket schema was settled today and makes like-work-to-like-work EXPRESSIBLE; #577 is what keeps it UNANSWERABLE, so the two belong in the same phase. But the census comes first and is cheap - what fraction of the 313 'None' rows are script actions (correct by construction) versus a recording gap (a defect). Until that split exists, 'close it' has no defined scope, and committing a plan to close an unscoped defect is how a phase slips. The roadmap #570 now lists #577 in Phase A on this reasoning.",
-  "target": "human" }
+  "target": "human", "answer": ["Phase 1 owns the census only; the fix is its own issue"] }
 :::
 
 
@@ -148,6 +148,15 @@ the shape Step 2 rule 5 of `plan-breakdown` says must split, so its rate is wort
 about its difficulty. `structural` contains both a two-line stub and a 1,000-line anchor test.
 Difficulty is `action.tier`, which is already a separate column — do not collapse the two.
 
+**DECIDED 2026-09-01 — the pre-fix era gets a documented boundary, not a backfill.** The §3.1 fix is
+forward-only: 92 older failed rows carry no provenance, and 447 of 587 name no usable model. Phase 1
+records a boundary date and every analysis filters before it. Backfilling was rejected as unbounded
+work against unknown yield (the run journals may not carry provenance for every era either), and
+re-baselining was rejected as discarding real spend history to fix an attribution problem. Both remain
+available later; a documented boundary forecloses neither. The option deliberately ruled out is
+letting analyses silently mix a pre-fix and post-fix era — which is precisely the flattering-numbers
+failure this plan exists to prevent.
+
 **Known limit, recorded rather than discovered later.** Bucketing makes the comparison *expressible*;
 it does not make it *answerable yet*. Of 587 corpus rows only **140 name a real model** (313 `None`,
 134 `(cli default)`), so per-(bucket × model) cells are single digits today. The schema is worth
@@ -163,7 +172,7 @@ gap is tracked separately.
   "options": ["Yes - bring it into Phase 1", "No - keep it for the bring-up week (Phase C)", "Only the schema field now, the digest capture later"],
   "recommended": "Only the schema field now, the digest capture later",
   "rationale": "This section says 'low urgency while every row is a hosted Claude tag, HIGH the moment a local model is in the mix. Sequence it with #223, not before.' #223 merged as plan 28, so the condition it names is met. But no local model has actually produced a row yet, so the URGENCY it describes still has not arrived. Adding the nullable field now is cheap and means the first local row is capturable; building digest capture before any local runner has been pointed at real hardware is work against an unmeasured surface. The middle option is the one that cannot go stale either way.",
-  "target": "human" }
+  "target": "human", "answer": ["Yes - bring it into Phase 1"] }
 :::
 
 
@@ -175,6 +184,30 @@ Low urgency while every row is a hosted Claude tag. **High the moment a local mo
 re-quantized local model under the same name is a different subject and must not be pooled as one
 sample. Sequence it with #223, not before.
 
+> **DECIDED 2026-09-01 — IN Phase 1, in full. This overrides the drafting agent's lean.** The agent
+> recommended the schema field now and the digest capture later, reasoning that #223's *condition* has
+> fired while the *urgency* has not, since no local model has produced a row yet. **The maintainer
+> chose the full scope**, and the work must not drift back toward field-only: Phase 1 delivers both the
+> row-schema field and the capture that populates it.
+>
+> The reviewer's call has the better of the argument on timing. The digest exists to stop a
+> re-quantized model under a stable tag being pooled as one sample — and the first moment that can
+> happen is the *first local row*, which Phase C produces. A field with no capture behind it would be
+> present and empty exactly when the first sample it was meant to disambiguate arrives.
+
+### 3.3a Model attribution — the CENSUS (#577)
+
+**DECIDED 2026-09-01: Phase 1 owns the census; the fix ships as its own issue (#577).**
+
+Of 587 corpus rows only **140 name a real model** — 313 `None`, 134 `(cli default)`. Settling §3.2's
+bucket made the like-work-to-like-work comparison *expressible*; this is what keeps it *unanswerable*,
+which is why the two sit in the same phase.
+
+Phase 1's deliverable is the split, not the repair: **what fraction of the 313 `None` rows are script
+actions** — correct by construction, since a script invokes no model — **versus a genuine recording
+gap.** Until that number exists, "close it" has no defined scope, and committing a phase to closing an
+unscoped defect is how a phase slips.
+
 ### 3.4 Then the charter's original list
 
 :::question
@@ -183,15 +216,15 @@ sample. Sequence it with #223, not before.
   "options": ["Yes - 64GB Mac Studio, tighter than the MacBook", "No - the Mac Studio has MORE unified memory", "Not decided yet"],
   "recommended": null,
   "rationale": "This section records that the 64GB Mac Studio is a tighter box than the 128GB MacBook available today, and concludes the same model name will run at a different quantization on each and must not be pooled as one sample. That conclusion is right EITHER WAY - two boxes with different memory produce different quantizations regardless of which is larger - but the plan states a specific fact about your hardware that only you can confirm, and #570 already flags that #544 carries a stale '~Sept 2026' date. If the configuration changed, the sentence should be corrected before it is quoted downstream. Genuinely no lean: this is a fact, not a judgement.",
-  "target": "human" }
+  "target": "human", "answer": ["Yes - 64GB Mac Studio, tighter than the MacBook"] }
 :::
 
 
 Turns-used (computed, printed and discarded today), segmented durations, warm/cold, machine and
 concurrency profile including unified memory, harness and skill versions.
 
-The unified-memory item is not hypothetical: the charter records that the 64GB Mac Studio is a
-**tighter** box than the 128GB MacBook available today, so the same model name will run at a different
+The unified-memory item is not hypothetical, and the maintainer **confirmed the configuration on
+2026-09-01**: the 64GB Mac Studio is a **tighter** box than the 128GB MacBook available today, so the same model name will run at a different
 quantization on each and **must not be pooled as one sample**.
 
 ## 4. Dependencies
