@@ -2087,10 +2087,21 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     "01-write-greeting-script": {
       "status": "succeeded",        // pending | running | succeeded | needs-human | blocked | failed
       "mergeSequence": 1,
-      "definitionHash": "sha256:…", // task.json + action.* + guardrails/** + preflights/**, stamped at
-                                    // this task's most recent successful settle. Absent on a journal
-                                    // entry predating this field (treated as "unknown — assume
-                                    // unchanged," never forces a halt on upgrade). See §7.2.
+      "definitionHash": "sha256:…",        // task.json + action.* + guardrails/** + preflights/**, CAPTURED AT
+                                           // PLAN LOAD (TaskNode.DefinitionHashAtLoad) and stamped at this
+                                           // task's most recent successful settle — the bytes the attempt
+                                           // EXECUTED, never the current on-disk bytes (§7.2, #556). Absent on
+                                           // an entry predating this field (treated as "unknown — assume
+                                           // unchanged," never forces a halt on upgrade).
+                                           // ONE exception: the operator's `[a]` drift-accept
+                                           // (RunJournal.RecordDriftAccepted) overwrites this with the
+                                           // CURRENT on-disk hash without re-running the task — a
+                                           // deliberate operator trade, refused for a divergence-
+                                           // originated drift (§7.2).
+      "definitionHashAtSettle": "sha256:…",// OPTIONAL, ABSENT when it equals definitionHash. Present only when
+                                           // the plan folder was edited between this task's load and its
+                                           // settle: the on-disk hash at settle. Its presence is the durable
+                                           // record of an executed-definition divergence (§7.2).
       "attempts": [
         {
           "attempt": 1,
@@ -2208,7 +2219,10 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
   "waves": {                            // per-wave completion + phase record (§14; keyed by wave dir, in strict order)
     "wave-01-scaffold": {
       "status": "completed",            // pending | running | completed | needs-human | blocked
-      "definitionHash": "sha256:…",     // WaveDefinitionHash at completion (§7.2) — folds the wave's task hashes + wave-gate folders
+      "definitionHash": "sha256:…",     // WaveDefinitionHash at completion (§7.2/§14.5) — folds the wave's task
+                                        // PINS (each task's DefinitionHashAtLoad) + the wave-gate folders and
+                                        // brief.md as captured at WaveNode construction. Never recomputed from
+                                        // disk at completion (#556).
       // entry/exit mirror planPreflights/planGuardrails EXACTLY — including the #432 additions
       // (evaluatedAt / checks[] / logDir), whose logDir nests under the wave dir.
       "entry":  { "status": "passed", "planHash": "sha256:…", "evaluatedAt": "…",
@@ -2867,6 +2881,10 @@ identically), deterministic ordering, `sha256:`-prefixed — but at **task granu
 whole-plan, folding over the SAME `TaskDefinitionFiles` enumeration `PlanDefinitionHash` uses (§7.3) so the
 two hashes cannot drift on "what defines a task".
 
+> It is **captured at plan load and stamped at settle** (see the partial-liveness boundary call below); the
+> file set and the framing are identical either way, so *when* it is computed changes nothing about *what*
+> it is computed over.
+
 **Three boundary calls (named, not hand-waved):**
 - **Out of scope — a shared file OUTSIDE the task folder referenced by path in free prose.** If a prompt
   action names a repo file by path in its instructions, editing that file does NOT change any task's
@@ -2880,18 +2898,26 @@ two hashes cannot drift on "what defines a task".
   proceed and reuse — a **narrower instance of the same "warn but reuse" bug class** this section closes
   at task granularity. Part A does **not** change the pre-existing `PlanHash` signal; the relationship is
   noted so the two are not confused.
-- **Known limitation — the plan folder is only partially LIVE during a run (issue #545 part 3, plan 31
-  §5.1).** Some definition inputs are read fresh per attempt; others are held from load: an action prompt
-  file and a guardrail script are re-read **per attempt** (from disk, on every action/guardrail
-  invocation), so a mid-run edit to either **applies** to the next attempt; `task.json` (`writeScope`,
-  `dependsOn`, retries, `maxTurns`) and the DAG are read **once, at plan load**, so a mid-run edit to
-  either does **NOT** apply to this run; the recorded `definitionHash` is computed **at settle**, from the
-  **current** on-disk bytes. The consequence: a task edited mid-run can run under the OLD `task.json`
-  semantics, succeed, and record the **post-edit** hash — after which a later resume's drift comparison
-  reads equal and never flags it. This is a named limitation, not silently ignored: the live plan-edit
-  watch (below) reports the edit as it happens, but does **not** close this gap — filed as **#556**
-  (capturing each task's hash at load and journalling *that* instead is the fix, and it changes this
-  section's drift semantics, which is why it is out of scope for the watch).
+
+> - **Partial liveness — and what the stamped hash therefore records (issue #556, plan 32).** The plan
+>   folder is only partially LIVE during a run. An action prompt file and a guardrail/preflight script are
+>   re-read **per attempt** (from disk, on every invocation), so a mid-run edit to either **applies** to the
+>   next attempt. `task.json` (`writeScope`, `dependsOn`, retries, `maxTurns`) and the DAG are read
+>   **once, at plan load** into an immutable `TaskNode`, so a mid-run edit to either does **NOT** apply to
+>   this run. A mid-run edit therefore leaves the attempt verified under a **mixed** definition
+>   corresponding to no on-disk state, for which no single hash is true.
+>   **The contract is that the stamped hash is the LOAD-TIME one.** `TaskNode.DefinitionHashAtLoad` is
+>   computed eagerly at `TaskNode` construction (`PlanLoader.LoadTask`) and is what every WRITE site
+>   stamps — the journal entry, the `Guardrails-Task-Hash:` trailer, and (via `WaveDefinitionHash`) the
+>   wave record. Every READ site — the resume pre-pass below, the `--dry-run` preview, the Part C audit
+>   rows, the answer-file anti-stale key — recomputes from **current disk**, which is what makes the
+>   comparison mean anything. The rule: **reads recompute from disk; writes read the pin.**
+>   Because the pin is the same function over the same file set, a run in which the folder is not edited
+>   records a byte-identical hash — there is no migration and no drift wave.
+>   The consequence, which is the intended one: a task edited mid-run runs the OLD `task.json` semantics,
+>   succeeds, and records the **pre-edit** hash, so the next resume's comparison **mismatches and halts**.
+>   The live plan-edit watch (below) reports the edit as it happens; the divergence gate (below) refuses to
+>   deliver the run.
 
 **The plan-edit watch — reporting a live edit, not gating on it (issue #545 part 3, plan 31 §5.2–§5.4).**
 `LivePlanEditWatch` is a passive, per-task, per-**file** baseline over the same `TaskDefinitionFiles.Enumerate`
@@ -2984,6 +3010,49 @@ parity with a real resume it consults BOTH the journal's recorded hash AND the p
 touches nothing); it degrades to journal-only when the workspace is not a git repo or the plan branch is
 absent. A genuine read failure while recomputing a hash simply omits that task from the preview (a dry run
 never aborts), whereas a real run would honestly abort — the dry run is advisory, not the gate.
+
+> **The executed-definition divergence gate (issue #556, plan 32 §6).** The resume pre-pass above makes the
+> *next* run honest. A run that drains green to completion never resumes, and `mergeOnSuccess` defaults ON
+> (#340) — so a mid-run edit would otherwise be **delivered** with nothing ever reading the record. At every
+> successful settle the harness therefore compares the task's `DefinitionHashAtLoad` against a **current**
+> on-disk recompute.
+>
+> **The comparison surface is the IGNORE-LIST-FILTERED one** — `.DS_Store`, `Thumbs.db`, `*.swp`, `*.orig`,
+> `*.rej` excluded, the same predicate `LivePlanEditWatch` applies and now shares. The **recorded** hash
+> keeps the full unfiltered surface, so no hash moves and no migration is owed. The gate is therefore
+> **strictly quieter than the recorded hash and never noisier**: a stray editor artifact appearing mid-run
+> leaves the run green and delivering, and remains what it is today — a resume-time drift condition this
+> section already owns. This is not a second notion of "what defines a task": the hashed file set is
+> unchanged, and the ignore list is a reporting filter on the two surfaces that speak to humans.
+>
+> On a mismatch the harness:
+> 1. records `succeeded` with the **pin** (the settle is never refused — the attempt ran, its guardrails
+>    passed, and in worktree mode its integration commit is already on the plan branch; refusing the journal
+>    record would discard paid work AND create the present-but-uncorroborated commit Part C rule 3 refuses
+>    to rewind past);
+> 2. records `definitionHashAtSettle` (§7) with the on-disk value;
+> 3. appends one `boundary:"definition-divergence"` / `decision:"halted"` `decisions[]` entry naming the
+>    task and its moved definition files; and
+> 4. sets `RunReport.ExecutedDefinitionDivergence`, which is a term of `RunReport.AllSucceeded` — so
+>    **delivery does not fire**, the run is not reported green, and the CLI exits **2**
+>    (actionable/needs-human), never 1. The halt renders in the **normal end-of-run path**, NOT at the
+>    pre-DAG early return `DefinitionDrift` uses: a divergence run executed its tasks, and returning there
+>    would discard its logs, telemetry and summary. Because `AllSucceeded` also gates the terminal
+>    plan-guardrail phase, a divergence run reports that gate as **not evaluated** — never as *passed*.
+>
+> The run **drains to completion**; no in-flight attempt is cancelled and no dispatch is stopped (each later
+> task carries its own pin and its own check, so nothing after the divergence goes undetected). The
+> subsequent resume's pre-pass reports the **same** task set through the existing `DefinitionDrift` path, so
+> the gate carries no remediation vocabulary of its own: `--autonomy auto`,
+> `guardrails reset <folder> <taskId>...`, `guardrails reset <folder> -y`.
+>
+> **The drift-accept `[a]` branch is REFUSED for a divergence-originated drift.** `RunJournal.RecordDriftAccepted`
+> overwrites a task's recorded `definitionHash` with the current on-disk value **without re-running the
+> task** — sound for an ordinary between-runs edit the operator is choosing to adopt, and never sound here:
+> it would re-create precisely the record this section exists to remove, and would leave the task's
+> plan-branch `Guardrails-Task-Hash:` trailer uncorroborated against the journal, so any later Part C rewind
+> covering that task refuses. A task whose journal entry carries `definitionHashAtSettle` is by construction
+> such a task; the prompt drops `[a]` for it and names `guardrails reset <folder> <taskId>` instead.
 
 #### Safe-auto-resolve + scoped rewind (Part C, issue #274)
 
@@ -6521,6 +6590,12 @@ wave-relative task-id order) plus the wave-level `preflights/**` and `guardrails
 OPTIONAL `brief.md` **when present** (§14.10 — a changed brief on a completed wave is legitimate drift),
 `sha256:`-prefixed, same discipline as `PlanHash`. Nesting: `PlanDefinitionHash` ⊇ `WaveDefinitionHash` ⊇
 `TaskDefinitionHash`.
+
+> The wave hash's WRITE at wave completion folds each constituent task's **stamped** hash
+> (`DefinitionHashAtLoad`), not a recomputation from disk — which is what makes *"the wave hash changes iff
+> a constituent task hash changes"* true rather than aspirational (#556). The READ form
+> (`WaveDefinitionHash.Compute(wave)`, used by the wave-drift compare, the answer key and `mark-reviewed`)
+> is unchanged and still reads current disk.
 
 ### 14.6 Cross-wave resume
 

@@ -628,6 +628,20 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   Re-baselined PLAN-WIDE (never per-task) after every harness writer that edits the plan folder mid-run
   (a JIT wave breakdown, its revert, the incomplete/quarantine sweeps, a `TryResolveDrift` that resolved --
   which on a WAVED plan is not pre-DAG, since `DrainAsync` runs once per wave, SSOT section 7.2).
+- **Executed-definition divergence gate (issue #556, plan 32, SSOT section 7.2).** Two liveness classes:
+  `task.json` and the DAG are held from LOAD (the immutable `TaskNode`); the action file and every
+  `guardrails/**`/`preflights/**` script are RE-READ per attempt. The rule: **reads recompute from disk;
+  writes of the executed-definition record read the pin** -- every WRITE site (the journal, the
+  `Guardrails-Task-Hash:` trailer, the wave record) stamps `TaskNode.DefinitionHashAtLoad`; every READ site
+  (the resume pre-pass, `--dry-run`, Part C, the answer-file anti-stale key) recomputes current disk. At
+  every successful settle the harness compares the pin against a current, **ignore-list-filtered** recompute
+  (the live-plan-edit-watch's editor-artifact predicate, shared) -- so a stray editor artifact still moves
+  the FULL-surface recorded `definitionHash` but never trips the gate. On a mid-run edit to a REAL
+  definition file the settle still records `succeeded` with the pin, but the journal also gets
+  **`definitionHashAtSettle`** (the durable record of the divergence, ABSENT on an unedited run), and
+  `AllSucceeded` goes false: delivery is blocked, the run is not reported green, and the CLI exits **2**.
+  Full mechanics (the `[a]` drift-accept refusal, the terminal-gate not-evaluated correction) -- SSOT
+  section 7.2.
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
   was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
