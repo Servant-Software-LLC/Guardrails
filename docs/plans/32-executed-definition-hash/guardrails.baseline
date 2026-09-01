@@ -89,7 +89,7 @@
     "tasks/12-add-the-divergence-record/task.json": "4b31e551c95182bba74a43578c72a67eb500ade667497120c46eb791532983d3",
     "tasks/13-add-the-divergence-gate/action.prompt.md": "f3f0594b47c39d0efc726820757319c0db7c7bcb1d4254b726ea13c2fa0e0f52",
     "tasks/13-add-the-divergence-gate/guardrails/01-build-passes.ps1": "5e0a57d552031e4d31e33c36b6c0e79a991e55426221cea6ab6ddaf938dcf2dc",
-    "tasks/13-add-the-divergence-gate/guardrails/02-divergence-tests-pass.ps1": "7c849a8b748e9387aa0271b0a1eafb796049dbac42c4ed7fbc4e8ade8527f376",
+    "tasks/13-add-the-divergence-gate/guardrails/02-divergence-tests-pass.ps1": "21d4034d905586252b2a7e072c7859741998475aba21fa03f109082494557971",
     "tasks/13-add-the-divergence-gate/guardrails/03-gate-uses-the-one-shared-predicate.ps1": "259165494c309d787083648cb90f47688f1193ffda18a064b3ca81c240abc50a",
     "tasks/13-add-the-divergence-gate/guardrails/04-one-delivery-term-no-second-path.ps1": "652cd2160c93a2b77a3b2e43154e1c9e9ab28f74afd4ab6095b40eb304ee6630",
     "tasks/13-add-the-divergence-gate/samples/03-gate-uses-the-one-shared-predicate.invalid.cs": "3cdf354eb32b155119f7fa9c38e0c8f76a331864e2129a18a4bbe387ee7a090f",

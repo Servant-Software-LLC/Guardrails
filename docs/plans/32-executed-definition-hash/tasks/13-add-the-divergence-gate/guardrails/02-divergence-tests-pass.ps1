@@ -16,6 +16,12 @@
 #          this is the ONLY stage whose implementation can turn it red, and section 15.4 forbids
 #          filtering it out here.
 #
+#          The filter below carries a SECOND integration method beyond what section 15.4 specifies -
+#          AGuardrailEditedMidRun_, the mirror case, which is red unless the gate FIRES on a real
+#          definition file. Approved at the draft review as a deliberate widening: the two failure
+#          modes above pull in opposite directions, and gating on only one of them leaves the other
+#          unwatched at the one stage that can break it.
+#
 #          Re-emits the assertion/exception lines at the END so they reach the harness retry-feedback
 #          tail (#179).
 $ErrorActionPreference = 'Continue'
@@ -27,22 +33,40 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 # TWO entries, and the SECOND one is section 15.4's explicit exception - it is not optional.
 #   1. The whole Core divergence suite. All four of stage 10's pins must now be green: P12 and P15
 #      were red (there was no gate), P10 and P16 were green and must stay green.
-#   2. ONE integration method by name: AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStill
-#      Changes. Section 15.4: 'Stage 13 is the stage that builds the gate. It is therefore the only
-#      stage whose implementation can turn that test red - by comparing the full surface instead of
-#      the filtered one, which is a three-line wrong implementation that passes P9 through P15 and
-#      every other guardrail in this plan. Filtering it out of the one stage that can trip it is why
-#      an earlier draft's tripwire caught nothing.'
-#      Its other four methods stay filtered out until stage 15 - two of them assert on an advisory
+#   2. TWO integration methods BY NAME, in one parenthesised alternation. Section 15.4 requires the
+#      first of them; the second is a DELIBERATE WIDENING BEYOND SECTION 15.4, approved at the draft
+#      review. Do NOT "restore" this filter to the plan's letter by dropping it.
+#
+#      2a. AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStillChanges - section 15.4's
+#          mandated exception: 'Stage 13 is the stage that builds the gate. It is therefore the only
+#          stage whose implementation can turn that test red - by comparing the full surface instead
+#          of the filtered one, which is a three-line wrong implementation that passes P9 through P15
+#          and every other guardrail in this plan. Filtering it out of the one stage that can trip it
+#          is why an earlier draft's tripwire caught nothing.'
+#
+#      2b. AGuardrailEditedMidRun_EmitsExactlyOneObservedPlanEditDecision - stage 2 inverted its
+#          AllSucceeded assertion to Assert.False, and THIS stage is what turns it green: a mid-run
+#          guardrail-script edit is a REAL definition file, so the gate must fire on it. It is the
+#          exact MIRROR of 2a - 2a proves the gate stays QUIET on an editor artifact, 2b proves it
+#          FIRES on a real one - and the two failure modes this guardrail exists to separate pull in
+#          opposite directions, so gating on only one of them leaves the other unwatched at the one
+#          stage that can break it. It costs nothing (same project, same invocation) and section 15.4
+#          neither requires nor forbids it; it simply did not specify it.
+#
+#      The other THREE methods stay filtered out until stage 15 - two of them assert on an advisory
 #      string and an exit code only stage 15 changes, and would fail here for a reason this stage
 #      cannot fix.
+#
+#      BARE pipe inside parentheses, never a backslash-escaped one: VSTest rejects the escaped form as
+#      an invalid condition and yields ZERO tests at exit 0 - a silent green (dotnet.md 4.3). The
+#      executed-count guard below is what would catch that, and it should never have to.
 $suites = @(
     @{ Project = 'tests/Guardrails.Core.Tests'
        Filter  = 'FullyQualifiedName~ExecutedDefinitionDivergenceTests'
        Hint    = 'If P12 or P15 failed, the gate does not fire - or it fires from the WRONG SOURCE. P15 discriminates on PROVENANCE: after a mid-run edit the plan-edit watch has ALREADY reported and re-baselined on, the settling task must STILL diverge, which only a PINNED baseline survives. If P10 or P16 failed, the gate is too NOISY: it must compare the IGNORE-LIST-FILTERED surface using the one shared predicate, never the full surface.' }
     @{ Project = 'tests/Guardrails.Integration.Tests'
-       Filter  = 'FullyQualifiedName~PlanEditedDuringRunTests.AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStillChanges'
-       Hint    = 'THIS IS THE TRIPWIRE (section 15.4, P16). A mid-run stray .DS_Store must leave the run GREEN AND DELIVERING while the RECORDED hash still differs from disk. If it is red, the gate is comparing the FULL surface instead of the ignore-list-filtered one - a three-line wrong implementation that passes every other pin in this plan, and one that would see the delivery gate disabled within a week (section 6.2 / #229). Apply LivePlanEditWatch.IsEditorArtifact - stage 5 promoted it to internal for exactly this - to BOTH sides before diffing. The RECORDED hash keeps the full unfiltered surface: do not touch HashText.' }
+       Filter  = '(FullyQualifiedName~PlanEditedDuringRunTests.AStrayDsStoreMidRun_EmitsNothingWhileTheDefinitionHashStillChanges|FullyQualifiedName~PlanEditedDuringRunTests.AGuardrailEditedMidRun_EmitsExactlyOneObservedPlanEditDecision)'
+       Hint    = 'THE TWO TRIPWIRES, and they fail in OPPOSITE directions. If AStrayDsStoreMidRun_ is red the gate is too NOISY (section 15.4, P16): a mid-run stray .DS_Store must leave the run GREEN AND DELIVERING while the RECORDED hash still differs from disk, so a red there means the gate compares the FULL surface instead of the ignore-list-filtered one - a three-line wrong implementation that passes every other pin in this plan, and one that would see the delivery gate disabled within a week (section 6.2 / #229). If AGuardrailEditedMidRun_ is red the gate is too QUIET: a guardrails script IS a real definition file, stage 2 inverted that assertion to Assert.False for exactly this stage, and a red there means the gate never fired. The fix for the first is to apply LivePlanEditWatch.IsEditorArtifact - stage 5 promoted it to internal for exactly this - to BOTH sides before diffing; the fix for the second is that the diff must actually run at every successful settle. The RECORDED hash keeps the full unfiltered surface either way: do not touch HashText.' }
 )
 
 # ACCUMULATE (#478): one distinguishable message per suite, dumped once at the end.
