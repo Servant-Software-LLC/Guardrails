@@ -80,10 +80,40 @@ about a task, never one read off its name."* Without it the corpus compares mode
 work to like work**, which is the comparison a graduation threshold actually needs. *"Sonnet handles
 this class of task"* is the claim worth making; *"sonnet is 100%"* is not.
 
-**Open design question, deliberately not answered here:** what a bucket IS. Candidates seen in the
-corpus — author-tests vs implement vs doc-edit vs wiring; `writeScope` cardinality; whether the task
-has a stub tree. This needs its own decision, and it should be made against the corpus rather than
-in the abstract.
+**SETTLED 2026-09-01, against the corpus as this section asked.** The first finding was that *none*
+of the candidates was computable: a telemetry row carries `taskId`, `model`, `runner`, `kind`, `tier`,
+`tierSource`, `effort`, cost and tokens — and **nothing structural about the task**. No `writeScope`,
+no guardrail shape. So `author-tests vs implement` could only have been read off `taskId`, which the
+report's own legend forbids. The question is therefore not *which* candidate but **what structural
+fact the harness emits at write time**.
+
+**The bucket is derived from two things the harness already holds at attempt time — the task's
+`writeScope` roots and its guardrail archetypes.** Never from the task's name.
+
+| bucket | rule | measured |
+|---|---|---|
+| `test-authoring` | writes `tests/**` only, **and** carries a TDD-red guardrail (`tests-fail-on-stubs` / `-on-current-code`) | 45 (14%) |
+| `implementation` | writes `src/**` only, gated by a `tests-pass` guardrail | 82 (26%) |
+| `structural` | writes `src/**` or `tests/**` with **no** behavioural gate — stubs, anchors, record additions, renames | 35 (11%) |
+| `code+tests` | writes **both** `src/**` and `tests/**` | 67 (21%) |
+| `documentation` | writes `docs/**` / `.claude/**` only | 44 (14%) |
+| `no-write` | `writeScope: []` — verification and state-only tasks | 39 (12%) |
+
+Measured over **316 tasks across 18 plan folders**. No bucket is degenerate and none is a catch-all:
+the largest residual category in the first cut, `multi-root` at 23%, turned out to be **90% one
+shape** (`src+tests`, 67 of 74), which is why it is a named bucket rather than an "other". It is also
+the shape Step 2 rule 5 of `plan-breakdown` says must split, so its rate is worth watching on its own.
+
+**What this bucket does NOT claim.** It is a fact about a task's *write surface and gate shape*, not
+about its difficulty. `structural` contains both a two-line stub and a 1,000-line anchor test.
+Difficulty is `action.tier`, which is already a separate column — do not collapse the two.
+
+**Known limit, recorded rather than discovered later.** Bucketing makes the comparison *expressible*;
+it does not make it *answerable yet*. Of 587 corpus rows only **140 name a real model** (313 `None`,
+134 `(cli default)`), so per-(bucket × model) cells are single digits today. The schema is worth
+emitting now — every future row is bucketed, and the corpus fills as tiered runs accumulate — but no
+graduation threshold should be computed off it until the cells are populated. The model-attribution
+gap is tracked separately.
 
 ### 3.3 The model digest
 
