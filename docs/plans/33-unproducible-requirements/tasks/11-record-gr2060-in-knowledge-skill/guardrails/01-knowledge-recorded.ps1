@@ -34,7 +34,13 @@ if ($doc -match 'GR2060[^.
 if ($doc -notmatch 'GR2070') {
     $failures.Add('GR2070 IS NOT RECORDED AS HELD in ' + $subject + '. This is the fact most likely to be lost: it was DESIGNED AND DECLINED because it has never fired on a real defect at any commit in this repository. A code absent from the knowledge skill is one the next design re-proposes from scratch.')
 } else {
-    $g70 = [regex]::Match($doc, '(?m)^.*GR2070.*$')
+    # A WINDOW, not a LINE. The first version scoped this to the single line carrying GR2070 - and this
+    # document wraps at ~110 characters, so a correct entry that puts GR2070 at the end of one line and
+    # the words HELD / designed and declined on the NEXT line was FALSE-RED'd by a line-scoped clause.
+    # line and was FALSE-RED'd. Measured: it cost task 11 all three attempts and a needs-human halt on
+    # work that was entirely correct. The window is local enough that the 8 distant occurrences of these
+    # words elsewhere in the document cannot satisfy it, and wide enough to survive a line break.
+    $g70 = [regex]::Match($doc, '(?s)GR2070.{0,400}')
     if (-not $g70.Success -or $g70.Value -notmatch '(?i)declin|held|never fired') {
         $failures.Add('GR2070 IS MENTIONED BUT NOT MARKED HELD in ' + $subject + '. A bare mention reads as an available code. Say it was declined ON THAT LINE, and give the bar for revisiting it: a defect, at a commit. Scoped to the GR2070 line deliberately: the words declined/held/never-fired occur 8 times elsewhere in this document, so a whole-document alternation is satisfied the instant GR2070 appears anywhere and can never fire.')
     }

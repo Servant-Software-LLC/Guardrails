@@ -64,7 +64,7 @@
     "tasks/10-add-callee-parameter-list-step/guardrails/01-callee-step-present.ps1": "9d4bf30c30b7d42fc8f84de8309d29a7022e80633945bbf3e424fa620d9f30ec",
     "tasks/10-add-callee-parameter-list-step/task.json": "dcc75ac538e9a26c5da36b7e6053d243115be70e21a28dc2e43713d904d650d2",
     "tasks/11-record-gr2060-in-knowledge-skill/action.prompt.md": "54bb0d29c02d0b3da90c8b88707f5eba22793a25bf4f48933bc42ddb241a57d6",
-    "tasks/11-record-gr2060-in-knowledge-skill/guardrails/01-knowledge-recorded.ps1": "86c2ed6b2b5deb6f4f5f826c3a3348437715c9a9ce17bf82012768df3e4f3826",
+    "tasks/11-record-gr2060-in-knowledge-skill/guardrails/01-knowledge-recorded.ps1": "60af4f8a02580a0c1e0066ac2c59dbede421c67216b81f6caae330a1f4b8e49c",
     "tasks/11-record-gr2060-in-knowledge-skill/task.json": "aa042a5536e601fb1ef63b9a58a4d821ba86c1486497b2be5e4cefe0f3e62898",
     "tasks/12-update-doc-19-status/action.prompt.md": "3850433891c79014b1b722cd17041ff0db87e16e75d790913ba2d7ad288dfacb",
     "tasks/12-update-doc-19-status/guardrails/01-doc19-updated.ps1": "b5618a9753c2a916b2142189354134f63b16488e06b23c7d1ee30cac6175f9f9",
