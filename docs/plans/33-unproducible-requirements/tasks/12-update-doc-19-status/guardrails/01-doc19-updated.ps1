@@ -29,7 +29,11 @@ $failures = New-Object System.Collections.Generic.List[string]
 # The HARNESS-half row specifically: doc 19 has two Milestone A rows and the FIRST is the skill half,
 # which already reads SHIPPED. Matching plain 'Milestone A' selected the wrong row and the clause could
 # never fire - found by RUNNING this guardrail, not by reading it (#478/#580).
-$row = [regex]::Match($doc, '(?m)^.*Milestone A.*GR2060.*$')
+# ANCHORED ON THE TABLE ROW, not merely on the two tokens: '.*Milestone A.*GR2060.*' still matches two
+# lines (the status row, and prose further down). Match takes the FIRST, so it works today - and would
+# fall through to the prose line, which has no NOT BUILT, the moment task 12 rewords the row so the two
+# tokens no longer share it. That is the failure this clause was already corrected for once.
+$row = [regex]::Match($doc, '(?m)^\s*>?\s*\|.*Milestone A.*GR2060.*$')
 if (-not $row.Success) {
     $failures.Add('THE MILESTONE A STATUS ROW IS MISSING from ' + $subject + '. It should point at this plan, not disappear.')
 } elseif ($row.Value -match 'NOT BUILT') {

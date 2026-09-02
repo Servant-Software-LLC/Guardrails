@@ -34,5 +34,23 @@ if ($code -ne 0) {
     exit 1
 }
 
-Write-Output 'GR2060 is silent on this plan''s own folder, and validate exits 0. The check can validate the plan that built it.'
+# THE WIRING CLAUSE, and it is why the silence clause above is not enough on its own: an UNWIRED GR2060
+# emits nothing, so it satisfies "no GR2060 findings" perfectly. Worse, if GR2060 ever DID fire on this
+# folder, unwiring it would be the cheapest way to green - and task 3's ten tests would keep passing,
+# because they drive ProducerCoverage directly rather than through the composition root. The call site is
+# deliverable 3 of this task (section 13 row 4) and nothing else on this task checks it.
+# Anchored on the dotted CALL, not the bare type name (#76), over comment-stripped source.
+# Baseline (#478): 0 before this task runs - red on arrival, correct for a not-yet-written call site.
+$pvPath = 'src/Guardrails.Core/Loading/PlanValidator.cs'
+if (-not (Test-Path -LiteralPath $pvPath)) {
+    Write-Output ('PRECONDITION: ' + $pvPath + ' not found.')
+    exit 1
+}
+$pv = [regex]::Replace((Get-Content -LiteralPath $pvPath -Raw), '(?m)//.*$', '')
+if ($pv -notmatch 'ProducerCoverage\s*\.\s*\w+\s*\(') {
+    Write-Output 'PlanValidator.cs NEVER INVOKES ProducerCoverage - the check is built but UNWIRED, and the GR2060-silence assertion above passes precisely BECAUSE it emits nothing. Task 3 tests drive ProducerCoverage directly, so they stay green too. The one call-site line in PlanValidator is deliverable 3 of this task.'
+    exit 1
+}
+
+Write-Output 'GR2060 is silent on this plan''s own folder, validate exits 0, and PlanValidator actually invokes ProducerCoverage.'
 exit 0

@@ -11,7 +11,13 @@
 #          clauses below require SUBSTRINGS with alternatives, never one mandated sentence.
 #
 # Required-present baselines (#478), measured on master @67859c7 with these clauses own case rules:
-#          guardrails-review/SKILL.md  : 'parameter list' 0, 'interface' present but NOT required alone
+#          guardrails-review/SKILL.md  : 'parameter list' 0 - honest, and it fires. 'interface' measures
+#                                        7 and the clause below WAS standalone despite this line once
+#                                        claiming otherwise, so it was green on arrival and task 10 could
+#                                        have shipped the callee step with NO interface-vs-concrete trap
+#                                        - the very defect Milestone C exists to close. It is now
+#                                        WINDOWED off 'parameter list', which measures 0 and is therefore
+#                                        a reliable anchor for the newly added text.
 #          plan-breakdown/SKILL.md     : 'declaring file' 0
 #          The shipped trace heading TRACE THE DATUM is measured at 1 in plan-breakdown - NONZERO with a
 #          named reason: it is a REGRESSION PIN asserting the shipped section SURVIVES this addition.
@@ -34,8 +40,9 @@ $failures = New-Object System.Collections.Generic.List[string]
 if ($r -notmatch '(?i)parameter list') {
     $failures.Add('THE REVIEW PROBE STILL STOPS AT THE CARRIER: no mention of a parameter list in ' + $review + '. Add the step that opens the CALLEE declaration and asks whether its parameter list already accepts what the clause requires. Without it the probe returns reachable-stop on the exact shape it missed.')
 }
-if ($r -notmatch '(?i)interface') {
-    $failures.Add('THE INTERFACE HALF IS MISSING from ' + $review + '. For a call dispatched through an interface the declaring file is the INTERFACE, not the concrete type - a cast to the concrete type compiles, satisfies the clause, and journals nothing.')
+$window = [regex]::Match($r, '(?is)parameter list[\s\S]{0,1500}')
+if (-not $window.Success -or $window.Value -notmatch '(?i)interface') {
+    $failures.Add('THE INTERFACE HALF IS MISSING from the added step in ' + $review + '. For a call dispatched through an interface the declaring file is the INTERFACE, not the concrete type - a cast to the concrete type compiles, satisfies the clause, and journals nothing.')
 }
 
 if ($a -notmatch '(?i)declaring file') {
@@ -43,7 +50,10 @@ if ($a -notmatch '(?i)declaring file') {
 }
 
 # REGRESSION PIN: the shipped datum trace must SURVIVE. This is an addition, never a rewrite.
-if ($a -notmatch 'TRACE THE DATUM') {
+# -cnotmatch: PowerShell -match is case-INSENSITIVE, and lowercase prose elsewhere in this skill also
+# says "trace the datum" (measured: 2 insensitive, 1 sensitive). A case-insensitive pin would survive
+# deletion of the actual heading, which is the only thing it exists to protect.
+if ($a -cnotmatch '(?m)^###.*TRACE THE DATUM') {
     $failures.Add('THE SHIPPED DATUM TRACE WAS REMOVED OR RENAMED in ' + $author + '. It shipped at e118b9d and is correct; this task ADDS the step it does not cover. A task that re-authors that section has done the wrong thing even if the result reads well.')
 }
 

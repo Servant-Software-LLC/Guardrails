@@ -1,5 +1,5 @@
 # catches: a corpus sweep that repeats the measurement error it exists to correct. The hand-run sweep
-#          enumerated plan folders carrying a top-level tasks/ directory and walked 740 of 1,271 scripts,
+#          enumerated plan folders carrying a top-level tasks/ directory and walked 533 of 850 scripts,
 #          silently excluding five WAVED folders that nest tasks under wave-NN-*/tasks/ - including
 #          model-tiering-stage-2, the ONE plan known to fire. A sweep rebuilt the same way reports a
 #          reassuring zero over a population that structurally cannot contain the finding.
@@ -27,7 +27,7 @@ $failures = New-Object System.Collections.Generic.List[string]
 
 # The waved layout must be enumerated, not just the flat one.
 if ($scan -notmatch 'wave-') {
-    $failures.Add('THE SWEEP DOES NOT ENUMERATE THE WAVED LAYOUT: no wave- path pattern appears in ' + $subject + ' outside a comment. Five plan folders nest their tasks under wave-NN-*/tasks/, and one of them carries the positive control. A sweep that walks only the flat tasks/ layout covers 740 of 1,271 scripts and reports a zero it cannot have earned.')
+    $failures.Add('THE SWEEP DOES NOT ENUMERATE THE WAVED LAYOUT: no wave- path pattern appears in ' + $subject + ' outside a comment. Four plan folders nest their tasks under wave-NN-*/tasks/ and one of them carries the positive control; a fifth, 09-preflight-first-class, was excluded for a different reason (neither layout). A sweep that walks only the flat tasks/ layout covers 533 of 850 scripts and reports a zero it cannot have earned.')
 }
 
 # The positive control must be named, at its commit.

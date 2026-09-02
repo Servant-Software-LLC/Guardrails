@@ -15,12 +15,12 @@ motivating clause through git and found that its two halves **never coexist at a
 moment the scope was broken the clause carried no named argument, and by the time it did the scope had
 been fixed for 36 minutes (§3.4). **GR2070 is declined and held by name** (§4.1, §6.3, §12.3). The same
 pass found that GR2060 at ERROR would **revert a JIT partial prefix**, re-opening #501 one code over
-(§5.3), and that the sweep proving GR2060 safe had walked 740 of 1,271 scripts — skipping the only plan
+(§5.3), and that the sweep proving GR2060 safe had walked 533 of 850 scripts — skipping the only plan
 that fires (§5.4). It also **reproduced GR2060's positive control blind**. So Milestone A comes out of
 review stronger and with a mitigation attached; the new lint comes out of it deleted.
 
 **Why this is its own plan, and not a paragraph appended to `19-producer-coverage.md`.** Doc 19 is the
-design of record for this family and it is *half shipped*: its skill milestone landed at `e118b9d`, its
+design of record for this family and it is *half shipped*: its skill milestone landed at `e78b9d`, its
 `intendedWaves`/GR2062 milestone landed, and **GR2060 — the harness half, the actual mechanical answer to
 #474 — was never built.** It has sat reserved-by-name in `DiagnosticCodes.cs` for twelve days. Building
 it turns out to require a change to `Scheduler`'s veto path that doc 19 never contemplated (§5.3), and to
@@ -62,9 +62,9 @@ is what makes this class hard to see, and it is why every existing gate passed: 
 
 ---
 
-## 2. The premise, re-verified (#563)
+## 2. The premise, re-verified (#393)
 
-#563 requires a design citing an issue to re-check the issue's load-bearing claims rather than inherit
+#393 requires a design citing an issue to re-check the issue's load-bearing claims rather than inherit
 them. Done against `09f223f`.
 
 | claim | verdict |
@@ -342,7 +342,7 @@ independently; §13 runs them in one plan only because they close one issue and 
 | GR2060 | **harness** — `Guardrails.Core/Loading`, author-time only |
 | SSOT §4.8 + §14.10's code paragraph | **schema** — lands in the same commit as the code (invariant 4) |
 | the **callee's-parameter-list** step (Milestone C) | **skill** — `guardrails-review` + `plan-breakdown`, ADDED beside the shipped datum trace (§6.2) |
-| the sibling-datum trace, the missing-insertion extension | **already shipped** — `e118b9d`; Milestone C extends the probe, it does not rewrite these |
+| the sibling-datum trace, the missing-insertion extension | **already shipped** — `e78b9d`; Milestone C extends the probe, it does not rewrite these |
 | a dataflow-reachability lint (#474's *first* headline) | **out of scope, permanently** — doc 19 D2 stands (§6.4) |
 | **GR2070** — the named-argument derivation | **DECLINED**, held by name (§4.1, §6.3) |
 | a lint over positional arity | **out of scope** (§14) |
@@ -429,6 +429,14 @@ report. Red first, on the #501 shape.
 
 ### 5.4 The corpus sweep, run in advance — and the population it MISSED
 
+> **The denominator in this section was itself wrong, and an adversarial pass caught it.** The first
+> draft said *"1,271 committed scripts"*. That figure is an **on-disk** count: 1,271 `.ps1` exist under
+> `docs/plans/` in a working tree, but **364 of them are gitignored generated `containment-hook.ps1`
+> copies** and only 850 are committed. The distinction is not pedantry — §8.5 tells task 9 to evaluate
+> each plan **at its own pre-run commit**, and you cannot `git show <commit>:<path>` a gitignored file.
+> Stated as "committed", the old number gave the task a population unreachable by the method it was
+> told to use. Every count below is now `git ls-files`, and task 9 enumerates from git, not the disk.
+
 Doc 19 §10 step 4 makes a zero-finding sweep a merge gate. Hand-run during this design:
 
 | | |
@@ -445,19 +453,19 @@ Doc 19 §10 step 4 makes a zero-finding sweep a merge gate. Hand-run during this
 witnesses these plans required are present *because the plans ran*. The zero proves the check is silent on
 **satisfied** requirements; it does not prove it is silent on a correct plan whose work is not yet done.
 
-**(b) The sweep walked 740 of 1,271 scripts, and skipped the only plan that fires.** It enumerated plan
+**(b) The sweep walked 533 of 850 scripts, and skipped the only plan that fires.** It enumerated plan
 folders carrying a top-level `tasks/` directory. **Five plan folders are waved**, nesting their tasks
 under `wave-NN-*/tasks/`, and were silently excluded:
 
 | folder | scripts | in the sweep? |
 |---|---|---|
-| `autonomous-mode-impl` | 177 | **no** — waved |
-| `model-tiering-stage-2` | **169** | **no** — waved, and it carries §8.2's positive control |
-| `model-tiering-stage-3` | 118 | **no** — waved |
-| `salvage-advice-provisioning` | 56 | **no** — waved |
+| `autonomous-mode-impl` | 100 | **no** — waved |
+| `model-tiering-stage-2` | **89** | **no** — waved, and it carries §8.2's positive control |
+| `model-tiering-stage-3` | 78 | **no** — waved |
+| `salvage-advice-provisioning` | 39 | **no** — waved |
 | `09-preflight-first-class` | 11 | **no** — neither layout |
-| the 14 walked folders | 740 | yes |
-| **total under `docs/plans/`** | **1,271** | |
+| the 14 walked folders | 533 | yes |
+| **total under `docs/plans/`** | **850** | |
 
 So the headline *"0 findings over 14 plan folders"* was computed over a population that structurally
 **excluded the one plan known to fire**. The number is not wrong, but it measured less than it claimed —
@@ -494,7 +502,7 @@ gains a row.
 
 The first draft described Milestone C as *"the sibling-datum authoring rule that doc 19 §4 specified and
 never shipped."* **That is wrong on both halves, and the adversarial pass verified it.** The rule shipped
-at `e118b9d` — *"feat(skills): #474/#477 Milestone A — point the existing probe at the gate, and trace
+at `e78b9d` — *"feat(skills): #474/#477 Milestone A — point the existing probe at the gate, and trace
 the datum"* — and it is live at `plan-breakdown/SKILL.md:381` under the heading *"Before you write a
 `writeScope`, TRACE THE DATUM — follow the sibling that already works (#474)."* C as first written would
 have re-authored existing text.
@@ -602,7 +610,7 @@ prose claims have nothing statically decidable to gate on. That reasoning is rig
 disturb it: GR2060 gates on **guardrail scripts** — machine-readable by construction — never on prompt
 prose.
 
-| | #578 probe (shipped) | #474 reachability probe (shipped, `e118b9d`) | GR2060 (this plan) |
+| | #578 probe (shipped) | #474 reachability probe (shipped, `e78b9d`) | GR2060 (this plan) |
 |---|---|---|---|
 | subject | a prompt's claim about the tree | a guardrail's datum and its **carrier** | a guardrail's requirement and the union of scopes |
 | the defect it names | the **map is false** | the **value has no route** | the **requirement has no producer** |
@@ -681,7 +689,7 @@ proves nothing.
   fixture in that form must be extracted.
 
 **And one control that cannot be red-first, which is the interesting case.** Condition 8 — *"no task
-declares the path"* — has **zero exercises in the corpus**: every requirement clause in all 1,271 scripts
+declares the path"* — has **zero exercises in the corpus**: every requirement clause in all 850 scripts
 either has a present witness or names a covered path, so **an implementation that hard-codes
 `covered = false` passes every other test in §8.** The red-first rule cannot discipline this, because a
 *silence* test is green before the check exists and green after a wrong implementation.
@@ -712,8 +720,8 @@ statements contradict each other**, and a correct implementation would have gone
 gate — where §11 forbids every cheap escape, so the run would have halted with delivery withheld and no
 legal move. The adversarial pass caught it; it is written out here in the form the implementer needs.
 
-**Population.** Every `.ps1` under `docs/plans/` — **1,271 files**, waved folders **included** (§5.4(b));
-plus `examples/`. A sweep that enumerates only folders with a top-level `tasks/` sees 740 of them and
+**Population.** Every `.ps1` under `docs/plans/` — **850 files**, waved folders **included** (§5.4(b));
+plus `examples/`. A sweep that enumerates only folders with a top-level `tasks/` sees 533 of them and
 misses the plan that fires.
 
 **Expectation, per plan and per commit.** Not one number:
@@ -748,7 +756,7 @@ being averaged away. It runs at the **terminal gate**, so either failure withhol
    script against `09f223f` is silent.
 3. The §8.3 negative controls pass, and the **constructed** condition-8 silence fixture is named
    `Constructed…` rather than `Recovered…` in both its test name and its comment.
-4. The §8.5 sweep walks **all 1,271** `.ps1` under `docs/plans/`, waved folders included, and is a
+4. The §8.5 sweep walks **all 850** `.ps1` under `docs/plans/`, waved folders included, and is a
    terminal gate. Its expected counts are **per plan and per commit** (§8.5) — not a blanket zero.
 5. **The #501 regression test (§5.4) is red before task 6 and green after**: a JIT partial prefix whose
    wave gate trips GR2060 is **not** reverted, and the finding still appears in the report.
@@ -891,7 +899,7 @@ sentence pointing forward.
 - Leave **GR2061** and **GR2054** reserved, unchanged.
 
 Per that paragraph's own standing instruction, `DiagnosticCodes.cs` wins — re-verify immediately before
-allocating, and beware `DiagnosticCodes.cs:565`, a **quoted historical** marker naming GR2047. The live
+allocating, and beware `DiagnosticCodes.cs:395`, a **quoted historical** marker naming GR2047. The live
 marker is at `:1026`.
 
 ### 12.3 `src/Guardrails.Core/Loading/DiagnosticCodes.cs` — the reservation block
@@ -946,7 +954,7 @@ folder in this repo is concrete.
 | 6 | `guardrails-harness-developer` | **The #501 mitigation**: add GR2060 to `UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete` and **not** on `PlanIsClosed` (§5.3). One member of `Scheduler.cs` is in scope; nothing else in that file is. | `src/Guardrails.Core/Execution/Scheduler.cs` | `["src/Guardrails.Core/Execution/Scheduler.cs"]` | 5 |
 | 7 | `guardrails-harness-developer` | **SSOT §4.8** (§12.1), including the two-suppressions paragraph and the excused-not-vanished rule, plus §4.7's forward-pointing sentence. | `docs/plans/02-schemas-and-contracts.md` | `["docs/plans/02-schemas-and-contracts.md"]` | 6 |
 | 8 | `guardrails-harness-developer` | **The code ladder** (§12.2, §12.3): GR2060 removed from `DiagnosticCodes.cs`'s reservation block because it is now allocated; **GR2070 added, held by name**, with its reason line; next-free advanced to GR2071; SSOT §14.10 updated to match. | `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `docs/plans/02-schemas-and-contracts.md` | `["src/Guardrails.Core/Loading/DiagnosticCodes.cs", "docs/plans/02-schemas-and-contracts.md"]` | 7 |
-| 9 | `guardrails-test-author` | **The §8.5 sweep**: all **1,271** `.ps1` under `docs/plans/` — waved folders included — plus `examples/`, each at its own pre-run commit where one exists, with the per-plan/per-commit expectation table **in the test file**, including the required **non-zero** on `model-tiering-stage-2` at `1b8e681`. Wired as a **terminal-gate** guardrail. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
+| 9 | `guardrails-test-author` | **The §8.5 sweep**: all **850** `.ps1` under `docs/plans/` — waved folders included — plus `examples/`, each at its own pre-run commit where one exists, with the per-plan/per-commit expectation table **in the test file**, including the required **non-zero** on `model-tiering-stage-2` at `1b8e681`. Wired as a **terminal-gate** guardrail. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
 | 10 | `guardrails-skill-author` | **Milestone C** (§6.2): the callee's-parameter-list step 5 in `guardrails-review`'s Unreachable-outcome probe, and its authoring twin in `plan-breakdown` beside the **already-shipped** datum trace at `:381` — an addition, never a rewrite of that section. | `.claude/skills/guardrails-review/SKILL.md`, `.claude/skills/plan-breakdown/SKILL.md` | `[".claude/skills/guardrails-review/SKILL.md", ".claude/skills/plan-breakdown/SKILL.md"]` | 4 |
 | 11 | `guardrails-skill-author` | One line in the knowledge skill naming GR2060 and the producer-coverage invariant, and recording GR2070 as held-not-allocated so the next design does not re-propose it. | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | `[".claude/skills/guardrails-domain-knowledge/SKILL.md"]` | 8 |
 | 12 | `guardrails-harness-developer` | Doc 19's status-table row and its **re-worded** D2 sentence (§12.4) — the decline, not the first draft's "shape (a) with a derived path". | `docs/plans/19-producer-coverage.md` | `["docs/plans/19-producer-coverage.md"]` | 8 |
@@ -1045,10 +1053,10 @@ are the rows this check protects least.
    is not being executed, and the answer is then a stronger authoring artifact, not a smarter lint (doc
    19 §5 item 3, verbatim).
 2. **GR2060's sweep zero is structural in two ways, not one** (§5.4). Today's tree satisfies these plans'
-   requirements *because the plans ran*, **and** the hand-run walked 740 of 1,271 scripts. §8.5's
+   requirements *because the plans ran*, **and** the hand-run walked 533 of 850 scripts. §8.5's
    pre-run-commit sweep across the full population is the version that could fail, and it is the merge
    gate. Until it runs, GR2060's conservatism rests on one recovered positive control and doc 19's
-   argument — which is more than GR2070 ever had, and less than GR2055/GR2056/GR2057 earned.
+   argument — which is more than GR2070 ever had, and less than GR2055/GR2039/GR2057 earned.
 3. **The #501 mitigation widens an allow-list, and allow-lists grow.** `UnsatisfiableWhileIncomplete`
    goes from one code to two. Every future ERROR-severity relational check will face the same question,
    and the honest answer is that the list is a **register of codes a partial prefix cannot fairly
@@ -1154,7 +1162,7 @@ precedent), so its edit there is one call-site line.
 different?"**
 
 **The best objection to what remains, and it is only partly answerable.** Doc 19's datum trace **did**
-ship (`e118b9d`) and the plan-30 instance still got through — because the procedure stops at step 3
+ship (`e78b9d`) and the plan-30 instance still got through — because the procedure stops at step 3
 (§6.1). C adds the step that continues past it, which is a real gap closed rather than a restatement. But
 it is still a procedure, executed by an agent, at review time. §15 risk 1 prices that honestly and names
 the trigger that would falsify it. Anyone who wants a stronger answer than a procedure needs to produce

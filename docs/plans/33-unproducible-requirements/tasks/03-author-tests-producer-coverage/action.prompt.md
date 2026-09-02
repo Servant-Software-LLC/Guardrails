@@ -65,7 +65,7 @@ Read the historical bytes with `git show 1b8e681:<path>`; do not copy them into 
 hand-copied control proves the code matches your copy and nothing about the world.
 
 **Test 5 is CONSTRUCTED, and it must say so.** Condition 8 — *"no task declares the path"* — has **zero
-exercises in the whole corpus**: every requirement clause in all 1,271 committed scripts either has a
+exercises in the whole corpus**: every requirement clause in all 850 committed scripts either has a
 present witness or names a covered path. So an implementation that hard-codes `covered = false` passes
 every other test in this file. The only way to exercise the suppression is to build the state
 deliberately: a synthetic plan whose gate requires an absent witness in a path that **IS** in some

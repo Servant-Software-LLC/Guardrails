@@ -12,8 +12,16 @@
 # Required-present baselines (#478), measured on master @67859c7 against DiagnosticCodes.cs:
 #          'CURRENT next-free code: GR2071'  0  - expected; this task writes it
 #          'GR2070 - ...33-unproducible...'  0  - expected; this task writes it
-#          'GR2047'                          1  - NONZERO with a named reason: a REGRESSION PIN on the
-#                                                 historical marker, asserted to still be there
+#          'CURRENT next-free code: GR2047'  1  - NONZERO with a named reason: a REGRESSION PIN on the
+#                                                 historical marker, asserted to still be there. The PIN
+#                                                 IS THE MARKER TEXT, NOT THE BARE CODE, and that is a
+#                                                 correction an adversarial pass made to this file: bare
+#                                                 'GR2047' measures 4, because MalformedRoutingGuidance
+#                                                 is a LIVE constant with that value (DiagnosticCodes.cs
+#                                                 :591). A bare-code clause is satisfied by the constant
+#                                                 alone, so the whole historical block could be DELETED
+#                                                 and this guardrail would still pass - the trap the
+#                                                 header above spends a paragraph on was not guarded.
 $ErrorActionPreference = 'Continue'
 
 $codes = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { 'src/Guardrails.Core/Loading/DiagnosticCodes.cs' }
@@ -31,8 +39,8 @@ if ($raw -notmatch 'CURRENT next-free code:\s*GR2071') {
 }
 
 # The historical marker is NOT collateral damage.
-if ($raw -notmatch 'GR2047') {
-    $failures.Add('THE HISTORICAL MARKER WAS EDITED: GR2047 no longer appears in ' + $codes + '. The marker near line 565 is a QUOTED HISTORICAL record naming GR2047, not a live instruction - editing it corrupts a historical note. Only the live marker near line 1026 advances.')
+if ($raw -notmatch 'CURRENT next-free code: GR2047') {
+    $failures.Add('THE HISTORICAL MARKER WAS EDITED: the quoted marker text "CURRENT next-free code: GR2047" no longer appears in ' + $codes + '. The marker near line 565 is a QUOTED HISTORICAL record naming GR2047, not a live instruction - editing it corrupts a historical note. Only the live marker near line 1026 advances.')
 }
 
 # GR2060 has LEFT the reservation block: it is a shipped constant now.

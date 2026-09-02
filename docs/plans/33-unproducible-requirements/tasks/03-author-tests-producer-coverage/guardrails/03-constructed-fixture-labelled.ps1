@@ -2,7 +2,7 @@
 #          prohibition 6 of the plan's section 11, and it tells exactly the lie this plan was rewritten
 #          to remove: a RECOVERED control is read from git and proves the check fires on a real defect;
 #          a CONSTRUCTED one is hand-built and proves a condition SUPPRESSES. Condition 8 has zero
-#          exercises in all 1,271 committed scripts, so its fixture MUST be constructed - and say so.
+#          exercises in all 850 committed scripts, so its fixture MUST be constructed - and say so.
 #
 # Required-present baseline (#478): the required literal occurs 0 times at author time (the file does
 #          not exist). The forbidden literal is a fail-on-present clause and is exempt from measurement

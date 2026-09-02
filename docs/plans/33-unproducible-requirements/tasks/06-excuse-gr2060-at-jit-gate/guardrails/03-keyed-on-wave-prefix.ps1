@@ -23,7 +23,12 @@ if (-not (Test-Path -LiteralPath $subject)) {
 $raw  = Get-Content -LiteralPath $subject -Raw
 # Blank comments: the surrounding #501 comment legitimately DISCUSSES both predicates, and a required
 # clause satisfied by a comment - or a ban tripped by one - would be exactly backwards.
-$scan = [regex]::Replace($raw, '(?m)^\s*//.*$', '')
+# ALL // comments, not just line-leading ones. The original anchored '^\s*//', so a TRAILING comment on
+# a code line survived into $scan and tripped the PlanIsClosed ban - two implementations with identical
+# behaviour got opposite verdicts on comment PLACEMENT, and the red one reported a claim that was false
+# about the code. Measured against three synthesized samples: correct impl with a full-line comment
+# exit 0, the SAME comment moved to trail the code line exit 1 (false red), wrong impl exit 0.
+$scan = [regex]::Replace($raw, '(?m)//.*$', '')
 $scan = [regex]::Replace($scan, '(?s)/\*.*?\*/', '')
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -34,6 +39,16 @@ if ($scan -notmatch 'UnproducibleGateRequirement') {
 
 if ($scan -notmatch 'wavePrefixIsIncomplete') {
     $failures.Add('THE EXCUSE IS NOT KEYED ON wavePrefixIsIncomplete in ' + $subject + '. That parameter is the gate actual knowledge that folders are still owed; without it the excuse is unconditional and GR2060 stops blocking complete plans that genuinely cannot produce their own gate requirement.')
+}
+
+# The excuse must stay CONDITIONAL. Without this, an implementation that makes the excuse unconditional
+# passes: 'wavePrefixIsIncomplete' still measures 5 elsewhere in the file (the parameter, the report
+# line), so the presence clause above cannot see the difference - measured as a false green by an
+# adversarial pass. Pinned on the ASSIGNMENT at Scheduler.cs:2224, not on the ternary: the '?' that
+# shares a line with the name is at :2246 and belongs to the gate-decision REPORT string, which would
+# survive an unconditional excuse untouched.
+if ($scan -notmatch 'excused\s*=\s*wavePrefixIsIncomplete') {
+    $failures.Add('THE EXCUSE IS NO LONGER CONDITIONAL in ' + $subject + ': the excused set is not assigned from wavePrefixIsIncomplete. An unconditional excuse stops GR2060 blocking a COMPLETE plan that genuinely cannot produce its own gate requirement, which is the over-correction that would make the whole diagnostic meaningless. Keep the conditional assignment.')
 }
 
 if ($scan -match 'PlanIsClosed') {

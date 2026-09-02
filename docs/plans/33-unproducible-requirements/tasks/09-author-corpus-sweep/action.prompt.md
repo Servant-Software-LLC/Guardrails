@@ -26,17 +26,21 @@ Write `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` — class
 **`ProducerCoverageCorpusTests`** — the sweep that runs GR2060 over the whole committed corpus. It is
 wired as a **terminal-gate** guardrail, so it withholds delivery rather than merging when it disagrees.
 
-**The population is ALL 1,271 `.ps1` under `docs/plans/`, waved folders included.** This is the part the
+**The population is ALL 850 COMMITTED `.ps1` under `docs/plans/`, waved folders included — and you
+enumerate them with `git ls-tree`, never by walking the working tree.** A working-tree walk finds
+1,271, but **364 of those are gitignored generated `containment-hook.ps1` copies**, and a gitignored
+file cannot be read at a historical commit with `git show <commit>:<path>` — so a disk walk would hand
+you a population your own per-commit method cannot evaluate, and 364 copies of one generated hook. This is the part the
 design got wrong the first time, and it is worth stating why. The hand-run sweep enumerated plan folders
-carrying a top-level `tasks/` directory and walked **740 of 1,271** scripts. Five plan folders are
+carrying a top-level `tasks/` directory and walked **533 of 850** scripts. Four plan folders are
 **waved** — they nest their tasks under `wave-NN-*/tasks/` — and were silently excluded:
 
 | folder | scripts | in the old sweep? |
 |---|---|---|
-| `autonomous-mode-impl` | 177 | no — waved |
-| `model-tiering-stage-2` | **169** | no — waved, **and it carries the positive control** |
-| `model-tiering-stage-3` | 118 | no — waved |
-| `salvage-advice-provisioning` | 56 | no — waved |
+| `autonomous-mode-impl` | 100 | no — waved |
+| `model-tiering-stage-2` | **89** | no — waved, **and it carries the positive control** |
+| `model-tiering-stage-3` | 78 | no — waved |
+| `salvage-advice-provisioning` | 39 | no — waved |
 | `09-preflight-first-class` | 11 | no — neither layout |
 
 So the headline *"0 findings over 14 plan folders"* was computed over a population that structurally
@@ -70,6 +74,6 @@ escalate with needsHuman naming the plan and the finding, and stop.
 ## Done when
 
 - The sweep enumerates scripts under BOTH the flat `tasks/` and the nested `wave-NN-*/tasks/` layouts,
-  and its own assertion proves the walked count covers the waved folders rather than 740 of 1,271.
+  and its own assertion proves the walked count covers the waved folders rather than 533 of 850.
 - The per-plan, per-commit expectation table is in the file, including the required **non-zero**.
 - The suite passes.
