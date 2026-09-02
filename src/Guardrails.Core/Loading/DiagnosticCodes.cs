@@ -1052,13 +1052,55 @@ public static class DiagnosticCodes
     /// </summary>
     public const string HandoffRowSplitAcrossTasks = "GR2069";
 
-    // CURRENT next-free code: GR2071. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
-    // GR2059 is the last CONTIGUOUS one; GR2061 remains reserved-by-name gap (GR2062 was TAKEN by
+    /// <summary>
+    /// GR2071 (WARNING) — a task's <c>action.prompt.md</c> INSTRUCTS the agent to run a shell command that
+    /// the task's own effective <c>allowedTools</c> do not grant, so the single command the task is told to
+    /// build its work on is refused the moment it is tried (issue #587 check A).
+    /// <para>Both inputs are STATIC and sit in the same plan folder — the prompt text and the
+    /// <c>promptRunners.&lt;name&gt;.allowedTools</c> array the task resolves to — so this is a string
+    /// comparison, decided offline, that nothing was doing. The measured defect: plan 33 task 09's prompt
+    /// said "you enumerate them with <c>git ls-tree</c>" while the grants ran to <c>Bash(dotnet *)</c>,
+    /// <c>Bash(git log*)</c>, <c>Bash(git diff*)</c>, <c>Bash(git show*)</c>, <c>Bash(git status*)</c>.
+    /// Two attempts burned, <c>needs-human</c>, run halted — after <c>validate</c>, <c>graph --check</c> and
+    /// a full <c>/guardrails-review</c> had all passed the folder.</para>
+    /// <para><b>Deliberately narrow</b>, on the GR2057 model — it refuses every case it cannot prove. A
+    /// candidate is an INLINE backticked span in an imperative context (a trigger word in the two tokens
+    /// before it, no negation cue in that line's prefix), or a line inside a fence the prompt HANDS OVER
+    /// (colon-introduced, shell-or-untagged); its head must be a known binary; and the paragraph must
+    /// address the AGENT in the second person, which is the narrowing that separates an instruction to run
+    /// a command from a description of what the ARTIFACT the agent authors must do. Measured over the
+    /// committed corpus, 488 backticked binary-led spans reduce to 6 the check will adjudicate at all.
+    /// A candidate is then split on unquoted <c>|</c>/<c>||</c>/<c>&amp;&amp;</c>/<c>;</c> exactly as the
+    /// runner splits a compound, and EVERY segment is tested — which catches the pipeline half of the same
+    /// defect without a second rule assuming the pipe target is ungranted, and reports one finding naming
+    /// every ungranted segment rather than one finding per segment.</para>
+    /// <para><b>Two gates that produce SILENCE.</b> A task whose resolved runner declares NO
+    /// <c>allowedTools</c> at all is skipped — an unconstrained task cannot violate a grant — and so is one
+    /// whose declared list carries no <c>Bash(...)</c> entry, because <c>allowedTools</c> is a FLOOR and not
+    /// a ceiling (#252): a plan that names no shell grant has expressed no shell policy for the operator's
+    /// own settings to be measured against. An unscoped <c>Bash</c> / <c>Bash(*)</c> grants everything and
+    /// is skipped too.</para>
+    /// <para>A WARNING, not an error, for the reason GR2068/GR2069 are: <c>RunCommand</c> refuses to run a
+    /// plan whose validation emits any error, and the extractor reads free prose — so an ERROR here would
+    /// refuse a correct plan on a sentence it misread. The grants it compares against are also only the
+    /// plan's own floor; an operator's <c>~/.claude/settings.json</c> can satisfy a command this check
+    /// reports, which is a second reason it may not block.</para>
+    /// </summary>
+    public const string PromptInstructsUngrantedCommand = "GR2071";
+
+    // CURRENT next-free code: GR2072. GR2071 (PromptInstructsUngrantedCommand) is the last taken code
+    // above — GR2059 is the last CONTIGUOUS one; GR2061 remains reserved-by-name gap (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
     // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
     // GR2068 and GR2069 were taken TOGETHER by plan 31 §4 (#553): the handoff-table path-coverage
     // check needs two codes, so that an operator who decides their tables split legitimately can
     // silence GR2069 while GR2068 keeps meaning "provably broken" forever.
+    // GR2071 was taken by issue #587 check A (PromptInstructsUngrantedCommand) — ONE code, not two,
+    // even though the check reports two shapes: an ungranted bare command and an ungranted segment of
+    // an instructed pipeline. Both are the SAME defect (the prompt names a command the grants refuse)
+    // and both have the SAME fix (grant it, or stop naming it), so the GR2068/GR2069 split — which
+    // exists because an operator may legitimately want to silence one and not the other — does not
+    // apply: nobody wants half of this one.
     // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
@@ -1067,7 +1109,7 @@ public static class DiagnosticCodes
     //     defect at any commit in this repository — see §3.4. Do not allocate without a positive control.
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2071 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2072 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave

@@ -1592,6 +1592,72 @@ finding may cast (does it veto this checkpoint), never whether an operator **see
 reads in the gate decision as `excused (#501): GR2060 — unsatisfiable while the wave is unfinished; NOT a
 veto`, with the finding's full message — witness and path — still present in the diagnostics body.
 
+### 4.9 Prompts that instruct a command the grants refuse (validated, GR2071 — warning)
+
+§4.7 and §4.8 are about a GUARDRAIL that no implementation can satisfy. This one is about an ACTION prompt
+that no agent can obey: the prompt names a shell command, and the task's own `allowedTools` refuse it. Both
+inputs are static and sit in the same plan folder, so it is a string comparison — and until issue #587 nothing
+was doing it.
+
+> A task's `action.prompt.md` instructs the agent to run a command that the `allowedTools` the task resolves
+> to do not grant.
+
+**The measured defect (plan 33 task 09).** The prompt said *"you enumerate them with `git ls-tree`"*; the
+grants were `Bash(dotnet *)`, `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`, `Bash(git status*)`.
+The one command the task's whole deliverable rested on was ungranted, and every fallback the agent reached for
+(`| grep`, `| awk`, `2>&1 | Select-Object`) was refused too, because the runner **splits a compound and
+rejects the whole thing on its ungranted part**. Two attempts burned, `needs-human`, run halted — after
+`validate`, `graph --check` and a full `/guardrails-review` had each passed the folder.
+
+**Grant resolution.** `allowedTools` is declared per **prompt runner**, never per task; the only per-task
+override is `action.runner`, which selects a different `promptRunners.<name>` block. The set compared against
+is that block's **action** settings (`EffectiveSettings(isGuardrail: false)` — `guardrailOverrides` governs
+prompt guardrails and is deliberately not read here) plus the read-only `Bash(git show*)` the harness injects
+into every invocation (`ClaudePromptRunner.ResolveToolGrants`, §9). Matching replicates the CLI's prefix glob:
+a trailing `*` makes the rest a prefix, a `:` before it is part of the separator, and every ambiguity resolves
+PERMISSIVELY — the check's errors must fall on the side of saying nothing.
+
+**Fires only when all of the following hold** (each a place conservatism is spent, in §4.7's idiom):
+
+1. **A prompt action** whose resolved runner **declares** a non-empty `allowedTools` containing at least one
+   `Bash(...)` entry, none of which is unscoped (`Bash`) or universal (`Bash(*)`). No declared tools ⇒ silent,
+   because an unconstrained task cannot violate a grant. No `Bash(...)` entry ⇒ silent too: `allowedTools` is a
+   **floor, not a ceiling** (#252), so a plan naming no shell grant has expressed no shell policy for the
+   operator's own `settings.json` to be measured against.
+2. **A candidate from one of two sources.** An INLINE backticked span, or a line inside a fence the prompt
+   **hands over** — colon-terminated introducer, language tag absent or a shell, at most one blank line
+   between. A fence is otherwise an artifact the task must AUTHOR, and the hand-over structure is the only
+   thing separating the two.
+3. **A recognisable command shape** — a head from a closed binary list, plus a bare verb when the span is
+   inline. No arbitrary shell is parsed: `git -C <path> log` is flag-first and is dropped, as is a bare
+   `` `git` `` or a backticked path.
+4. **An imperative context** (inline only) — a trigger token in the two words before the span, no negation cue
+   anywhere in that line's prefix. The third-person "runs"/"uses" is not a trigger, which is what drops the
+   commonest inline shape in the corpus ("the harness runs a `git diff` check", 45% of a stratified sample).
+5. **Addressed to the AGENT** — a second-person pronoun (`you`/`yourself`, never `your`) in the paragraph
+   before the command. This is the narrowing that carries the whole precision result: without it the check
+   produced 5 findings over the committed corpus and **every one** was a prompt describing what the ARTIFACT
+   the agent authors must do ("roll back with `git reset --hard <preHead>`" inside a spec for a test helper).
+   `your X` names a thing belonging to the agent and makes that thing the subject; `you` names the agent.
+
+The candidate is then **split on unquoted `|`/`||`/`&&`/`;` exactly as the runner splits a compound**, and
+every segment is tested. That covers the pipeline half of the same defect without a second rule asserting "a
+pipe is always a refusal" — which would be unsound (a plan granting both halves runs the pipeline fine) and
+would have fired on the remediation prompt that fixed plan 33. A compound with two ungranted segments is
+**one** finding naming both: one defect, one fix.
+
+**Measured before shipping** (21 committed plan folders, 336 prompt-action tasks, 488 backticked binary-led
+spans): 20 candidates survive conditions 2–4, **6** survive condition 5, and the check produces **one finding
+at HEAD** — plan 33 task 02's `grep -rn … | wc -l`, a genuine uncorrected defect it found rather than one the
+issue named — plus **one at `2281ece^`**, the task-09 defect. Zero false positives.
+
+**A WARNING, not an error**, for GR2068/GR2069's reason: `RunCommand` refuses to run a plan whose validation
+emits any error, and the extractor reads free prose, so an ERROR would refuse a correct plan on a sentence it
+misread. The grants are also only the plan's own floor, and an operator's `~/.claude/settings.json` can satisfy
+a command this check reports. **Known residual**, and the thing to weigh if promotion is ever proposed: a
+second-person instruction about what the authored artifact must do is indistinguishable here from an
+instruction to run the command.
+
 ## 5. Child-process contract
 
 ### 5.1 Environment variables (all paths absolute)
