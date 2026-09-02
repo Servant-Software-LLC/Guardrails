@@ -19,6 +19,32 @@
   and quote (a) the guardrail's exact claim and (b) the file:line that refutes it.
   If you cannot produce BOTH quotes it is not a defective guardrail — retry the work,
   or escalate as "blocked-work". Difficulty is never "defective-guardrail".
+**READ THIS FIRST — `needsHarnessWrite` is a TOP-LEVEL key, NOT nested under your folder name.**
+The harness contract above tells you to write everything you publish under your task's FOLDER NAME as
+the single top-level key. **The control keys are the exception.** `needsHarnessWrite` and `needsHuman`
+are top-level SIBLINGS of your folder-name key. Nest either one inside it and the harness never sees it:
+nothing is written, no error mentions the escape hatch, and your guardrail then fails complaining about
+the CONTENT of a file you never got to touch. Three attempts of this task were lost that way.
+
+CORRECT:
+
+```json
+{ "needsHarnessWrite": { "path": ".claude/skills/guardrails-domain-knowledge/SKILL.md",
+                         "reason": "...", "edits": [ { "old": "...", "new": "..." } ] } }
+```
+
+WRONG — silently does nothing:
+
+```json
+{ "11-record-gr2060-in-knowledge-skill": { "needsHarnessWrite": { "path": "...", "edits": [ ... ] } } }
+```
+
+**And keep every anchor SHORT — one line, copied from a fresh read.** This file contains TWO
+near-duplicate GR-code-ladder passages that state the same facts in different words. Long multi-line
+anchors composed from memory fuse the two and match nothing; `edits` is atomic, so one bad anchor
+discards the whole request. The three facts this task needs are each a short single-line edit. Re-read
+the exact line you intend to change and copy it character-for-character rather than retyping it.
+
 Your primary deliverable is a file under `.claude/`, which a Claude Code subprocess CANNOT write —
 the tool-permission layer refuses every `.claude/` write unconditionally. Do NOT attempt a direct
 `Write`/`Edit` to the `.claude/` path: a direct-write probe wastes a turn and populates the
