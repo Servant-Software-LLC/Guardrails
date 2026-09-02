@@ -6838,10 +6838,9 @@ unsatisfiable-guardrail family and #459
 `BannedPatternScanTimedOut` / `WaveIntegrationScopeInert`, §4.6/§4.7), **`GR2062` by #477's
 `IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), so an unrelated new code should take
-**`GR2065`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
-(`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2060`
-(`docs/plans/19-producer-coverage.md` §3.1) and `GR2061` (`docs/plans/18-integration-proof-proximity.md`
-§3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
+**`GR2071`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+(`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
+§3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
 note and, per that document's standing instruction, **the file wins**: re-verify against it immediately
 before allocating.)

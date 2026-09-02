@@ -1052,20 +1052,22 @@ public static class DiagnosticCodes
     /// </summary>
     public const string HandoffRowSplitAcrossTasks = "GR2069";
 
-    // CURRENT next-free code: GR2070. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
-    // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
+    // CURRENT next-free code: GR2071. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
+    // GR2059 is the last CONTIGUOUS one; GR2061 remains reserved-by-name gap (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
     // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
     // GR2068 and GR2069 were taken TOGETHER by plan 31 §4 (#553): the handoff-table path-coverage
     // check needs two codes, so that an operator who decides their tables split legitimately can
     // silence GR2069 while GR2068 keeps meaning "provably broken" forever.
     // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
-    //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
+    //   GR2070 — docs/plans/33-unproducible-requirements.md §6.3 (a guardrail requiring a named argument
+    //     whose declaring member no task may widen). DESIGNED AND DECLINED: it has never fired on a real
+    //     defect at any commit in this repository — see §3.4. Do not allocate without a positive control.
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2070 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2071 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
