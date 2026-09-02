@@ -55,9 +55,18 @@ public sealed class BreakdownSalvageAllowListTests
     [Fact]
     public void TheAllowListIsExactlyOneCode_SoWideningItIsADeliberateActWithAFailingTest()
     {
-        // Every GR code the validator can emit, checked against the list. If someone adds a second code to
+        // Every GR code the validator can emit, checked against the list. If someone adds a THIRD code to
         // UnsatisfiableWhileIncomplete without revisiting this test, this fails and they have to argue for
         // it — which is the entire point of an allow-list over a category.
+        //
+        // GR2060 (UnproducibleGateRequirement) is the deliberate second admission (#501/GR2060 excuse).
+        // An ERROR-severity GR2060 on a JIT partial prefix reasons over an INCOMPLETE writeScope union —
+        // the wave still owes folders, so "no task declares this file" cannot yet be trusted — and so it
+        // cannot fairly cast a veto there. The excuse is keyed on wavePrefixIsIncomplete, which is actual
+        // knowledge from the breakdown manifest that folders are still owed, and NEVER on PlanIsClosed,
+        // which returns true for an authored partial prefix and would excuse the wrong case. The finding
+        // is still REPORTED at the gate either way: this suppresses a verdict, never an operator's sight
+        // of it.
         string[] excused = typeof(DiagnosticCodes)
             .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string))
@@ -65,6 +74,8 @@ public sealed class BreakdownSalvageAllowListTests
             .Where(c => Scheduler.UnsatisfiableWhileIncomplete(Error(c)))
             .ToArray();
 
-        Assert.Equal([DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun], excused);
+        Assert.Equal(
+            [DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, DiagnosticCodes.UnproducibleGateRequirement],
+            excused);
     }
 }
