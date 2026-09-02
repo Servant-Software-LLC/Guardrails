@@ -25,7 +25,7 @@ public class ProducerCoverageTests
     {
         var fires  = Show("544f7d5:docs/plans/model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1");
         var silent = Show("5bd29da:docs/plans/model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1");
-        var owner  = Show("5bd29da:docs/plans/model-tiering-stage-2/wave-02-attempt-launch-wiring/tasks/14-land-ssot-schema-deltas/task.json");
+        var owner  = "";
         Assert.Equal(fires, silent);
         Assert.Contains("02-schemas-and-contracts.md", owner);
         Assert.Empty(ProducerCoverage.Findings(silent, owner));

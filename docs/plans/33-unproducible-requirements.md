@@ -486,8 +486,10 @@ GR2060 stays at ERROR, per doc 19 D4:
   measured at $115.32.
 - Its false-positive surface is a **path**, which is unambiguous — unlike a member **name**, the surface
   that helped sink GR2070 (§6.3).
-- It has a **recovered positive control that an independent pass reproduced blind** (§8.2). That is the
-  bar this document holds everything to, and GR2060 is the only thing in it that clears it.
+- It has a **recovered positive control verified condition-by-condition against its commit** (§8.2) —
+  all ten, by a pass that did not author it. That is the bar this document holds everything to, and
+  GR2060 is the only thing in it that clears it. The earlier phrasing rested on an independent *blind*
+  reproduction; §8.2 withdraws that claim, and this bullet must not outlive it.
 
 **And the one condition on that severity: §5.3 ships in the same milestone.** ERROR without the
 `wavePrefixIsIncomplete` allow-list entry is not a stricter version of this design — it is a different
@@ -658,7 +660,7 @@ Each of GR2060's ten conditions gets a test that it **fires** and a test that it
 **silent** when that condition alone is flipped. A condition with only a firing test has not been shown
 to be load-bearing; a condition with only a silence test has not been shown to exist.
 
-### 8.2 The positive control — one, recovered, and reproduced blind
+### 8.2 The positive control — one, recovered, and verified condition-by-condition
 
 **There is exactly one, and it is GR2060's.** The first draft claimed two; the second could not be
 recovered from git and its check is declined (§3.4). One real control is what this plan has, and the
@@ -790,8 +792,8 @@ being averaged away. It runs at the **terminal gate**, so either failure withhol
    `model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at `544f7d5`, naming
    `tierSource` and the SSOT path — and was **shown red** before the implementation landed. The same
    script against `09f223f` is silent.
-3. The §8.3 negative controls pass, and the **constructed** condition-8 silence fixture is named
-   `Constructed…` rather than `Recovered…` in both its test name and its comment.
+3. The §8.3 negative controls pass, and the condition-8 silence control is the **RECOVERED** pair —
+   named `Recovered…`, reading `5bd29da` from git, and paired with `544f7d5` (§8.3).
 4. The §8.5 sweep walks **all 850** `.ps1` under `docs/plans/`, waved folders included, and is a
    terminal gate. Its expected counts are **per plan and per commit** (§8.5) — not a blanket zero.
 5. **The #501 regression test (§5.4) is red before task 6 and green after**: a JIT partial prefix whose
@@ -991,7 +993,7 @@ folder in this repo is concrete.
 |---|---|---|---|---|---|
 | 1 | `guardrails-harness-developer` | **Refactor, no behaviour change.** Lift GR2057's `PresenceClause`, `BranchFailsTheGuardrail`, `BlankCommentLines`, `TryLiteralWitness` and `MatchesWitness` out of `PlanValidator` into a shared internal helper, **unchanged** — no widening of the single-quote pattern rule (§3.5). Gate: every existing GR2057 test green and **unedited**. | `src/Guardrails.Core/Loading/GuardrailClauseText.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/GuardrailClauseText.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | — |
 | 2 | `guardrails-harness-developer` | `IGitTrackedFileProbe` + `GitLsFilesProbe` + `NullGitTrackedFileProbe`, mirroring `IScriptSyntaxProbe` including its "silence is not proof" contract; a **fifth** `PlanValidator` constructor overload with a real default. **N3 gate: 73 `new PlanValidator(` call sites exist across `tests/` and `Guardrails.Cli`** — the task must assert the count, confirm every one still compiles unchanged, and state in its own commit message which default they now silently receive. | `src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs`, `src/Guardrails.Core/Loading/GitLsFilesProbe.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs", "src/Guardrails.Core/Loading/GitLsFilesProbe.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 1 |
-| 3 | `guardrails-test-author` | **Red** tests for GR2060: one firing + one silence test per §5.1 condition; §8.2's **recovered** positive control; §8.3's two negative controls; and §8.3's **constructed** condition-8 silence fixture, named `Constructed…` in both test name and comment. | `tests/Guardrails.Core.Tests/ProducerCoverageTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"]` | 2 |
+| 3 | `guardrails-test-author` | **Red** tests for GR2060: one firing + one silence test per §5.1 condition; §8.2's **recovered** positive control; §8.3's two negative controls; and §8.3's **RECOVERED** condition-8 silence control, named `Recovered…`, read from `5bd29da` and paired with `544f7d5`. | `tests/Guardrails.Core.Tests/ProducerCoverageTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"]` | 2 |
 | 4 | `guardrails-harness-developer` | **GR2060** in a new `ProducerCoverage.cs` (the `HandoffScopeCoverage.cs` precedent — one check family, one file, one line in `PlanValidator`), the code constant, and the call site. Its own guardrails include a `guardrails validate` of **this plan's folder** with the newly built binary (§11 item 10). | `src/Guardrails.Core/Loading/ProducerCoverage.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/ProducerCoverage.cs", "src/Guardrails.Core/Loading/DiagnosticCodes.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 3 |
 | 5 | `guardrails-test-author` | **Red** #501 regression test (§5.3): a JIT partial prefix whose wave gate trips GR2060 must **not** be reverted, and the finding must still appear in the gate-decision report. Red before task 6, green after. | `tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs` | `["tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs"]` | 4 |
 | 6 | `guardrails-harness-developer` | **The #501 mitigation**: add GR2060 to `UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete` and **not** on `PlanIsClosed` (§5.3). One member of `Scheduler.cs` is in scope; nothing else in that file is. | `src/Guardrails.Core/Execution/Scheduler.cs` | `["src/Guardrails.Core/Execution/Scheduler.cs"]` | 5 |
@@ -1158,7 +1160,7 @@ prose.** §8.2's blind reproduction is the discipline that would have caught it.
 implementing someone else's twelve-day-old design and adding a paragraph to two skills."**
 
 **Largely conceded, and it is the right outcome.** What is left is: a shipped GR2060 with a recovered,
-independently reproduced positive control; a mitigation for a **live** #501-class defect that shipping
+condition-by-condition verified positive control; a mitigation for a **live** #501-class defect that shipping
 GR2060 would otherwise cause; and the one procedural step that covers the plan-30 shape. The document's
 own thesis — *a prompt may propose, only a deterministic gate may certify* — applies to designs too. A
 design that survives review with less in it than it started with is the mechanism working.

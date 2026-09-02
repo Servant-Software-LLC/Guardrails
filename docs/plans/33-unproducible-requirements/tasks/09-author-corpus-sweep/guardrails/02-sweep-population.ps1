@@ -7,9 +7,9 @@
 #          It also catches the second way this gate goes hollow: a blanket-zero expectation. A sweep that
 #          expects zero everywhere cannot tell a working check from a mute one. The required NON-ZERO on
 #          model-tiering-stage-2 at 544f7d5 is what proves the sweep can fail in the FIRING direction;
-#          the HEAD row proves it can fail in the SILENCE direction. Section 11 prohibition 5.
+#          the 5bd29da row proves it can fail in the FIRING direction, and the HEAD row that the check tracks the tree. Section 11 prohibition 5.
 #
-# Required-present baseline (#478): all four literals occur 0 times at author time - the file does not
+# Required-present baseline (#478): all five literals occur 0 times at author time - the file does not
 #          exist yet. Expected 0.
 $ErrorActionPreference = 'Continue'
 
@@ -34,6 +34,13 @@ if ($scan -notmatch 'wave-') {
 if ($raw -notmatch 'model-tiering-stage-2') {
     $failures.Add('THE POSITIVE CONTROL PLAN IS NOT NAMED in ' + $subject + '. model-tiering-stage-2 is the one plan in the corpus GR2060 fires on, and the expectation table must carry it explicitly.')
 }
+# The SILENCE half of the recovered pair. Without this clause the amendment's claim that the gate "can
+# fail in BOTH directions" is asserted in a commit message and enforced nowhere: an implementation that
+# writes the firing row and the HEAD row and drops 5bd29da passes every other clause here.
+if ($raw -notmatch '5bd29da') {
+    $failures.Add('THE RECOVERED SILENCE ROW IS MISSING from ' + $subject + '. 544f7d5 -> 5bd29da is a recovered fires/silent pair on ONE artifact: the gate script is byte-identical at both commits and the witness is absent at both, so the ONLY difference is that 14-land-ssot-schema-deltas owns the path at 5bd29da. The firing row alone proves the sweep can fail when the check goes mute; this row is what proves it can fail when the check fires wrongly.')
+}
+
 if ($raw -notmatch '544f7d5') {
     $failures.Add('THE PRE-RUN COMMIT IS NOT PINNED in ' + $subject + '. Each plan is evaluated at its OWN pre-run commit; against today HEAD every requirement is satisfied because the plans RAN, so a HEAD-only sweep is structurally incapable of failing.')
 }
