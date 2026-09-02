@@ -1,7 +1,14 @@
 {
   "description": "Add GR2060 to Scheduler.UnsatisfiableWhileIncomplete, keyed on wavePrefixIsIncomplete and never on PlanIsClosed, so an ERROR-severity GR2060 cannot revert a JIT partial prefix",
-  "dependsOn": ["05-author-tests-jit-prefix-veto"],
+  "dependsOn": [
+    "05-author-tests-jit-prefix-veto"
+  ],
   "stableId": "w6h3f8",
-  "writeScope": ["src/Guardrails.Core/Execution/Scheduler.cs"],
-  "action": { "tier": "medium" }
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "tests/Guardrails.Core.Tests/BreakdownSalvageAllowListTests.cs"
+  ],
+  "action": {
+    "tier": "medium"
+  }
 }

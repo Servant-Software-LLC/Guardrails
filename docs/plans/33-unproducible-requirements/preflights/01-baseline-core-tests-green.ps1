@@ -22,14 +22,20 @@
 #        latter reads ...CoverageCorpusTests, which does not contain the former - which is why both are
 #        listed rather than relying on one prefix to cover both.
 #
-#        NO METHOD-LEVEL EXCLUSION IS NEEDED HERE, and that is a MEASURED finding rather than an
-#        assumption (#574 - a baseline that halted a plan-32 run on a red the plan itself had created).
-#        This plan adds a diagnostic and never changes an existing one's severity, message or firing
-#        condition: task 8 edits DiagnosticCodes.cs only in the reservation-block comment and the
-#        next-free marker, and task 6 touches exactly one member of Scheduler.cs. No shipped Core
-#        assertion pins either. If a later hand-edit changes that, add a method-level
-#        `FullyQualifiedName!~<Method>` term here rather than dropping a whole class, which would take
-#        that class's other shipped facts out of the baseline with it.
+#        ONE METHOD-LEVEL EXCLUSION IS NEEDED, and the claim that none was is a MEASURED CORRECTION
+#        (#574 - a baseline that halted a plan-32 run on a red the plan itself had created; this is the
+#        same defect, recurring). The original note here reasoned that task 6 "touches exactly one member
+#        of Scheduler.cs" and that "no shipped Core assertion pins either". The second half was WRONG, and
+#        the run proved it: BreakdownSalvageAllowListTests.TheAllowListIsExactlyOneCode_... is a TRIPWIRE
+#        whose stated purpose is to fail the moment a second code joins UnsatisfiableWhileIncomplete -
+#        "which is the entire point of an allow-list over a category". Task 6 adds GR2060, so the tripwire
+#        fires BY DESIGN. Excluded at METHOD level, not class level, so that class's other shipped facts
+#        stay in the baseline.
+#
+#        THIS EXCLUSION IS NOT A SUPPRESSION. Task 6 now OWNS that test file and must update the
+#        assertion carrying section 5.3's argument - the tripwire is demanding a justification and this
+#        plan has one. The unfiltered terminal gate (02-core-suite-passes) re-runs the whole suite on the
+#        merged HEAD, so a task 6 that merely deletes the assertion is caught there.
 #
 # Required-present baseline (#478): this guardrail asserts a POSITIVE precondition on the STARTING tree,
 #        so it is green-on-arrival BY DESIGN - the class Step 7.0a exempts. MEASURED on master @67859c7,
@@ -53,7 +59,8 @@ if (-not (Test-Path $project)) {
 # JitPrefixVetoTests; task 9 -> ProducerCoverageCorpusTests.
 $filter = 'FullyQualifiedName!~ProducerCoverageTests' +
           '&FullyQualifiedName!~JitPrefixVetoTests' +
-          '&FullyQualifiedName!~ProducerCoverageCorpusTests'
+          '&FullyQualifiedName!~ProducerCoverageCorpusTests' +
+          '&FullyQualifiedName!~TheAllowListIsExactlyOneCode'
 
 # NO -v q on a TEST command: it deletes the Error Message/Expected/Actual/Stack Trace block the re-emit
 # below exists to surface, defeating #179 by the flag alone.
