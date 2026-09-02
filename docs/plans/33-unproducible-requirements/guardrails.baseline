@@ -30,7 +30,7 @@
     "tasks/03-author-tests-producer-coverage/samples/02-covers-key-behaviors.valid.cs": "3acfef5f38df10cab13856976d388dfdadfa48e9a8555520311d2097616e22fc",
     "tasks/03-author-tests-producer-coverage/samples/03-recovered-pair-not-constructed.invalid.cs": "7324bd7a8a828eeb0328033d883ffaf348af67f31eafb2089e76dc2817e307ea",
     "tasks/03-author-tests-producer-coverage/samples/03-recovered-pair-not-constructed.valid.cs": "3acfef5f38df10cab13856976d388dfdadfa48e9a8555520311d2097616e22fc",
-    "tasks/03-author-tests-producer-coverage/task.json": "e68de87abb02b52866bbffb8515f7bb99aad2ca43526a44443c1a98cd35dd0be",
+    "tasks/03-author-tests-producer-coverage/task.json": "0f9f07ce705e5cb8e69fe3e3575a58dd96a873148843b7c459c52dae2fbfdd07",
     "tasks/04-implement-gr2060/action.prompt.md": "b51a482f91a512b27d33a214dbcd32548b6ca440c6921d848f2cfcfc20f60542",
     "tasks/04-implement-gr2060/guardrails/01-build-passes.ps1": "57d03a644d27630a93d8d4d0236f3c927bf5f2e422a6069aa9f65de0e601aac5",
     "tasks/04-implement-gr2060/guardrails/02-tests-pass.ps1": "a13b722c041527c8e4f0ca0052e2999f3b65cac07cd8a6bde51b8f407b25a6e3",
