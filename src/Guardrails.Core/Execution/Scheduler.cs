@@ -1207,6 +1207,8 @@ public sealed class Scheduler
         // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change),
         // so the CLI's one-time "delivered by default" notice can name it. Non-null only when delivery
         // actually ran green (FF or clean merge); null for a halted delivery, a no-delivery run, or serial.
+        // #588 depends on that restriction: BranchMoved must leave this NULL so the "delivered to X" line
+        // does not print a branch the work never reached — the exact false claim that issue was filed for.
         string? deliveredToBranch =
             mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
                 ? integ?.OriginalBranch
@@ -1263,9 +1265,9 @@ public sealed class Scheduler
     /// The end-of-run merge-back itself (SSOT §5.3) — shared by the immediate path in
     /// <see cref="Finalize"/> and the terminal-gate-deferred path in
     /// <see cref="CompleteDeferredDelivery"/>, so both stamp identical outcomes. Threads the provider's
-    /// detail out for the two halts that carry one: the git hook's stderr (HookRejected, #149/#150) and
-    /// the blocking dirty paths (DirtyWorkingTree, #448), so the CLI can NAME what refused a green run's
-    /// delivery instead of sending the user to <c>git status</c>.
+    /// detail out for the three halts that carry one: the git hook's stderr (HookRejected, #149/#150), the
+    /// blocking dirty paths (DirtyWorkingTree, #448) and the two branch names (BranchMoved, #588), so the
+    /// CLI can NAME what refused a green run's delivery instead of sending the user to <c>git status</c>.
     /// </summary>
     private (MergeOnSuccessResult Outcome, string? Detail) DeliverToUserBranch(
         IntegrationHandle integ, CancellationToken cancellationToken)
@@ -1273,7 +1275,9 @@ public sealed class Scheduler
         MergeOnSuccessResult outcome =
             _worktreeProvider!.MergePlanBranchIntoUserBranch(integ, cancellationToken);
 
-        string? detail = outcome is MergeOnSuccessResult.HookRejected or MergeOnSuccessResult.DirtyWorkingTree
+        string? detail = outcome is MergeOnSuccessResult.HookRejected
+            or MergeOnSuccessResult.DirtyWorkingTree
+            or MergeOnSuccessResult.BranchMoved
             ? _worktreeProvider.LastMergeOnSuccessDetail
             : null;
 

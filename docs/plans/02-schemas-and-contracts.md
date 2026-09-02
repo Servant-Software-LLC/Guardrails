@@ -1829,11 +1829,35 @@ into the user's original branch (ff-only when possible, else a real merge whose 
 **AI-merge is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
 intact — never a force-overwrite. Opting out (`false` / `--no-merge-on-success`) leaves the plan branch
 for the user to review and merge. The merge-back outcome is reported as `MergeOnSuccessResult`
-(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected`); a dirty user working
-tree is refused **before any git merge runs** (the harness never runs git over uncommitted user work)
-and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that re-drains green
-after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
-(→ `FastForwarded`, exit 0) — never a double-merge or error.
+(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved`); a dirty
+user working tree is refused **before any git merge runs** (the harness never runs git over uncommitted
+user work) and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that
+re-drains green after a prior run already delivered re-issues an ff-only merge that git reports "Already
+up to date" (→ `FastForwarded`, exit 0) — never a double-merge or error.
+
+**The delivery target is VERIFIED, not assumed — compare and refuse (issue #588).** "The user's original
+branch" above is pinned once, at run start (`IntegrationHandle.OriginalBranch`, read by
+`CreateIntegration`), while the merge itself is a bare `git merge` in the user's checkout that lands on
+whatever `HEAD` **currently** is. Those two are now reconciled: **before merging**, the harness re-reads
+`git rev-parse --abbrev-ref HEAD` and, if it is not the pinned branch, **merges nothing** and returns
+`BranchMoved`, carrying "run started on `<original>`; HEAD is now `<current>`" through the same
+`RunReport.MergeOnSuccessDetail` channel `HookRejected` and `DirtyWorkingTree` use, so the CLI names both
+branches plus the plan branch the verified work is on. `DeliveredToBranch` stays **null**, so the
+"delivered to `<branch>`" line correctly does not print. A **detached** `HEAD` (the idiom prints the
+literal `HEAD`) and an unreadable `HEAD` take the same path — neither is provably the pinned branch, and
+this gate FAILS CLOSED exactly as the dirty-tree gate below does. This check runs FIRST, ahead of the dirty-path
+intersection and the merge-shape probe, both of which are computed against `HEAD` and would otherwise
+reason about the wrong branch.
+
+- **The harness does NOT check the user's branch back out.** Restoring it would mutate a working tree the
+  user moved deliberately — a worse failure than declining — so a moved `HEAD` joins the "delivery
+  withheld for a nameable reason" family: user checkout untouched, verified work left on
+  `guardrails/<plan-name>` for a manual merge, the SAFE failure direction.
+- **Motivating incident.** A run started on `master`; a `design/34-…` branch was cut from `HEAD` and
+  checked out *while the run was in flight*. The end-of-run merge produced
+  `Merge branch 'guardrails/33-…' into design/34-…` while the run printed `delivered to master` from the
+  pinned value. `master` contained zero deliverables, and **nothing in the output was self-inconsistent** —
+  only git revealed it.
 
 **Delivery is ordered AFTER the terminal gate — "all succeeded" means tasks AND gate (issue #457).**
 Nothing reaches the user's branch until *every* terminal check the plan declares has passed on the
@@ -1937,9 +1961,10 @@ The non-FF merge commit (`git commit --no-edit`, no `--no-verify`) therefore run
   commit. A user who needs the hook to vet every delivery should expect it only when the merge-back is
   non-FF (their branch advanced during the run).
 
-A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected`) exits
-non-zero at the CLI: the work is durable on the plan branch but the user must act. A `FastForwarded` /
-`Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict untouched.
+A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected` /
+`BranchMoved`) exits non-zero at the CLI: the work is durable on the plan branch but the user must act. A
+`FastForwarded` / `Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict
+untouched.
 
 **Green-but-undelivered warning (#340) — the safety backstop for the OPT-OUT posture.** With delivery
 now **ON by default** (`mergeOnSuccess` defaults `true`, per the flip above), a wholly-green run normally
@@ -2366,12 +2391,13 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                       // `outcome`, so "did the work ship?" is answerable without knowing
                                       // which outcome tokens count as success
     "outcome": "not-attempted",       // not-attempted | fast-forwarded | merged | conflict |
-                                      // dirty-working-tree | hook-rejected
+                                      // dirty-working-tree | hook-rejected | branch-moved
     "reason": "mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
     "planBranch": "guardrails/27-operator-visibility"  // the branch to merge by hand; absent when delivered,
                                       // and absent in serial mode where nothing is stranded
     // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
-    // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, or the blocking paths
+    // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
+                                      // (branch-moved, #588) the branch pinned at start + the current HEAD
   }
 }
 ```

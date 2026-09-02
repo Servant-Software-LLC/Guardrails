@@ -193,8 +193,9 @@ public sealed record DeliverySection
     /// <summary>
     /// Free-text detail carried by a refusing outcome (mirrors
     /// <see cref="Execution.RunReport.MergeOnSuccessDetail"/>): a hook's stderr for
-    /// <see cref="DeliveryOutcome.HookRejected"/>, or the blocking tracked paths for
-    /// <see cref="DeliveryOutcome.DirtyWorkingTree"/>. Null when the outcome carries none.
+    /// <see cref="DeliveryOutcome.HookRejected"/>, the blocking tracked paths for
+    /// <see cref="DeliveryOutcome.DirtyWorkingTree"/>, or the two branch names for
+    /// <see cref="DeliveryOutcome.BranchMoved"/>. Null when the outcome carries none.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Detail { get; init; }
@@ -224,7 +225,13 @@ public enum DeliveryOutcome
     DirtyWorkingTree,
 
     /// <summary>One of the user's git hooks rejected the merge commit (issues #149/#150).</summary>
-    HookRejected
+    HookRejected,
+
+    /// <summary>
+    /// The checkout was no longer on the branch the run pinned as its delivery target, so nothing was
+    /// merged (issue #588). Includes a detached HEAD and an unreadable HEAD.
+    /// </summary>
+    BranchMoved
 }
 
 /// <summary>

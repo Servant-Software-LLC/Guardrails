@@ -478,7 +478,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   re-drained-green resume re-issues an ff-only merge that git reports "already up to date"). When delivery
   fires purely because of the default (no config key, no flag), the CLI prints a one-time
   "delivered to <branch> …" notice naming the branch + the opt-out. The outcome is a `MergeOnSuccessResult`:
-  `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected`
+  `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved`
   (halted; work is durable on the plan branch, exit 2).
   **The dirty-tree gate is an INTERSECTION, not "any dirt anywhere" (#448, SSOT §5.3).** `DirtyWorkingTree`
   fires only when a TRACKED uncommitted path is ALSO a path the merge would update — `git status
@@ -495,6 +495,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   base, unparseable porcelain) it reverts to refuse-on-ANY-tracked-dirt; a fail-open would be worse than
   the bug. The blocking paths are **NAMED**: newline-separated + ordinal-sorted in
   `RunReport.MergeOnSuccessDetail` (the same channel `HookRejected` uses for hook stderr), listed by the
+- **The delivery target is VERIFIED at merge time, never assumed (#588).** `OriginalBranch` is pinned at
+  run start, but the merge itself runs in the repo against whatever `HEAD` is when it fires. If the
+  checkout MOVED during the run — a branch switch, or a detached HEAD — the harness **refuses**:
+  `BranchMoved`, nothing merged, `DeliveredToBranch` null so no "delivered to X" line prints, work left
+  on the plan branch. It does NOT check the original branch back out: that would stomp the branch someone
+  switched to deliberately. Measured incident: a run started on `master`, a design branch was created
+  from HEAD mid-run, and the work merged into that branch while the run truthfully reported `master` —
+  the report was derived from the right value, so only git revealed it.
+
   CLI, so nobody is sent to `git status` to find what blocked a green run. `Conflict`/`HookRejected` are
   untouched.
   **Green-but-undelivered warning (#340):** the backstop for the OPT-OUT case. When the user opts OUT
@@ -516,7 +525,8 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   a wholly-green run launched with `--no-merge-on-success` was read as shipped and two issues were closed
   against a branch that had never been merged. `run.json` now carries a top-level `delivery` section (SSOT
   section 7) — `delivered` (a plain boolean, deliberately not derived from `outcome`), `outcome`
-  (`not-attempted` | `fast-forwarded` | `merged` | `conflict` | `dirty-working-tree` | `hook-rejected`),
+  (`not-attempted` | `fast-forwarded` | `merged` | `conflict` | `dirty-working-tree` | `hook-rejected` |
+  `branch-moved`),
   plus `reason`/`planBranch`/`deliveredToBranch`/`detail`. The **four** not-attempted reasons are kept
   DISTINGUISHABLE (delivery off / terminal gate failed / not wholly green / serial mode), and `planBranch`
   is written **only** for the case that actually strands work — naming a branch in serial mode would send
@@ -644,7 +654,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   section 7.2.
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
-  was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
+  was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected`/`BranchMoved` — work durable on the plan branch) /
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision. The OBJECT form carries `options[]` (#387, an

@@ -13,6 +13,9 @@ namespace Guardrails.Core.Execution;
 /// </remarks>
 public sealed class GitWorktreeProvider : IWorktreeProvider
 {
+    /// <summary>What <c>git rev-parse --abbrev-ref HEAD</c> prints when no branch is checked out (#588).</summary>
+    private const string DetachedHead = "HEAD";
+
     private readonly string _repoPath;
     private readonly string _worktreeRoot;
     private readonly string _realRoot;
@@ -399,6 +402,28 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // Reset any rejection detail captured by a prior call (this provider is run-scoped, but a
         // resumed run could call the merge more than once over its lifetime).
         LastMergeOnSuccessDetail = null;
+
+        // Issue #588 — COMPARE AND REFUSE: the delivery target is PINNED at run start
+        // (integ.OriginalBranch, read once by CreateIntegration) but every merge below is a bare
+        // `git merge` in the user's repo, which lands on whatever HEAD currently is. Those two were
+        // never reconciled, so a branch checked out (or created from HEAD) WHILE the run was in flight
+        // silently redirected the delivery: the measured incident merged into
+        // 'design/34-run-event-stream-and-attach' while the run truthfully printed "delivered to master"
+        // from the pinned value, and master got nothing. Nothing in the output was self-inconsistent —
+        // only git revealed it. This check must be FIRST: every gate below (the dirty-path intersection,
+        // the merge-base FF probe) is computed against HEAD and would otherwise reason about the wrong
+        // branch.
+        //
+        // We do NOT check the original branch back out. That would mutate the user's working tree and
+        // could stomp a branch they switched to deliberately — a worse failure than declining. Refusing
+        // leaves the user's checkout untouched and the verified work on the plan branch, which is the
+        // same SAFE failure direction HookRejected (#149/#150) and DirtyWorkingTree (#448) take, and it
+        // carries its detail through the same LastMergeOnSuccessDetail channel they use.
+        if (HeadMovedDetail(integ.OriginalBranch) is { } moved)
+        {
+            LastMergeOnSuccessDetail = moved;
+            return MergeOnSuccessResult.BranchMoved;
+        }
 
         // F4, NARROWED TO A REAL INTERSECTION (issue #448): never run git over uncommitted user work
         // THIS MERGE WOULD OVERWRITE. The pre-#448 gate refused on ANY tracked modification anywhere
@@ -1629,6 +1654,45 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             try { GitIn(repoPath, "update-ref", "-d", r); }
             catch (InvalidOperationException) { /* best-effort */ }
         }
+    }
+
+    /// <summary>
+    /// The issue #588 moved-HEAD gate for the end-of-run delivery. Returns <c>null</c> when the merge may
+    /// proceed — the user's checkout is STILL on <paramref name="originalBranch"/>, the branch the run
+    /// pinned as its delivery target at start. Otherwise returns the human-readable detail naming BOTH
+    /// branches, for <see cref="LastMergeOnSuccessDetail"/> to carry to the CLI.
+    /// <para>
+    /// Three refusing shapes, all "not provably the pinned branch": HEAD is on a DIFFERENT branch (the
+    /// measured incident — a branch created from HEAD mid-run); HEAD is DETACHED (the local idiom
+    /// <c>rev-parse --abbrev-ref HEAD</c> prints the literal <c>HEAD</c>, and a delivery there would land
+    /// commits on no branch at all, including the case where the run itself started detached); or HEAD
+    /// could not be read at all. The last one FAILS CLOSED for the same reason
+    /// <see cref="BlockingDirtyPaths"/> does: merging into a target we cannot confirm is strictly worse
+    /// than declining.
+    /// </para>
+    /// </summary>
+    private string? HeadMovedDetail(string originalBranch)
+    {
+        // Same idiom CreateIntegration used to PIN the target, so the two values are directly comparable.
+        var (stdout, exit) = TryGitIn(_repoPath, "rev-parse", "--abbrev-ref", "HEAD");
+        string started = string.Equals(originalBranch, DetachedHead, StringComparison.Ordinal)
+            ? "run started on a detached HEAD"
+            : $"run started on '{originalBranch}'";
+
+        if (exit != 0)
+        {
+            return $"{started}; the current branch could not be read (git rev-parse failed)";
+        }
+
+        string current = stdout.Trim();
+        if (string.Equals(current, DetachedHead, StringComparison.Ordinal))
+        {
+            return $"{started}; HEAD is now detached (no branch checked out)";
+        }
+
+        return string.Equals(current, originalBranch, StringComparison.Ordinal)
+            ? null
+            : $"{started}; HEAD is now '{current}'";
     }
 
     /// <summary>
