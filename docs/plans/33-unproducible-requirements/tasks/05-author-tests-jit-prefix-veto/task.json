@@ -1,0 +1,7 @@
+{
+  "description": "Author the RED #501 regression test: a JIT partial prefix whose wave gate trips GR2060 must not be reverted, and the finding must still appear in the gate-decision report",
+  "dependsOn": ["04-implement-gr2060"],
+  "stableId": "k2j7d4",
+  "writeScope": ["tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs"],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

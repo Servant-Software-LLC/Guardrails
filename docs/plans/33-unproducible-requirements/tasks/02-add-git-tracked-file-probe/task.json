@@ -1,0 +1,11 @@
+{
+  "description": "Add IGitTrackedFileProbe + GitLsFilesProbe + NullGitTrackedFileProbe and a FIFTH PlanValidator constructor overload with a real default, mirroring IScriptSyntaxProbe including its silence-is-not-proof contract",
+  "dependsOn": ["01-lift-guardrail-clause-text"],
+  "stableId": "m7q2zd",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs",
+    "src/Guardrails.Core/Loading/GitLsFilesProbe.cs",
+    "src/Guardrails.Core/Loading/PlanValidator.cs"
+  ],
+  "action": { "tier": "medium" }
+}

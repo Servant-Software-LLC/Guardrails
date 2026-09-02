@@ -1,0 +1,7 @@
+{
+  "description": "Name GR2060 and the producer-coverage invariant in the knowledge skill, and record GR2070 as held-not-allocated so the next design does not re-propose it",
+  "dependsOn": ["08-advance-the-code-ladder"],
+  "stableId": "d7r2m5",
+  "writeScope": [".claude/skills/guardrails-domain-knowledge/SKILL.md"],
+  "action": { "tier": "easy" }
+}

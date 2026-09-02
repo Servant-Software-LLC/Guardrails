@@ -1,0 +1,10 @@
+{
+  "description": "Add the callee-parameter-list step to the guardrails-review Unreachable-outcome probe and its authoring twin to plan-breakdown, beside the already-shipped datum trace",
+  "dependsOn": ["04-implement-gr2060"],
+  "stableId": "c3p6k1",
+  "writeScope": [
+    ".claude/skills/guardrails-review/SKILL.md",
+    ".claude/skills/plan-breakdown/SKILL.md"
+  ],
+  "action": { "tier": "medium" }
+}

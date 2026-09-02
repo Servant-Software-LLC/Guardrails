@@ -1,0 +1,7 @@
+{
+  "description": "Author the RED tests for GR2060: the recovered positive control, the two extractor negative controls, and the CONSTRUCTED condition-8 silence fixture",
+  "dependsOn": ["02-add-git-tracked-file-probe"],
+  "stableId": "v4x8b6",
+  "writeScope": ["tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

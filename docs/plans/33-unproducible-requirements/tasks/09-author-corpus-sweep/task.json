@@ -1,0 +1,7 @@
+{
+  "description": "Author the corpus sweep over all 1271 committed guardrail scripts including waved folders, with a per-plan per-commit expectation table carrying the required non-zero",
+  "dependsOn": ["08-advance-the-code-ladder"],
+  "stableId": "b5m9j7",
+  "writeScope": ["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

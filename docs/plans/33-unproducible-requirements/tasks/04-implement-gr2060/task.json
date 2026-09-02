@@ -1,0 +1,11 @@
+{
+  "description": "Implement GR2060 UnproducibleGateRequirement in a new ProducerCoverage.cs, allocate the code, and wire the one call site in PlanValidator",
+  "dependsOn": ["03-author-tests-producer-coverage"],
+  "stableId": "r9n5c2",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/ProducerCoverage.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs",
+    "src/Guardrails.Core/Loading/PlanValidator.cs"
+  ],
+  "action": { "tier": "hard", "maxTurns": 75 }
+}

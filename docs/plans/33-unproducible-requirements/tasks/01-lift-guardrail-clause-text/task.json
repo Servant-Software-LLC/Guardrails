@@ -1,0 +1,10 @@
+{
+  "description": "Lift GR2057's clause-reading helpers out of PlanValidator into a shared internal GuardrailClauseText class, unchanged - a pure refactor with no behaviour change",
+  "dependsOn": [],
+  "stableId": "p3k9a1",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/GuardrailClauseText.cs",
+    "src/Guardrails.Core/Loading/PlanValidator.cs"
+  ],
+  "action": { "tier": "medium" }
+}

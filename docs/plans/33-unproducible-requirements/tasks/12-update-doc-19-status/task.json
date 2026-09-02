@@ -1,0 +1,7 @@
+{
+  "description": "Update doc 19 Milestone A status from NOT BUILT to a pointer at this plan, and add the one D2 sentence recording that the derived-path lint was designed and declined",
+  "dependsOn": ["08-advance-the-code-ladder"],
+  "stableId": "e4w8n6",
+  "writeScope": ["docs/plans/19-producer-coverage.md"],
+  "action": { "tier": "easy" }
+}

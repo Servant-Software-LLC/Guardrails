@@ -1,0 +1,7 @@
+{
+  "description": "Add SSOT section 4.8 for GR2060, including the two-suppressions paragraph and the excused-not-vanished rule, plus section 4.7 forward pointer",
+  "dependsOn": ["06-excuse-gr2060-at-jit-gate"],
+  "stableId": "y1t5g9",
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"],
+  "action": { "tier": "medium" }
+}

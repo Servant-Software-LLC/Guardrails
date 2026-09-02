@@ -1,0 +1,10 @@
+{
+  "description": "Remove GR2060 from the reservation block because it is allocated, add GR2070 held by name with its reason, advance next-free to GR2071, and mirror it in SSOT section 14.10",
+  "dependsOn": ["07-ssot-producer-coverage-section"],
+  "stableId": "z8s4h3",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs",
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": { "tier": "easy" }
+}
