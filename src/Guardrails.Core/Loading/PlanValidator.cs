@@ -98,6 +98,7 @@ public sealed class PlanValidator
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
         ValidateHandoffScopeCoverage(plan, diagnostics);
+        ProducerCoverage.Validate(plan, _gitTrackedFileProbe, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
@@ -2640,8 +2641,12 @@ public sealed class PlanValidator
     /// text, so a <c>{</c> inside a string literal can leave the block unbalanced — in which case the
     /// answer is NO. Silence beats a guess: a mis-read block that ran to end-of-file would pick up some
     /// other clause's failure signal and invert this clause's polarity.
+    /// <para><c>internal</c> rather than private only so <see cref="ProducerCoverage"/> can reuse it
+    /// UNCHANGED: GR2060's condition 4 asks the same polarity question about the same clause shape, and two
+    /// readers free to disagree about whether a branch fails would put the two checks' polarities out of
+    /// step with each other.</para>
     /// </summary>
-    private static bool BranchFailsTheGuardrail(string text, int openBrace)
+    internal static bool BranchFailsTheGuardrail(string text, int openBrace)
     {
         int depth = 0;
         for (int i = openBrace; i < text.Length; i++)
@@ -2724,8 +2729,11 @@ public sealed class PlanValidator
     /// flattened across waves (so waved TASK folders are covered by the task loop); only the
     /// wave-LEVEL folders need the separate <c>plan.Waves</c> loop. Prompt guardrails are excluded
     /// (they are prose, not a regex construction).
+    /// <para><c>internal</c> rather than private only so <see cref="ProducerCoverage"/> can reuse it
+    /// UNCHANGED (doc 19 §3.4): GR2060 enumerates exactly the same six folder instances, and a private
+    /// second copy of this walk would silently stop covering the terminal gate the day this one moved.</para>
     /// </summary>
-    private static IEnumerable<GuardrailDefinition> FourFolderScriptGuardrails(PlanDefinition plan)
+    internal static IEnumerable<GuardrailDefinition> FourFolderScriptGuardrails(PlanDefinition plan)
     {
         foreach (TaskNode task in plan.Tasks)
         {
@@ -3239,12 +3247,19 @@ public sealed class PlanValidator
     /// <b>`planIsClosed`</b> (doc 19 §3.3) — the plan has no declared wave folder with zero tasks, so its
     /// declaration set is COMPLETE and nothing further is expected to be authored. Trivially true for a flat
     /// plan: there is no JIT breakdown, so nothing is pending by construction.
-    /// <para>It is the shared suppressor for the producer-coverage family. GR2062 uses it here; GR2060 (doc
-    /// 19 §3.1, reserved, not built) uses the same predicate for the same reason — while an un-authored wave
+    /// <para>It is the shared suppressor for the producer-coverage family. GR2062 uses it here; GR2060 uses
+    /// the same predicate for the same reason in <see cref="ProducerCoverage"/> — while an un-authored wave
     /// stub exists a shortfall is EXPECTED (that IS the #365 one-ahead invariant working) and a warning that
     /// fired then would be ignored within a week.</para>
+    /// <para><b>It detects an EMPTY STUB WAVE and nothing else.</b> It returns <c>true</c> for a wave
+    /// authored as a JIT PARTIAL PREFIX — five task folders of an intended twelve — because 5 &gt; 0, even
+    /// though that prefix's <c>writeScope</c> union is just as incomplete. So it is NOT a soundness
+    /// guarantee for the JIT breakdown gate: that case is excused separately in
+    /// <c>Scheduler.UnsatisfiableWhileIncomplete</c>, keyed on <c>wavePrefixIsIncomplete</c>, which is
+    /// actual knowledge of incompleteness rather than an observation that no wave folder is empty (plan 33
+    /// §5.3). The two suppressions are complementary, never alternatives.</para>
     /// </summary>
-    private static bool PlanIsClosed(PlanDefinition plan) => plan.Waves.All(w => w.Tasks.Count > 0);
+    internal static bool PlanIsClosed(PlanDefinition plan) => plan.Waves.All(w => w.Tasks.Count > 0);
 
     /// <summary>
     /// GR2062 (issue #477, doc 19 §3.2, SSOT §2/§14.1) — the plan INTENDS more waves than it DECLARES while

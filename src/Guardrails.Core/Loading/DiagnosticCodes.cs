@@ -826,6 +826,35 @@ public static class DiagnosticCodes
     public const string WaveIntegrationScopeInert = "GR2059";
 
     /// <summary>
+    /// <b>GR2060 — a script guardrail REQUIRES an exact literal in a TRACKED workspace file that does not
+    /// contain it, and NO task in the plan declares that file in its <c>writeScope</c> (issue #474, doc 19
+    /// §3.1, plan 33 §5, SSOT §4.8).</b> Nothing the plan can do makes the gate pass, so the run spends its
+    /// whole DAG and fails at the gate; the measured price of learning that the expensive way was $115.32.
+    /// <para><b>Relational, unlike the §4.7 three.</b> GR2055/GR2056/GR2057 are each decidable from ONE
+    /// script's own text. This one reads the script, the UNION of every task's <c>writeScope</c> across
+    /// every wave, and the workspace file's current bytes, and asks git whether that file is tracked — so
+    /// it lives in <see cref="ProducerCoverage"/> rather than inline in the validator.</para>
+    /// <para><b>ERROR, and it is the conditions that earn it.</b> All ten of doc 19 §3.1's conjuncts must
+    /// hold: PowerShell only; a statically-known path operand; a one-hop variable association; a
+    /// requirement clause whose branch FAILS and whose pattern de-regexes to one exact witness; the witness
+    /// absent from current bytes; the file git-TRACKED (a not-known answer is never read as "untracked",
+    /// and a known-untracked generated artifact is out of scope entirely); the path not under the plan
+    /// folder; no task declaring it under <see cref="Execution.WriteScope.IsInScope"/>; GR2041 clean; and
+    /// <c>planIsClosed</c>. The verdict is a provable impossibility about the run ABOUT TO START rather
+    /// than a judgement about a document, and its false-positive surface is a PATH — unambiguous, unlike a
+    /// member name.</para>
+    /// <para><b>Two suppressions, NOT interchangeable</b> (plan 33 §5.3). <c>planIsClosed</c> suppresses
+    /// the EMPTY STUB WAVE case here. An authored JIT PARTIAL PREFIX — five task folders of an intended
+    /// twelve — has <c>planIsClosed == true</c> and an incomplete union anyway; that case is excused at the
+    /// JIT breakdown gate by <c>Scheduler.UnsatisfiableWhileIncomplete</c>, keyed on
+    /// <c>wavePrefixIsIncomplete</c>. Excused there means "casts no veto", never "vanishes": the finding
+    /// stays in the gate-decision report and still errors under a plain <c>guardrails validate</c>.
+    /// Reading either suppression as a substitute for the other reverts JIT work wholesale, which is
+    /// verbatim the defect #501 fixed.</para>
+    /// </summary>
+    public const string UnproducibleGateRequirement = "GR2060";
+
+    /// <summary>
     /// <b>GR2062 — a waved plan INTENDS more waves than it DECLARES, and no wave is left to author
     /// (issue #477, doc 19 §3.2, SSOT §2/§14.1).</b> The plan's <c>intendedWaves</c> disagrees with the
     /// number of <c>wave-*</c> folders on disk while <c>planIsClosed</c> holds — every declared wave has
