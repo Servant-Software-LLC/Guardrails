@@ -1238,7 +1238,7 @@ total order driven by the wave folder's numeric prefix.
 | Multi-wave plans (nested layout, design of record) | `docs/plans/10-multi-wave-plans.md` (contract in SSOT section 14) |
 | The overwatcher (active AI supervisor, design of record) | `docs/plans/11-overwatcher.md` (contract in SSOT §9.2/§9.2.1) |
 | JIT breakdown durability (intent manifest, prefix, resume) | `docs/plans/20-jit-breakdown-durability.md` (contract in SSOT §14.11; GR2063/GR2064) |
-| Producer coverage + wave intent (`intendedWaves`) | `docs/plans/19-producer-coverage.md` (contract in SSOT §2/§14.1; GR2062 shipped, GR2060 reserved) |
+| Producer coverage + wave intent (`intendedWaves`) | `docs/plans/19-producer-coverage.md` (contract in SSOT §2/§14.1; GR2062 shipped, GR2060 UnproducibleGateRequirement shipped) |
 | Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
 | Waved worked example (2 waves, validate-clean) | `examples/waved-hello/` + `plan-breakdown/references/example-breakdown-waved.md` |
 
@@ -1365,14 +1365,17 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1011 / GR2065** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
+  HEAD-independence). Next-free GR code: **GR1011 / GR2071** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
   GR2062, GR2063 and GR2064 are all SHIPPED now, and model-tiering Stage 3 ALLOCATED
   GR2051-GR2053 (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist — documented
   under Model tiering, above), so what remains reserved-by-name and must not be re-used is GR2054
-  (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes code); and
-  GR2060 (`docs/plans/19-producer-coverage.md` §3.1,
-  `UnproducibleGateRequirement`, designed but NOT built) + GR2061
-  (`docs/plans/18-integration-proof-proximity.md` §3.4, the deferred seam-ledger lint) — so an
+  (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes code); GR2060 is SHIPPED
+  (`docs/plans/19-producer-coverage.md` §3.1, `UnproducibleGateRequirement` — a guardrail may only require content
+  some task in the plan can actually produce; ERROR severity, excused at JIT breakdown gate when incomplete); and
+  GR2070 (HELD, designed and declined — never fired on a real defect at any commit in this repository;
+  reservation in DiagnosticCodes.cs with pointer to `docs/plans/33-unproducible-requirements.md` §6.3;
+  revisit bar = a defect at a commit where named-argument requirement and unowned declaring file coexist)
+  + GR2061 (`docs/plans/18-integration-proof-proximity.md` §3.4, the deferred seam-ledger lint) — so an
   UNRELATED new code takes the next code `DiagnosticCodes.cs` records as free, which is why
   **`DiagnosticCodes.cs` WINS — re-verify against its next-free comment before allocating.**
   GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 = GuardrailScriptDoesNotParse #473; GR2057 =
@@ -1413,12 +1416,13 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2065**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2071**
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
   model tiering (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes
-  code; GR2051-GR2053 were ALLOCATED by Stage 3), **GR2060** (`docs/plans/19-producer-coverage.md`
-  §3.1 — `UnproducibleGateRequirement`, designed but NOT built), **GR2061**
+  code; GR2051-GR2053 were ALLOCATED by Stage 3), **GR2070** (HELD — designed and declined, never fired on real defect,
+  reservation in DiagnosticCodes.cs with pointer to `docs/plans/33-unproducible-requirements.md` §6.3,
+  revisit bar = defect at commit with named-argument requirement + unowned declaring file), **GR2061**
   (`docs/plans/18-integration-proof-proximity.md` §3.4). Taken: GR2035 =
   DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
   GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
