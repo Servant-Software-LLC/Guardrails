@@ -19,6 +19,7 @@ public sealed class PlanValidator
     private readonly IExecutableProbe _probe;
     private readonly BannedPatternRegistry _bannedPatterns;
     private readonly IScriptSyntaxProbe _syntaxProbe;
+    private readonly IGitTrackedFileProbe _gitTrackedFileProbe;
 
     /// <summary>Validate with the given PATH probe and the embedded default banned-pattern registry.</summary>
     public PlanValidator(IExecutableProbe probe) : this(probe, BannedPatternRegistry.Load()) { }
@@ -39,12 +40,33 @@ public sealed class PlanValidator
     /// probe because parse-checking spawns an interpreter: tests inject a fake so the GR2056 check is
     /// exercised without pwsh/bash present, and a caller that must not spawn anything can pass
     /// <see cref="NullScriptSyntaxProbe"/>.
+    ///
+    /// <para><b>Behaviour change for every existing caller of this overload (and the three shorter
+    /// ones above it, which all funnel through here):</b> the git-tracked-file probe now defaults to
+    /// a REAL <see cref="GitLsFilesProbe"/>, not the inert <see cref="NullGitTrackedFileProbe"/>. None
+    /// of today's checks read it yet (GR2060 arrives separately), so nothing spawns <c>git</c> as a
+    /// side effect of this default — but the day GR2060 lands, every one of those callers starts
+    /// asking git a question it did not ask before, without touching a single call site.</para>
     /// </summary>
     public PlanValidator(IExecutableProbe probe, BannedPatternRegistry bannedPatterns, IScriptSyntaxProbe syntaxProbe)
+        : this(probe, bannedPatterns, syntaxProbe, new GitLsFilesProbe()) { }
+
+    /// <summary>
+    /// Validate with an injected git-tracked-file probe as well (GR2060). Separate from the other probes
+    /// because it spawns <c>git</c>: tests inject a fake so GR2060's conservatism (not-known ⇒ silent,
+    /// never "untracked") is exercised without a git checkout present, and a caller that must not spawn
+    /// anything can pass <see cref="NullGitTrackedFileProbe"/>.
+    /// </summary>
+    public PlanValidator(
+        IExecutableProbe probe,
+        BannedPatternRegistry bannedPatterns,
+        IScriptSyntaxProbe syntaxProbe,
+        IGitTrackedFileProbe gitTrackedFileProbe)
     {
         _probe = probe;
         _bannedPatterns = bannedPatterns;
         _syntaxProbe = syntaxProbe;
+        _gitTrackedFileProbe = gitTrackedFileProbe;
     }
 
     /// <summary>Run every semantic check and return all diagnostics (errors and warnings).</summary>
