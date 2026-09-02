@@ -1729,6 +1729,12 @@ Per `references/schemas.md`, exactly:
     `04-author-tests-tcapi-local`), NOT the stableId. The harness REJECTS a fragment
     keyed by anything else (every attempt), so:
     `{ "04-author-tests-tcapi-local": { "someKey": "someValue" } }`.
+  - EXCEPTION — the CONTROL KEYS `needsHarnessWrite` and `needsHuman` are TOP-LEVEL
+    SIBLINGS of your folder-name key, never nested inside it. They are instructions to
+    the harness, not state, so the rule above does not cover them:
+    `{ "04-author-tests-tcapi-local": { "someKey": "someValue" },
+    "needsHarnessWrite": { "path": "…", "edits": [ … ] } }`. Nest one inside your
+    folder-name key and the harness REJECTS the attempt — nothing is written.
   - If a previous-attempt feedback section is appended, this is a RETRY: fix those
     specific failures; do not start over.
   - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
@@ -2629,8 +2635,18 @@ Add it as an escape-hatch header, parallel to the `needsHuman` header, **verbati
 > `Write`/`Edit` to the `.claude/` path: a direct-write probe wastes a turn and populates the
 > harness's permission-wall tracker. Instead, FIRST write a `needsHarnessWrite` request to the
 > state-out path. The harness (which is NOT subject to that layer) performs the write directly, then
-> your guardrails still run normally against the result. There are two forms, and they are mutually
-> exclusive — send exactly one:
+> your guardrails still run normally against the result.
+>
+> **`needsHarnessWrite` is a TOP-LEVEL key — a SIBLING of your task's folder-name key, NEVER nested
+> inside it.** The harness reads it at the fragment root only. Emit both keys side by side:
+> `{ "<your-task-folder-name>": { "someKey": "someValue" },
+> "needsHarnessWrite": { "path": "…", "edits": [ … ] } }`
+> — and omit the folder-name key entirely if this task publishes no state. Nested one level down
+> (`{ "<your-task-folder-name>": { "needsHarnessWrite": { … } } }`) the harness REJECTS the attempt:
+> nothing is written, and before that rejection existed the request was silently ignored and the
+> guardrail then failed on the CONTENT of a file you never got to touch.
+>
+> There are two payload forms, and they are mutually exclusive — send exactly one:
 >
 > - **MODIFYING an existing file — use `edits` (prefer this):**
 >   `{"needsHarnessWrite": {"path": "<workspace-relative path>", "reason": "<why>", "edits":

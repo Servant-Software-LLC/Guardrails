@@ -2072,8 +2072,46 @@ merged (the attempt fails, retries with feedback naming the stray key, and nothi
 `state.json`). The fragment is **rejected, not stripped**. This makes the harness the single
 writer of every task's namespace, closing the #48 cross-task poisoning vector: no task can
 overwrite another task's captured `fileHashes` (or any derived key) by writing under that
-task's id. `needsHuman` is **exempt** — it short-circuits the attempt (§9) *before* the merge
-step, so it is never subject to this rule.
+task's id.
+
+**The CONTROL KEYS are exempt, and they are TOP-LEVEL SIBLINGS of the folder-name key.** The
+fragment root carries two kinds of thing: the **state** a task publishes (namespaced under its own
+id, the rule above) and **instructions to the harness** — `needsHuman` (§9) and `needsHarnessWrite`
+(§9) — which are not state and are not namespaced. `needsHuman` short-circuits the attempt *before*
+the merge step and `needsHarnessWrite` is CONSUMED (stripped) before it, so neither is ever subject
+to the single-writer rule. A fragment may carry a control key and the task's own state key together:
+
+```json
+{ "02-generate-greeting": { "greetingPath": "out/greeting.txt" },
+  "needsHarnessWrite": { "path": ".claude/skills/foo/SKILL.md", "edits": [ ] } }
+```
+
+**A control key NESTED under a top-level key is REJECTED (issue #586).** Written one level down —
+`{ "02-generate-greeting": { "needsHarnessWrite": { … } } }` — it is not a control key at all: the
+harness reads control keys at the fragment ROOT, so nested it is ordinary state under a key the task
+legitimately owns. The single-writer check passes it, the escape hatch never fires, **nothing is
+written, and nothing anywhere says so** — the task's guardrails then fail on the CONTENT of a file
+the agent was never given the chance to touch. (Measured on plan 33: 7 attempts across two runs and
+one run-stopping `needs-human` halt; the same task, model and content passed in 78 seconds once the
+prompt was corrected by hand. It is a defensible reading of the harness-contract header, which says
+to write everything published under the FOLDER NAME as the single top-level key and that anything
+else is REJECTED, while marking nothing exempt — the wording is fixed at the source, but a wording
+fix reaches only plans authored afterwards.) The harness therefore detects a control key nested
+**exactly one level** under any object-valued top-level key and fails the attempt as
+**invalid-fragment** — the SAME outcome the foreign-key rejection above uses, so an agent meets ONE
+consistent story about fragment shape — with retry feedback that names the specific mistake, states
+that nothing was written, and shows the correct shape with both keys present. Detection is by PAYLOAD
+SHAPE, never by key name alone (a `needsHarnessWrite` value must carry a `path` plus `content`/`edits`,
+or be an array containing such an entry; a `needsHuman` value must be the structured object form
+carrying a non-empty `question` — the bare-string form is deliberately not matched): a task's own state
+could name a key `needsHuman` for unrelated reasons, and a false rejection of legitimate state would be
+worse than the bug — the bug costs attempts, a false rejection blocks a task on every attempt forever.
+A control key TWO or more levels down is likewise not flagged; that depth is genuinely reachable by
+legitimate state. The check runs **before the guardrails**, because a guardrail failure returns long
+before the fragment-validation path here ever reads the fragment — detecting this at the merge site
+alone would not have caught the measured defect at all. `stagingOutputs` is NOT in this family: it is a
+`task.json` field (§3.5), not a fragment key, so there is no top-level fragment contract for it to be
+nested out of.
 
 **Multi-wave plans (§14):** in a waved plan the "task's own id" is the **wave-qualified id**
 `<waveDir>/<taskFolder>` (e.g. `wave-02-provision/01-author-tests`), so two waves may each reuse `01-`
@@ -3882,7 +3920,9 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     { "path": ".claude/skills/plan-breakdown/references/new.md",  "reason": "...", "content": "..." } ] }
 ```
 
-- **Wire contract.** A root fragment key, read from the SAME already-written `GUARDRAILS_STATE_OUT`
+- **Wire contract.** A **ROOT** fragment key — a top-level SIBLING of the task's folder-name state key,
+  never nested inside it (§6.2; nesting it one level down is REJECTED as invalid-fragment, issue #586) —
+  read from the SAME already-written `GUARDRAILS_STATE_OUT`
   file `needsHuman` uses, via the same "read once" shape. The key's value is **either a single ENTRY
   object or an ARRAY of entry objects** — the array is additive and the single-object form is
   unchanged, byte for byte, including its failure messages. Each entry has a `path`, workspace-relative
@@ -3987,6 +4027,12 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
   `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
   trumps a mechanical write request).
+- **Nesting it under the folder-name key is a REJECTED shape, not a silent no-op (issue #586).** See
+  §6.2 for the full rule and the measured cost. The order in the attempt loop is: the top-level
+  `needsHuman` short-circuit first (a deliberate escalation is honoured, never met with a shape
+  lecture), then the nested-control-key rejection, then the `needsHarnessWrite` application — so a
+  fragment carrying both a correct request and a nested one is rejected with nothing written for
+  either, and an action that FAILED outright keeps its own more primary failure feedback.
 - **Three load-bearing safety checks, run PER ENTRY and ALL BEFORE the write — and, since #437, before
   that entry's target file is so much as READ (a security boundary — otherwise any task could claim
   "I'm blocked, please write this for me" and bypass `writeScope` entirely). All three are

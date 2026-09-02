@@ -68,7 +68,14 @@ internal sealed class ActionRunner
                 task.Action.Path, task.Action.Args, workspace, env,
                 Extend(_resolveTimeout(task, task.Action.TimeoutSeconds), timeoutMultiplier),
                 cancellationToken).ConfigureAwait(false);
-            return ActionRun.FromScript(script, ParseNeedsHuman(fragmentOutPath), HarnessWrite.RequestFrom(fragmentOutPath));
+            return ActionRun.FromScript(
+                script,
+                ParseNeedsHuman(fragmentOutPath),
+                HarnessWrite.RequestFrom(fragmentOutPath),
+                // #586: the same fragment, read a third way — a control key MISPLACED one level down,
+                // which neither of the two reads above can see (they look at the root only, which is
+                // exactly the defect).
+                NestedControlKey.DetectIn(fragmentOutPath));
         }
 
         return await RunPromptActionAsync(
@@ -228,8 +235,12 @@ internal sealed class ActionRunner
         // request (SSOT §9, issue #191) — both read from the same already-written fragment file.
         NeedsHumanSignal? needsHuman = ParseNeedsHuman(fragmentOutPath);
         HarnessWriteBatch? harnessWrite = HarnessWrite.RequestFrom(fragmentOutPath);
+        // #586: and a third read of the SAME file for a control key written one level too deep. Both
+        // reads above interrogate the ROOT, so a nested request is invisible to them by construction —
+        // the fragment merely looks like a task publishing ordinary state under its own id.
+        NestedControlKeySignal? nestedControlKey = NestedControlKey.DetectIn(fragmentOutPath);
 
-        return ActionRun.FromPrompt(result, needsHuman, harnessWrite);
+        return ActionRun.FromPrompt(result, needsHuman, harnessWrite, nestedControlKey);
     }
 
     /// <summary>
@@ -473,6 +484,17 @@ internal sealed record ActionRun
     /// </summary>
     public HarnessWriteBatch? HarnessWriteBatch { get; init; }
 
+    /// <summary>
+    /// A control key (<c>needsHarnessWrite</c> / <c>needsHuman</c>) the fragment nested ONE LEVEL under a
+    /// top-level key instead of beside it (issue #586), or null — the overwhelmingly common case. Non-null
+    /// on EITHER a script or a prompt action, read from the same fragment file the two members above are.
+    /// <para>Carried HERE rather than acted on in the runner because it is a DISPOSITION, not an outcome:
+    /// the attempt loop owns which failures short-circuit and in what order (the <c>needsHuman</c>
+    /// short-circuit must still win, and an action that failed outright has a more primary cause to
+    /// report).</para>
+    /// </summary>
+    public NestedControlKeySignal? NestedControlKey { get; init; }
+
     public string? FailureFeedback { get; init; }
     public string FailureSummary { get; init; } = "action failed";
 
@@ -513,7 +535,11 @@ internal sealed record ActionRun
         Duration = TimeSpan.Zero
     };
 
-    public static ActionRun FromScript(ProcessResult result, NeedsHumanSignal? needsHuman, HarnessWriteBatch? harnessWrite = null) => new()
+    public static ActionRun FromScript(
+        ProcessResult result,
+        NeedsHumanSignal? needsHuman,
+        HarnessWriteBatch? harnessWrite = null,
+        NestedControlKeySignal? nestedControlKey = null) => new()
     {
         Succeeded = result.Succeeded,
         ExitCode = result.ExitCode,
@@ -524,6 +550,7 @@ internal sealed record ActionRun
         NeedsHumanOptions = needsHuman?.Options ?? [],
         NeedsHumanKind = needsHuman?.Kind,
         HarnessWriteBatch = harnessWrite,
+        NestedControlKey = nestedControlKey,
         // A script timeout is classified Timeout so it shares the timeout-specific retry handling
         // (issue #119); any other non-zero exit is a generic action failure (no Claude signals apply).
         FailureKind = result.TimedOut ? PromptFailureKind.Timeout
@@ -532,7 +559,11 @@ internal sealed record ActionRun
         FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
     };
 
-    public static ActionRun FromPrompt(PromptResult result, NeedsHumanSignal? needsHuman, HarnessWriteBatch? harnessWrite = null)
+    public static ActionRun FromPrompt(
+        PromptResult result,
+        NeedsHumanSignal? needsHuman,
+        HarnessWriteBatch? harnessWrite = null,
+        NestedControlKeySignal? nestedControlKey = null)
     {
         bool succeeded = result.Completed && !result.IsError;
         string? feedback = succeeded ? null : BuildPromptFeedback(result);
@@ -574,6 +605,7 @@ internal sealed record ActionRun
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,
             HarnessWriteBatch = harnessWrite,
+            NestedControlKey = nestedControlKey,
             FailureFeedback = feedback,
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,
             ResetHint = result.ResetHint,

@@ -431,6 +431,53 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for an attempt rejected because its state fragment NESTED a control key
+    /// (<c>needsHarnessWrite</c> / <c>needsHuman</c>, SSOT §9) one level under a top-level key instead of
+    /// placing it beside one (issue #586).
+    /// <para>
+    /// This sits deliberately beside <see cref="ForForeignKey"/> and returns through the same
+    /// invalid-fragment outcome: an agent must meet ONE consistent story about fragment shape, not two
+    /// competing ones. What it must NOT do is restate the general folder-name rule — that rule is exactly
+    /// what produced the mistake (the harness-contract header says everything published goes under the
+    /// folder name and that anything else is rejected; nothing marked the control keys exempt). So the
+    /// message names the SPECIFIC error, states plainly that nothing was written, and shows the correct
+    /// shape with BOTH keys present.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// <c>internal</c> rather than <c>public</c> like its <see cref="ForForeignKey"/> neighbour only
+    /// because <see cref="NestedControlKeySignal"/> is internal — the detection is a harness-internal
+    /// disposition, not part of any published surface. Both test assemblies see it.
+    /// </remarks>
+    internal static string ForNestedControlKey(
+        TaskNode task, int attempt, NestedControlKeySignal nested, bool fileWritesRolledBack = false)
+    {
+        var text = new StringBuilder();
+        // Fragment rejections are NOT salvaged (the documented scope boundary ForForeignKey observes) —
+        // no salvage ref here either.
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack);
+        text.AppendLine($"## `{nested.ControlKey}` was nested inside your folder-name key — nothing was written");
+        text.AppendLine();
+        text.AppendLine($"`{nested.ControlKey}` was nested under the task-folder key '{nested.ContainingKey}'.");
+        text.AppendLine("Control keys are top-level SIBLINGS of your folder-name key, not nested inside it.");
+        text.AppendLine("The harness reads them at the fragment ROOT only, so this request was never seen:");
+        text.AppendLine("NOTHING was written, no file changed, and no error mentioned the escape hatch.");
+        text.AppendLine("Nested, it was merely ordinary state published under a key you own.");
+        text.AppendLine();
+        text.AppendLine("Emit it like this — your folder-name key and the control key side by side at the top level:");
+        text.AppendLine();
+        text.AppendLine("```json");
+        text.AppendLine(NestedControlKey.CorrectShapeFor(nested.ControlKey, task.Id));
+        text.AppendLine("```");
+        text.AppendLine();
+        text.AppendLine("The folder-name-as-single-top-level-key rule governs the STATE you publish. The control");
+        text.AppendLine("keys `needsHarnessWrite` and `needsHuman` are exempt from it — they are instructions to");
+        text.AppendLine("the harness, not state — and a fragment may carry both at once.");
+        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        return text.ToString();
+    }
+
+    /// <summary>
     /// Append the file-write rollback disclosure when a non-final attempt's worktree is reset to
     /// <c>taskBase</c> + cleaned before the next attempt — so the agent re-authors ALL files instead
     /// of assuming its prior file writes survived. The single source of the disclosure WORDING, shared

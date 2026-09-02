@@ -495,6 +495,17 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   base, unparseable porcelain) it reverts to refuse-on-ANY-tracked-dirt; a fail-open would be worse than
   the bug. The blocking paths are **NAMED**: newline-separated + ordinal-sorted in
   `RunReport.MergeOnSuccessDetail` (the same channel `HookRejected` uses for hook stderr), listed by the
+- **A CONTROL KEY nested under a top-level key is REJECTED as invalid-fragment (#586).**
+  `needsHuman` and `needsHarnessWrite` are top-level SIBLINGS of the task's folder-name key — the
+  harness reads them at the fragment ROOT only. Nested one level down they were previously INVISIBLE:
+  nothing written, nothing raised about the escape hatch, and the guardrail then failed on the CONTENT
+  of a file the agent never got to touch. Matched on the control key's own payload shape (a `path` plus
+  `content`/`edits`; a structured `question`), never on the key name alone — a false rejection would
+  block a task forever, while the bug only cost attempts. Fires BEFORE the guardrails, because a
+  guardrail failure returns long before the fragment-merge path ever reads the fragment. Measured cost
+  of the ambiguity: 7 attempts and a run-halting escalation, versus 78 seconds once the prompt was
+  corrected.
+
 - **The delivery target is VERIFIED at merge time, never assumed (#588).** `OriginalBranch` is pinned at
   run start, but the merge itself runs in the repo against whatever `HEAD` is when it fires. If the
   checkout MOVED during the run — a branch switch, or a detached HEAD — the harness **refuses**:

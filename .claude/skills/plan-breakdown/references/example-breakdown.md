@@ -198,6 +198,12 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
   the name of the directory this task.json lives in (here `01-author-stats-tests`), NOT the
   stableId. The harness REJECTS a fragment keyed by anything else (every attempt), so:
   `{ "01-author-stats-tests": { "someKey": "someValue" } }`.
+- EXCEPTION — the CONTROL KEYS `needsHarnessWrite` and `needsHuman` are TOP-LEVEL
+  SIBLINGS of your folder-name key, never nested inside it. They are instructions to
+  the harness, not state, so the rule above does not cover them:
+  `{ "01-author-stats-tests": { "someKey": "someValue" },
+  "needsHarnessWrite": { "path": "…", "edits": [ … ] } }`. Nest one inside your
+  folder-name key and the harness REJECTS the attempt — nothing is written.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working

@@ -1088,6 +1088,53 @@ public sealed class TaskExecutor : ITaskExecutor
             }
         }
 
+        // --- nested control key (issue #586, SSOT §6.2/§9) --------------------------------
+        // A control key written ONE LEVEL under a top-level key —
+        // `{ "<task-folder>": { "needsHarnessWrite": { … } } }` — is not a control key at all. The
+        // harness reads needsHuman / needsHarnessWrite at the fragment ROOT, so nested it merges as
+        // ordinary state under a key the task legitimately owns: the single-writer check passes it, the
+        // escape hatch never fires, nothing is written, and NOTHING anywhere says so. The task's own
+        // guardrails then fail on the CONTENT of a file the agent was never given the chance to touch —
+        // the visible symptom points at the agent's work while the actual cause is that its request was
+        // silently ignored (measured: 7 attempts across two runs and one run-stopping needs-human halt;
+        // the same task, model and content passed in 78s once the prompt was corrected by hand).
+        //
+        // Placed HERE — after the needsHuman short-circuit and the action-success gate, BEFORE the
+        // harness write, the write-scope check and the guardrails — for three reasons:
+        //   • it must fire before the GUARDRAILS, because a guardrail failure returns long before the
+        //     fragment-validation path (§6.2) ever reads the fragment. Detecting this at the merge site
+        //     alone would not have caught the measured defect at all.
+        //   • an explicit top-level needsHuman still wins: an agent that escalated deliberately gets its
+        //     escalation, not a shape lecture.
+        //   • an action that FAILED outright has a more primary cause to report; its own feedback stands.
+        // It reports the SAME invalid-fragment outcome the #164 foreign-key rejection does, so an agent
+        // meets one consistent story about fragment shape rather than two. Like every fragment rejection
+        // it is NOT salvaged (the documented scope boundary) and it discloses the file-write rollback.
+        if (action.NestedControlKey is { } nestedControlKey)
+        {
+            bool nestedRolledBack = WorktreeWillReset(worktree, isFinal);
+            string nestedSummary =
+                $"{nestedControlKey.ControlKey} was nested under '{nestedControlKey.ContainingKey}' " +
+                "instead of being a top-level key — nothing was written";
+            return _journaler.FailedAttempt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir,
+                RetryPolicy.ForNestedControlKey(task, attemptNumber, nestedControlKey, nestedRolledBack),
+                isFinal,
+                AttemptOutcome.InvalidFragment,
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.InvalidFragment,
+                    ActionExitCode = action.ExitCode,
+                    Summary = nestedSummary
+                },
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
+                turns: action.Turns,
+                // Same in-between position as the staging / harness-write failures above: the action was
+                // measured, no guardrail was reached.
+                segments: AttemptJournaler.SegmentsFor(action));
+        }
+
         // --- needsHarnessWrite escape hatch (issue #191, SSOT §9): after action success, BEFORE the
         // write-scope check and guardrails — the .NET harness process itself performs a write the
         // action's own subprocess could never make (a .claude/ path the Claude Code runtime refuses
