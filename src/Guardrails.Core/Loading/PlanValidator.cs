@@ -1821,27 +1821,7 @@ public sealed class PlanValidator
     /// actually invoking one.
     /// </summary>
     private static string StripCommentLines(string body) =>
-        string.Join('\n', body.Split('\n').Where(line => !IsCommentLine(line)));
-
-    /// <summary>
-    /// <see cref="StripCommentLines"/>'s line-preserving twin: a comment line is BLANKED rather than
-    /// removed, so an offset into the result still maps to the line number the reader will find in the
-    /// file. Same #97 exclusion (the shared <see cref="IsCommentLine"/>), so a header comment that merely
-    /// DESCRIBES a construction still cannot be what trips a check. Used by GR2057, which cites two clause
-    /// LINE NUMBERS — a citation off by however many comment lines sit above it is worse than none.
-    /// </summary>
-    private static string BlankCommentLines(string body) =>
-        string.Join('\n', body.Split('\n').Select(line => IsCommentLine(line) ? string.Empty : line));
-
-    private static bool IsCommentLine(string line)
-    {
-        string trimmed = line.TrimStart();
-        return trimmed.StartsWith('#')
-            || trimmed.StartsWith("//", StringComparison.Ordinal)
-            || trimmed.StartsWith("::", StringComparison.Ordinal)
-            || (trimmed.StartsWith("REM", StringComparison.OrdinalIgnoreCase) &&
-                (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3])));
-    }
+        string.Join('\n', body.Split('\n').Where(line => !GuardrailClauseText.IsCommentLine(line)));
 
     /// <summary>
     /// Validate <c>writeScope</c> across all tasks — including every waved task, since
@@ -2496,47 +2476,13 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// A single-clause PowerShell presence test whose ENTIRE condition is ONE <c>-match</c>/<c>-notmatch</c>
-    /// of a variable against a SINGLE-QUOTED literal, opening a block:
-    /// <c>if ($content -notmatch '…') {</c>. Everything else is deliberately unmatched, because everything
-    /// else makes the clause's polarity undecidable from the text:
-    /// <list type="bullet">
-    /// <item>a COMPOUND condition (<c>-and</c>/<c>-or</c>/<c>-not</c>/nested parens) — the block is then a
-    /// verdict on the conjunction, not on this pattern, so taking the branch does not prove the pattern is
-    /// required (the <c>\s*\)</c> immediately after the closing quote enforces this);</item>
-    /// <item>a DOUBLE-QUOTED or COMPOSED operand (<c>("(?m)\b" + [regex]::Escape($m) + "\s*\(")</c>) — the
-    /// pattern is not statically known, since PowerShell interpolates <c>$</c> inside <c>"…"</c>;</item>
-    /// <item>a pattern spanning a newline — no guardrail in the field writes one, and admitting it lets a
-    /// stray quote swallow half a script.</item>
-    /// </list>
-    /// <c>-cmatch</c>/<c>-imatch</c> and their <c>not</c> forms are the same operator with an explicit
-    /// case rule and are admitted.
-    /// </summary>
-    private static readonly Regex PresenceClause = new(
-        @"\bif\s*\(\s*\$(?<subject>\w+)\s+-[ci]?(?<neg>not)?match\s+'(?<pat>(?:[^'\r\n]|'')*)'\s*\)\s*\{",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    /// <summary>
-    /// Evidence that a clause's branch FAILS the guardrail rather than recording something: an append to a
-    /// <c>$failures</c>-shaped accumulator, a non-zero <c>exit</c>, a <c>throw</c>, or a <c>Write-Error</c>.
-    /// Both clauses of the measured #470 instance append to <c>$failures</c>; the catalogue's prescribed
-    /// form writes a line and <c>exit 1</c>.
-    /// </summary>
-    private static readonly Regex ClauseFailsTheGuardrail = new(
-        @"\$\w*fail\w*\s*\+=|\bexit\s+[1-9]|\bthrow\b|\bWrite-Error\b",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    /// <summary>Regex metacharacters that make a pattern non-literal, so no exact witness can be derived.</summary>
-    private const string RegexMetacharacters = "()[]{}|*+?.^$";
-
-    /// <summary>
     /// Shortest witness worth reconciling. Below this a "collision" is noise — a two-character required
     /// literal tripping some forbidden pattern says nothing about the guardrail being unsatisfiable.
     /// </summary>
     private const int MinimumWitnessLength = 3;
 
     /// <summary>Bounded match timeout for the ad-hoc regexes GR2057 compiles out of a plan's own text.</summary>
-    private static readonly TimeSpan ClauseMatchTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan ClauseMatchTimeout = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// GR2057 (issue #470 ask 1) — a guardrail that REQUIRES a token it also FORBIDS. One script carries a
@@ -2606,12 +2552,12 @@ public sealed class PlanValidator
                 continue;
             }
 
-            string scanned = BlankCommentLines(body);
+            string scanned = GuardrailClauseText.BlankCommentLines(body);
 
             List<(string Subject, string Witness, int Line)> required = [];
             List<(string Subject, string Pattern, int Line)> forbidden = [];
 
-            foreach (Match clause in PresenceClause.Matches(scanned))
+            foreach (Match clause in GuardrailClauseText.PresenceClause.Matches(scanned))
             {
                 // The regex ends ON the block's opening brace; the branch must FAIL for polarity to mean anything.
                 if (!BranchFailsTheGuardrail(scanned, clause.Index + clause.Length - 1))
@@ -2629,8 +2575,8 @@ public sealed class PlanValidator
                     continue;
                 }
 
-                string? witness = TryLiteralWitness(pattern);
-                if (witness is null || witness.Trim().Length < MinimumWitnessLength || !MatchesWitness(pattern, witness))
+                string? witness = GuardrailClauseText.TryLiteralWitness(pattern);
+                if (witness is null || witness.Trim().Length < MinimumWitnessLength || !GuardrailClauseText.MatchesWitness(pattern, witness))
                 {
                     continue;
                 }
@@ -2644,7 +2590,7 @@ public sealed class PlanValidator
                 {
                     if (!string.Equals(subject, bannedSubject, StringComparison.OrdinalIgnoreCase)
                         || HasInputAnchor(bannedPattern)
-                        || !MatchesWitness(bannedPattern, witness))
+                        || !GuardrailClauseText.MatchesWitness(bannedPattern, witness))
                     {
                         continue;
                     }
@@ -2692,127 +2638,11 @@ public sealed class PlanValidator
             depth--;
             if (depth == 0)
             {
-                return ClauseFailsTheGuardrail.IsMatch(text[openBrace..(i + 1)]);
+                return GuardrailClauseText.ClauseFailsTheGuardrail.IsMatch(text[openBrace..(i + 1)]);
             }
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// The exact text every file satisfying <paramref name="pattern"/> must contain, or <c>null</c> when the
-    /// pattern does not pin one — see the bounded subset documented on
-    /// <see cref="ValidateGuardrailRequiresForbiddenToken"/>.
-    /// </summary>
-    private static string? TryLiteralWitness(string pattern)
-    {
-        int i = 0;
-
-        // Leading inline option groups — (?i), (?m), (?is) — change matching, never the text matched.
-        while (i + 2 < pattern.Length && pattern[i] == '(' && pattern[i + 1] == '?')
-        {
-            int close = i + 2;
-            while (close < pattern.Length && "imsxn-".Contains(pattern[close], StringComparison.Ordinal))
-            {
-                close++;
-            }
-
-            if (close == i + 2 || close >= pattern.Length || pattern[close] != ')')
-            {
-                break;
-            }
-
-            i = close + 1;
-        }
-
-        if (i < pattern.Length && pattern[i] == '^')
-        {
-            i++;                                                    // zero-width start anchor
-        }
-
-        int end = pattern.Length;
-        if (end > i && pattern[end - 1] == '$' && (end - 2 < i || pattern[end - 2] != '\\'))
-        {
-            end--;                                                  // zero-width end anchor
-        }
-
-        StringBuilder witness = new();
-        while (i < end)
-        {
-            char c = pattern[i];
-            if (c != '\\')
-            {
-                if (RegexMetacharacters.Contains(c, StringComparison.Ordinal))
-                {
-                    return null;
-                }
-
-                witness.Append(c);
-                i++;
-                continue;
-            }
-
-            if (i + 1 >= end)
-            {
-                return null;
-            }
-
-            char escaped = pattern[i + 1];
-            i += 2;
-
-            if (escaped == 'b')
-            {
-                continue;                                           // zero-width word boundary
-            }
-
-            if (escaped == 's')
-            {
-                char quantifier = i < end ? pattern[i] : '\0';
-                if (quantifier is '*' or '?')
-                {
-                    i++;                                            // zero whitespace is a valid witness
-                    continue;
-                }
-
-                if (quantifier == '+')
-                {
-                    i++;
-                }
-
-                witness.Append(' ');
-                continue;
-            }
-
-            if (char.IsAsciiLetterOrDigit(escaped))
-            {
-                return null;                                        // \w \d \S \n \t \1 …
-            }
-
-            witness.Append(escaped);                                // escaped punctuation is itself
-        }
-
-        return witness.ToString();
-    }
-
-    /// <summary>
-    /// Does <paramref name="pattern"/>, compiled from the PLAN's own text, match <paramref name="witness"/>?
-    /// A pattern that is not a valid regex, or that times out, answers NO — <c>validate</c> is read-only and
-    /// must degrade rather than throw over a plan author's typo (GR2056's precedent; issue #487).
-    /// </summary>
-    private static bool MatchesWitness(string pattern, string witness)
-    {
-        try
-        {
-            return new Regex(pattern, RegexOptions.CultureInvariant, ClauseMatchTimeout).IsMatch(witness);
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return false;
-        }
     }
 
     /// <summary>
