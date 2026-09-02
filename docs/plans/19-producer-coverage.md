@@ -7,7 +7,7 @@
 > |---|---|
 > | Milestone A — skill half (missing-insertion extended to gate folders; the reachability probe; the sibling-datum trace) | **SHIPPED** `e118b9d` |
 > | Milestone B — `intendedWaves` + **GR2062** + the "intends N, declares M" line | **SHIPPED** |
-> | Milestone A — harness half (**GR2060**) | **NOT BUILT** |
+> | Milestone A — harness half (**GR2060**) | **SHIPPED** — see `docs/plans/33-unproducible-requirements.md` |
 >
 > The maintainer waived #106's draft-PR gate for this document and directed straight-to-implementation.
 > **#474 is NOT closed** — its headline (reachability) is permanently review-only by §2.2, and GR2060,
@@ -560,7 +560,7 @@ checks complementary across exactly that boundary rather than leaving a hole.
 | # | decision |
 |---|---|
 | D1 | **One family, and the relation is dependency, not symmetry**: producer coverage is decidable only over a closed declaration set; #477 is that precondition gone missing. |
-| D2 | #474's headline (reachability) is **not decidable** and gets no lint, ever. |
+| D2 | #474's headline (reachability) is **not decidable** and gets no lint, ever. *"a later instance (#474, plan 30) looked like shape (a) with a derived path, and a lint for it was designed and declined — the shape has never occurred in a form a lint could see; see `33-unproducible-requirements.md` §3.4 and §6.3. D2 is unchanged and is now better evidenced."* |
 | D3 | #477's headline (which wave owes a behaviour) is **not decidable** and gets no lint, ever — keying on gate prose is refused on doc-18 §3.1 grounds. |
 | D4 | GR2060 is an **ERROR**, blocking `validate`, in a **new §4.8** — not a fourth row of §4.7. §4.7 is closed-world over one script's text; this is relational. |
 | D5 | GR2062 is a **WARNING**, gated on `planIsClosed`, skipped when `intendedWaves` is absent. |

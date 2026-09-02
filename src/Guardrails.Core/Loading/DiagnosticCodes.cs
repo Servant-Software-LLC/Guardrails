@@ -826,6 +826,35 @@ public static class DiagnosticCodes
     public const string WaveIntegrationScopeInert = "GR2059";
 
     /// <summary>
+    /// <b>GR2060 — a script guardrail REQUIRES an exact literal in a TRACKED workspace file that does not
+    /// contain it, and NO task in the plan declares that file in its <c>writeScope</c> (issue #474, doc 19
+    /// §3.1, plan 33 §5, SSOT §4.8).</b> Nothing the plan can do makes the gate pass, so the run spends its
+    /// whole DAG and fails at the gate; the measured price of learning that the expensive way was $115.32.
+    /// <para><b>Relational, unlike the §4.7 three.</b> GR2055/GR2056/GR2057 are each decidable from ONE
+    /// script's own text. This one reads the script, the UNION of every task's <c>writeScope</c> across
+    /// every wave, and the workspace file's current bytes, and asks git whether that file is tracked — so
+    /// it lives in <see cref="ProducerCoverage"/> rather than inline in the validator.</para>
+    /// <para><b>ERROR, and it is the conditions that earn it.</b> All ten of doc 19 §3.1's conjuncts must
+    /// hold: PowerShell only; a statically-known path operand; a one-hop variable association; a
+    /// requirement clause whose branch FAILS and whose pattern de-regexes to one exact witness; the witness
+    /// absent from current bytes; the file git-TRACKED (a not-known answer is never read as "untracked",
+    /// and a known-untracked generated artifact is out of scope entirely); the path not under the plan
+    /// folder; no task declaring it under <see cref="Execution.WriteScope.IsInScope"/>; GR2041 clean; and
+    /// <c>planIsClosed</c>. The verdict is a provable impossibility about the run ABOUT TO START rather
+    /// than a judgement about a document, and its false-positive surface is a PATH — unambiguous, unlike a
+    /// member name.</para>
+    /// <para><b>Two suppressions, NOT interchangeable</b> (plan 33 §5.3). <c>planIsClosed</c> suppresses
+    /// the EMPTY STUB WAVE case here. An authored JIT PARTIAL PREFIX — five task folders of an intended
+    /// twelve — has <c>planIsClosed == true</c> and an incomplete union anyway; that case is excused at the
+    /// JIT breakdown gate by <c>Scheduler.UnsatisfiableWhileIncomplete</c>, keyed on
+    /// <c>wavePrefixIsIncomplete</c>. Excused there means "casts no veto", never "vanishes": the finding
+    /// stays in the gate-decision report and still errors under a plain <c>guardrails validate</c>.
+    /// Reading either suppression as a substitute for the other reverts JIT work wholesale, which is
+    /// verbatim the defect #501 fixed.</para>
+    /// </summary>
+    public const string UnproducibleGateRequirement = "GR2060";
+
+    /// <summary>
     /// <b>GR2062 — a waved plan INTENDS more waves than it DECLARES, and no wave is left to author
     /// (issue #477, doc 19 §3.2, SSOT §2/§14.1).</b> The plan's <c>intendedWaves</c> disagrees with the
     /// number of <c>wave-*</c> folders on disk while <c>planIsClosed</c> holds — every declared wave has
@@ -1023,20 +1052,22 @@ public static class DiagnosticCodes
     /// </summary>
     public const string HandoffRowSplitAcrossTasks = "GR2069";
 
-    // CURRENT next-free code: GR2070. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
-    // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
+    // CURRENT next-free code: GR2071. GR2069 (HandoffRowSplitAcrossTasks) is the last taken code above —
+    // GR2059 is the last CONTIGUOUS one; GR2061 remains reserved-by-name gap (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
     // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
     // GR2068 and GR2069 were taken TOGETHER by plan 31 §4 (#553): the handoff-table path-coverage
     // check needs two codes, so that an operator who decides their tables split legitimately can
     // silence GR2069 while GR2068 keeps meaning "provably broken" forever.
     // THREE codes remain RESERVED BY NAME in design documents and must not be re-used:
-    //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
     //   GR2054 — docs/plans/17-model-tiering.md §13.2, RoutingNumericNonPositive, the v2 (#227 probes) code
+    //   GR2070 — docs/plans/33-unproducible-requirements.md §6.3 (a guardrail requiring a named argument
+    //     whose declaring member no task may widen). DESIGNED AND DECLINED: it has never fired on a real
+    //     defect at any commit in this repository — see §3.4. Do not allocate without a positive control.
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2070 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2071 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave

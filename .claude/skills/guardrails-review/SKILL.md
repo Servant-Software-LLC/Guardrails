@@ -965,7 +965,7 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
 
   > **If the agent edits only the files it is allowed to, is there anything for the target file to read?**
 
-  Four steps, in order. The habit they replace is a single `writeScope` membership check on the **target**
+  Five steps, in order. The habit they replace is a single `writeScope` membership check on the **target**
   file — which passes on the measured instance, because the target file was never the problem:
   1. **Open X on the tree this task actually runs against** (the plan baseline plus every ancestor's merged
      output). Find the statement that would carry Y — the assignment or initializer where Y gets written —
@@ -983,6 +983,13 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
      actually requires adding the member? → reachable, but confirm the ancestor carries its own guardrail
      for it: a merged FILE is not a present VALUE. Owned by a **non-ancestor**, by a **later** task, or by
      **no task at all** → **BLOCKER**.
+  5. **If the required text is an ARGUMENT IN A CALL, the carrier is not the answer — the CALLEE is.**
+     Name the member being called and open **its declaration**. Does its parameter list already accept
+     what the clause requires? If not, the requirement is *"widen this signature,"* and the file
+     declaring that member must be in this task's `writeScope` or an ancestor's. **Not the file the call
+     is written in — the file the member is declared in.** For a call dispatched through an interface,
+     that is the **interface**, not the concrete type: a cast to the concrete type compiles, satisfies
+     the clause, and journals nothing — the false green this step exists to catch.
 
   **The one-grep shortcut, and the fastest way to run steps 1–3: follow the sibling datum.** Find the
   nearest existing datum that already makes the whole trip and grep it; every file it passes through must be

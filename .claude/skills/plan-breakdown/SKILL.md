@@ -419,6 +419,14 @@ GR2042 owns *"this task is too big"*). No `validate` check sees an unreachable d
 semantic analysis over a tree the run has not written yet — so this trace and `/guardrails-review` §2's
 matching **Unreachable-outcome** probe are the only gates it has.
 
+**When the sink is a CALL, not a field — the callee's declaration is the target, not the call site
+(#474).** When a task's deliverable is *"pass D to M"*, `M`'s declaring file goes in the `writeScope`
+— the **interface** `M` is declared on, if the call dispatches through one, not the concrete type it's
+dispatched to — unless `M` already accepts D today. Grep the declaration, not the call site. Get this
+wrong and the concrete type is where the parameter gets added instead: a cast to it compiles, satisfies
+the clause, and ships a false green — the interface's other callers never receive D, and nothing
+downstream catches it.
+
 ### Large/unbounded fan-out → scripted ETL, NOT an agent-per-item loop (#100)
 
 The over-size split-trigger sizes by *deliverable count and blast radius*; this rule sizes by
