@@ -1,20 +1,33 @@
-# 33 — Unproducible requirements: producer coverage, and the file the guardrail never names (#474)
+# 33 — Unproducible requirements: producer coverage built, and the carrier gap that stays procedural (#474)
 
 **Issue:** #474 — *A guardrail can demand an outcome the task's `writeScope` cannot reach: the datum's
 path runs through a file the task may not write.* This document is the **mechanical half**. The prose
-half shipped separately as #578 (`de4e17c`); §7 states how the two divide the work.
+half shipped separately as #578 (`de4e17c`); §7 states how the two divide the work, and where neither of
+them reaches.
 
-**Status:** design of record. Delivered as a draft PR for inline review (#106) before any implementation
-milestone starts.
+**Status:** design of record, **revised after an independent adversarial pass** (2026-09-02). Delivered
+as a draft PR for inline review (#106) before any implementation milestone starts.
+
+**What the review changed, in one paragraph, because it changed the shape and not the details.** The
+first draft shipped two codes: **GR2060**, doc 19's designed-and-unbuilt producer-coverage check, and
+**GR2070**, a new derivation for the carrier shape measured on plan 30. The pass traced GR2070's
+motivating clause through git and found that its two halves **never coexist at any commit** — at the
+moment the scope was broken the clause carried no named argument, and by the time it did the scope had
+been fixed for 36 minutes (§3.4). **GR2070 is declined and held by name** (§4.1, §6.3, §12.3). The same
+pass found that GR2060 at ERROR would **revert a JIT partial prefix**, re-opening #501 one code over
+(§5.3), and that the sweep proving GR2060 safe had walked 740 of 1,271 scripts — skipping the only plan
+that fires (§5.4). It also **reproduced GR2060's positive control blind**. So Milestone A comes out of
+review stronger and with a mitigation attached; the new lint comes out of it deleted.
 
 **Why this is its own plan, and not a paragraph appended to `19-producer-coverage.md`.** Doc 19 is the
 design of record for this family and it is *half shipped*: its skill milestone landed at `e118b9d`, its
-`intendedWaves`/GR2062 milestone landed, and **GR2060 — the harness half, the actual mechanical answer
-to #474 — was never built.** It has sat reserved-by-name in `DiagnosticCodes.cs` for twelve days. A new
-instance was measured on plan 30 yesterday that doc 19's design would *not* have caught, and closing that
-gap changes doc 19's §2 decidability table. Editing a half-shipped design in place to record both facts
-is how the reasoning behind a contract change gets lost. This gets its own design, its own review and
-its own run; doc 19 gains a status pointer and nothing else (§12).
+`intendedWaves`/GR2062 milestone landed, and **GR2060 — the harness half, the actual mechanical answer to
+#474 — was never built.** It has sat reserved-by-name in `DiagnosticCodes.cs` for twelve days. Building
+it turns out to require a change to `Scheduler`'s veto path that doc 19 never contemplated (§5.3), and to
+leave a documented gap that doc 19's D2 predicted and this plan can now evidence (§6.4). Editing a
+half-shipped design in place to record all that is how the reasoning behind a contract change gets lost.
+This gets its own design, its own review and its own run; doc 19 gains a status pointer and one corrected
+sentence (§12.4).
 
 ---
 
@@ -61,22 +74,28 @@ them. Done against `09f223f`.
 | GR2057's de-regex witness extractor exists | **Holds** — `TryLiteralWitness` (`PlanValidator.cs:2707`) and `MatchesWitness` (`:2802`), both `private static`, both used only by `ValidateGuardrailRequiresForbiddenToken`. The refactor doc 19 §10 step 1 asks for has not happened. |
 | `IGitTrackedFileProbe` exists | **Does not.** `src/Guardrails.Core/Loading/` holds `IScriptSyntaxProbe` + `InterpreterScriptSyntaxProbe` and nothing else probe-shaped. |
 | SSOT §4.8 exists | **Does not.** §4.7 runs to line 1520 and §5 begins at 1521. Doc 19 §6 specified §4.8 verbatim and it was never applied. |
-| `RunCommand` refuses a plan carrying any validation error | **Holds** — `RunCommand.cs:198-207`, `probe.HasErrors` → `ExitCodes.HarnessError`, *"Validation failed; nothing was run."* This is the fact that decides both severities (§5.4, §6.5). |
+| `RunCommand` refuses a plan carrying any validation error | **Holds** — `RunCommand.cs:198-207`, `probe.HasErrors` → `ExitCodes.HarnessError`, *"Validation failed; nothing was run."* This is the fact that decides GR2060's severity (§5.5) and that §5.3's veto rides on. |
 | `ISchedulerJournal.RecordSettleWithAttempt` was 5-arity when plan 30 was authored | **Holds** — at `10816fb`: `taskId, attempt, status, mergeSequence, definitionHash`. `RunJournal`'s public overload was 6-arity, but its sixth is `definitionHashAtSettle`. **No `bucket` parameter existed anywhere under `src/`.** |
 | plan 30's task 16 did not own the carrier | **Holds** — at `10816fb` its `writeScope` was `["…/AttemptJournaler.cs", "…/Scheduler.cs"]`. Fixed later at `62d7314`. |
 
-**Two corrections the re-verification forced.** Both are load-bearing and both are in §3.
+**Three corrections the re-verification and the adversarial pass forced.** All are load-bearing, and the
+first two reverse claims the first draft made in this section.
 
 1. **Doc 19 §2's decidability table classifies #474 as shape (b), reachability, and rules it out
-   permanently (D2: *"not decidable … gets no lint, ever"*).** That verdict is correct **for the
-   instance doc 19 measured** and wrong as a statement about the issue. Plan 30's instance is shape
-   **(a), coverage** — the carrier file is one **no task may write**. Doc 19 could not have known: it
-   was written seven weeks before that instance existed. §3.4 states the boundary precisely, and D2
-   survives it intact.
-2. **The maintainer's proposed predicate, read as written, would have been silent on the very instance
-   it was proposed for.** *"Is `M`'s declaring file in some task's `writeScope`?"* — `RecordSettleWithAttempt`
+   permanently (D2: *"not decidable … gets no lint, ever"*).** The first draft argued that plan 30's
+   instance is shape **(a), coverage**, and therefore lintable. The reading was right; **the conclusion
+   was not**. The shape is decidable in principle and has **never occurred in a form a lint could see**
+   (§3.4). **D2 stands, and is now better evidenced than when doc 19 wrote it** — an attempt was made and
+   the evidence refused it. §6.4 carries the corrected table.
+2. **The maintainer's proposed predicate, read as written, would have been silent on the very instance it
+   was proposed for.** *"Is `M`'s declaring file in some task's `writeScope`?"* — `RecordSettleWithAttempt`
    has two declaring files, and **one of them was owned** (task 06 held `RunJournal.cs`). The existential
-   reading returns *yes* and says nothing. §3.3 has the measurement and the fix.
+   reading returns *yes* and says nothing (§3.3). This correction survives the decline: it is the first of
+   the three findings §6.3 preserves for whoever reaches for this shape next.
+3. **`PlanIsClosed` is not the soundness precondition doc 19 §3.3 took it for.** It detects an **empty
+   stub wave**; it returns `true` for an authored **partial prefix**, which is the case where the scope
+   union is incomplete and GR2060 would fire wrongly — and, at ERROR, revert the prefix. §5.3 is the
+   mechanism and §5.2 is why the first draft's reading of this predicate was exactly backwards.
 
 ---
 
@@ -165,58 +184,68 @@ boundary constraint and the correctness constraint point the same way, exactly a
 **Universal quantification is the design.** It is stated here rather than buried in §6 because the
 one-word difference is what separates a check that fires from a check that ships and never speaks.
 
-### 3.4 The qualified check: 0 false positives, and a population of one
+### 3.4 The qualified check has a true-positive population of ZERO — the git trace
 
 Adding the two qualifiers — a **named-argument** requirement, and **no declaration of `M` anywhere
-declares that parameter** — over the same 443 scripts:
+declares that parameter** — over the same 443 scripts gives 2 candidate `(M, p)` pairs (`bucket`,
+`definitionHash`, both from the one script), which the clause-form filter reduces to 1, and **0 findings
+against today's tree**.
 
-| | count |
-|---|---|
-| candidate `(M, p)` pairs | **2** (`bucket`, `definitionHash`, both from the one script) |
-| would fire against today's tree | **0** — the plan-30 folder is fixed and the interface now declares `bucket` |
-| **false positives** | **0 / 443 (0.0%)** |
-| would fire against the tree and folder **as they stood at `10816fb`** | **1**, naming `ISchedulerJournal.cs` |
+The first draft of this document read that zero as *"the folder has been fixed"* and asserted a positive
+control: *"fires exactly 1 against the tree and folder as they stood at `10816fb`."* **That assertion is
+false, and an adversarial pass caught it by opening the file at that commit instead of reasoning about
+it.** The trace, verified in full:
 
-The positive control is exact. At `10816fb`: `bucket` was declared on **no member anywhere under
-`src/`**; `RecordSettleWithAttempt` was declared in `ISchedulerJournal.cs` and `RunJournal.cs`; the plan's
-scope union covered the second and not the first; the plan is flat, so `planIsClosed` is trivially true.
-Every condition holds and exactly one finding is produced.
+| commit | time | the `Bucket` clause | scope holds `ISchedulerJournal.cs`? | GR2070 fires? |
+|---|---|---|---|---|
+| `10816fb` breakdown | — | `if ($argList -cnotmatch 'pending\s*\.\s*Bucket')` | **no** — the defect | **no** — no named-argument head |
+| `62d7314` scope fix | 21:04 | `'pending\s*\.\s*Bucket'` (unchanged) | **yes** — repaired | no |
+| `124a7d0` | 21:40 | `'bucket\s*:\s*pending\s*\.\s*Bucket'` — named argument appears, **single-quoted** | yes | no |
+| `d87eea2` | 22:28 | `"bucket\s*:\s*$c\s*\.\s*Bucket"` — becomes double-quoted | yes | no |
 
-**And the honest numbers beside it. The shape occurs in 1 script of 443, and 1 plan of 6 — and a zero
-over a population of one is not evidence of conservatism.** Doc 19 drew exactly this distinction when
-GR2062's sweep came back clean: *"Milestone B's false-positive zero is STRUCTURAL, not empirical … the
-distinction should not be blurred when the next lint cites the precedent."* This is the next lint, and it
-is citing that precedent, so: **GR2070 has not yet had an opportunity to be wrong.** GR2055/GR2056/GR2057
-earned an empirical zero against 500+ real scripts. GR2070 has not, and §15 risk 1 is where that is
-priced rather than papered over.
+**The two halves of the check never coexist.** At the only moment the scope is broken, the clause has no
+named argument. By the time the named argument exists, the scope has been repaired for 36 minutes. There
+is no commit in this repository's history at which GR2070 fires on a real defect.
 
-### 3.5 The clause form is rarer than the anchor, and reusing GR2057's reader ships the check MUTE
+Three things follow, and each one kills a piece of the first draft:
 
-This was caught by executing the spec against the corpus rather than reading it, which is #580's whole
-point. Doc 19 §3.1 condition 4 says to reuse **GR2057's shipped extractor**. GR2057's clause regex
-(`PlanValidator.cs:2515`) accepts a **single-quoted pattern operand only** — deliberately, because a
-double-quoted regex makes `$` ambiguous between an anchor and an interpolation. Measured over the 443
-scripts:
+1. **§8.2's positive control cannot be recovered from git.** Its heading was *"recovered artifacts, not
+   synthetic fixtures"*, and the artifact does not exist. Task 6's implementer would have had to
+   hand-build it and label it recovered — in the plan whose thesis is #580.
+2. **The double-quote relaxation had no cause.** §3.5's justification was that the guardrail is
+   double-quoted *because* it needs a variable in the pattern. True, but the variable arrived at
+   `d87eea2`, **48 minutes after** the named argument at `124a7d0`, where the clause was single-quoted and
+   **readable by GR2057's shipped extractor unchanged**. The sibling clause reader, the head-only
+   soundness rule, its negative control and its self-critique all rested on a cosmetic accident.
+3. **The back-out trigger had already fired.** §15 risk 1 offered to withdraw the check if it had not
+   fired on a real plan in six months. It had not fired on a real plan ever.
+
+**This is the same defect the document is about, committed by the document.** A requirement was asserted
+against a state of the tree that was never checked, it read plausibly, and every downstream artifact —
+predicate, severity argument, test plan, risk register — was built on it. That §4.1 declines Milestone B
+is the correct outcome; that it took an independent pass to get there is the finding worth keeping.
+
+### 3.5 What the clause-form measurement is still good for
+
+The measurement below stands — only the inference drawn from it in the first draft was wrong. Over the
+443 scripts:
 
 | clause form | count |
 |---|---|
-| `if ($v -match '…') { … }` — **single-quoted**, GR2057's surface | **1,172** |
-| `if ($v -match "…") { … }` — **double-quoted**, excluded by GR2057 | **6** |
+| `if ($v -match '…') { … }` — **single-quoted**, GR2057's shipped surface (`PlanValidator.cs:2515`) | **1,172** |
+| `if ($v -match "…") { … }` — **double-quoted**, excluded by GR2057 by design | **6** |
 | named-argument requirements among the 1,172 | **0** |
-| named-argument requirements among the 6 | **1** — the measured instance |
+| named-argument requirements among the 6 | **1** — and it postdates its own defect by 36 minutes (§3.4) |
 
-**GR2070 built on GR2057's extractor verbatim would have a population of zero and would ship completely
-mute.** Its one true positive is a double-quoted clause, because the guardrail interpolates a
-discovered binding name (`$c`) into its pattern — which is *why* it is double-quoted.
+**5 of the 6 double-quoted clauses are in that one script**; the sixth is a `$member` interpolation in
+plan 28. The form is not an emerging convention — it is what two authors reached for when they needed a
+variable in a pattern, and in both cases the variable was introduced by a refactor unrelated to what the
+clause asserts.
 
-§6.2 condition 4 therefore specifies a **sibling** clause reader, and §6.2's soundness argument is that
-GR2070 needs only the pattern's **literal head**, never the whole pattern, so the `$`-ambiguity GR2057
-refuses to touch never arises.
-
-And the fact that argues the other way, recorded in the same breath: **5 of those 6 double-quoted clauses
-are in the one script**, and the sixth is a `$member` interpolation in plan 28. The form is not an
-emerging convention; it is what two authors reached for when they needed a variable in a pattern. §15
-risk 1 and §16 D-a both turn on this number.
+**The durable lesson, which outlives the declined check:** GR2057 restricts pattern operands to
+single quotes because a `$` in a double-quoted regex is ambiguous between an anchor and an
+interpolation. Any future lint tempted to relax that must first show a **defect** it catches, at a
+**commit**, in the relaxed form — not merely a clause that happens to be written that way today.
 
 ### 3.6 Every attempt to widen it produced a wolf
 
@@ -237,7 +266,7 @@ product is built on. Not re-litigated. Rejected, and the reason is recorded so t
 re-propose it.
 
 **(c) Dropping the named-argument qualifier.** That is §3.2. Rejected — and re-tested with the
-declaration-count bound of §6.2 c6 applied, since that bound is what kills `RunAsync` (66 declarations)
+declaration-count bound of §6.3 applied, since that bound is what kills `RunAsync` (66 declarations)
 and `InvokeAsync` (27): **11 of the 16 false positives survive it**, because they are single-declaration
 name collisions (`NoRoute`, `IsInScope` ×2, `Contains`, `Equal` ×2, `Enumerate`, `Count`,
 `WriteAllText`, `Add` ×2). The qualifier is not replaceable by a cardinality bound.
@@ -260,58 +289,62 @@ already reads.
 
 ### 4.1 The verdict on the candidate check, plainly
 
-**As a standalone diagnostic: no.** GR2070 alone needs a clause extractor, a requirement-polarity reader,
-a `planIsClosed` gate, a repository probe, the union-of-scopes rule, an SSOT section and a test suite —
-roughly 90% of GR2060's build — to serve a shape that occurs in 1 script of 443. Shipping that alone is
-the thing this repo keeps filing issues about: a check that looks rigorous and certifies almost nothing.
+**The candidate check is DECLINED. GR2070 is not built and is not allocated; it is held by name.**
 
-**As the second rule of a producer-coverage check whose first rule is already designed and unbuilt:
-yes, with the counter-number stated.** GR2060 is the mechanical answer to #474 that doc 19 specified and
-nobody built. It catches the **$115.32 terminal-gate instance**, the most expensive one on record.
-GR2070 is one additional **path-derivation rule** on the identical machinery: where GR2060 asks *"can
-anyone write the file the guardrail **names**?"*, GR2070 asks *"can anyone write the file the guardrail
-**implies**?"* One question, two ways of getting to a path.
+The first draft of this document recommended building it as a rider on GR2060, and an independent
+adversarial pass falsified the evidence that recommendation rested on. §3.4 has the git trace. The short
+form: at the only moment plan 30's scope was actually broken, the motivating clause was
+`'pending\s*\.\s*Bucket'` — **single-quoted, with no named argument in it at all**. The named argument
+first appears at `124a7d0`, **36 minutes after the scope was repaired at `62d7314`**, and it was
+single-quoted then too. So:
 
-**The ranking, and it is not a tie: A ≫ C > B.**
+- **GR2070's true-positive population over this repository's entire history is zero.** There is no commit
+  at which it fires on a real defect. Not one.
+- **The double-quote relaxation had no justification.** The clause became double-quoted at `d87eea2`, 48
+  minutes later still, when the receiver was refactored into `$c`. That is a cosmetic consequence of an
+  unrelated edit, and the first draft built a sibling clause reader, a head-only soundness rule and a
+  negative control on top of it.
+- **§15 risk 1's own back-out trigger had already fired**, retroactively, before the check was specified.
 
-- **A removes a review step.** The `/guardrails-review` missing-insertion check, pointed at the gate
-  folders, becomes mechanical for its coverage subset. That is what #570's Phase A′ actually asked for.
-- **C is one paragraph in a skill** that doc 19 specified and never shipped. Nearly free.
-- **B removes no review step.** The reachability probe still has to run for the shape GR2070 cannot see
-  (§6.6), so a reviewer's pass over carriers is not retired by it. Its value is entirely in the case
-  where that pass is skipped or the plan is edited after review.
+A check whose motivating instance it cannot reproduce is not a narrow check; it is an unfalsified one.
+Shipping it in the plan whose thesis is #580 — *a check is not authored, it is proven to fire* — would
+have required task 6's implementer to hand-build a fixture and label it recovered. §14 records the
+decline; §6 records what was learned, because the reasoning is worth keeping even though the code is not.
 
-**And the number that argues for declining B**, stated so the maintainer can act on it rather than take
-my word: its clause form occurs **6 times in 443 scripts, 5 of them in the single script that motivates
-it** (§3.5). This is not an emerging convention. Declining B is defensible, and §16 D-a makes that an
-explicit choice rather than a silent one.
+**What survives, and it is the larger half by every measure.**
 
-**My recommendation is still to build it** — the marginal cost once A exists is three tasks on machinery
-already there, at WARNING, with a written back-out trigger — because the failure it prevents is a false
-green that detonates 26 tasks downstream and is attributed to the wrong task. But the case rests on the
-cost of the failure, not on the frequency, and the document should not pretend otherwise.
+- **A removes a review step.** GR2060 is the mechanical answer to #474 that doc 19 specified and nobody
+  built, and it catches the **$115.32 terminal-gate instance** — the most expensive one on record. The
+  adversarial pass reproduced its positive control **blind**, so its case is stronger after review than
+  before.
+- **C is now load-bearing rather than a rounding error.** With B declined it is the **only** thing
+  covering the plan-30 shape — and §6 shows the shipped review probe does **not** cover it either, which
+  the first draft got wrong in two places (§4.1 and §7 both credited the probe with a catch its written
+  procedure does not produce).
 
-### 4.2 Three milestones, sequential, each green before the next
+**The ranking is A ≫ C, and B is gone.**
+
+### 4.2 Two milestones, and the code that is held rather than spent
 
 | # | milestone | ships | approvable alone? |
 |---|---|---|---|
-| **A** | **GR2060 — `UnproducibleGateRequirement`** (doc 19 §3.1, built) | ERROR | **yes** — take A only and the design still stands |
-| **B** | **GR2070 — `UnproducibleCallArgument`** (this document) | WARNING | no — depends on A's machinery |
-| **C** | the authoring rule in `plan-breakdown`, and the knowledge-skill line | — | yes, but worth nothing before A |
+| **A** | **GR2060 — `UnproducibleGateRequirement`** (doc 19 §3.1, built) + the #501 veto mitigation (§5.4) | ERROR | **yes** |
+| **C** | **the callee's parameter list** — the step the shipped review probe stops one short of (§6) | — | yes, and it is worth more with B declined |
+| ~~B~~ | ~~GR2070~~ — **declined**, §4.1 and §6.3. Held by name in `DiagnosticCodes.cs`, not allocated | — | — |
 
-**If the maintainer takes A only**, #474's most expensive measured instance is closed mechanically and
-the plan-30 instance stays with the review probe, which did catch it. That is a coherent outcome and it
-is stated here so that taking it is a choice rather than a retreat.
+**Milestone A does not depend on C, and C does not depend on A.** They can be approved and sequenced
+independently; §13 runs them in one plan only because they close one issue and share a reviewer.
 
 ### 4.3 Placement
 
 | piece | placement |
 |---|---|
-| GR2060, GR2070 | **harness** — `Guardrails.Core/Loading`, author-time only |
-| SSOT §4.8, §4.9, §14.10's code paragraph | **schema** — lands in the same commit as the code (invariant 4) |
-| the sibling-datum authoring rule | **skill** — `plan-breakdown` (doc 19 §4 specified it; it did not ship) |
-| the reachability probe, the missing-insertion extension | **already shipped** — `e118b9d`, do not touch |
-| a dataflow-reachability lint (#474's *first* headline) | **out of scope, permanently** — doc 19 D2 stands (§6.6) |
+| GR2060 | **harness** — `Guardrails.Core/Loading`, author-time only |
+| SSOT §4.8 + §14.10's code paragraph | **schema** — lands in the same commit as the code (invariant 4) |
+| the **callee's-parameter-list** step (Milestone C) | **skill** — `guardrails-review` + `plan-breakdown`, ADDED beside the shipped datum trace (§6.2) |
+| the sibling-datum trace, the missing-insertion extension | **already shipped** — `e118b9d`; Milestone C extends the probe, it does not rewrite these |
+| a dataflow-reachability lint (#474's *first* headline) | **out of scope, permanently** — doc 19 D2 stands (§6.4) |
+| **GR2070** — the named-argument derivation | **DECLINED**, held by name (§4.1, §6.3) |
 | a lint over positional arity | **out of scope** (§14) |
 
 ---
@@ -332,23 +365,71 @@ requirement polarity; the witness absent from current bytes; the file git-tracke
 the plan folder; coverage decided by `WriteScope.IsInScope` over the **union**; GR2041 clean;
 `planIsClosed`.
 
-### 5.2 Three things doc 19 assumed that are now facts
+### 5.2 What doc 19 assumed — and the one assumption that is a TRAP
 
-- **`PlanIsClosed` is built** (`PlanValidator.cs:3395`) and already documented as GR2060's suppressor.
-  Milestone A consumes it; it does not write it.
-- **`PlanJson.cs` does not hold the raw config** — doc 19 §10 step 6 named a file that does not exist for
-  that purpose; the raw deserialization target is `RawManifests.cs`. Milestone A does not touch either,
-  but the handoff table must not repeat the wrong name.
+- **`PlanJson.cs` does not hold the raw config.** Doc 19 §10 step 6 named a file that does not exist for
+  that purpose; the raw deserialization target is `RawManifests.cs`. Milestone A touches neither, but the
+  handoff table must not repeat the wrong name.
 - **`PlanValidator` has a four-overload constructor chain** ending at
-  `(IExecutableProbe, BannedPatternRegistry, IScriptSyntaxProbe)`, with a parameterless overload used by
-  **two production composition roots** (`PlanProbe.cs:86`, `Scheduler.cs:2213`). The tracked-file probe
-  arrives as a **fifth overload with a real default**, exactly as the syntax probe did. Neither
-  composition root changes signature.
+  `(IExecutableProbe, BannedPatternRegistry, IScriptSyntaxProbe)`. The tracked-file probe arrives as a
+  **fifth overload with a real default**, exactly as the syntax probe did — see §13 task 2 for the
+  **73 call sites** that default silently changes.
+- **`PlanIsClosed` is built** (`PlanValidator.cs:3395`) — and the first draft called that *"better than
+  doc 19 assumed."* **It is worse.** It is the trap in §5.3, and reading it as a soundness guarantee is
+  how GR2060 at ERROR reproduces a defect the harness already fixed.
 
-### 5.3 The corpus sweep, run in advance
+### 5.3 The #501 veto — GR2060 at ERROR can revert a JIT prefix, and must not
 
-Doc 19 §10 step 4 makes a zero-finding sweep a merge gate. Hand-run now, over **all 14 plan folders in
-`docs/plans/` that carry a `tasks/` directory** — not just 26–32:
+This is the finding that changes Milestone A's shape, and every line of it is in the tree today.
+
+**The mechanism, in four facts.**
+
+1. `PlanIsClosed(plan) => plan.Waves.All(w => w.Tasks.Count > 0)` (`PlanValidator.cs:3395`). It detects an
+   **empty stub wave**. It returns **`true`** for a wave authored as a **partial prefix** — 5 task folders
+   of an intended 12 — because 5 > 0. Doc 19 §3.3 leaned on this predicate as GR2060's soundness
+   precondition; for the JIT-prefix case it is not one.
+2. A partial prefix therefore has an **incomplete `writeScope` union**: the tasks that will own the
+   remaining files do not exist yet. A wave gate requiring content one of them will produce looks, to
+   GR2060, exactly like a gate nothing can produce.
+3. `ValidatePlanAfterBreakdown` (`Scheduler.cs:2205`) runs `new PlanValidator().Validate(...)` on that
+   prefix and computes `excused = wavePrefixIsIncomplete ? errors.Where(UnsatisfiableWhileIncomplete)`,
+   then `blocking = errors.Except(excused)`.
+4. `UnsatisfiableWhileIncomplete` (`Scheduler.cs:2325`) is a **single-code comparison** against
+   `PlanGuardrailsMissingIntegrationReRun`. GR2060 is not in it.
+
+**So an ERROR-severity GR2060 is not excused, casts a veto, and the prefix is reverted wholesale** — which
+is verbatim the defect #501 fixed, described in that code's own comment: *"a wave cut off after 5 of 12
+task folders had, by construction, no wave-root `guardrails/` exit gate yet … so GR2028 fired, `valid`
+went false, and the prefix the manifest existed to preserve was reverted wholesale."* Shipping GR2060 at
+ERROR without a mitigation re-opens it one code over, and the cost is paid in reverted JIT work — the
+most expensive thing this harness can throw away.
+
+**The mitigation: allow-list on `wavePrefixIsIncomplete`, NOT on `PlanIsClosed`.**
+
+`UnsatisfiableWhileIncomplete` grows a second code. That is a one-line change and it is the right seam,
+because `wavePrefixIsIncomplete` is **actual knowledge of incompleteness** — it is set from a usable
+`breakdown-intent.json` that still owes folders — whereas `PlanIsClosed` merely observes that no wave
+folder is empty. The two are not interchangeable, and the trap in §5.2 is exactly the belief that they
+are.
+
+Three properties the implementer must preserve, all already true of the #501 code:
+
+- **Excused errors stay in the report.** They stop casting a veto they cannot fairly cast; they do not
+  vanish. An operator reading the gate decision still sees the GR2060 finding.
+- **The suppression is scoped to the JIT breakdown gate**, not to `validate`. A human running
+  `guardrails validate` on a partial prefix still sees the error, which is correct: they are asking a
+  different question.
+- **`PlanIsClosed` stays as GR2060's condition-10 suppressor** for the *empty-stub* case it does detect.
+  The two suppressions are complementary, not alternatives, and §12.1's SSOT text must say so — otherwise
+  the next reader repeats the first draft's mistake.
+
+**Task 5 authors the regression test before task 6 implements**: a plan with a JIT partial prefix whose
+wave gate trips GR2060 must **not** be reverted, and the finding must still appear in the gate-decision
+report. Red first, on the #501 shape.
+
+### 5.4 The corpus sweep, run in advance — and the population it MISSED
+
+Doc 19 §10 step 4 makes a zero-finding sweep a merge gate. Hand-run during this design:
 
 | | |
 |---|---|
@@ -358,179 +439,203 @@ Doc 19 §10 step 4 makes a zero-finding sweep a merge gate. Hand-run now, over *
 | …whose witness is **absent** from the named file | **0** |
 | **GR2060 findings** | **0** |
 
-**State the limit with the number, on doc 19's own precedent about GR2062.** Today's tree is post-merge,
-so the witnesses these plans required are present *because the plans ran*. The zero proves the check is
-silent on satisfied requirements; it does not prove it is silent on a *correct plan whose work is not yet
-done*. The gate that proves that is the positive control (§8.2), and the sweep the implementers run must
-be re-run **against each plan's own pre-run commit** for at least plans 30 and 32 — a stronger form than
-doc 19 asked for, added here because it is the version that could actually fail.
+**Two limits, and the second is a defect in the sweep rather than a caveat about it.**
 
-### 5.4 Severity: ERROR, and the defense
+**(a) Structural silence, on doc 19's own precedent about GR2062.** Today's tree is post-merge, so the
+witnesses these plans required are present *because the plans ran*. The zero proves the check is silent on
+**satisfied** requirements; it does not prove it is silent on a correct plan whose work is not yet done.
+
+**(b) The sweep walked 740 of 1,271 scripts, and skipped the only plan that fires.** It enumerated plan
+folders carrying a top-level `tasks/` directory. **Five plan folders are waved**, nesting their tasks
+under `wave-NN-*/tasks/`, and were silently excluded:
+
+| folder | scripts | in the sweep? |
+|---|---|---|
+| `autonomous-mode-impl` | 177 | **no** — waved |
+| `model-tiering-stage-2` | **169** | **no** — waved, and it carries §8.2's positive control |
+| `model-tiering-stage-3` | 118 | **no** — waved |
+| `salvage-advice-provisioning` | 56 | **no** — waved |
+| `09-preflight-first-class` | 11 | **no** — neither layout |
+| the 14 walked folders | 740 | yes |
+| **total under `docs/plans/`** | **1,271** | |
+
+So the headline *"0 findings over 14 plan folders"* was computed over a population that structurally
+**excluded the one plan known to fire**. The number is not wrong, but it measured less than it claimed —
+the same species of error as §3.4, one level up. §8.5's sweep **must walk waved folders**, and its
+expected counts are per plan and per commit rather than a blanket zero.
+
+### 5.5 Severity: ERROR — conditional on §5.3, and on nothing else
 
 `RunCommand.cs:198-207` refuses to run a plan carrying any validation error, so an ERROR is a
 run-blocking gate on every plan forever, including on **resume**. GR2068/GR2069 ship as WARNING for
 exactly that reason: a correct shipped plan can carry a stale handoff cell.
 
-GR2060 is different in kind and stays at ERROR, per doc 19 D4:
+GR2060 stays at ERROR, per doc 19 D4:
 
 - Its verdict is a **provable impossibility about the run about to start**, not a judgement about a
   document. The clause is red now, red at the end, and no agent action inside the plan can change it.
 - The alternative is not "the run succeeds". It is "the run spends its whole DAG and fails at the gate" —
   measured at $115.32.
-- Its false-positive surface is a **path**, which is unambiguous. GR2070's is a **name**, which is not
-  (§6.5) — and that difference is the whole reason the two severities differ.
-- The empirical bar is met: 0 findings over 14 plan folders, with §5.3's limit stated.
+- Its false-positive surface is a **path**, which is unambiguous — unlike a member **name**, the surface
+  that helped sink GR2070 (§6.3).
+- It has a **recovered positive control that an independent pass reproduced blind** (§8.2). That is the
+  bar this document holds everything to, and GR2060 is the only thing in it that clears it.
+
+**And the one condition on that severity: §5.3 ships in the same milestone.** ERROR without the
+`wavePrefixIsIncomplete` allow-list entry is not a stricter version of this design — it is a different
+design, one that reverts JIT prefixes. If task 6 cannot land, GR2060 ships at WARNING instead and §16
+gains a row.
 
 ---
 
-## 6. Milestone B — GR2070 `UnproducibleCallArgument`, the derived path
+## 6. Milestone C — the callee's parameter list, and the code that is held
 
-### 6.1 The predicate
+### 6.1 The gap: the shipped probe stops one step short of the defect
 
-> A script guardrail requires a **named argument `p:`** inside a call to member `M`; **no declaration of
-> `M` anywhere in the tracked tree declares a parameter named `p`**; and **at least one file declaring
-> `M` is covered by no task's `writeScope`**. The call cannot be written without widening a signature the
-> plan may not touch.
+The first draft described Milestone C as *"the sibling-datum authoring rule that doc 19 §4 specified and
+never shipped."* **That is wrong on both halves, and the adversarial pass verified it.** The rule shipped
+at `e118b9d` — *"feat(skills): #474/#477 Milestone A — point the existing probe at the gate, and trace
+the datum"* — and it is live at `plan-breakdown/SKILL.md:381` under the heading *"Before you write a
+`writeScope`, TRACE THE DATUM — follow the sibling that already works (#474)."* C as first written would
+have re-authored existing text.
 
-### 6.2 Conditions — every one is conservatism spent
+**The real gap is one step further on, and it is why plan 30's instance survived a review pass that ran
+the probe correctly.** The shipped Unreachable-outcome probe (`guardrails-review/SKILL.md:948`) is four
+steps, and its step 3 is a stopping condition:
 
-1. **PowerShell script guardrail**, any of the six folder instances
-   (`PlanValidator.FourFolderScriptGuardrails` already enumerates all six, terminal gate included).
-2. **A call anchor.** A quoted single-line literal that, after normalising `\b` and `\s*` away (§3.1),
-   contains `(?<![A-Za-z0-9_])(?<M>[A-Z][A-Za-z0-9_]{2,})\\?\(`.
-3. **Exactly one distinct `M` in the script.** Two or more → **silence**. Association is by
-   co-occurrence and there is no sound way to pick. The corpus has never exercised the multi-anchor case
-   (n=1), so this is silence-by-default rather than a rule with evidence behind it.
-4. **A named-argument requirement**, read by a **sibling clause regex — NOT `PresenceClause` itself**
-   (§3.5: reusing GR2057's verbatim gives this check a population of zero). The sibling admits a
-   **double-quoted** pattern operand as well as a single-quoted one; polarity is decided by GR2057's
-   shipped `BranchFailsTheGuardrail` reader, unchanged (the branch appends to a failures accumulator,
-   exits non-zero, throws, or `Write-Error`s).
+> 1. Open X … name the expression it must read **from**. That is the **carrier**.
+> 2. Resolve the carrier's declaring type and the file that declares it.
+> 3. **Does the carrier already expose what Y needs, on that tree? If yes → reachable; stop.**
+> 4. If not, the member must be ADDED to the carrier. Is the file declaring the carrier in scope? …
 
-   **The soundness rule that makes the double-quote relaxation safe, and it is narrow on purpose.** Take
-   the pattern's **head** — everything before the first `$` or backtick — and require that the head alone
-   satisfies `^(?<p>[a-z][A-Za-z0-9_]*)(?:\\s\*)?:`, **case-sensitively**. A head containing no `$` and no
-   backtick is its own literal content, so no interpolation analysis is needed and GR2057's reason for
-   refusing double quotes never arises. GR2057 must de-regex the *whole* pattern and therefore cannot make
-   this relaxation; GR2070 needs only the parameter name, and the parameter name is always in the head.
-   Verified on the measured instance: `"bucket\s*:\s*$c\s*\.\s*Bucket"` → head `bucket\s*:\s*` → `p = bucket`.
+Run it on the plan-30 clause. The required text is `bucket: pending.Bucket`; the carrier is `pending`, a
+`PendingAttempt`; `PendingAttempt.Bucket` **does** exist on that tree, added by an in-scope ancestor. Step
+3 answers *yes*, the probe returns **reachable**, and step 4 never runs. The file that actually made the
+task unsatisfiable — `ISchedulerJournal.cs`, which declares the **callee** — is never opened, because the
+probe traces **upstream to the value's source** and the defect was **downstream in the receiver's
+signature**.
 
-   **Case-sensitivity is load-bearing, not style.** Reading it with `-match` instead of `-cmatch` turns
-   1 hit into 295, every extra one a prose string in a failure message beginning `PRECONDITION:` or
-   `NOTE:`.
+So §7 and §4.1 of the first draft were both wrong to say *"the probe caught it."* A **reviewer** caught
+it, by tracing further than the written procedure asks. That is precisely the discretion this plan exists
+to remove, and with GR2070 declined, **C is the only thing that removes it.**
 
-   **And the clause form, not merely the literal, is what is required.** Scanning every quoted literal in
-   the script instead of only `if (…) { … }` clause operands re-admits `definitionHash:` — which appears
-   in this same guardrail's *failure-message prose*, not in any pattern. The clause form drops it and
-   takes the candidate count from 2 to 1.
-5. **`M` is declared in at least one tracked `.cs` file.** Zero → **silence**: the plan is creating it,
-   which is the red-test archetype and never a defect.
-6. **`M` is declared in at most 3 tracked files.** Four or more → **silence**. Measured: the real
-   instance has 2; the noise class begins at 4 (`Capture`) and runs to 66 (`RunAsync`). A name declared
-   in five places is a common name, and this check has no way to know which declaration the call binds to.
-7. **No declaration of `M` declares a parameter named `p`.** Any one does → **silence**: the call
-   compiles today and the requirement is about the call site, which the task owns.
-8. **At least one declaring file is covered by no task's `writeScope`** — union over every task in every
-   wave, decided by `WriteScope.IsInScope`, never `dependsOn` (doc 19 §7). Universal quantification over
-   declaration sites; §3.3 is why.
-9. **Declaring files under the plan folder are excluded** — harness-written, invariant 2.
-10. **`planIsClosed`** — an un-authored JIT wave may own the carrier; the verdict is unprovable.
-11. **GR2041 clean** — an undeclared `writeScope` makes the union incomplete.
-12. **The tracked-file probe answered.** Probe absent, git absent, or the call failed → **silence, not
-    failure** (GR2056's contract).
+### 6.2 The step Milestone C adds
 
-### 6.3 Message shape
+One new step, in both skills, phrased so it cannot be satisfied by the check that already passed:
 
-> `GR2070` — this guardrail requires the named argument `bucket:` in a call to `RecordSettleWithAttempt`.
-> No declaration of that member accepts a parameter named `bucket`, so satisfying this clause means
-> **widening a signature** — and `src/Guardrails.Core/Execution/ISchedulerJournal.cs`, which declares it,
-> is in **no task's `writeScope`**. As written the call does not compile, and the in-scope alternatives
-> are an honest halt or a cast to the concrete type that satisfies this pattern and journals nothing.
-> Either give some task the declaring file, or move the clause to a task that owns it.
+> **5. If the required text is an ARGUMENT IN A CALL, the carrier is not the answer — the CALLEE is.**
+> Name the member being called and open **its declaration**. Does its parameter list already accept what
+> the clause requires? If not, the requirement is *"widen this signature,"* and the file declaring that
+> member must be in this task's `writeScope` or an ancestor's. **Not the file the call is written in —
+> the file the member is declared in.** For a call dispatched through an interface, that is the
+> **interface**, not the concrete type: a cast to the concrete type compiles, satisfies the clause, and
+> journals nothing.
 
-The message names the **false green** as well as the finding, because in this class the false green is
-the outcome that actually ships. It offers no correction beyond the two structural ones — GR2068's rule,
-that a wrong suggestion is worse than none, holds here.
+And the authoring-side twin in `plan-breakdown`, beside the shipped datum trace:
 
-### 6.4 Cost — nothing is read unless there is a candidate
+> When a task's deliverable is *"pass D to M"*, `M`'s **declaring** file goes in the `writeScope` — the
+> interface if the call dispatches through one — unless `M` already accepts D today. Grep the declaration,
+> not the call site.
 
-Conditions 2–4 are text operations over scripts the validator already reads. Only when they all hold
-does the check touch `.cs` at all, and then it takes the tracked-file list it already has (Milestone A's
-probe, one `git ls-files` per validate run), filters to `.cs`, prefilters with `string.Contains(M)`, and
-regex-parses **only the files that survive**. Measured: candidates exist in 0.2% of scripts, so on
-99.8% of plans the marginal cost is zero. **No second probe, no `git grep` per candidate, no cache.**
+**Both are one paragraph, and both name the false green**, because in this class the false green is the
+outcome that ships: the cast that compiles, passes the task's own filter, and detonates 26 tasks later
+under a fake.
 
-### 6.5 Severity: WARNING, and the defense
+### 6.3 GR2070 — reserved by name, and the record of why
 
-GR2070 does **not** follow GR2060 to ERROR, and the asymmetry is deliberate.
+**GR2070 is held, not spent.** §12.3 adds it to `DiagnosticCodes.cs`'s reservation block with a one-line
+reason and a pointer to this section, on the same footing as GR2061 and GR2054. The design is recorded
+here so the next person to reach for this shape starts from the evidence rather than from the idea.
 
-- **GR2060 keys on a path; GR2070 keys on a name.** A path is unambiguous. A member name is resolved
-  across the whole tree by a textual extractor that, during this design alone, was wrong three separate
-  ways — twice in the silent direction, once (the `Type.Member` trial) in the firing direction.
-- **The evidence base is one instance.** An ERROR is a promise that every finding is a defect. Zero false
-  positives over 443 scripts with a population of 2 candidate pairs does not support that promise; it
-  supports *"nothing contradicts it yet"*.
-- **The known false-positive shape is real and unfixed:** a declaring file that is a **test double** which
-  the widening does not require changing — an interface member with a default body, precisely the shape
-  `ISchedulerJournal.RecordSettleWithAttempt` has. No such declaration exists in today's corpus, so the
-  shape is unmeasured, not absent.
-- **The failure costs are asymmetric.** A false ERROR blocks a correct plan from running *and from
-  resuming* — including, during this plan's own run, a resume of the run that shipped it. A false WARNING
-  costs one line of reading.
-- **A warning already collects the whole win.** The defect costs 26 tasks and a terminal-gate detonation.
-  A warning at author time is 26 tasks earlier.
+**What was specified, in one line.** *A guardrail requires a named argument `p:` in a call to member `M`;
+no declaration of `M` accepts a parameter named `p`; at least one file declaring `M` is in no task's
+`writeScope`.* Twelve conservatism conditions, universal quantification over declaration sites (§3.3), a
+tracked-file probe reused from Milestone A, WARNING severity.
 
-**Promotion to ERROR** on GR2068's stated bar, and not before: a hand-run of this code alone across every
-plan folder in the repo, at each plan's own pre-run commit, producing only genuine defects. §16 leaves
-that to the maintainer.
+**Why it is declined, in one line.** It has **never fired on a real defect at any commit in this
+repository** (§3.4), and the double-quote relaxation its extractor required rested on a cosmetic edit
+made 48 minutes after the defect was already fixed.
 
-### 6.6 Why this does not reopen doc 19 D2
+**The three findings worth keeping, because they will recur:**
 
-D2 — *"#474's headline (reachability) is not decidable and gets no lint, ever"* — stands, unamended.
+1. **Universal, not existential.** *"Is `M`'s declaring file in some task's `writeScope`?"* is silent when
+   any one declaring file is owned — and in the motivating case `RunJournal.cs` was owned while
+   `ISchedulerJournal.cs` was not. Any future version must quantify over **every** declaration site. This
+   also keeps it inside doc 19 §7's GR2042 boundary, since it needs only the union of scopes and never
+   `dependsOn`.
+2. **The qualifier is the check.** Asking *"is the declaring file owned?"* without asking *"does the
+   requirement need the declaration to change?"* fires 16 times on six correct plans and is wrong all 16
+   (§3.2) — including twice on a guardrail whose entire purpose is that a scope stay **narrow**.
+3. **A parameter list is readable; a type's member set is not.** The `Type.Member` widening produced 3
+   fires and 3 extractor errors (§3.5). A parameter list is bounded by its own parentheses; a type's
+   members are spread across properties, fields, positional records, partials, base types and extension
+   methods.
 
-| | doc 19's instance (shape **b**) | plan 30's instance (shape **a**) |
+**What would justify revisiting it.** Not a clause that happens to be written in the right shape — a
+**defect**, at a **commit**, where the named-argument requirement and the unowned declaring file coexist.
+One such instance turns GR2070 from an unfalsified idea into a check with a positive control, and that is
+the bar §8.2 holds everything else to.
+
+### 6.4 Why doc 19 D2 stands, and what that leaves uncovered
+
+D2 — *"#474's headline (reachability) is not decidable and gets no lint, ever"* — stands, unamended, and
+the decline of GR2070 strengthens rather than tests it.
+
+| | doc 19's instance (shape **b**) | plan 30's instance |
 |---|---|---|
 | the file that must change | `ActionRunner.cs` — **owned**, by a merged sibling task | `ISchedulerJournal.cs` — **owned by nobody** |
 | what is missing | a *value* on a type: `ActionRun` has no `Usage` | a *parameter* on a member declaration |
-| to decide it you must | resolve a parameter's type, walk to its declaration, enumerate its members, infer which one the required expression sources from | read one parameter list, bounded by its own parentheses |
-| verdict | C# semantic analysis. **Not a lint.** | a coverage question with a derived path |
+| to decide it you must | resolve a parameter's type, walk to its declaration, enumerate its members, infer which the required expression sources from | read one parameter list — **but only if you know to look at the callee at all** |
+| covered by | the review probe, permanently | **Milestone C, procedurally. No lint.** |
 
-The two instances live on the same issue and are not the same defect. GR2070 covers exactly the
-right-hand column and **would not have caught the left-hand one** — stated here in the design rather than
-discovered later, because presenting it as a fix for #474 would be the overclaim this whole document is
-arguing against. #474 **does not close** on this plan; §9 says what it closes and what it does not.
+The first draft used this table to argue that plan 30's instance is a decidable coverage shape and
+therefore lintable. The reading was right and the conclusion did not survive contact with git: the shape
+is decidable **in principle** and has **never occurred in a form a lint could have seen**. Decidability is
+not the bar; a positive control is.
 
 ---
-
-## 7. Relationship to #578, and to the review probe — complements, not alternatives
+## 7. Relationship to #578, and to the review probe — complements, and a gap neither of them closes
 
 #578 shipped yesterday (`de4e17c`): a `/guardrails-review` probe that **executes** the structural claims
 a prompt makes about the code. It explicitly declined a mechanical `validate` check, on the grounds that
 prose claims have nothing statically decidable to gate on. That reasoning is right and this plan does not
-disturb it: GR2060/GR2070 gate on **guardrail scripts** — machine-readable by construction — never on
-prompt prose.
+disturb it: GR2060 gates on **guardrail scripts** — machine-readable by construction — never on prompt
+prose.
 
-| | #578 probe (shipped) | #474 reachability probe (shipped, `e118b9d`) | GR2060 / GR2070 (this plan) |
+| | #578 probe (shipped) | #474 reachability probe (shipped, `e118b9d`) | GR2060 (this plan) |
 |---|---|---|---|
-| subject | a prompt's claim about the tree | a guardrail's datum and its carrier | a guardrail's requirement and the union of scopes |
+| subject | a prompt's claim about the tree | a guardrail's datum and its **carrier** | a guardrail's requirement and the union of scopes |
 | the defect it names | the **map is false** | the **value has no route** | the **requirement has no producer** |
 | when | review, once | review, once | every `validate`, every run start, every **resume** |
 | who | a non-authoring agent, 15–20 min | a non-authoring agent | nobody |
-| its failure mode | **nobody ran it** | **nobody ran it** | **the shape was not extractable** |
+| its failure mode | **nobody ran it** | **nobody ran it**, *and* it stops at step 3 (§6.1) | **the shape was not extractable** |
 
 **What the probes catch that no diagnostic can:** any claim expressible only in prose (*"A funnels
-through B"*, *"there are nine sites"*), the semantic reachability shape (§6.6), a claim about a file the
+through B"*, *"there are nine sites"*), the semantic reachability shape (§6.4), a claim about a file the
 plan will **create**, and the case where the guardrail is strong and correct while the *instructions*
 around it are wrong — which #570's table says is six of seven recent defects.
 
-**What the diagnostic catches that no probe can:** the case where nobody thought to look. The plan-30
-instance *was* caught by the reachability probe — by a reviewer who chose to trace a datum to its
-carrier instead of to the file the guardrail named. Everything about that catch was discretionary. A
-diagnostic removes the discretion, and it keeps firing on the plan that is edited after review, and on
-the resume six days later.
+**What GR2060 catches that no probe can:** the case where nobody thought to look. It fires on the plan
+edited after review and on the resume six days later, and it costs nobody fifteen minutes.
 
-Their failure modes do not overlap, which is the definition of a complement. Neither replaces the other,
-and neither should be described as the fix for #474 on its own.
+**And the correction the first draft needs most, because it inverted the credit.** This section
+originally read: *"the plan-30 instance was caught by the reachability probe — by a reviewer who chose to
+trace."* **The probe did not catch it, and could not have.** §6.1 walks the shipped four-step procedure
+against that clause: the carrier is `pending`, `PendingAttempt.Bucket` exists on that tree, **step 3
+returns "reachable; stop"**, and the callee's declaration is never opened. A reviewer caught it by going
+past the written procedure.
+
+So the honest map of this shape is:
+
+| covers the plan-30 carrier shape | status |
+|---|---|
+| GR2070 | **declined** — never fires on a real defect at any commit (§3.4) |
+| the shipped `#474` reachability probe | **does not reach it** — stops at step 3 (§6.1) |
+| the shipped `#578` structural-claim probe | **out of subject** — the prompt's claim was true; the guardrail was unsatisfiable |
+| **Milestone C's step 5** (§6.2) | **the only coverage this plan delivers, and it is procedural** |
+
+That is a weaker answer than the first draft claimed, and it is the true one. It is also why C's value
+went **up** when B was declined: C is no longer a tidy-up beside a lint, it is the entire mitigation.
 
 ---
 
@@ -541,92 +646,143 @@ its own evidence that it bites.
 
 ### 8.1 Per-condition unit tests, both polarities
 
-Each of GR2060's ten and GR2070's twelve conditions gets a test that it **fires** and a test that it is
+Each of GR2060's ten conditions gets a test that it **fires** and a test that it is
 **silent** when that condition alone is flipped. A condition with only a firing test has not been shown
 to be load-bearing; a condition with only a silence test has not been shown to exist.
 
-### 8.2 Positive controls — recovered artifacts, not synthetic fixtures
+### 8.2 The positive control — one, recovered, and reproduced blind
 
-Both are real, both verified present in git during this design.
+**There is exactly one, and it is GR2060's.** The first draft claimed two; the second could not be
+recovered from git and its check is declined (§3.4). One real control is what this plan has, and the
+document says so rather than padding the count.
 
 - **GR2060:** `docs/plans/model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at
-  `1b8e681`, against a tree whose SSOT is `tierSource`-free and the wave's task set as it then stood.
+  `1b8e681`, against a tree whose SSOT is `tierSource`-free and that wave's task set as it then stood.
   Verified: **0 of that plan's task manifests name the SSOT in `writeScope`**. Assert: fires **exactly
-  once**, naming `tierSource` and the SSOT path.
-- **GR2070:** `docs/plans/30-telemetry-phase-1/tasks/16-…/guardrails/03-both-settle-records-set-every-phase1-member.ps1`
-  at `10816fb`, with that commit's task manifests and that commit's `ISchedulerJournal.cs`. Verified:
-  `bucket` appears as a parameter **nowhere under `src/`** at that commit; `RecordSettleWithAttempt` is
-  declared in exactly 2 files; 1 is unowned. Assert: fires **exactly once**, naming `ISchedulerJournal.cs`.
-  Assert also that the **same script against `09f223f`'s tree is silent** — the post-fix state — so the
-  test proves the check tracks the tree rather than the string.
+  once**, naming `tierSource` and the SSOT path. Assert also that the **same script against `09f223f` is
+  silent**, so the test proves the check tracks the tree rather than the string.
 
-### 8.3 The negative control that would have caught this design's own bugs
+  **Independently reproduced.** The adversarial pass derived this control blind — without reading §8.2 —
+  and got the same artifact, commit and count. That is the strongest evidence in the document, and it is
+  the reason Milestone A came out of review stronger than it went in.
 
-Three ways this check can ship mute were found *while designing it*. Each gets a test that fails if it
-regresses, and each test must be shown **red against the pre-implementation tree** and green after — a
-green-on-both test proves nothing.
+### 8.3 Negative controls — including one that must be CONSTRUCTED, and why that is honest here
 
-- **The `\b` anchor.** A fixture whose anchor is written `'\bM\s*\('` — the idiomatic form, and the form
-  the measured instance uses — **must** be extracted. `(?<![A-Za-z0-9_])M\(` does not match it, because
-  the character before `M` is the `b`. Without this test the check ships mute on almost every real anchor.
-- **The interface declaration.** A fixture whose only declaration of `M` is an **interface member with no
-  access modifier** (`void M(…);`) must be found. A declaration index anchored on
-  `public|internal|private|…` misses it — and that is exactly the carrier class this check exists for.
-- **The double-quoted clause (§3.5).** A fixture whose requirement clause is
-  `if ($v -cnotmatch "p\s*:\s*$x") { $failures += … }` must be extracted. Reusing GR2057's
-  single-quote-only `PresenceClause` gives GR2070 a corpus population of **zero**; this test is the pin
-  that says so out loud, and its comment must name the number.
+Two ways GR2060 can ship mute were found while designing it. Each gets a test that fails if it regresses,
+and each must be shown **red against the pre-implementation tree** and green after — a green-on-both test
+proves nothing.
 
-A fourth test guards the opposite direction: a fixture whose requirement clause is single-quoted and whose
-pattern head is `PRECONDITION:` must be **silent** — the case-sensitivity pin, worth 294 spurious
-candidates if it regresses.
+- **The one-hop association.** A fixture written
+  `$v = if (Test-Path 'X') { Get-Content -Raw 'X' } else { "" }` — the measured instance's own shape —
+  must be extracted. A reader that only handles `$v = Get-Content 'X'` misses it and the check ships mute
+  on the artifact it was built from.
+- **The double-quoted path operand.** Doc 19 §3.1 condition 2 relaxes *paths* (not patterns) to
+  double-quoted literals containing no `$` and no backtick, because the measured instance needs it. A
+  fixture in that form must be extracted.
 
-### 8.4 The corpus sweep as a terminal gate, not a unit test
+**And one control that cannot be red-first, which is the interesting case.** Condition 8 — *"no task
+declares the path"* — has **zero exercises in the corpus**: every requirement clause in all 1,271 scripts
+either has a present witness or names a covered path, so **an implementation that hard-codes
+`covered = false` passes every other test in §8.** The red-first rule cannot discipline this, because a
+*silence* test is green before the check exists and green after a wrong implementation.
 
-The sweep of §5.3, extended: both codes, over every plan folder in `docs/plans/` **and** `examples/`,
-each evaluated **at its own pre-run commit** where one exists. Expected findings: **0** for GR2060 and
-**0** for GR2070 on every plan except plan 30 at `10816fb`, where GR2070 must produce exactly 1. This
-runs at the **terminal gate**, so an extractor that learned to fire on correct plans **withholds
-delivery** rather than merging.
+So condition 8 gets a **constructed** fixture: a synthetic plan whose gate requires an absent witness in
+a path that **is** in a task's `writeScope`, asserting **silence**. It must be labelled `Constructed`, not
+`Recovered`, in the test name and its comment.
 
-### 8.5 The anti-tautology pin
+**Why constructed is legitimate here and was not legitimate for the declined check.** A *silence* control
+asserts that a condition **suppresses** a finding; it needs a state the corpus does not contain, and
+manufacturing that state is the only way to exercise the suppression at all. A *positive* control asserts
+the check **fires on a real defect** — and manufacturing that is precisely the thing #580 forbids, because
+a hand-built firing fixture proves the code matches the fixture and nothing about the world. The
+distinction is the direction of the claim, and the test names must carry it.
+
+### 8.4 The anti-tautology pin
 
 `ProducerCoverage` must never be tested only through fixtures it also generates. At least one test drives
 the real `PlanValidator.Validate` over a real on-disk plan folder, through the same composition root
 `PlanProbe.cs` uses — the #382 lesson, which is that fake-masked unit guardrails certify green while the
 composition-root path is broken.
 
+### 8.5 The corpus sweep as a terminal gate — with an expectation that is NOT a blanket zero
+
+The first draft wrote *"expected findings: 0 for GR2060 on every plan"* two sections after §8.2 asserted
+that GR2060's positive control **fires once** on `model-tiering-stage-2` at `1b8e681`. **Those two
+statements contradict each other**, and a correct implementation would have gone red at the terminal
+gate — where §11 forbids every cheap escape, so the run would have halted with delivery withheld and no
+legal move. The adversarial pass caught it; it is written out here in the form the implementer needs.
+
+**Population.** Every `.ps1` under `docs/plans/` — **1,271 files**, waved folders **included** (§5.4(b));
+plus `examples/`. A sweep that enumerates only folders with a top-level `tasks/` sees 740 of them and
+misses the plan that fires.
+
+**Expectation, per plan and per commit.** Not one number:
+
+| subject | commit | expected GR2060 findings |
+|---|---|---|
+| `model-tiering-stage-2` — `guardrails/03-dor-section-6-contract-landed.ps1` | `1b8e681` | **exactly 1**, naming `tierSource` and the SSOT path |
+| `model-tiering-stage-2` — the same script | `09f223f` (today) | **0** — the requirement is satisfied now |
+| every other plan folder | its own pre-run commit, where one exists | **0** |
+| every plan folder | `09f223f` | **0** |
+
+**The two ways this gate must be able to fail**, and they are different failures:
+
+- **a finding where the table says 0** → the extractor learned to fire on a correct plan. Back it out;
+  this is doc 19 §5's falsification trigger, not a fixture to adjust.
+- **no finding where the table says 1** → the check is mute. This is the failure §3.4 and §5.4 were both
+  instances of, and it is the one that looks like success.
+
+Encoded as a data-driven test whose expectations are a **table in the test file**, not a single assertion
+— so adding a plan folder adds a row, and a row that disagrees with reality fails loudly rather than
+being averaged away. It runs at the **terminal gate**, so either failure withholds delivery.
+
 ---
 
 ## 9. Done when
 
 1. `guardrails validate` emits **GR2060 (ERROR)** on a plan whose gate requires an absent literal in a
-   tracked file no task declares, and is silent on all fourteen committed plan folders.
-2. `guardrails validate` emits **GR2070 (WARNING)** on plan 30's task-16 guardrail as it stood at
-   `10816fb`, naming `ISchedulerJournal.cs`, and is silent on the same guardrail against `09f223f`.
-3. Both positive controls (§8.2) pass, and both were **shown red** before the implementation landed.
-4. The §8.4 sweep is a terminal gate and reports its counts.
-5. `docs/plans/02-schemas-and-contracts.md` carries **§4.8** and **§4.9**, and §14.10's code paragraph
-   advances next-free to **GR2071** — in the same commits as the code (invariant 4).
-6. `plan-breakdown` carries the sibling-datum rule; `guardrails-domain-knowledge` names both codes.
-7. `docs/plans/19-producer-coverage.md` carries a status line pointing here (§12.4).
-8. Neither composition root (`PlanProbe.cs`, `Scheduler.cs`) changed signature.
-9. Core + Integration suites green; no existing GR2057 test edited.
+   tracked file no task declares.
+2. **The one positive control (§8.2) fires exactly once**, on
+   `model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at `1b8e681`, naming
+   `tierSource` and the SSOT path — and was **shown red** before the implementation landed. The same
+   script against `09f223f` is silent.
+3. The §8.3 negative controls pass, and the **constructed** condition-8 silence fixture is named
+   `Constructed…` rather than `Recovered…` in both its test name and its comment.
+4. The §8.5 sweep walks **all 1,271** `.ps1` under `docs/plans/`, waved folders included, and is a
+   terminal gate. Its expected counts are **per plan and per commit** (§8.5) — not a blanket zero.
+5. **The #501 regression test (§5.4) is red before task 6 and green after**: a JIT partial prefix whose
+   wave gate trips GR2060 is **not** reverted, and the finding still appears in the report.
+6. `docs/plans/02-schemas-and-contracts.md` carries **§4.8**; §14.10's code paragraph records GR2060 as
+   shipped, holds **GR2070 by name**, and advances next-free to **GR2071** — in the same commits as the
+   code (invariant 4).
+7. `DiagnosticCodes.cs`'s reservation block lists **GR2070** with a one-line reason and a pointer here
+   (§12.3), and GR2060 has been **removed** from that block because it is now allocated.
+8. `guardrails-review` and `plan-breakdown` carry the **callee's-parameter-list** step (§6);
+   `guardrails-domain-knowledge` names GR2060 and the producer-coverage invariant.
+9. `docs/plans/19-producer-coverage.md` carries a status line pointing here (§12.4).
+10. Neither `PlanValidator` composition root changed signature, and the **73** `new PlanValidator(` call
+    sites (§13 task 2) still compile with their existing arguments.
+11. Core + Integration suites green; no existing GR2057 test edited.
 
-**#474 does not close on this plan.** It closes its *coverage* shapes. Its headline reachability shape
-stays with the review probe, permanently, per doc 19 D2 and §6.6. The issue gets a comment saying exactly
-that, and stays open only if the maintainer wants a durable home for the shape; §16 asks.
+**#474 does not close on this plan, and less of it closes than the first draft claimed.** Milestone A
+closes the **named-path** coverage shape at both altitudes. The **plan-30 carrier shape closes
+mechanically nowhere** — GR2070 is declined (§4.1) and §6 shows the shipped review probe stops one step
+short of it. Milestone C covers it **procedurally**, which is weaker than a lint and is the honest state
+of the art for this shape. The issue gets a comment saying exactly that and stays open.
 
 ---
 
 ## 10. Invariants in play
 
-**1 — deterministic guardrails over prompt-judges; judges never alone.** Both codes are the deterministic
-half of a class whose larger half is permanently a review probe. The document's discipline is that it
-**says which half is which** and does not inflate the lint to look productive: §3.5 records three
-widenings that were tried and rejected with numbers.
+**1 — deterministic guardrails over prompt-judges; judges never alone.** GR2060 is the deterministic
+half of a class whose larger half is permanently a review probe. The discipline this document had to
+learn is that it **says which half is which** and does not inflate the lint to look productive: §3.6
+records three widenings tried and rejected with numbers, and §4.1 records a fourth — a whole lint,
+declined for want of a single instance where it fires. **The invariant cuts both ways**, and the first
+draft only read it one way: preferring a deterministic gate does not license shipping one that has never
+gated anything.
 
-**4 — the SSOT is the schema SSOT; a contract change lands in the SAME change.** Two new sections and one
+**4 — the SSOT is the schema SSOT; a contract change lands in the SAME change.** One new section and one
 code-paragraph edit, specified verbatim in §12, landing in the implementing commits. §5.2 records that
 doc 19 specified §4.8 and never applied it — the exact failure this invariant exists to prevent, and the
 reason §12's edits are pinned to specific tasks in §13 rather than left as an intention.
@@ -634,14 +790,18 @@ reason §12's edits are pinned to specific tasks in §13 rather than left as an 
 **5 — honest halts; nothing is marked done unverified.** All three measured instances **were** honest
 halts or withheld deliveries. The system worked; it worked at the most expensive point available. This
 design moves the verdict earlier and adds **no escape hatch and no waiver field** — there is no way to
-suppress either code from inside a plan, by design.
+suppress GR2060 from inside a plan, by design. The one suppression that exists (§5.3's JIT-prefix excuse)
+lives in the **harness**, is keyed on the harness's own knowledge that folders are still owed, and leaves
+the finding **visible in the report** — it withholds a veto, not a verdict.
 
-**2 — the harness is the single writer of merged state.** Both codes skip every path under the plan
+**2 — the harness is the single writer of merged state.** GR2060 skips every path under the plan
 folder. `state/`, `logs/`, the journal and `diagram.md` are harness-written and appear in no `writeScope`
 by construction; a coverage check that did not skip them would fire on every plan that reads its own state.
 
 **6 — plain files, light setup.** One `git ls-files` per validate run, injected, silent when unavailable.
-No index, no daemon, no cache, no new dependency. §3.7 and §6.4 are the reason that holds.
+No index, no daemon, no cache, no new dependency. §3.7 measured the alternative that GR2070 would have
+forced — a full declaration index over `src/` + `tests/`, **16.6 s** — and declining that check removed
+the only part of this design that ever threatened this invariant.
 
 ---
 
@@ -649,41 +809,57 @@ No index, no daemon, no cache, no new dependency. §3.7 and §6.4 are the reason
 
 `mergeOnSuccess` defaults ON, so a green run **delivers**. What the run must not be allowed to do:
 
-1. **Raise either severity.** A task that "improves" the check by promoting GR2070 to ERROR can refuse
-   every existing plan — including the **resume of the run doing it**. Severity is a maintainer decision
-   backed by a sweep (§16). Enforced as a forbidden-token guardrail on `Error(DiagnosticCodes.Unproducible…`.
-2. **Widen the extractor to make a test pass.** Dropping the named-argument qualifier (§3.2), the
-   one-anchor rule (§6.2 c3), the 3-declaration bound (c6) or the case-sensitivity (c4) each converts the
-   check into a measured wolf. Each is pinned by a **silence** test whose deletion is itself a finding.
-3. **Weaken the sweep's expectation.** The expected count is 0 (and 1 for the one positive control). A
-   run that re-baselines it to "≤ 3 findings" has inverted the gate. The sweep is a terminal gate (§8.4),
-   so this fails loudly and withholds delivery.
-4. **Touch the run path.** `RunCommand`, `Scheduler`, `TaskExecutor`, `IPromptRunner`, `IActionRunner`,
-   `IProgressSink` are all out of scope. This is author-time only, and no `writeScope` in §13 names one.
-5. **Change either composition root's signature.** `PlanProbe.cs:86` and `Scheduler.cs:2213` both call
-   `new PlanValidator()`. The probe arrives as a fifth overload with a default.
-6. **Self-consistency, which this plan must pass on its own terms.** Its SSOT clauses require content in
-   `docs/plans/02-schemas-and-contracts.md`. Rows 5 and 8 of §13 own that file, so GR2060 is silent on
+1. **Ship GR2060 at ERROR without the §5.3 allow-list entry.** This is the first prohibition because it
+   is the one that costs someone else's work: an un-mitigated ERROR reverts a JIT partial prefix
+   wholesale, re-opening #501 one code over. Tasks 5 and 6 are not optional polish on task 4; §5.5 makes
+   the severity conditional on them.
+2. **Allocate GR2070.** It is **held by name** (§6.3, §12.3). A run that reads the reservation block as a
+   TODO and spends the code has shipped an unfalsified check into the ladder. Pinned by a forbidden-token
+   guardrail: no `DiagnosticCodes` constant may be added whose value is `"GR2070"`.
+3. **Raise GR2060's severity beyond ERROR, or lower it to silence a failing sweep.** Severity is a
+   maintainer decision (§16) backed by a positive control and a sweep, not a knob for going green.
+4. **Widen the extractor to make a test pass.** The one-hop association, the single-quote pattern rule
+   and the git-tracked condition are each a place conservatism is spent (§5.1). Each is pinned by a
+   **silence** test, and deleting a silence test is itself a finding.
+5. **Weaken the sweep's expectation.** The expectation is **per plan and per commit** (§8.5) and includes
+   a required **non-zero**: `model-tiering-stage-2` at `1b8e681` must produce exactly 1. A run that
+   re-baselines the sweep to "≤ N findings", or that flattens it back to a blanket zero, has inverted the
+   gate. It is a terminal gate, so this withholds delivery rather than merging.
+6. **Relabel the constructed fixture.** §8.3's condition-8 silence fixture is `Constructed`. A run that
+   renames it `Recovered` to match its siblings has told the exact lie §3.4 caught.
+7. **Touch the run path beyond the one line §5.3 requires.** `RunCommand`, `TaskExecutor`,
+   `IPromptRunner`, `IActionRunner` and `IProgressSink` are out of scope. Task 6 touches `Scheduler.cs`
+   and touches **only** `UnsatisfiableWhileIncomplete`; no other behaviour in that file is in scope.
+8. **Change a `PlanValidator` composition root's signature**, or leave the **73** existing
+   `new PlanValidator(` call sites to absorb a new parameter silently (§13 task 2, N3).
+9. **Self-consistency, which this plan must pass on its own terms.** Its SSOT clauses require content in
+   `docs/plans/02-schemas-and-contracts.md`. Rows 7 and 8 of §13 own that file, so GR2060 is silent on
    this plan's own gate — as it must be. Any task added later that asserts SSOT content **must** be
    paired with a task owning the SSOT, or this plan trips the check it is building.
-7. **The self-lock, stated precisely rather than dramatically.** Task 4 ships an ERROR-severity check
-   into `Guardrails.Core`. The run in flight is executed by the **installed** CLI, so it does not pick
-   the new code up mid-run — the lock is not immediate. But from the next `dotnet tool update` onward,
-   **any resume of this plan re-validates it with the check it built** (`Scheduler.cs:2213` constructs a
-   `PlanValidator` on every load). Task 4's own guardrails must therefore include a
-   `guardrails validate` of **this plan's folder** with the newly built binary, asserting zero GR2060
-   findings. A check that cannot validate the plan that built it has failed its first real test, and it
-   is cheaper to learn that inside task 4 than at a resume three days later.
+10. **The self-lock, stated precisely rather than dramatically — and the first draft got the mechanism
+    wrong.** Task 4 ships an ERROR-severity check into `Guardrails.Core`. The run in flight executes via
+    the **installed** CLI, so it does not pick the new code up mid-run; the lock is not immediate. From
+    the next `dotnet tool update` onward, a **resume refusal** would come through
+    `RunCommand.RunAsync`'s `PlanProbe.LoadAndValidate` (`RunCommand.cs:198-207`) — **not** through
+    `Scheduler.cs:2213`, which the first draft cited. That line is inside `ValidatePlanAfterBreakdown`,
+    the **JIT-breakdown gate**, and it is a *different* hazard with a *different* mitigation (§5.3).
+    Naming the wrong seam would have sent the implementer to fix the wrong thing.
+
+    Task 4's own guardrails must therefore include a `guardrails validate` of **this plan's folder** with
+    the newly built binary, asserting zero GR2060 findings. A check that cannot validate the plan that
+    built it has failed its first real test, and it is cheaper to learn that inside task 4 than at a
+    resume three days later.
 
 **Sized for cheap retries.** Every task is ≤ 3 files and one concern. Three tasks edit
 `PlanValidator.cs`; they are strictly sequential by `dependsOn`, never parallel. Tests are authored
-before the implementation they gate, so a retry re-runs one narrow filter rather than a suite.
+before the implementation they gate — including the #501 regression test, which is red before task 6 —
+so a retry re-runs one narrow filter rather than a suite.
 
 ---
 
-## 12. Exact SSOT edits (`docs/plans/02-schemas-and-contracts.md`)
+## 12. Exact SSOT and `DiagnosticCodes.cs` edits
 
-### 12.1 New §4.8 — immediately after §4.7 (which ends at line 1520) and before `## 5. Child-process contract`
+### 12.1 New §4.8 in `docs/plans/02-schemas-and-contracts.md` — after §4.7 (which ends at line 1520) and before `## 5. Child-process contract`
 
 Heading: `### 4.8 Guardrails that CANNOT PASS given what this plan BUILDS (validated, GR2060 — error)`.
 
@@ -692,41 +868,69 @@ Opening paragraph to state: the §4.7 three are decidable from **one script's ow
 bytes. Same consequence (red before the task runs, red forever, and `/guardrails-review` structurally
 misses it because it hunts weakness while this guardrail is *strong*), different evidence base, hence a
 sibling section rather than a fourth row in §4.7's table. Carry doc 19 §3.1's predicate and all ten
-conservatism conditions verbatim, the `planIsClosed` suppression, and the cross-reference to §14.1/GR2062
-as its soundness precondition. §4.7 gains one closing sentence pointing forward.
+conservatism conditions verbatim, and the cross-reference to §14.1/GR2062. §4.7 gains one closing
+sentence pointing forward.
 
-### 12.2 New §4.9 — immediately after §4.8
+**Two paragraphs this section must carry that doc 19 §6 did not anticipate:**
 
-Heading: `### 4.9 Guardrails that require a SIGNATURE the plan may not widen (validated, GR2070 — warning)`.
+- **The two suppressions, and that they are not interchangeable** (§5.3). `PlanIsClosed` suppresses
+  GR2060 for an **empty stub wave**. It does **not** cover an authored **partial prefix**, for which the
+  suppression lives in `Scheduler.UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete`. State
+  plainly that `PlanIsClosed` returns `true` for a partial prefix and is therefore not a soundness
+  guarantee for the JIT gate — the trap that cost this design a milestone's worth of rework.
+- **The excused-not-vanished rule.** A GR2060 finding excused at the JIT gate still appears in the
+  gate-decision report, and still errors under a plain `guardrails validate`. Suppression is about which
+  verdict a finding may cast, never about whether an operator sees it.
 
-Carry: §6.1's predicate; §6.2's twelve conditions; §6.3's message shape; the **universal quantification
-over declaration sites** with §3.3's measurement as its justification (one sentence: the existential
-reading is silent on the only instance on record); the **derived-path** relationship to §4.8 in one line
-— *§4.8's path is the one the guardrail names; §4.9's is the one it implies* — and §6.5's severity
-argument including the promotion bar. Add the boundary sentence: **this does not cover the reachability
-shape**, with the §6.6 table reduced to two rows.
+### 12.2 §14.10's GR-code paragraph
 
-### 12.3 §14.10's GR-code paragraph
+- Record **GR2060** (`UnproducibleGateRequirement`) as **shipped**, and remove it from the
+  reserved-by-name list.
+- Add **GR2070** to the reserved-by-name list.
+- Advance next-free to **GR2071**.
+- Leave **GR2061** and **GR2054** reserved, unchanged.
 
-Advance next-free to **GR2071**. Record **GR2060** (`UnproducibleGateRequirement`, this plan, doc 19's
-design) as no longer reserved-by-name but **shipped**, and **GR2070** (`UnproducibleCallArgument`). Leave
-**GR2061** and **GR2054** reserved. Per that paragraph's own standing instruction, `DiagnosticCodes.cs`
-wins — re-verify immediately before allocating, and beware `DiagnosticCodes.cs:565`, a **quoted
-historical** marker naming GR2047; the live marker is at `:1026`.
+Per that paragraph's own standing instruction, `DiagnosticCodes.cs` wins — re-verify immediately before
+allocating, and beware `DiagnosticCodes.cs:565`, a **quoted historical** marker naming GR2047. The live
+marker is at `:1026`.
+
+### 12.3 `src/Guardrails.Core/Loading/DiagnosticCodes.cs` — the reservation block
+
+The block currently at **`:1034`** (not `:1036`, which is GR2054) lists three reserved codes. After this
+plan it lists three again, with a different membership: GR2060 leaves because it is allocated, GR2070
+arrives because it is held.
+
+- **Remove** the `GR2060 — docs/plans/19-producer-coverage.md §1 …` line; GR2060 is now a shipped
+  constant above.
+- **Add**, in the same idiom as its neighbours:
+
+  > `GR2070 — docs/plans/33-unproducible-requirements.md §6.3 (a guardrail requiring a named argument`
+  > `whose declaring member no task may widen). DESIGNED AND DECLINED: it has never fired on a real`
+  > `defect at any commit in this repository — see §3.4. Do not allocate without a positive control.`
+
+- **Advance** the `CURRENT next-free code` marker at `:1026` to **GR2071**.
+
+The reason-line matters more than the reservation. A bare *"reserved"* invites the next author to spend
+the code; a line that says *the design exists and the evidence did not* sends them to §6.3, which is
+where the three durable findings are.
 
 ### 12.4 Two edits outside the SSOT
 
-- **`docs/plans/19-producer-coverage.md`** — its status table's `Milestone A — harness half (GR2060)`
-  row changes from `NOT BUILT` to a pointer at this plan, and D2 gains one sentence: *"a later instance
-  (#474, plan 30) proved to be shape (a) with a derived path; see `33-unproducible-requirements.md` §6.6.
-  D2 is unchanged."* No other edit; the document is not rewritten.
-- **`docs/plans/03-roadmap.md`** — no change. Neither code is a v2 bet; both are v1 author-time validation.
+- **`docs/plans/19-producer-coverage.md`** — the status table's `Milestone A — harness half (GR2060)` row
+  changes from `NOT BUILT` to a pointer at this plan. **D2 gains one sentence, and it is not the sentence
+  the first draft proposed:** *"a later instance (#474, plan 30) looked like shape (a) with a derived
+  path, and a lint for it was designed and declined — the shape has never occurred in a form a lint could
+  see; see `33-unproducible-requirements.md` §3.4 and §6.3. D2 is unchanged and is now better evidenced."*
+  No other edit; the document is not rewritten.
+- **`docs/plans/03-roadmap.md`** — no change. GR2060 is not a v2 bet; it is v1 author-time validation.
 
 ---
 
 ## 13. Implementation handoff
 
-Nothing starts until the #106 draft-PR review of this document is addressed.
+Nothing starts until the #106 draft-PR review of this document is addressed. **This table is re-derived
+for the post-review task set** — Milestone B's four tasks are gone, the #501 mitigation adds two, and
+Milestone C is re-aimed. It is not the first draft's table with rows deleted.
 
 Each row is deliverable by **one** task. The `writeScope` column is the **verbatim, concrete** array to
 emit in that task's `task.json` — no globs, matching the convention that every `writeScope` in every plan
@@ -734,180 +938,224 @@ folder in this repo is concrete.
 
 | # | Agent | Deliverable | `filesTouched` | pinned `writeScope` (verbatim) | depends on |
 |---|---|---|---|---|---|
-| 1 | `guardrails-harness-developer` | **Refactor, no behaviour change.** Lift GR2057's `PresenceClause`, `BranchFailsTheGuardrail`, `BlankCommentLines`, `TryLiteralWitness` and `MatchesWitness` out of `PlanValidator` into a shared internal helper. **`PresenceClause` moves unchanged** — widening it to admit double quotes would change GR2057's behaviour, and GR2070 gets a sibling regex instead (§6.2 c4). Gate: every existing GR2057 test green and **unedited**. | `src/Guardrails.Core/Loading/GuardrailClauseText.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/GuardrailClauseText.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | — |
-| 2 | `guardrails-harness-developer` | `IGitTrackedFileProbe` + `GitLsFilesProbe` + `NullGitTrackedFileProbe`, mirroring `IScriptSyntaxProbe` including its "silence is not proof" contract; a **fifth** `PlanValidator` constructor overload with a real default so neither composition root changes. | `src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs`, `src/Guardrails.Core/Loading/GitLsFilesProbe.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs", "src/Guardrails.Core/Loading/GitLsFilesProbe.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 1 |
-| 3 | `guardrails-test-author` | **Red** tests for GR2060: one firing + one silence test per §5.1 condition, plus the §8.2 recovered `model-tiering-stage-2` positive control. | `tests/Guardrails.Core.Tests/ProducerCoverageTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"]` | 2 |
-| 4 | `guardrails-harness-developer` | **GR2060** in a new `ProducerCoverage.cs` (the `HandoffScopeCoverage.cs` precedent — one check family, one file, one line in `PlanValidator`), the code constant, and the call site. | `src/Guardrails.Core/Loading/ProducerCoverage.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/ProducerCoverage.cs", "src/Guardrails.Core/Loading/DiagnosticCodes.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 3 |
-| 5 | `guardrails-harness-developer` | **SSOT §4.8** (§12.1) and §4.7's forward-pointing sentence. | `docs/plans/02-schemas-and-contracts.md` | `["docs/plans/02-schemas-and-contracts.md"]` | 4 |
-| 6 | `guardrails-test-author` | **Red** tests for GR2070: one firing + one silence test per §6.2 condition, the §8.2 recovered plan-30 positive control **and its post-fix silence twin**, and the two §8.3 negative controls (`\b` anchor; interface member with no access modifier). | `tests/Guardrails.Core.Tests/CallArgumentCoverageTests.cs` | `["tests/Guardrails.Core.Tests/CallArgumentCoverageTests.cs"]` | 5 |
-| 7 | `guardrails-harness-developer` | **GR2070** as a second rule inside `ProducerCoverage.cs`, reusing task 2's tracked-file list; the **sibling double-quote-admitting clause regex** and the head-only rule (§6.2 c4); the return-type-anchored declaration index (§8.3); the code constant; next-free advanced to GR2071. | `src/Guardrails.Core/Loading/ProducerCoverage.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | `["src/Guardrails.Core/Loading/ProducerCoverage.cs", "src/Guardrails.Core/Loading/DiagnosticCodes.cs"]` | 6 |
-| 8 | `guardrails-harness-developer` | **SSOT §4.9** (§12.2) and §14.10's code-paragraph edit (§12.3). | `docs/plans/02-schemas-and-contracts.md` | `["docs/plans/02-schemas-and-contracts.md"]` | 7 |
-| 9 | `guardrails-test-author` | The §8.4 corpus sweep and the §8.5 anti-tautology test: both codes, every plan folder in `docs/plans/` and `examples/`, each at its own pre-run commit where one exists; expected 0 everywhere except plan 30 at `10816fb`. Wired as a **terminal-gate** guardrail, not only a unit test. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
-| 10 | `guardrails-skill-author` | The sibling-datum authoring rule in `plan-breakdown` (doc 19 §4 specified it; it never shipped), and one line in the knowledge skill naming both codes and the producer-coverage invariant. | `.claude/skills/plan-breakdown/SKILL.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | `[".claude/skills/plan-breakdown/SKILL.md", ".claude/skills/guardrails-domain-knowledge/SKILL.md"]` | 7 |
-| 11 | `guardrails-harness-developer` | Doc 19's status-table row and its D2 sentence (§12.4). | `docs/plans/19-producer-coverage.md` | `["docs/plans/19-producer-coverage.md"]` | 8 |
+| 1 | `guardrails-harness-developer` | **Refactor, no behaviour change.** Lift GR2057's `PresenceClause`, `BranchFailsTheGuardrail`, `BlankCommentLines`, `TryLiteralWitness` and `MatchesWitness` out of `PlanValidator` into a shared internal helper, **unchanged** — no widening of the single-quote pattern rule (§3.5). Gate: every existing GR2057 test green and **unedited**. | `src/Guardrails.Core/Loading/GuardrailClauseText.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/GuardrailClauseText.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | — |
+| 2 | `guardrails-harness-developer` | `IGitTrackedFileProbe` + `GitLsFilesProbe` + `NullGitTrackedFileProbe`, mirroring `IScriptSyntaxProbe` including its "silence is not proof" contract; a **fifth** `PlanValidator` constructor overload with a real default. **N3 gate: 73 `new PlanValidator(` call sites exist across `tests/` and `Guardrails.Cli`** — the task must assert the count, confirm every one still compiles unchanged, and state in its own commit message which default they now silently receive. | `src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs`, `src/Guardrails.Core/Loading/GitLsFilesProbe.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/IGitTrackedFileProbe.cs", "src/Guardrails.Core/Loading/GitLsFilesProbe.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 1 |
+| 3 | `guardrails-test-author` | **Red** tests for GR2060: one firing + one silence test per §5.1 condition; §8.2's **recovered** positive control; §8.3's two negative controls; and §8.3's **constructed** condition-8 silence fixture, named `Constructed…` in both test name and comment. | `tests/Guardrails.Core.Tests/ProducerCoverageTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"]` | 2 |
+| 4 | `guardrails-harness-developer` | **GR2060** in a new `ProducerCoverage.cs` (the `HandoffScopeCoverage.cs` precedent — one check family, one file, one line in `PlanValidator`), the code constant, and the call site. Its own guardrails include a `guardrails validate` of **this plan's folder** with the newly built binary (§11 item 10). | `src/Guardrails.Core/Loading/ProducerCoverage.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs` | `["src/Guardrails.Core/Loading/ProducerCoverage.cs", "src/Guardrails.Core/Loading/DiagnosticCodes.cs", "src/Guardrails.Core/Loading/PlanValidator.cs"]` | 3 |
+| 5 | `guardrails-test-author` | **Red** #501 regression test (§5.3): a JIT partial prefix whose wave gate trips GR2060 must **not** be reverted, and the finding must still appear in the gate-decision report. Red before task 6, green after. | `tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs` | `["tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs"]` | 4 |
+| 6 | `guardrails-harness-developer` | **The #501 mitigation**: add GR2060 to `UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete` and **not** on `PlanIsClosed` (§5.3). One member of `Scheduler.cs` is in scope; nothing else in that file is. | `src/Guardrails.Core/Execution/Scheduler.cs` | `["src/Guardrails.Core/Execution/Scheduler.cs"]` | 5 |
+| 7 | `guardrails-harness-developer` | **SSOT §4.8** (§12.1), including the two-suppressions paragraph and the excused-not-vanished rule, plus §4.7's forward-pointing sentence. | `docs/plans/02-schemas-and-contracts.md` | `["docs/plans/02-schemas-and-contracts.md"]` | 6 |
+| 8 | `guardrails-harness-developer` | **The code ladder** (§12.2, §12.3): GR2060 removed from `DiagnosticCodes.cs`'s reservation block because it is now allocated; **GR2070 added, held by name**, with its reason line; next-free advanced to GR2071; SSOT §14.10 updated to match. | `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `docs/plans/02-schemas-and-contracts.md` | `["src/Guardrails.Core/Loading/DiagnosticCodes.cs", "docs/plans/02-schemas-and-contracts.md"]` | 7 |
+| 9 | `guardrails-test-author` | **The §8.5 sweep**: all **1,271** `.ps1` under `docs/plans/` — waved folders included — plus `examples/`, each at its own pre-run commit where one exists, with the per-plan/per-commit expectation table **in the test file**, including the required **non-zero** on `model-tiering-stage-2` at `1b8e681`. Wired as a **terminal-gate** guardrail. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
+| 10 | `guardrails-skill-author` | **Milestone C** (§6.2): the callee's-parameter-list step 5 in `guardrails-review`'s Unreachable-outcome probe, and its authoring twin in `plan-breakdown` beside the **already-shipped** datum trace at `:381` — an addition, never a rewrite of that section. | `.claude/skills/guardrails-review/SKILL.md`, `.claude/skills/plan-breakdown/SKILL.md` | `[".claude/skills/guardrails-review/SKILL.md", ".claude/skills/plan-breakdown/SKILL.md"]` | 4 |
+| 11 | `guardrails-skill-author` | One line in the knowledge skill naming GR2060 and the producer-coverage invariant, and recording GR2070 as held-not-allocated so the next design does not re-propose it. | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | `[".claude/skills/guardrails-domain-knowledge/SKILL.md"]` | 8 |
+| 12 | `guardrails-harness-developer` | Doc 19's status-table row and its **re-worded** D2 sentence (§12.4) — the decline, not the first draft's "shape (a) with a derived path". | `docs/plans/19-producer-coverage.md` | `["docs/plans/19-producer-coverage.md"]` | 8 |
 
-**Sequencing.** 1 → 2 → 3 → 4 → 5 → 6 → 7 → {8, 10} → 9, with 11 after 8. Tasks 1, 2 and 4 all edit
-`PlanValidator.cs` and are strictly serial; task 10 touches no C# and may run beside 8. Milestone
-boundaries: **A** = 1–5, **B** = 6–9 + 11, **C** = 10.
+**Sequencing.** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → {9, 11, 12}, with **10 branching off 4** and running
+beside 5–8. Milestone boundaries: **A** = 1–9 + 11 + 12; **C** = 10.
+
+**Three constraints the order encodes rather than states.**
+
+- Tasks 1, 2 and 4 all edit `PlanValidator.cs` and are strictly serial. Task 4 puts the check in a **new**
+  file, so its edit there is one call-site line.
+- **Task 6 must not lag task 4 by more than one task.** Between them the tree carries an ERROR-severity
+  GR2060 with no `wavePrefixIsIncomplete` excuse. This plan is flat, so it cannot trip its own hazard —
+  but a `--fresh` run of any *waved* plan against that intermediate commit could, and the window should
+  be one task wide, not five.
+- Task 10 touches no C# and no `docs/plans/`, so it is the only row that can run beside the chain.
 
 ### 13.1 Hand-run of GR2068 / GR2069 against this table
 
-Run by hand against the pinned `writeScope` column above, because this plan has **no task folder yet** —
-`HandoffScopeCoverage` runs over a loaded `PlanDefinition`, so it will be structurally silent until the
-breakdown exists. The pinned column is what makes the hand-run possible, and it is the contract the
-breakdown must emit.
+Run by hand against the pinned `writeScope` column, because this plan has **no task folder yet** —
+`HandoffScopeCoverage` runs over a loaded `PlanDefinition` and is structurally silent until the breakdown
+exists. The pinned column is what makes the hand-run possible, and it is the contract the breakdown must
+emit.
 
-| row | candidates extracted | first segment resolves? | covered by ONE task? | verdict |
+| row | candidates | anchored? | covered by ONE task? | verdict |
 |---|---|---|---|---|
-| 1 | 2 | `src` ✓ | yes — identical to row 1's scope | **silent** |
-| 2 | 3 | `src` ✓ | yes | **silent** |
-| 3 | 1 | `tests` ✓ | yes | **silent** |
-| 4 | 3 | `src` ✓ | yes | **silent** |
-| 5 | 1 | `docs` ✓ | yes | **silent** |
-| 6 | 1 | `tests` ✓ | yes | **silent** |
-| 7 | 2 | `src` ✓ | yes | **silent** |
-| 8 | 1 | `docs` ✓ | yes | **silent** |
-| 9 | 1 | `tests` ✓ | yes | **silent** |
-| 10 | 2 | `.claude` ✓ | yes | **silent** |
-| 11 | 1 | `docs` ✓ | yes | **silent** |
+| 1 | 2 | yes | yes — identical to row 1's scope | **silent** |
+| 2 | 3 | yes | yes | **silent** |
+| 3 | 1 | yes | yes | **silent** |
+| 4 | 3 | yes | yes | **silent** |
+| 5 | 1 | yes | yes | **silent** |
+| 6 | 1 | yes | yes | **silent** |
+| 7 | 1 | yes | yes | **silent** |
+| 8 | 2 | yes | yes | **silent** |
+| 9 | 1 | yes | yes | **silent** |
+| 10 | 2 | yes | yes | **silent** |
+| 11 | 1 | yes | yes | **silent** |
+| 12 | 1 | yes | yes | **silent** |
 
-**GR2068 × 0, GR2069 × 0.** Every path is repo-rooted, so segment resolution is trivial; every row's
-`filesTouched` is exactly its own task's `writeScope`, so no row is split.
+**GR2068 × 0, GR2069 × 0.** Every row's `filesTouched` is exactly its own task's `writeScope`, so no row
+splits and no path is unreachable.
 
-Two rows deserve a note rather than a silent pass:
+**The reason the first draft gave for the "anchored?" column was wrong, and the correction matters.** It
+said the candidates resolve because they are repo-rooted paths. `IsAnchored`
+(`HandoffScopeCoverage.cs:303-318`) never touches the filesystem: it takes the candidate's **first
+segment** and asks whether that string equals a **whole `/`-delimited segment of some `writeScope` entry
+in this plan** — the plan's own path vocabulary, nothing else. Repo-rootedness is irrelevant.
 
-- **Rows 5 and 8 both own `docs/plans/02-schemas-and-contracts.md`, and rows 4 and 7 both own
-  `DiagnosticCodes.cs` and `ProducerCoverage.cs`.** GR2069 is a *per-row* verdict, so repeated ownership
-  across rows is invisible to it and correct here — each row is one task's whole delivery. The real
-  hazard is a **merge collision**, which the `dependsOn` chain 4→5→6→7→8 removes by serialising them.
-- **A tempting simplification that must be refused:** merging rows 4+5 (or 7+8) into "the code and its
-  SSOT section" would still be one task and still silent under both codes — but it would put a 400-line
-  C# check and a schema section in one retry unit. §11's cheap-retry requirement wins.
+**The consequence is a real property of this table, not a footnote.** Rows 10 and 11 are the only ones
+whose candidates begin with `.claude`, and the only `writeScope` entries in the whole plan containing a
+`.claude` segment are rows 10's and 11's own. So if those two rows' scopes were dropped or renamed, their
+`filesTouched` candidates would become **unanchored and silently dropped** — the check would go quiet
+rather than emit GR2068. Every other first segment (`src`, `tests`, `docs`) appears in several rows and
+survives any single row's loss.
+
+That is the anchor test working as designed — it declines to judge a cell written outside the plan's own
+vocabulary — but it means **the `.claude` rows are the ones a reviewer must check by eye**, because they
+are the rows this check protects least.
 
 ---
 
 ## 14. Out of scope
 
-- **A dataflow-reachability lint** — doc 19 D2, §6.6. Permanent. The review probe (`e118b9d`) is the answer.
+- **GR2070 itself** — designed, declined, held by name (§4.1, §6.3, §12.3). Not "deferred pending
+  capacity": **declined for want of a single instance where it fires.** Revisiting it needs a defect at a
+  commit, not a clause written in the right shape.
+- **A dataflow-reachability lint** — doc 19 D2, §6.4. Permanent.
 - **Positional arity requirements** — §3.1 item 2. The largest uncovered shape, and there is no proposal
   for it: a comma-counting regex over a call's argument list carries no name to compare against a
   declaration.
 - **`Type.Member` derivation** — §3.6(a). Rejected on measurement: 3 fires, 3 wrong, and the failure is
   intrinsic rather than a bug to fix.
 - **"Token `T` nowhere in the task's scope"** — §3.6(b), doc 19 §2.2. The loudest wolf in the family.
+- **Relaxing GR2057's single-quote pattern rule** — §3.5. The one relaxation this design proposed died
+  with GR2070; a future one must show a defect in the relaxed form first.
 - **`.sh` guardrails** — GR2057's precedent; ships when a `.sh`-only corpus exists.
-- **Multi-hop variable association** — doc 19 §5. One hop covers both measured instances.
+- **Multi-hop variable association** — doc 19 §5. One hop covers the measured instance.
 - **AST-based clause extraction** — welcome if an in-process parser ever becomes free; not required, and
   must not be the reason this slips.
+- **Any other change to `Scheduler.cs`** than the one member §5.3 names. The #501 seam is being touched
+  precisely because it is delicate.
 - **A `filesTouched` handoff table on this plan being *generated* by the breakdown.** Plan 30's breakdown
   declined to author one and was right: a table written from the author's own `writeScope`s is green by
   construction. §13's table is **declared by a human in this document**, ahead of the breakdown, and the
   breakdown's job is to match it.
-- **Promoting GR2070 to ERROR** — §16, maintainer's call, on evidence this plan cannot yet produce.
 
 ---
 
 ## 15. Risks accepted
 
-1. **GR2070's population is 1 script in 443, and its clause form is 6 in 443 with 5 of those 6 in that
-   same script.** The zero false-positive rate is therefore **structural, not empirical** — the check has
-   had one opportunity to be wrong and took it correctly (§3.4). I considered and rejected the comfortable
-   version of this risk (*"the form is new and growing, because a call-scoped argument-list clause is the
-   strongest known shape against a discard mutant"*): the corpus does not support it. Two authors reached
-   for a double-quoted pattern because they needed a variable in it, and that is all the data says.
-
-   **Priced as a falsification trigger, not a hope.** If GR2070 has not fired on a real plan within six
-   months while the review probe keeps catching carrier gaps, **the lint was unnecessary and the probe was
-   the whole answer** — back it out and keep GR2060. Doc 19 §5 recorded the same possible outcome for
-   GR2060 and was right to. Conversely, if the corpus reaches ~20 named-argument clauses and GR2070's
-   false-positive count is still 0, that is when the promotion conversation in §16 D-b becomes worth
-   having; before then, "0 findings" is a statement about the corpus and not about the check.
-2. **The known false-positive shape is unmeasured, not absent** (§6.5): a declaring file that is a test
-   double the widening does not require changing. No such declaration exists in today's corpus. First
-   observed instance → narrow condition 8 to exclude declarations that are explicit interface
-   implementations, or drop to declaring files under `src/` only, and re-run the sweep.
-3. **Association by co-occurrence is untested above n=1** (§6.2 c3). The single-anchor restriction makes
-   the untested case silent rather than wrong, which is the correct direction, but it means a script that
-   greps two members gets no check at all.
-4. **§5.3's zero is partly structural.** Today's tree satisfies the requirements these plans made, because
-   the plans ran. §8.4's pre-run-commit sweep is the version that could fail, and it is the merge gate.
-5. **GR2060 at ERROR can block a resume.** If it false-fires on a shipped plan, that plan cannot be
-   resumed until the finding is fixed or the code is backed out. Accepted on doc 19 D4's reasoning and on
-   the measured zero; the escape hatch is deliberately absent, because a suppressible producer-coverage
-   check is one an author silences instead of fixing.
-6. **This plan does not close #474.** It closes the coverage shapes on both altitudes. Saying so plainly
-   is the point; the alternative is a closed issue and an open defect.
+1. **Milestone C is procedural, and procedures get skipped.** With GR2070 declined, the plan-30 carrier
+   shape is covered by **one paragraph in two skills** and by nothing mechanical (§7's second table).
+   That is a genuine reduction in coverage against the first draft's claim, and it is accepted because
+   the alternative — a lint with no positive control — is worse than an honest gap. **Falsification
+   trigger:** a second carrier-shaped defect that reaches a run *after* Milestone C ships means the step
+   is not being executed, and the answer is then a stronger authoring artifact, not a smarter lint (doc
+   19 §5 item 3, verbatim).
+2. **GR2060's sweep zero is structural in two ways, not one** (§5.4). Today's tree satisfies these plans'
+   requirements *because the plans ran*, **and** the hand-run walked 740 of 1,271 scripts. §8.5's
+   pre-run-commit sweep across the full population is the version that could fail, and it is the merge
+   gate. Until it runs, GR2060's conservatism rests on one recovered positive control and doc 19's
+   argument — which is more than GR2070 ever had, and less than GR2055/GR2056/GR2057 earned.
+3. **The #501 mitigation widens an allow-list, and allow-lists grow.** `UnsatisfiableWhileIncomplete`
+   goes from one code to two. Every future ERROR-severity relational check will face the same question,
+   and the honest answer is that the list is a **register of codes a partial prefix cannot fairly
+   satisfy** — not a place to park inconvenient findings. If it reaches four or five entries without each
+   one carrying a #501-shaped regression test, that is the signal the design has drifted.
+4. **GR2060 at ERROR can block a resume.** If it false-fires on a shipped plan, that plan cannot be
+   resumed until the finding is fixed or the code is backed out. Accepted on doc 19 D4, on the recovered
+   positive control, and on §11 item 10's self-validation gate. The escape hatch is deliberately absent,
+   because a suppressible producer-coverage check is one an author silences instead of fixing.
+5. **`PlanIsClosed` remains a name that invites the mistake this plan just made.** It reads as *"the plan
+   is closed"* and means *"no wave folder is empty."* §12.1 documents the gap in the SSOT rather than
+   renaming the predicate, because renaming it is a change to shipped GR2062 behaviour that this plan has
+   no evidence to justify. The next reader is protected by prose, which is weaker than a better name.
+6. **This plan does not close #474, and closes less of it than the first draft claimed** — §9's closing
+   paragraph. Saying so plainly is the point; the alternative is a closed issue and an open defect.
 
 ---
 
 ## 16. Decisions this plan leaves to the maintainer
 
-| # | decision | this plan's recommendation |
-|---|---|---|
-| D-a | **Take all three milestones, or A + C only?** A alone closes the $115.32 instance and is coherent (§4.2). B's clause form occurs 6 times in 443 scripts, 5 of them in the one script that motivates it. | **All three**, but this is the closest call in the document and **declining B is defensible on the numbers**. §4.1 states both sides; the case for B rests on the cost of the failure, not its frequency. |
-| D-b | **GR2070 at WARNING or ERROR?** | **WARNING**, with the promotion bar written into §4.9. §6.5 is the argument; the evidence base is one instance and a name-keyed extractor. |
-| D-c | **Does #474 close?** | **No.** Comment on it naming what closed (both coverage shapes) and what did not (reachability, permanently review-only). Close only if you want the shape's durable home to be doc 19 §2.2 rather than an open issue. |
-| D-d | **Does the sweep run at each plan's pre-run commit, or only against `HEAD`?** Pre-run is stronger and costs a `git ls-tree` per plan folder. | **Pre-run**, for the plans that have one. It is the only version of the sweep that can fail. |
-| D-e | **Does §13's table get emitted into the breakdown, or stay declared here only?** | **Stay declared here.** §14's last bullet: a breakdown-authored table is green by construction, and this is the plan where that matters most. |
+**Decided 2026-09-02 by the lead session under the standing autonomy mandate — the maintainer has not
+yet seen any of this.** D-a was decided twice by that same session: first *"all three,"* then **reversed**
+on evidence an independent adversarial pass produced and the lead session verified at the source. The
+reversal is recorded rather than overwritten, because the reason it happened is the most useful thing in
+this document. Every row below is a lead-session call and is open to the maintainer overturning it; D-a
+and D-f are the two worth his attention first.
 
-**Decided 2026-09-02, by the lead session under the standing autonomy mandate — not by the maintainer in
-person.** D-a is the one to revisit first if he disagrees; nothing downstream of it has been built yet.
-
-| # | decision | why |
+| # | decision | outcome and why |
 |---|---|---|
-| D-a | **All three milestones.** | The marginal cost of B once A exists is three tasks on machinery A already builds, and the milestones are sequential — if A's build changes the picture, B can still be dropped without stranding anything. The failure B prevents is the plan-30 `RecordSettleWithAttempt` instance: a false green that surfaced 26 tasks downstream attributed to the wrong task. Cost is not the constraint here; a check that certifies nothing is. |
-| D-b | **WARNING**, as recommended. | Same reasoning that put GR2068/GR2069 at WARNING: a name-keyed extractor that was wrong three ways during its own design does not get to refuse a correct plan, and a false WARNING costs a line of reading. §4.9's promotion bar stands. |
-| D-c | **#474 stays open**, with a comment naming what closed. | Both coverage shapes close mechanically; the reachability headline stays with the review probe by doc 19 D2. Closing it would file the surviving shape somewhere nobody looks. |
-| D-d | **Pre-run commit**, as recommended. | It is the only version of the sweep that can fail, which is the whole of #580 — a check is not authored, it is proven to fire. |
-| D-e | **Stays declared here.** | A breakdown-authored handoff table is green by construction. This plan's §13.1 hand-run is evidence precisely because the breakdown did not write it. |
+| D-a | **Take Milestone B (GR2070)?** | **DECLINED — reversed 2026-09-02, by the lead session that made the original call.** It first decided *"all three,"* reasoning that B's marginal cost once A exists is three tasks and that *"cost is not the constraint; a check that certifies nothing is."* The second half of that sentence turned out to indict B rather than justify it. The adversarial pass traced the motivating clause through git: at `10816fb` and at the broken-scope moment it reads `'pending\s*\.\s*Bucket'` — **single-quoted, no named argument** — and the named-argument form first appears at `124a7d0`, **36 minutes after the scope was fixed**. **B's true-positive population across the repository's whole history is zero.** GR2070 is **held by name** in `DiagnosticCodes.cs`, not allocated (§12.3). |
+| D-b | ~~GR2070 at WARNING or ERROR?~~ | **Moot.** B is declined; no severity to set, no §4.9 to write. |
+| D-c | **Does #474 close?** | **No, and less of it closes than the first draft claimed.** Milestone A closes the *named-path* coverage shape at both altitudes. The **plan-30 carrier shape closes mechanically nowhere** — B is declined and §6 shows the shipped review probe stops one step short of it. Milestone C is what covers it, and it covers it procedurally. Comment on #474 saying exactly that; it stays open. |
+| D-d | **Does the sweep run at each plan's pre-run commit, or only against `HEAD`?** | **Pre-run**, for the plans that have one — and the sweep must **walk waved folders**, which the first draft's did not (§5.5). It is the only version of the sweep that can fail, which is the whole of #580. |
+| D-e | **Does §13's table get emitted into the breakdown, or stay declared here only?** | **Stays declared here.** A breakdown-authored handoff table is green by construction; §13.1's hand-run is evidence precisely because the breakdown did not write it. |
+| D-f | **New — how is the #501 veto mitigated?** (§5.4) | **An allow-list entry keyed on `wavePrefixIsIncomplete`**, not on `PlanIsClosed`. `wavePrefixIsIncomplete` is *actual knowledge* that folders are still owed; `PlanIsClosed` only detects an **empty stub wave** and returns `true` for an authored partial prefix, which is the case that breaks. Task 6 of §13, with the #501-shaped regression test in task 5 ahead of it. |
 
 ---
 
 ## 17. Devil's-advocate self-critique
 
-**The strongest counter: "You have spent a design on a check with a population of one, and made it look
-substantial by annexing an unbuilt milestone from someone else's document."**
+The first draft's self-critique is superseded. It defended a milestone that has since been declined, on a
+premise that turned out to be false — which is itself the most useful entry in this section, so the
+failure is recorded rather than deleted.
 
-**Half-conceded, and the concession is §4.1's ranking.** The annexation is not a rhetorical move: doc 19's
-Milestone A **is** the mechanical half of #474, it was specified in full, and it was never built. Had it
-shipped in August this document would be three pages about one derivation rule. What I will not concede is
-the alternative — writing plan 33 as GR2070 alone would mean building a git probe, a clause reader, a
-witness extractor refactor, a `planIsClosed` gate and an SSOT section **for a shape that occurs once in
-443 scripts**, while the check those parts were designed for sits unbuilt beside them. That is the worse
-version of the same criticism. The mitigation is that A, B and C are separately approvable and the
-document ranks them **A ≫ C > B** rather than presenting three equals.
+**What the first draft's self-critique got wrong, and why it is instructive.** It anticipated the
+objection *"a check with a population of one"* and answered it with cost-of-failure reasoning. It never
+asked the prior question — **does the check fire on the instance at all?** — because it had already
+written the positive control from the issue's narrative rather than from `git show`. An adversarial pass
+that opened four commits falsified in minutes what a devil's-advocate pass had defended at length. **The
+lesson is not "argue harder"; it is that a self-critique which does not re-execute its own evidence is
+prose.** §8.2's blind reproduction is the discipline that would have caught it.
 
-**"GR2060 at ERROR can refuse the resume of the very run that shipped it."**
+---
 
-**Real, and §11 item 7 is the answer** — a `validate` of this plan's own folder, with the newly built
-binary, inside task 4's guardrails. Precision matters here and the document should not over-dramatise: the
-in-flight run uses the installed CLI, so the lock arrives at the next tool update, not at the next task.
-But it does arrive, and the first plan it would refuse is this one.
+**The strongest counter now: "You have declined the only new thing in this plan. What is left is
+implementing someone else's twelve-day-old design and adding a paragraph to two skills."**
 
-**"Your soundness argument for reading double-quoted patterns is one paragraph in a place GR2057
-deliberately refused to go."**
+**Largely conceded, and it is the right outcome.** What is left is: a shipped GR2060 with a recovered,
+independently reproduced positive control; a mitigation for a **live** #501-class defect that shipping
+GR2060 would otherwise cause; and the one procedural step that covers the plan-30 shape. The document's
+own thesis — *a prompt may propose, only a deterministic gate may certify* — applies to designs too. A
+design that survives review with less in it than it started with is the mechanism working.
 
-**Conceded as a risk, answered on scope.** GR2057 refuses double quotes because it must de-regex the
-**whole** pattern to an exact witness, and a `$` there is ambiguous between an anchor and an
-interpolation. GR2070 never reads past the first `$` or backtick — it needs only the parameter name, which
-is always in the head. The enumeration is small and closed: `$var`, `$(…)`, `${…}` and a backtick-escaped
-`` `$ `` all begin with a character that is the cut point, so every one of them terminates the head before
-it can matter. It is one fixture to prove and §8.3 requires it. If a reviewer wants the relaxation
-withdrawn, the honest consequence is §3.5's: GR2070 has a population of zero and should not ship.
+The honest residue: **the issue that motivated plan 33 (#474) gets less mechanical coverage than the
+first draft promised**, and §9 and §15 risk 1 both say so in those words.
 
-**"Universal quantification will name test doubles, and you have no measurement for that."**
+**"You are shipping an ERROR-severity check into `Scheduler`'s veto path on the strength of one positive
+control."**
 
-**Conceded in full.** It is why GR2070 is a WARNING and not an ERROR, it is §15 risk 2, and the first
-observed instance narrows condition 8 rather than being argued away.
+**Real, and it is why tasks 5 and 6 exist and why §5.5 makes the severity conditional on them.** The
+counter-counter is that the alternative is not safety: GR2060 at WARNING leaves the $115.32 terminal-gate
+class uncaught, since a warning does not stop a run. If the reviewer wants WARNING, §16 gains a row and
+the plan still ships coherently — it just does not close the instance it was written for.
+
+**"The #501 mitigation makes GR2060 silent exactly when a plan is most likely to be wrong — mid-JIT,
+scope incomplete."**
+
+**Conceded, and it is correct behaviour rather than a compromise.** With folders still owed, *"no task
+can produce this"* is not merely unproven, it is **false** — the producing task has not been authored
+yet. A check that fired there would be reporting the absence of work that is scheduled to happen. The
+finding still appears in the gate-decision report (§5.3), so nothing is hidden; only the veto is
+withheld.
+
+**"`PlanIsClosed` fooled you once. What else in doc 19 §3.1's ten conditions did you adopt without
+re-verifying?"**
+
+**The sharpest question in the review, and I cannot fully answer it.** §2 re-verified six of doc 19's
+premises and found two wrong; the #501 interaction was found by someone else. Conditions 2, 3 and 4 (the
+path operand, the one-hop association, the witness extractor) are exercised by §8.3's negative controls
+and by the positive control, so they will be tested. Conditions 6, 7 and 9 (git-tracked, not under the
+plan folder, GR2041 clean) have **no corpus exercise and no constructed fixture named for them** beyond
+§8.1's per-condition rule. §8.1 is therefore not a formality: if the implementer cannot construct a
+silence fixture for a condition, that condition is not known to do anything, and the honest response is to
+say so in the PR rather than to assert ten conditions and test six.
 
 **"Three tasks editing `PlanValidator.cs` in worktree mode is the merge-collision shape #175 exists for."**
 
 **Real, and handled by shape rather than by hope.** Tasks 1, 2 and 4 are chained by `dependsOn`, so they
-serialise; and task 4 puts the check itself in a **new file** (`ProducerCoverage.cs`, on
-`HandoffScopeCoverage.cs`'s precedent), so its edit to `PlanValidator.cs` is one call-site line.
+serialise; task 4 puts the check in a **new file** (`ProducerCoverage.cs`, on `HandoffScopeCoverage.cs`'s
+precedent), so its edit there is one call-site line.
 
-**"Doc 19 already had a skill obligation that never shipped. Why will task 10 be different?"**
+**"Doc 19 had a skill obligation that shipped and still missed the defect. Why will Milestone C be
+different?"**
 
-Because it is a task in a DAG with a dependency and a guardrail, not a bullet in a handoff section. That
-is the whole difference between doc 19 §4's sibling-datum rule (specified, unshipped, still open here as
-Milestone C) and everything this plan will actually run.
+**The best objection to what remains, and it is only partly answerable.** Doc 19's datum trace **did**
+ship (`e118b9d`) and the plan-30 instance still got through — because the procedure stops at step 3
+(§6.1). C adds the step that continues past it, which is a real gap closed rather than a restatement. But
+it is still a procedure, executed by an agent, at review time. §15 risk 1 prices that honestly and names
+the trigger that would falsify it. Anyone who wants a stronger answer than a procedure needs to produce
+the thing this plan could not: **a defect, at a commit, where a lint would have fired.**
