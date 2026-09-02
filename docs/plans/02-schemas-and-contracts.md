@@ -1516,7 +1516,81 @@ and naming both colliding lines.
 task runs, one that THROWS at runtime (non-fatal under `$ErrorActionPreference = 'Continue'`, silently skipping
 a comment/string strip and changing the guardrail's meaning), and a `--filter` matching nothing — genuinely
 require execution. They live in the `/guardrails-review` and `/plan-breakdown` skill phases instead, where a
-human or agent is driving and can accept the cost and the side effects.
+human or agent is driving and can accept the cost and the side effects. A fourth defect in this family is not
+decidable from one script's text at all — it needs the union of every task's `writeScope` and the workspace's
+current bytes; see §4.8.
+
+### 4.8 Guardrails that CANNOT PASS given what this plan BUILDS (validated, GR2060 — error)
+
+The §4.7 three are decidable from **one script's own text**. GR2060 is not: it is **relational** — it reads
+the script, the union of every task's `writeScope`, and the workspace's current bytes. The consequence is the
+same (**red before the task runs**, correct; **red forever**, not; and `/guardrails-review` structurally
+misses it because it hunts *weakness* while this guardrail is *strong*), but the evidence base differs enough
+that GR2060 is a sibling section rather than a fourth row in §4.7's table.
+
+> A script guardrail requires an exact literal in a tracked workspace file that does not contain it, and
+> **no task in the plan declares that file in its `writeScope`**.
+
+**Fires only when all of the following hold** (design of record `19-producer-coverage.md` §3.1; every
+condition is a place conservatism is spent, in §4.7's idiom):
+
+1. **PowerShell script guardrail**, from any of the six folder instances (`PlanValidator.FourFolderScriptGuardrails`
+   already enumerates all six, including `plan.PlanGuardrails` — the terminal gate is in reach for free). `.sh`
+   is out for v1 on §4.7's GR2057 precedent: portable guardrails ship as `.ps1`+`.sh` pairs, so the pair is
+   still caught.
+2. **A statically-known path operand.** A `Get-Content` (any parameter form) whose path argument is a
+   single-quoted literal, or a double-quoted literal containing no `$` and no backtick — the same relaxation
+   §4.7 grants GR2057, and not extended to pattern operands for the same reason.
+3. **A one-hop variable association.** `$v = … Get-Content … '<path>' …`, where `$v` is assigned **exactly
+   once** in the script and that statement names **exactly one** statically-known literal path. More than one
+   assignment, or more than one path, → skip. (The measured instance's `$ssot = if (Test-Path "…") { Get-Content
+   -Raw "…" } else { "" }` satisfies this: one assignment, one distinct literal path.)
+4. **A requirement clause with a witness.** `if ($v -cnotmatch '<pat>')` / `-notmatch`, single clause,
+   single-quoted literal operand, in a branch whose polarity is a requirement — §4.7's GR2057 polarity reader:
+   the block appends to a `$failures` accumulator, exits non-zero, throws, or `Write-Error`s. `<pat>` must
+   **de-regex to one exact literal witness** — §4.7's GR2057 extractor, including its re-test of the witness
+   against its own pattern so a mis-extraction drops the clause.
+5. **The witness is absent from the file's current bytes.** Case-sensitive iff the operator was `-cnotmatch`.
+   If the witness is present, the clause is satisfiable today and there is nothing to say.
+6. **The file is tracked by git** — one `git ls-files -z` per validate run, behind an injected
+   `IGitTrackedFileProbe` (mirroring `IScriptSyntaxProbe`). Probe absent, git absent, or the call fails →
+   **silence, not failure**, §4.7's "silence is not proof of validity" principle again — the discrimination
+   that eliminates the build-output false-positive class: a gate grepping `TestResults/results.trx` names
+   something no author would ever put in a `writeScope`.
+7. **The path is not under the plan folder.** `state/`, `logs/`, the journal and `diagram.md` are
+   harness-written (invariant 2) and appear in no `writeScope` by construction.
+8. **No task declares the path**, evaluated with `WriteScope.IsInScope` — the same predicate the harness
+   enforces at write time, so a glob or directory-prefix entry counts as coverage and the lint cannot disagree
+   with the runtime check. Evaluated over the **union of every task's `writeScope` across every wave**, plus
+   every task's declared `stagingOutputs` `to` path (§3.5).
+9. **Every task declares a `writeScope`.** If GR2041 fired anywhere, the union is incomplete and GR2060 must
+   be silent — an incomplete union cannot support a claim about what no task declares.
+10. **`planIsClosed`** — no declared wave folder holds zero tasks (trivially true for a flat plan).
+
+**Condition 10 is the same predicate that gates GR2062.** §14.1 defines `planIsClosed` once and both checks
+read it: `planIsClosed == false` silences GR2060 (a future wave may still own the file) exactly as it
+silences GR2062 (a wave-count shortfall is expected mid-authoring); `planIsClosed == true` is what makes both
+verdicts provable. See §14.1's GR2062 entry for the shared derivation.
+
+**The two suppressions are not interchangeable.** `PlanIsClosed` (condition 10, above) suppresses GR2060 for
+an **empty stub wave** — a declared `wave-NN-*` folder with zero tasks, the ordinary shape of a plan
+mid-JIT-authoring. It does **not** cover an authored **partial prefix**: a wave whose manifest still owes
+folders but whose already-authored tasks are all complete reads as `planIsClosed == true`, because every
+*declared* wave folder holds at least one task — the folders still owed were never declared as empty stubs in
+the first place. `PlanIsClosed` therefore returns `true` for a partial prefix and is **not** a soundness
+guarantee for the JIT gate. The suppression that covers a partial prefix lives one layer down, in
+`Scheduler.UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete` — actual knowledge, carried by the
+breakdown session itself, that the manifest still owes folders. This is the trap that cost the design a
+milestone's worth of rework: treating `PlanIsClosed` as sufficient at the JIT gate lets an ERROR-severity
+GR2060 revert a partial prefix that cannot, by construction, satisfy a requirement only a later,
+not-yet-authored task could have produced.
+
+**Excused is not vanished.** A GR2060 finding excused by `wavePrefixIsIncomplete` at the JIT gate still
+appears in the gate-decision report, and the same finding still errors under a plain `guardrails validate` —
+the JIT-gate excuse is scoped to `ValidatePlanAfterBreakdown` only. Suppression governs which **verdict** a
+finding may cast (does it veto this checkpoint), never whether an operator **sees** it. An excused GR2060
+reads in the gate decision as `excused (#501): GR2060 — unsatisfiable while the wave is unfinished; NOT a
+veto`, with the finding's full message — witness and path — still present in the diagnostics body.
 
 ## 5. Child-process contract
 
