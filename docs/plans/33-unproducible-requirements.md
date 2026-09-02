@@ -665,14 +665,32 @@ recovered from git and its check is declined (§3.4). One real control is what t
 document says so rather than padding the count.
 
 - **GR2060:** `docs/plans/model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at
-  `1b8e681`, against a tree whose SSOT is `tierSource`-free and that wave's task set as it then stood.
+  `544f7d5`, against a tree whose SSOT is `tierSource`-free and that wave's task set as it then stood.
   Verified: **0 of that plan's task manifests name the SSOT in `writeScope`**. Assert: fires **exactly
   once**, naming `tierSource` and the SSOT path. Assert also that the **same script against `09f223f` is
   silent**, so the test proves the check tracks the tree rather than the string.
 
-  **Independently reproduced.** The adversarial pass derived this control blind — without reading §8.2 —
-  and got the same artifact, commit and count. That is the strongest evidence in the document, and it is
-  the reason Milestone A came out of review stronger than it went in.
+  **The commit moved, and WHY it moved is the most instructive thing in this document.** The control was
+  first pinned at `1b8e681`. GR2060 **cannot fire there**, and the reason is its own condition 10: at
+  that commit `model-tiering-stage-2`'s `wave-02-attempt-launch-wiring` holds only `brief.md` and two
+  diagrams — **zero task manifests** — so `PlanIsClosed` is FALSE and the check is suppressed. The two
+  pinned tests were mutually unsatisfiable, and any implementation that made test 1 pass would have done
+  it by deleting condition 10 (§11 prohibition 4).
+
+  **And the suppression is CORRECT**, which is what makes this worth recording rather than merely fixing.
+  Doc 19 §3.3's stated reason for condition 10 is *"a future wave may own the file"* — and at `1b8e681`
+  that is literally what then happened: wave 2 was later authored and gained
+  `14-land-ssot-schema-deltas`, whose `writeScope` is exactly `["docs/plans/02-schemas-and-contracts.md"]`.
+  GR2060 was right to stay quiet. `544f7d5` is the same artifact, same witness, same path, at a commit
+  where the plan is CLOSED (19 manifests across both waves) and no manifest names the SSOT.
+
+  **The earlier claim of independent reproduction has been withdrawn.** An adversarial pass derived this
+  control blind and reached the same artifact, commit and count, and that agreement was reported as the
+  strongest evidence in the document. Both derivations omitted condition 10 — the same blind spot, twice,
+  which is precisely why the agreement felt conclusive. **Two independent reproductions are not proof
+  when they share an omission**, and only building the tests against real bytes exposed it. That is the
+  same lesson as §3.4 one level up: there, a control could not be recovered; here, a control was
+  recovered from a commit at which the check is silent by design.
 
 ### 8.3 Negative controls — including one that must be CONSTRUCTED, and why that is honest here
 
@@ -688,15 +706,32 @@ proves nothing.
   double-quoted literals containing no `$` and no backtick, because the measured instance needs it. A
   fixture in that form must be extracted.
 
-**And one control that cannot be red-first, which is the interesting case.** Condition 8 — *"no task
-declares the path"* — has **zero exercises in the corpus**: every requirement clause in all 850 scripts
-either has a present witness or names a covered path, so **an implementation that hard-codes
-`covered = false` passes every other test in §8.** The red-first rule cannot discipline this, because a
-*silence* test is green before the check exists and green after a wrong implementation.
+**Condition 8's control — and the claim here was FALSIFIED by the run that implemented it.** This
+section first asserted that condition 8 — *"no task declares the path"* — had **zero exercises in the
+corpus**, and concluded that its silence control therefore had to be **constructed**. That was wrong, and
+the same git trace that moved the positive control found the exercise:
 
-So condition 8 gets a **constructed** fixture: a synthetic plan whose gate requires an absent witness in
-a path that **is** in a task's `writeScope`, asserting **silence**. It must be labelled `Constructed`, not
-`Recovered`, in the test name and its comment.
+> At **`5bd29da`** the witness is still absent (`docs/plans/02-schemas-and-contracts.md` carries 0
+> occurrences of `tierSource`) — but `14-land-ssot-schema-deltas` now declares
+> `["docs/plans/02-schemas-and-contracts.md"]` in its `writeScope`, and the plan is closed at 20
+> manifests. **The path IS covered and the witness IS absent: that is condition 8, exercised, on a real
+> artifact.**
+
+So `544f7d5` → `5bd29da` is a **recovered fires/silent pair on one artifact**: same script, same witness,
+same path, with the *only* difference being whether a task owns the file. That is strictly better
+evidence than anything synthetic could be, and it is exactly the discrimination the check exists to make.
+
+**Condition 8's control is therefore RECOVERED, not constructed**, and the constructed fixture is
+withdrawn. The reasoning that justified constructing it was sound — a silence control needs a state the
+corpus may not contain, and manufacturing it is legitimate where a *firing* control's manufacture is not
+— but its premise was false, and a recovered control beats a legitimate synthetic one every time. The
+general rule survives unchanged for a condition whose exercise genuinely does not exist; it simply does
+not apply here.
+
+**What this cost, stated plainly:** the corpus was asserted to lack an exercise without the trace being
+run. §3.4 killed Milestone B for an unverified claim about what git contained; this section made an
+unverified claim about what git contained and got a weaker test out of it. Same error, opposite
+direction, same remedy — look.
 
 **Why constructed is legitimate here and was not legitimate for the declined check.** A *silence* control
 asserts that a condition **suppresses** a finding; it needs a state the corpus does not contain, and
@@ -715,7 +750,7 @@ composition-root path is broken.
 ### 8.5 The corpus sweep as a terminal gate — with an expectation that is NOT a blanket zero
 
 The first draft wrote *"expected findings: 0 for GR2060 on every plan"* two sections after §8.2 asserted
-that GR2060's positive control **fires once** on `model-tiering-stage-2` at `1b8e681`. **Those two
+that GR2060's positive control **fires once** on `model-tiering-stage-2` at `544f7d5`. **Those two
 statements contradict each other**, and a correct implementation would have gone red at the terminal
 gate — where §11 forbids every cheap escape, so the run would have halted with delivery withheld and no
 legal move. The adversarial pass caught it; it is written out here in the form the implementer needs.
@@ -728,7 +763,8 @@ misses the plan that fires.
 
 | subject | commit | expected GR2060 findings |
 |---|---|---|
-| `model-tiering-stage-2` — `guardrails/03-dor-section-6-contract-landed.ps1` | `1b8e681` | **exactly 1**, naming `tierSource` and the SSOT path |
+| `model-tiering-stage-2` — `guardrails/03-dor-section-6-contract-landed.ps1` | `544f7d5` | **exactly 1**, naming `tierSource` and the SSOT path |
+| the same script | `5bd29da` | **0** — the witness is STILL absent, but `14-land-ssot-schema-deltas` now owns the path. The recovered condition-8 silence row; paired with the row above it is the only place the sweep can fail in BOTH directions |
 | `model-tiering-stage-2` — the same script | `09f223f` (today) | **0** — the requirement is satisfied now |
 | every other plan folder | its own pre-run commit, where one exists | **0** |
 | every plan folder | `09f223f` | **0** |
@@ -751,7 +787,7 @@ being averaged away. It runs at the **terminal gate**, so either failure withhol
 1. `guardrails validate` emits **GR2060 (ERROR)** on a plan whose gate requires an absent literal in a
    tracked file no task declares.
 2. **The one positive control (§8.2) fires exactly once**, on
-   `model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at `1b8e681`, naming
+   `model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1` at `544f7d5`, naming
    `tierSource` and the SSOT path — and was **shown red** before the implementation landed. The same
    script against `09f223f` is silent.
 3. The §8.3 negative controls pass, and the **constructed** condition-8 silence fixture is named
@@ -830,11 +866,18 @@ the only part of this design that ever threatened this invariant.
    and the git-tracked condition are each a place conservatism is spent (§5.1). Each is pinned by a
    **silence** test, and deleting a silence test is itself a finding.
 5. **Weaken the sweep's expectation.** The expectation is **per plan and per commit** (§8.5) and includes
-   a required **non-zero**: `model-tiering-stage-2` at `1b8e681` must produce exactly 1. A run that
+   a required **non-zero**: `model-tiering-stage-2` at `544f7d5` must produce exactly 1. A run that
    re-baselines the sweep to "≤ N findings", or that flattens it back to a blanket zero, has inverted the
    gate. It is a terminal gate, so this withholds delivery rather than merging.
-6. **Relabel the constructed fixture.** §8.3's condition-8 silence fixture is `Constructed`. A run that
-   renames it `Recovered` to match its siblings has told the exact lie §3.4 caught.
+6. **Relabel a control against the evidence — in EITHER direction.** The original prohibition read
+   *"§8.3's condition-8 silence fixture is `Constructed`; a run that renames it `Recovered` has told the
+   exact lie §3.4 caught."* The run found that condition 8 **is** exercised in the corpus at `5bd29da`,
+   so the honest label there is now `Recovered` and §8.3 has been rewritten. The prohibition stands in
+   its general form and is what matters: **a control's label states how its evidence was obtained, and
+   may never be chosen to match its siblings, to satisfy a guardrail, or to make a section read
+   tidily.** Calling a hand-built fixture `Recovered` is the lie §3.4 caught. Calling a genuinely
+   recovered one `Constructed` — which this plan did until the run corrected it — understates real
+   evidence, and is the same fault pointing the other way.
 7. **Touch the run path beyond the one line §5.3 requires.** `RunCommand`, `TaskExecutor`,
    `IPromptRunner`, `IActionRunner` and `IProgressSink` are out of scope. Task 6 touches `Scheduler.cs`
    and touches **only** `UnsatisfiableWhileIncomplete`; no other behaviour in that file is in scope.
@@ -954,7 +997,7 @@ folder in this repo is concrete.
 | 6 | `guardrails-harness-developer` | **The #501 mitigation**: add GR2060 to `UnsatisfiableWhileIncomplete`, keyed on `wavePrefixIsIncomplete` and **not** on `PlanIsClosed` (§5.3). One member of `Scheduler.cs` is in scope; nothing else in that file is. | `src/Guardrails.Core/Execution/Scheduler.cs` | `["src/Guardrails.Core/Execution/Scheduler.cs"]` | 5 |
 | 7 | `guardrails-harness-developer` | **SSOT §4.8** (§12.1), including the two-suppressions paragraph and the excused-not-vanished rule, plus §4.7's forward-pointing sentence. | `docs/plans/02-schemas-and-contracts.md` | `["docs/plans/02-schemas-and-contracts.md"]` | 6 |
 | 8 | `guardrails-harness-developer` | **The code ladder** (§12.2, §12.3): GR2060 removed from `DiagnosticCodes.cs`'s reservation block because it is now allocated; **GR2070 added, held by name**, with its reason line; next-free advanced to GR2071; SSOT §14.10 updated to match. | `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, `docs/plans/02-schemas-and-contracts.md` | `["src/Guardrails.Core/Loading/DiagnosticCodes.cs", "docs/plans/02-schemas-and-contracts.md"]` | 7 |
-| 9 | `guardrails-test-author` | **The §8.5 sweep**: all **850** `.ps1` under `docs/plans/` — waved folders included — plus `examples/`, each at its own pre-run commit where one exists, with the per-plan/per-commit expectation table **in the test file**, including the required **non-zero** on `model-tiering-stage-2` at `1b8e681`. Wired as a **terminal-gate** guardrail. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
+| 9 | `guardrails-test-author` | **The §8.5 sweep**: all **850** `.ps1` under `docs/plans/` — waved folders included — plus `examples/`, each at its own pre-run commit where one exists, with the per-plan/per-commit expectation table **in the test file**, including the required **non-zero** on `model-tiering-stage-2` at `544f7d5`. Wired as a **terminal-gate** guardrail. | `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs` | `["tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs"]` | 8 |
 | 10 | `guardrails-skill-author` | **Milestone C** (§6.2): the callee's-parameter-list step 5 in `guardrails-review`'s Unreachable-outcome probe, and its authoring twin in `plan-breakdown` beside the **already-shipped** datum trace at `:381` — an addition, never a rewrite of that section. | `.claude/skills/guardrails-review/SKILL.md`, `.claude/skills/plan-breakdown/SKILL.md` | `[".claude/skills/guardrails-review/SKILL.md", ".claude/skills/plan-breakdown/SKILL.md"]` | 4 |
 | 11 | `guardrails-skill-author` | One line in the knowledge skill naming GR2060 and the producer-coverage invariant, and recording GR2070 as held-not-allocated so the next design does not re-propose it. | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | `[".claude/skills/guardrails-domain-knowledge/SKILL.md"]` | 8 |
 | 12 | `guardrails-harness-developer` | Doc 19's status-table row and its **re-worded** D2 sentence (§12.4) — the decline, not the first draft's "shape (a) with a derived path". | `docs/plans/19-producer-coverage.md` | `["docs/plans/19-producer-coverage.md"]` | 8 |

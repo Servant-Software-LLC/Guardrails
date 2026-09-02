@@ -28,7 +28,7 @@ $required = @(
     'Recovered_Silent_OnTheSameScript_AtTodaysCommit',
     'Extracts_OneHopAssociation_TestPathThenGetContentShape',
     'Extracts_DoubleQuotedPathOperand_WithNoDollarAndNoBacktick',
-    'Constructed_Silent_WhenThePathIsCoveredByATaskWriteScope',
+    'Recovered_Silent_WhenThePathIsCoveredByATaskWriteScope',
     'Silent_WhenTheWitnessIsPresentInTheFile',
     'Silent_WhenTheFileIsNotGitTracked',
     'Silent_WhenTheProbeAnswersNotKnown',

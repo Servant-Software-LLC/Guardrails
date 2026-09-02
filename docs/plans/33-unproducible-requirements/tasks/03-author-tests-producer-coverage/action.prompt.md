@@ -42,7 +42,7 @@ a contract, not a suggestion:
 | 2 | `Recovered_Silent_OnTheSameScript_AtTodaysCommit` | the same script is silent against today's bytes |
 | 3 | `Extracts_OneHopAssociation_TestPathThenGetContentShape` | the `$v = if (Test-Path 'X') { Get-Content -Raw 'X' } else { "" }` form is read |
 | 4 | `Extracts_DoubleQuotedPathOperand_WithNoDollarAndNoBacktick` | a double-quoted **path** operand is read |
-| 5 | `Constructed_Silent_WhenThePathIsCoveredByATaskWriteScope` | condition 8 suppresses |
+| 5 | `Recovered_Silent_WhenThePathIsCoveredByATaskWriteScope` | condition 8 suppresses |
 | 6 | `Silent_WhenTheWitnessIsPresentInTheFile` | a satisfied requirement is not a finding |
 | 7 | `Silent_WhenTheFileIsNotGitTracked` | untracked files are out of scope |
 | 8 | `Silent_WhenTheProbeAnswersNotKnown` | git unavailable ⇒ conservative silence |
@@ -54,29 +54,36 @@ artifact is real and both halves must be driven from the repository rather than 
 fixture:
 
 - Script: `docs/plans/model-tiering-stage-2/guardrails/03-dor-section-6-contract-landed.ps1`
-- Commit: **`1b8e681`** — at which the SSOT is `tierSource`-free and **0 of that plan's task manifests
+- Commit: **`544f7d5`** — at which the SSOT is `tierSource`-free and **0 of that plan's task manifests
   name the SSOT in any `writeScope`**
 - Expected: fires **exactly once**, naming the witness `tierSource` and the SSOT path
   `docs/plans/02-schemas-and-contracts.md`
 - Test 2 runs the **same script against today's tree** and expects **silence** — which is what proves
   the check tracks the TREE rather than the string.
 
-Read the historical bytes with `git show 1b8e681:<path>`; do not copy them into a fixture file. A
+Read the historical bytes with `git show 544f7d5:<path>`; do not copy them into a fixture file. A
 hand-copied control proves the code matches your copy and nothing about the world.
 
-**Test 5 is CONSTRUCTED, and it must say so.** Condition 8 — *"no task declares the path"* — has **zero
-exercises in the whole corpus**: every requirement clause in all 850 committed scripts either has a
-present witness or names a covered path. So an implementation that hard-codes `covered = false` passes
-every other test in this file. The only way to exercise the suppression is to build the state
-deliberately: a synthetic plan whose gate requires an absent witness in a path that **IS** in some
-task's `writeScope`, asserting **silence**.
+**Test 5 is RECOVERED, and it completes a fires/silent pair on ONE artifact.** An earlier draft of this
+plan asserted that condition 8 — *"no task declares the path"* — had zero exercises in the corpus, and
+told you to build a synthetic fixture. **That claim was false and has been withdrawn.** The exercise is
+real:
 
-Name it `Constructed_…` — as the table above does — and say **in a comment on that test** that it is
-constructed and why that is legitimate here: a *silence* control asserts a condition **suppresses** a
-finding, and it needs a state the corpus does not contain. A *positive* control asserting the check
-**fires** may never be hand-built, which is exactly why tests 1 and 2 read real git bytes. **Do not
-rename it `Recovered_…` to match its neighbours** — that is prohibition 6 of the plan's section 11, and
-it would tell precisely the lie this plan was rewritten to remove.
+- **`544f7d5`** — the SSOT is `tierSource`-free and **no** task manifest names it → GR2060 **FIRES**
+  (that is test 1).
+- **`5bd29da`** — the SSOT is *still* `tierSource`-free, but `14-land-ssot-schema-deltas` now declares
+  `["docs/plans/02-schemas-and-contracts.md"]` in its `writeScope`, and the plan is closed at 20
+  manifests → GR2060 is **SILENT**.
+
+Same script, same witness, same path. **The only difference between the two commits is whether a task
+owns the file** — which is precisely the discrimination condition 8 exists to make, so this is the
+strongest possible test of it. Read both from git, as tests 1 and 2 do; do not hand-build either.
+
+Name it `Recovered_…`, and say in a comment that it is recovered and what the pair proves. The rule
+about labels has not changed and is worth restating because it now cuts the other way: **a control's
+label states how its evidence was obtained.** Calling a hand-built fixture `Recovered` is the lie this
+plan was rewritten to remove; calling a genuinely recovered one `Constructed` understates real evidence.
+Neither is acceptable, and this one is genuinely recovered.
 
 **Tests 3 and 4 are the two ways GR2060 can ship MUTE.** Both extractor shapes were found while
 designing the check; a reader that handles only `$v = Get-Content 'X'` misses the measured instance's
@@ -115,4 +122,5 @@ file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to t
 - The file exists with all ten pinned method names, each carrying a real `[Fact]` or `[Theory]`.
 - `dotnet test --filter FullyQualifiedName~ProducerCoverageTests` exits **non-zero** (it will not
   compile — that is the red).
-- Test 5 is named `Constructed_…` and its comment explains the constructed/recovered distinction.
+- Test 5 is named `Recovered_…`, reads `5bd29da` from git, and its comment states what the
+  `544f7d5` -> `5bd29da` pair proves: the only difference between the two is whether a task owns the file.

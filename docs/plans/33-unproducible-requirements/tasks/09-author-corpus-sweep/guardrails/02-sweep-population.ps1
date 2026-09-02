@@ -6,7 +6,7 @@
 #
 #          It also catches the second way this gate goes hollow: a blanket-zero expectation. A sweep that
 #          expects zero everywhere cannot tell a working check from a mute one. The required NON-ZERO on
-#          model-tiering-stage-2 at 1b8e681 is what proves the sweep can fail in the FIRING direction;
+#          model-tiering-stage-2 at 544f7d5 is what proves the sweep can fail in the FIRING direction;
 #          the HEAD row proves it can fail in the SILENCE direction. Section 11 prohibition 5.
 #
 # Required-present baseline (#478): all four literals occur 0 times at author time - the file does not
@@ -34,7 +34,7 @@ if ($scan -notmatch 'wave-') {
 if ($raw -notmatch 'model-tiering-stage-2') {
     $failures.Add('THE POSITIVE CONTROL PLAN IS NOT NAMED in ' + $subject + '. model-tiering-stage-2 is the one plan in the corpus GR2060 fires on, and the expectation table must carry it explicitly.')
 }
-if ($raw -notmatch '1b8e681') {
+if ($raw -notmatch '544f7d5') {
     $failures.Add('THE PRE-RUN COMMIT IS NOT PINNED in ' + $subject + '. Each plan is evaluated at its OWN pre-run commit; against today HEAD every requirement is satisfied because the plans RAN, so a HEAD-only sweep is structurally incapable of failing.')
 }
 

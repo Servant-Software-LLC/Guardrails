@@ -51,7 +51,8 @@ where a reader meets it:
 
 | plan | commit | expected GR2060 findings |
 |---|---|---|
-| `model-tiering-stage-2` — `guardrails/03-dor-section-6-contract-landed.ps1` | `1b8e681` | **exactly 1**, naming `tierSource` and `docs/plans/02-schemas-and-contracts.md` |
+| `model-tiering-stage-2` — `guardrails/03-dor-section-6-contract-landed.ps1` | `544f7d5` | **exactly 1**, naming `tierSource` and `docs/plans/02-schemas-and-contracts.md` |
+| the same script | `5bd29da` | **0** — witness still absent, but `14-land-ssot-schema-deltas` now declares that path in its `writeScope`. This row and the one above differ ONLY in whether a task owns the file, so together they are the only rows that can catch the check firing wrongly AND going mute |
 | the same script | today's HEAD | **0** — the requirement is satisfied now |
 | every other plan folder | its own pre-run commit where one exists | **0** |
 
