@@ -94,6 +94,7 @@ public sealed class DeliveryRecordTests
     [InlineData(MergeOnSuccessResult.Conflict, DeliveryOutcome.Conflict)]
     [InlineData(MergeOnSuccessResult.DirtyWorkingTree, DeliveryOutcome.DirtyWorkingTree)]
     [InlineData(MergeOnSuccessResult.HookRejected, DeliveryOutcome.HookRejected)]
+    [InlineData(MergeOnSuccessResult.BranchMoved, DeliveryOutcome.BranchMoved)]
     public void ARefusedMerge_IsNotDelivered_AndKeepsItsOwnOutcomeAndDetail(
         MergeOnSuccessResult outcome, DeliveryOutcome expected)
     {
@@ -105,6 +106,45 @@ public sealed class DeliveryRecordTests
         Assert.Equal(PlanBranch, d.PlanBranch);
         Assert.Equal("src/Thing.cs", d.Detail);
         Assert.NotNull(d.Reason);
+    }
+
+    /// <summary>
+    /// Issue #588: a run whose checkout moved off the branch it pinned merged NOTHING, so the durable
+    /// record must say so — its own <c>branch-moved</c> token (not the generic <c>not-attempted</c> that
+    /// would send a reader hunting for a delivery that never happened), the two branch names in
+    /// <c>detail</c>, the plan branch holding the work, and NO <c>deliveredToBranch</c>. That last absence
+    /// is the whole issue: the pre-fix run reported a delivery to a branch the work never reached, and
+    /// the durable record would have repeated the claim for any post-mortem reading it later.
+    /// </summary>
+    [Fact]
+    public void AMovedCheckout_RecordsBranchMoved_NamingBothBranches_AndNoDeliveryTarget()
+    {
+        const string detail = "run started on 'master'; HEAD is now 'design/34-run-event-stream-and-attach'";
+
+        DeliverySection d = RunCommand.DescribeDelivery(
+            Report(outcome: MergeOnSuccessResult.BranchMoved, detail: detail),
+            terminalGatePassed: true, PlanDir);
+
+        Assert.False(d.Delivered);
+        Assert.Equal(DeliveryOutcome.BranchMoved, d.Outcome);
+        Assert.Null(d.DeliveredToBranch);
+        Assert.Equal(PlanBranch, d.PlanBranch);
+        Assert.Equal(detail, d.Detail);
+
+        // The SSOT §7 kebab spelling survives the round-trip that makes the record durable.
+        var doc = new JournalDocument
+        {
+            RunId = "2026-09-01T00-00-00Z-abcd",
+            PlanHash = "sha256:abc",
+            Delivery = d,
+        };
+        string json = JsonSerializer.Serialize(doc, JournalJson.Options);
+        Assert.Contains("\"outcome\": \"branch-moved\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("deliveredToBranch", json, StringComparison.Ordinal);
+
+        JournalDocument back = JsonSerializer.Deserialize<JournalDocument>(json, JournalJson.Options)!;
+        Assert.Equal(DeliveryOutcome.BranchMoved, back.Delivery!.Outcome);
+        Assert.Equal(detail, back.Delivery.Detail);
     }
 
     /// <summary>

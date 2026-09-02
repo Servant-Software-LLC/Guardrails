@@ -168,8 +168,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   banned-pattern registry `references/banned-guardrail-patterns.json`, embedded into Core + scanned over
   the four-folder script guardrails' comment-stripped bodies; ERROR, one per match; a CURATED set of three
   — #73 + #187a + #462 — grown only by reviewed addition, #346/SSOT §4.6) is TAKEN too.
-  Next free: **GR1011 / GR2064** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
-  GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 are taken. RESERVED BY NAME and
+  **GR2071** (PromptInstructsUngrantedCommand — a task's `action.prompt.md` INSTRUCTS a shell command
+  the task's own effective `allowedTools` refuse, so the agent hits a wall on its first turn; WARNING,
+  static, #587 check A / SSOT §4.9) is TAKEN too.
+  Next free: **GR1011 / GR2072** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
   half a fact, which is how a sibling skill came to claim "GR1010 / GR2055" long after both were taken.

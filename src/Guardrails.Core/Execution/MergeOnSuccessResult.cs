@@ -39,5 +39,24 @@ public enum MergeOnSuccessResult
     /// graceful halt, NOT a failure of the work: every task passed and is durable on the plan branch.
     /// The hook's stderr is surfaced to the user via <see cref="RunReport.MergeOnSuccessDetail"/>.
     /// </summary>
-    HookRejected
+    HookRejected,
+
+    /// <summary>
+    /// The user's checkout is no longer on the branch the run started on (issue #588), so NOTHING was
+    /// merged. The delivery TARGET is pinned at run start (<see cref="IntegrationHandle.OriginalBranch"/>,
+    /// read once by <c>CreateIntegration</c>) but the merge itself is a bare <c>git merge</c> that lands on
+    /// whatever <c>HEAD</c> currently is — so a branch created or checked out WHILE the run was in flight
+    /// silently redirected the delivery, and the report still named the pinned branch. Detached HEAD
+    /// (<c>rev-parse --abbrev-ref HEAD</c> → the literal <c>HEAD</c>) and an unreadable HEAD take this same
+    /// path: neither is provably the original branch, and the gate FAILS CLOSED.
+    /// <para>
+    /// <b>Compare and refuse — never check out.</b> The harness does not restore the user's branch: that
+    /// would mutate a working tree the user moved deliberately, a worse failure than declining. Both branch
+    /// names travel to the CLI via <see cref="IWorktreeProvider.LastMergeOnSuccessDetail"/> →
+    /// <see cref="RunReport.MergeOnSuccessDetail"/>, exactly as <see cref="HookRejected"/> and
+    /// <see cref="DirtyWorkingTree"/> do. The user's checkout is untouched and the verified work is left on
+    /// the plan branch for a manual merge — the SAFE failure direction.
+    /// </para>
+    /// </summary>
+    BranchMoved
 }

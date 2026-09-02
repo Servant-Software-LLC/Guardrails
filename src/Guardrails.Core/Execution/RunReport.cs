@@ -235,12 +235,14 @@ public sealed record RunReport
 
     /// <summary>
     /// Free-text detail for the merge-on-success outcome when it carries one; null otherwise. The CLI
-    /// renders it so the user sees exactly what refused the delivery. Two carriers:
+    /// renders it so the user sees exactly what refused the delivery. Three carriers:
     /// <list type="bullet">
     ///   <item><see cref="MergeOnSuccessResult.HookRejected"/> — the git hook's stderr, verbatim
     ///     (issues #149/#150).</item>
     ///   <item><see cref="MergeOnSuccessResult.DirtyWorkingTree"/> — the newline-separated, ordinal-sorted
     ///     TRACKED paths whose uncommitted changes blocked the merge (issue #448).</item>
+    ///   <item><see cref="MergeOnSuccessResult.BranchMoved"/> — the branch the run started on and the one
+    ///     HEAD is on now (issue #588).</item>
     /// </list>
     /// </summary>
     public string? MergeOnSuccessDetail { get; init; }

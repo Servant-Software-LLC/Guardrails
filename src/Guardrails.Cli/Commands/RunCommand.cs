@@ -608,8 +608,8 @@ public static class RunCommand
                 //
                 // Placed BEFORE WriteFinalStatic/Finish so the outcome is in the report every downstream
                 // consumer reads: the exit-code mapping for a halted delivery (HookRejected /
-                // DirtyWorkingTree / Conflict), the final static pages, the #340 notices, and the #407
-                // reclaim predicate.
+                // DirtyWorkingTree / Conflict / BranchMoved), the final static pages, the #340 notices,
+                // and the #407 reclaim predicate.
                 if (report.DeliveryPendingTerminalGate && planGuardrailsPassed is true)
                 {
                     report = scheduler.CompleteDeferredDelivery(report, cancellationToken);
@@ -1050,7 +1050,8 @@ public static class RunCommand
         }
 
         // Issue #150 — a wholly-green run whose end-of-run delivery to the user's branch was HALTED
-        // (a git hook rejected the user-facing merge, a conflict, or a dirty user tree) is NOT a
+        // (a git hook rejected the user-facing merge, a conflict, a dirty user tree, or — #588 — a
+        // checkout that moved off the branch the run pinned) is NOT a
         // clean success: the work is durable on the plan branch, but the user must act. Render the
         // actionable message and exit non-zero. A FastForwarded/Merged delivery, or no mergeOnSuccess
         // at all (null), leaves the success verdict untouched.
@@ -1848,6 +1849,7 @@ public static class RunCommand
                 MergeOnSuccessResult.Conflict => DeliveryOutcome.Conflict,
                 MergeOnSuccessResult.DirtyWorkingTree => DeliveryOutcome.DirtyWorkingTree,
                 MergeOnSuccessResult.HookRejected => DeliveryOutcome.HookRejected,
+                MergeOnSuccessResult.BranchMoved => DeliveryOutcome.BranchMoved,
                 _ => DeliveryOutcome.NotAttempted
             };
 
@@ -2096,7 +2098,8 @@ public static class RunCommand
     /// Render the actionable end-of-run delivery halt (issue #150). The plan branch carries all the
     /// (verified) work; only the optional merge back into the user's branch was refused. For a hook
     /// rejection the user's own hook stderr (<see cref="RunReport.MergeOnSuccessDetail"/>) is shown
-    /// verbatim so they see exactly why and can resolve it or disable the hook for the merge.
+    /// verbatim so they see exactly why and can resolve it or disable the hook for the merge; for a
+    /// moved checkout (#588) that same channel carries the two branch names.
     /// </summary>
     private static void PrintMergeOnSuccessHalt(
         RunReport report, Core.Model.PlanDefinition plan, MergeOnSuccessResult outcome, IConsoleIo io)
@@ -2152,6 +2155,27 @@ public static class RunCommand
                         "branch was refused because your working tree has uncommitted changes. Commit or " +
                         "stash them, then merge `" + planBranch + "` manually.");
                 }
+                break;
+
+            case MergeOnSuccessResult.BranchMoved:
+                // Issue #588: the delivery target is pinned at run start, so a checkout that moved
+                // mid-run would otherwise have merged somewhere the report never named. NAME BOTH
+                // branches — the surprise is precisely that they differ — and say why the harness
+                // declines rather than "fixing" it by checking a branch out.
+                output.WriteLine(
+                    report.MergeOnSuccessDetail is { Length: > 0 } move
+                        ? $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                          $"branch was NOT attempted because your checkout moved during the run — {move}."
+                        : $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                          "branch was NOT attempted because your checkout is no longer on the branch this " +
+                          "run started on.");
+                output.WriteLine(
+                    "  Merging into a branch you did not start the run on would deliver the work somewhere " +
+                    "you never asked for, and checking the original branch back out would stomp the one you " +
+                    "switched to — so the harness does neither.");
+                output.WriteLine(
+                    "  Nothing was merged and your checkout is unchanged — merge `" + planBranch +
+                    "` wherever you want it.");
                 break;
         }
     }

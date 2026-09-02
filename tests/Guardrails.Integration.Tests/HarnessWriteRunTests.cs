@@ -1439,4 +1439,196 @@ public sealed class HarnessWriteRunTests
         Assert.Contains("needsHarnessWrite not applied", task.Summary);
         Assert.Contains("EMPTY array", task.Summary);
     }
+
+    // ── #586: a control key NESTED under the task-folder key ─────────────────────────────────────
+    //
+    // Measured on plan 33: an agent emitted
+    // `{ "11-record-gr2060-in-knowledge-skill": { "needsHarnessWrite": { … } } }`. The harness reads
+    // control keys at the fragment ROOT, so nested it is not a control key at all — it merges as
+    // ordinary state under a key the task legitimately owns. Nothing was written, nothing raised
+    // anything about the escape hatch, and the task's guardrail then failed on the CONTENT of a file
+    // the agent never got to touch. 7 attempts across two runs and one run-stopping needs-human halt;
+    // the same task, model and content passed in 78 seconds once the prompt was corrected by hand.
+    //
+    // The two DEFECT tests below are the red bar. The two CONTROL tests after them are the thing this
+    // check must never break — the correct shape, and a task publishing ordinary state.
+
+    /// <summary>
+    /// The #586 scaffold: the fragment-copy action plus one guardrail asserting the deliverable exists.
+    /// On the defect path that guardrail must never RUN (the attempt is rejected before it); on the
+    /// control path it must run and pass.
+    /// </summary>
+    private static string WriteControlKeyShapePlan(string repoPath, string fragmentJson, string checkedPath)
+    {
+        (string planDir, string taskDir) = WriteFragmentCopyScaffold(
+            repoPath, fragmentJson, "deliver a .claude/ file via the escape hatch");
+
+        if (Ps)
+        {
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-exists.ps1"),
+                "if (Test-Path (Join-Path $env:GUARDRAILS_WORKSPACE '" + checkedPath.Replace("/", "\\") +
+                "')) { exit 0 } else { Write-Output 'deliverable missing'; exit 1 }\n");
+        }
+        else
+        {
+            WriteSh(Path.Combine(taskDir, "guardrails", "01-exists.sh"),
+                "#!/usr/bin/env bash\n" +
+                $"if [ -f \"$GUARDRAILS_WORKSPACE/{checkedPath}\" ]; then exit 0; else echo 'deliverable missing'; exit 1; fi\n");
+        }
+
+        return planDir;
+    }
+
+    private const string NestedTargetPath = ".claude/skills/foo/SKILL.md";
+
+    [Fact]
+    public async Task Worktree_NestedNeedsHarnessWrite_IsRejected_NamingTheMistake_AndNothingIsWritten()
+    {
+        using var repo = new TempGitRepo();
+
+        // The exact defect shape: a well-formed request, one level too deep.
+        string fragmentJson = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["01-write"] = new
+            {
+                needsHarnessWrite = new
+                {
+                    path = NestedTargetPath,
+                    reason = "the tool-permission layer refuses .claude/ writes",
+                    content = "WRITTEN-BY-HARNESS"
+                }
+            }
+        });
+
+        string planDir = WriteControlKeyShapePlan(repo.RepoPath, fragmentJson, NestedTargetPath);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        // The #164 rejection surface, reused: one consistent story about fragment shape, not two.
+        Assert.Equal(TaskOutcome.InvalidFragment, task.Outcome);
+        Assert.False(task.IsGreen);
+        // The guardrails never ran — the whole point is that the failure is diagnosed BEFORE they can
+        // fail for a reason that is not the agent's work.
+        Assert.Empty(task.Guardrails);
+        Assert.Contains("needsHarnessWrite was nested under '01-write'", task.Summary);
+        Assert.Contains("nothing was written", task.Summary);
+
+        // Nothing written, anywhere.
+        Assert.False(repo.PlanBranchHasPath(planBranch, NestedTargetPath),
+            "a nested needsHarnessWrite must not be applied");
+        Assert.False(File.Exists(Path.Combine(planDir, "state", "state.json"))
+            && File.ReadAllText(Path.Combine(planDir, "state", "state.json")).Contains("needsHarnessWrite", StringComparison.Ordinal),
+            "the misplaced control key must not be merged into state.json as ordinary state either");
+
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journal.Tasks["01-write"].Status);
+        AttemptRecord attempt = Assert.Single(journal.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.InvalidFragment, attempt.Outcome);
+
+        // The feedback is what a retrying agent actually reads, so it has to be actionable on its own:
+        // the SPECIFIC error, the fact that nothing was written, and the correct shape with BOTH keys.
+        string feedback = File.ReadAllText(Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+        Assert.Contains("`needsHarnessWrite` was nested under the task-folder key '01-write'", feedback);
+        Assert.Contains("top-level SIBLINGS of your folder-name key", feedback);
+        Assert.Contains("NOTHING was written", feedback);
+        Assert.Contains("\"01-write\": { \"someKey\": \"someValue\" }", feedback);
+        Assert.Contains("\"needsHarnessWrite\": { \"path\"", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_NestedNeedsHuman_IsRejectedTheSameWay_NotSilentlyIgnored()
+    {
+        using var repo = new TempGitRepo();
+
+        // needsHuman presumably survived this trap because a missed one degrades to an ordinary attempt
+        // failure rather than a silent no-op — but it is the same mistake and gets the same diagnosis.
+        string fragmentJson = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["01-write"] = new
+            {
+                needsHuman = new { question = "Which schema version should this target?", kind = "blocked-work" }
+            }
+        });
+
+        string planDir = WriteControlKeyShapePlan(repo.RepoPath, fragmentJson, NestedTargetPath);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.InvalidFragment, task.Outcome);
+        // NOT an escalation: a nested needsHuman is a shape mistake, not a human-decision halt, so it
+        // must not consume the run the way a real escalation does.
+        Assert.NotEqual(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Empty(task.Guardrails);
+        Assert.Contains("needsHuman was nested under '01-write'", task.Summary);
+
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
+        AttemptRecord attempt = Assert.Single(journal.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.InvalidFragment, attempt.Outcome);
+
+        string feedback = File.ReadAllText(Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+        Assert.Contains("`needsHuman` was nested under the task-folder key '01-write'", feedback);
+        Assert.Contains("\"needsHuman\": { \"question\"", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_CorrectShape_ControlKeyBesideTheFolderNameKey_IsUnaffected()
+    {
+        using var repo = new TempGitRepo();
+
+        // The shape the corrected wording teaches: the folder-name key AND the control key, side by
+        // side at the root. Both must work in the same attempt — state merges, the write lands.
+        string fragmentJson = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["01-write"] = new { deliveredPath = NestedTargetPath },
+            ["needsHarnessWrite"] = new
+            {
+                path = NestedTargetPath,
+                reason = "the tool-permission layer refuses .claude/ writes",
+                content = "WRITTEN-BY-HARNESS"
+            }
+        });
+
+        string planDir = WriteControlKeyShapePlan(repo.RepoPath, fragmentJson, NestedTargetPath);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+        Assert.True(repo.PlanBranchHasPath(planBranch, NestedTargetPath),
+            "the correctly-shaped request must still be applied");
+
+        string state = File.ReadAllText(Path.Combine(planDir, "state", "state.json"));
+        Assert.Contains("deliveredPath", state);
+        // The control key is CONSUMED before the merge, exactly as it was before #586.
+        Assert.DoesNotContain("needsHarnessWrite", state);
+    }
+
+    [Fact]
+    public async Task Worktree_OrdinaryPublishedState_IsUnaffected()
+    {
+        using var repo = new TempGitRepo();
+        // A task publishing plain state under its own folder name, with no control key anywhere: the
+        // overwhelmingly common fragment, and the one a name-only check would have been free to break.
+        repo.Commit(NestedTargetPath, "already here");
+
+        string fragmentJson = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["01-write"] = new { someKey = "someValue", nested = new { deeper = "still just state" } }
+        });
+
+        string planDir = WriteControlKeyShapePlan(repo.RepoPath, fragmentJson, NestedTargetPath);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+        Assert.Single(task.Guardrails);
+
+        string state = File.ReadAllText(Path.Combine(planDir, "state", "state.json"));
+        Assert.Contains("someValue", state);
+    }
 }

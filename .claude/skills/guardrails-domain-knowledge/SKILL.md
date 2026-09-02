@@ -478,7 +478,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   re-drained-green resume re-issues an ff-only merge that git reports "already up to date"). When delivery
   fires purely because of the default (no config key, no flag), the CLI prints a one-time
   "delivered to <branch> …" notice naming the branch + the opt-out. The outcome is a `MergeOnSuccessResult`:
-  `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected`
+  `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved`
   (halted; work is durable on the plan branch, exit 2).
   **The dirty-tree gate is an INTERSECTION, not "any dirt anywhere" (#448, SSOT §5.3).** `DirtyWorkingTree`
   fires only when a TRACKED uncommitted path is ALSO a path the merge would update — `git status
@@ -495,6 +495,26 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   base, unparseable porcelain) it reverts to refuse-on-ANY-tracked-dirt; a fail-open would be worse than
   the bug. The blocking paths are **NAMED**: newline-separated + ordinal-sorted in
   `RunReport.MergeOnSuccessDetail` (the same channel `HookRejected` uses for hook stderr), listed by the
+- **A CONTROL KEY nested under a top-level key is REJECTED as invalid-fragment (#586).**
+  `needsHuman` and `needsHarnessWrite` are top-level SIBLINGS of the task's folder-name key — the
+  harness reads them at the fragment ROOT only. Nested one level down they were previously INVISIBLE:
+  nothing written, nothing raised about the escape hatch, and the guardrail then failed on the CONTENT
+  of a file the agent never got to touch. Matched on the control key's own payload shape (a `path` plus
+  `content`/`edits`; a structured `question`), never on the key name alone — a false rejection would
+  block a task forever, while the bug only cost attempts. Fires BEFORE the guardrails, because a
+  guardrail failure returns long before the fragment-merge path ever reads the fragment. Measured cost
+  of the ambiguity: 7 attempts and a run-halting escalation, versus 78 seconds once the prompt was
+  corrected.
+
+- **The delivery target is VERIFIED at merge time, never assumed (#588).** `OriginalBranch` is pinned at
+  run start, but the merge itself runs in the repo against whatever `HEAD` is when it fires. If the
+  checkout MOVED during the run — a branch switch, or a detached HEAD — the harness **refuses**:
+  `BranchMoved`, nothing merged, `DeliveredToBranch` null so no "delivered to X" line prints, work left
+  on the plan branch. It does NOT check the original branch back out: that would stomp the branch someone
+  switched to deliberately. Measured incident: a run started on `master`, a design branch was created
+  from HEAD mid-run, and the work merged into that branch while the run truthfully reported `master` —
+  the report was derived from the right value, so only git revealed it.
+
   CLI, so nobody is sent to `git status` to find what blocked a green run. `Conflict`/`HookRejected` are
   untouched.
   **Green-but-undelivered warning (#340):** the backstop for the OPT-OUT case. When the user opts OUT
@@ -516,7 +536,8 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   a wholly-green run launched with `--no-merge-on-success` was read as shipped and two issues were closed
   against a branch that had never been merged. `run.json` now carries a top-level `delivery` section (SSOT
   section 7) — `delivered` (a plain boolean, deliberately not derived from `outcome`), `outcome`
-  (`not-attempted` | `fast-forwarded` | `merged` | `conflict` | `dirty-working-tree` | `hook-rejected`),
+  (`not-attempted` | `fast-forwarded` | `merged` | `conflict` | `dirty-working-tree` | `hook-rejected` |
+  `branch-moved`),
   plus `reason`/`planBranch`/`deliveredToBranch`/`detail`. The **four** not-attempted reasons are kept
   DISTINGUISHABLE (delivery off / terminal gate failed / not wholly green / serial mode), and `planBranch`
   is written **only** for the case that actually strands work — naming a branch in serial mode would send
@@ -644,7 +665,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   section 7.2.
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
-  was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
+  was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected`/`BranchMoved` — work durable on the plan branch) /
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision. The OBJECT form carries `options[]` (#387, an
@@ -840,6 +861,24 @@ guardrails-review):**
   legitimately trips it. Mutually exclusive per row. Both WARN, never ERROR, because `RunCommand.RunAsync`
   refuses to run a plan whose validation emits any error, and a stale cell (plan 28 row 3) is a real,
   non-blocking shipped-plan state.
+- **Prompt/grant contradiction lint (`GR2071`, WARN, #587 check A, SSOT section 4.9).** A task's
+  `action.prompt.md` INSTRUCTS a shell command that the task's own `allowedTools` refuse -- so the single
+  command the deliverable rests on is a wall the agent hits on its first turn and cannot argue past. Plan 33
+  task 09 said *"you enumerate them with `git ls-tree`"* against grants running to `git log/diff/show/status`
+  only; two attempts burned, `needs-human`, run halted, with `validate` + `graph --check` + a full
+  `/guardrails-review` all green beforehand. **Both inputs are static and in the same folder** -- a string
+  comparison nobody was doing. **Grants are per RUNNER, never per task**; the only per-task override is
+  `action.runner` picking a different block, and the set compared is that block's ACTION settings (never
+  `guardrailOverrides`) plus the injected `Bash(git show*)`. Deliberately narrow on the GR2057 model: an
+  inline backticked span in an imperative context, or a line in a colon-introduced hand-over fence; a known
+  binary head; **and a second-person pronoun (`you`/`yourself`, not `your`) in the paragraph** -- that last
+  is what separates "you run this" from "your test should do this", and without it every one of the check's
+  5 corpus findings was the artifact-describing shape. The candidate is then SPLIT on unquoted
+  `|`/`&&`/`;` exactly as the runner splits a compound and every segment tested, which covers the pipeline
+  half without the unsound "a pipe is always refused" rule. Measured before shipping: 488 backticked spans
+  -> 6 adjudicated, 1 finding at HEAD (a genuine uncorrected defect the sweep found, plan 33 task 02's
+  `grep … | wc -l`) + 1 at the historical defect commit, 0 false positives. WARN for GR2068's reason plus
+  one more: `allowedTools` is a FLOOR (#252), so an operator's own settings can satisfy what it reports.
 
 ## Model tiering -- the SCHEMA half only (#201, SSOT section 9.6)
 
@@ -1365,7 +1404,8 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1011 / GR2071** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
+  HEAD-independence). Next-free GR code: **GR1011 / GR2072** (GR2071 is TAKEN by #587 check A --
+  `PromptInstructsUngrantedCommand`, SSOT section 4.9; GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
   GR2062, GR2063 and GR2064 are all SHIPPED now, and model-tiering Stage 3 ALLOCATED
   GR2051-GR2053 (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist — documented
   under Model tiering, above), so what remains reserved-by-name and must not be re-used is GR2054
@@ -1416,7 +1456,8 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2071**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2072**
+  (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
   model tiering (`docs/plans/17-model-tiering.md` §13.2 — RoutingNumericNonPositive, the v2 #227 probes
