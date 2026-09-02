@@ -11,9 +11,24 @@
       "strength": 3,
       "specialization": "coding",
       "maxTurns": 50,
-      "allowedTools": ["Read", "Grep", "Glob", "Write", "Edit", "Bash(dotnet *)", "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"],
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git ls-tree*)",
+        "Bash(git ls-files*)",
+        "Bash(git status*)"
+      ],
       "routing": {
-        "tiers": ["easy"],
+        "tiers": [
+          "easy"
+        ],
         "notes": "Mechanical edits whose exact target text this plan quotes: a reservation-block line removed and another added verbatim, a next-free marker advanced by one, a status-table row repointed, a named sentence appended to a design doc. Nothing that has to DECIDE a predicate, a severity, or where a suppression belongs."
       }
     },
@@ -25,9 +40,24 @@
       "strength": 6,
       "specialization": "coding",
       "maxTurns": 50,
-      "allowedTools": ["Read", "Grep", "Glob", "Write", "Edit", "Bash(dotnet *)", "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"],
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git ls-tree*)",
+        "Bash(git ls-files*)",
+        "Bash(git status*)"
+      ],
       "routing": {
-        "tiers": ["medium"],
+        "tiers": [
+          "medium"
+        ],
         "notes": "Ordinary implementation against a spec that already exists: lifting five regex helpers into a shared file unchanged, adding a probe interface plus its git-backed implementation behind a fifth constructor overload, writing an SSOT section whose paragraphs the plan enumerates. The plan-wide default tier, so anything untagged lands here."
       }
     },
@@ -39,14 +69,31 @@
       "strength": 9,
       "specialization": "planning-reasoning",
       "maxTurns": 50,
-      "allowedTools": ["Read", "Grep", "Glob", "Write", "Edit", "Bash(dotnet *)", "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"],
+      "allowedTools": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Write",
+        "Edit",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git ls-tree*)",
+        "Bash(git ls-files*)",
+        "Bash(git status*)"
+      ],
       "routing": {
-        "tiers": ["hard"],
+        "tiers": [
+          "hard"
+        ],
         "notes": "Work that must reason about a relational predicate over three inputs at once - one script's text, the union of every task's writeScope, and the workspace's current bytes - or about the JIT-breakdown gate's veto path, where being wrong reverts someone else's authored prefix. The GR2060 implementation, its tests, the #501 regression test, and the corpus sweep whose expectation is a table rather than a zero."
       }
     }
   },
-  "tiering": { "defaultTier": "medium" },
+  "tiering": {
+    "defaultTier": "medium"
+  },
   "maxParallelism": 4,
   "defaultRetries": 2,
   "defaultTimeoutSeconds": 1800,

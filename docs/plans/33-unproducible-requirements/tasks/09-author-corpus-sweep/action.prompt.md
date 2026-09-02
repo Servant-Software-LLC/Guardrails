@@ -66,6 +66,22 @@ working check from a mute one. The `model-tiering-stage-2` row proves the sweep 
 *firing* direction; the HEAD row proves it can fail in the *silence* direction. Section 11 prohibition 5
 forbids re-baselining this to a tolerance or flattening it back to a blanket zero.
 
+**SHELL DISCIPLINE — read this before your first command; two attempts were lost to it.** The runner
+SPLITS compound shell commands and refuses any sub-command outside the declared grants. Your Bash grants
+are exactly: `dotnet *`, `git log*`, `git diff*`, `git show*`, `git status*`, `git ls-tree*`,
+`git ls-files*`. Consequences:
+
+- **No pipelines.** `git ls-tree ... | grep ...` is refused, because `grep` is not a granted binary.
+  Neither is `| awk`, `| wc`, `| sort`, `| head`, or `2>&1 | Select-Object`.
+- **No `;`-chained or `&&`-chained compounds** that include an ungranted verb — the whole command is
+  rejected on the ungranted part, even when the first half was fine.
+- **Filter with your TOOLS, not the shell.** Run the bare `git ls-tree -r --name-only <rev> -- docs/plans`
+  and filter the result with the Grep/Glob tools or in the code you are writing. That is what they are for,
+  and it is the only route that works here.
+
+The enumeration you need is a bare, ungrouped `git ls-tree`. Reach for it directly rather than composing
+a one-liner that does the filtering in the shell.
+
 **Scope boundary (harness-enforced):** Write only to
 `tests/Guardrails.Core.Tests/ProducerCoverageCorpusTests.cs`. After this task completes, the harness
 runs a `git diff` check and rejects any edit outside that path. If a plan folder in the corpus produces
