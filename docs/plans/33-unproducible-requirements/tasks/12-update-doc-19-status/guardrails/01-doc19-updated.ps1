@@ -23,6 +23,10 @@ if (-not (Test-Path -LiteralPath $subject)) {
 }
 
 $doc = [regex]::Replace((Get-Content -LiteralPath $subject -Raw), '(?s)<!--.*?-->', '')
+
+# Same emphasis hazard as task 10's guardrail, fixed preventively rather than after another false red:
+# "designed and **declined**" contains no literal "designed and declined". Markers are presentation.
+$prose = [regex]::Replace($doc, '[*_`]', '')
 $failures = New-Object System.Collections.Generic.List[string]
 
 # The Milestone A row must no longer read NOT BUILT.
@@ -49,7 +53,7 @@ if ($doc -notmatch '33-unproducible-requirements') {
 # 'declin' alone occurs 2 times in this document already (sections about a deliberately declined weaker
 # check, and doc 18 declining GR2059), so a bare 'declin' clause is GREEN ON ARRIVAL and proves nothing.
 # Measured 0 for the specific phrase this task must write.
-if ($doc -notmatch '(?i)designed and declined') {
+if ($prose -notmatch '(?i)designed and declined') {
     $failures.Add('THE D2 SENTENCE IS MISSING from ' + $subject + '. D2 gains exactly one sentence recording that a lint for the derived-path shape was designed and DECLINED - the shape has never occurred in a form a lint could see.')
 }
 if ($doc -match '(?i)D2 (?:was|is) (?:wrong|incorrect|mistaken|superseded|reversed)') {

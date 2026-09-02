@@ -35,17 +35,27 @@ foreach ($f in @($review, $author)) {
 $r = [regex]::Replace((Get-Content -LiteralPath $review -Raw), '(?s)<!--.*?-->', '')
 $a = [regex]::Replace((Get-Content -LiteralPath $author -Raw), '(?s)<!--.*?-->', '')
 
+# PROSE COPIES with inline markdown emphasis REMOVED. A multi-word phrase clause over a MARKDOWN target
+# is broken by emphasis BETWEEN its words: a correct paragraph reading "`M`'s **declaring** file goes in
+# the writeScope" does not contain the literal "declaring file" at all, because ** sits between them.
+# Measured, and it cost a real attempt: task 10's first attempt wrote exactly that sentence - a better
+# paragraph than the one this guardrail asked for - and was FALSE-RED'd by this check. Emphasis markers
+# are presentation; a reader sees "declaring file". Match what the reader sees.
+# Token clauses keep using $r/$a; only the multi-word PHRASE clauses use these.
+$rProse = [regex]::Replace($r, '[*_`]', '')
+$aProse = [regex]::Replace($a, '[*_`]', '')
+
 $failures = New-Object System.Collections.Generic.List[string]
 
-if ($r -notmatch '(?i)parameter list') {
+if ($rProse -notmatch '(?i)parameter list') {
     $failures.Add('THE REVIEW PROBE STILL STOPS AT THE CARRIER: no mention of a parameter list in ' + $review + '. Add the step that opens the CALLEE declaration and asks whether its parameter list already accepts what the clause requires. Without it the probe returns reachable-stop on the exact shape it missed.')
 }
-$window = [regex]::Match($r, '(?is)parameter list[\s\S]{0,1500}')
+$window = [regex]::Match($rProse, '(?is)parameter list[\s\S]{0,1500}')
 if (-not $window.Success -or $window.Value -notmatch '(?i)interface') {
     $failures.Add('THE INTERFACE HALF IS MISSING from the added step in ' + $review + '. For a call dispatched through an interface the declaring file is the INTERFACE, not the concrete type - a cast to the concrete type compiles, satisfies the clause, and journals nothing.')
 }
 
-if ($a -notmatch '(?i)declaring file') {
+if ($aProse -notmatch '(?i)declaring file') {
     $failures.Add('THE AUTHORING TWIN IS MISSING from ' + $author + ': no mention of a declaring file. When a task deliverable is "pass D to M", M declaring file goes in the writeScope - the interface if the call dispatches through one - unless M already accepts D today.')
 }
 
