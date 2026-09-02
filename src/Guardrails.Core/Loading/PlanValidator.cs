@@ -19,6 +19,7 @@ public sealed class PlanValidator
     private readonly IExecutableProbe _probe;
     private readonly BannedPatternRegistry _bannedPatterns;
     private readonly IScriptSyntaxProbe _syntaxProbe;
+    private readonly IGitTrackedFileProbe _gitTrackedFileProbe;
 
     /// <summary>Validate with the given PATH probe and the embedded default banned-pattern registry.</summary>
     public PlanValidator(IExecutableProbe probe) : this(probe, BannedPatternRegistry.Load()) { }
@@ -39,12 +40,33 @@ public sealed class PlanValidator
     /// probe because parse-checking spawns an interpreter: tests inject a fake so the GR2056 check is
     /// exercised without pwsh/bash present, and a caller that must not spawn anything can pass
     /// <see cref="NullScriptSyntaxProbe"/>.
+    ///
+    /// <para><b>Behaviour change for every existing caller of this overload (and the three shorter
+    /// ones above it, which all funnel through here):</b> the git-tracked-file probe now defaults to
+    /// a REAL <see cref="GitLsFilesProbe"/>, not the inert <see cref="NullGitTrackedFileProbe"/>. None
+    /// of today's checks read it yet (GR2060 arrives separately), so nothing spawns <c>git</c> as a
+    /// side effect of this default — but the day GR2060 lands, every one of those callers starts
+    /// asking git a question it did not ask before, without touching a single call site.</para>
     /// </summary>
     public PlanValidator(IExecutableProbe probe, BannedPatternRegistry bannedPatterns, IScriptSyntaxProbe syntaxProbe)
+        : this(probe, bannedPatterns, syntaxProbe, new GitLsFilesProbe()) { }
+
+    /// <summary>
+    /// Validate with an injected git-tracked-file probe as well (GR2060). Separate from the other probes
+    /// because it spawns <c>git</c>: tests inject a fake so GR2060's conservatism (not-known ⇒ silent,
+    /// never "untracked") is exercised without a git checkout present, and a caller that must not spawn
+    /// anything can pass <see cref="NullGitTrackedFileProbe"/>.
+    /// </summary>
+    public PlanValidator(
+        IExecutableProbe probe,
+        BannedPatternRegistry bannedPatterns,
+        IScriptSyntaxProbe syntaxProbe,
+        IGitTrackedFileProbe gitTrackedFileProbe)
     {
         _probe = probe;
         _bannedPatterns = bannedPatterns;
         _syntaxProbe = syntaxProbe;
+        _gitTrackedFileProbe = gitTrackedFileProbe;
     }
 
     /// <summary>Run every semantic check and return all diagnostics (errors and warnings).</summary>
@@ -76,6 +98,7 @@ public sealed class PlanValidator
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
         ValidateHandoffScopeCoverage(plan, diagnostics);
+        ProducerCoverage.Validate(plan, _gitTrackedFileProbe, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
@@ -1821,27 +1844,7 @@ public sealed class PlanValidator
     /// actually invoking one.
     /// </summary>
     private static string StripCommentLines(string body) =>
-        string.Join('\n', body.Split('\n').Where(line => !IsCommentLine(line)));
-
-    /// <summary>
-    /// <see cref="StripCommentLines"/>'s line-preserving twin: a comment line is BLANKED rather than
-    /// removed, so an offset into the result still maps to the line number the reader will find in the
-    /// file. Same #97 exclusion (the shared <see cref="IsCommentLine"/>), so a header comment that merely
-    /// DESCRIBES a construction still cannot be what trips a check. Used by GR2057, which cites two clause
-    /// LINE NUMBERS — a citation off by however many comment lines sit above it is worse than none.
-    /// </summary>
-    private static string BlankCommentLines(string body) =>
-        string.Join('\n', body.Split('\n').Select(line => IsCommentLine(line) ? string.Empty : line));
-
-    private static bool IsCommentLine(string line)
-    {
-        string trimmed = line.TrimStart();
-        return trimmed.StartsWith('#')
-            || trimmed.StartsWith("//", StringComparison.Ordinal)
-            || trimmed.StartsWith("::", StringComparison.Ordinal)
-            || (trimmed.StartsWith("REM", StringComparison.OrdinalIgnoreCase) &&
-                (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3])));
-    }
+        string.Join('\n', body.Split('\n').Where(line => !GuardrailClauseText.IsCommentLine(line)));
 
     /// <summary>
     /// Validate <c>writeScope</c> across all tasks — including every waved task, since
@@ -2496,47 +2499,13 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// A single-clause PowerShell presence test whose ENTIRE condition is ONE <c>-match</c>/<c>-notmatch</c>
-    /// of a variable against a SINGLE-QUOTED literal, opening a block:
-    /// <c>if ($content -notmatch '…') {</c>. Everything else is deliberately unmatched, because everything
-    /// else makes the clause's polarity undecidable from the text:
-    /// <list type="bullet">
-    /// <item>a COMPOUND condition (<c>-and</c>/<c>-or</c>/<c>-not</c>/nested parens) — the block is then a
-    /// verdict on the conjunction, not on this pattern, so taking the branch does not prove the pattern is
-    /// required (the <c>\s*\)</c> immediately after the closing quote enforces this);</item>
-    /// <item>a DOUBLE-QUOTED or COMPOSED operand (<c>("(?m)\b" + [regex]::Escape($m) + "\s*\(")</c>) — the
-    /// pattern is not statically known, since PowerShell interpolates <c>$</c> inside <c>"…"</c>;</item>
-    /// <item>a pattern spanning a newline — no guardrail in the field writes one, and admitting it lets a
-    /// stray quote swallow half a script.</item>
-    /// </list>
-    /// <c>-cmatch</c>/<c>-imatch</c> and their <c>not</c> forms are the same operator with an explicit
-    /// case rule and are admitted.
-    /// </summary>
-    private static readonly Regex PresenceClause = new(
-        @"\bif\s*\(\s*\$(?<subject>\w+)\s+-[ci]?(?<neg>not)?match\s+'(?<pat>(?:[^'\r\n]|'')*)'\s*\)\s*\{",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    /// <summary>
-    /// Evidence that a clause's branch FAILS the guardrail rather than recording something: an append to a
-    /// <c>$failures</c>-shaped accumulator, a non-zero <c>exit</c>, a <c>throw</c>, or a <c>Write-Error</c>.
-    /// Both clauses of the measured #470 instance append to <c>$failures</c>; the catalogue's prescribed
-    /// form writes a line and <c>exit 1</c>.
-    /// </summary>
-    private static readonly Regex ClauseFailsTheGuardrail = new(
-        @"\$\w*fail\w*\s*\+=|\bexit\s+[1-9]|\bthrow\b|\bWrite-Error\b",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    /// <summary>Regex metacharacters that make a pattern non-literal, so no exact witness can be derived.</summary>
-    private const string RegexMetacharacters = "()[]{}|*+?.^$";
-
-    /// <summary>
     /// Shortest witness worth reconciling. Below this a "collision" is noise — a two-character required
     /// literal tripping some forbidden pattern says nothing about the guardrail being unsatisfiable.
     /// </summary>
     private const int MinimumWitnessLength = 3;
 
     /// <summary>Bounded match timeout for the ad-hoc regexes GR2057 compiles out of a plan's own text.</summary>
-    private static readonly TimeSpan ClauseMatchTimeout = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan ClauseMatchTimeout = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// GR2057 (issue #470 ask 1) — a guardrail that REQUIRES a token it also FORBIDS. One script carries a
@@ -2606,12 +2575,12 @@ public sealed class PlanValidator
                 continue;
             }
 
-            string scanned = BlankCommentLines(body);
+            string scanned = GuardrailClauseText.BlankCommentLines(body);
 
             List<(string Subject, string Witness, int Line)> required = [];
             List<(string Subject, string Pattern, int Line)> forbidden = [];
 
-            foreach (Match clause in PresenceClause.Matches(scanned))
+            foreach (Match clause in GuardrailClauseText.PresenceClause.Matches(scanned))
             {
                 // The regex ends ON the block's opening brace; the branch must FAIL for polarity to mean anything.
                 if (!BranchFailsTheGuardrail(scanned, clause.Index + clause.Length - 1))
@@ -2629,8 +2598,8 @@ public sealed class PlanValidator
                     continue;
                 }
 
-                string? witness = TryLiteralWitness(pattern);
-                if (witness is null || witness.Trim().Length < MinimumWitnessLength || !MatchesWitness(pattern, witness))
+                string? witness = GuardrailClauseText.TryLiteralWitness(pattern);
+                if (witness is null || witness.Trim().Length < MinimumWitnessLength || !GuardrailClauseText.MatchesWitness(pattern, witness))
                 {
                     continue;
                 }
@@ -2644,7 +2613,7 @@ public sealed class PlanValidator
                 {
                     if (!string.Equals(subject, bannedSubject, StringComparison.OrdinalIgnoreCase)
                         || HasInputAnchor(bannedPattern)
-                        || !MatchesWitness(bannedPattern, witness))
+                        || !GuardrailClauseText.MatchesWitness(bannedPattern, witness))
                     {
                         continue;
                     }
@@ -2672,8 +2641,12 @@ public sealed class PlanValidator
     /// text, so a <c>{</c> inside a string literal can leave the block unbalanced — in which case the
     /// answer is NO. Silence beats a guess: a mis-read block that ran to end-of-file would pick up some
     /// other clause's failure signal and invert this clause's polarity.
+    /// <para><c>internal</c> rather than private only so <see cref="ProducerCoverage"/> can reuse it
+    /// UNCHANGED: GR2060's condition 4 asks the same polarity question about the same clause shape, and two
+    /// readers free to disagree about whether a branch fails would put the two checks' polarities out of
+    /// step with each other.</para>
     /// </summary>
-    private static bool BranchFailsTheGuardrail(string text, int openBrace)
+    internal static bool BranchFailsTheGuardrail(string text, int openBrace)
     {
         int depth = 0;
         for (int i = openBrace; i < text.Length; i++)
@@ -2692,127 +2665,11 @@ public sealed class PlanValidator
             depth--;
             if (depth == 0)
             {
-                return ClauseFailsTheGuardrail.IsMatch(text[openBrace..(i + 1)]);
+                return GuardrailClauseText.ClauseFailsTheGuardrail.IsMatch(text[openBrace..(i + 1)]);
             }
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// The exact text every file satisfying <paramref name="pattern"/> must contain, or <c>null</c> when the
-    /// pattern does not pin one — see the bounded subset documented on
-    /// <see cref="ValidateGuardrailRequiresForbiddenToken"/>.
-    /// </summary>
-    private static string? TryLiteralWitness(string pattern)
-    {
-        int i = 0;
-
-        // Leading inline option groups — (?i), (?m), (?is) — change matching, never the text matched.
-        while (i + 2 < pattern.Length && pattern[i] == '(' && pattern[i + 1] == '?')
-        {
-            int close = i + 2;
-            while (close < pattern.Length && "imsxn-".Contains(pattern[close], StringComparison.Ordinal))
-            {
-                close++;
-            }
-
-            if (close == i + 2 || close >= pattern.Length || pattern[close] != ')')
-            {
-                break;
-            }
-
-            i = close + 1;
-        }
-
-        if (i < pattern.Length && pattern[i] == '^')
-        {
-            i++;                                                    // zero-width start anchor
-        }
-
-        int end = pattern.Length;
-        if (end > i && pattern[end - 1] == '$' && (end - 2 < i || pattern[end - 2] != '\\'))
-        {
-            end--;                                                  // zero-width end anchor
-        }
-
-        StringBuilder witness = new();
-        while (i < end)
-        {
-            char c = pattern[i];
-            if (c != '\\')
-            {
-                if (RegexMetacharacters.Contains(c, StringComparison.Ordinal))
-                {
-                    return null;
-                }
-
-                witness.Append(c);
-                i++;
-                continue;
-            }
-
-            if (i + 1 >= end)
-            {
-                return null;
-            }
-
-            char escaped = pattern[i + 1];
-            i += 2;
-
-            if (escaped == 'b')
-            {
-                continue;                                           // zero-width word boundary
-            }
-
-            if (escaped == 's')
-            {
-                char quantifier = i < end ? pattern[i] : '\0';
-                if (quantifier is '*' or '?')
-                {
-                    i++;                                            // zero whitespace is a valid witness
-                    continue;
-                }
-
-                if (quantifier == '+')
-                {
-                    i++;
-                }
-
-                witness.Append(' ');
-                continue;
-            }
-
-            if (char.IsAsciiLetterOrDigit(escaped))
-            {
-                return null;                                        // \w \d \S \n \t \1 …
-            }
-
-            witness.Append(escaped);                                // escaped punctuation is itself
-        }
-
-        return witness.ToString();
-    }
-
-    /// <summary>
-    /// Does <paramref name="pattern"/>, compiled from the PLAN's own text, match <paramref name="witness"/>?
-    /// A pattern that is not a valid regex, or that times out, answers NO — <c>validate</c> is read-only and
-    /// must degrade rather than throw over a plan author's typo (GR2056's precedent; issue #487).
-    /// </summary>
-    private static bool MatchesWitness(string pattern, string witness)
-    {
-        try
-        {
-            return new Regex(pattern, RegexOptions.CultureInvariant, ClauseMatchTimeout).IsMatch(witness);
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return false;
-        }
     }
 
     /// <summary>
@@ -2872,8 +2729,11 @@ public sealed class PlanValidator
     /// flattened across waves (so waved TASK folders are covered by the task loop); only the
     /// wave-LEVEL folders need the separate <c>plan.Waves</c> loop. Prompt guardrails are excluded
     /// (they are prose, not a regex construction).
+    /// <para><c>internal</c> rather than private only so <see cref="ProducerCoverage"/> can reuse it
+    /// UNCHANGED (doc 19 §3.4): GR2060 enumerates exactly the same six folder instances, and a private
+    /// second copy of this walk would silently stop covering the terminal gate the day this one moved.</para>
     /// </summary>
-    private static IEnumerable<GuardrailDefinition> FourFolderScriptGuardrails(PlanDefinition plan)
+    internal static IEnumerable<GuardrailDefinition> FourFolderScriptGuardrails(PlanDefinition plan)
     {
         foreach (TaskNode task in plan.Tasks)
         {
@@ -3387,12 +3247,19 @@ public sealed class PlanValidator
     /// <b>`planIsClosed`</b> (doc 19 §3.3) — the plan has no declared wave folder with zero tasks, so its
     /// declaration set is COMPLETE and nothing further is expected to be authored. Trivially true for a flat
     /// plan: there is no JIT breakdown, so nothing is pending by construction.
-    /// <para>It is the shared suppressor for the producer-coverage family. GR2062 uses it here; GR2060 (doc
-    /// 19 §3.1, reserved, not built) uses the same predicate for the same reason — while an un-authored wave
+    /// <para>It is the shared suppressor for the producer-coverage family. GR2062 uses it here; GR2060 uses
+    /// the same predicate for the same reason in <see cref="ProducerCoverage"/> — while an un-authored wave
     /// stub exists a shortfall is EXPECTED (that IS the #365 one-ahead invariant working) and a warning that
     /// fired then would be ignored within a week.</para>
+    /// <para><b>It detects an EMPTY STUB WAVE and nothing else.</b> It returns <c>true</c> for a wave
+    /// authored as a JIT PARTIAL PREFIX — five task folders of an intended twelve — because 5 &gt; 0, even
+    /// though that prefix's <c>writeScope</c> union is just as incomplete. So it is NOT a soundness
+    /// guarantee for the JIT breakdown gate: that case is excused separately in
+    /// <c>Scheduler.UnsatisfiableWhileIncomplete</c>, keyed on <c>wavePrefixIsIncomplete</c>, which is
+    /// actual knowledge of incompleteness rather than an observation that no wave folder is empty (plan 33
+    /// §5.3). The two suppressions are complementary, never alternatives.</para>
     /// </summary>
-    private static bool PlanIsClosed(PlanDefinition plan) => plan.Waves.All(w => w.Tasks.Count > 0);
+    internal static bool PlanIsClosed(PlanDefinition plan) => plan.Waves.All(w => w.Tasks.Count > 0);
 
     /// <summary>
     /// GR2062 (issue #477, doc 19 §3.2, SSOT §2/§14.1) — the plan INTENDS more waves than it DECLARES while

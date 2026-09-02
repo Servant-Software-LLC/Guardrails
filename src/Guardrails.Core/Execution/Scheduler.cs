@@ -2323,7 +2323,8 @@ public sealed class Scheduler
     }
 
     internal static bool UnsatisfiableWhileIncomplete(Diagnostic diagnostic) =>
-        string.Equals(diagnostic.Code, DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, StringComparison.Ordinal);
+        string.Equals(diagnostic.Code, DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, StringComparison.Ordinal)
+        || string.Equals(diagnostic.Code, DiagnosticCodes.UnproducibleGateRequirement, StringComparison.Ordinal);
 
     /// <summary>The hard cap on breakdown segments for ONE wave in ONE run (SSOT §14.11, design 20 §4.5).</summary>
     private const int MaxBreakdownSegments = 3;
