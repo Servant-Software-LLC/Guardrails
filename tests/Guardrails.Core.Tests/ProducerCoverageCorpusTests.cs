@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
@@ -130,6 +130,7 @@ namespace Guardrails.Core.Tests;
 /// two lists must agree. A check that is written but not wired into the composition root passes the first and
 /// fails the second.</para>
 /// </summary>
+[Collection(GitEnvironmentCollection.Name)]
 public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces>
 {
     private const string Gr2060 = "GR2060";

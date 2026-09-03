@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Guardrails.Core.Loading;
@@ -32,6 +32,7 @@ namespace Guardrails.Core.Tests;
 /// <see cref="InstructionAboutTheAuthoredArtifact_StaysSilent"/>, which is the shape of all five findings
 /// the check produced over the corpus before the second-person narrowing landed.</para>
 /// </summary>
+[Collection(GitEnvironmentCollection.Name)]
 public sealed class PromptToolGrantCoverageTests : IDisposable
 {
     private readonly string _root = Directory.CreateTempSubdirectory("gr2071-").FullName;
