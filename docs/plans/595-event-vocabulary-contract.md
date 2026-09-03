@@ -1,10 +1,28 @@
-# Architecture: the `events.jsonl` event vocabulary — run bracketing and the attempt row (#595)
+# Architecture: the `events.jsonl` event vocabulary — run termination and the attempt row (#595)
 
 Design of record for the two `IRunObserver` contract changes issue #595 asks for, on top of the
 additive kinds already landed on `fix/595-events-lifecycle-kinds` (`e7ba57d`).
 
-Status: **design of record, pending inline human review** (#106). Implementation milestones do not
-start until the draft PR's comments are addressed.
+Status: **REVIEWED AND SETTLED.** The implementation plan is `docs/plans/35-event-vocabulary.md`.
+
+## Maintainer ruling (settled — do not re-open)
+
+> **Decision 1 — `run-finished` ships ALONE. `run-started` is DROPPED.**
+> Carried by this document's own finding A: both of `run-started`'s counters are approximations,
+> `taskCount` undercounts exactly the JIT-waved plan the argument leaned on, and the name asserts a
+> bracket it does not deliver — false alarms across a long Full Flight Checks phase, missed alarms on
+> the six halts that write no row. That is the #595 defect shape reintroduced by the fix for it.
+> `task-started`, already shipped on `e7ba57d`, covers DAG-onward liveness, which was the gap that
+> actually motivated `run-started`.
+>
+> **Decision 2 — `AttemptFinished` → `(TaskNode, Journal.AttemptRecord)` is APPROVED as designed.**
+> Projection-side accumulation was pushed back on and the §2b rejection held: cost and turns are
+> announced to no observer ever, so accumulation cannot solve the stated problem, and it would make
+> the projection a second owner of a fact `run.json` owns.
+
+Sections below are kept as authored where they remain true, and marked where the ruling supersedes
+them. `RunStarting`'s rejection is preserved in §1a rather than deleted, so the case for it — and the
+reason it lost — survives for whoever proposes it again.
 
 **#563 applied.** Every load-bearing claim #595 makes was re-verified against the code rather than
 taken from the issue body. One came back incomplete and changed the design: `attempt-finished` is not
@@ -40,7 +58,8 @@ Plan 34 (`c10a13a`) shipped one emission seam (`IRunObserver`) with two projecti
 `observer.jsonl` (render-fidelity, drives `guardrails attach`). #595 measured that `events.jsonl`
 shipped with one kind and a six-field row, and asks for two things:
 
-1. **Run-level bracketing** — `run-started` / `run-finished`. No member of `IRunObserver` is
+1. **Run-level bracketing** — proposed as `run-started` / `run-finished`; **shipped as
+   `run-finished` alone** (§1a). No member of `IRunObserver` is
    run-scoped, so this needs a **new seam**, not a new projection.
 2. **Cost and turns on the attempt row** — plan 34 §6 claimed `events.jsonl` was "field-aligned with
    `TelemetryRow`"; the alignment holds for five identity fields and stops there.
@@ -65,11 +84,12 @@ design pins the real names in the SSOT rather than retrofitting the sketch — s
 
 | Item | Placement |
 |------|-----------|
-| `RunStarting` / `RunFinished` on `IRunObserver` | **harness** — `Guardrails.Core.Execution` + one CLI raise site each |
+| `RunFinished` on `IRunObserver` | **harness** — `Guardrails.Core.Execution` + one CLI raise site |
+| `RunStarting` on `IRunObserver` | **REJECTED** — §1a records the case and why it lost |
 | `AttemptFinished` payload widening | **harness** — `Guardrails.Core.Execution` |
 | The worktree-mode `attempt-finished` coverage hole | **harness** (bug, found while designing — see below) |
 | `GET /events` losing the terminal row to its poll interval on shutdown | **harness** (bug, load-bearing for decision 1) |
-| `GET /events` returning an empty 200 for a run with no rows yet | **NOT a bug — leave it.** Deliberate, test-pinned, and the window closes on its own once `run-started` exists |
+| `GET /events` returning an empty 200 for a run with no rows yet | **NOT a bug — leave it.** Deliberate, test-pinned, and the server does not start until after every pre-DAG phase |
 | The worktree `needs-human`-by-integration-gate settles raising no attempt event | **separate issue** — the gap is in the journal, not the seam |
 | A plan-folder lock against two concurrent runs sharing one `events.jsonl` | **out of scope** — pre-existing; §8.1 scopes its single-writer claim honestly instead |
 | `logs/<runId>/events.jsonl` + `observer.jsonl` wire contract | **schema** — `02-schemas-and-contracts.md` §8.1/§8.2 (**they are absent from the SSOT entirely**) |
@@ -129,8 +149,8 @@ re-proposes it:**
 3. **The window it was meant to cover barely exists.** `LogServer.TryStart` is at `RunCommand.cs:461`
    — *after* the Full Flight Checks (`:372`), the MAX_PATH preflight, and every interactive confirm.
    So there is no interval in which the server is up, a consumer is attached, and the pre-DAG phases
-   are still running. Once `run-started` is written at the top of `ExecuteAsync`, the file-missing
-   window shrinks to the handful of statements between `:461` and `:525`. `run-started` closes it.
+   are still running. The first row now lands as soon as the first task starts, so the file-missing
+   window is the handful of statements between `:461` and the first `TaskStarting`.
 
 **Bug B′ — the last row can miss a live subscriber, and that one IS load-bearing.**
 `WriteEventsStream`'s tail loop reads, and on a zero-byte read does
@@ -159,7 +179,7 @@ trade than a documented re-read.
    not the two members. **The invariant was already strained before this change; this change is where
    it gets repaid.**
 2. **#2 — the harness is the single writer of merged state.** Directly constrains decision 1: the
-   tempting cheap answer (have `RunEventStream`'s constructor author a `run-started` row, or have
+   tempting cheap answer (have `RunEventStream`'s constructor author a run-scoped row, or have
    `RunCommand` write run rows itself from the moment `runId` is known) gives `events.jsonl` two
    writers. Rejected below.
 3. **#5 — honest halts; nothing is marked done unverified.** Constrains `run-finished` hard: it must
@@ -171,7 +191,8 @@ trade than a documented re-read.
    no index, no state.
 5. **#1 — deterministic over prompt-judges** — not strained; nothing here consults a model.
 
-**Where the design strains an invariant.** #5, at one seam: `events.jsonl` begins at `run-started`,
+**Where the design strains an invariant.** #5, at one seam: `events.jsonl` begins at the first
+`task-started`,
 so six pre-DAG halts produce no file at all. I do not fix that (see rejected alternatives) — I
 *declare* it, in the SSOT, with the list of the six and the pointer to the mechanism that does cover
 them (the process exit code, and the `halt` section #432 added to `run.json`). A declared blind spot
@@ -179,69 +200,53 @@ is honest; an undeclared one is the #595 defect again.
 
 ---
 
-## Decision 1 — `RunStarting` / `RunFinished` on `IRunObserver`
+## Decision 1 — `RunFinished` on `IRunObserver` (`RunStarting` rejected)
 
-### 1a. Does `run-started` still earn its keep?
+### 1a. `run-started` — proposed, and REJECTED
 
-**Yes — but on the header argument, not the liveness argument, and the difference matters.**
+Preserved rather than deleted, because the case for it is genuinely tempting and someone will make it
+again. **The ruling is settled; this section exists so the next proposal starts from the counter-case.**
 
-The already-landed `task-started` kind mostly closes #595's cases (a) and (b): a stream with
-`task-started` rows and no `task-settled` is a healthy run in flight. So the liveness case for
-`run-started` is weaker than #595 implies, and weaker still because the observer chain does not exist
-during the pre-DAG phases (below) — `run-started` is **not** a reliable "the process launched" proof
-and must not be documented as one.
+**What was proposed, and what it uniquely bought.** A `run-started` header row carrying `taskCount`
+(the denominator — five `task-settled` rows mean nothing without it, and a `/events` consumer has no
+other source short of reading the plan folder, which is the filesystem read #585 exists to remove) and
+`alreadyCompleteCount` (so a resume of a 12-task plan with 10 already green does not read as a run
+that skipped ten tasks). Plus coverage of the JIT-breakdown window, where a waved plan can spend 30
+minutes with no `task-started` row at all.
 
-What it uniquely buys, and nothing else in the stream does:
+**Why it lost, and every reason came out of this document's own analysis:**
 
-1. **The denominator.** `taskCount`. Five `task-settled` rows mean nothing without it. A `/events`
-   consumer has no other source — it would have to read the plan folder, which is the filesystem read
-   #585 exists to remove.
-2. **The resume correction.** `alreadyCompleteCount`. A resume of a 12-task plan with 10 already green
-   emits two `task-started` rows and a green `run-finished`. Without this field that stream reads as a
-   run that skipped ten tasks. Resume is the *normal* case for long unattended runs (#361), so this is
-   not an edge.
-3. **`runId` as a stated fact rather than a derived one** — see 1c.
-4. **Coverage of the JIT-breakdown window.** A waved plan's between-wave breakdown can run 30 minutes
-   with no `task-started` (the checkpoint fires inside the Scheduler, after `ExecuteAsync`). That
-   window *is* covered by `run-started`.
+1. **Both counters are approximations.** `taskCount` is `PlanDefinition.Tasks` — the flattened union
+   of the waves AUTHORED so far — so a JIT-waved plan authors more afterward and the stated count
+   undercounts. `alreadyCompleteCount` is read before the §7.2 definition-drift rewind, which can
+   return already-succeeded tasks to pending. **The denominator would have been wrong on exactly the
+   plan shape argument 4 leaned on**, which is not a caveat, it is the argument eating itself.
+2. **The name asserts a bracket it does not deliver.** The observer chain is built after plan
+   validation, the MAX_PATH preflight, Full Flight Checks and every interactive confirm, so
+   `run-started` is not a process-launch event. A consumer would write "alert if no `run-started`
+   within N seconds" and get a false alarm on every long Full Flight Checks phase and a *missed*
+   alarm on the six halts that write no row at all. **That is the #595 defect shape — a signal that
+   looks like it certifies something it does not — reintroduced by the fix for it.**
+3. **The gap it was meant to close is already closed.** `task-started`, shipped on `e7ba57d`, covers
+   liveness from the DAG onward, which was the motivating case.
+4. **Its remaining unique argument was `runId` on the seam, and that argument was itself wrong** —
+   see §1b: the composition root already holds `runId` and hands it to the writer as a constructor
+   parameter.
 
-`run-finished` needs no defense: #595's case (c) — finished while disconnected — has no other answer,
-and it is the terminal signal an unattended supervisor and layer 3 both branch on.
+**What is lost, stated plainly:** a late-attaching consumer gets no denominator from the stream. That
+is a real cost, and it is smaller than it looks precisely because the denominator this design could
+have supplied would have been unreliable on the runs that most need it. If exact progress is ever
+wanted, it is a `run-progress` kind emitted where the counts are actually known — not a header row
+guessing at run start.
 
-### 1b. Exact signatures
+`run-finished` needs no such defense: #595's case (c) — finished while disconnected — has no other
+answer, and it is the terminal signal an unattended supervisor and layer 3 both branch on.
 
-Added to `src/Guardrails.Core/Execution/IRunObserver.cs`, both with default `{ }` bodies:
+### 1b. Exact signature
+
+**ONE** member added to `src/Guardrails.Core/Execution/IRunObserver.cs`, with a default `{ }` body:
 
 ```csharp
-/// <summary>
-/// The run's DAG is about to execute (issue #595) — the FIRST call any observer receives, raised once
-/// per PROCESS from <c>RunCommand.ExecuteAsync</c> before the Scheduler is even constructed.
-/// <paramref name="taskCount"/> is the plan's task count (the DENOMINATOR a stream consumer has no
-/// other source for); <paramref name="alreadyCompleteCount"/> is how many of those were ALREADY
-/// terminal in the journal before this process started, so a resume's short stream is
-/// self-explanatory rather than looking like a run that skipped work.
-///
-/// <para><b>Both counts are AS RECORDED AT RUN START, and both can be wrong later.</b>
-/// <paramref name="taskCount"/> is <c>PlanDefinition.Tasks</c> — the flattened union of the waves
-/// AUTHORED so far — so a JIT-waved plan (SSOT §14.4) authors more tasks after this fires and the
-/// stated count undercounts. <paramref name="alreadyCompleteCount"/> is read before the §7.2
-/// definition-drift rewind, which can push already-succeeded tasks back to pending, so more tasks may
-/// run than the arithmetic predicts. This is a HEADER for orientation, not an accounting record; a
-/// consumer that needs exact progress counts the rows.</para>
-///
-///
-/// <para><b>What this event does NOT claim.</b> It is not "the process launched": the observer chain
-/// is built after plan validation, the Windows MAX_PATH preflight, the plan-level Full Flight Checks
-/// and the interactive drift/wave/breakdown confirms, each of which can halt the run before any
-/// observer exists (SSOT §8.1 lists all six). It claims exactly "the observer chain is live and the
-/// DAG is about to run".</para>
-///
-/// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
-/// forward it EXPLICITLY or the run's own identity never reaches the projections behind it, in every
-/// mode (the <see cref="WaveGateFinished"/> / <see cref="VerifierAdvisoryFound"/> lesson).</para>
-/// </summary>
-void RunStarting(int taskCount, int alreadyCompleteCount) { }
-
 /// <summary>
 /// This process is DONE with the run (issue #595) — raised once, from a <c>finally</c> that brackets
 /// BOTH the DAG and the terminal plan-guardrail phase in <c>RunCommand.RunAsync</c>, so it fires on
@@ -266,7 +271,7 @@ void RunStarting(int taskCount, int alreadyCompleteCount) { }
 void RunFinished(int? exitCode, string? faultKind) { }
 ```
 
-**Should the new member carry `runId` explicitly? No — and the first draft was wrong to say yes.**
+**Should the member carry `runId` explicitly? No — and the first draft was wrong to say yes.**
 The concern is real: `RunEventStream` derives it as `Path.GetFileName(directory)`
 (`RunEventStream.cs:74`), an implicit contract ("the directory's name IS the run id") that breaks
 **silently** — pass a differently shaped directory and every row's `runId` is wrong with nothing
@@ -282,12 +287,13 @@ nothing for a decorator to swallow. The first draft's three reasons all collapse
 the one it weighted highest: a layer-3 webhook projection is *also* constructed by
 `BuildObserverChain`, so it takes `runId` the same way. **Making an unbuilt v2 bet the justification
 for the most expensive part of a v1 contract change was speculative abstraction**, and the composition
-root already holds the value.
+root already holds the value. This was also `run-started`'s last surviving unique argument (§1a).
 
 `_runId` stops being `readonly`-and-derived and becomes `readonly`-and-passed. `runId` still appears on
 every row; only the seam is spared.
 
-**Fields deliberately NOT on `RunStarting`:**
+**Fields that were proposed for `RunStarting` and are moot now it is rejected** — kept because two of
+them would be proposed again for any future run-scoped event:
 
 | Rejected | Why |
 |---|---|
@@ -307,28 +313,10 @@ every row; only the seam is spared.
 | Task counts, cost totals | Derivable from the rows already in the file; the run's total cost is in `run.json`. |
 | The exception message | Layer 3 will POST it. See `faultKind` above. |
 
-### 1c. Where each is raised — the real question
+### 1c. Where `RunFinished` is raised — the real question
 
-**`RunStarting`: the first statement of `RunCommand.ExecuteAsync`**
-(`src/Guardrails.Cli/Commands/RunCommand.cs:2403`), which gains two parameters (`string runId`,
-`int alreadyCompleteCount`).
-
-One site, not two. Both the `live` and `--no-ui` branches build the chain and then call
-`ExecuteAsync`, so raising it there covers both and cannot drift between them. Placed **before**
-`SchedulerFactory.Create` so it genuinely precedes every other observer call — including
-`ParallelismClampedNoProvider` (raised from the Scheduler ctor) and `VerifierAdvisoryFound` (raised at
-`Scheduler.cs:334`).
-
-Precisely: in the `live` branch `BuildObserverChain` and `ExecuteAsync` are adjacent statements; in
-the `--no-ui` branch four calls sit between them (`WriteInitialIndex`, `PrintStaticIndexLink`,
-`WriteInitialDiagram`, `PrintDiagramLink`, `RunCommand.cs:527-531`). A throw from any of those leaves
-the chain constructed and `RunStarting` unraised — but that run never executed a task either, so the
-stream correctly holds nothing, exactly as for the six pre-DAG halts. The window is real and its
-behavior is already the documented one.
-
-`alreadyCompleteCount` is computed by the caller from the journal already loaded at
-`RunCommand.cs:~322` (`RunJournal.LoadOrCreate`) — the count of `Tasks` entries whose status is
-terminal-green. **Not** re-read from disk.
+**`RunFinished` is the only member raised, and `runId` reaches the writer through the composition
+root** (`BuildObserverChain` → `new RunEventStream(inner, logsRoot, runId)`), not through the seam.
 
 **`RunFinished`: a NEW `finally` that brackets the DAG *and* the terminal phase.**
 
@@ -487,7 +475,7 @@ the two that are the point.
    `Guardrails.Core` and `Guardrails.Cli` declares **every** member — reusing
    `AttemptModelForwardingTests.Declares` (which correctly treats an inherited default as *not*
    declared, and catches explicit interface implementations). Verified: all four decorators declare
-   all 20 current members today, so this test is **green on arrival** and fails only on the two new
+   all 20 current members today, so this test is **green on arrival** and fails only on the new
    ones — which is exactly the signal wanted. Non-vacuity floor, copying the existing precedent:
    `Assert.Contains` each of the four known decorator types, and assert the member list is non-empty.
    This is the durable fix; it retires the class rather than patching instance #6.
@@ -683,7 +671,7 @@ vocabulary is settled:
   before the append.
 - Move the `At` timestamp inside the lock too, so `at` and `seq` and file order all agree.
 - `seq` restarts at 1 for a resume (a new process appending to the same file). It orders rows *within
-  a bracket*, and `(run-started … run-finished)` brackets are what a consumer segments on. Making it
+  a bracket*, and `run-finished` is what closes one. Making it
   durable across processes would mean reading the file back to find the high-water mark — a reader in
   the writer, for an ordering a bracket already gives.
 
@@ -696,11 +684,11 @@ settled telemetry row does not. That is stated in §8.1, so nobody looks for a `
 
 | Seam | Change |
 |---|---|
-| `IRunObserver` | + `RunStarting(string, int, int)`, + `RunFinished(string, int?, string?)`, `AttemptFinished` payload → `Journal.AttemptRecord` |
+| `IRunObserver` | + `RunFinished(int?, string?)`, `AttemptFinished` payload → `Journal.AttemptRecord` |
 | `RunEventStream` | + `runId` ctor parameter; 2 new emitting members; `EventRow.TaskId` → **`required string?`** (a run-scoped row has no task); `seq` + `at` assigned inside `_gate`; new `attempt-finished` fields |
 | `ObserverProjection` | 2 new recording members; `AttemptFinished` line flattens the record's fields |
 | `OnTheFlyDiagramObserver`, `OnTheFlyLogSiteObserver` | 2 new explicit forwards each (the swallow hazard) |
-| `LiveRunObserver`, `ConsoleRunObserver` | `AttemptFinished` signature only. **They must NOT declare the two new members** — see the disposal hazard below. |
+| `LiveRunObserver`, `ConsoleRunObserver` | `AttemptFinished` signature only. **They must NOT declare `RunFinished`** — see the disposal hazard below. |
 | `AttemptJournaler`, `TaskExecutor` | 11 mechanical raise-site edits |
 | `Scheduler.RecordSucceededSettle` | **+1 new raise site** — Bug A |
 | `AttachCommand.Dispatch` | `AttemptFinished` decode rebuilds an `AttemptRecord` from the flattened line. No new `case` for the run members (`default:` ignores them). |
@@ -801,7 +789,7 @@ every existing "SSOT §8" cross-reference still resolves.
 > | `at` | when the row was WRITTEN (ISO-8601 UTC), stamped under the same lock. Not a domain timestamp — `startedAt`/`endedAt` are those. Its resolution is the platform clock tick (~15.6 ms on Windows), so concurrent rows can share an `at`; that is why `seq` exists. |
 > | `runId` | the run's id, passed to the writer by the composition root. |
 >
-> **On every TASK-scoped row** (that is, every kind except `run-started` and `run-finished`):
+> **On every TASK-scoped row** (that is, every kind except `run-finished`):
 >
 > | Field | Meaning |
 > |---|---|
@@ -811,13 +799,12 @@ every existing "SSOT §8" cross-reference still resolves.
 >
 > | `kind` | Raised from | Additional fields |
 > |---|---|---|
-> | `run-started` | `IRunObserver.RunStarting` | `taskCount`, `alreadyCompleteCount` (no `taskId`) |
 > | `task-started` | `TaskStarting` | — |
 > | `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
 > | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 > | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 > | `task-settled` | `TaskFinished` | `outcome`, `detail` |
-> | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` (no `taskId`) |
+> | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — **the only kind with no `taskId`** |
 >
 > **One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
 > `Journal.AttemptOutcome` (`JournalJson.OutcomeToken`) — the same token §7 journals and §15.2's
@@ -845,39 +832,32 @@ every existing "SSOT §8" cross-reference still resolves.
 > reflects over `ExitCodes` — a hand-copied gloss that nothing checks is the same drift risk this
 > design cites when it rejects a parallel token set.)
 >
-> **Where the stream begins, and what its absence means.** The first row is `run-started`, raised
-> when the observer chain is live and the DAG is about to execute. Six halts return BEFORE the chain
-> exists and therefore write no `events.jsonl` at all: plan validation errors; an unparseable
-> `--autonomy` value; the Windows MAX_PATH worktree preflight (§3.2); the plan-level Full Flight
-> Checks failing (§7 `planPreflights`); and a declined interactive definition-drift (§7.2) or
-> wave-drift (§14.6) confirm. This is structural, not incidental: the interactive confirms and the
-> Full Flight Checks phase both write plain console lines and so must precede the live region the
-> chain is built around (§12.1). **A consumer must read "no `events.jsonl`" as "the run has not
-> reached the DAG", never as "no run"** — and for those halts the covering record is the process exit
-> code plus `run.json`'s `halt` section (§7). (All six were traced to their return statements in
-> `RunCommand.RunAsync` when this section was written; an exhaustive list ages, so treat it as the
-> halts known at that time rather than a closed set.)
+> **Where the stream begins, and what its absence means.** The first row is a `task-started`. There
+> is deliberately NO run-opening event: one was designed and rejected (design of record
+> `docs/plans/595-event-vocabulary-contract.md` §1a) because its payload could not be stated
+> accurately at run start and its name would have implied a bracket it did not deliver. Six halts
+> return BEFORE the observer chain exists and therefore write no `events.jsonl` at all: plan
+> validation errors; an unparseable `--autonomy` value; the Windows MAX_PATH worktree preflight
+> (§3.2); the plan-level Full Flight Checks failing (§7 `planPreflights`); and a declined interactive
+> definition-drift (§7.2) or wave-drift (§14.6) confirm. This is structural, not incidental: the
+> interactive confirms and the Full Flight Checks phase both write plain console lines and so must
+> precede the live region the chain is built around (§12.1). **A consumer must read "no
+> `events.jsonl`" as "the run has not reached the DAG", never as "no run"** — and for those halts the
+> covering record is the process exit code plus `run.json`'s `halt` section (§7). (All six were traced
+> to their return statements in `RunCommand.RunAsync` when this section was written; an exhaustive
+> list ages, so treat it as the halts known at that time rather than a closed set.)
 >
-> **A third state, and what it means.** A file whose FIRST row is not `run-started` means the
-> `RunStarting` event was swallowed on its way down the decorator chain — a defect, not a run state.
-> It is distinguishable and should be reported, not tolerated.
->
-> **A runId spans processes, so the file can hold more than one bracket.** A resume reuses the run id
-> and appends to the SAME `events.jsonl`. A `run-started` following a `run-finished` is therefore
-> normally the resume signal — though it is equally the signature of a second concurrent process
-> (above), so a consumer treats it as "a new bracket began", not as proof of a resume. Take the LAST
-> `run-finished` as current. A resume of an already-complete run re-fires the terminal gate with no
+> **A runId spans processes, so the file can hold more than one `run-finished`.** A resume reuses the
+> run id and appends to the SAME `events.jsonl`. **Take the LAST `run-finished` as current**; rows
+> after one belong to a later process (a resume, or — see above — a second concurrent run). A resume of an already-complete run re-fires the terminal gate with no
 > attempt burned (§7) and emits its own bracket around zero `task-started` rows — which
-> `alreadyCompleteCount` explains.
+> no `task-started` rows at all: every task was already green, so the terminal row is the only one.
+> **A `run-finished` with no `task-started` before it in that process's tail is a completed resume,
+> not a stalled run.**
 >
 > **`run-finished` is a durable FILE event first.** A `/events` subscriber can miss the terminal row:
 > the run appends it and tears the log server down microseconds later. A client whose connection
 > closes must RE-READ the file rather than assume it saw the end of the stream.
->
-> **`taskCount` and `alreadyCompleteCount` are run-start snapshots, not guarantees.** `taskCount` is
-> the tasks AUTHORED at run start, so a JIT-waved plan (§14.4) authors more afterward and the stated
-> count undercounts. `alreadyCompleteCount` is read before the §7.2 definition-drift rewind, which can
-> return already-succeeded tasks to pending. The pair orients a late subscriber; it does not balance.
 >
 > **An attempt-level `needs-human` is not terminal for its task.** The harness may re-drive the attempt
 > with an injected best guess (§7.1, #361/#550) and adopt a green result, so a `needs-human`
@@ -938,14 +918,10 @@ this document. Five were fixed (listed at the top). These are the ones that **su
 limitations**, and each is a place review may reasonably overrule me:
 
 **A. Both of `run-started`'s payload fields are approximations.** `taskCount` undercounts a JIT-waved
-plan; `alreadyCompleteCount` is read before the §7.2 drift rewind. §1a's case for the event rests on
-"the denominator" and "it covers the 30-minute JIT-breakdown window" — and the JIT plan is precisely
-the one whose denominator is wrong. I caveat both rather than move the raise site, because raising
-`RunStarting` after the Scheduler's drift resolution and wave authoring would put it after
-`ParallelismClampedNoProvider` and `VerifierAdvisoryFound`, so it would no longer be the first call
-and would no longer bracket anything. **A header for orientation is worth having; an accounting record
-is a different feature.** If review disagrees, the fallback below applies with more force than the
-first draft admitted.
+plan; `alreadyCompleteCount` is read before the §7.2 drift rewind. **This finding decided the
+feature**: the maintainer struck `run-started` on it (see the ruling at the top, and §1a). Recorded
+here because the finding came from the adversarial pass, not from this document's own critique — the
+author's case survived his own review and did not survive an independent one.
 
 **B. `run-finished` is best-effort over the wire.** `_listener.Stop()` runs first in `DisposeAsync`, so
 even with task 11's final drain a live subscriber can miss the terminal row. §8.1 tells consumers to
@@ -963,32 +939,24 @@ because they journal no attempt record. Fixed at the journal or not at all (abov
 
 ### The strongest objections, and my responses
 
-**The strongest counter-argument: `run-started` does not do what its name promises, and shipping it
-teaches consumers a false invariant.** A consumer reads the SSOT's kind table, sees `run-started`, and
-writes "if no `run-started` after N seconds, alert" — and gets a false alarm on every run that spends
-20 minutes in Full Flight Checks, plus a *missed* alarm on the six halts that never write a row.
-The event's name asserts a bracket it does not actually bracket. That is the #595 defect shape (a
-signal that looks like it certifies something it does not) reintroduced by the fix for it.
+**The strongest counter-argument — SUSTAINED, and it removed half the design.** A consumer reads the
+kind table, sees `run-started`, and writes "alert if no `run-started` within N seconds": a false alarm
+on every run with a long Full Flight Checks phase, and a *missed* alarm on the six halts that write no
+row at all. The name asserts a bracket it does not deliver. **That is the #595 defect shape — a signal
+that looks like it certifies something it does not — reintroduced by the fix for it.**
 
-**Response, and it is a concession as much as a rebuttal.** The name is load-bearing, so it is
-constrained rather than defended: the XML doc has an explicit "what this event does NOT claim"
-paragraph and a "both counts are run-start snapshots" one; §8.1 has a named "where the stream begins"
-subsection listing all six halts and the covering mechanism, plus the third-state rule for a file
-whose first row is not `run-started`. A consumer who reads the contract cannot form the false
-invariant. A consumer who does not read it can — and I accept that residue, because the alternative (no
-run-level bracketing at all) leaves #595's case (c) with no answer whatsoever, and because
-`taskCount`/`alreadyCompleteCount` are unavailable from any other source in the stream. **The honest
-framing, and the one that should appear in the PR: `run-started` is a HEADER row that happens to also
-prove liveness from the DAG onward — not a process-launch event.**
+The first draft's response was to constrain the name in three places (an XML "does NOT claim"
+paragraph, an SSOT "where the stream begins" subsection, a third-state rule) and accept the residue.
+That response was too clever: **a contract that needs three separate warnings not to be misread is
+telling you the event is wrong, not that the documentation is thin.** Combined with finding A — the
+counters were unreliable on exactly the plan shape the strongest argument leaned on — the honest call
+is the one the maintainer made: ship `run-finished` alone. `task-started` already covers the liveness
+gap that motivated the proposal, and the denominator this design could have supplied would have been
+wrong when it mattered most.
 
-**The fallback, now more live than the first draft allowed** (finding A above): ship **`run-finished`
-alone**. It answers #595's case (c), it is what an unattended supervisor and layer 3 branch on, its
-placement is now correct on every fault path, and it carries none of `run-started`'s exposure — no
-name that overpromises, no two approximate counters. The cost is that a late subscriber has no
-denominator, which matters less than it did once you notice the denominator would have been wrong on
-JIT-waved plans anyway. **I still recommend shipping both**, because a header row that is explicitly
-labeled a snapshot is more useful than no header at all — but this is the decision I would most like
-review to actually weigh rather than wave through.
+**What this cost.** A late-attaching consumer gets no denominator from the stream, and must read the
+plan folder for one. That is a real regression against #585's "remove the filesystem read" goal, and
+it is the right trade: a wrong denominator delivered confidently is worse than an absent one.
 
 **Second counter: decision 2 changes a shipped interface member for a benefit the row does not yet
 use.** The seam will carry `Kind`, `Effort`, `ModelDigest`, `RouteWarm`, `FailedGuardrails`,
@@ -1007,8 +975,8 @@ type that already exists and is already the SSOT for exactly these facts.
 **Third counter: pulling extra bugs in makes this three changes, and the brief said smallest.**
 
 **Response, revised.** The adversarial pass sustained this against "Bug B" and I dropped it — the
-empty-200 is deliberate, test-pinned, and the window it covered closes on its own once `run-started`
-exists. What replaced it (Bug B′, a three-line final drain) is genuinely load-bearing: without it the
+empty-200 is deliberate, test-pinned, and the server does not start until after every pre-DAG phase,
+so the window it covered does not exist. What replaced it (Bug B′, a three-line final drain) is genuinely load-bearing: without it the
 terminal event never reaches the wire, which is the whole payoff.
 
 Bug A stays, and is not optional: without it, decision 2 delivers cost and turns for the *minority*
@@ -1037,34 +1005,34 @@ strictly a `TelemetryRow` subset, drop it and let a consumer read the kind off `
 
 ## Implementation handoff
 
+**Superseded as the executable artifact** by `docs/plans/35-event-vocabulary.md`, which is the
+plan-breakdown-ready form of this table. Kept here as the rationale of record — the plan states WHAT,
+this states WHY, and where they disagree the plan is wrong.
+
 One task per row. `filesTouched` cells are backticked and segment-resolvable against the real tree.
 
 | # | Agent | filesTouched | Deliverable |
 |---|---|---|---|
-| 1 | `guardrails-harness-developer` | `src/Guardrails.Core/Journal/JournalModel.cs` | Nothing to change — **read-only precondition check** that `AttemptRecord` and every nested record (`AttemptUsage`, `AttemptSegments`, `AttemptProvenance`) are `public`. Fold into task 2 if you prefer; listed so the assumption is verified, not assumed. |
-| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/IRunObserver.cs` | Add `RunStarting(int, int)` / `RunFinished(int?, string?)` with the XML docs above (including the "does NOT claim", "both counts are run-start snapshots" and "never the message" paragraphs); change `AttemptFinished` to `(TaskNode, Journal.AttemptRecord)`. **No `runId` on either member** — it is a `RunEventStream` ctor parameter (task 4). Leave `NullObserver` alone — default-bodied members need no entry. |
-| 3 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/` | The exhaustive two-assembly decorator meta-test (assertion 1) **plus** behavioral forward tests for both new members (assertion 2) — written RED against task 2's interface, before task 4 declares anything. Retire or subsume `WaveGateForwardingTests` and `AttemptModelForwardingTests`'s reflection halves rather than leaving three overlapping sweeps. |
-| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunEventStream.cs` | A `runId` ctor parameter replacing the `Path.GetFileName` derivation; the two new emitting members; `EventRow.TaskId` → **`required string?`** (keep `required`: dropping it lets a future kind omit `taskId` silently, which `JsonIgnoreCondition.WhenWritingNull` makes indistinguishable from a run-scoped row); the `seq` counter and the `At` stamp both assigned **inside `_gate`**; the new `attempt-finished` fields. Update the class doc's "Emitted kinds" list and delete its now-false "Run-level bracketing is NOT here" paragraph. |
-| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/ObserverProjection.cs` | The two new recording members; flatten the `AttemptRecord` onto the `AttemptFinished` line — **all five `required` members** (`attempt`, `startedAt`, `endedAt`, `outcome`, `logDir`) plus the optionals it holds. Omitting any of the five makes `AttachCommand`'s replay throw `FormatException`, which it **silently swallows and skips** (`AttachCommand.cs:189-196`) — a `guardrails attach` where no attempt ever finishes, with no error anywhere. Task 13's round-trip test is what catches this; do not land task 5 without it. |
-| 6 | `guardrails-harness-developer` | `src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs`, `src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs`, `src/Guardrails.Cli/Ui/LiveRunObserver.cs`, `src/Guardrails.Cli/ConsoleRunObserver.cs` | Explicit forwards for both new members on the two decorators; `AttemptFinished` signature update on all four. The two renderers keep the interface default for the run members — comment the **reason**, not the choice: `RunFinished` is the first `IRunObserver` call ever made on the chain after `LiveRunObserver.DisposeAsync` has torn down the Spectre live loop, so declaring it there is a use-after-dispose. A style rationale would be accepted on its merits by the next reader who thinks a completion line would look nice. |
-| 7 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/AttemptJournaler.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs` | The 11 mechanical raise-site edits (`AttemptJournaler` 162, 382, 455, 534, 611, 668, 734, 802, 852; `TaskExecutor` 587, 622). |
-| 8 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/Scheduler.cs` | **Bug A** — the new raise in `RecordSucceededSettle`, after `RecordSettleWithAttempt`. Comment it with the §15.2a serial-versus-worktree trap. The comment must say **"the worktree SUCCESS path's only route to this event"** — NOT "the default mode's only route", which is false: the union-reverify / AI-merge / non-FF `needs-human` settles still raise nothing (they build no record). |
-| 9 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | `RunStarting` at the top of `ExecuteAsync` (+ two parameters, bound BY NAME at both call sites); `alreadyCompleteCount` from the journal loaded at `:307`; `runId` threaded into `BuildObserverChain`'s `RunEventStream` construction (`:2357`). Then the **new outer bracket**: hoist `diagramObserver` to `OnTheFlyDiagramObserver?` initialized null, open the try **before** the `if (live)` at `:509`, add the `catch (Exception ex) { faultKind = ex.GetType().Name; throw; }` and `finally { diagramObserver?.RunFinished(…); }`. **Leave the `finalSitesSettled` block at `:556` exactly as it is**, nested inside — widening it would newly fire `TrySettleFinalSitesAfterFault` on a mid-DAG fault, which is a separate behavior change. |
-| 10 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/AttachCommand.cs` | Rebuild an `AttemptRecord` in the `AttemptFinished` replay case from task 5's flattened line — its five `required` members (`Attempt`, `StartedAt`, `EndedAt`, `Outcome`, `LogDir`) must all be on the line, which needs one new `RequireDateTimeOffset` helper beside the existing `RequireString`/`RequireInt`/`RequireBool`. Add no `case` for the run members — comment that `default:` (`AttachCommand.cs:311-315`) intentionally ignores them. |
-| 11 | `guardrails-harness-developer` | `src/Guardrails.Cli/Ui/LogServer.cs` | **Bug B′ only** — `WriteEventsStream`'s poll loop does ONE final read-and-flush when `_shutdown` signals, before returning, so the terminal `run-finished` row is not lost to the 150 ms wait. **Do NOT change the empty-200 for a missing file**: it is deliberate (`LogServer.cs:763-767`), pinned by `EventsEndpointTests.cs:127-142`, and the change would hang that test rather than fail it. |
-| 12 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/` | Row-shape tests: the two new kinds; the `attempt-finished` field set; absent-not-null for every kind; `taskId` present on every task-scoped kind and absent on both run-scoped ones; `seq` strictly increasing and unique across concurrent writers; `run-started` with **asymmetric** `taskCount`/`alreadyCompleteCount` (never 1 and 1) so a positional slip fails; the `faultKind`-carries-no-message negative assertion; and the §8.1 exit-code gloss pinned by reflection over `ExitCodes`. |
-| 13 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/` | The composition-root wiring test through `RunCommand.BuildObserverChain` (assertion 3); the `run-finished`-on-every-exit-path matrix **including a throw out of `ExecuteAsync`** (assertion 4); a **real-settle** worktree test for Bug A that does NOT take the fake-provider `PendingAttempt is null` branch; and — the one the first draft missed — an **`ObserverProjection` → `AttachCommand` round-trip** for the widened `AttemptFinished`, asserting the replayed record's fields, because a short line is skipped silently rather than failing. |
-| 14 | `guardrails-architect` | `docs/plans/02-schemas-and-contracts.md` | Edits 1–3 above, verbatim. **Lands in the same change as task 2** (invariant #4) — not after. |
-| 15 | `guardrails-skill-author` | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | The contract quick-reference gains `events.jsonl`'s kinds and the "absence means the DAG was not reached" rule. **Verified: the skill mentions `events.jsonl`, `observer.jsonl` and `attach` nowhere** — plan 34 shipped past its own self-updating clause as well as past the SSOT. |
+| 1 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/IRunObserver.cs` | Add `RunFinished(int? exitCode, string? faultKind)` with the XML doc above (including the "never the message" paragraph); change `AttemptFinished` to `(TaskNode, Journal.AttemptRecord)`. **No `runId` on the member** — it is a `RunEventStream` ctor parameter. Leave `NullObserver` alone. |
+| 2 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/` | The exhaustive two-assembly decorator meta-test **plus** a behavioral forward test for `RunFinished` — written RED against task 1's interface, before task 3 declares anything. Subsume `WaveGateForwardingTests` and `AttemptModelForwardingTests`'s reflection halves rather than leaving three overlapping sweeps. |
+| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunEventStream.cs` | A `runId` ctor parameter replacing the `Path.GetFileName` derivation; the `RunFinished` emitting member; `EventRow.TaskId` → **`required string?`**; the `seq` counter and the `At` stamp both assigned **inside `_gate`**; the new `attempt-finished` fields. Update the class doc's "Emitted kinds" list and delete its now-false "Run-level bracketing is NOT here" paragraph. |
+| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/ObserverProjection.cs` | The `RunFinished` recording member; flatten the `AttemptRecord` onto the `AttemptFinished` line — **all five `required` members** plus the optionals it holds. |
+| 5 | `guardrails-harness-developer` | `src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs`, `src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs`, `src/Guardrails.Cli/Ui/LiveRunObserver.cs`, `src/Guardrails.Cli/ConsoleRunObserver.cs` | Explicit `RunFinished` forwards on the two decorators; `AttemptFinished` signature update on all four. The two renderers keep the interface default — comment the **reason** (use-after-dispose), not the choice. |
+| 6 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/AttemptJournaler.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs` | The 11 mechanical raise-site edits. |
+| 7 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/` | The **RED** real-settle worktree test for Bug A. Must not take the fake-provider `PendingAttempt is null` branch, and must assert it actually took the deferred-settle path. |
+| 8 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/Scheduler.cs` | **Bug A** — the new raise in `RecordSucceededSettle`. Comment says "the worktree SUCCESS path's only route", NOT "the default mode's only route". |
+| 9 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | `runId` threaded into `BuildObserverChain`'s `RunEventStream` construction; the new outer bracket (`OnTheFlyDiagramObserver?` hoisted null, try before the `if (live)`, `catch`/`throw;`, `finally { diagramObserver?.RunFinished(…); }`). **Leave the `finalSitesSettled` block exactly as it is**, nested inside. |
+| 10 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/AttachCommand.cs` | Rebuild an `AttemptRecord` in the `AttemptFinished` replay case; one new `RequireDateTimeOffset` helper. No `case` for `RunFinished` — `default:` ignores it by design. |
+| 11 | `guardrails-harness-developer` | `src/Guardrails.Cli/Ui/LogServer.cs` | **Bug B′ only** — one final read on shutdown. Do NOT change the empty-200. |
+| 12 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/` | Row-shape tests; `seq` monotonicity under concurrent writers; the `faultKind`-carries-no-message negative assertion; the §8.1 exit-code gloss pinned by reflection over `ExitCodes`. |
+| 13 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/` | The composition-root wiring test through `RunCommand.BuildObserverChain`; the `run-finished`-on-every-exit-path matrix **including a throw out of `ExecuteAsync`**; the **`ObserverProjection` → `AttachCommand` round-trip**. |
+| 14 | `guardrails-architect` | `docs/plans/02-schemas-and-contracts.md` | Edits 1–3 above, verbatim. Lands in the same change as task 1 (invariant #4). |
+| 15 | `guardrails-skill-author` | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | The contract quick-reference gains `events.jsonl`'s kinds and the "absence means the DAG was not reached" rule. |
 
-**Sequencing.** 1 → 2 → 3 (RED) → 4, 5, 6, 7 in parallel → 8 → 9 → 10, 11 in parallel → 12, 13 →
-14 (with 2, not after) → 15. Build stays broken between 2 and 7 by construction: that is the point of
-the signature change — the compiler enumerates the sites.
-
-**Ordering note for task 14.** Invariant #4 says the SSOT edit lands in the *same change*, and this
-plan spans several commits on one branch. "Same change" means the same PR/branch, and the SSOT edit
-must not be the last commit before merge as an afterthought — author it alongside task 2, adjust if
-implementation reveals a divergence.
+**Sequencing.** 1 → 2 (RED) → 3, 4, 5, 6 → 7 (RED) → 8 → 9 → 10, 11 → 12, 13 → 14 (with 1, not
+after) → 15. **The build is RED between task 1 and task 6 by construction** — that is the point of the
+signature change; the compiler enumerates the sites. See plan 35 §5 for what that means for
+task-level guardrails.
 
 ---
 
@@ -1097,7 +1065,15 @@ implementation reveals a divergence.
    free. **This is the same §15.2a serial-versus-worktree asymmetry a third time** — worth saying so
    in the issue, because three instances is a pattern the codebase should be checked against
    systematically rather than one at a time.
-6. **A third, lower priority: no plan-folder lock.** Two concurrent `guardrails run` invocations
+6. **Filed while revising this document: #596** — `SchedulerFactory` decides worktree mode twice
+   (inline in `Create`'s provider wiring and again as `WouldUseWorktreeMode`, which four more CLI sites
+   call), via a git subprocess whose `catch { return false; }` cannot distinguish "not a repository"
+   from "git was momentarily unavailable". The two evaluations can disagree within one run, and the F7
+   clamp notice does not fire in the direction that journals a run as serial while wiring worktree
+   mode. **This is a direct risk to Bug A's regression test** — a worktree test that only sets
+   `maxParallelism > 1` may run serial and pass for the wrong reason — and it is a plausible reason
+   Bug A hid this long.
+7. **A lower priority: no plan-folder lock.** Two concurrent `guardrails run` invocations
    resolve the same run id and both append to one `events.jsonl` (`File.AppendAllText` opens
    `FileShare.Read`, so the loser can take an `IOException` up through `RunEventStream.TaskStarting`).
    Pre-existing and not this change's to fix, but §8.1 now states single-writer *per process*, and a
@@ -1112,7 +1088,8 @@ Flagged because layer 3 must not be built until these are settled:
 1. **`runId` comes from the composition root, not the seam.** A webhook projection is a sibling
    decorator constructed by `BuildObserverChain`, which already holds `runId` — it takes it the same
    way `RunEventStream` now does. (The first draft made this the headline argument for putting `runId`
-   on `RunStarting`; it is the argument *against*.)
+   on `RunStarting` — which was also that member's last surviving unique argument, and so helped
+   retire it.)
 2. **`run-finished` as the delivery-terminal signal.** A webhook consumer needs one unambiguous "stop
    expecting deliveries" event, and its `exitCode` is what a CI wrapper branches on. Two consequences
    layer 3 must design for: a runId can produce more than one `run-finished` (a resume, or a second
