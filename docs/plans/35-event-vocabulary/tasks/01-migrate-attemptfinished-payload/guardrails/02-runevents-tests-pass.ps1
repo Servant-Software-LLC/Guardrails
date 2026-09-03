@@ -7,6 +7,17 @@ $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $failures = New-Object System.Collections.Generic.List[string]
 
+# Count FLOORS (#521). All 41 Core RunEvents tests live in three files THIS TASK OWNS, and they are its
+# only behaviour-preservation proof - so the task can satisfy its own guardrail by deleting or disabling
+# the assertion that catches its regression. "Do not change what any existing test asserts" is prose
+# against a 17-file, 75-turn task under retry pressure; these numbers are not.
+# Measured on 4e4785e: Core 41, Integration 32. A floor catches deletion and disabling.
+# It does NOT catch an assertion RELAXED inside a still-passing test - a named, accepted residual.
+$floors = @{
+    'tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj'               = 41
+    'tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj' = 32
+}
+
 foreach ($proj in @(
     'tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj',
     'tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj')) {
@@ -23,6 +34,9 @@ foreach ($proj in @(
     if (($passed + $failed) -lt 1) {
         $failures.Add("[$proj] the Category=RunEvents filter executed ZERO tests - it certifies nothing. The trait or the project moved.")
         continue
+    }
+    if ($passed -lt $floors[$proj]) {
+        $failures.Add("[$proj] only $passed RunEvents test(s) passed; this plan was authored against $($floors[$proj]). A test was deleted, disabled or renamed out of the category - a suite with fewer tests still goes green, so this floor is the only thing that sees it.")
     }
     if ($code -ne 0) {
         $failures.Add("[$proj] $failed of $($passed + $failed) RunEvents test(s) failed - the migration changed emitted behaviour.")

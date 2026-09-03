@@ -56,11 +56,39 @@ foreach ($c in @(
     @{ Token = 'attempt-finished'; Why = 'the kind whose field set this plan widens' },
     @{ Token = 'ordering key';     Why = "seq, not at, is the ordering key - a consumer keying on 'at' is wrong under parallel workers, and the contract has to say so" },
     @{ Token = 'TelemetryRow';     Why = 'each attempt-finished field names its telemetry twin; unstated, the vocabulary forks (#585)' },
-    @{ Token = 'faultKind';        Why = 'must be documented as a TYPE NAME and never a message - a security property once layer 3 POSTs these rows to an operator-supplied URL' })) {
+    @{ Token = 'faultKind';        Why = 'must be documented as a TYPE NAME and never a message - a security property once layer 3 POSTs these rows to an operator-supplied URL' },
+    @{ Token = 'task-started';     Why = 'one of the six emitted kinds - a partial kind list is a contract that lies by omission' },
+    @{ Token = 'attempt-started';  Why = 'likewise' },
+    @{ Token = 'guardrail-finished'; Why = 'likewise' },
+    @{ Token = 'task-settled';     Why = 'likewise' },
+    @{ Token = 'DAG';              Why = 'the ABSENCE RULE - the stream begins with the DAG, so an empty stream does NOT mean a healthy quiet run. This is the single most operationally important sentence here for an unattended supervisor, and mistaking silence for health is the defect #585 was filed about' })) {
 
     if ($body -notmatch [regex]::Escape($c.Token)) {
         $failures.Add("MISSING FROM SECTION 8 '$($c.Token)' - $($c.Why)")
     }
+}
+
+# Substance floor. Measured: a five-line token-stuffed insert - two headings plus one line listing
+# every required token - satisfied every clause above and exited 0. A token census cannot tell prose
+# from a word list, so bound how much has to be written. A LOWER BOUND, never a quality judgement.
+foreach ($h in @('### 8.1', '### 8.2')) {
+    $m = [regex]::Match($body, '(?ms)^' + [regex]::Escape($h) + '.*?(?=^###\s|\z)')
+    if ($m.Success) {
+        $lines = @($m.Value -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 })
+        if ($lines.Count -lt 12) {
+            $failures.Add("SECTION '$h' has $($lines.Count) non-blank line(s). A wire format an external consumer parses needs more than a token list - write the contract.")
+        }
+    }
+}
+
+# Edit 3 of the design of record: the GET /events shutdown read. It lives in section 12.2, NOT in
+# section 8, so every scoped clause above is structurally blind to it.
+$s122 = [regex]::Match($doc, '(?s)^###\s+12\.2.*?(?=^###\s+12\.3|^##\s+13\.)', 'Multiline')
+if (-not $s122.Success) {
+    $failures.Add("PRECONDITION: could not locate section 12.2's body - the document was restructured, so this clause cannot scope itself and would report a false absence.")
+}
+elseif ($s122.Value -notmatch 'shutdown') {
+    $failures.Add("MISSING FROM SECTION 12.2 'shutdown' - edit 3 is unwritten. GET /events must be documented as performing one final read on shutdown so the terminal row is delivered rather than lost to the poll interval, with delivery still best-effort.")
 }
 
 if ($failures.Count -gt 0) {

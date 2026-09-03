@@ -27,12 +27,23 @@ if ($doc -match '<!--') {
     exit 1
 }
 
+# SCOPED to the Quick Reference section. Measured: appending ONE line carrying all five tokens to the
+# END of the file satisfied every clause and exited 0. The prompt requires these additions land in the
+# contract quick-reference, and a whole-document scope cannot tell that from a footer.
+$qr = [regex]::Match($doc, '(?ms)^##\s+Quick Reference.*?(?=^##\s)')
+if (-not $qr.Success) {
+    Write-Output "PRECONDITION: could not locate the '## Quick Reference' section - the skill was restructured, so this check cannot scope itself and would report a false absence."
+    exit 1
+}
+$doc = $qr.Value
+
 $clauses = @(
     @{ Token = 'events.jsonl'; Why = "the semantic agent-facing stream - absent from this skill entirely today" },
     @{ Token = 'observer.jsonl'; Why = "the render-fidelity projection that drives attach" },
     @{ Token = 'guardrails attach'; Why = "the verb a reader of this skill has no other way to learn about" },
     @{ Token = 'run-finished'; Why = "the run-termination kind, and the one an unattended supervisor branches on" },
-    @{ Token = 'ordering key'; Why = "seq, not at, is the ordering key - a bare 'seq' clause was GREEN ON ARRIVAL here (it matches 'sequence' as a substring, measured 1 hit) and certified nothing" }
+    @{ Token = 'ordering key'; Why = "seq, not at, is the ordering key - a bare 'seq' clause was GREEN ON ARRIVAL here (it matches 'sequence' as a substring, measured 1 hit) and certified nothing" },
+    @{ Token = 'DAG'; Why = "the ABSENCE RULE - the stream begins with the DAG, so an empty stream does NOT mean a healthy quiet run. An unattended supervisor branches on exactly this, and mistaking silence for health is the defect #585 was filed about" }
 )
 
 $failures = New-Object System.Collections.Generic.List[string]

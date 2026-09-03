@@ -5,7 +5,12 @@ $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $filter = "FullyQualifiedName~EventsEndpointTests"
-$log = & dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --filter $filter --nologo 2>&1 | Out-String
+# --blame-hang-timeout: the plan states in three places that the WRONG change here (holding the
+# connection open for a missing events.jsonl) makes EventsEndpoint_OnAMissingEventsFile_... HANG rather
+# than fail, because it reads the whole body. Without a bound, that wrong implementation burns the full
+# task timeout on every attempt and returns NO feedback at all - strictly worse retry input than a
+# failure. The bound converts a hang into a named, actionable failure.
+$log = & dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --filter $filter --nologo --blame-hang-timeout 90s 2>&1 | Out-String
 $code = $LASTEXITCODE
 Write-Output $log
 

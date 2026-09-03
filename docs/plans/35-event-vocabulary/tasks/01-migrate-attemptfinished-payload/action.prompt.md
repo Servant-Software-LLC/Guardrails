@@ -67,9 +67,16 @@ another member to compensate for its absence.
 
 ### 2. Migrate every RAISE site
 
-**Count them yourself before you edit anything. Grep for `.AttemptFinished(` in
-`src/Guardrails.Core/Execution/AttemptJournaler.cs` and `src/Guardrails.Core/Execution/TaskExecutor.cs`.**
-At authoring time that returned **9 hits in AttemptJournaler and 2 in TaskExecutor**. Every one already
+**Count them yourself before you edit anything. Grep for `.AttemptFinished(` across BOTH `src/` AND
+`tests/` — not one of them, and not a named pair of files.** At authoring time that returned **9 hits in
+`AttemptJournaler.cs` and 2 in `TaskExecutor.cs`** in `src/`, plus **26 call sites across 6 test files**.
+
+**Read that second number carefully — it is why this instruction says "both trees".** The breakdown that
+authored this plan grepped *declarations* over `tests/` and *calls* over `src/`, and the difference between
+those two sets is a file with a CALL and no DECLARATION:
+`tests/Guardrails.Integration.Tests/RunEvents/AttachReplayTests.cs`, which passes a 3-arg lambda to an
+`Action<IRunObserver>`. It is in your `writeScope` now. Do not assume this paragraph is complete either —
+run the grep. Every one already
 has the record in a local (named `record`, or `failedRecord` in one TaskExecutor site) and already reads
 `.Outcome` off it, so each edit is mechanical:
 
@@ -98,6 +105,28 @@ signature update only, same behaviour, reading what they need off the record.
 **Do NOT declare `RunFinished` in ANY implementation in this task.** Leaving it undeclared everywhere is
 what makes the next task's forwarding tests fail for the right reason.
 
+### 3b. `RunEventStream` gains an explicit `runId` constructor parameter
+
+Same reason this task is atomic: it is the plan's **second** signature change, and its call sites live in
+files no later task may write.
+
+Add a `runId` parameter to `RunEventStream`'s constructor and use it, replacing the
+`Path.GetFileName(Path.TrimEndingDirectorySeparator(directory))` derivation. Make it **required** — do not
+add a defaulted or delegating 2-arg overload. An overload keeps every existing call site compiling while
+preserving the exact silent coupling this change exists to remove, and every guardrail in this plan would
+still go green.
+
+Then migrate every call site — **grep for `new RunEventStream(`**; at authoring time that was **11 sites in
+`tests/Guardrails.Core.Tests/RunEvents/RunEventStreamTests.cs` and 1 in
+`src/Guardrails.Cli/Commands/RunCommand.cs`**, all in your `writeScope`:
+
+- In the **tests**, pass the derived value explicitly —
+  `new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))` — so behaviour is unchanged and every
+  existing assertion still holds. This is a mechanical migration, not a rewrite.
+- In **`RunCommand.BuildObserverChain`**, pass the **real `runId`**, which that method already takes as a
+  parameter. This is the production wiring: it is what makes the run id on every row the run's own id
+  rather than a directory name that merely resembles it.
+
 ### 4. `src/Guardrails.Cli/Commands/AttachCommand.cs`
 
 Its replay dispatcher constructs the `AttemptFinished` call. Make it compile against the new signature by
@@ -114,4 +143,5 @@ change what any existing test asserts** — if an existing assertion looks genui
 ### Done when
 
 `dotnet build Guardrails.sln` succeeds and the existing `Category=RunEvents` tests still pass in both
-test projects. No behaviour changed anywhere: this is a payload migration.
+test projects — **at least 41 in Core and 32 in Integration**, the counts measured when this plan was
+authored. No behaviour changed anywhere: this is a payload and constructor migration.

@@ -61,6 +61,13 @@ try {
         elseif ($hit.outcome -eq 'NotExecuted') {
             $problems.Add("[$name] was SKIPPED. A declared exemption must execute; a skipped test is invisible evidence loss.")
         }
+        elseif ($hit.outcome -ne 'Passed') {
+            # The header used to claim this branch rejected 'Failed' and it did not - measured, a census
+            # over three Assert.Fail bodies reported "the exemption executed" and exited 0. A declared
+            # exemption asserts EXISTING CORRECT behaviour, so it must PASS; a failing one means the
+            # premise it encodes is already false, which is the one thing the exemption cannot survive.
+            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Passed'. This test is exempt from the RED census because a correct implementation leaves it GREEN - so a failure here means its premise is already false, not that the work is unfinished.")
+        }
     }
 
     if ($problems.Count -gt 0) {

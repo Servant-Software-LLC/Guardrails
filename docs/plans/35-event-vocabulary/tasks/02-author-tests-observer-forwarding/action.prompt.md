@@ -79,6 +79,12 @@ outermost decorator, and assert it arrives at the innermost observer. Use a reco
 as the innermost. This is the test that would still catch a decorator that declares the member and
 then does not call `_inner`.
 
+**Build the chain by calling `RunCommand.BuildObserverChain` — do NOT construct `RunEventStream` or any
+other decorator directly.** Two reasons, and the second is not obvious: a hand-built chain proves only
+that the decorators forward to each other, never that the PRODUCTION chain is assembled that way; and a
+direct `new RunEventStream(...)` here would pin a constructor signature that task 01 has already changed
+and that later tasks build on, breaking your file from a task not allowed to repair it.
+
 **3. `TheTwoRenderers_DoNotDeclareRunFinished_BecauseTheyAreDisposedFirst`** — will be GREEN, and that
 is correct.
 

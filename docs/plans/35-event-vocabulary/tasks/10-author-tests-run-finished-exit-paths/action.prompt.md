@@ -70,8 +70,14 @@ contains a recognisable secret-shaped string, and assert that string appears **n
 one value on the row that can carry an absolute path, a token, or a fragment of source.
 
 **6. `TheThrownExceptionStillPropagates_Unchanged`**
-The `catch` that records `faultKind` must **rethrow bare**. A catch that swallows or wraps the
-exception would convert a crash into a silent wrong answer - a far worse bug than the one being fixed.
+The `catch` that records `faultKind` must **rethrow bare**. A catch that swallows or wraps the exception
+would convert a crash into a silent wrong answer - a far worse bug than the one being fixed.
+
+**Assert the STACK TRACE too, or this test does not test what it is named for.** `throw ex;` propagates
+the same instance, the same type and the same message as `throw;` - it differs only in RESETTING
+`StackTrace` to this frame. So assertions on type and message pass against the one implementation the
+plan explicitly forbids, and the diagnostics for every unhandled fault in the process are destroyed
+silently. Assert the propagated exception's `StackTrace` still names the original throwing frame.
 
 **7. `BuildObserverChain_WiresTheEventStream_SoRunFinishedReachesEventsJsonl`**
 The composition-root proof. Drive the **real** `RunCommand.BuildObserverChain`, raise `RunFinished` on

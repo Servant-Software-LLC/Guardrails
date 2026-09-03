@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=67988cbcd463636deb0300ac5ba4ac894b0f9a0d57d1384d0993bf6db45bffa4 -->
+<!-- guardrails:graph v1 source-sha256=91055a4a797d25f60aa5dfa28629406b9139a0043b13347a84465442373c1cdd -->
 
 ```mermaid
 flowchart TD
@@ -47,6 +47,7 @@ flowchart TD
   style task_08_author_tests_worktree_settle_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_09_fix_worktree_settle_event["09-fix-worktree-settle-event"]
     task_09_fix_worktree_settle_event_gr_0["01-worktree-settle-tests-pass"]:::guardrail
+    task_09_fix_worktree_settle_event_gr_1["02-comment-states-the-worktree-scope"]:::guardrail
   end
   style task_09_fix_worktree_settle_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_10_author_tests_run_finished_exit_paths["10-author-tests-run-finished-exit-paths"]
@@ -98,10 +99,10 @@ flowchart TD
   task_07_implement_record_roundtrip --> task_15_update_domain_knowledge_skill
   task_08_author_tests_worktree_settle_event --> task_09_fix_worktree_settle_event
   task_10_author_tests_run_finished_exit_paths --> task_11_raise_run_finished_in_runcommand
+  task_11_raise_run_finished_in_runcommand --> task_14_document_the_streams_in_ssot
   task_12_author_tests_terminal_row_delivery --> task_13_deliver_terminal_row_in_logserver
   task_13_deliver_terminal_row_in_logserver --> task_14_document_the_streams_in_ssot
   task_09_fix_worktree_settle_event --> plan_guardrails
-  task_11_raise_run_finished_in_runcommand --> plan_guardrails
   task_14_document_the_streams_in_ssot --> plan_guardrails
   task_15_update_domain_knowledge_skill --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;

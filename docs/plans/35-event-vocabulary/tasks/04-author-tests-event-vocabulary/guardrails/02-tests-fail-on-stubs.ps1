@@ -40,9 +40,23 @@ try {
         'EveryRow_CarriesAStrictlyIncreasingSeq',
         'Seq_IsUniqueAndOrdered_UnderConcurrentWriters',
         'AttemptFinishedRow_CarriesTheFieldsThatDecideAResponse',
-        'AttemptFinishedRow_OmitsFieldsTheRecordDoesNotHold',
+        'AttemptFinishedRow_OmitsFieldsTheRecordDoesNotHold'
+    )
+    # DECLARED EXEMPTION (Step 2 rule 5): task 01 already landed the runId constructor parameter and
+    # wired it at the composition root, so a CORRECT tree leaves this test GREEN the moment it is
+    # authored. Demanding it be red would demand a correct implementation fail. It must EXECUTE and PASS.
+    $mustExecute = @(
         'RunIdComesFromTheConstructor_NotTheDirectoryName'
     )
+    foreach ($name in $mustExecute) {
+        $hit = $results | Where-Object { $_.testName -like "*$name*" } | Select-Object -First 1
+        if (-not $hit) {
+            $problems.Add("[$name] NOT EXECUTED - declared-exempt from the red census but still required to RUN. No test with this method name is in the TRX.")
+        }
+        elseif ($hit.outcome -ne 'Passed') {
+            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Passed'. Task 01 already landed the runId constructor parameter, so a correct tree leaves this GREEN - a failure means that wiring regressed.")
+        }
+    }
     $problems = New-Object System.Collections.Generic.List[string]
 
     foreach ($name in $mustFail) {

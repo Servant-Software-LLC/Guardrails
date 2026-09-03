@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "reviewedAt": "2026-09-03T20:00:28.5094756+00:00",
+  "planHash": "sha256:e064e4e40bb777813207a059ad64b99167f09aec4038f3d0330a8fcc8c3cbcff",
+  "attestation": {
+    "source": "review-artifact",
+    "tool": "guardrails 1.1.0",
+    "evidence": {
+      "reportPath": "state\\reviews\\review-e064e4e40bb7-2026-09-03T194712Z.md",
+      "reportDigest": "sha256:3b6bdbc41a53f961df34e5b385bf4bff801e64a7d4d4408da57a5712346f8807"
+    }
+  }
+}

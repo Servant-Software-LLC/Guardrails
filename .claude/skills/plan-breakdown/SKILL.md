@@ -2087,6 +2087,45 @@ Per `references/schemas.md`, exactly:
     Probe B (the minimal-gaming mutation), not yours — but say in the report that you ran the baseline
     only, so the next pass knows what is still unchecked.
 
+0f. **Closed-world self-review — does the plan folder's OWN EXISTENCE break a test? (#587)** A repo can
+   carry a **closed-world check**: a test whose expectation is an exhaustive, hand-maintained list of
+   something the repo contains — every plan folder, every allow-listed file, every registered producer.
+   Creating a new plan folder **adds a member to that world**, so the check goes red *before any task
+   runs* — and **no task in the plan can fix it**, because the file holding the list is in no task's
+   `writeScope` and nothing in the plan has a reason to claim it. The terminal gate then red-halts a
+   fully-successful run on a defect none of its tasks caused, at the most expensive possible moment.
+
+   **This is not hypothetical and it is not rare — it has now fired on three consecutive plans in this
+   repo.** Plan 33 broke `BreakdownSalvageAllowListTests`; plan 34 broke
+   `ProducerCoverageCorpusTests.TheExpectationTableCoversEveryPlanFolder` when its folder merged; plan 35
+   broke that same test **at breakdown time**, where merely creating the directory was enough. Each was
+   found late, by a run or a review, never by the breakdown that caused it.
+
+   **The check is one command, and it is the only one that finds this class.** After writing the folder
+   (Step 6) and before reporting, run the repo's own suite — or, when that is slow, the subset that
+   enumerates repo contents — **against the tree with the new folder present**:
+
+   ```
+   dotnet test <the suite>            # or the project holding the corpus/allow-list tests
+   ```
+
+   A failure whose assertion names **your new plan folder** is this defect. Do not reach for the
+   `--filter` your plan happens to use: the tripwire is by construction in a test area your plan has
+   nothing to do with, so a task-scoped or category-scoped filter is exactly what cannot see it. That is
+   also why the **#181 baseline preflight does not cover it** — the baseline is deliberately narrowed to
+   the touched area, and this defect is never in the touched area.
+
+   **When it fires, the registration is a HAND step and belongs in the breakdown report, not in a task.**
+   The row usually has to carry the breakdown commit's own sha, which does not exist while the tasks are
+   being authored — which is precisely why it keeps being forgotten. Add the entry yourself after
+   committing the folder, verify the test passes, and **state in the Step 7.4 report that you did it and
+   why it could not be a task**. Do not hand it to a task whose `writeScope` would then have to include a
+   test file unrelated to the plan's deliverable.
+
+   Cross-check the terminal gate while you are here: if its `# catches:` or its floors record a suite
+   count, that number must be the count **with the folder present**, not the one you measured before
+   creating it.
+
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why). **This now FAILS a breakdown that OMITS any `writeScope`**
    (**GR2041**, #389 — required on every task): a task that writes nothing to the repo must still
@@ -3879,6 +3918,7 @@ authority for every path/signature the new wave references.
 - [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
+- [ ] (#587) Step 7.0f ran: the repo's own suite (or the project holding its corpus / allow-list tests) was executed **with the new plan folder present**, to check whether the folder's mere EXISTENCE breaks a closed-world check — a test whose expectation is an exhaustive hand-maintained list of what the repo contains. Such a test goes red before any task runs and **no task can fix it** (the file holding the list is in no `writeScope`), so the terminal gate red-halts a fully-successful run on a defect none of its tasks caused. **Measured three consecutive times in this repo** (plan 33's `BreakdownSalvageAllowListTests`; plan 34's `ProducerCoverageCorpusTests` on merge; plan 35's on breakdown, where creating the directory was enough). The plan's own `--filter`-scoped guardrails and the #181 baseline preflight both structurally CANNOT see it — the tripwire is by construction outside the touched area. When it fires, the registration is a HAND step (its row usually needs the breakdown commit's own sha, which does not exist while tasks are authored — which is why it keeps being forgotten), performed after committing the folder and NAMED in the Step 7.4 report, never handed to a task. Any suite count recorded in the terminal gate is the count WITH the folder present.
 - [ ] Output explicitly presented as a draft for human review.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->
 - [ ] (#578) No action prompt states an **unmeasured** structural claim about the codebase. Where a prompt points at a set of code sites it ships the **command** ("grep this file for `X` and cover every hit") rather than the list — and where it states a count, a routing/exclusivity claim or a location as fact, this pass RAN the command, the command sits in the prompt beside the claim, and the prompt names **the grep, not the number**, as the authority when they disagree. A command followed by a gloss that pre-answers it is the enumerated form wearing a command (the measured plan-30 defect), not a compliance. Line-number pointers take the #203 durable-marker fix — that is this rule's location case, and this rule applies to flat plans and to code no task touches, where #203's wave trigger never fires. The claims and the commands that established them are in the Step 7.4 report, with the `/guardrails-review` #578 probe surfaced. **No `validate` check backs this, deliberately** — the claims are prose and nothing about them is statically decidable.

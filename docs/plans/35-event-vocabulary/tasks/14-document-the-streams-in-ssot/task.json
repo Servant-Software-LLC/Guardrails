@@ -4,6 +4,7 @@
   "dependsOn": [
     "05-implement-event-vocabulary",
     "07-implement-record-roundtrip",
+    "11-raise-run-finished-in-runcommand",
     "13-deliver-terminal-row-in-logserver"
   ],
   "writeScope": [

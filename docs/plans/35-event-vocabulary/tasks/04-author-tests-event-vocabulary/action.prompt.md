@@ -76,13 +76,21 @@ each field, named for its `TelemetryRow` twin verbatim: `costUsd`, `turns`, `mod
 
 **7. `AttemptFinishedRow_OmitsFieldsTheRecordDoesNotHold`**
 With a record whose `Provenance` is null, assert `model` / `tier` / `runner` are **absent**, not null.
+**In the same test, assert `elapsedSeconds` and `attemptsMax` appear on NO kind** - the two fields the
+design forbids. They are prose prohibitions otherwise, and a forked vocabulary is exactly what #585 warns
+against two paragraphs after proposing them.
 The stream reports exactly what the journal holds - four of `FailedAttempt`'s call sites pass no
 provenance, and papering over that in the projection would make it a second owner of the fact.
 
-**8. `RunIdComesFromTheConstructor_NotTheDirectoryName`**
+**8. `RunIdComesFromTheConstructor_NotTheDirectoryName`** - will be GREEN, and that is correct.
 Construct `RunEventStream` with a `runId` that deliberately **differs** from the directory's name and
-assert rows carry the constructor value. Today it is derived by `Path.GetFileName(directory)`; a test
-whose runId happens to equal the directory name cannot tell the two apart.
+assert rows carry the constructor value. Choose a runId that could not be derived from the path: one
+existing test's temp directory really is named `my-test-run`, so a test whose runId happens to equal the
+directory name cannot tell the two apart.
+
+Task 01 already landed the constructor parameter and wired it at the composition root, so this passes the
+moment it is written. **It is a DECLARED EXEMPTION from the red census** - it pins a property that must
+not regress, and demanding it be red would demand a correct implementation fail.
 
 ### What NOT to assert
 

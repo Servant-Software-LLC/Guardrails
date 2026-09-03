@@ -30,38 +30,31 @@
 
 Make the `RunEventVocabularyTests` tests pass by widening the `events.jsonl` writer.
 
-**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/RunEventStream.cs` and `src/Guardrails.Cli/Commands/RunCommand.cs`. After this task completes the harness runs a
-`git diff` check and rejects any edit outside that surface - production files, other test files, the
-`.csproj`. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile
-error caused by a missing symbol in another file, do NOT edit that file - write
-`{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/RunEventStream.cs`.
+After this task completes the harness runs a `git diff` check and rejects any edit outside that file -
+production files, test files, the `.csproj`. An out-of-scope edit fails the task immediately and consumes
+a retry. If you hit a compile error caused by a missing symbol in another file, do NOT edit that file -
+write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 
 **Do NOT edit the tests authored upstream.** They are the specification. If one is genuinely wrong,
 write `{"needsHuman": "<why>"}` to the state-out path and stop rather than changing it - an
 out-of-scope edit to a test file fails the task immediately and consumes a retry.
 
-**Your `RunCommand.cs` edit is ONE line and nothing else:** the `new RunEventStream(...)` construction
-inside `BuildObserverChain`, which must now pass `runId` (that method already has it as a parameter).
-Raising `RunFinished` from `RunCommand` is task 11 - do not attempt it here, and do not restructure the
-try/finally.
+**The `runId` constructor parameter is NOT yours** - task 01 already added it and wired it at the
+composition root. Raising `RunFinished` from `RunCommand` is task 11. This task changes ONE file.
 
 ### What to change in `RunEventStream`
 
-1. **`runId` becomes a constructor parameter**, replacing the
-   `Path.GetFileName(Path.TrimEndingDirectorySeparator(directory))` derivation. The composition root
-   already holds the real run id; deriving it from a directory name is a silent coupling that a test
-   whose runId happens to equal the directory name cannot detect.
-
-2. **`seq` on EVERY row**: monotonic, 1-based, per-process, assigned **inside** `lock (_gate)` -
+1. **`seq` on EVERY row**: monotonic, 1-based, per-process, assigned **inside** `lock (_gate)` -
    and **move the `At` stamp inside that lock too**. Both are ordering-relevant and both are currently
    built outside it.
 
-3. **The `run-finished` row**, carrying `exitCode` and `faultKind`. It is the only kind with **no
+2. **The `run-finished` row**, carrying `exitCode` and `faultKind`. It is the only kind with **no
    `taskId`**, so `EventRow.TaskId` becomes `required string?`. **Keep `required`**: dropping it would
    let a future kind omit `taskId` silently, which `JsonIgnoreCondition.WhenWritingNull` makes
    indistinguishable from a legitimately run-scoped row.
 
-4. **The widened `attempt-finished` row.** Each field names its `TelemetryRow` twin verbatim:
+3. **The widened `attempt-finished` row.** Each field names its `TelemetryRow` twin verbatim:
 
    | Row field | `TelemetryRow` | From the record |
    |---|---|---|
@@ -77,7 +70,7 @@ try/finally.
    Do **not** add `elapsedSeconds` or `attemptsMax`, and do **not** substitute a value when the record
    holds none - a row omitting `model` because the journal has no provenance is correct and honest.
 
-5. **Update the class doc**: extend the "Emitted kinds" list with `run-finished`, and **delete the
+4. **Update the class doc**: extend the "Emitted kinds" list with `run-finished`, and **delete the
    now-false paragraph** saying run-level bracketing is not here.
 
 ### Done when
