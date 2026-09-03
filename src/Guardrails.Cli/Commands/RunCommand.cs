@@ -506,210 +506,243 @@ public static class RunCommand
 
             RunReport report;
             Scheduler scheduler;
-            OnTheFlyDiagramObserver diagramObserver;
-            if (live)
-            {
-                // Write the initial all-pending index + the seeded live diagram AND print their links
-                // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
-                // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
-                // So both static writes + their links must precede the live region.
-                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
-                PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
-                OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
-                PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
 
-                await using var liveObserver = new LiveRunObserver(
-                    probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
-                    probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
-                (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
-                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
-                PrintStaticIndexLink(logsRoot, io);
-                diagramObserver.WriteInitialDiagram();
-                PrintDiagramLink(logsRoot, io);
-                (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
-            }
-
-            // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
-            // ONCE, AFTER the DAG drains wholly green, against the merged plan-branch HEAD — replacing
-            // the retired integrationGate task-kind's terminal role (Scheduler.cs skips that legacy path
-            // whenever the plan declares this folder, SSOT §3.3). No-op (true) when the DAG did not
-            // fully succeed this run/resume, or the plan has no <plan>/guardrails/ folder at all.
-            // B2(b) terminal-only resume falls out for free: a resume where every task is already
-            // succeeded drains the DAG with nothing left to do (report.AllSucceeded stays true, no
-            // attempt burned), so this phase unconditionally re-fires against the current HEAD.
-            // Issue #240: same silent-on-success gap as Full Flight Checks above. This phase is only
-            // ever actually invoked when the DAG settled green AND the plan declares this folder (the
-            // `!report.AllSucceeded ||` short-circuit means EvaluateAsync is never called at all
-            // otherwise) — gate the bracketing lines on exactly that, or "Terminal Gate: running..."
-            // would misleadingly print for a run that failed before ever reaching this phase.
-            // Issue #333: the terminal-gate phase and the two end-of-run final-static writes are wrapped so
-            // that an UNEXPECTED throw from PlanGuardrailPhase.EvaluateAsync (anything that is NOT a
-            // #150-converted abort — it runs OUTSIDE the Scheduler, so an infra fault here propagates raw)
-            // still settles BOTH final pages. Without this, a throw skips WriteFinalStatic + the durable
-            // final log-site write, leaving logs/<runId>/diagram.html <meta refresh>-ing with the Terminal
-            // Gate badge frozen on a spinner and the log index stuck in its during-run (refreshing) state.
-            bool finalSitesSettled = false;
+            // Issue #(event-vocabulary plan 35) — run-finished must fire on EVERY exit path, including an
+            // unhandled fault out of the Scheduler (the largest fault surface in the process). The prior
+            // `finally` below (issue #333, still unchanged and nested inside) sits INSIDE this try, with no
+            // catch between it and the two ExecuteAsync call sites — so a throw out of ExecuteAsync unwound
+            // straight past it. This outer try/catch/finally is the actual run-finished bracket: the chain
+            // (diagramObserver), the resolved exit code, and the fault kind are all hoisted above it so the
+            // finally can report on them regardless of which path was taken, including a throw before the
+            // chain even exists (diagramObserver stays null, so `?.` below correctly raises nothing).
+            OnTheFlyDiagramObserver? diagramObserver = null;
+            int? resolvedExitCode = null;
+            string? faultKind = null;
             try
             {
-                bool hasPlanGuardrails = probe.Plan.PlanGuardrails.Count > 0;
-                bool willEvaluateTerminalGate = report.AllSucceeded && hasPlanGuardrails;
-                if (willEvaluateTerminalGate)
+                if (live)
                 {
-                    io.Out.WriteLine("Terminal Gate: running...");
-                    diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
+                    // Write the initial all-pending index + the seeded live diagram AND print their links
+                    // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
+                    // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
+                    // So both static writes + their links must precede the live region.
+                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
+                    PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
+                    OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
+                    PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
+
+                    await using var liveObserver = new LiveRunObserver(
+                        probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
+                        probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
+                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
+                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
+                    PrintStaticIndexLink(logsRoot, io);
+                    diagramObserver.WriteInitialDiagram();
+                    PrintDiagramLink(logsRoot, io);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
                 }
 
-                // Issue #556 (plan 32 §6.5 correction 1) — NOT EVALUATED is a third state, and it is not
-                // "passed". The expression below used to be `!report.AllSucceeded || await EvaluateAsync(…)`,
-                // so every run that never reached the gate recorded that the gate PASSED. For an ordinary
-                // failed run that short-circuit is harmless shorthand — nothing downstream turns on it. For an
-                // executed-definition DIVERGENCE run it is a verdict that never happened, on a run whose every
-                // task settled `succeeded`, in the one change whose whole purpose is that the harness stops
-                // claiming verifications it did not perform. So this is a TRI-STATE: true = passed,
-                // false = failed, null = NOT EVALUATED. Only the divergence case is ever null, so every other
-                // run is byte-identical to before (`is true` / `is false` on a non-null bool? is the bool).
-                // The gate is deliberately not RUN either: evaluating a gate whose result cannot change the
-                // outcome spends real money for a number nobody acts on (§6.5).
-                bool? planGuardrailsPassed = report.HasExecutedDefinitionDivergence
-                    ? null
-                    : !report.AllSucceeded
-                      || await PlanGuardrailPhase
-                          .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
-                          .ConfigureAwait(false);
-
-                if (willEvaluateTerminalGate)
-                {
-                    // willEvaluateTerminalGate implies report.AllSucceeded, which implies no divergence — so
-                    // the tri-state is never null in here.
-                    diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed is true); // settle the bracket badge
-                    if (planGuardrailsPassed is true)
-                    {
-                        io.Out.WriteLine("Terminal Gate: passed.");
-                    }
-                }
-
-                // Issue #457 — DELIVERY HAPPENS HERE, NOT INSIDE THE SCHEDULER, for any plan declaring a
-                // <plan>/guardrails/ terminal gate. The Scheduler HELD the merge back (report
-                // .DeliveryPendingTerminalGate) precisely because its own `AllSucceeded` is TASKS ONLY and
-                // this gate's verdict did not exist yet. Now it does: a PASSED gate delivers exactly as
-                // before (#340 delivered-by-default is unchanged for a genuinely green run), and a FAILED
-                // gate simply never reaches this call — nothing merges to the user's branch, and the
-                // verified-but-ungated work stays on the plan branch where the halt message says it is.
-                //
-                // Placed BEFORE WriteFinalStatic/Finish so the outcome is in the report every downstream
-                // consumer reads: the exit-code mapping for a halted delivery (HookRejected /
-                // DirtyWorkingTree / Conflict / BranchMoved), the final static pages, the #340 notices,
-                // and the #407 reclaim predicate.
-                if (report.DeliveryPendingTerminalGate && planGuardrailsPassed is true)
-                {
-                    report = scheduler.CompleteDeferredDelivery(report, cancellationToken);
-                }
-
-                // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
-                // the run, sourced from the observer's own in-memory map, mirroring the durable final log site
-                // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
-                diagramObserver.WriteFinalStatic();
-
-                int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
-                finalSitesSettled = true; // both final pages are now settled on the normal path
-
-                // #387 v1: in an attended TTY, offer a one-click pick for any OPEN, options-carrying needsHuman
-                // escalation this run raised — the choice is written to the SAME reply channel (an answer file)
-                // and injected on the next resume (halt/resume). A no-op when not interactive or nothing is
-                // pickable; a NON-answerable escalation is never offered a pick (§7.3).
-                EscalationPickPrompt.OfferPicksInteractive(probe.Plan, runId, io);
-
-                // Issue #361 Phase 4 (doc 12 §5.2 Option P / §7.1): a run that PROCEEDED THROUGH one or more
-                // waves unreviewed is INDELIBLY flagged — render the permanent "ran with N unreviewed wave(s)"
-                // warning so the run can never read as clean green, regardless of the verdict resolved above.
-                // Placed before the exit-path branches below so it fires on every outcome (the fact is
-                // permanent, not conditional on the final verdict); the distinct ExitCodes.ProceededUnreviewed
-                // (5) that a wholly-green such run returns is mapped in Finish — this is its console companion
-                // (SSOT §7 rendering lives behind the CLI seam).
-                RenderUnreviewedWavesWarning(report, io.Out);
-
-                // Issue #545 part 3 (plan 31 §5.1/§5.4): the terminal surface of the mid-run plan-folder
-                // edit advisory. Placed beside the unreviewed-waves warning and BEFORE the exit-path
-                // branches below, so an operator who edited the plan folder is told regardless of how the
-                // run ended — including the terminal-gate-failure early return.
-                RenderPlanEditWarning(report, io.Out);
-
-                if (report.AllSucceeded && planGuardrailsPassed is false)
-                {
-                    PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
-                    return ExitCodes.TaskFailed;
-                }
-
-                // Issue #542: journal the delivery outcome BEFORE rendering the banner, so the durable
-                // record exists even if the console is never read (or never seen at all — #496's unattended
-                // pipeline has no console). Written here, at the end, because delivery only fully resolves
-                // once the terminal gate's verdict is in (the DeliveryPendingTerminalGate path). Best-effort:
-                // a journal write must never flip a run's verdict this late.
+                // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
+                // ONCE, AFTER the DAG drains wholly green, against the merged plan-branch HEAD — replacing
+                // the retired integrationGate task-kind's terminal role (Scheduler.cs skips that legacy path
+                // whenever the plan declares this folder, SSOT §3.3). No-op (true) when the DAG did not
+                // fully succeed this run/resume, or the plan has no <plan>/guardrails/ folder at all.
+                // B2(b) terminal-only resume falls out for free: a resume where every task is already
+                // succeeded drains the DAG with nothing left to do (report.AllSucceeded stays true, no
+                // attempt burned), so this phase unconditionally re-fires against the current HEAD.
+                // Issue #240: same silent-on-success gap as Full Flight Checks above. This phase is only
+                // ever actually invoked when the DAG settled green AND the plan declares this folder (the
+                // `!report.AllSucceeded ||` short-circuit means EvaluateAsync is never called at all
+                // otherwise) — gate the bracketing lines on exactly that, or "Terminal Gate: running..."
+                // would misleadingly print for a run that failed before ever reaching this phase.
+                // Issue #333: the terminal-gate phase and the two end-of-run final-static writes are wrapped so
+                // that an UNEXPECTED throw from PlanGuardrailPhase.EvaluateAsync (anything that is NOT a
+                // #150-converted abort — it runs OUTSIDE the Scheduler, so an infra fault here propagates raw)
+                // still settles BOTH final pages. Without this, a throw skips WriteFinalStatic + the durable
+                // final log-site write, leaving logs/<runId>/diagram.html <meta refresh>-ing with the Terminal
+                // Gate badge frozen on a spinner and the log index stuck in its during-run (refreshing) state.
+                bool finalSitesSettled = false;
                 try
                 {
-                    // `is not false` rather than `?? true`: the parameter is consumed as "did the terminal
-                    // gate REFUSE?", and a gate that was never evaluated did not refuse. The divergence run's
-                    // own reason branch inside DescribeDelivery is reached first, so a NOT-EVALUATED gate
-                    // never reaches the terminal-gate wording either way.
-                    journal.RecordDelivery(
-                        DescribeDelivery(report, planGuardrailsPassed is not false, probe.Plan.PlanDirectory));
+                    bool hasPlanGuardrails = probe.Plan.PlanGuardrails.Count > 0;
+                    bool willEvaluateTerminalGate = report.AllSucceeded && hasPlanGuardrails;
+                    if (willEvaluateTerminalGate)
+                    {
+                        io.Out.WriteLine("Terminal Gate: running...");
+                        diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
+                    }
+
+                    // Issue #556 (plan 32 §6.5 correction 1) — NOT EVALUATED is a third state, and it is not
+                    // "passed". The expression below used to be `!report.AllSucceeded || await EvaluateAsync(…)`,
+                    // so every run that never reached the gate recorded that the gate PASSED. For an ordinary
+                    // failed run that short-circuit is harmless shorthand — nothing downstream turns on it. For an
+                    // executed-definition DIVERGENCE run it is a verdict that never happened, on a run whose every
+                    // task settled `succeeded`, in the one change whose whole purpose is that the harness stops
+                    // claiming verifications it did not perform. So this is a TRI-STATE: true = passed,
+                    // false = failed, null = NOT EVALUATED. Only the divergence case is ever null, so every other
+                    // run is byte-identical to before (`is true` / `is false` on a non-null bool? is the bool).
+                    // The gate is deliberately not RUN either: evaluating a gate whose result cannot change the
+                    // outcome spends real money for a number nobody acts on (§6.5).
+                    bool? planGuardrailsPassed = report.HasExecutedDefinitionDivergence
+                        ? null
+                        : !report.AllSucceeded
+                          || await PlanGuardrailPhase
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
+                              .ConfigureAwait(false);
+
+                    if (willEvaluateTerminalGate)
+                    {
+                        // willEvaluateTerminalGate implies report.AllSucceeded, which implies no divergence — so
+                        // the tri-state is never null in here.
+                        diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed is true); // settle the bracket badge
+                        if (planGuardrailsPassed is true)
+                        {
+                            io.Out.WriteLine("Terminal Gate: passed.");
+                        }
+                    }
+
+                    // Issue #457 — DELIVERY HAPPENS HERE, NOT INSIDE THE SCHEDULER, for any plan declaring a
+                    // <plan>/guardrails/ terminal gate. The Scheduler HELD the merge back (report
+                    // .DeliveryPendingTerminalGate) precisely because its own `AllSucceeded` is TASKS ONLY and
+                    // this gate's verdict did not exist yet. Now it does: a PASSED gate delivers exactly as
+                    // before (#340 delivered-by-default is unchanged for a genuinely green run), and a FAILED
+                    // gate simply never reaches this call — nothing merges to the user's branch, and the
+                    // verified-but-ungated work stays on the plan branch where the halt message says it is.
+                    //
+                    // Placed BEFORE WriteFinalStatic/Finish so the outcome is in the report every downstream
+                    // consumer reads: the exit-code mapping for a halted delivery (HookRejected /
+                    // DirtyWorkingTree / Conflict / BranchMoved), the final static pages, the #340 notices,
+                    // and the #407 reclaim predicate.
+                    if (report.DeliveryPendingTerminalGate && planGuardrailsPassed is true)
+                    {
+                        report = scheduler.CompleteDeferredDelivery(report, cancellationToken);
+                    }
+
+                    // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
+                    // the run, sourced from the observer's own in-memory map, mirroring the durable final log site
+                    // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
+                    diagramObserver.WriteFinalStatic();
+
+                    int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
+                    finalSitesSettled = true; // both final pages are now settled on the normal path
+
+                    // #387 v1: in an attended TTY, offer a one-click pick for any OPEN, options-carrying needsHuman
+                    // escalation this run raised — the choice is written to the SAME reply channel (an answer file)
+                    // and injected on the next resume (halt/resume). A no-op when not interactive or nothing is
+                    // pickable; a NON-answerable escalation is never offered a pick (§7.3).
+                    EscalationPickPrompt.OfferPicksInteractive(probe.Plan, runId, io);
+
+                    // Issue #361 Phase 4 (doc 12 §5.2 Option P / §7.1): a run that PROCEEDED THROUGH one or more
+                    // waves unreviewed is INDELIBLY flagged — render the permanent "ran with N unreviewed wave(s)"
+                    // warning so the run can never read as clean green, regardless of the verdict resolved above.
+                    // Placed before the exit-path branches below so it fires on every outcome (the fact is
+                    // permanent, not conditional on the final verdict); the distinct ExitCodes.ProceededUnreviewed
+                    // (5) that a wholly-green such run returns is mapped in Finish — this is its console companion
+                    // (SSOT §7 rendering lives behind the CLI seam).
+                    RenderUnreviewedWavesWarning(report, io.Out);
+
+                    // Issue #545 part 3 (plan 31 §5.1/§5.4): the terminal surface of the mid-run plan-folder
+                    // edit advisory. Placed beside the unreviewed-waves warning and BEFORE the exit-path
+                    // branches below, so an operator who edited the plan folder is told regardless of how the
+                    // run ended — including the terminal-gate-failure early return.
+                    RenderPlanEditWarning(report, io.Out);
+
+                    if (report.AllSucceeded && planGuardrailsPassed is false)
+                    {
+                        PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
+                        resolvedExitCode = ExitCodes.TaskFailed; // overrides Finish's own (greener) verdict — never read that instead.
+                        return ExitCodes.TaskFailed;
+                    }
+
+                    // Issue #542: journal the delivery outcome BEFORE rendering the banner, so the durable
+                    // record exists even if the console is never read (or never seen at all — #496's unattended
+                    // pipeline has no console). Written here, at the end, because delivery only fully resolves
+                    // once the terminal gate's verdict is in (the DeliveryPendingTerminalGate path). Best-effort:
+                    // a journal write must never flip a run's verdict this late.
+                    try
+                    {
+                        // `is not false` rather than `?? true`: the parameter is consumed as "did the terminal
+                        // gate REFUSE?", and a gate that was never evaluated did not refuse. The divergence run's
+                        // own reason branch inside DescribeDelivery is reached first, so a NOT-EVALUATED gate
+                        // never reaches the terminal-gate wording either way.
+                        journal.RecordDelivery(
+                            DescribeDelivery(report, planGuardrailsPassed is not false, probe.Plan.PlanDirectory));
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+                    {
+                        // The run's outcome stands; the banner below still tells the operator what happened.
+                        // JsonException is in scope because RecordDelivery re-reads the journal from disk before
+                        // writing (so it cannot clobber the run it is describing) — a corrupt journal must not
+                        // turn a finished run into a harness error at the very last step.
+                    }
+
+                    // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
+                    // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
+                    // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
+                    RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
+
+                    // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
+                    // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
+                    // so the breaking default is observable/self-documenting rather than a silent surprise. Never
+                    // fires together with the undelivered warning (that requires delivery OFF; this requires it ran).
+                    RenderDeliveredByDefaultNotice(report, deliveryFromDefaultOnly, io.Out);
+
+                    // #407 A — terminal-completion cleanup. A wholly-green, terminal-gate-passed, DELIVERED run
+                    // is non-resumable, so reclaim its junction LINK + worktree root NOW. KEEP both for every
+                    // RESUMABLE outcome — needs-human / halt / cancelled (exitCode != green) and the wholly-green
+                    // -but-UNDELIVERED opt-out (its verified work sits on the plan branch for the user to inspect /
+                    // deliver, so its integration worktree must survive) — where a resume needs them. The startup
+                    // GC (B) is the backstop for crashed/abandoned leaks that never reach here. Cross-platform: the
+                    // gr-wt root leaks on every OS; the junction is Windows-only (RemoveJunctionLink no-ops else).
+                    // #419: the junction link comes from the IN-MEMORY run-scoped value now (no longer journaled);
+                    // A removes it here for a green-delivered run, and the `junctionLifetime` Dispose (below) is
+                    // then a no-op. For a resumable outcome A is skipped and `junctionLifetime` removes just the
+                    // link, leaving the root for the resume.
+                    bool terminalGreen = WorktreeReclaim.ShouldReclaimOnCompletion(report, planGuardrailsPassed is true);
+                    if (terminalGreen && worktreeMode && realWorktreeRootForRun is { } completedRoot)
+                    {
+                        WorktreeReclaim.CleanupCompletedRun(
+                            probe.Plan.Workspace, completedRoot, junctionRootForRun, io.Out);
+                    }
+
+                    resolvedExitCode = exitCode; // the exact value about to be returned — never overridden after this point.
+                    return exitCode;
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+                finally
                 {
-                    // The run's outcome stands; the banner below still tells the operator what happened.
-                    // JsonException is in scope because RecordDelivery re-reads the journal from disk before
-                    // writing (so it cannot clobber the run it is describing) — a corrupt journal must not
-                    // turn a finished run into a harness error at the very last step.
+                    // Issue #333: if the terminal-gate phase (or anything else after the run body) threw before
+                    // the normal-path settle above completed, still settle BOTH final static pages so the diagram
+                    // stops meta-refreshing with a frozen Terminal Gate spinner and the log index leaves its
+                    // during-run state. A no-op when the normal path already settled them. In a finally (not a
+                    // catch) so the original exception still propagates unchanged — the run verdict, exit code,
+                    // and state are untouched (SSOT §10.1: these are best-effort chrome).
+                    if (!finalSitesSettled)
+                    {
+                        TrySettleFinalSitesAfterFault(diagramObserver, logsRoot, probe.Plan);
+                    }
                 }
-
-                // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
-                // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
-                // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
-                RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
-
-                // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
-                // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
-                // so the breaking default is observable/self-documenting rather than a silent surprise. Never
-                // fires together with the undelivered warning (that requires delivery OFF; this requires it ran).
-                RenderDeliveredByDefaultNotice(report, deliveryFromDefaultOnly, io.Out);
-
-                // #407 A — terminal-completion cleanup. A wholly-green, terminal-gate-passed, DELIVERED run
-                // is non-resumable, so reclaim its junction LINK + worktree root NOW. KEEP both for every
-                // RESUMABLE outcome — needs-human / halt / cancelled (exitCode != green) and the wholly-green
-                // -but-UNDELIVERED opt-out (its verified work sits on the plan branch for the user to inspect /
-                // deliver, so its integration worktree must survive) — where a resume needs them. The startup
-                // GC (B) is the backstop for crashed/abandoned leaks that never reach here. Cross-platform: the
-                // gr-wt root leaks on every OS; the junction is Windows-only (RemoveJunctionLink no-ops else).
-                // #419: the junction link comes from the IN-MEMORY run-scoped value now (no longer journaled);
-                // A removes it here for a green-delivered run, and the `junctionLifetime` Dispose (below) is
-                // then a no-op. For a resumable outcome A is skipped and `junctionLifetime` removes just the
-                // link, leaving the root for the resume.
-                bool terminalGreen = WorktreeReclaim.ShouldReclaimOnCompletion(report, planGuardrailsPassed is true);
-                if (terminalGreen && worktreeMode && realWorktreeRootForRun is { } completedRoot)
-                {
-                    WorktreeReclaim.CleanupCompletedRun(
-                        probe.Plan.Workspace, completedRoot, junctionRootForRun, io.Out);
-                }
-
-                return exitCode;
+            }
+            catch (Exception ex)
+            {
+                // #(event-vocabulary plan 35) — the fault surface this bracket exists for: an unhandled throw
+                // out of ExecuteAsync (most notably Scheduler.RunAsync) unwinds straight through the DAG and the
+                // terminal-gate phase above with no catch until here. Record ONLY the exception's TYPE NAME —
+                // never ex.Message, which can carry an absolute path, a token, or a fragment of source destined
+                // for an operator-supplied webhook URL — then rethrow bare so the exception propagates unchanged;
+                // this catch exists solely to observe it, never to handle it.
+                faultKind = ex.GetType().Name;
+                throw;
             }
             finally
             {
-                // Issue #333: if the terminal-gate phase (or anything else after the run body) threw before
-                // the normal-path settle above completed, still settle BOTH final static pages so the diagram
-                // stops meta-refreshing with a frozen Terminal Gate spinner and the log index leaves its
-                // during-run state. A no-op when the normal path already settled them. In a finally (not a
-                // catch) so the original exception still propagates unchanged — the run verdict, exit code,
-                // and state are untouched (SSOT §10.1: these are best-effort chrome).
-                if (!finalSitesSettled)
-                {
-                    TrySettleFinalSitesAfterFault(diagramObserver, logsRoot, probe.Plan);
-                }
+                // diagramObserver is null only if the throw happened before the chain was built (BuildObserverChain
+                // never ran) — `?.` makes that correctly raise nothing rather than a NullReferenceException.
+                diagramObserver?.RunFinished(resolvedExitCode, faultKind);
             }
         }
         finally
@@ -2409,11 +2442,27 @@ public static class RunCommand
         string? junctionRoot,
         CancellationToken cancellationToken)
     {
-        Scheduler scheduler = SchedulerFactory.Create(
-            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
-            breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot);
-        RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
-        return new RunExecution(report, scheduler);
+        try
+        {
+            Scheduler scheduler = SchedulerFactory.Create(
+                plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
+                breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot);
+            RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
+            return new RunExecution(report, scheduler);
+        }
+        catch (Exception ex)
+        {
+            // #(event-vocabulary plan 35) — this is the largest fault surface in the process: a validated
+            // plan can never make the Scheduler itself throw (every internal fault is converted to an
+            // honest-halt Abort, issue #150), but this method is also reachable directly (embedded, or by
+            // an unvalidated plan carrying e.g. a genuine dependency cycle — Scheduler.RunAsync's own cycle
+            // guard exists exactly for that case). Record ONLY the exception's TYPE NAME on the caller's
+            // observer — never ex.Message, which can carry an absolute path, a token, or a fragment of
+            // source destined for an operator-supplied webhook URL — then rethrow bare so the exception
+            // (and its original stack trace) propagates unchanged.
+            observer.RunFinished(exitCode: null, faultKind: ex.GetType().Name);
+            throw;
+        }
     }
 
     /// <summary>
