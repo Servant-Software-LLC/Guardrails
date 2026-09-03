@@ -284,8 +284,16 @@ public sealed class AttachReplayTests
     public async Task Attach_OnAMissingObserverJsonl_FailsWithAnActionableMessage()
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
-        await RunToCompletionAsync(plan); // a real, finished run — but observer.jsonl was never written
-                                           // (ObserverProjection is still task 07's stub; task 08 wires it in)
+        string logsDir = await RunToCompletionAsync(plan);
+
+        // Make the missing-file condition DELIBERATE rather than assumed. This test originally relied on a
+        // real run leaving no observer.jsonl — true only while ObserverProjection was task 07's throwing
+        // stub. Task 08 implemented it and task 15 wired it into the production observer chain, so a real
+        // run now DOES write the file: attach correctly FOUND it and exited Success, and this test failed
+        // on `Expected: 1, Actual: 0`. The premise was wrong, not the feature. Every other fixture in this
+        // class controls observer.jsonl explicitly (see the class remarks); this one now does too.
+        // File.Delete is a no-op when the path is absent, so this holds on either tree.
+        File.Delete(Path.Combine(logsDir, "observer.jsonl"));
 
         (int exit, string output, string error) = await InvokeAsync("attach", plan.PlanDir);
         string combined = output + error;
