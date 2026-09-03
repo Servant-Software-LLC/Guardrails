@@ -134,6 +134,9 @@ public sealed class RunEventStream : IRunObserver
     }
 
     /// <inheritdoc/>
+    public void RunFinished(int? exitCode, string? faultKind) => _inner.RunFinished(exitCode, faultKind);
+
+    /// <inheritdoc/>
     public void TaskFinished(TaskResult result)
     {
         _inner.TaskFinished(result);
