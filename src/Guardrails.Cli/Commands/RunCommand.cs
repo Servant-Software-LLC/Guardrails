@@ -2354,7 +2354,9 @@ public static class RunCommand
         Func<string, string?>? logUrlForTask,
         JournalDocument? diagramSeed)
     {
-        var siteObserver = new OnTheFlyLogSiteObserver(inner, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
+        var eventsProjection = new RunEventStream(inner, logsRoot);
+        var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
+        var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
         return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
     }
 
