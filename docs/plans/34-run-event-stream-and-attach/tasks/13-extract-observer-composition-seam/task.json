@@ -1,0 +1,10 @@
+{
+  "description": "Extract RunCommand's observer-chain construction into one named, test-callable method (no behaviour change)",
+  "dependsOn": [
+    "02-implement-decorator-forwarding"
+  ],
+  "stableId": "r6k9fb",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Construct and inject both projections into the production observer chain, in both branches",
+  "dependsOn": [
+    "14-author-tests-composition-root-wiring"
+  ],
+  "stableId": "u5p2gh",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Author failing tests that the production observer chain actually constructs and injects BOTH projections",
+  "dependsOn": [
+    "13-extract-observer-composition-seam",
+    "06-implement-events-projection",
+    "08-implement-observer-projection"
+  ],
+  "stableId": "y3t7cq",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/RunCommandObserverWiringTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

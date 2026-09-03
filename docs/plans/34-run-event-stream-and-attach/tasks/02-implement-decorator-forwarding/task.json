@@ -1,0 +1,13 @@
+{
+  "description": "Make all four IRunObserver implementations forward AttemptFinished explicitly",
+  "dependsOn": [
+    "01-author-tests-attempt-completion-seam"
+  ],
+  "stableId": "m8q3vt",
+  "writeScope": [
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"
+  ]
+}

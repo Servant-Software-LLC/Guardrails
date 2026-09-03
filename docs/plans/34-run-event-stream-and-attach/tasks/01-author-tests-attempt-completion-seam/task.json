@@ -1,0 +1,9 @@
+{
+  "description": "Author failing forwarding tests for a new IRunObserver attempt-completion member, plus the member itself as the no-op stub",
+  "dependsOn": [],
+  "stableId": "e4k2ra",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/AttemptCompletionForwardingTests.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
+  ]
+}
