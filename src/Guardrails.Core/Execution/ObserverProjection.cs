@@ -101,16 +101,16 @@ public sealed class ObserverProjection : IRunObserver
         _inner.AttemptRouteResolved(task, attempt, runner, model, tier, requestedTier);
     }
 
-    public void AttemptFinished(TaskNode task, int attempt, Journal.AttemptOutcome outcome)
+    public void AttemptFinished(TaskNode task, Journal.AttemptRecord record)
     {
         Append(new JsonObject
         {
             ["member"] = "AttemptFinished",
             ["taskId"] = task.Id,
-            ["attempt"] = attempt,
-            ["outcome"] = outcome.ToString()
+            ["attempt"] = record.Attempt,
+            ["outcome"] = record.Outcome.ToString()
         });
-        _inner.AttemptFinished(task, attempt, outcome);
+        _inner.AttemptFinished(task, record);
     }
 
     public void TaskFinished(TaskResult result)

@@ -265,9 +265,19 @@ public static class AttachCommand
                 break;
 
             case "AttemptFinished":
+                // The wire line carries only attempt + outcome (task 07's projection); the rest of
+                // AttemptRecord's required fields are filled with sentinels the renderer never reads.
+                // Full round-trip fidelity (StartedAt/EndedAt/LogDir on the wire) is task 07.
                 renderer.AttemptFinished(
-                    TaskFor(node, taskById), RequireInt(node, "attempt"),
-                    Enum.Parse<AttemptOutcome>(RequireString(node, "outcome")));
+                    TaskFor(node, taskById),
+                    new AttemptRecord
+                    {
+                        Attempt = RequireInt(node, "attempt"),
+                        StartedAt = DateTimeOffset.MinValue,
+                        EndedAt = DateTimeOffset.MinValue,
+                        Outcome = Enum.Parse<AttemptOutcome>(RequireString(node, "outcome")),
+                        LogDir = string.Empty
+                    });
                 break;
 
             case "TaskFinished":

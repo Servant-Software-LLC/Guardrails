@@ -223,8 +223,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // cleanly and drops the per-attempt outcome in every mode (the VerifierAdvisoryFound lesson again).
     // This observer does not ACT on it: an attempt's outcome is not a log-site artifact, so it forwards
     // and nothing else.
-    public void AttemptFinished(TaskNode task, int attempt, Core.Journal.AttemptOutcome outcome) =>
-        _inner.AttemptFinished(task, attempt, outcome);
+    public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record) =>
+        _inner.AttemptFinished(task, record);
 
     public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
 

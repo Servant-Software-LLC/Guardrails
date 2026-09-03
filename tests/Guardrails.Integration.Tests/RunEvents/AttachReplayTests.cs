@@ -124,7 +124,14 @@ public sealed class AttachReplayTests
     private static ObservedCall AttemptFinishedCall(TaskNode task, int attempt, AttemptOutcome outcome) => new(
         "AttemptFinished",
         $$"""{"member":"AttemptFinished","taskId":"{{task.Id}}","attempt":{{attempt}},"outcome":"{{outcome}}"}""",
-        o => o.AttemptFinished(task, attempt, outcome));
+        o => o.AttemptFinished(task, new AttemptRecord
+        {
+            Attempt = attempt,
+            StartedAt = DateTimeOffset.UtcNow,
+            EndedAt = DateTimeOffset.UtcNow,
+            Outcome = outcome,
+            LogDir = "logs/fixture"
+        }));
 
     private static ObservedCall TaskFinishedCall(TaskNode task, TaskOutcome outcome, string summary) => new(
         "TaskFinished",

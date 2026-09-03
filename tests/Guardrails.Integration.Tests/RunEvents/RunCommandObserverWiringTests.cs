@@ -89,9 +89,19 @@ public sealed class RunCommandObserverWiringTests
 
         public void PlanHashMismatch(string previousPlanHash) { }
 
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) =>
-            Calls.Add((task, attempt, outcome));
+        public void AttemptFinished(TaskNode task, AttemptRecord record) =>
+            Calls.Add((task, record.Attempt, record.Outcome));
     }
+
+    /// <summary>A minimal <see cref="AttemptRecord"/> fixture — only <c>Attempt</c>/<c>Outcome</c> matter to these tests.</summary>
+    private static AttemptRecord AttemptRecordFixture(int attempt, AttemptOutcome outcome) => new()
+    {
+        Attempt = attempt,
+        StartedAt = DateTimeOffset.UtcNow,
+        EndedAt = DateTimeOffset.UtcNow,
+        Outcome = outcome,
+        LogDir = "logs/fixture"
+    };
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Tests
@@ -109,7 +119,7 @@ public sealed class RunCommandObserverWiringTests
         OnTheFlyDiagramObserver chain = RunCommand.BuildObserverChain(
             IRunObserver.Null, logsRoot, "events-projection-run", plan, logUrlForTask: null, diagramSeed: null);
 
-        chain.AttemptFinished(task, 1, AttemptOutcome.Succeeded);
+        chain.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
 
         string eventsPath = Path.Combine(logsRoot, "events.jsonl");
         Assert.True(
@@ -138,7 +148,7 @@ public sealed class RunCommandObserverWiringTests
         OnTheFlyDiagramObserver chain = RunCommand.BuildObserverChain(
             IRunObserver.Null, logsRoot, "observer-projection-run", plan, logUrlForTask: null, diagramSeed: null);
 
-        chain.AttemptFinished(task, 2, AttemptOutcome.GuardrailFailed);
+        chain.AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.GuardrailFailed));
 
         string observerPath = Path.Combine(logsRoot, "observer.jsonl");
         Assert.True(
@@ -169,7 +179,7 @@ public sealed class RunCommandObserverWiringTests
         OnTheFlyDiagramObserver chain = RunCommand.BuildObserverChain(
             new ConsoleRunObserver(TextWriter.Null), logsRoot, "no-ui-run", plan, logUrlForTask: null, diagramSeed: null);
 
-        chain.AttemptFinished(task, 1, AttemptOutcome.Succeeded);
+        chain.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
 
         Assert.True(
             File.Exists(Path.Combine(logsRoot, "events.jsonl")),
@@ -195,7 +205,7 @@ public sealed class RunCommandObserverWiringTests
         OnTheFlyDiagramObserver chain = RunCommand.BuildObserverChain(
             liveObserver, logsRoot, "live-ui-run", plan, logUrlForTask: null, diagramSeed: null);
 
-        chain.AttemptFinished(task, 1, AttemptOutcome.Succeeded);
+        chain.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
 
         Assert.True(
             File.Exists(Path.Combine(logsRoot, "events.jsonl")),
@@ -218,7 +228,7 @@ public sealed class RunCommandObserverWiringTests
         OnTheFlyDiagramObserver chain = RunCommand.BuildObserverChain(
             inner, logsRoot, "still-wires-run", plan, logUrlForTask: null, diagramSeed: null);
 
-        chain.AttemptFinished(task, 4, AttemptOutcome.MaxTurns);
+        chain.AttemptFinished(task, AttemptRecordFixture(4, AttemptOutcome.MaxTurns));
 
         // The CONTRAST: the observer this chain was already built around (the live table or plain console
         // in production) must STILL receive the call — proving the projections were ADDED into the chain,
@@ -255,8 +265,8 @@ public sealed class RunCommandObserverWiringTests
         // own independent, parseable line on disk: this is the end-to-end proof that "an attempt raised
         // through the real composed chain reaches events.jsonl on disk", distinct from the narrower
         // single-shot wiring checks above.
-        chain.AttemptFinished(taskOne, 1, AttemptOutcome.Succeeded);
-        chain.AttemptFinished(taskTwo, 1, AttemptOutcome.GuardrailFailed);
+        chain.AttemptFinished(taskOne, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
+        chain.AttemptFinished(taskTwo, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
 
         string eventsPath = Path.Combine(logsRoot, "events.jsonl");
         Assert.True(

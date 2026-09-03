@@ -69,9 +69,19 @@ public sealed class AttemptCompletionForwardingTests
 
         public void PlanHashMismatch(string previousPlanHash) { }
 
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) =>
-            Calls.Add((task, attempt, outcome));
+        public void AttemptFinished(TaskNode task, AttemptRecord record) =>
+            Calls.Add((task, record.Attempt, record.Outcome));
     }
+
+    /// <summary>A minimal <see cref="AttemptRecord"/> fixture — only <c>Attempt</c>/<c>Outcome</c> matter to these tests.</summary>
+    private static AttemptRecord AttemptRecordFixture(int attempt, AttemptOutcome outcome) => new()
+    {
+        Attempt = attempt,
+        StartedAt = DateTimeOffset.UtcNow,
+        EndedAt = DateTimeOffset.UtcNow,
+        Outcome = outcome,
+        LogDir = "logs/fixture"
+    };
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // The two decorators that ship today.
@@ -87,7 +97,7 @@ public sealed class AttemptCompletionForwardingTests
         TaskNode task = FlatTask("01-first");
         var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null);
 
-        ((IRunObserver)decorator).AttemptFinished(task, 1, AttemptOutcome.ActionFailed);
+        ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.ActionFailed));
 
         Assert.Single(inner.Calls);
         Assert.Same(task, inner.Calls[0].Task);
@@ -111,7 +121,7 @@ public sealed class AttemptCompletionForwardingTests
         };
         var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null);
 
-        ((IRunObserver)decorator).AttemptFinished(task, 1, AttemptOutcome.ActionFailed);
+        ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.ActionFailed));
 
         Assert.Single(inner.Calls);
         Assert.Same(task, inner.Calls[0].Task);
@@ -129,7 +139,7 @@ public sealed class AttemptCompletionForwardingTests
         TaskNode task = FlatTask("01-first");
         var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null);
 
-        ((IRunObserver)decorator).AttemptFinished(task, 2, AttemptOutcome.MaxTurns);
+        ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.MaxTurns));
 
         Assert.Single(inner.Calls);
         // Not merely "something arrived" — the EXACT outcome, so a decorator that forwards a hard-coded or
@@ -164,14 +174,14 @@ public sealed class AttemptCompletionForwardingTests
         var logSiteInner = new RecordingObserver();
         var logSiteDecorator = new OnTheFlyLogSiteObserver(
             logSiteInner, tree.Dir("logs", "log-site-run"), "log-site-run", [task], liveUrlForTask: null);
-        ((IRunObserver)logSiteDecorator).AttemptFinished(task, 1, outcome);
+        ((IRunObserver)logSiteDecorator).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
         Assert.Single(logSiteInner.Calls);
         Assert.Equal(outcome, logSiteInner.Calls[0].Outcome);
 
         var diagramInner = new RecordingObserver();
         var diagramDecorator = new OnTheFlyDiagramObserver(diagramInner, tree.Dir("logs", "diagram-run"), plan, journalForSeed: null);
-        ((IRunObserver)diagramDecorator).AttemptFinished(task, 1, outcome);
+        ((IRunObserver)diagramDecorator).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
         Assert.Single(diagramInner.Calls);
         Assert.Equal(outcome, diagramInner.Calls[0].Outcome);

@@ -159,7 +159,7 @@ internal sealed class AttemptJournaler
         _journal.RecordAttempt(
             task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
             bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can
@@ -379,7 +379,7 @@ internal sealed class AttemptJournaler
         _journal.RecordAttempt(
             task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
             bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(result, feedbackPath, Outcome: outcome);
     }
@@ -452,7 +452,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -531,7 +531,7 @@ internal sealed class AttemptJournaler
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -608,7 +608,7 @@ internal sealed class AttemptJournaler
             Provenance = provenance
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -665,7 +665,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -731,7 +731,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -799,7 +799,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {
@@ -849,7 +849,7 @@ internal sealed class AttemptJournaler
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending, bucket: BucketFor(task));
-        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
+        _observer.AttemptFinished(task, record);
 
         return new AttemptResult(new TaskResult
         {

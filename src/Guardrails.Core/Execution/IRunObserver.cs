@@ -69,21 +69,45 @@ public interface IRunObserver
         string? tier, string? requestedTier) { }
 
     /// <summary>
-    /// Attempt <paramref name="attempt"/> of <paramref name="task"/> just FINISHED — the retry loop is
-    /// about to either burn another attempt or settle the task. Until this event existed, the only
-    /// per-attempt signal an observer had was <see cref="AttemptStarting"/>; the next thing it heard was
-    /// <see cref="TaskFinished"/>, after the WHOLE retry loop, so nothing could say WHY a single attempt
-    /// failed — the shipped <c>[retry] &lt;task&gt;: attempt 2/3</c> line carries no reason. <paramref
-    /// name="outcome"/> is the SAME <see cref="Journal.AttemptOutcome"/> already recorded for this
-    /// attempt in the journal (SSOT §7) — no new vocabulary, no observer re-deriving why an attempt ended
-    /// the way it did.
+    /// Attempt <paramref name="record"/>.Attempt of <paramref name="task"/> just FINISHED — the retry
+    /// loop is about to either burn another attempt or settle the task. Until this event existed, the
+    /// only per-attempt signal an observer had was <see cref="AttemptStarting"/>; the next thing it heard
+    /// was <see cref="TaskFinished"/>, after the WHOLE retry loop, so nothing could say WHY a single
+    /// attempt failed — the shipped <c>[retry] &lt;task&gt;: attempt 2/3</c> line carries no reason.
+    /// <paramref name="record"/> is the SAME <see cref="Journal.AttemptRecord"/> already recorded for
+    /// this attempt in the journal (SSOT §7) — no new vocabulary, no observer re-deriving why an attempt
+    /// ended the way it did, and every field the journal knows about the attempt (cost, turns, model,
+    /// provenance) arrives with it rather than requiring a future signature change per field.
     ///
     /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
     /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
     /// swallowed silently, in every mode (the <see cref="WaveGateFinished"/> / <see cref="VerifierAdvisoryFound"/>
     /// lesson).</para>
     /// </summary>
-    void AttemptFinished(TaskNode task, int attempt, Journal.AttemptOutcome outcome) { }
+    void AttemptFinished(TaskNode task, Journal.AttemptRecord record) { }
+
+    /// <summary>
+    /// The run is about to terminate, on every exit path — green, a gate failure, an unhandled fault
+    /// during unwind, everything. <paramref name="exitCode"/> is the <c>Guardrails.Cli.ExitCodes</c>
+    /// vocabulary: 0 green, 1 harness error, 2 needs-human/gate failure, 3 cancelled, 4 escalations
+    /// pending, 5 proceeded unreviewed. It is <b>null</b> when the run is unwinding on an unhandled fault
+    /// and no exit code was ever determined — null is honest; a fabricated code would claim a verdict the
+    /// run never reached.
+    ///
+    /// <para><paramref name="faultKind"/> is the unhandled exception's TYPE NAME, null on every
+    /// non-fault path, and NEVER the exception message. #585 layer 3 will POST these rows to an
+    /// operator-supplied URL, and the message is the one value on the row that can carry an absolute
+    /// path, a token, or a fragment of source. Same posture as
+    /// <see cref="WaveBreakdownFinished"/>'s <c>failureKind</c>.</para>
+    ///
+    /// <para>Carries no <c>runId</c>: the composition root already holds it.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
+    /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
+    /// swallowed silently, in every mode (the <see cref="WaveGateFinished"/> / <see cref="VerifierAdvisoryFound"/>
+    /// lesson).</para>
+    /// </summary>
+    void RunFinished(int? exitCode, string? faultKind) { }
 
     /// <summary>A task finished (succeeded, failed, or was blocked).</summary>
     void TaskFinished(TaskResult result);

@@ -9,8 +9,8 @@ namespace Guardrails.Core.Execution;
 /// The semantic, low-frequency, agent-facing run-event projection off the one emission seam (plan 34):
 /// a DECORATOR that sits beside every other <see cref="IRunObserver"/> in the chain and appends one JSON
 /// object per line to <c>events.jsonl</c> in the directory it is constructed with (the run's own log
-/// directory, <c>logs/&lt;runId&gt;/</c> — <paramref name="directory"/>'s own name IS the run id, since
-/// no member of <see cref="IRunObserver"/> carries one separately). A supervising agent filters rows on
+/// directory, <c>logs/&lt;runId&gt;/</c>), stamping each row with the run id it is constructed with
+/// explicitly — since no member of <see cref="IRunObserver"/> carries one separately. A supervising agent filters rows on
 /// FIELDS (<c>taskId</c>, <c>attempt</c>, …), so a row whose <c>kind</c> it does not recognise is still a
 /// visible line rather than an invisible one — the property that would have prevented all three of the
 /// stdout-grep failures in issue #585.
@@ -67,11 +67,15 @@ public sealed class RunEventStream : IRunObserver
 
     /// <param name="inner">The real observer every event is forwarded to.</param>
     /// <param name="directory">The run's log directory; events land in <c>events.jsonl</c> underneath it.</param>
-    public RunEventStream(IRunObserver inner, string directory)
+    /// <param name="runId">
+    /// The run's own id, as the composition root already knows it — never derived from
+    /// <paramref name="directory"/>'s name, which merely resembles it.
+    /// </param>
+    public RunEventStream(IRunObserver inner, string directory, string runId)
     {
         _inner = inner;
         _directory = directory;
-        _runId = Path.GetFileName(Path.TrimEndingDirectorySeparator(directory));
+        _runId = runId;
     }
 
     /// <inheritdoc/>
@@ -114,9 +118,9 @@ public sealed class RunEventStream : IRunObserver
         _inner.AttemptRouteResolved(task, attempt, runner, model, tier, requestedTier);
 
     /// <inheritdoc/>
-    public void AttemptFinished(TaskNode task, int attempt, Journal.AttemptOutcome outcome)
+    public void AttemptFinished(TaskNode task, Journal.AttemptRecord record)
     {
-        _inner.AttemptFinished(task, attempt, outcome);
+        _inner.AttemptFinished(task, record);
 
         AppendLine(new EventRow
         {
@@ -124,8 +128,8 @@ public sealed class RunEventStream : IRunObserver
             At = DateTimeOffset.UtcNow,
             RunId = _runId,
             TaskId = task.Id,
-            Attempt = attempt,
-            Outcome = Journal.JournalJson.OutcomeToken(outcome)
+            Attempt = record.Attempt,
+            Outcome = Journal.JournalJson.OutcomeToken(record.Outcome)
         });
     }
 
