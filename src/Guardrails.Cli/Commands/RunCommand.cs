@@ -521,18 +521,13 @@ public static class RunCommand
                 await using var liveObserver = new LiveRunObserver(
                     probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                     probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
-                // Stack the diagram observer AROUND the log-site observer: it forwards every event down
-                // the chain and re-renders logs/<runId>/diagram.html after each.
-                diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
+                diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
                 (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                var siteObserver = new OnTheFlyLogSiteObserver(
-                    new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
-                diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
-                siteObserver.WriteInitialIndex();
+                diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
+                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                 PrintStaticIndexLink(logsRoot, io);
                 diagramObserver.WriteInitialDiagram();
                 PrintDiagramLink(logsRoot, io);
@@ -2340,6 +2335,27 @@ public static class RunCommand
 
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
         io.Out.WriteLine($"Live status diagram: {Hyperlink(diagramPath, linkable)}");
+    }
+
+    /// <summary>
+    /// Compose the observer decorator chain both the live-UI and <c>--no-ui</c> branches run behind
+    /// (issue #478): stack the diagram observer AROUND the log-site observer, which forwards every event
+    /// down to <paramref name="inner"/> (the live table or the plain console) — so every event re-renders
+    /// both <c>logs/&lt;runId&gt;/index.html</c> and <c>logs/&lt;runId&gt;/diagram.html</c> after each.
+    /// Pure composition, no behaviour of its own; a test can call it directly. Public because
+    /// <c>Guardrails.Cli</c> ships no <c>InternalsVisibleTo</c>, and the tests exercising this seam live in
+    /// the <c>Guardrails.Integration.Tests</c> assembly.
+    /// </summary>
+    public static OnTheFlyDiagramObserver BuildObserverChain(
+        IRunObserver inner,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
+        Func<string, string?>? logUrlForTask,
+        JournalDocument? diagramSeed)
+    {
+        var siteObserver = new OnTheFlyLogSiteObserver(inner, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
+        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
     }
 
     /// <summary>
