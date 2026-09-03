@@ -1,4 +1,5 @@
 using Guardrails.Core.Execution;
+using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Tests;
 
@@ -465,5 +466,64 @@ public sealed class WriteScopeMatcherTests
         string[] d = ["src/B/**"];
         Assert.False(WriteScope.Overlaps(c, d));
         Assert.Empty(WriteScope.OverlappingEntries(c, d));
+    }
+
+    // =========================================================================
+    // ProducibleScope / CompleteProducibleScope — the ONE definition of "what this plan can produce",
+    // shared by GR2060's load-time condition 8 and the #587 failure-time ownership note. Two consumers
+    // computing it separately is exactly how they would come to disagree.
+    // =========================================================================
+
+    private static TaskNode Task(string id, IReadOnlyList<string>? writeScope,
+        IReadOnlyList<StagingOutput>? staging = null) => new()
+        {
+            Id = id,
+            Directory = "/plan/tasks/" + id,
+            Description = id,
+            Action = new ActionDefinition { Path = "action.sh", Kind = ActionKind.Script },
+            Guardrails = [],
+            WriteScope = writeScope,
+            StagingOutputs = staging
+        };
+
+    private static PlanDefinition Plan(params TaskNode[] tasks) => new()
+    {
+        PlanDirectory = "/plan",
+        Workspace = "/ws",
+        Config = new RunConfig { Version = 1 },
+        Tasks = tasks
+    };
+
+    [Fact]
+    public void ProducibleScope_UnionsEveryTasksWriteScopeAndEveryStagingDestination()
+    {
+        // The staging half is NOT redundant: SSOT §3.5 requires `to` to land under .claude/ and does not
+        // require it to ALSO appear in the task's writeScope, so a staged-only file would otherwise read
+        // as unproducible.
+        PlanDefinition plan = Plan(
+            Task("01", ["src/A.cs", "   ", "src/B.cs"]),
+            Task("02", [], [new StagingOutput { From = "out.md", To = ".claude/skills/x/SKILL.md" }]));
+
+        Assert.Equal(
+            ["src/A.cs", "src/B.cs", ".claude/skills/x/SKILL.md"],
+            WriteScope.ProducibleScope(plan));
+    }
+
+    [Fact]
+    public void CompleteProducibleScope_IsNull_WhenAnyTaskDeclaresNoWriteScope()
+    {
+        // GR2060 condition 9 in reusable form: the undeclared task may write anywhere, so the union is
+        // incomplete and cannot support a claim about what NO task owns.
+        PlanDefinition plan = Plan(Task("01", ["src/A.cs"]), Task("02", writeScope: null));
+
+        Assert.Null(WriteScope.CompleteProducibleScope(plan));
+    }
+
+    [Fact]
+    public void CompleteProducibleScope_IsTheUnion_WhenEveryTaskDeclaresOne()
+    {
+        PlanDefinition plan = Plan(Task("01", ["src/A.cs"]), Task("02", ["tests/ATests.cs"]));
+
+        Assert.Equal(["src/A.cs", "tests/ATests.cs"], WriteScope.CompleteProducibleScope(plan));
     }
 }
