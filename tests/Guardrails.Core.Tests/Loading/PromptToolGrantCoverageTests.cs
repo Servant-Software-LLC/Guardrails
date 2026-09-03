@@ -547,19 +547,15 @@ public sealed class PromptToolGrantCoverageTests : IDisposable
         }
     }
 
-    private static string RepositoryRoot
-    {
-        get
-        {
-            string dir = AppContext.BaseDirectory;
-            while (!Directory.Exists(Path.Combine(dir, ".git")))
-            {
-                string? parent = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
-                Assert.NotNull(parent);
-                dir = parent;
-            }
-
-            return dir;
-        }
-    }
+    /// <summary>
+    /// Anchored on the SOURCE path (<see cref="TestPaths.ProjectDir"/> is a <c>[CallerFilePath]</c>), which
+    /// is the same anchor <c>ProducerCoverageCorpusTests</c> uses and is the only one that survives a git
+    /// WORKTREE. The previous form walked up from <c>AppContext.BaseDirectory</c> looking for a <c>.git</c>
+    /// DIRECTORY — but in a worktree <c>.git</c> is a FILE holding a <c>gitdir:</c> pointer, so the walk ran
+    /// to the filesystem root and asserted on a null parent. That made every recovered-from-git control in
+    /// this file unrunnable in exactly the setup this repository dogfoods in (worktree-per-task, plan 08),
+    /// and it hid behind a shallow-clone SKIP in CI, so nothing reported it.
+    /// </summary>
+    private static readonly string RepositoryRoot =
+        Path.GetFullPath(Path.Combine(TestPaths.ProjectDir, "..", ".."));
 }

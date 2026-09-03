@@ -1,0 +1,11 @@
+{
+  "description": "Raise AttemptFinished from TaskExecutor on every attempt-completion path, carrying the real AttemptOutcome",
+  "dependsOn": [
+    "03-author-tests-executor-raises-completion"
+  ],
+  "stableId": "t6n1cx",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ]
+}

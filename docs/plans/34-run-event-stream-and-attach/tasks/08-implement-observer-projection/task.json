@@ -1,0 +1,10 @@
+{
+  "description": "Implement ObserverProjection so observer.jsonl records and replays the observed call sequence",
+  "dependsOn": [
+    "07-author-tests-observer-projection"
+  ],
+  "stableId": "c7x2ld",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ObserverProjection.cs"
+  ]
+}

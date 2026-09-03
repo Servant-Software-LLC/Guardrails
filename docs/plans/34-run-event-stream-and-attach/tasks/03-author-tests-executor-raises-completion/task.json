@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests that TaskExecutor raises AttemptFinished on every attempt-completion path with the real outcome",
+  "dependsOn": [
+    "01-author-tests-attempt-completion-seam"
+  ],
+  "stableId": "p2w9hb",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunEvents/TaskExecutorAttemptCompletionTests.cs"
+  ]
+}

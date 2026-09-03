@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "charterVersion": "0.26.0",
+  "plan": "34-run-event-stream-and-attach.charter.md",
+  "planSha256": "d07c007703e89f89067a213cb15f5dd7e95ec0980860120d6547d3339b50356f",
+  "answers": null,
+  "answersSha256": null,
+  "handoff": "34-run-event-stream-and-attach.md",
+  "handoffSha256": "42dcff49bb0cd35adc8f6ac0651853543d6576c58b102d4d3f4be6bf08d2c750",
+  "malformedQuestions": 0,
+  "gate": {
+    "flagPassed": true,
+    "needsHuman": false,
+    "exitCode": 0,
+    "blockers": [],
+    "unmatchedAnswerIds": []
+  },
+  "questions": [
+    {
+      "id": "stream-shape",
+      "title": "One physical stream, or one emission seam with two projections?",
+      "sourceLine": 155,
+      "answered": true,
+      "answer": [
+        "One seam, two projections (events.jsonl \u002B observer stream)"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "attempt-seam",
+      "title": "Where does the attempt-completion event come from?",
+      "sourceLine": 164,
+      "answered": true,
+      "answer": [
+        "Widen IRunObserver with a new attempt-completion member"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "v1-scope",
+      "title": "Does v1 include the SSE/WebSocket endpoint, or stop at the durable file?",
+      "sourceLine": 173,
+      "answered": true,
+      "answer": [
+        "File plus the /events endpoint on the existing log server"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "roadmap-slot",
+      "title": "Where does this sit against the Mac Studio roadmap in #570?",
+      "sourceLine": 182,
+      "answered": true,
+      "answer": [
+        "Interleave \u2014 build it alongside Phase B bring-up fixes"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "status-watch",
+      "title": "Is \u0060guardrails status --watch\u0060 in this plan at all?",
+      "sourceLine": 191,
+      "answered": true,
+      "answer": [
+        "Only if it falls out cheaply from the projection work"
+      ],
+      "answerSource": "inline"
+    }
+  ]
+}
