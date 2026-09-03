@@ -226,6 +226,9 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record) =>
         _inner.AttemptFinished(task, record);
 
+    /// <inheritdoc/>
+    public void RunFinished(int? exitCode, string? faultKind) => _inner.RunFinished(exitCode, faultKind);
+
     public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
 
     public void CleanupFailed(string owner, Exception error) => _inner.CleanupFailed(owner, error);

@@ -113,6 +113,9 @@ public sealed class ObserverProjection : IRunObserver
         _inner.AttemptFinished(task, record);
     }
 
+    /// <inheritdoc/>
+    public void RunFinished(int? exitCode, string? faultKind) => _inner.RunFinished(exitCode, faultKind);
+
     public void TaskFinished(TaskResult result)
     {
         Append(new JsonObject
