@@ -1,0 +1,11 @@
+{
+  "description": "Declare and forward RunFinished in all four transparent decorators, and deliberately not in the two renderers",
+  "stableId": "r8t3wm",
+  "dependsOn": ["02-author-tests-observer-forwarding"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"
+  ]
+}

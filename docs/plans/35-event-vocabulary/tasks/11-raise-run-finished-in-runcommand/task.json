@@ -1,0 +1,13 @@
+{
+  "description": "Open an outer bracket around the DAG and the terminal phase so RunFinished is raised on every exit path including an unhandled fault",
+  "stableId": "k5w9mz",
+  "dependsOn": [
+    "10-author-tests-run-finished-exit-paths"
+  ],
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

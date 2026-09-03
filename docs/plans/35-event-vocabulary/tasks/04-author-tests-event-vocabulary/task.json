@@ -1,0 +1,10 @@
+{
+  "description": "Author RED tests for the run-finished row, the seq ordering key, and the widened attempt-finished field set",
+  "stableId": "c4j9dp",
+  "dependsOn": [
+    "03-forward-runfinished-in-decorators"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunEvents/RunEventVocabularyTests.cs"
+  ]
+}

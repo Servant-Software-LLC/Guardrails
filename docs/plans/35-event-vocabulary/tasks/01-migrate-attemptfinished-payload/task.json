@@ -1,0 +1,23 @@
+{
+  "description": "Add IRunObserver.RunFinished and change AttemptFinished to carry Journal.AttemptRecord, migrating every declaration and raise site so the solution compiles again",
+  "stableId": "e5v1qa",
+  "dependsOn": [],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs",
+    "src/Guardrails.Cli/Commands/AttachCommand.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/ObserverProjectionTests.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/RunEventStreamTests.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/TaskExecutorAttemptCompletionTests.cs",
+    "tests/Guardrails.Integration.Tests/RunEvents/AttemptCompletionForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/RunEvents/RunCommandObserverWiringTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}
