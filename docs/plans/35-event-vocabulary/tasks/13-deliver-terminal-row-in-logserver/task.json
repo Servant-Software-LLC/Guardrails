@@ -8,6 +8,7 @@
     "src/Guardrails.Cli/Ui/LogServer.cs"
   ],
   "action": {
-    "maxTurns": 100
-  }
+    "maxTurns": 250
+  },
+  "timeoutSeconds": 5400
 }
