@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests that guardrails attach replays observer.jsonl into the REAL LiveRunObserver",
+  "dependsOn": [
+    "07-author-tests-observer-projection"
+  ],
+  "stableId": "b1v6ny",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/AttachReplayTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

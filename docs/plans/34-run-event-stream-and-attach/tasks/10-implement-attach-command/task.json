@@ -1,0 +1,14 @@
+{
+  "description": "Implement guardrails attach: tail observer.jsonl and drive the real LiveRunObserver in the attaching terminal",
+  "dependsOn": [
+    "09-author-tests-attach-replay"
+  ],
+  "stableId": "s4g8pv",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/AttachCommand.cs",
+    "src/Guardrails.Cli/CommandFactory.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

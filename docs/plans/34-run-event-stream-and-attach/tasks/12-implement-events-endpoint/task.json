@@ -1,0 +1,14 @@
+{
+  "description": "Add the /events route to LogServer, streaming events.jsonl to subscribers",
+  "dependsOn": [
+    "11-author-tests-events-endpoint",
+    "06-implement-events-projection"
+  ],
+  "stableId": "w8m4dj",
+  "writeScope": [
+    "src/Guardrails.Cli/Ui/LogServer.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

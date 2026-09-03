@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for the observer.jsonl projection: render-fidelity events carrying the live-only fields",
+  "dependsOn": [
+    "01-author-tests-attempt-completion-seam"
+  ],
+  "stableId": "h9b4mw",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunEvents/ObserverProjectionTests.cs",
+    "src/Guardrails.Core/Execution/ObserverProjection.cs"
+  ]
+}

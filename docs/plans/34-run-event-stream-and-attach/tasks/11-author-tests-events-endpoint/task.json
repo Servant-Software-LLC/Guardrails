@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests for a /events endpoint on the existing log server, streaming events.jsonl",
+  "dependsOn": [
+    "05-author-tests-events-projection"
+  ],
+  "stableId": "n2z5tk",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/EventsEndpointTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

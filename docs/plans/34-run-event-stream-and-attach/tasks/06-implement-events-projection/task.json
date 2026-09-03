@@ -1,0 +1,10 @@
+{
+  "description": "Implement RunEventStream so it appends semantic run events to events.jsonl and forwards every call",
+  "dependsOn": [
+    "05-author-tests-events-projection"
+  ],
+  "stableId": "f3j7qz",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RunEventStream.cs"
+  ]
+}

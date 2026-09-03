@@ -1,0 +1,4 @@
+{
+  "scope": "integration",
+  "description": "Union soundness: no conflict markers, no emptied file, and the wired projections survive the merge"
+}

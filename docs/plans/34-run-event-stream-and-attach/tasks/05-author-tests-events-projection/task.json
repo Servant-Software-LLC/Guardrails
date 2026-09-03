@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for the events.jsonl projection: semantic run events, field-aligned with TelemetryRow",
+  "dependsOn": [
+    "01-author-tests-attempt-completion-seam"
+  ],
+  "stableId": "d5r8ke",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunEvents/RunEventStreamTests.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs"
+  ]
+}
