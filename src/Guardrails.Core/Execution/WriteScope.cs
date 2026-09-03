@@ -70,6 +70,56 @@ public static class WriteScope
                $"file(s): {string.Join("; ", pairs)}";
     }
 
+    /// <summary>
+    /// Every workspace path this plan is authorized to PRODUCE: the UNION of every task's
+    /// <c>writeScope</c> across every wave (<see cref="PlanDefinition.Tasks"/> is already the flattened
+    /// union), plus every declared <c>stagingOutputs.to</c> destination. Blank entries are dropped; a task
+    /// declaring NO <c>writeScope</c> contributes nothing (see
+    /// <see cref="CompleteProducibleScope"/> for the caller that must not tolerate that).
+    ///
+    /// <para>The staging half is not redundant with the first: SSOT §3.5 requires a <c>to</c> to land under
+    /// <c>.claude/</c> and nothing requires it to ALSO appear in the task's <c>writeScope</c>, so a file
+    /// produced only through staging would otherwise read as unproducible.</para>
+    ///
+    /// <para>Lifted here from <c>ProducerCoverage</c> (GR2060) so the load-time check and the
+    /// failure-time attribution (issue #587 check B) compute "what this plan can produce" from ONE
+    /// definition — the two must never disagree.</para>
+    /// </summary>
+    public static IReadOnlyList<string> ProducibleScope(PlanDefinition plan)
+    {
+        var scope = new List<string>();
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (string entry in task.WriteScope ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(entry))
+                {
+                    scope.Add(entry);
+                }
+            }
+
+            foreach (StagingOutput staging in task.StagingOutputs ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(staging.To))
+                {
+                    scope.Add(staging.To);
+                }
+            }
+        }
+
+        return scope;
+    }
+
+    /// <summary>
+    /// <see cref="ProducibleScope"/>, or <c>null</c> when ANY task declares no <c>writeScope</c> at all.
+    /// The union is then INCOMPLETE — the undeclared task may write anywhere — and an incomplete union
+    /// cannot support a claim about what NO task in the plan owns. This is GR2060's condition 9 in a
+    /// reusable form: every consumer that reasons from ABSENCE from the union must ask for the scope this
+    /// way, and must treat <c>null</c> as "say nothing".
+    /// </summary>
+    public static IReadOnlyList<string>? CompleteProducibleScope(PlanDefinition plan) =>
+        plan.Tasks.Any(t => t.WriteScope is null) ? null : ProducibleScope(plan);
+
     /// <summary>Returns true if <paramref name="path"/> is claimed by at least one glob in <paramref name="scope"/>.</summary>
     public static bool IsInScope(string path, IReadOnlyList<string> scope)
     {

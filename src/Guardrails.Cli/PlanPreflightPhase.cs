@@ -165,7 +165,14 @@ public static class PlanPreflightPhase
             .ReVerifyAsync(
                 evalWorkspace,
                 plan.PlanPreflights,
-                new ReVerifyOptions { Progress = heartbeat, ArtifactDirectory = artifactDir },
+                // #587 check B: the plan's producible scope, so a failing check's reason can name a
+                // failing test file NO task declares — the measured plan-33 halt was exactly this gate.
+                new ReVerifyOptions
+                {
+                    Progress = heartbeat,
+                    ArtifactDirectory = artifactDir,
+                    ProducibleScope = WriteScope.CompleteProducibleScope(plan)
+                },
                 cancellationToken)
             .ConfigureAwait(false);
 

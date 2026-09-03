@@ -87,7 +87,15 @@ public static class PlanGuardrailPhase
             .ReVerifyAsync(
                 evalWorkspace,
                 plan.PlanGuardrails,
-                new ReVerifyOptions { Progress = heartbeat, ArtifactDirectory = artifactDir },
+                // #587 check B: the plan's producible scope, so a failing check's reason can name a
+                // failing test file NO task declares. Null (silence) whenever any task declares no
+                // writeScope — see WriteScope.CompleteProducibleScope.
+                new ReVerifyOptions
+                {
+                    Progress = heartbeat,
+                    ArtifactDirectory = artifactDir,
+                    ProducibleScope = WriteScope.CompleteProducibleScope(plan)
+                },
                 cancellationToken)
             .ConfigureAwait(false);
 

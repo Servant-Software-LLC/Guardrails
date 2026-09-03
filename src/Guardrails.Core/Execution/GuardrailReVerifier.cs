@@ -30,8 +30,9 @@ public sealed class GuardrailReVerifier : IReVerifier
     /// per-guardrail liveness sink (issue #331), so a long-running plan-level gate (§3.3 terminal gate, §7
     /// pre-DAG preflights) can surface a wall-clock heartbeat; and an artifact directory (issue #432), so
     /// each check's captured stdout/stderr lands under <c>logs/&lt;runId&gt;/</c> instead of being
-    /// discarded with the child process. <paramref name="options"/> null ⇒ neither (the interface path,
-    /// used by the attempt-decoupled union re-verify).
+    /// discarded with the child process; and the plan's producible scope (issue #587 check B), so a FAILING
+    /// check's reason can name a failing test file NO task owns. <paramref name="options"/> null ⇒ none of
+    /// them (the interface path, used by the attempt-decoupled union re-verify).
     /// </summary>
     public async Task<ReVerifyResult> ReVerifyAsync(
         string worktreePath,
@@ -41,6 +42,7 @@ public sealed class GuardrailReVerifier : IReVerifier
     {
         IReVerifyProgress? progress = options?.Progress;
         string? artifactDirectory = options?.ArtifactDirectory;
+        IReadOnlyList<string>? producibleScope = options?.ProducibleScope;
         var failed = new List<GuardrailResult>();
         // #124: a re-verify guardrail's effective workspace IS the integration worktree (its cwd),
         // so GUARDRAILS_WORKSPACE must point there — identical to the in-attempt contract where the
@@ -82,6 +84,20 @@ public sealed class GuardrailReVerifier : IReVerifier
                         : GuardrailFailureReason.Tail(result.StandardOutput)
                           ?? GuardrailFailureReason.Tail(result.StandardError)
                           ?? $"exit code {result.ExitCode}";
+
+                    // #587 check B, on #272 Part 1's premise: the reason is the ONLY operator signal a
+                    // plan-level gate produces, so the ONE fact triage cannot recover from the failure
+                    // detail alone belongs in it — that the failing test's file is in NO task's writeScope,
+                    // and therefore no task in this plan can fix it. Appended AFTER the failure detail so
+                    // the detail still leads; silent (null) unless a stack frame parsed, its path
+                    // relativized, and the scope was supplied AND complete. Never changes the verdict.
+                    string? ownership =
+                        UnownedFailingTestAttribution.Note(result.StandardOutput, producibleScope, worktreePath)
+                        ?? UnownedFailingTestAttribution.Note(result.StandardError, producibleScope, worktreePath);
+                    if (ownership is not null)
+                    {
+                        reason += "\n\n" + ownership;
+                    }
 
                     // Issue #432 (same root cause, adjacent consumer): carry the FULL captured output the
                     // way GuardrailRunner does for a task attempt. The union-reverify evidence writer

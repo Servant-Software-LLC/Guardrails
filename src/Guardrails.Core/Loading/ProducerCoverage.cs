@@ -117,7 +117,9 @@ internal static class ProducerCoverage
             return;
         }
 
-        IReadOnlyList<string> producible = ProducibleScope(plan);
+        // Condition 8's oracle, shared with the #587 failure-time attribution so the load-time check and
+        // the run-time note can never disagree about what this plan can produce.
+        IReadOnlyList<string> producible = WriteScope.ProducibleScope(plan);
 
         var requirements = new List<Requirement>();
         foreach (GuardrailDefinition guardrail in PlanValidator.FourFolderScriptGuardrails(plan))
@@ -564,41 +566,6 @@ internal static class ProducerCoverage
     private static bool IsUnderPlanFolder(string? planFolder, string path) =>
         planFolder is not null
         && (path.Equals(planFolder, Cmp) || path.StartsWith(planFolder + "/", Cmp));
-
-    /// <summary>
-    /// Every path this plan is authorized to produce: the UNION of every task's <c>writeScope</c> across
-    /// every wave (<see cref="PlanDefinition.Tasks"/> is already the flattened union), plus every declared
-    /// <c>stagingOutputs</c> destination.
-    ///
-    /// <para>The staging half is not redundant with the first, and that was worth checking: SSOT §3.5
-    /// requires a <c>to</c> to land under <c>.claude/</c> and nothing requires it to ALSO appear in the
-    /// task's <c>writeScope</c>, so a file produced only through staging would otherwise read as
-    /// unproducible.</para>
-    /// </summary>
-    private static IReadOnlyList<string> ProducibleScope(PlanDefinition plan)
-    {
-        var scope = new List<string>();
-        foreach (TaskNode task in plan.Tasks)
-        {
-            foreach (string entry in task.WriteScope ?? [])
-            {
-                if (!string.IsNullOrWhiteSpace(entry))
-                {
-                    scope.Add(entry);
-                }
-            }
-
-            foreach (StagingOutput staging in task.StagingOutputs ?? [])
-            {
-                if (!string.IsNullOrWhiteSpace(staging.To))
-                {
-                    scope.Add(staging.To);
-                }
-            }
-        }
-
-        return scope;
-    }
 
     /// <summary>
     /// Was the clause's operator the case-SENSITIVE form? Read from the text BEFORE the pattern operand

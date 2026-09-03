@@ -1372,7 +1372,17 @@ public sealed class Scheduler
         (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.PreflightsFolder);
         ReVerifyResult result = _reVerifier is not null
             ? await _reVerifier
-                .ReVerifyAsync(workspace, wave.Preflights, new ReVerifyOptions { ArtifactDirectory = artifactDir }, ct)
+                // #587 check B: ProducibleScope is the WHOLE plan's union (not this wave's) — a later
+                // wave's task owning the file is still an owner, and a wider union means FEWER notes.
+                .ReVerifyAsync(
+                    workspace,
+                    wave.Preflights,
+                    new ReVerifyOptions
+                    {
+                        ArtifactDirectory = artifactDir,
+                        ProducibleScope = WriteScope.CompleteProducibleScope(plan)
+                    },
+                    ct)
                 .ConfigureAwait(false)
             : new ReVerifyResult { Passed = true };
 
@@ -1418,7 +1428,16 @@ public sealed class Scheduler
         (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.GuardrailsFolder);
         ReVerifyResult result = _reVerifier is not null
             ? await _reVerifier
-                .ReVerifyAsync(workspace, wave.Guardrails, new ReVerifyOptions { ArtifactDirectory = artifactDir }, ct)
+                // #587 check B: the whole plan's union, for the same reason as the entry gate above.
+                .ReVerifyAsync(
+                    workspace,
+                    wave.Guardrails,
+                    new ReVerifyOptions
+                    {
+                        ArtifactDirectory = artifactDir,
+                        ProducibleScope = WriteScope.CompleteProducibleScope(plan)
+                    },
+                    ct)
                 .ConfigureAwait(false)
             : new ReVerifyResult { Passed = true };
 

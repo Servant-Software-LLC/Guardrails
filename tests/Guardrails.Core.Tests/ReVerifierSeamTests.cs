@@ -242,6 +242,112 @@ public sealed class ReVerifierSeamTests : IDisposable
     }
 
     // =========================================================================
+    // Issue #587 check B: when ReVerifyOptions carries the plan's producible scope, a FAILING check's
+    // reason is enriched with an ownership note naming a failing test file NO task declares. Enrichment
+    // only — the verdict is byte-identical with and without the scope.
+    // =========================================================================
+
+    /// <summary>
+    /// A failing guardrail that prints a #179-style re-emitted detail line and then a real .NET stack
+    /// frame naming <paramref name="failingTestFile"/> under the gate's own worktree root.
+    /// </summary>
+    private GuardrailDefinition WriteStackTraceFailScript(string name, string detail, string failingTestFile)
+    {
+        string abs = Path.Combine(_tempRoot, failingTestFile.Replace('/', Path.DirectorySeparatorChar));
+        string frame = $"   at Acme.Suite.OrphanTests.Explodes() in {abs}:line 42";
+
+        string emit(string line) => OperatingSystem.IsWindows() ? $"Write-Output '{line}'\n" : $"echo '{line}'\n";
+        var body = new System.Text.StringBuilder();
+        if (!OperatingSystem.IsWindows())
+        {
+            body.Append("#!/usr/bin/env bash\n");
+        }
+
+        body.Append(emit("Determining projects to restore..."))
+            .Append(emit(detail))
+            .Append(emit("  Stack Trace:"))
+            .Append(emit(frame))
+            .Append("exit 1");
+
+        return WriteGuardrailScript(name, body.ToString());
+    }
+
+    [Fact]
+    public async Task FailingGuardrail_WithProducibleScope_AppendsOwnershipNoteAfterTheFailureDetail()
+    {
+        // The measured shape of #587 check B: the gate's failing test lives in a file the plan's writeScope
+        // union does not claim, so no task in the DAG can ever fix it.
+        const string detail = "Assert.Single() Failure: The collection contained 2 items";
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteStackTraceFailScript(
+            "01-suite", detail, "tests/OrphanSuite/OrphanTests.cs");
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot,
+            [g],
+            new ReVerifyOptions { ProducibleScope = ["src/Acme/Widget.cs"] },
+            TestContext.Current.CancellationToken);
+
+        GuardrailResult failed = Assert.Single(result.FailedGuardrails);
+        string reason = failed.Reason ?? string.Empty;
+
+        // The failure detail still LEADS — the note is additive, never a replacement (#272 Part 1).
+        Assert.Contains(detail, reason, StringComparison.Ordinal);
+        Assert.Contains("OWNERSHIP:", reason, StringComparison.Ordinal);
+        Assert.Contains("tests/OrphanSuite/OrphanTests.cs", reason, StringComparison.Ordinal);
+        Assert.True(
+            reason.IndexOf(detail, StringComparison.Ordinal) < reason.IndexOf("OWNERSHIP:", StringComparison.Ordinal),
+            "the ownership note must be APPENDED after the failure detail, not ahead of it");
+    }
+
+    [Fact]
+    public async Task FailingGuardrail_OwnershipNote_IsEnrichmentOnly_AndNeverChangesTheVerdict()
+    {
+        // Same guardrail set, evaluated twice: once WITHOUT the scope and once WITH one that owns nothing.
+        // The verdict and the set of failing checks must be identical; only the reason may differ.
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition pass = WriteGuardrailScript("01-pass", MakePassScript());
+        GuardrailDefinition fail = WriteStackTraceFailScript(
+            "02-suite", "Assert.True() Failure", "tests/OrphanSuite/OrphanTests.cs");
+
+        ReVerifyResult bare = await verifier.ReVerifyAsync(
+            _tempRoot, [pass, fail], options: null, TestContext.Current.CancellationToken);
+        ReVerifyResult enriched = await verifier.ReVerifyAsync(
+            _tempRoot,
+            [pass, fail],
+            new ReVerifyOptions { ProducibleScope = ["src/Acme/Widget.cs"] },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(bare.Passed, enriched.Passed);
+        Assert.False(enriched.Passed);
+        Assert.Equal(
+            bare.FailedGuardrails.Select(f => f.Name),
+            enriched.FailedGuardrails.Select(f => f.Name));
+
+        // ...and the ONLY difference is the appended note.
+        Assert.DoesNotContain("OWNERSHIP:", bare.FailedGuardrails[0].Reason ?? string.Empty, StringComparison.Ordinal);
+        Assert.Contains("OWNERSHIP:", enriched.FailedGuardrails[0].Reason ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailingGuardrail_WithOwningScope_HasNoOwnershipNote()
+    {
+        // The overwhelmingly common case: the failing test's file IS somebody's job.
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteStackTraceFailScript(
+            "01-suite", "Assert.True() Failure", "tests/OrphanSuite/OrphanTests.cs");
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot,
+            [g],
+            new ReVerifyOptions { ProducibleScope = ["src/Acme/Widget.cs", "tests/OrphanSuite/**"] },
+            TestContext.Current.CancellationToken);
+
+        GuardrailResult failed = Assert.Single(result.FailedGuardrails);
+        Assert.DoesNotContain("OWNERSHIP:", failed.Reason ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    // =========================================================================
     // Attempt-decoupled: GUARDRAILS_ACTION_* env vars must NOT be injected
     // The scenarios-present guardrail greps for the exact method name below.
     // =========================================================================
