@@ -28,6 +28,11 @@ namespace Guardrails.Cli.Ui;
 ///   <item><c>GET /diagram.html</c> — the live status diagram <c>logs/&lt;runId&gt;/diagram.html</c>
 ///     (issue #522), which <see cref="OnTheFlyDiagramObserver"/> keeps written to that exact path; a
 ///     404 when the run has not written one yet.</item>
+///   <item><c>GET /events</c> — a long-lived stream of <c>logs/&lt;runId&gt;/events.jsonl</c> (plan 34),
+///     which <see cref="Core.Execution.RunEventStream"/> keeps appended to: a late subscriber first
+///     receives every row already on disk, then subsequent rows as they are appended, one parseable
+///     JSON object per line, over the same connection; an empty (not-yet-started) stream when the file
+///     does not exist yet, never a 404.</item>
 ///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
 ///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
 ///     available attempt number, and the files in the selected attempt (default = latest), with a
@@ -59,6 +64,9 @@ public sealed class LogServer : IAsyncDisposable
     private static readonly string[] PreferenceOrder =
         ["transcript.md", "claude-stream.jsonl", "action-stdout.log"];
 
+    /// <summary>How often <see cref="WriteEventsStream"/> re-checks <c>events.jsonl</c> for growth once it has caught up.</summary>
+    private static readonly TimeSpan EventsPollInterval = TimeSpan.FromMilliseconds(150);
+
     private readonly HttpListener _listener;
     private readonly string _logsRoot;
     private readonly IReadOnlyList<TaskNode> _tasks;
@@ -66,6 +74,13 @@ public sealed class LogServer : IAsyncDisposable
     private readonly string _baseUrl;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
+
+    // Every request dispatched by AcceptLoopAsync (see the comment there), so DisposeAsync can wait for
+    // ALL of them to finish before disposing _shutdown — a long-lived GET /events stream (plan 34) polls
+    // _shutdown.Token.WaitHandle, and disposing that CancellationTokenSource while a wait is outstanding
+    // on it is undefined behaviour, so nothing may touch it until every dispatched request has returned.
+    private readonly object _inFlightLock = new();
+    private readonly List<Task> _inFlightRequests = new();
 
     // #387 v2: the run's escalations/ dir (logs/<runId>/escalations/) and whether the run is under the
     // proceed-unreviewed opt-in — read for the /tasks/{id}/escalations pick panel and the POST /answer writer,
@@ -310,18 +325,34 @@ public sealed class LogServer : IAsyncDisposable
                 return;
             }
 
-            try
+            // Dispatched onto its own task rather than awaited in-line: GET /events (plan 34) is a
+            // genuinely long-lived streaming connection, and the accept loop must keep pulling the NEXT
+            // queued connection off the listener while that one is still open — matching the concurrent
+            // access this class already assumes elsewhere (see the comment on _fileCacheLock). Tracked in
+            // _inFlightRequests so DisposeAsync can wait for it to notice _shutdown before disposing the
+            // CancellationTokenSource out from under it (see the comment there).
+            Task requestTask = Task.Run(() => HandleAndClose(context));
+            lock (_inFlightLock)
             {
-                Handle(context);
+                _inFlightRequests.RemoveAll(t => t.IsCompleted);
+                _inFlightRequests.Add(requestTask);
             }
-            catch (Exception)
-            {
-                TrySetStatus(context, HttpStatusCode.InternalServerError);
-            }
-            finally
-            {
-                try { context.Response.Close(); } catch (Exception) { /* client gone */ }
-            }
+        }
+    }
+
+    private void HandleAndClose(HttpListenerContext context)
+    {
+        try
+        {
+            Handle(context);
+        }
+        catch (Exception)
+        {
+            TrySetStatus(context, HttpStatusCode.InternalServerError);
+        }
+        finally
+        {
+            try { context.Response.Close(); } catch (Exception) { /* client gone */ }
         }
     }
 
@@ -347,6 +378,19 @@ public sealed class LogServer : IAsyncDisposable
         {
             if (isPost) { TrySetStatus(context, HttpStatusCode.MethodNotAllowed); return; }
             WriteDiagramFile(context);
+            return;
+        }
+
+        // GET /events (plan 34): a top-level, long-lived stream of this run's events.jsonl (the
+        // RunEventStream projection) — a late subscriber first receives every row already on disk,
+        // then subsequent rows as they are appended, over the SAME connection (unlike the
+        // poll-again-later /file route). Checked before the "tasks" gate for the same reason as
+        // /diagram.html: a top-level path of its own, not a task route, and an explicit single case
+        // rather than a wildcard static file server over _logsRoot.
+        if (segments.Length == 1 && segments[0] == "events")
+        {
+            if (isPost) { TrySetStatus(context, HttpStatusCode.MethodNotAllowed); return; }
+            WriteEventsStream(context);
             return;
         }
 
@@ -726,6 +770,75 @@ public sealed class LogServer : IAsyncDisposable
     }
 
     /// <summary>
+    /// Serve <c>GET /events</c> (plan 34): stream <c>&lt;logsRoot&gt;/events.jsonl</c> to a subscriber —
+    /// every row already on disk, then each row appended afterward, one parseable JSON object per line,
+    /// over a single open connection. A run that has not emitted anything yet (no <c>events.jsonl</c> on
+    /// disk) is still a HEALTHY run: the response completes immediately with an empty body rather than
+    /// staying open or erroring, mirroring <see cref="WriteFile"/>'s "attempt not started yet" idiom.
+    /// Once the file exists, the response is chunked and polls the file for growth until the client
+    /// disconnects (a write fails) or the server shuts down (<see cref="_shutdown"/>).
+    /// </summary>
+    private void WriteEventsStream(HttpListenerContext context)
+    {
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+        context.Response.ContentType = "application/x-ndjson; charset=utf-8";
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["X-Frame-Options"] = "DENY";
+
+        string path = Path.Combine(_logsRoot, "events.jsonl");
+        if (!File.Exists(path))
+        {
+            context.Response.ContentLength64 = 0;
+            return;
+        }
+
+        context.Response.SendChunked = true;
+        Stream output = context.Response.OutputStream;
+
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var buffer = new byte[8192];
+            using var pending = new MemoryStream();
+
+            while (!_shutdown.IsCancellationRequested)
+            {
+                int read = fs.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                {
+                    if (_shutdown.Token.WaitHandle.WaitOne(EventsPollInterval))
+                    {
+                        return; // shutting down
+                    }
+
+                    continue;
+                }
+
+                for (int i = 0; i < read; i++)
+                {
+                    if (buffer[i] == (byte)'\n')
+                    {
+                        pending.WriteByte((byte)'\n');
+                        output.Write(pending.GetBuffer(), 0, (int)pending.Length);
+                        pending.SetLength(0);
+                    }
+                    else
+                    {
+                        pending.WriteByte(buffer[i]);
+                    }
+                }
+
+                output.Flush();
+            }
+        }
+        catch (Exception)
+        {
+            // The client disconnected mid-stream, or the listener stopped underneath us — end quietly;
+            // the accept loop closes the response either way.
+        }
+    }
+
+    /// <summary>
     /// Serve <c>GET /tasks/{id}/guardrails/{file}</c> or <c>GET /tasks/{id}/preflights/{file}</c> (issue
     /// #522): the raw text of ONE of the task's declared check scripts, resolved ONLY through
     /// <see cref="_checkScriptsByTask"/>'s (folder, name) key. An unknown name, or a name declared only
@@ -989,6 +1102,16 @@ public sealed class LogServer : IAsyncDisposable
         {
             try { await _acceptLoop.ConfigureAwait(false); } catch (Exception) { /* loop ended */ }
         }
+
+        // Wait for every dispatched request (including a still-polling GET /events stream) to notice
+        // _shutdown and return before disposing it out from under them.
+        Task[] pending;
+        lock (_inFlightLock)
+        {
+            pending = _inFlightRequests.ToArray();
+        }
+
+        try { await Task.WhenAll(pending).ConfigureAwait(false); } catch (Exception) { /* individual request faults are already handled in HandleAndClose */ }
 
         _shutdown.Dispose();
     }
