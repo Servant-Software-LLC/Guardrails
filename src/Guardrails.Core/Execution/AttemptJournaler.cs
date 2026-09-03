@@ -21,11 +21,18 @@ internal sealed class AttemptJournaler
 {
     private readonly StateManager _stateManager;
     private readonly RunJournal _journal;
+    private readonly IRunObserver _observer;
 
-    public AttemptJournaler(StateManager stateManager, RunJournal journal)
+    /// <summary>
+    /// <paramref name="observer"/> defaults to <see cref="IRunObserver.Null"/> so the existing
+    /// direct-construction call sites in tests (which exercise journal behavior, not observer
+    /// forwarding) keep compiling unchanged.
+    /// </summary>
+    public AttemptJournaler(StateManager stateManager, RunJournal journal, IRunObserver? observer = null)
     {
         _stateManager = stateManager;
         _journal = journal;
+        _observer = observer ?? IRunObserver.Null;
     }
 
     /// <summary>
@@ -152,6 +159,7 @@ internal sealed class AttemptJournaler
         _journal.RecordAttempt(
             task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, task.DefinitionHashAtLoad,
             bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can
@@ -371,6 +379,7 @@ internal sealed class AttemptJournaler
         _journal.RecordAttempt(
             task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
             bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(result, feedbackPath, Outcome: outcome);
     }
@@ -443,6 +452,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -521,6 +531,7 @@ internal sealed class AttemptJournaler
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -597,6 +608,7 @@ internal sealed class AttemptJournaler
             Provenance = provenance
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -653,6 +665,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -718,6 +731,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -785,6 +799,7 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
@@ -834,6 +849,7 @@ internal sealed class AttemptJournaler
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Pending, bucket: BucketFor(task));
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         return new AttemptResult(new TaskResult
         {
