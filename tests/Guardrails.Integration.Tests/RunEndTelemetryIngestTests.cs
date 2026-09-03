@@ -250,7 +250,21 @@ public sealed class RunEndTelemetryIngestTests
         Assert.NotEqual(firstRunId, secondRunId);
 
         List<TelemetryRow> rowsAfterSecond = ReadRows(corpus.Path);
-        Assert.Equal(rowsAfterFirst.Count, rowsAfterSecond.Count);
+
+        // Count only OUR OWN runs' rows. A bare total-count equality assumes nothing else writes to this
+        // corpus — but the root is a PROCESS-WIDE env var, so while RunAgainstCorpusAsync holds it pointed
+        // at this TempDir, any test class running in PARALLEL that spawns a real `guardrails run` inherits
+        // the pointer and writes its rows in here. The try/finally restores the variable but cannot close
+        // that window: the shared state is the process's, not the lock's — the same reasoning
+        // GitEnvironmentCollection records for GIT_DIR, and the same reasoning TelemetryCorpusIsolation
+        // gives for making its scratch root per-PROCESS ("parallel suite runs … cannot make each other
+        // flaky by counting each other's rows"); that initializer just cannot help INSIDE one process.
+        // Measured: plan 34 added AttachReplayTests, whose 7 real runs put 2 extra rows here and turned
+        // this into `Expected: 8, Actual: 10` in the full suite — while passing 3/3 in isolation.
+        // Scoping to our own runIds is immune to that AND a sharper claim than a global total.
+        int ownRowsAfterFirst = rowsAfterFirst.Count(r => r.RunId == firstRunId);
+        int ownRowsAfterSecond = rowsAfterSecond.Count(r => r.RunId == firstRunId || r.RunId == secondRunId);
+        Assert.Equal(ownRowsAfterFirst, ownRowsAfterSecond);
         Assert.DoesNotContain(rowsAfterSecond, r => r.RunId == secondRunId);
     }
 

@@ -68,6 +68,23 @@ public interface IRunObserver
         TaskNode task, int attempt, string runner, string model,
         string? tier, string? requestedTier) { }
 
+    /// <summary>
+    /// Attempt <paramref name="attempt"/> of <paramref name="task"/> just FINISHED — the retry loop is
+    /// about to either burn another attempt or settle the task. Until this event existed, the only
+    /// per-attempt signal an observer had was <see cref="AttemptStarting"/>; the next thing it heard was
+    /// <see cref="TaskFinished"/>, after the WHOLE retry loop, so nothing could say WHY a single attempt
+    /// failed — the shipped <c>[retry] &lt;task&gt;: attempt 2/3</c> line carries no reason. <paramref
+    /// name="outcome"/> is the SAME <see cref="Journal.AttemptOutcome"/> already recorded for this
+    /// attempt in the journal (SSOT §7) — no new vocabulary, no observer re-deriving why an attempt ended
+    /// the way it did.
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
+    /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
+    /// swallowed silently, in every mode (the <see cref="WaveGateFinished"/> / <see cref="VerifierAdvisoryFound"/>
+    /// lesson).</para>
+    /// </summary>
+    void AttemptFinished(TaskNode task, int attempt, Journal.AttemptOutcome outcome) { }
+
     /// <summary>A task finished (succeeded, failed, or was blocked).</summary>
     void TaskFinished(TaskResult result);
 
