@@ -1,10 +1,13 @@
 {
-  "description": "Do one final read-and-flush on the shutdown signal so the terminal event row reaches a live subscriber",
+  "description": "Deliver the terminal event row: a final read on the shutdown signal, and move DisposeAsync's existing in-flight drain to before the listener teardown",
   "stableId": "y6c1pn",
   "dependsOn": [
     "12-author-tests-terminal-row-delivery"
   ],
   "writeScope": [
     "src/Guardrails.Cli/Ui/LogServer.cs"
-  ]
+  ],
+  "action": {
+    "maxTurns": 100
+  }
 }

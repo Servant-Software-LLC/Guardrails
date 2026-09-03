@@ -1,6 +1,7 @@
 {
   "Version": 1,
   "Files": {
+    ".gitignore": "77d79149f78bdb4793d16f67bfadabc6ac3f033d9b22cddd0c55e220a9565125",
     "guardrails.json": "3520804fc40ce6518dd4763494ac9a021e05733366c6f624c8d0faeb98f188f6",
     "guardrails/01-solution-builds.ps1": "ef605fa1ebf12f0fe22f2c65bfc4a28b8ef8917460315df1781fd55f57476ab5",
     "guardrails/02-all-tests-pass.ps1": "9567687fb2b5aba2682929af3b04557ed78cf0fcc31cb80d290cea37168f6a2d",
@@ -53,10 +54,10 @@
     "tasks/12-author-tests-terminal-row-delivery/guardrails/01-tests-build.ps1": "5746926542080a45c16ce20a11c6b86081a1d4e1a808b5616d7ab2c52c38da7e",
     "tasks/12-author-tests-terminal-row-delivery/guardrails/02-tests-fail-on-current-code.ps1": "60c680f6591f61a0d1d3da9221fb6c478e38d22d5802a5ee78a7444fa4064b78",
     "tasks/12-author-tests-terminal-row-delivery/task.json": "084f1c8cb15eb6770c64f0fa35da20d6ab7f15ecea6edb04f7446d2975effadf",
-    "tasks/13-deliver-terminal-row-in-logserver/action.prompt.md": "1770f1a688fc906ee090682c6f02b7e1a12b2287d6b48355c7c04dc8f19f0847",
+    "tasks/13-deliver-terminal-row-in-logserver/action.prompt.md": "748b352e509980442d8bd0da8feaa39e0eab89646b860eae9308dad61726b116",
     "tasks/13-deliver-terminal-row-in-logserver/guardrails/01-delivery-tests-pass.ps1": "4d781a1e573c81b3570bfd070228d7808768ec842cac0cf7dc427e2eeb246841",
     "tasks/13-deliver-terminal-row-in-logserver/guardrails/02-existing-endpoint-tests-pass.ps1": "83ed744e2faa80e8012daad2be42083d450dfe923151a872c6c2437cc4734c93",
-    "tasks/13-deliver-terminal-row-in-logserver/task.json": "17026db78359fc3bef938316bb05ec51437171ac36fc9cf18eedaeb59c68d288",
+    "tasks/13-deliver-terminal-row-in-logserver/task.json": "91afaf1c388a4621d15e6d87b15c6fc4745e0227b45dcd2eccde6f93cc2a8d85",
     "tasks/14-document-the-streams-in-ssot/action.prompt.md": "a7947b8fff40886b211344487386112d7f94697c7667d17cc28f74371776feeb",
     "tasks/14-document-the-streams-in-ssot/guardrails/01-ssot-documents-the-streams.ps1": "980d72351aaebcfbe0d36c9f8a7a7e1522af3a40d5f51b455a9cd095b70fef02",
     "tasks/14-document-the-streams-in-ssot/task.json": "8ad3e8ad3da2f76045f92bea6ce7769ab1c53168384c6eaa3e6ff821a875eec3",

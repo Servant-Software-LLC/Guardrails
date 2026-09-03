@@ -196,7 +196,11 @@ is deliberate.
 
 `WriteEventsStream`'s tail loop returns on the shutdown signal **without a final read**, and
 `run-finished` is appended microseconds before the server is disposed. Add one final read-and-flush on
-the shutdown signal.
+the shutdown signal — **and move the drain `DisposeAsync` already has to before `_listener.Stop()`,
+with a bounded timeout.** The final read alone delivers nothing: `Stop()`/`Close()` tear down the
+shared HTTP.sys request queue first, so the write always throws (§9.3, corrected mid-run). The existing
+`await Task.WhenAll(pending)` already claims in its own comment to run before that teardown; making the
+code match the comment is the fix.
 
 **Do NOT change the empty-200 for a missing `events.jsonl`.** It is deliberate
 (`LogServer.cs` documents it), pinned by
@@ -404,11 +408,27 @@ nothing.
 
 §5. Mitigated by making the signature change one task; the residual risk is that task's turn budget.
 
-### 9.3 `run-finished` delivery is best-effort over the wire
+### 9.3 `run-finished` delivery — CORRECTED mid-run
 
-`_listener.Stop()` runs first in `LogServer.DisposeAsync`, so even with §3.8 a live subscriber can miss
-the terminal row. The SSOT tells consumers the row is durable in the file and to re-read on close.
-Guaranteeing delivery would mean the run waiting on its own HTTP clients.
+**This section was wrong as first written, and the correction is the more interesting fact.** It said
+`_listener.Stop()` runs first in `DisposeAsync` so delivery is inherently best-effort, and that closing
+the gap would mean "the run waiting on its own HTTP clients".
+
+Measured during the run, over ~10 variants: with `Stop()` first, the final write throws
+`ObjectDisposedException` on the shared HTTP.sys request-queue handle **every time** — and
+`_listener.Close()` cancels outstanding I/O for the whole queue at the kernel level, so even a
+provably-completed `Close(willBlock: true)` before `Stop()` still loses the row. **A "best-effort"
+mechanism that is 0% effective is not best-effort; it is dead code.** §3.8's final read alone delivers
+nothing.
+
+`DisposeAsync` already contains `await Task.WhenAll(pending)` whose own comment claims it runs *before*
+disposing the handle out from under in-flight requests. It does not — it runs three lines too late.
+Moving it above `Stop()`, with a bounded timeout, closes the gap for the ordinary shutdown path. The
+handlers have already been signalled by `_shutdown` and this stream's poll interval is 150 ms, so the
+wait is on the server's own loop, not on a client — which is what the original worry got wrong.
+
+Delivery remains best-effort **in principle** (a client can drop; the bound can expire), and
+`run-finished` is a durable FILE event first. That is what the SSOT should say.
 
 ## 10. Acceptance
 
