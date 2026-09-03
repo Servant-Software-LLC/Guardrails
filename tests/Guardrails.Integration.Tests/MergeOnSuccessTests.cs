@@ -344,6 +344,59 @@ public sealed class MergeOnSuccessTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
+    // SwitchUserBranchBeforeMergeDecorator (issue #588) — wraps a real IWorktreeProvider and, inside
+    // MergePlanBranchIntoUserBranch, CREATES AND CHECKS OUT a new branch in the user's repo immediately
+    // before delegating. This is the measured incident: a branch cut from HEAD while the run was in
+    // flight, which silently redirected a bare `git merge` away from the branch the run had pinned.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private sealed class SwitchUserBranchBeforeMergeDecorator : IWorktreeProvider
+    {
+        private readonly IWorktreeProvider _inner;
+        private readonly string _repoPath;
+        private readonly string _newBranch;
+
+        public SwitchUserBranchBeforeMergeDecorator(IWorktreeProvider inner, string repoPath, string newBranch)
+        {
+            _inner = inner;
+            _repoPath = repoPath;
+            _newBranch = newBranch;
+        }
+
+        public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct) =>
+            _inner.CreateIntegration(planName, runId, ct);
+
+        public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct) =>
+            _inner.CreateSegment(taskId, attempt, integ, ct);
+
+        public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt) =>
+            _inner.ReuseSegment(upstreamSegment, taskId, attempt);
+
+        public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
+            _inner.ForkFromTip(producerRecordedSha, taskId, attempt);
+
+        public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
+            _inner.Integrate(segment, integ, ct);
+
+        public void Discard(WorktreeHandle handle) => _inner.Discard(handle);
+
+        public void PruneOrphans(IReadOnlyCollection<string> liveTaskIds, IntegrationHandle integ) =>
+            _inner.PruneOrphans(liveTaskIds, integ);
+
+        public void RollbackMerge(IntegrationHandle integ, CancellationToken ct) =>
+            _inner.RollbackMerge(integ, ct);
+
+        /// <summary>The inner provider's detail (the #588 pair of branch names) must reach the Scheduler.</summary>
+        public string? LastMergeOnSuccessDetail => _inner.LastMergeOnSuccessDetail;
+
+        public MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct)
+        {
+            TempGitRepo.Git(_repoPath, "checkout", "-b", _newBranch);
+            return _inner.MergePlanBranchIntoUserBranch(integ, ct);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     // Plan helpers for git-based tests (2 and 3): a single-task plan inside repoPath at
     // <repoPath>/plan/ with workspace: ".." and maxParallelism: 2 (activates worktree mode).
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -355,13 +408,19 @@ public sealed class MergeOnSuccessTests
     /// The task action writes <paramref name="taskFile"/> (relative to the segment worktree root)
     /// with <paramref name="taskFileContent"/> and emits a state fragment.
     /// </summary>
+    /// <param name="switchToBranchMidRun">
+    /// Issue #588: when set, the task's own action <c>git checkout -b</c>s this branch in
+    /// <paramref name="repoPath"/> — the user's checkout moving WHILE the run is in flight, driven through
+    /// the real CLI pipeline (no test decorator can reach inside the CLI's own provider construction).
+    /// </param>
     private static string CreatePlanInRepo(
         string repoPath,
         bool? mergeOnSuccess,
         string taskFile = "src/app.cs",
         string taskFileContent = "class App {}",
         bool guardrailFails = false,
-        bool runOnCurrentBranch = false)
+        bool runOnCurrentBranch = false,
+        string? switchToBranchMidRun = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
@@ -385,7 +444,8 @@ public sealed class MergeOnSuccessTests
             }
             """);
 
-        WriteGitTask(planDir, "01-task", taskFile, taskFileContent, guardrailFails);
+        WriteGitTask(planDir, "01-task", taskFile, taskFileContent, guardrailFails,
+            switchToBranchMidRun is null ? null : (repoPath, switchToBranchMidRun));
         return planDir;
     }
 
@@ -394,7 +454,8 @@ public sealed class MergeOnSuccessTests
         string taskId,
         string taskFile,
         string taskFileContent,
-        bool guardrailFails)
+        bool guardrailFails,
+        (string RepoPath, string Branch)? switchBranchMidRun = null)
     {
         string taskDir = Path.Combine(planDir, "tasks", taskId);
         Directory.CreateDirectory(taskDir);
@@ -407,11 +468,17 @@ public sealed class MergeOnSuccessTests
 
         if (OperatingSystem.IsWindows())
         {
-            // Windows: backslash separators for the file path in the PS script.
+            // Windows: backslash separators for the file path in the PS script. The optional #588 line
+            // swallows both streams ($null = & … 2>&1) so git's "Switched to a new branch" chatter on
+            // stderr cannot be mistaken for a failing action.
             string psPath = taskFile.Replace("/", "\\");
+            string psSwitch = switchBranchMidRun is { } ps
+                ? $"$null = & git -C '{ps.RepoPath}' checkout -b '{ps.Branch}' 2>&1\n"
+                : "";
             File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
                 $"Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{fragmentJson}'\n" +
                 $"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\{psPath}\" -Force -Value '{taskFileContent}' | Out-Null\n" +
+                psSwitch +
                 "exit 0\n");
             File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"),
                 guardrailFails ? "Write-Output 'deliberate guardrail failure'; exit 1\n" : "exit 0\n");
@@ -426,12 +493,17 @@ public sealed class MergeOnSuccessTests
                 ? ""
                 : $"mkdir -p \"$GUARDRAILS_WORKSPACE/{taskParentDir}\"\n";
 
+            string shSwitch = switchBranchMidRun is { } sh
+                ? $"git -C '{sh.RepoPath}' checkout -b '{sh.Branch}' >/dev/null 2>&1\n"
+                : "";
+
             string actionPath = Path.Combine(taskDir, "action.sh");
             File.WriteAllText(actionPath,
                 "#!/usr/bin/env bash\n" +
                 $"printf '%s' '{fragmentJson}' > \"$GUARDRAILS_STATE_OUT\"\n" +
                 mkdirLine +
                 $"printf '%s' '{taskFileContent}' > \"$GUARDRAILS_WORKSPACE/{taskFile}\"\n" +
+                shSwitch +
                 "exit 0\n");
             File.SetUnixFileMode(actionPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
@@ -1393,6 +1465,228 @@ public sealed class MergeOnSuccessTests
         Assert.Equal(headAfterFirstDelivery, repo.HeadSha()); // HEAD unchanged — no double-merge
         Assert.Empty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
         Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    // Issue #588 — the delivery TARGET is pinned at run start; the merge must not land elsewhere.
+    //
+    // MEASURED INCIDENT: a run started on 'master'; a `design/34-run-event-stream-and-attach` branch was
+    // cut from HEAD and checked out WHILE the run was in flight; the end-of-run
+    // `git merge --ff-only <planBranch>` — a bare merge into whatever HEAD then was — produced
+    // "Merge branch 'guardrails/33-…' into design/34-…", while the run printed "delivered to master"
+    // from the value pinned at start (IntegrationHandle.OriginalBranch). Master contained zero
+    // deliverables, and NOTHING in the output was self-inconsistent: only git revealed it.
+    //
+    // THE FIX COMPARES AND REFUSES. It never checks the user's branch back out — mutating a working tree
+    // the user moved deliberately is a worse failure than declining — so a moved HEAD joins HookRejected
+    // (#149/#150) and DirtyWorkingTree (#448) as "delivery withheld for a nameable reason", carrying its
+    // detail through the same LastMergeOnSuccessDetail channel and leaving the verified work on the plan
+    // branch: the SAFE failure direction.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>The branch name from the incident, cut from HEAD mid-run.</summary>
+    private const string BranchCutMidRun = "design/34-run-event-stream-and-attach";
+
+    /// <summary>Commit a deliverable onto the plan branch through the integration worktree.</summary>
+    private static void CommitOnPlanBranch(IntegrationHandle integ, string relPath, string content)
+    {
+        string full = Path.Combine(
+            integ.IntegrationWorktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, content);
+        TempGitRepo.Git(integ.IntegrationWorktreePath, "add", "-A");
+        TempGitRepo.Git(integ.IntegrationWorktreePath, "commit", "--no-verify", "-m", "plan work");
+    }
+
+    /// <summary>
+    /// Issue #588 CONTROL: HEAD is still on the branch the run pinned, so delivery behaves exactly as it
+    /// did before — a fast-forward onto the user's branch, no detail, the deliverable in their checkout.
+    /// Without this the refusals below would still pass if the gate refused everything.
+    /// </summary>
+    [Fact]
+    public void MergePlanBranchIntoUserBranch_HeadStillOnTheStartingBranch_DeliversUnchanged()
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        string startingBranch = repo.CurrentBranch();
+        string headBeforeDelivery = repo.HeadSha();
+
+        IntegrationHandle integ = provider.CreateIntegration("588-stay", "run-588a", CancellationToken.None);
+        CommitOnPlanBranch(integ, "src/app.cs", "class App {}");
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.FastForwarded, result);
+        Assert.Null(provider.LastMergeOnSuccessDetail);
+        Assert.NotEqual(headBeforeDelivery, repo.HeadSha());
+        Assert.Equal(startingBranch, repo.CurrentBranch());
+        Assert.True(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")),
+            "#588 control: an unmoved HEAD must still deliver the plan's file into the user's checkout.");
+    }
+
+    /// <summary>
+    /// Issue #588, THE DEFECT: HEAD is on a branch cut from it mid-run. The merge must NOT run — not into
+    /// the new branch (the incident), and not into the pinned one either, which would mean checking the
+    /// user's branch back out over work they moved to deliberately. Nothing merges anywhere, the checkout
+    /// is untouched, both branches sit where they were, and the detail NAMES BOTH so the operator can see
+    /// the mismatch that stopped the delivery.
+    /// </summary>
+    [Fact]
+    public void MergePlanBranchIntoUserBranch_HeadCutToAnotherBranch_RefusesAndMergesNothing()
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        string startingBranch = repo.CurrentBranch();
+
+        IntegrationHandle integ = provider.CreateIntegration("588-moved", "run-588b", CancellationToken.None);
+        CommitOnPlanBranch(integ, "src/app.cs", "class App {}");
+
+        // The incident: a branch cut from HEAD and checked out while the run is in flight.
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", BranchCutMidRun);
+        string headBeforeDelivery = repo.HeadSha();
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.BranchMoved, result);
+
+        // Both branch names travel to the CLI — the whole point is that they DIFFER.
+        Assert.NotNull(provider.LastMergeOnSuccessDetail);
+        Assert.Contains(startingBranch, provider.LastMergeOnSuccessDetail!, StringComparison.Ordinal);
+        Assert.Contains(BranchCutMidRun, provider.LastMergeOnSuccessDetail!, StringComparison.Ordinal);
+
+        // NOTHING was merged, into EITHER branch, and no branch was checked out on the user's behalf.
+        Assert.Equal(BranchCutMidRun, repo.CurrentBranch());
+        Assert.Equal(headBeforeDelivery, repo.HeadSha());
+        Assert.Equal(headBeforeDelivery, TempGitRepo.Git(repo.RepoPath, "rev-parse", startingBranch).Trim());
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")),
+            "#588: a refused delivery must leave the plan's file OUT of the user's checkout.");
+        Assert.Empty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
+        Assert.Empty(TempGitRepo.Git(repo.RepoPath, "status", "--porcelain").Trim());
+
+        // The verified work is still on the plan branch, for a manual merge wherever the user wants it.
+        Assert.True(repo.BranchExists("guardrails/588-moved"));
+    }
+
+    /// <summary>
+    /// Issue #588, detached HEAD: <c>rev-parse --abbrev-ref HEAD</c> prints the literal <c>HEAD</c>, which
+    /// is neither the pinned branch nor a branch at all — a delivery there would strand commits on no
+    /// branch. It takes the SAME refusal path rather than crashing or merging.
+    /// </summary>
+    [Fact]
+    public void MergePlanBranchIntoUserBranch_DetachedHead_TakesTheSameRefusal()
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        string startingBranch = repo.CurrentBranch();
+
+        IntegrationHandle integ = provider.CreateIntegration("588-detached", "run-588c", CancellationToken.None);
+        CommitOnPlanBranch(integ, "src/app.cs", "class App {}");
+
+        TempGitRepo.Git(repo.RepoPath, "checkout", "--detach");
+        string headBeforeDelivery = repo.HeadSha();
+
+        MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
+
+        Assert.Equal(MergeOnSuccessResult.BranchMoved, result);
+        Assert.NotNull(provider.LastMergeOnSuccessDetail);
+        Assert.Contains(startingBranch, provider.LastMergeOnSuccessDetail!, StringComparison.Ordinal);
+        Assert.Contains("detached", provider.LastMergeOnSuccessDetail!, StringComparison.OrdinalIgnoreCase);
+
+        // Still detached — nothing was merged and nothing was checked out for the user.
+        Assert.Equal("HEAD", repo.CurrentBranch());
+        Assert.Equal(headBeforeDelivery, repo.HeadSha());
+        Assert.Equal(headBeforeDelivery, TempGitRepo.Git(repo.RepoPath, "rev-parse", startingBranch).Trim());
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")));
+        Assert.True(repo.BranchExists("guardrails/588-detached"));
+    }
+
+    /// <summary>
+    /// Issue #588 through the SCHEDULER — the report contract. A wholly-green run whose checkout moved
+    /// mid-run must stamp <see cref="MergeOnSuccessResult.BranchMoved"/> and leave
+    /// <see cref="RunReport.DeliveredToBranch"/> <b>null</b>. That null is the headline: the CLI's
+    /// "delivered to X" line is driven off it, and the pre-fix report filled it from the branch pinned at
+    /// run start — printing a truthful-looking delivery to a branch the work never reached.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_CheckoutMovedDuringRun_ReportsBranchMoved_AndNamesNoDeliveryTarget()
+    {
+        using var repo = new TempGitRepo();
+        string startingBranch = repo.CurrentBranch();
+        string headBeforeRun = repo.HeadSha();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        var decorator = new SwitchUserBranchBeforeMergeDecorator(
+            new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), repo.RepoPath, BranchCutMidRun);
+
+        var (report, _) = await RunWithProviderAsync(planDir, decorator, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "#588: the tasks all pass; only the end-of-run delivery refuses. " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        Assert.Equal(MergeOnSuccessResult.BranchMoved, report.MergeOnSuccessOutcome);
+
+        // THE HEADLINE: no delivery happened, so the report names no delivery target.
+        Assert.Null(report.DeliveredToBranch);
+
+        Assert.NotNull(report.MergeOnSuccessDetail);
+        Assert.Contains(startingBranch, report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+        Assert.Contains(BranchCutMidRun, report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+
+        // Not the #340 opt-out warning: delivery was ON, it RAN, and it refused.
+        Assert.False(report.WhollyGreenButUndelivered);
+
+        // The user's checkout never moved and never received the work.
+        Assert.Equal(headBeforeRun, repo.HeadSha());
+        Assert.Equal(BranchCutMidRun, repo.CurrentBranch());
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")));
+    }
+
+    /// <summary>
+    /// Issue #588 through the REAL CLI — the operator surface. The task itself cuts a new branch in the
+    /// user's repo mid-run (no decorator can reach inside the CLI's own provider construction), so this is
+    /// the incident end to end. The halt must name BOTH branches and the plan branch the verified work is
+    /// sitting on, must NOT print the "delivered to &lt;branch&gt;" line, and exits
+    /// <see cref="ExitCodes.TaskFailed"/> like every other withheld delivery (SSOT §5.3).
+    /// </summary>
+    [Fact]
+    public async Task Cli_CheckoutMovedDuringRun_HaltsNamingBothBranches_AndClaimsNoDelivery()
+    {
+        using var repo = new TempGitRepo();
+        string startingBranch = repo.CurrentBranch();
+        string headBeforeRun = repo.HeadSha();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}",
+            switchToBranchMidRun: BranchCutMidRun);
+
+        var io = new StringConsoleIo();
+        int exitCode = await InvokeCliAsync(io, "run", planDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.TaskFailed, exitCode);
+
+        // The task really did move the checkout — otherwise this test proves nothing.
+        Assert.Equal(BranchCutMidRun, repo.CurrentBranch());
+
+        // Both branches, named, in the operator's own words.
+        Assert.Contains(
+            $"run started on '{startingBranch}'; HEAD is now '{BranchCutMidRun}'",
+            io.OutText, StringComparison.Ordinal);
+        // … plus the plan branch the verified work is sitting on, and the offer to merge it anywhere.
+        Assert.Contains("guardrails/plan", io.OutText, StringComparison.Ordinal);
+        Assert.Contains("wherever you want it", io.OutText, StringComparison.Ordinal);
+
+        // The false claim this issue was filed for must be GONE.
+        Assert.DoesNotContain($"delivered to {startingBranch}", io.OutText, StringComparison.Ordinal);
+
+        // Nothing was delivered: neither branch advanced and the deliverable is not in the checkout.
+        Assert.Equal(headBeforeRun, repo.HeadSha());
+        Assert.Equal(headBeforeRun, TempGitRepo.Git(repo.RepoPath, "rev-parse", startingBranch).Trim());
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")));
     }
 
     /// <summary>

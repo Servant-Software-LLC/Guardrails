@@ -1592,6 +1592,72 @@ finding may cast (does it veto this checkpoint), never whether an operator **see
 reads in the gate decision as `excused (#501): GR2060 — unsatisfiable while the wave is unfinished; NOT a
 veto`, with the finding's full message — witness and path — still present in the diagnostics body.
 
+### 4.9 Prompts that instruct a command the grants refuse (validated, GR2071 — warning)
+
+§4.7 and §4.8 are about a GUARDRAIL that no implementation can satisfy. This one is about an ACTION prompt
+that no agent can obey: the prompt names a shell command, and the task's own `allowedTools` refuse it. Both
+inputs are static and sit in the same plan folder, so it is a string comparison — and until issue #587 nothing
+was doing it.
+
+> A task's `action.prompt.md` instructs the agent to run a command that the `allowedTools` the task resolves
+> to do not grant.
+
+**The measured defect (plan 33 task 09).** The prompt said *"you enumerate them with `git ls-tree`"*; the
+grants were `Bash(dotnet *)`, `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`, `Bash(git status*)`.
+The one command the task's whole deliverable rested on was ungranted, and every fallback the agent reached for
+(`| grep`, `| awk`, `2>&1 | Select-Object`) was refused too, because the runner **splits a compound and
+rejects the whole thing on its ungranted part**. Two attempts burned, `needs-human`, run halted — after
+`validate`, `graph --check` and a full `/guardrails-review` had each passed the folder.
+
+**Grant resolution.** `allowedTools` is declared per **prompt runner**, never per task; the only per-task
+override is `action.runner`, which selects a different `promptRunners.<name>` block. The set compared against
+is that block's **action** settings (`EffectiveSettings(isGuardrail: false)` — `guardrailOverrides` governs
+prompt guardrails and is deliberately not read here) plus the read-only `Bash(git show*)` the harness injects
+into every invocation (`ClaudePromptRunner.ResolveToolGrants`, §9). Matching replicates the CLI's prefix glob:
+a trailing `*` makes the rest a prefix, a `:` before it is part of the separator, and every ambiguity resolves
+PERMISSIVELY — the check's errors must fall on the side of saying nothing.
+
+**Fires only when all of the following hold** (each a place conservatism is spent, in §4.7's idiom):
+
+1. **A prompt action** whose resolved runner **declares** a non-empty `allowedTools` containing at least one
+   `Bash(...)` entry, none of which is unscoped (`Bash`) or universal (`Bash(*)`). No declared tools ⇒ silent,
+   because an unconstrained task cannot violate a grant. No `Bash(...)` entry ⇒ silent too: `allowedTools` is a
+   **floor, not a ceiling** (#252), so a plan naming no shell grant has expressed no shell policy for the
+   operator's own `settings.json` to be measured against.
+2. **A candidate from one of two sources.** An INLINE backticked span, or a line inside a fence the prompt
+   **hands over** — colon-terminated introducer, language tag absent or a shell, at most one blank line
+   between. A fence is otherwise an artifact the task must AUTHOR, and the hand-over structure is the only
+   thing separating the two.
+3. **A recognisable command shape** — a head from a closed binary list, plus a bare verb when the span is
+   inline. No arbitrary shell is parsed: `git -C <path> log` is flag-first and is dropped, as is a bare
+   `` `git` `` or a backticked path.
+4. **An imperative context** (inline only) — a trigger token in the two words before the span, no negation cue
+   anywhere in that line's prefix. The third-person "runs"/"uses" is not a trigger, which is what drops the
+   commonest inline shape in the corpus ("the harness runs a `git diff` check", 45% of a stratified sample).
+5. **Addressed to the AGENT** — a second-person pronoun (`you`/`yourself`, never `your`) in the paragraph
+   before the command. This is the narrowing that carries the whole precision result: without it the check
+   produced 5 findings over the committed corpus and **every one** was a prompt describing what the ARTIFACT
+   the agent authors must do ("roll back with `git reset --hard <preHead>`" inside a spec for a test helper).
+   `your X` names a thing belonging to the agent and makes that thing the subject; `you` names the agent.
+
+The candidate is then **split on unquoted `|`/`||`/`&&`/`;` exactly as the runner splits a compound**, and
+every segment is tested. That covers the pipeline half of the same defect without a second rule asserting "a
+pipe is always a refusal" — which would be unsound (a plan granting both halves runs the pipeline fine) and
+would have fired on the remediation prompt that fixed plan 33. A compound with two ungranted segments is
+**one** finding naming both: one defect, one fix.
+
+**Measured before shipping** (21 committed plan folders, 336 prompt-action tasks, 488 backticked binary-led
+spans): 20 candidates survive conditions 2–4, **6** survive condition 5, and the check produces **one finding
+at HEAD** — plan 33 task 02's `grep -rn … | wc -l`, a genuine uncorrected defect it found rather than one the
+issue named — plus **one at `2281ece^`**, the task-09 defect. Zero false positives.
+
+**A WARNING, not an error**, for GR2068/GR2069's reason: `RunCommand` refuses to run a plan whose validation
+emits any error, and the extractor reads free prose, so an ERROR would refuse a correct plan on a sentence it
+misread. The grants are also only the plan's own floor, and an operator's `~/.claude/settings.json` can satisfy
+a command this check reports. **Known residual**, and the thing to weigh if promotion is ever proposed: a
+second-person instruction about what the authored artifact must do is indistinguishable here from an
+instruction to run the command.
+
 ## 5. Child-process contract
 
 ### 5.1 Environment variables (all paths absolute)
@@ -1829,11 +1895,35 @@ into the user's original branch (ff-only when possible, else a real merge whose 
 **AI-merge is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
 intact — never a force-overwrite. Opting out (`false` / `--no-merge-on-success`) leaves the plan branch
 for the user to review and merge. The merge-back outcome is reported as `MergeOnSuccessResult`
-(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected`); a dirty user working
-tree is refused **before any git merge runs** (the harness never runs git over uncommitted user work)
-and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that re-drains green
-after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
-(→ `FastForwarded`, exit 0) — never a double-merge or error.
+(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected` / `BranchMoved`); a dirty
+user working tree is refused **before any git merge runs** (the harness never runs git over uncommitted
+user work) and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that
+re-drains green after a prior run already delivered re-issues an ff-only merge that git reports "Already
+up to date" (→ `FastForwarded`, exit 0) — never a double-merge or error.
+
+**The delivery target is VERIFIED, not assumed — compare and refuse (issue #588).** "The user's original
+branch" above is pinned once, at run start (`IntegrationHandle.OriginalBranch`, read by
+`CreateIntegration`), while the merge itself is a bare `git merge` in the user's checkout that lands on
+whatever `HEAD` **currently** is. Those two are now reconciled: **before merging**, the harness re-reads
+`git rev-parse --abbrev-ref HEAD` and, if it is not the pinned branch, **merges nothing** and returns
+`BranchMoved`, carrying "run started on `<original>`; HEAD is now `<current>`" through the same
+`RunReport.MergeOnSuccessDetail` channel `HookRejected` and `DirtyWorkingTree` use, so the CLI names both
+branches plus the plan branch the verified work is on. `DeliveredToBranch` stays **null**, so the
+"delivered to `<branch>`" line correctly does not print. A **detached** `HEAD` (the idiom prints the
+literal `HEAD`) and an unreadable `HEAD` take the same path — neither is provably the pinned branch, and
+this gate FAILS CLOSED exactly as the dirty-tree gate below does. This check runs FIRST, ahead of the dirty-path
+intersection and the merge-shape probe, both of which are computed against `HEAD` and would otherwise
+reason about the wrong branch.
+
+- **The harness does NOT check the user's branch back out.** Restoring it would mutate a working tree the
+  user moved deliberately — a worse failure than declining — so a moved `HEAD` joins the "delivery
+  withheld for a nameable reason" family: user checkout untouched, verified work left on
+  `guardrails/<plan-name>` for a manual merge, the SAFE failure direction.
+- **Motivating incident.** A run started on `master`; a `design/34-…` branch was cut from `HEAD` and
+  checked out *while the run was in flight*. The end-of-run merge produced
+  `Merge branch 'guardrails/33-…' into design/34-…` while the run printed `delivered to master` from the
+  pinned value. `master` contained zero deliverables, and **nothing in the output was self-inconsistent** —
+  only git revealed it.
 
 **Delivery is ordered AFTER the terminal gate — "all succeeded" means tasks AND gate (issue #457).**
 Nothing reaches the user's branch until *every* terminal check the plan declares has passed on the
@@ -1937,9 +2027,10 @@ The non-FF merge commit (`git commit --no-edit`, no `--no-verify`) therefore run
   commit. A user who needs the hook to vet every delivery should expect it only when the merge-back is
   non-FF (their branch advanced during the run).
 
-A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected`) exits
-non-zero at the CLI: the work is durable on the plan branch but the user must act. A `FastForwarded` /
-`Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict untouched.
+A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected` /
+`BranchMoved`) exits non-zero at the CLI: the work is durable on the plan branch but the user must act. A
+`FastForwarded` / `Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict
+untouched.
 
 **Green-but-undelivered warning (#340) — the safety backstop for the OPT-OUT posture.** With delivery
 now **ON by default** (`mergeOnSuccess` defaults `true`, per the flip above), a wholly-green run normally
@@ -2047,8 +2138,46 @@ merged (the attempt fails, retries with feedback naming the stray key, and nothi
 `state.json`). The fragment is **rejected, not stripped**. This makes the harness the single
 writer of every task's namespace, closing the #48 cross-task poisoning vector: no task can
 overwrite another task's captured `fileHashes` (or any derived key) by writing under that
-task's id. `needsHuman` is **exempt** — it short-circuits the attempt (§9) *before* the merge
-step, so it is never subject to this rule.
+task's id.
+
+**The CONTROL KEYS are exempt, and they are TOP-LEVEL SIBLINGS of the folder-name key.** The
+fragment root carries two kinds of thing: the **state** a task publishes (namespaced under its own
+id, the rule above) and **instructions to the harness** — `needsHuman` (§9) and `needsHarnessWrite`
+(§9) — which are not state and are not namespaced. `needsHuman` short-circuits the attempt *before*
+the merge step and `needsHarnessWrite` is CONSUMED (stripped) before it, so neither is ever subject
+to the single-writer rule. A fragment may carry a control key and the task's own state key together:
+
+```json
+{ "02-generate-greeting": { "greetingPath": "out/greeting.txt" },
+  "needsHarnessWrite": { "path": ".claude/skills/foo/SKILL.md", "edits": [ ] } }
+```
+
+**A control key NESTED under a top-level key is REJECTED (issue #586).** Written one level down —
+`{ "02-generate-greeting": { "needsHarnessWrite": { … } } }` — it is not a control key at all: the
+harness reads control keys at the fragment ROOT, so nested it is ordinary state under a key the task
+legitimately owns. The single-writer check passes it, the escape hatch never fires, **nothing is
+written, and nothing anywhere says so** — the task's guardrails then fail on the CONTENT of a file
+the agent was never given the chance to touch. (Measured on plan 33: 7 attempts across two runs and
+one run-stopping `needs-human` halt; the same task, model and content passed in 78 seconds once the
+prompt was corrected by hand. It is a defensible reading of the harness-contract header, which says
+to write everything published under the FOLDER NAME as the single top-level key and that anything
+else is REJECTED, while marking nothing exempt — the wording is fixed at the source, but a wording
+fix reaches only plans authored afterwards.) The harness therefore detects a control key nested
+**exactly one level** under any object-valued top-level key and fails the attempt as
+**invalid-fragment** — the SAME outcome the foreign-key rejection above uses, so an agent meets ONE
+consistent story about fragment shape — with retry feedback that names the specific mistake, states
+that nothing was written, and shows the correct shape with both keys present. Detection is by PAYLOAD
+SHAPE, never by key name alone (a `needsHarnessWrite` value must carry a `path` plus `content`/`edits`,
+or be an array containing such an entry; a `needsHuman` value must be the structured object form
+carrying a non-empty `question` — the bare-string form is deliberately not matched): a task's own state
+could name a key `needsHuman` for unrelated reasons, and a false rejection of legitimate state would be
+worse than the bug — the bug costs attempts, a false rejection blocks a task on every attempt forever.
+A control key TWO or more levels down is likewise not flagged; that depth is genuinely reachable by
+legitimate state. The check runs **before the guardrails**, because a guardrail failure returns long
+before the fragment-validation path here ever reads the fragment — detecting this at the merge site
+alone would not have caught the measured defect at all. `stagingOutputs` is NOT in this family: it is a
+`task.json` field (§3.5), not a fragment key, so there is no top-level fragment contract for it to be
+nested out of.
 
 **Multi-wave plans (§14):** in a waved plan the "task's own id" is the **wave-qualified id**
 `<waveDir>/<taskFolder>` (e.g. `wave-02-provision/01-author-tests`), so two waves may each reuse `01-`
@@ -2366,12 +2495,13 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                       // `outcome`, so "did the work ship?" is answerable without knowing
                                       // which outcome tokens count as success
     "outcome": "not-attempted",       // not-attempted | fast-forwarded | merged | conflict |
-                                      // dirty-working-tree | hook-rejected
+                                      // dirty-working-tree | hook-rejected | branch-moved
     "reason": "mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
     "planBranch": "guardrails/27-operator-visibility"  // the branch to merge by hand; absent when delivered,
                                       // and absent in serial mode where nothing is stranded
     // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
-    // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, or the blocking paths
+    // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
+                                      // (branch-moved, #588) the branch pinned at start + the current HEAD
   }
 }
 ```
@@ -3856,7 +3986,9 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     { "path": ".claude/skills/plan-breakdown/references/new.md",  "reason": "...", "content": "..." } ] }
 ```
 
-- **Wire contract.** A root fragment key, read from the SAME already-written `GUARDRAILS_STATE_OUT`
+- **Wire contract.** A **ROOT** fragment key — a top-level SIBLING of the task's folder-name state key,
+  never nested inside it (§6.2; nesting it one level down is REJECTED as invalid-fragment, issue #586) —
+  read from the SAME already-written `GUARDRAILS_STATE_OUT`
   file `needsHuman` uses, via the same "read once" shape. The key's value is **either a single ENTRY
   object or an ARRAY of entry objects** — the array is additive and the single-object form is
   unchanged, byte for byte, including its failure messages. Each entry has a `path`, workspace-relative
@@ -3961,6 +4093,12 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
   `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
   trumps a mechanical write request).
+- **Nesting it under the folder-name key is a REJECTED shape, not a silent no-op (issue #586).** See
+  §6.2 for the full rule and the measured cost. The order in the attempt loop is: the top-level
+  `needsHuman` short-circuit first (a deliberate escalation is honoured, never met with a shape
+  lecture), then the nested-control-key rejection, then the `needsHarnessWrite` application — so a
+  fragment carrying both a correct request and a nested one is rejected with nothing written for
+  either, and an action that FAILED outright keeps its own more primary failure feedback.
 - **Three load-bearing safety checks, run PER ENTRY and ALL BEFORE the write — and, since #437, before
   that entry's target file is so much as READ (a security boundary — otherwise any task could claim
   "I'm blocked, please write this for me" and bypass `writeScope` entirely). All three are

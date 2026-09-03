@@ -75,6 +75,7 @@ public static class JournalJson
         DeliveryOutcome.Conflict => "conflict",
         DeliveryOutcome.DirtyWorkingTree => "dirty-working-tree",
         DeliveryOutcome.HookRejected => "hook-rejected",
+        DeliveryOutcome.BranchMoved => "branch-moved",
         _ => throw new JsonException($"Unhandled delivery outcome '{outcome}'.")
     };
 
@@ -178,6 +179,7 @@ public static class JournalJson
                 "conflict" => DeliveryOutcome.Conflict,
                 "dirty-working-tree" => DeliveryOutcome.DirtyWorkingTree,
                 "hook-rejected" => DeliveryOutcome.HookRejected,
+                "branch-moved" => DeliveryOutcome.BranchMoved,
                 _ => throw new JsonException($"Unknown delivery outcome '{value}'.")
             };
         }

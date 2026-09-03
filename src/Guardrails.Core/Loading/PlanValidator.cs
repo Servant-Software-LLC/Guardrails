@@ -98,6 +98,7 @@ public sealed class PlanValidator
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
         ValidateHandoffScopeCoverage(plan, diagnostics);
+        PromptToolGrantCoverage.Validate(plan, diagnostics);
         ProducerCoverage.Validate(plan, _gitTrackedFileProbe, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);

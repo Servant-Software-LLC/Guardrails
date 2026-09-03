@@ -76,7 +76,7 @@ public interface IWorktreeProvider
 
     /// <summary>
     /// Free-text detail captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/> call
-    /// for the two halts that carry one; null otherwise. Read by the Scheduler immediately after the
+    /// for the halts that carry one; null otherwise. Read by the Scheduler immediately after the
     /// merge call to populate <see cref="RunReport.MergeOnSuccessDetail"/>. Default null for fake
     /// providers that have no real git hooks or working tree.
     /// <list type="bullet">
@@ -84,6 +84,9 @@ public interface IWorktreeProvider
     ///   <item><see cref="MergeOnSuccessResult.DirtyWorkingTree"/> — the newline-separated, ordinal-sorted
     ///     TRACKED paths whose uncommitted changes blocked the merge (#448), so the CLI can name them
     ///     instead of sending the user to <c>git status</c>. Null when none could be enumerated.</item>
+    ///   <item><see cref="MergeOnSuccessResult.BranchMoved"/> — the branch the run started on and the one
+    ///     HEAD is on now (#588), so the CLI can name both instead of reporting a delivery to a branch
+    ///     the work never reached.</item>
     /// </list>
     /// </summary>
     string? LastMergeOnSuccessDetail => null;

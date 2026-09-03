@@ -136,8 +136,8 @@ public static class WorktreeReclaim
     /// <list type="bullet">
     /// <item>any non-green outcome (needs-human / blocked / failed / drift / wave-halt / abort / cancel):
     ///   RESUMABLE, a resume forks fresh segments under the recorded root;</item>
-    /// <item>a wholly-green run whose delivery HALTED (conflict / dirty tree / hook-rejected — the outcome is
-    ///   not FastForwarded/Merged): the user must act, then re-run to deliver;</item>
+    /// <item>a wholly-green run whose delivery HALTED (conflict / dirty tree / hook-rejected / branch-moved —
+    ///   the outcome is not FastForwarded/Merged): the user must act, then re-run to deliver;</item>
     /// <item>a wholly-green-but-UNDELIVERED opt-out (<see cref="RunReport.WhollyGreenButUndelivered"/>): the
     ///   verified work sits on the plan branch for the user to inspect / deliver, so its integration worktree
     ///   must survive (the startup GC reclaims it later once clearly abandoned).</item>
