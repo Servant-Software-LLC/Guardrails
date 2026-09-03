@@ -187,6 +187,21 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", detail);
     }
 
+    public void AttemptFinished(TaskNode task, int attempt, Core.Journal.AttemptOutcome outcome)
+    {
+        lock (_gate)
+        {
+            // The per-attempt WHY (the gap between AttemptStarting/[retry] and TaskFinished, which fires
+            // only after the WHOLE retry loop settles). Written ABOVE the live region under _gate, exactly
+            // like AttemptModelResolved and OverwatchNoVerdict: the executor raises this from INSIDE the
+            // Spectre live region, and a raw write there corrupts the task table (#145/#372).
+            string colour = outcome == Core.Journal.AttemptOutcome.Succeeded ? "green" : "red";
+            AnsiConsole.MarkupLine(
+                $"[{colour}]attempt[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
+                + $"[{colour}]{Markup.Escape(outcome.ToString())}[/]");
+        }
+    }
+
     /// <summary>
     /// Repaint the Status cell of every running task with its live elapsed clock, and — issue #469 — of
     /// every in-flight wave phase with its clock plus the two observed liveness fragments. Cell writes run
