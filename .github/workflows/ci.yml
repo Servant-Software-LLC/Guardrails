@@ -15,7 +15,19 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
+      # fetch-depth: 0 is REQUIRED, not a convenience. ProducerCoverageCorpusTests is GR2060's corpus
+      # sweep and it reasons over history: it rebuilds each plan folder as it stood at a pinned commit
+      # (`git archive`) and derives each pre-run commit as "the first commit adding a task.json here".
+      # At the action's default depth of 1 both questions get wrong answers from a one-commit history —
+      # every path looks added at the tip — which is how CI came to report 04-dogfood-cost-cap's pre-run
+      # commit as the plan-33 MERGE and false-red a table that was correct.
+      # It also silently SKIPPED four tests whose commits a shallow clone cannot see, including
+      # ThePositiveControl_FiresExactlyOnce_At544f7d5 — the single load-bearing measurement proving
+      # GR2060 still FIRES. A sweep of nothing but zeroes cannot tell a working check from a mute one,
+      # so at depth 1 the whole sweep was running as a formality.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
