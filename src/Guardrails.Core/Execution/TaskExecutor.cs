@@ -90,7 +90,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // per-union re-verify — built here from the same processRunner/interpreterMap so it is wired
         // unconditionally in BOTH serial and worktree mode (TaskExecutor is constructed once per run).
         _reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
-        _journaler = new AttemptJournaler(stateManager, journal);
+        _journaler = new AttemptJournaler(stateManager, journal, observer);
     }
 
     /// <inheritdoc />
@@ -584,6 +584,7 @@ public sealed class TaskExecutor : ITaskExecutor
             // NeedsHuman, not pending: the gate still does not pass, so the task stays a non-green
             // halt the human must keep working on — exactly as a normal failed attempt would leave it.
             _journal.RecordAttempt(task.Id, failedRecord, JournalTaskStatus.NeedsHuman);
+            _observer.AttemptFinished(task, attemptNumber, failedRecord.Outcome);
 
             var result = new TaskResult
             {
@@ -618,6 +619,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // Plan 32 §5.2: the pin captured at load, never a disk recompute — no fallback, ever.
         _journal.RecordAttempt(
             task.Id, record, JournalTaskStatus.Succeeded, definitionHash: task.DefinitionHashAtLoad);
+        _observer.AttemptFinished(task, attemptNumber, record.Outcome);
 
         var ok = new TaskResult
         {
