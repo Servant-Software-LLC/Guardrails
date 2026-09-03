@@ -201,6 +201,11 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
         new("docs/plans/32-executed-definition-hash", "4a308ab", 0, 0),
         new("docs/plans/33-unproducible-requirements", "c04c3d1", 0, 0,
             "this plan's own breakdown; §11 prohibition 9 requires GR2060 to be silent on it, and rows 7 and 8 own the SSOT so it is"),
+        new("docs/plans/34-run-event-stream-and-attach", "b33dd1a", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree; it is also the " +
+            "row that proves the point of this table - merging its folder (PR #589) broke " +
+            "TheExpectationTableCoversEveryPlanFolder, which is the tripwire-no-task-owns defect of #587 " +
+            "arriving for the second time in two plans"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,
@@ -430,6 +435,14 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
     {
         SkipUnlessAvailable("HEAD");
 
+        // This test is the one that DERIVES rather than reads, so it needs the whole history and not just
+        // the presence of each pinned commit — see CorpusWorkspaces.HistoryIsComplete for the false red
+        // this guard exists to prevent.
+        Assert.SkipUnless(CorpusWorkspaces.HistoryIsComplete,
+            "this checkout is SHALLOW, so 'the first commit adding a path' cannot be derived - every path " +
+            "looks added at the tip, which turns a correct pin into a false failure. Run " +
+            "`git fetch --unshallow` (or set `fetch-depth: 0`) to restore the corpus.");
+
         foreach (PlanRow row in Corpus)
         {
             string derived = _workspaces.FirstCommitAdding(row.Folder + "/*task.json");
@@ -633,6 +646,23 @@ public sealed class CorpusWorkspaces : IDisposable
 
     /// <summary>Can git run here at all? Its absence skips the sweep rather than passing it vacuously.</summary>
     internal static readonly bool GitIsUsable = RunGit("--version").ExitCode == 0;
+
+    /// <summary>
+    /// False in a SHALLOW clone. <see cref="CommitIsPresent"/> is not a sufficient guard for anything that
+    /// derives an answer from the whole history of a path: a truncated history does not merely hide old
+    /// commits, it MOVES the answer to the tip, because every path looks added there. That is a false red
+    /// rather than a silence, and a false red dead-ends work that was already right.
+    ///
+    /// <para>Measured, not hypothetical: CI ran <c>actions/checkout@v6</c> at its default
+    /// <c>fetch-depth: 1</c> and reported 04-dogfood-cost-cap's pre-run commit as the plan-33 MERGE
+    /// (<c>5124857</c>) rather than the correct <c>8012572</c>, failing master for four consecutive runs
+    /// against a table that was right the whole time. The fix is <c>fetch-depth: 0</c> in
+    /// <c>.github/workflows/ci.yml</c>; this flag is what stops the same false red returning anywhere
+    /// else a shallow clone is used, by turning it back into an honest skip.</para>
+    /// </summary>
+    internal static readonly bool HistoryIsComplete =
+        GitIsUsable && !string.Equals(
+            RunGit("rev-parse", "--is-shallow-repository").Stdout.Trim(), "true", StringComparison.Ordinal);
 
     /// <summary>
     /// Short, because these workspaces hold repo paths up to 174 characters and Windows still has a 260-char
