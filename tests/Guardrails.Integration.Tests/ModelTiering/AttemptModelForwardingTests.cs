@@ -1,4 +1,3 @@
-using System.Reflection;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
@@ -17,8 +16,11 @@ namespace Guardrails.Integration.Tests.ModelTiering;
 /// from every operator, not from a corner case. That is exactly how
 /// <see cref="IRunObserver.VerifierAdvisoryFound"/> and the #469 breakdown phase were each lost once already;
 /// <c>JitBreakdownVisibilityTests.T12_OnTheFlyLogSiteObserver_ForwardsBothPhaseMembers</c> is this file's
-/// precedent, and the third clause here is the generalisation of it — a reflection sweep, so a THIRD
-/// decorator added later cannot re-open the same hole unnoticed.</para>
+/// precedent. The reflection sweep that used to live in this file — checking a THIRD decorator added later
+/// cannot re-open the same hole unnoticed — now lives in
+/// <c>RunEvents.ObserverForwardingSweepTests.EveryTransparentDecorator_DeclaresEveryIRunObserverMember</c>,
+/// which sweeps every <see cref="IRunObserver"/> member across both assemblies rather than just this one
+/// member in the CLI assembly.</para>
 ///
 /// <para><b>Nothing here re-derives the route.</b> Wave 2 already folded the observed model over the
 /// requested one ONCE, at the attempt, and made the pair a recorded fact
@@ -156,47 +158,10 @@ public sealed class AttemptModelForwardingTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // …and the one that has not been written yet. The pair above is what existed when this wave was
-    // authored; this clause is what catches a third decorator added later.
+    // The reflection sweep that used to live here — over every IRunObserver decorator in the CLI assembly,
+    // checking each declares AttemptModelResolved — is superseded by
+    // RunEvents.ObserverForwardingSweepTests.EveryTransparentDecorator_DeclaresEveryIRunObserverMember,
+    // which sweeps EVERY member across BOTH assemblies (this file's sweep covered only Guardrails.Cli, so
+    // the two Guardrails.Core projections were never checked).
     // ─────────────────────────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// A member is DECLARED by a type when the type itself carries it — an implicit override or an explicit
-    /// interface implementation (which is private, and named
-    /// <c>Guardrails.Core.Execution.IRunObserver.AttemptModelResolved</c>). Inheriting the interface's empty
-    /// default declares nothing, which is precisely the state this test must be able to see.
-    /// </summary>
-    private static bool Declares(Type type, string method) =>
-        type.GetMethods(
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-            .Any(m => m.Name == method || m.Name.EndsWith("." + method, StringComparison.Ordinal));
-
-    [Fact]
-    public void EveryForwardingObserverInTheCliAssembly_DeclaresAttemptModelResolved()
-    {
-        Type[] forwarders = typeof(LiveRunObserver).Assembly
-            .GetTypes()
-            .Where(t => !t.IsInterface && !t.IsAbstract && typeof(IRunObserver).IsAssignableFrom(t))
-            .Where(t => t.GetConstructors()
-                .Any(c => c.GetParameters().Any(p => p.ParameterType == typeof(IRunObserver))))
-            .OrderBy(t => t.FullName, StringComparer.Ordinal)
-            .ToArray();
-
-        // A floor on the scan itself: a filter that quietly matched NOTHING would report "every forwarder
-        // declares it" and be indistinguishable from success.
-        Assert.Contains(typeof(OnTheFlyLogSiteObserver), forwarders);
-        Assert.Contains(typeof(OnTheFlyDiagramObserver), forwarders);
-
-        string[] silent = forwarders
-            .Where(t => !Declares(t, nameof(IRunObserver.AttemptModelResolved)))
-            .Select(t => t.FullName!)
-            .ToArray();
-
-        Assert.True(
-            silent.Length == 0,
-            $"{silent.Length} of {forwarders.Length} forwarding observer(s) in Guardrails.Cli do not declare "
-            + $"{nameof(IRunObserver.AttemptModelResolved)}, so each inherits the interface's empty default and "
-            + "swallows the attempt-model disclosure (#349) before it reaches whatever it wraps: "
-            + string.Join(", ", silent));
-    }
 }
