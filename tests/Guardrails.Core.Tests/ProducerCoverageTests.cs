@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -48,6 +48,7 @@ namespace Guardrails.Core.Tests;
 /// lookup underneath it. A fake probe there would prove that <c>ProducerCoverage</c> honours whatever the
 /// probe says and nothing about whether the probe says anything true.</para>
 /// </summary>
+[Collection(GitEnvironmentCollection.Name)]
 public sealed class ProducerCoverageTests : IDisposable
 {
     // ── the recovered pair ────────────────────────────────────────────────────────────────────────────

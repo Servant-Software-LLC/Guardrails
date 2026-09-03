@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Journal;
@@ -23,6 +23,7 @@ namespace Guardrails.Core.Tests.Prompts;
 /// <c>02-assign-roles-at-seven-sites</c> turns the four failures green; nothing here is "fixed" in the
 /// meantime.</para>
 /// </summary>
+[Collection(GitEnvironmentCollection.Name)]
 public sealed class PromptRoleSeamTests : IDisposable
 {
     private const string TestRunnerName = "test-runner";

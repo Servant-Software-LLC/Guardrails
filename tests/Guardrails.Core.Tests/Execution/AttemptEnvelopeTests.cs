@@ -1,4 +1,4 @@
-using Guardrails.Core.Execution;
+﻿using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
@@ -273,7 +273,7 @@ public sealed class AttemptSegmentsTests
 
             Assert.NotNull(attempt.Segments);
             Assert.NotNull(attempt.Segments!.ActionMs);
-            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs,
+            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs - AttemptEnvelopeFixture.ClockTruncationToleranceMs,
                 $"ActionMs was {attempt.Segments.ActionMs}ms; expected at least the stub's " +
                 $"{AttemptEnvelopeFixture.ActionDelayMs}ms delay.");
         }
@@ -304,7 +304,7 @@ public sealed class AttemptSegmentsTests
 
             Assert.NotNull(attempt.Segments);
             Assert.NotNull(attempt.Segments!.GuardrailMs);
-            Assert.True(attempt.Segments.GuardrailMs >= AttemptEnvelopeFixture.GuardrailDelayMs,
+            Assert.True(attempt.Segments.GuardrailMs >= AttemptEnvelopeFixture.GuardrailDelayMs - AttemptEnvelopeFixture.ClockTruncationToleranceMs,
                 $"GuardrailMs was {attempt.Segments.GuardrailMs}ms; expected at least the guardrail's " +
                 $"{AttemptEnvelopeFixture.GuardrailDelayMs}ms sleep.");
             // The cheapest wrong implementation copies one clock into both members.
@@ -373,7 +373,7 @@ public sealed class AttemptSegmentsTests
             // assert ActionMs only; GuardrailMs is deliberately not referenced here at all.
             Assert.NotNull(attempt.Segments);
             Assert.NotNull(attempt.Segments!.ActionMs);
-            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs);
+            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs - AttemptEnvelopeFixture.ClockTruncationToleranceMs);
         }
         finally { AttemptEnvelopeFixture.DeleteBestEffort(root); }
     }
@@ -405,7 +405,7 @@ public sealed class AttemptSegmentsTests
             // Same half-populated-by-design shape as behaviour 11: no guardrail ran here either.
             Assert.NotNull(attempt.Segments);
             Assert.NotNull(attempt.Segments!.ActionMs);
-            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs);
+            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs - AttemptEnvelopeFixture.ClockTruncationToleranceMs);
         }
         finally { AttemptEnvelopeFixture.DeleteBestEffort(root); }
     }
@@ -480,7 +480,7 @@ public sealed class AttemptSegmentsTests
             // This path settles before any guardrail runs too — GuardrailMs is not referenced.
             Assert.NotNull(attempt.Segments);
             Assert.NotNull(attempt.Segments!.ActionMs);
-            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs);
+            Assert.True(attempt.Segments.ActionMs >= AttemptEnvelopeFixture.ActionDelayMs - AttemptEnvelopeFixture.ClockTruncationToleranceMs);
         }
         finally { AttemptEnvelopeFixture.DeleteBestEffort(root); }
     }
@@ -571,6 +571,21 @@ file static class AttemptEnvelopeFixture
     public const decimal DistinctiveCostUsd = 0.4242m;
 
     public static readonly PromptUsage DistinctiveUsage = new() { InputTokens = 5150, OutputTokens = 3070 };
+
+    /// <summary>
+    /// Slack allowed on every timed LOWER bound, and it is a CLOCK fact rather than a loaded-box fact.
+    /// <c>Task.Delay(n)</c> waits at least n by the system TIMER, while the harness measures with
+    /// <see cref="System.Diagnostics.Stopwatch"/>.<c>ElapsedMilliseconds</c> — a different clock source, and
+    /// an integer division that TRUNCATES. A genuine 300ms wait can therefore be recorded as 299, which is
+    /// the product behaving correctly and the assertion being wrong by one.
+    ///
+    /// <para>Measured, not defensive: the v1.15.0 release pipeline was already burned by one flake, and
+    /// <c>AMidAttemptCancel_StillRecordsItsActionSegment</c> then failed on ubuntu in CI while the SAME
+    /// commit passed in the parallel run. This is deliberately tiny — it absorbs truncation and clock skew
+    /// and nothing else, so a segment that reports ZERO, or reports the other segment's duration, still
+    /// fails exactly as it did before.</para>
+    /// </summary>
+    public const int ClockTruncationToleranceMs = 2;
 
     /// <summary>Comfortably larger than timer granularity (a couple hundred ms), per plan §3.4's guidance.</summary>
     public const int ActionDelayMs = 300;

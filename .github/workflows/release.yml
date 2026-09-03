@@ -49,7 +49,14 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
+      # fetch-depth: 0 for the same reason ci.yml carries it, and it matters MORE here: this job is the
+      # gate that decides whether a version is published. At the action's default depth of 1 the GR2060
+      # corpus sweep cannot read any historical commit, so it SKIPPED 33 tests — including
+      # ThePositiveControl_FiresExactlyOnce_At544f7d5, the one measurement proving GR2060 still fires.
+      # The v1.15.0 pipeline ran exactly that way: a release gate weaker than the PR gate that preceded it.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v5

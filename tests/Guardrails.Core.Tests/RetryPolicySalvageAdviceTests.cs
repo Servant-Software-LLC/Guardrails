@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 using static Guardrails.Core.Tests.PlanFixtures;
 
@@ -33,6 +33,7 @@ namespace Guardrails.Core.Tests;
 /// Companion to <c>RetryPolicyTests.SalvageSection_NeverRecommendsAStateMutatingGitCommandAsThePerFileRoute</c>
 /// (the #374 regression), which this suite strengthens rather than replaces.
 /// </summary>
+[Collection(GitEnvironmentCollection.Name)]
 public sealed class RetryPolicySalvageAdviceTests
 {
     private const string SalvagedRef = "refs/guardrails/07-impl/attempt-1";
