@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -324,7 +325,9 @@ public sealed class WebhookEventSink : IAsyncDisposable
     private TimeSpan Jittered(TimeSpan step)
     {
         double factor = JitterLowerBound + ((JitterUpperBound - JitterLowerBound) * Random.Shared.NextDouble());
-        return Scaled(step) * factor;
+        TimeSpan delay = Scaled(step) * factor;
+        _computedBackoffs.Enqueue(delay);
+        return delay;
     }
 
     /// <summary>The pump: the ONE background task started in the constructor, reading serially so a retrying row delays later rows rather than being overtaken by them.</summary>
@@ -648,6 +651,19 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// 977 ms locally. The decision is the thing under test; the elapsed time is not.
     /// </summary>
     internal TimeSpan LastPumpGraceUsed { get; private set; }
+
+    private readonly ConcurrentQueue<TimeSpan> _computedBackoffs = new();
+
+    /// <summary>
+    /// Test observable, and the same reasoning as <see cref="LastPumpGraceUsed"/> one layer down: the
+    /// backoff delays this sink COMPUTED, in the order it computed them. The gap a test can measure
+    /// between two recorded requests is the delay the sink asked for PLUS however long the thread pool
+    /// took to run the timer's continuation, and only the first of those is ever under test. When the
+    /// pool is saturated the second is neither small nor bounded - it is governed by the runtime's
+    /// thread-INJECTION rate (~1 per 500 ms once starved), which quantizes an observed gap near a second
+    /// whatever the sink asked for. A wrong schedule is a wrong COMPUTATION, so assert the computation.
+    /// </summary>
+    internal IReadOnlyList<TimeSpan> ComputedBackoffs => [.. _computedBackoffs];
 
     internal static readonly TimeSpan PumpShutdownGrace = TimeSpan.FromSeconds(2);
 
