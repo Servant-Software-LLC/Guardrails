@@ -399,15 +399,29 @@ public static class RunCommand
         // recoverable exit by `junctionLifetime` (the method-scoped `using` below covers ALL return/throw
         // paths), and re-allocated FRESH each run — a resume takes any free .a..z letter, since git
         // canonicalized the link away and the deterministic segment subpath resolves the same tree under it.
-        bool worktreeMode = SchedulerFactory.WouldUseWorktreeMode(probe.Plan);
+        // Issue #596: worktree mode is resolved ONCE PER RUN, here, and threaded to every consumer —
+        // the junction setup, the Windows MAX_PATH preflight, the journaled effective maxParallelism, the
+        // plan-preflight / terminal-gate workspace, the wave-brief prompt gate, SchedulerFactory's provider
+        // wiring, and the end-of-run reclaim. It used to be re-derived at each of those from a fresh git
+        // subprocess whose every failure collapsed to `false`, so two evaluations could disagree WITHIN one
+        // run in both directions and say nothing: a run could wire worktree mode while journaling itself
+        // serial. One fold, handed down (the D22a discipline).
+        WorktreeModeResolution worktreeResolution = SchedulerFactory.ResolveWorktreeMode(probe.Plan);
+        bool worktreeMode = worktreeResolution.Enabled;
+
+        // #596's visibility half: git could not be RUN, so nothing here is an answer FROM git. The run keeps
+        // the mode the plan asked for (see ResolveWorktreeMode for why that is the honest choice) — but an
+        // operator must never learn from a post-mortem that the probe silently decided their isolation model.
+        RenderGitProbeFailureWarning(worktreeResolution, probe.Plan, io.Out);
 
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
         // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):
         // a stamp placed after the second load would be silently overwritten by a document read before the
-        // stamp existed. MaxParallelism records the EFFECTIVE concurrency, not the configured one — derived
-        // from the same WouldUseWorktreeMode predicate the Scheduler's own no-provider clamp is keyed on
-        // (ParallelismClampedNoProvider), so the two can never disagree.
+        // stamp existed. MaxParallelism records the EFFECTIVE concurrency, not the configured one — read
+        // from the SINGLE worktree-mode resolution above, which is also what SchedulerFactory wires the
+        // provider on, so the journaled figure and the Scheduler's own no-provider clamp
+        // (ParallelismClampedNoProvider) can never disagree (#596).
         journal.RecordEnvironment(RunEnvironmentProbe.Probe(
             maxParallelism: worktreeMode ? probe.Plan.Config.MaxParallelism : 1,
             harnessVersion: GuardrailsVersion.Current,
@@ -453,7 +467,7 @@ public static class RunCommand
         }
 
         bool preflightsPassed = await PlanPreflightPhase
-            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun)
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution)
             .ConfigureAwait(false);
 
         if (hasPlanPreflights && preflightsPassed)
@@ -530,7 +544,7 @@ public static class RunCommand
         if (probe.Plan.IsWaved && !probe.Plan.Config.AutoBreakdown
             && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
         {
-            breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io);
+            breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io, worktreeResolution);
         }
 
         // The log server's ONLY gate is --no-log-server (issue #552). It used to also require `live`,
@@ -636,7 +650,7 @@ public static class RunCommand
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                         probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
                     diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -645,7 +659,7 @@ public static class RunCommand
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
                     PrintDiagramLink(logsRoot, io);
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
 
                 // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -693,7 +707,7 @@ public static class RunCommand
                         ? null
                         : !report.AllSucceeded
                           || await PlanGuardrailPhase
-                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution)
                               .ConfigureAwait(false);
 
                     if (willEvaluateTerminalGate)
@@ -1614,7 +1628,8 @@ public static class RunCommand
     /// worktree = no materialized upstream to break down against).
     /// </summary>
     private static IReadOnlyDictionary<string, bool>? ConfirmWaveBreakdownIfInteractive(
-        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
+        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io,
+        WorktreeModeResolution worktreeMode)
     {
         // The upcoming checkpoint = the FIRST not-completed wave with an empty tasks/ folder (skip completed
         // waves and authored-but-not-completed waves, which run before any later stub). This is the wave the
@@ -1641,7 +1656,7 @@ public static class RunCommand
         }
 
         bool briefPresent = File.Exists(Path.Combine(checkpoint.Directory, Core.Model.WaveNode.BriefFileName));
-        if (!briefPresent || !SchedulerFactory.WouldUseWorktreeMode(plan) || Console.IsInputRedirected)
+        if (!briefPresent || !worktreeMode.Enabled || Console.IsInputRedirected)
         {
             return null; // non-eligible or non-interactive → the Scheduler honest-halts per policy.
         }
@@ -2568,13 +2583,17 @@ public static class RunCommand
         IReadOnlySet<string>? waveDriftAuthorized,
         IReadOnlyDictionary<string, bool>? breakdownConfirmations,
         string? junctionRoot,
+        WorktreeModeResolution worktreeMode,
         CancellationToken cancellationToken)
     {
         try
         {
+            // #596: the run's ONE worktree-mode resolution is handed to the factory rather than letting it
+            // re-derive the predicate — the second of the two spellings that could disagree mid-run.
             Scheduler scheduler = SchedulerFactory.Create(
                 plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
-                breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot);
+                breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot,
+                worktreeMode: worktreeMode);
             RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
             return new RunExecution(report, scheduler);
         }
@@ -2591,6 +2610,55 @@ public static class RunCommand
             observer.RunFinished(exitCode: null, faultKind: ex.GetType().Name);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Render the loud run-start notice for issue #596's second defect: the git work-tree probe could not
+    /// be RUN, so this run's worktree-mode answer did not come from git at all.
+    /// <para>
+    /// The predecessor swallowed every probe failure as "not a git repository" and demoted the run to
+    /// serial — changing the run's entire isolation model with no console line, no observer event and no
+    /// journal field to show for it. The harness now keeps the mode the plan REQUESTED (see
+    /// <see cref="SchedulerFactory.ResolveWorktreeMode"/> for why that is the honest answer) and says so
+    /// here, before anything runs. Silent — the overwhelmingly common case — when git answered normally.
+    /// </para>
+    /// <para>
+    /// Public + rendered through a <see cref="TextWriter"/> for the same reason as
+    /// <see cref="RenderUndeliveredWorkWarning"/>: the Cli assembly ships no <c>InternalsVisibleTo</c>, so
+    /// this is the seam its tests drive.
+    /// </para>
+    /// </summary>
+    public static void RenderGitProbeFailureWarning(
+        WorktreeModeResolution resolution, Core.Model.PlanDefinition plan, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (resolution.GitProbeFailure is not { Length: > 0 } failure)
+        {
+            return;
+        }
+
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine("*** GIT WORK-TREE PROBE FAILED ***");
+        output.WriteLine($"git could not be RUN in '{plan.Workspace}':");
+        output.WriteLine($"  {failure}");
+        output.WriteLine(
+            $"That is an UNKNOWN, not an answer, so it is NOT being read as 'not a git repository'. This");
+        output.WriteLine(
+            $"run keeps the worktree mode its plan asked for (maxParallelism {plan.Config.MaxParallelism}) rather than");
+        output.WriteLine(
+            "silently downgrading to serial: the workspace was already certified a git repository at");
+        output.WriteLine(
+            "validation (GR2015), which walks the filesystem and never spawns git. If git really is");
+        output.WriteLine(
+            "unavailable this run will halt loudly when it creates the plan branch — it will not run");
+        output.WriteLine("un-isolated behind your back.");
+        output.WriteLine(rule);
     }
 
     /// <summary>

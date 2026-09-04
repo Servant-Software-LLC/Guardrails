@@ -27,9 +27,17 @@ internal static class PlanPhaseWorkspace
     /// canonicalized the junction away, so <c>WorktreeForBranch</c> returns the real (long) path, and this
     /// keeps the terminal-gate / plan-guardrail whole-repo cwd short on resume exactly like a fresh run's.
     /// </param>
-    public static string Resolve(PlanDefinition plan, CancellationToken cancellationToken, string? junctionRoot = null)
+    /// <param name="worktreeMode">
+    /// The run's ONE worktree-mode resolution (issue #596), threaded from the caller that owns the run so
+    /// this phase reads the SAME answer the provider wiring, the junction setup and the journaled
+    /// effective <c>maxParallelism</c> read. Null (a standalone revalidate, which owns no run) ⇒ resolved
+    /// here.
+    /// </param>
+    public static string Resolve(
+        PlanDefinition plan, CancellationToken cancellationToken, string? junctionRoot = null,
+        WorktreeModeResolution? worktreeMode = null)
     {
-        if (!SchedulerFactory.WouldUseWorktreeMode(plan))
+        if (!(worktreeMode ?? SchedulerFactory.ResolveWorktreeMode(plan)).Enabled)
         {
             return plan.Workspace;
         }
