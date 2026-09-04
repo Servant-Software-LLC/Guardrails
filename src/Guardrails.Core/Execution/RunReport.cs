@@ -177,6 +177,19 @@ public sealed record PendingAttempt
     /// a script task.
     /// </summary>
     public Journal.AttemptProvenance? Provenance { get; init; }
+
+    /// <summary>
+    /// The <c>needsHarnessWrite</c> disposition this attempt recorded (#532 gap 1), on exactly the same
+    /// terms as <see cref="Usage"/>, <see cref="Turns"/> and <see cref="Segments"/> above: the worktree
+    /// settle (<c>Scheduler.RecordSucceededSettle</c>) builds its OWN <see cref="Journal.AttemptRecord"/>
+    /// from THIS object and never consults the journaller, so a member declared only on the attempt record
+    /// reaches SERIAL runs and silently vanishes in the DEFAULT mode. This member's counterpart at the next
+    /// hop is <see cref="Journal.AttemptRecord.HarnessWrite"/>.
+    /// <para>An APPLIED write is precisely the case that reaches this carrier — the attempt went on to pass
+    /// its guardrails — so omitting it here would leave the journal recording harness writes only when they
+    /// FAILED, which is the survivorship defect #532 gap 2 was about, reproduced one field over.</para>
+    /// </summary>
+    public Journal.HarnessWriteRecord? HarnessWrite { get; init; }
 }
 
 /// <summary>
