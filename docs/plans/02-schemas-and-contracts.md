@@ -3980,14 +3980,33 @@ regardless of the circuit or the backlog, spends one further attempt (up to 10 s
 enqueued**, which on every normal path is `run-finished`. It then waits up to **2 s** for the delivery
 pump to return before disposing the transport, so worst-case teardown is **~22 s**.
 **On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely, the terminal attempt is bounded
-at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because the CLI host allows the whole
-process about **two seconds** to unwind after SIGINT (System.CommandLine's default
-`ProcessTerminationTimeout`), which the log server's own shutdown drain (§12.2) must also fit inside,
-*after* this one. Every one of those three budgets has a cancelled variant for that reason, the pump
+at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because it is spent *before* the log
+server's own shutdown drain (§12.2), and both have to fit inside **the process termination ceiling**
+below. Every one of those three budgets has a cancelled variant for that reason, the pump
 wait included: it is a last resort against a transport that never returns rather than a scheduled
 cost, but .NET's DNS resolution is not reliably cancellable, so an unresolvable endpoint parks the
 pump for the whole of it. So on Ctrl-C, delivery of `run-finished` is a single best-effort attempt
 and nothing more; as everywhere else here, **the file is the record.**
+
+**The process termination ceiling — 15 s (issue #603).** After SIGINT/SIGTERM, System.CommandLine
+cancels the invocation token and then gives the whole invocation this long to unwind before abandoning
+it and returning `130`. It is set **deliberately**, in `CliInvocation` (`src/Guardrails.Cli/`), and
+passed from `Program.cs`; supplying no `InvocationConfiguration` does not mean "unbounded", it means
+the library's default of **2 s**, under which the log server's 5 s drain (§12.2) alone could not
+finish — so the terminal-row delivery both layers exist to guarantee was structurally unable to
+complete on the one path an operator invokes deliberately.
+
+It is a **ceiling, not a delay**: teardown that finishes in 40 ms still exits in 40 ms, which is what
+makes one number right for `run` and for `plan-hash` alike. Its lower bound is arithmetic — the bounded
+budgets a cancelled run spends **in series** (this section's ~750 ms, then §12.2's 5 s drain and 250 ms
+linger = **6 s**), with the remainder reserved for what no constant bounds: the scheduler's unwind
+(a process-tree kill and reader drain per in-flight task), the journal write, and the worktree exit
+sweep. Its upper bound is a person — past roughly this long an operator concludes the process is hung
+and reaches for a harder kill, and a ceiling nobody waits out delivers nothing.
+
+**The rule that follows: raising any teardown budget means raising this ceiling with it.** A budget
+that no longer fits is not a slower shutdown, it is a silently truncated one. The arithmetic is pinned
+by `ProcessTerminationBudgetTests` rather than left to a comment.
 
 **Every drop is recorded, in ONE place.** A counts line prints at the end of every run that used
 `--on-event` — **including when nothing was dropped**, because silence on success is the defect
@@ -6637,6 +6656,18 @@ the poll interval; delivery is still best-effort, and a client whose connection 
 file (§8.1). The same rows can also be **pushed** rather than served: `guardrails run --on-event
 <url>` POSTs each one to an operator-supplied endpoint (§8.3). That is delivery of this same
 projection, not a second stream — and it is the one path on which these rows leave the machine.
+
+**The two budgets that final read depends on**, and what they must fit inside. Disposing the server
+first drains every in-flight request — chiefly a still-parked `/events` stream — for up to **5 s**, so
+that final read-and-flush happens *before* the listener is touched at all; it then returns, and the
+listener is actually stopped **250 ms** later. That linger is not decoration: stopping the listener
+resets every connection the shared request queue still tracks, including one whose response completed
+gracefully, discarding whatever the peer received but has not yet read — and the subscriber can only
+issue that read once dispose has returned. Both budgets are spent after §8.3's and must fit inside the
+process termination ceiling (§8.3), which before #603 they did not. **The linger runs on a foreground
+thread**, for the same reason: it is scheduled *after* dispose returns, and dispose is the last thing a
+run does, so on the thread pool the process would routinely exit before it ran — and process exit
+resets the subscriber's connection exactly as hard as stopping the listener would have.
 
 The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
 / `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —

@@ -76,11 +76,16 @@ public sealed class LogServer : IAsyncDisposable
     /// stops the listener. Generous relative to <see cref="EventsPollInterval"/> so the normal path (a
     /// handler waking on cancellation and returning within milliseconds) never brushes it — this only
     /// bounds a pathological handler, and shutdown proceeds regardless once it expires.
+    ///
+    /// <para>Public, and paired with <see cref="ListenerTeardownLinger"/>, as the test seam for the #603
+    /// budget arithmetic — the Cli assembly ships no <c>InternalsVisibleTo</c>. The sum of the two must fit
+    /// inside <see cref="CliInvocation.ProcessTerminationTimeout"/>, which it did NOT before #603: this
+    /// value alone is 2.5x the 2-second default the process ran under.</para>
     /// </summary>
-    private static readonly TimeSpan ShutdownDrainTimeout = TimeSpan.FromSeconds(5);
+    public static readonly TimeSpan ShutdownDrainTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// How long <see cref="FinishTeardownAsync"/> waits before actually stopping the listener, once
+    /// How long <see cref="FinishTeardown"/> waits before actually stopping the listener, once
     /// <see cref="DisposeAsync"/> has already returned. A subscriber's next read of an already-flushed
     /// final row can only be issued after <see cref="DisposeAsync"/> returns, and the shared HTTP.sys
     /// request queue resets every connection it still tracks the instant the listener stops — including
@@ -88,8 +93,10 @@ public sealed class LogServer : IAsyncDisposable
     /// not yet read. This linger is the subscriber's only real window to read before that reset lands.
     /// Generous relative to loopback round-trip latency (routinely sub-millisecond) without meaningfully
     /// delaying real shutdown.
+    ///
+    /// <para>Public as a test seam — see <see cref="ShutdownDrainTimeout"/>.</para>
     /// </summary>
-    private static readonly TimeSpan ListenerTeardownLinger = TimeSpan.FromMilliseconds(250);
+    public static readonly TimeSpan ListenerTeardownLinger = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpListener _listener;
     private readonly string _logsRoot;
@@ -98,6 +105,16 @@ public sealed class LogServer : IAsyncDisposable
     private readonly string _baseUrl;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
+    private Thread? _deferredTeardown;
+
+    /// <summary>
+    /// The thread <see cref="DisposeAsync"/> hands the listener teardown to, or null before it is disposed.
+    /// Public as a test seam (the Cli assembly ships no <c>InternalsVisibleTo</c>): the #603 fix IS this
+    /// thread's <see cref="Thread.IsBackground"/> flag, since the runtime's rule that a process does not
+    /// exit while a foreground thread runs is what makes <see cref="ListenerTeardownLinger"/> real outside
+    /// a test host.
+    /// </summary>
+    public Thread? DeferredTeardownThread => _deferredTeardown;
 
     // Every request dispatched by AcceptLoopAsync (see the comment there), so DisposeAsync can wait for
     // ALL of them to finish before disposing _shutdown — a long-lived GET /events stream (plan 34) polls
@@ -1164,9 +1181,24 @@ public sealed class LogServer : IAsyncDisposable
         catch (Exception) { /* individual request faults are already handled in HandleAndClose */ }
 
         // The listener's actual teardown runs afterward, deliberately NOT awaited here — see
-        // FinishTeardownAsync for why returning before it runs is what makes a subscriber's read of an
+        // FinishTeardown for why returning before it runs is what makes a subscriber's read of an
         // already-flushed final row survive shutdown.
-        _ = FinishTeardownAsync();
+        //
+        // #603: not awaited, but NOT on the thread pool either. In the shipped CLI this dispose is the
+        // last thing a `run` does — RunCommand's outermost finally — so a pooled continuation races the
+        // process's own exit and loses: "not awaited" and "never runs" become the same thing, and the
+        // linger below buys the subscriber nothing because process exit resets its connection exactly as
+        // hard as Stop() would have. Every test for this drives DisposeAsync directly inside a test host
+        // that keeps living, which is why the gap was invisible. A FOREGROUND thread is the whole fix:
+        // the runtime will not exit while one is running, so the linger this method promises is the
+        // linger a subscriber actually gets. It is bounded by construction (the linger, plus Stop/Close),
+        // and everything unbounded is handed off below rather than held on it.
+        _deferredTeardown = new Thread(FinishTeardown)
+        {
+            IsBackground = false,
+            Name = "guardrails-logserver-teardown"
+        };
+        _deferredTeardown.Start();
     }
 
     /// <summary>
@@ -1184,14 +1216,33 @@ public sealed class LogServer : IAsyncDisposable
     /// reset would always land before the read is even issued. Deferring the reset itself past that
     /// point, with a brief linger, is what gives an already-flushed row a real window to be read before
     /// the shared queue goes away underneath it.
+    ///
+    /// <para>Runs on a FOREGROUND thread (#603) so a process unwinding around this — the shipped case,
+    /// where <see cref="DisposeAsync"/> is the last thing a run does — cannot exit before the linger it
+    /// promises has elapsed. It is therefore deliberately SYNCHRONOUS and deliberately short: only the
+    /// linger and the listener stop hold the process open. The accept loop's own unwind and the
+    /// <see cref="CancellationTokenSource"/> dispose are hygiene for in-process reuse — nothing on the
+    /// wire depends on them and neither is bounded — so they are handed to the pool.</para>
     /// </summary>
-    private async Task FinishTeardownAsync()
+    private void FinishTeardown()
     {
-        await Task.Delay(ListenerTeardownLinger).ConfigureAwait(false);
+        Thread.Sleep(ListenerTeardownLinger);
 
         try { _listener.Stop(); } catch (Exception) { /* already stopped */ }
         try { _listener.Close(); } catch (Exception) { /* already closed */ }
 
+        _ = ReleaseAcceptLoopAsync();
+    }
+
+    /// <summary>
+    /// The unbounded tail of teardown, off the foreground thread. <see cref="_shutdown"/> is disposed only
+    /// AFTER the accept loop has actually ended: a <c>GET /events</c> handler polls
+    /// <c>_shutdown.Token.WaitHandle</c>, and disposing the source while a wait is outstanding on it is
+    /// undefined behaviour. If the process exits before this runs, nothing is lost — the OS reclaims the
+    /// handle, and no subscriber's read depends on it.
+    /// </summary>
+    private async Task ReleaseAcceptLoopAsync()
+    {
         if (_acceptLoop is not null)
         {
             try { await _acceptLoop.ConfigureAwait(false); } catch (Exception) { /* loop ended */ }
