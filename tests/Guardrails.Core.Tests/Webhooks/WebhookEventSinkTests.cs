@@ -177,6 +177,16 @@ public sealed class WebhookEventSinkTests
         var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token);
 
         sink.Emit(Row("row-1"));
+
+        // WAIT FOR THE SCHEDULE, do not race the teardown. Disposing immediately makes this test a coin
+        // flip on jitter even on an idle machine: the jittered backoff can reach (1+2+4) * 1.5 * 0.2 =
+        // 2.1s, while DisposeAsync's backlog budget is 10s * 0.2 = 2.0s - and the backlog phase abandons
+        // retries (one attempt per row), so the fourth request is simply never made. Observed as
+        // "Expected: 4 / Actual: 3". Poll for the schedule to complete, then tear down.
+        DateTime attemptsDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (handler.Requests.Count < 4 && DateTime.UtcNow < attemptsDeadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+
         await sink.DisposeAsync();
 
         IReadOnlyList<(string DeliveryId, DateTimeOffset At)> requests = handler.Requests;
@@ -735,7 +745,12 @@ public sealed class WebhookEventSinkTests
         };
 
         using var cts = new CancellationTokenSource();
-        var sink = new WebhookEventSink(DefaultUrl, authValue, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
+        // scale 0.2, NOT 0.05. At 0.05 the per-attempt timeout is 10s * 0.05 = 500ms, and under load the
+        // handler's 401 loses that race - the row is recorded as a TaskCanceledException instead, the
+        // positive control below finds no "401"/"Unauthorized" among the notices, and the test fails
+        // having proven nothing about secret redaction. Widening the budget keeps every assertion intact;
+        // this test measures notice CONTENT, never elapsed time.
+        var sink = new WebhookEventSink(DefaultUrl, authValue, "guardrails/test", notices.Add, handler, 0.2, cts.Token);
 
         sink.Emit(Row("exhausts-retries"));
         sink.Emit(Row("hard-failure"));
