@@ -249,10 +249,22 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Equal(2, settled.ResolvedTransient!.Pauses);
         Assert.Equal(TimeSpan.FromSeconds(6), settled.ResolvedTransient.Waited);
 
-        // The retry budget was preserved: only ONE attempt was journaled (the paused retries are
-        // observe-only — never journaled, never counted), and it is the succeeded one.
+        // The retry budget was preserved: only ONE attempt was journaled (a paused re-run is not a new
+        // attempt — it re-runs under the same number, which IS the no-retry-consumed contract), and it is
+        // the succeeded one.
         AttemptRecord attempt = Assert.Single(entry.Attempts);
         Assert.Equal(AttemptOutcome.Succeeded, attempt.Outcome);
+
+        // #515: and the pauses themselves are now DURABLE, on their own task-grained ledger rather than as
+        // attempts. This line used to read "the paused retries are observe-only — never journaled", which
+        // was the defect stated as a property: a green run that waited out two provider stalls was, in
+        // every durable record, identical to one that ran clean. Both entries name the attempt they
+        // suspended (1), so the association the attempt list cannot carry is not lost.
+        Assert.NotNull(entry.TransientPauses);
+        Assert.Equal(2, entry.TransientPauses!.Count);
+        Assert.All(entry.TransientPauses, p => Assert.Equal(1, p.Attempt));
+        Assert.Equal("11:20am", entry.TransientPauses[0].ResetHint);
+        Assert.Null(entry.TransientPauses[1].ResetHint);   // the second transient named no reset time
 
         // Two distinct pause signals were surfaced to the observer; the first carries the reset hint.
         Assert.Equal(2, observer.Pauses.Count);
