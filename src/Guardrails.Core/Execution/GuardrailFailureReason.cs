@@ -22,7 +22,7 @@ internal static class GuardrailFailureReason
     private const int MaxTailLines = 15;
 
     /// <summary>Hard cap on the reason length; the LAST <see cref="MaxChars"/> chars win (tail-biased).</summary>
-    private const int MaxChars = 2000;
+    internal const int MaxChars = 2000;
 
     /// <summary>
     /// The last (up to <see cref="MaxTailLines"/>) NON-EMPTY lines of <paramref name="text"/>, joined by
