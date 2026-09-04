@@ -1,0 +1,13 @@
+{
+  "description": "Author the RED test proving Bug A: a succeeded attempt on the worktree deferred-settle path emits no attempt-finished row",
+  "stableId": "z7d5nx",
+  "dependsOn": [
+    "01-migrate-attemptfinished-payload"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/WorktreeSettleEventTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Add the two run streams and the attach verb to the guardrails-domain-knowledge contract quick-reference",
+  "stableId": "d9r2ek",
+  "dependsOn": [
+    "05-implement-event-vocabulary",
+    "07-implement-record-roundtrip"
+  ],
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ]
+}

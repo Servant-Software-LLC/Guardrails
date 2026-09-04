@@ -3571,7 +3571,7 @@ whole-plan hash entirely and the marker kept vouching for a waved plan whose gat
 
 ---
 
-## 8. Per-attempt log layout
+## 8. Per-attempt log layout, and the run's own streams
 
 ```
 logs/<runId>/<task-id>/attempt-N/
@@ -3769,6 +3769,142 @@ its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` 
 tool-result summaries + the final result text; thinking blocks and all telemetry (thinking-token
 counters, rate-limit/init/usage events) are dropped. It is what a human skims and what a dependent
 task's prompt links to (§9, #26) — the raw stream stays as the debug artifact.
+
+### 8.1 The run event stream (`logs/<runId>/events.jsonl`) — issues #585 / #595
+
+One JSON object per line, appended as it happens, UTF-8 without BOM, `\n`-terminated, flushed per
+row. Written by exactly one component **per process** — `RunEventStream`, a decorator on the
+`IRunObserver` seam (plan 34 §5) — and served live over `GET /events` (§12.2). **Semantic and
+low-frequency: it is the stream a supervising AGENT filters on FIELDS.** Its render-fidelity sibling
+is §8.2.
+
+**"Per process" is not a hedge.** A resume reuses the run id (§7) and appends to the SAME file, and
+nothing locks a plan folder against two concurrent `guardrails run` invocations — both would resolve
+the same run id and both would append here. Single-writer therefore holds *within* a process and not
+across them.
+
+**A consumer filters on fields, never on a `kind` allowlist.** An unrecognized `kind` must remain a
+visible row: that property is the whole reason this file exists (#585 measured three hand-written
+stdout greps, each of which failed by producing silence, which is also what a healthy quiet run
+produces).
+
+**Fields absent versus null.** A row carries only the fields its `kind` defines; inapplicable fields
+are OMITTED, never written as `null`. So `field in row` is a straight answer, and a `null` never
+appears. A field the harness genuinely did not know (an unreported cost) is likewise omitted.
+
+**On every row, without exception.**
+
+| Field | Meaning |
+|---|---|
+| `kind` | the event discriminator, kebab-case (table below) |
+| `seq` | a monotonic, 1-based counter within this PROCESS's bracket, assigned under the writer's append lock. **`seq`, not `at`, is the ordering key.** It restarts at 1 for a resume, which appends a fresh bracket to the same file. |
+| `at` | when the row was WRITTEN (ISO-8601 UTC), stamped under the same lock. Not a domain timestamp — `startedAt`/`endedAt` are those. Its resolution is the platform clock tick (~15.6 ms on Windows), so concurrent rows can share an `at`; that is why `seq` exists. |
+| `runId` | the run's id, passed to the writer by the composition root. |
+
+**On every TASK-scoped row** (that is, every kind except `run-finished`):
+
+| Field | Meaning |
+|---|---|
+| `taskId` | the task's folder name |
+
+**The kinds.**
+
+| `kind` | Raised from | Additional fields |
+|---|---|---|
+| `task-started` | `TaskStarting` | — |
+| `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
+| `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
+| `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
+| `task-settled` | `TaskFinished` | `outcome`, `detail` |
+| `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — **the only kind with no `taskId`** |
+
+**One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
+`Journal.AttemptOutcome` (`JournalJson.OutcomeToken`) — the same token §7 journals and §15.2's
+`TelemetryRow.Outcome` carries. `outcome` on `task-settled` is the `Execution.TaskOutcome` token,
+spelled to match `OutcomeToken` on the members the two enums share. `needsHumanKind` is the §7
+`NeedsHumanKinds` token. Every field on `attempt-finished` other than `needsHumanKind` names a
+`TelemetryRow` property verbatim: `costUsd`→`CostUsd`, `turns`→`Turns`, `model`→`Model`,
+`tier`→`Tier`, `runner`→`Runner`, `startedAt`→`StartedAt`, `endedAt`→`EndedAt`, `outcome`→`Outcome`.
+`needsHumanKind` is journal-owned and has no telemetry counterpart by design.
+
+**`attempt-finished` is the journal's `AttemptRecord`, emitted live.** `IRunObserver.AttemptFinished`
+carries the whole `Journal.AttemptRecord` (§7), so the row is a projection of the record the journal
+writes and §15.3's ETL reads — not a parallel assembly of the same facts. A field the record does not
+populate on a given path (four of `FailedAttempt`'s call sites pass no provenance) is omitted from
+the row; the stream reports exactly what the journal holds, and never derives a fact of its own.
+
+**`exitCode` is the §7 `ExitCodes` vocabulary,** not a token set of this stream's own:
+`0` green · `1` harness/validation error · `2` a task needs a human (or a gate failed) · `3`
+cancelled · `4` escalations pending · `5` drained green but proceeded through unreviewed wave(s).
+It is **omitted** when the run is unwinding on an unhandled fault and no code was determined — in
+which case `faultKind` carries the exception's TYPE NAME. `faultKind` never carries an exception
+MESSAGE: #585 layer 3 (`--on-event <url>`) posts these rows to an operator-supplied URL, and a
+message is the one value on the row that can carry a path, a token, or a fragment of source.
+(The code table above is restated here for the reader's convenience and is pinned by a test that
+reflects over `ExitCodes` — a hand-copied gloss that nothing checks is the same drift risk this
+design cites when it rejects a parallel token set.)
+
+**Where the stream begins, and what its absence means.** The first row is a `task-started`. There
+is deliberately NO run-opening event: one was designed and rejected (design of record
+`docs/plans/595-event-vocabulary-contract.md` §1a) because its payload could not be stated
+accurately at run start and its name would have implied a bracket it did not deliver. Six halts
+return BEFORE the observer chain exists and therefore write no `events.jsonl` at all: plan
+validation errors; an unparseable `--autonomy` value; the Windows MAX_PATH worktree preflight
+(§3.2); the plan-level Full Flight Checks failing (§7 `planPreflights`); and a declined interactive
+definition-drift (§7.2) or wave-drift (§14.6) confirm. This is structural, not incidental: the
+interactive confirms and the Full Flight Checks phase both write plain console lines and so must
+precede the live region the chain is built around (§12.1). **A consumer must read "no
+`events.jsonl`" as "the run has not reached the DAG", never as "no run"** — and for those halts the
+covering record is the process exit code plus `run.json`'s `halt` section (§7). (All six were traced
+to their return statements in `RunCommand.RunAsync` when this section was written; an exhaustive
+list ages, so treat it as the halts known at that time rather than a closed set.)
+
+**A runId spans processes, so the file can hold more than one `run-finished`.** A resume reuses the
+run id and appends to the SAME `events.jsonl`. **Take the LAST `run-finished` as current**; rows
+after one belong to a later process (a resume, or — see above — a second concurrent run). A resume of
+an already-complete run re-fires the terminal gate with no attempt burned (§7) and emits its own
+bracket with no `task-started` rows at all: every task was already green, so the terminal row is the
+only one. **A `run-finished` with no `task-started` before it in that process's tail is a completed
+resume, not a stalled run.**
+
+**`run-finished` is a durable FILE event first.** A `/events` subscriber can miss the terminal row:
+the run appends it and tears the log server down microseconds later. A client whose connection
+closes must RE-READ the file rather than assume it saw the end of the stream.
+
+**An attempt-level `needs-human` is not terminal for its task.** The harness may re-drive the attempt
+with an injected best guess (§7.1, #361/#550) and adopt a green result, so a `needs-human`
+`attempt-finished` can be followed by a `succeeded` one for the same task. Read `needsHumanKind` for
+context; act on `task-settled`.
+
+**What is NOT emitted yet,** deliberately, and will be added when a consumer decision needs it:
+`needs-human`, `task-blocked`, `wave-gate`, `merge`, and the plan/wave preflight phases (#595).
+
+### 8.2 The observer projection (`logs/<runId>/observer.jsonl`) — issue #560
+
+The SECOND projection off the same seam: one JSON line per `IRunObserver` CALL, naming the member
+and flattening its arguments as camelCase fields, in order. **Render fidelity, not semantics** —
+`guardrails attach` (§12.2) replays it into a real `LiveRunObserver` in a second terminal rather
+than reimplementing the renderer, so it must carry every call including the live-only ones a
+filtered agent stream would starve. It is deliberately NOT the same file as §8.1: one stream
+serving both consumers serves each badly.
+
+Consequences a reader needs:
+
+- Both projections declare **every** member of `IRunObserver` explicitly, because a decorator that
+  leaves one to the interface's default body swallows that event silently in every mode (plan 34 §3).
+- **The replay's skip rule is wider than "unknown member", and that is a hazard, not just
+  forward-compatibility.** An unrecognized `member` is skipped — genuinely forward-compatible. But a
+  **known** member whose line is missing a field the replay requires raises `FormatException`, which
+  the replay also swallows and skips. So a SHAPE change to a member that this file's writer and the
+  replay disagree about produces a silently incomplete replay, not an error. Any change to a
+  projected member's fields must be covered by a writer→replay round-trip test.
+- **`observer.jsonl` and `events.jsonl` spell shared enums differently, on purpose.** This file
+  writes `outcome` as the enum's `ToString()` (`GuardrailFailed`), because the replay parses it back
+  with `Enum.Parse`; §8.1 writes the kebab wire token (`guardrail-failed`), because that is the
+  token §7 and §15.2 use. §8.1's "one vocabulary" rule governs the AGENT-facing stream; this file is
+  an internal round-trip format between two halves of one feature, and its spelling is an
+  implementation detail of that round trip. A reader comparing the two files will see the
+  difference; this paragraph is why.
 
 ---
 
@@ -6354,6 +6490,14 @@ also starts the live tailing server (so a *running* task's live page works — f
 server simply goes unused). With `--no-open` it opens nothing; otherwise it opens the static index
 (or, with `--task`, the named running task's live page). It runs until Ctrl-C, then exits `0`. The
 folder argument defaults to the current directory and follows the §7 plan-file → task-folder fixup.
+
+`GET /events` streams §8.1 over one connection: a late subscriber first receives every row already
+on disk, then subsequent rows as they are appended. A run that has written no row yet completes with
+an empty body — correct, because the server does not start until after every pre-DAG phase (§8.1),
+so an empty stream there means the file genuinely holds nothing. On shutdown the stream performs one
+final read before closing, so a run's terminal `run-finished` row is delivered rather than lost to
+the poll interval; delivery is still best-effort, and a client whose connection closes re-reads the
+file (§8.1).
 
 The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
 / `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —

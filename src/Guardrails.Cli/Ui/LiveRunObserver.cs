@@ -187,7 +187,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", detail);
     }
 
-    public void AttemptFinished(TaskNode task, int attempt, Core.Journal.AttemptOutcome outcome)
+    public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
     {
         lock (_gate)
         {
@@ -195,10 +195,10 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             // only after the WHOLE retry loop settles). Written ABOVE the live region under _gate, exactly
             // like AttemptModelResolved and OverwatchNoVerdict: the executor raises this from INSIDE the
             // Spectre live region, and a raw write there corrupts the task table (#145/#372).
-            string colour = outcome == Core.Journal.AttemptOutcome.Succeeded ? "green" : "red";
+            string colour = record.Outcome == Core.Journal.AttemptOutcome.Succeeded ? "green" : "red";
             AnsiConsole.MarkupLine(
-                $"[{colour}]attempt[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
-                + $"[{colour}]{Markup.Escape(outcome.ToString())}[/]");
+                $"[{colour}]attempt[/] [grey]{Markup.Escape(task.Id)}[/] attempt {record.Attempt}: "
+                + $"[{colour}]{Markup.Escape(record.Outcome.ToString())}[/]");
         }
     }
 

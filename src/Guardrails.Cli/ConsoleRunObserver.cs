@@ -51,14 +51,14 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
-    public void AttemptFinished(TaskNode task, int attempt, Core.Journal.AttemptOutcome outcome)
+    public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
     {
         lock (_gate)
         {
             // The per-attempt WHY (the gap between [retry] above and the task's final [outcome] line,
             // which fires only after the WHOLE retry loop settles): under --no-ui the tailed log IS the
             // record, so the reason a single attempt ended must be IN it.
-            _output.WriteLine($"[attempt] {task.Id} attempt {attempt}: {outcome}");
+            _output.WriteLine($"[attempt] {task.Id} attempt {record.Attempt}: {record.Outcome}");
         }
     }
 

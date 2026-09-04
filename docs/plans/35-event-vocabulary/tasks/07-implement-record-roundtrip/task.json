@@ -1,0 +1,14 @@
+{
+  "description": "Flatten the AttemptRecord onto observer.jsonl, record RunFinished, and rebuild the record in the attach replay",
+  "stableId": "b3p8hq",
+  "dependsOn": [
+    "06-author-tests-record-roundtrip"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Cli/Commands/AttachCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

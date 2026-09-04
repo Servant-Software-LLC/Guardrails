@@ -31,6 +31,19 @@ halting honestly (`needs-human`) when a task can't converge.
 **The bet:** in agentic engineering, verification is the bottleneck, not generation.
 Humans review the *checks* once instead of reviewing *every agent output* forever.
 
+**The run's own streams:** every run also appends two JSON-lines files under
+`logs/<runId>/` -- `events.jsonl`, the semantic, low-frequency, agent-facing stream (kinds
+include `task-started`, `attempt-started`, `guardrail-finished`, `attempt-finished`,
+`task-settled`, and `run-finished`, the run-termination kind), and `observer.jsonl`, the
+render-fidelity projection that drives `guardrails attach <folder>` (replays a run's live
+terminal UI into a second terminal). `seq`, not `at`, is the ordering key -- a monotonic
+per-process counter assigned under the writer's append lock. **Absence means the DAG was
+not reached, not a healthy quiet run:** the first row is `task-started`, so a handful of
+pre-DAG halts (plan validation, a preflight failure, a declined drift confirm) write no
+`events.jsonl` at all, and a consumer must read that absence accordingly. Field tables and
+the full kind list are the SSOT, not duplicated here: `docs/plans/02-schemas-and-contracts.md`
+sections 8.1 (`events.jsonl`) and 8.2 (`observer.jsonl`).
+
 ## The model
 
 - **Plan folder** `<plan-name>/` generated next to `<plan-name>.md`:

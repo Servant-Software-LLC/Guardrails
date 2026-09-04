@@ -12,9 +12,8 @@ namespace Guardrails.Core.Tests.RunEvents;
 /// it does not recognise is still a visible line rather than an invisible one — the property that would
 /// have prevented all three of the stdout-grep failures in issue #585.
 ///
-/// <para>Every test here is written to FAIL right now: <see cref="RunEventStream"/> exists (task 05) but
-/// every member throws <see cref="NotImplementedException"/> (task 06 implements the real behaviour), so
-/// every call below throws before any assertion runs.</para>
+/// <para>(These were authored red against task 05's throwing stub and went green in task 06; plan 34 has
+/// since merged, so they assert real behaviour now.)</para>
 /// </summary>
 public sealed class RunEventStreamTests
 {
@@ -59,7 +58,7 @@ public sealed class RunEventStreamTests
         public void AttemptRouteResolved(
             TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier) =>
             Calls.Add(nameof(AttemptRouteResolved));
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) => Calls.Add(nameof(AttemptFinished));
+        public void AttemptFinished(TaskNode task, AttemptRecord record) => Calls.Add(nameof(AttemptFinished));
         public void TaskFinished(TaskResult result) => Calls.Add(nameof(TaskFinished));
         public void GuardrailFinished(TaskNode task, GuardrailResult result) => Calls.Add(nameof(GuardrailFinished));
         public void PlanHashMismatch(string previousPlanHash) => Calls.Add(nameof(PlanHashMismatch));
@@ -82,6 +81,16 @@ public sealed class RunEventStreamTests
             WaveNode? authoredWave) => Calls.Add(nameof(WaveBreakdownFinished));
     }
 
+    /// <summary>A minimal <see cref="AttemptRecord"/> fixture — only <c>Attempt</c>/<c>Outcome</c> matter to these tests.</summary>
+    private static AttemptRecord AttemptRecordFixture(int attempt, AttemptOutcome outcome) => new()
+    {
+        Attempt = attempt,
+        StartedAt = DateTimeOffset.UtcNow,
+        EndedAt = DateTimeOffset.UtcNow,
+        Outcome = outcome,
+        LogDir = "logs/fixture"
+    };
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Tests
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -93,10 +102,10 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 2, AttemptOutcome.GuardrailFailed);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.GuardrailFailed));
 
             List<string> lines = ReadEventLines(dir);
             Assert.Single(lines);
@@ -124,10 +133,10 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 1, outcome);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
 
@@ -149,13 +158,13 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode taskA = FlatTask("01-first");
             TaskNode taskB = FlatTask("02-second");
 
-            ((IRunObserver)stream).AttemptFinished(taskA, 1, AttemptOutcome.Succeeded);
-            ((IRunObserver)stream).AttemptFinished(taskA, 2, AttemptOutcome.MaxTurns);
-            ((IRunObserver)stream).AttemptFinished(taskB, 1, AttemptOutcome.GuardrailFailed);
+            ((IRunObserver)stream).AttemptFinished(taskA, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
+            ((IRunObserver)stream).AttemptFinished(taskA, AttemptRecordFixture(2, AttemptOutcome.MaxTurns));
+            ((IRunObserver)stream).AttemptFinished(taskB, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
 
             List<string> lines = ReadEventLines(dir);
             Assert.Equal(3, lines.Count);
@@ -184,10 +193,10 @@ public sealed class RunEventStreamTests
         {
             string runDir = Path.Combine(dir, "my-test-run");
             Directory.CreateDirectory(runDir);
-            var stream = new RunEventStream(IRunObserver.Null, runDir);
+            var stream = new RunEventStream(IRunObserver.Null, runDir, Path.GetFileName(runDir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 3, AttemptOutcome.RateLimited);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(3, AttemptOutcome.RateLimited));
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(runDir).Single()).RootElement;
 
@@ -204,6 +213,202 @@ public sealed class RunEventStreamTests
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Lifecycle kinds (issue #595)
+    //
+    // The shipped projection emitted ONLY `attempt-finished`, which left a consumer unable to tell a
+    // healthy run that has not finished its first attempt from a run that never started — the exact
+    // ambiguity #585 exists to remove, relocated from the stdout grep into the event vocabulary.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void TaskStarting_EmitsTaskStarted_SoAnEmptyStreamMeansNotStarted()
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
+            TaskNode task = FlatTask("01-first");
+
+            ((IRunObserver)stream).TaskStarting(task);
+
+            // The liveness proof: a row exists BEFORE any attempt has finished. Without this, a consumer
+            // attaching to a just-started run sees an empty file and cannot distinguish "alive, still on
+            // attempt 1" from "never started" from "already over".
+            JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
+            Assert.Equal("task-started", root.GetProperty("kind").GetString());
+            Assert.Equal(task.Id, root.GetProperty("taskId").GetString());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void LifecycleKinds_BracketATaskFromStartToSettle_InOrder()
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
+            TaskNode task = FlatTask("01-first");
+
+            stream.TaskStarting(task);
+            stream.AttemptStarting(task, 1, 3);
+            stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = false, Reason = "no file" });
+            stream.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
+            stream.AttemptStarting(task, 2, 3);
+            stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
+            stream.AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.Succeeded));
+            stream.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });
+
+            List<string> kinds =
+            [
+                .. ReadEventLines(dir).Select(line => JsonDocument.Parse(line).RootElement.GetProperty("kind").GetString()!)
+            ];
+
+            // The whole retry story a supervisor needs, in the order it happened — not just the two
+            // attempt settles the original projection emitted.
+            Assert.Equal(
+                [
+                    "task-started",
+                    "attempt-started", "guardrail-finished", "attempt-finished",
+                    "attempt-started", "guardrail-finished", "attempt-finished",
+                    "task-settled"
+                ],
+                kinds);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void AttemptStarted_CarriesItsBudget()
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).AttemptStarting(FlatTask("01-first"), 2, 5);
+
+            JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
+            Assert.Equal(2, root.GetProperty("attempt").GetInt32());
+
+            // attempt 2 of 5 vs 2 of 2 are different situations: one has room to retry, one is the last
+            // chance. #585 asked for `attemptsMax` for exactly this.
+            Assert.Equal(5, root.GetProperty("budget").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void GuardrailFinished_CarriesTheFailureReason_ButNotOnAPass()
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
+            TaskNode task = FlatTask("01-first");
+
+            stream.GuardrailFinished(task, new GuardrailResult { Name = "02-fails", Passed = false, Reason = "out/x.txt missing" });
+            stream.GuardrailFinished(task, new GuardrailResult { Name = "01-passes", Passed = true, Reason = "ignored" });
+
+            List<string> lines = ReadEventLines(dir);
+
+            JsonElement failed = JsonDocument.Parse(lines[0]).RootElement;
+            Assert.Equal("02-fails", failed.GetProperty("guardrail").GetString());
+            Assert.False(failed.GetProperty("passed").GetBoolean());
+
+            // The point of the field: the supervisor learns WHY without opening feedback.md, which is the
+            // filesystem read #585 was filed to remove.
+            Assert.Equal("out/x.txt missing", failed.GetProperty("detail").GetString());
+
+            JsonElement passed = JsonDocument.Parse(lines[1]).RootElement;
+            Assert.True(passed.GetProperty("passed").GetBoolean());
+            Assert.False(passed.TryGetProperty("detail", out _));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    public static IEnumerable<object[]> AllTaskOutcomes() =>
+        Enum.GetValues<TaskOutcome>().Select(o => new object[] { o });
+
+    [Trait("Category", "RunEvents")]
+    [Theory]
+    [MemberData(nameof(AllTaskOutcomes))]
+    public void TaskSettled_SharesOneOutcomeVocabularyWithAttemptFinished(TaskOutcome outcome)
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir)))
+                .TaskFinished(new TaskResult { TaskId = "01-first", Outcome = outcome, Summary = "s" });
+
+            JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
+            string token = root.GetProperty("outcome").GetString()!;
+
+            // Every member tokenizes (the switch throws on an unmapped one), and in the house kebab style
+            // rather than the enum's PascalCase.
+            Assert.NotEmpty(token);
+            Assert.DoesNotMatch("[A-Z]", token);
+
+            // The one that matters: where TaskOutcome and AttemptOutcome name the same thing, the wire
+            // token is IDENTICAL — so a consumer filtering `outcome == "guardrail-failed"` catches it on
+            // both kinds. #585: "do NOT invent a second vocabulary."
+            if (Enum.TryParse(outcome.ToString(), out AttemptOutcome twin))
+            {
+                Assert.Equal(JournalJson.OutcomeToken(twin), token);
+            }
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void ARowOmitsTheFieldsItsKindDoesNotDefine_RatherThanWritingThemNull()
+    {
+        string dir = NewTempDirectory();
+        try
+        {
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).TaskStarting(FlatTask("01-first"));
+
+            JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
+
+            // Absent, not null. A consumer testing for a field's presence must get a straight answer —
+            // `"attempt": null` on a task-started row would read as "attempt unknown" instead of
+            // "attempts do not apply here".
+            Assert.False(root.TryGetProperty("attempt", out _));
+            Assert.False(root.TryGetProperty("outcome", out _));
+            Assert.False(root.TryGetProperty("guardrail", out _));
+            Assert.False(root.TryGetProperty("passed", out _));
+
+            // The envelope is always there.
+            foreach (string field in (string[])["kind", "at", "runId", "taskId"])
+            {
+                Assert.True(root.TryGetProperty(field, out _), $"envelope field '{field}' missing");
+            }
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Trait("Category", "RunEvents")]
     [Fact]
     public void Decorator_ForwardsEveryObservedCallToTheInner()
@@ -212,7 +417,7 @@ public sealed class RunEventStreamTests
         try
         {
             var inner = new RecordingObserver();
-            IRunObserver decorator = new RunEventStream(inner, dir);
+            IRunObserver decorator = new RunEventStream(inner, dir, Path.GetFileName(dir));
 
             TaskNode task = FlatTask("01-first");
             TaskNode waveTask = task with { Id = "wave-01-x/01-first", WaveDir = "wave-01-x" };
@@ -255,7 +460,7 @@ public sealed class RunEventStreamTests
             decorator.AttemptStarting(task, 1, 3);
             decorator.AttemptModelResolved(task, 1, "claude-sonnet-5", requestedModel: null);
             decorator.AttemptRouteResolved(task, 1, "claude", "claude-sonnet-5", tier: null, requestedTier: null);
-            decorator.AttemptFinished(task, 1, AttemptOutcome.Succeeded);
+            decorator.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
             decorator.TaskFinished(taskResult);
             decorator.GuardrailFinished(task, guardrailResult);
             decorator.PlanHashMismatch("sha256:old");

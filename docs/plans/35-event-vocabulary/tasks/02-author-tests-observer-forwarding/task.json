@@ -1,0 +1,10 @@
+{
+  "description": "Author the exhaustive two-assembly decorator-forwarding sweep and the RunFinished forwarding tests, RED against the undeclared member",
+  "stableId": "h2n7bk",
+  "dependsOn": ["01-migrate-attemptfinished-payload"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs",
+    "tests/Guardrails.Integration.Tests/WaveGateForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/AttemptModelForwardingTests.cs"
+  ]
+}

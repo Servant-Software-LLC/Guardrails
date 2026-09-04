@@ -207,6 +207,15 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "row that proves the point of this table - merging its folder (PR #589) broke " +
             "TheExpectationTableCoversEveryPlanFolder, which is the tripwire-no-task-owns defect of #587 " +
             "arriving for the second time in two plans"),
+        new("docs/plans/35-event-vocabulary", "4e4785e", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. It is the row " +
+            "above's defect arriving a THIRD time, and one step earlier: plan 33 broke " +
+            "BreakdownSalvageAllowListTests, plan 34 broke this test when its folder MERGED (PR #589), and " +
+            "plan 35 broke it at BREAKDOWN - creating the folder was enough, before any task ran. Its own " +
+            "terminal gate was red on arrival and no task in it could have fixed that, because this file is " +
+            "in no plan's writeScope by construction. The row is added by hand because it needs the " +
+            "breakdown commit's own sha, which does not exist when the plan's tasks are authored - which is " +
+            "precisely why it keeps being forgotten, and why the fix belongs in /plan-breakdown (#587)"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,

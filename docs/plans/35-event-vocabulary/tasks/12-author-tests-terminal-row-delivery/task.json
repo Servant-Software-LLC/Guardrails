@@ -1,0 +1,10 @@
+{
+  "description": "Author the RED test proving a live /events subscriber receives the terminal row rather than losing it to the poll interval",
+  "stableId": "q4b8vd",
+  "dependsOn": [
+    "05-implement-event-vocabulary"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/EventsStreamShutdownTests.cs"
+  ]
+}

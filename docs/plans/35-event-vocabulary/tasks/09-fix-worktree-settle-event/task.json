@@ -1,0 +1,10 @@
+{
+  "description": "Raise AttemptFinished from Scheduler.RecordSucceededSettle so the worktree success path emits a completion event",
+  "stableId": "t2g6yc",
+  "dependsOn": [
+    "08-author-tests-worktree-settle-event"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ]
+}

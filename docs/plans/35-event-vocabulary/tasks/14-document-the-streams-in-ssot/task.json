@@ -1,0 +1,13 @@
+{
+  "description": "Document events.jsonl and observer.jsonl in the schemas SSOT, which describes neither today",
+  "stableId": "n3h7lu",
+  "dependsOn": [
+    "05-implement-event-vocabulary",
+    "07-implement-record-roundtrip",
+    "11-raise-run-finished-in-runcommand",
+    "13-deliver-terminal-row-in-logserver"
+  ],
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

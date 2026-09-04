@@ -73,8 +73,8 @@ public sealed class ObserverProjectionTests
             TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier) =>
             Calls.Add($"AttemptRouteResolved({task.Id},{attempt},{runner},{model},{tier},{requestedTier})");
 
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) =>
-            Calls.Add($"AttemptFinished({task.Id},{attempt},{outcome})");
+        public void AttemptFinished(TaskNode task, AttemptRecord record) =>
+            Calls.Add($"AttemptFinished({task.Id},{record.Attempt},{record.Outcome})");
 
         public void TaskFinished(TaskResult result) => Calls.Add($"TaskFinished({result.TaskId},{result.Outcome})");
 
@@ -107,6 +107,16 @@ public sealed class ObserverProjectionTests
             Calls.Add($"WaveFinished({wave.Dir},{status},{skipped})");
     }
 
+    /// <summary>A minimal <see cref="AttemptRecord"/> fixture — only <c>Attempt</c>/<c>Outcome</c> matter to these tests.</summary>
+    private static AttemptRecord AttemptRecordFixture(int attempt, AttemptOutcome outcome) => new()
+    {
+        Attempt = attempt,
+        StartedAt = DateTimeOffset.UtcNow,
+        EndedAt = DateTimeOffset.UtcNow,
+        Outcome = outcome,
+        LogDir = "logs/fixture"
+    };
+
     /// <summary>
     /// A representative sweep across every parameter SHAPE on <see cref="IRunObserver"/> — task/attempt
     /// primitives, a <see cref="TaskResult"/>, a <see cref="GuardrailResult"/>, a <see cref="DecisionEntry"/>,
@@ -121,7 +131,7 @@ public sealed class ObserverProjectionTests
         ("AttemptStarting", o => o.AttemptStarting(task, 1, 3)),
         ("AttemptModelResolved", o => o.AttemptModelResolved(task, 1, "claude-sonnet-5", requestedModel: null)),
         ("AttemptRouteResolved", o => o.AttemptRouteResolved(task, 1, "claude", "claude-sonnet-5", "standard", requestedTier: null)),
-        ("AttemptFinished", o => o.AttemptFinished(task, 1, AttemptOutcome.MaxTurns)),
+        ("AttemptFinished", o => o.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.MaxTurns))),
         ("GuardrailFinished", o => o.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = false, Reason = "boom" })),
         ("TaskFinished", o => o.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" })),
         ("PlanHashMismatch", o => o.PlanHashMismatch("sha256:aaaaaaaa")),
@@ -179,7 +189,7 @@ public sealed class ObserverProjectionTests
 
         projection.TaskStarting(taskA);
         projection.AttemptStarting(taskA, 1, 3);
-        projection.AttemptFinished(taskA, 1, AttemptOutcome.Succeeded);
+        projection.AttemptFinished(taskA, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
         projection.TaskStarting(taskB);
         projection.PlanHashMismatch("sha256:bbbbbbbb");
 
@@ -213,7 +223,7 @@ public sealed class ObserverProjectionTests
         TaskNode task = FlatTask("02-second");
         var projection = new ObserverProjection(IRunObserver.Null, tree.Root);
 
-        projection.AttemptFinished(task, 2, AttemptOutcome.GuardrailFailed);
+        projection.AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.GuardrailFailed));
 
         string line = Assert.Single(File.ReadAllLines(Path.Combine(tree.Root, "observer.jsonl")));
         JsonNode? json = JsonNode.Parse(line);

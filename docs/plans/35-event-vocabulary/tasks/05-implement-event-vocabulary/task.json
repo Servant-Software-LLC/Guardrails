@@ -1,0 +1,13 @@
+{
+  "description": "Widen the events.jsonl row set: the run-finished kind, seq inside the append lock, and the AttemptRecord field set",
+  "stableId": "m6x2fs",
+  "dependsOn": [
+    "04-author-tests-event-vocabulary"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RunEventStream.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

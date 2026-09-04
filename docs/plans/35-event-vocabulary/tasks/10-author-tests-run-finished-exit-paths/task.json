@@ -1,0 +1,13 @@
+{
+  "description": "Author the RED matrix proving run-finished fires on every exit path including an unhandled fault, plus the composition-root wiring test",
+  "stableId": "f8s3jr",
+  "dependsOn": [
+    "05-implement-event-vocabulary"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/RunFinishedExitPathTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Author RED tests for the flattened AttemptRecord on observer.jsonl and its round-trip back through the attach replay",
+  "stableId": "w9k4tv",
+  "dependsOn": [
+    "03-forward-runfinished-in-decorators"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/ObserverRecordRoundTripTests.cs"
+  ]
+}

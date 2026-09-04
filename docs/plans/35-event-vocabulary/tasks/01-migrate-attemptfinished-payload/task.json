@@ -1,0 +1,27 @@
+{
+  "description": "Add IRunObserver.RunFinished, change AttemptFinished to carry Journal.AttemptRecord, and give RunEventStream an explicit runId constructor parameter - migrating every declaration and call site so the solution compiles again",
+  "stableId": "e5v1qa",
+  "dependsOn": [],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs",
+    "src/Guardrails.Cli/Commands/AttachCommand.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/ObserverProjectionTests.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/RunEventStreamTests.cs",
+    "tests/Guardrails.Core.Tests/RunEvents/TaskExecutorAttemptCompletionTests.cs",
+    "tests/Guardrails.Integration.Tests/RunEvents/AttemptCompletionForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/RunEvents/RunCommandObserverWiringTests.cs",
+    "tests/Guardrails.Integration.Tests/RunEvents/AttachReplayTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}
