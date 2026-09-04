@@ -4,8 +4,9 @@ Design of record for the last of #585's three layers. Layers 1 (`events.jsonl`) 
 shipped in PR #599 / plan 35; this document decides what happens when the harness POSTs those same rows
 to an endpoint it does not control.
 
-**Status:** proposed. To be delivered as a **draft PR for inline review** before any implementation
-milestone starts (#106). Implementation plan (`docs/plans/36-*.md` or equivalent) follows review.
+**Status:** reviewed and settled. The review ran in **Charter**, not a draft PR (a design of record is
+reviewed in Charter; a PR is a code-review vehicle) — see §12 for the closure. Implementation plan
+(`docs/plans/36-*.md` or equivalent) follows.
 
 **Binds to:** `RunEventStream`, `IRunObserver` and the §8.1 row shape as they stand on
 `feat/585-layer3-webhooks` at `57887e5`. This design **defines no event vocabulary of its own** — it
@@ -1206,3 +1207,27 @@ interface created, but it is the one place a reader will have to look in two fil
    one, and smuggling it in here would be the scope creep this document keeps refusing elsewhere.
 6. **#585 itself:** on merge, close it — layer 3 completes the three layers, and §2.1 closes the `ws:`
    question on the record rather than leaving it open behind the issue.
+
+---
+
+## 12. Review closure
+
+**The `ws:` endpoint is SUPERSEDED, not deferred.** §2.1 argues it, and the review did not reopen it: a
+`ws:` endpoint removes one of the consumer's three obligations (learn the port, hold the connection,
+notice it died); the webhook removes all three, and moves the "did it arrive?" accounting to the side
+that can actually answer it. **No `ws:` follow-up issue is filed.** #585 can be closed with layer 3's
+implementation rather than left open behind a dangling question.
+
+**The Charter review settled all five open questions.** The design carried five `:::question` blocks;
+the review answered every one, recorded inline in the flattened plan of record,
+`docs/plans/36-onevent-webhooks.md`:
+
+- **`bracket-field`** — add `bracket` to the §8.1 row (the design's proposal), not a delivery-only
+  header and not silent acceptance of a discarded resumed run. §4.2 stands as written.
+- **`circuit-breaker`** — the circuit never re-closes, and `run-finished` is always attempted even while
+  it is open. §3.3 step 3 and §5.3 stand as written.
+- **`detail-default`** — `detail` is withheld by default; `--on-event-detail` opts in. §4.4 and §6.3
+  stand as written.
+- **`detail-optin-flag`** — `--on-event-detail` ships; it is not cut from v1.
+- **`untracked-deferrals`** — both follow-up issues named in §8 and §11 (HMAC body signing, multiple
+  `--on-event` endpoints) are filed now rather than left as a named-but-untracked mention.
