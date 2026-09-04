@@ -26,17 +26,27 @@ namespace Guardrails.Integration.Tests.Commands;
 /// I/O at all — it only asserts the resolved PATH STRING.</para>
 /// </summary>
 [Trait("Category", "ModelEvidence")]
+[Collection(TelemetryEnvironmentCollection.Name)]
 public sealed class TelemetryCommandTests
 {
     /// <summary>A distinctive, test-only model tag — never a real model name — so a substring match in
     /// rendered output can only be explained by the real corpus row flowing through, not by coincidence.</summary>
     private const string TestModelTag = "gr535-test-model";
 
-    private static async Task<(int Exit, string Output)> InvokeAsync(params string[] args)
+    private static Task<(int Exit, string Output)> InvokeAsync(params string[] args) =>
+        InvokeAsync(collectionEnabled: null, args);
+
+    /// <summary>
+    /// <paramref name="collectionEnabled"/> injects the opt-out decision instead of setting the
+    /// process-wide <c>GUARDRAILS_TELEMETRY</c> variable — see
+    /// <c>Ingest_WhenOptedOut_WritesNothing</c>. Null takes the production default (the environment).
+    /// </summary>
+    private static async Task<(int Exit, string Output)> InvokeAsync(
+        Func<bool>? collectionEnabled, params string[] args)
     {
         var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(TelemetryCommand.Create(io));
+        root.Add(TelemetryCommand.Create(io, collectionEnabled));
         int exit = await root.Parse(args).InvokeAsync();
         return (exit, io.OutText);
     }
@@ -76,17 +86,13 @@ public sealed class TelemetryCommandTests
 
         WriteJournal(plan.Path, "run-optout-1", "01-example", DateTimeOffset.UtcNow);
 
-        string? original = Environment.GetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar);
-        int exit;
-        try
-        {
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, "off");
-            (exit, _) = await InvokeAsync("telemetry", "ingest", plan.Path, "--corpus-root", corpus.Path);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, original);
-        }
+        // The opt-out is INJECTED, not set process-wide. Setting GUARDRAILS_TELEMETRY=off around this
+        // await used to silently suppress writes in every test running concurrently in this process — the
+        // measured six-test failure documented on TelemetryCollectionSwitchTests. What this test owns is
+        // that the VERB honours the decision; that the environment produces the decision is proven
+        // separately as a pure function.
+        (int exit, _) = await InvokeAsync(
+            collectionEnabled: () => false, "telemetry", "ingest", plan.Path, "--corpus-root", corpus.Path);
 
         Assert.Equal(ExitCodes.Success, exit);
         AssertNoFilesUnder(corpus.Path);

@@ -116,7 +116,7 @@ public sealed class PromptRunnerRegistry
             runners[pair.Key] = factory(pair.Value);
         }
 
-        return new PromptRunnerRegistry(runners, config.PromptRunners, ResolveDefault(config));
+        return new PromptRunnerRegistry(runners, config.PromptRunners, DefaultNameFor(config));
     }
 
     /// <summary>The default runner name: <c>promptRunners.default</c> if it resolves, else the sole declared runner.</summary>
@@ -146,6 +146,36 @@ public sealed class PromptRunnerRegistry
             : throw new InvalidOperationException($"No prompt runner named '{resolved}' (validation should have caught this).");
     }
 
+    /// <summary>
+    /// The registry KEY an attempt of this action would dispatch to — <b>the one expression</b>
+    /// <c>ActionRunner</c> hands <see cref="Resolve"/>, exposed so a PREVIEW can ask the same question
+    /// without spawning anything (issue #549).
+    ///
+    /// <para>Order, and every step of it is load-bearing: the RESOLVED ROUTE's own block first (§6.1
+    /// decided it — a pin, a rung, or the legacy pointer), then the action's <c>runner</c> pin, then the
+    /// prompt file's frontmatter <c>runner</c>, then <see cref="DefaultNameFor"/>. The frontmatter/default
+    /// tail is not defensive style: on the LEGACY path the route's own NAME is
+    /// <c>config.DefaultPromptRunner</c>, which can be null while the sole-declared-block fallback still
+    /// resolves, so <c>route?.Runner?.Name</c> — the resolved BLOCK's name, non-null whenever a block
+    /// actually resolved — is what is read here rather than <see cref="TierResolution.RunnerName"/>.</para>
+    ///
+    /// <para>Null only when nothing named a runner AND no default resolves — the state
+    /// <see cref="Resolve"/> throws on and validation already rejects. A caller that must render it says
+    /// so; a caller that must run refuses.</para>
+    /// </summary>
+    /// <param name="config">The plan's run configuration — the registry and its <c>default</c> pointer.</param>
+    /// <param name="route">The §6.1 resolution for this attempt, or null for a script action.</param>
+    /// <param name="actionRunner">The task manifest's <c>action.runner</c>, if any.</param>
+    /// <param name="frontmatterRunner">The prompt file's frontmatter <c>runner</c>, if any.</param>
+    public static string? DispatchNameFor(
+        RunConfig config, TierResolution? route, string? actionRunner, string? frontmatterRunner)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        string? named = route?.Runner?.Name ?? actionRunner ?? frontmatterRunner;
+        return string.IsNullOrWhiteSpace(named) ? DefaultNameFor(config) : named;
+    }
+
     private string ResolveName(string? name)
     {
         if (!string.IsNullOrWhiteSpace(name))
@@ -157,8 +187,16 @@ public sealed class PromptRunnerRegistry
             ?? throw new InvalidOperationException("No prompt runner specified and no default is configured.");
     }
 
-    private static string? ResolveDefault(RunConfig config)
+    /// <summary>
+    /// The default runner NAME for <paramref name="config"/>: <c>promptRunners.default</c> when it names
+    /// a declared block, else the sole declared block, else null. Public because the <c>--dry-run</c>
+    /// preview needs the same answer a run gets and must not carry a second copy of the sole-block
+    /// fallback (issue #549 was that exact duplication, one rule further up).
+    /// </summary>
+    public static string? DefaultNameFor(RunConfig config)
     {
+        ArgumentNullException.ThrowIfNull(config);
+
         if (config.DefaultPromptRunner is { } named && config.PromptRunnerNames.Contains(named))
         {
             return named;

@@ -80,6 +80,25 @@ public static class JournalJson
     };
 
     /// <summary>
+    /// The SSOT §7 token for a <see cref="HarnessWriteDisposition"/> (<c>applied</c> | <c>rejected</c> |
+    /// <c>denied</c> | <c>not-applied</c> | <c>failed</c>) — the single source of truth for the kebab
+    /// spelling of <c>harnessWrite.disposition</c> and of each <c>harnessWrite.entries[].disposition</c>
+    /// (issue #532). Explicit rather than <c>Enum.ToString</c> for the same reason
+    /// <see cref="TierSourceToken"/> is: <c>not-applied</c> carries a hyphen, and the default
+    /// System.Text.Json enum handling would write the ORDINAL, which is worse still for a file humans and
+    /// unlinked tooling read.
+    /// </summary>
+    public static string HarnessWriteDispositionToken(HarnessWriteDisposition disposition) => disposition switch
+    {
+        HarnessWriteDisposition.Applied => "applied",
+        HarnessWriteDisposition.Rejected => "rejected",
+        HarnessWriteDisposition.Denied => "denied",
+        HarnessWriteDisposition.NotApplied => "not-applied",
+        HarnessWriteDisposition.Failed => "failed",
+        _ => throw new JsonException($"Unhandled harness-write disposition '{disposition}'.")
+    };
+
+    /// <summary>
     /// The SSOT §7 / DoR §12.4 token for a <see cref="Journal.TierSource"/> (<c>task</c> |
     /// <c>plan-default</c> | <c>override</c>) — the single source of truth for the kebab spelling of
     /// <c>provenance.tierSource</c>, reused by the JSON converter and by any run-report labelling
@@ -117,7 +136,29 @@ public static class JournalJson
         options.Converters.Add(new RunHaltKindConverter());
         options.Converters.Add(new TierSourceConverter());
         options.Converters.Add(new DeliveryOutcomeConverter());
+        options.Converters.Add(new HarnessWriteDispositionConverter());
         return options;
+    }
+
+    /// <summary>Maps <see cref="HarnessWriteDisposition"/> to/from the SSOT §7 <c>harnessWrite</c> strings (issue #532).</summary>
+    private sealed class HarnessWriteDispositionConverter : JsonConverter<HarnessWriteDisposition>
+    {
+        public override HarnessWriteDisposition Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "applied" => HarnessWriteDisposition.Applied,
+                "rejected" => HarnessWriteDisposition.Rejected,
+                "denied" => HarnessWriteDisposition.Denied,
+                "not-applied" => HarnessWriteDisposition.NotApplied,
+                "failed" => HarnessWriteDisposition.Failed,
+                _ => throw new JsonException($"Unknown harness-write disposition '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, HarnessWriteDisposition value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(HarnessWriteDispositionToken(value));
     }
 
     /// <summary>

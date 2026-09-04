@@ -13,14 +13,17 @@ namespace Guardrails.Core.Telemetry;
 public sealed class TelemetryCorpusStore
 {
     /// <summary>
-    /// The opt-out switch (charter §9's collection-default decision): <c>GUARDRAILS_TELEMETRY=off</c>
-    /// disables collection entirely (no files written, not even an empty corpus root); any other value,
-    /// or unset, means collection stays ON. This is the SINGLE definition for the whole plan — the CLI
-    /// verb (task 10) and run-end ingest (task 13) both honour this by calling into the store rather than
-    /// re-reading the environment themselves, so a machine cannot end up opted out of one path and not
-    /// the other.
+    /// The opt-out environment variable (charter §9's collection-default decision), re-exported from
+    /// <see cref="TelemetryCollectionSwitch.OptOutEnvVar"/> so existing callers keep compiling against one
+    /// spelling.
+    ///
+    /// <para><b>This store no longer reads it.</b> The decision is now constructor state
+    /// (<see cref="CollectionEnabled"/>), resolved at a composition root. See
+    /// <see cref="TelemetryCollectionSwitch"/> for the measured defect that moved it: reading
+    /// process-global state at WRITE time meant a concurrent, unrelated caller could silently turn every
+    /// write in the process into a no-op.</para>
     /// </summary>
-    public const string OptOutEnvVar = "GUARDRAILS_TELEMETRY";
+    public const string OptOutEnvVar = TelemetryCollectionSwitch.OptOutEnvVar;
 
     /// <summary>
     /// The wire-format options every row is written and read with — camelCase to match the field names
@@ -39,25 +42,40 @@ public sealed class TelemetryCorpusStore
     public string CorpusRoot { get; }
 
     /// <summary>
+    /// Whether this store writes at all. Fixed at construction and never re-derived, so a store's behavior
+    /// is a function of how it was built and NOT of what the process environment happens to look like at
+    /// the instant of a write — see <see cref="TelemetryCollectionSwitch"/> for the concurrency defect that
+    /// distinction fixes.
+    /// </summary>
+    public bool CollectionEnabled { get; }
+
+    /// <summary>
     /// <paramref name="corpusRoot"/> is the ONLY place this store will ever read or write. It is never
     /// resolved, defaulted, or created here in the constructor — resolving the real
     /// <c>~/.guardrails/telemetry/</c> home path is the CLI task's job, not this store's.
+    ///
+    /// <para><paramref name="collectionEnabled"/> defaults to <see langword="true"/>: a store you
+    /// explicitly construct writes. The opt-out is a POLICY question, answered once at a composition root
+    /// via <see cref="TelemetryCollectionSwitch.IsEnabledFromEnvironment"/> and passed in here — it is not
+    /// a fact this leaf goes looking for. Every production call site passes it; a test that just wants a
+    /// working store need not.</para>
     /// </summary>
-    public TelemetryCorpusStore(string corpusRoot)
+    public TelemetryCorpusStore(string corpusRoot, bool collectionEnabled = true)
     {
         CorpusRoot = corpusRoot;
+        CollectionEnabled = collectionEnabled;
     }
 
     /// <summary>
     /// Appends <paramref name="row"/> as one JSON line to the file for its <see cref="TelemetryRow.StartedAt"/>'s
-    /// UTC year and month, unless collection is disabled (<see cref="OptOutEnvVar"/> — writes nothing at
-    /// all, no file created) or a row with the same <c>(runId, taskId, attempt)</c> triple is already on
+    /// UTC year and month, unless <see cref="CollectionEnabled"/> is false (writes nothing at all, no file
+    /// created) or a row with the same <c>(runId, taskId, attempt)</c> triple is already on
     /// disk (idempotent no-op — re-ingesting a plan must be safe by construction). Never rewrites an
     /// existing line.
     /// </summary>
     public void Append(TelemetryRow row)
     {
-        if (IsCollectionDisabled())
+        if (!CollectionEnabled)
         {
             return;
         }
@@ -174,13 +192,6 @@ public sealed class TelemetryCorpusStore
             Directory.Delete(CorpusRoot, recursive: true);
         }
     }
-
-    /// <summary>
-    /// <c>GUARDRAILS_TELEMETRY=off</c> (case-insensitive) disables collection; any other value, or unset,
-    /// leaves it ON — the single opt-out definition <see cref="OptOutEnvVar"/> documents.
-    /// </summary>
-    private static bool IsCollectionDisabled() =>
-        string.Equals(Environment.GetEnvironmentVariable(OptOutEnvVar), "off", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Scans every <c>*.jsonl</c> file already on disk under the corpus root for a row matching

@@ -59,6 +59,18 @@ public static class StatusCommand
             PrintRow(task.Id, entry, output);
         }
 
+        // #515: the provider-pause ledger, omitted entirely when nothing paused (nearly every run).
+        IReadOnlyList<string> pauseLines = TransientPauseLines(document);
+        if (pauseLines.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine("Provider pauses (transient; did NOT consume the retry budget)");
+            foreach (string line in pauseLines)
+            {
+                output.WriteLine(line);
+            }
+        }
+
         // Run-level cost (SSOT §7 costUsd) — omitted entirely when no attempt recorded a
         // cost, so deterministic-only plans stay noise-free.
         if (JournalCost.Total(document) is { } total)
@@ -69,6 +81,33 @@ public static class StatusCommand
 
         return ExitCodes.Success;
     }
+
+    /// <summary>
+    /// One line per task that took at least one class-(b) transient pause (issue #515, SSOT §7
+    /// <c>transientPauses[]</c>) — empty when none did, so the table stays noise-free on the overwhelming
+    /// majority of runs.
+    /// <para>
+    /// This is the question the durable record now exists to answer: <i>did this run hit provider
+    /// trouble?</i> A task that quietly paused six times and then went green used to be indistinguishable
+    /// here from one that ran clean, because the pause reached the observer and nothing else.
+    /// </para>
+    /// <para>Ordered by task id (ORDINAL, like every other sort in this codebase) so the output is stable
+    /// across platforms and locales — <c>document.Tasks</c> is a dictionary and carries no order of its own.
+    /// Pure — public for the same reason <see cref="LastFailureText"/> is.</para>
+    /// </summary>
+    public static IReadOnlyList<string> TransientPauseLines(JournalDocument document) =>
+    [
+        .. document.Tasks
+            .Where(pair => pair.Value.TransientPauses is { Count: > 0 })
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair =>
+            {
+                IReadOnlyList<TransientPauseRecord> pauses = pair.Value.TransientPauses!;
+                int waited = (int)pauses.Sum(p => p.WaitSeconds);
+                string last = pauses[^1].Reason;
+                return $"  {pair.Key,-32} {pauses.Count} pause(s), {waited}s waited — last: {Truncate(last, 60)}";
+            })
+    ];
 
     private static void PrintRow(string taskId, TaskJournalEntry? entry, TextWriter output)
     {

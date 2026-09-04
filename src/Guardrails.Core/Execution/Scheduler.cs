@@ -4508,7 +4508,11 @@ public sealed class Scheduler
             Turns = pending.Turns,
             Segments = pending.Segments,
             LogDir = pending.LogDir,
-            Provenance = pending.Provenance
+            Provenance = pending.Provenance,
+            // #532 gap 1: read off the carrier, never derived here — this method holds no batch and no
+            // outcome. Omitting the line would journal harness writes only where they FAILED (the serial
+            // failure paths), which is the same survivorship shape gap 2 was about.
+            HarnessWrite = pending.HarnessWrite
         };
         // Plan 30 §3.2: the bucket is TASK grain (constant across a task's own retries), so it is declared
         // on TaskJournalEntry rather than on the record above and travels through the recorder instead.

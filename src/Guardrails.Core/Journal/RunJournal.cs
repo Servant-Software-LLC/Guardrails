@@ -269,6 +269,33 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// SSOT §7 (issue #515): append one class-(b) transient PAUSE to the task's
+    /// <see cref="TaskJournalEntry.TransientPauses"/> log and persist immediately.
+    /// <para>
+    /// Called from the pause site itself, BEFORE the backoff is awaited, so a run killed mid-wait still
+    /// records that it was waiting and why. This is the ONLY durable record of a transient that RESOLVES —
+    /// the exhausted path writes an <see cref="AttemptRecord"/>, the resolving one writes nothing else at
+    /// all.
+    /// </para>
+    /// <para>
+    /// It deliberately does NOT touch the task's <see cref="TaskJournalEntry.Status"/>: a pause is not a
+    /// state transition. The task is mid-attempt and stays <c>running</c>; writing a status here would make
+    /// a paused task look settled to a concurrent reader (<c>guardrails status</c> runs against a live
+    /// journal).
+    /// </para>
+    /// </summary>
+    public void RecordTransientPause(string taskId, TransientPauseRecord pause)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            var pauses = new List<TransientPauseRecord>(entry.TransientPauses ?? []) { pause };
+            UpdateTask(taskId, entry with { TransientPauses = pauses });
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Reserve the next merge sequence (advancing the counter) so a fragment merge can be
     /// stamped with it. The caller passes it to <see cref="StateManager.MergeFragment"/> and
     /// then to <see cref="RecordAttempt"/>. Reserving up front keeps the counter monotonic

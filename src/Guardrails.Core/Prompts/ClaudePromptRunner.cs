@@ -99,19 +99,21 @@ public sealed class ClaudePromptRunner : IPromptRunner
         // returns (its state is final by then), so no cross-thread read of this flag is load-bearing.
         bool denialAbortFired = false;
 
-        // #504 stall watchdog. Bounds SILENCE, not duration: the caller's Timeout stays a backstop while
-        // this kills a session that has stopped producing. Ticks via Volatile so the reader thread's write
-        // is visible to the watchdog without a lock; `stallFired` is the same spawn-guard shape as
-        // denialAbortFired above, and is likewise re-read AFTER the process returns rather than trusted
-        // cross-thread mid-flight.
-        long lastLineTicks = DateTime.UtcNow.Ticks;
-        bool stallFired = false;
+        // #504 stall watchdog / #517 suspend discrimination. Bounds SILENCE, not duration: the caller's
+        // Timeout stays a backstop while this kills a session that has stopped producing. The clock, the
+        // cadence and the verdict all live on the shared StallWatch — OpenAiCompatPromptRunner drives the
+        // same object, because a bound spelled twice is a bound that is wrong in one of the two places.
+        // Its `Stalled` flag is the same spawn-guard shape as denialAbortFired above, and is likewise
+        // re-read AFTER the process returns rather than trusted cross-thread mid-flight.
+        StallWatch? stall = invocation.StallBound is { } bound && bound > TimeSpan.Zero
+            ? new StallWatch(bound)
+            : null;
 
         try
         {
             void Tee(string line)
             {
-                Volatile.Write(ref lastLineTicks, DateTime.UtcNow.Ticks);
+                stall?.Beat();
                 parser.Feed(line);
                 permissionScanner.Feed(line);
                 streamWriter?.WriteLine(line);
@@ -147,49 +149,16 @@ public sealed class ClaudePromptRunner : IPromptRunner
             // (ProcessRunner treats cancellation as "kill the tree and return") rather than a throw.
             using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(abortCts.Token);
             Task? stallWatchdog = null;
-            if (invocation.StallBound is { } stallBound && stallBound > TimeSpan.Zero)
+            if (stall is not null)
             {
-                TimeSpan poll = TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, stallBound.Ticks / 20));
-                DateTime previousPollAt = DateTime.UtcNow;
-                stallWatchdog = Task.Run(async () =>
-                {
-                    while (!stallCts.Token.IsCancellationRequested)
+                // The loop, the verdict and the #517 window reset all live on the watch —
+                // OpenAiCompatPromptRunner drives the same object. Killing the session is this runner's own
+                // business, and it goes through the SAME linked source the #452 fail-fast uses so a stall
+                // lands as an ordinary ProcessResult rather than a throw.
+                stallWatchdog = Task.Run(() => stall.WatchAsync(
+                    Task.Delay,
+                    () =>
                     {
-                        try
-                        {
-                            await Task.Delay(poll, stallCts.Token).ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            return;   // the run finished; nothing to police
-                        }
-                        catch (ObjectDisposedException)
-                        {
-                            // The LAUNCH-FAILURE path returns before the shutdown below, so the source can
-                            // be disposed out from under a watchdog still sitting in Delay. Swallow it:
-                            // an unobserved exception on a pool thread is a poor way to report that a
-                            // process never started, and the real fault is already on its way to the caller.
-                            return;
-                        }
-
-                        DateTime pollAt = DateTime.UtcNow;
-                        TimeSpan sincePreviousPoll = pollAt - previousPollAt;
-                        previousPollAt = pollAt;
-                        var silent = TimeSpan.FromTicks(pollAt.Ticks - Volatile.Read(ref lastLineTicks));
-
-                        switch (ClassifySilence(silent, sincePreviousPoll, poll, stallBound))
-                        {
-                            case StallVerdict.Suspended:
-                                // #517: the MACHINE was asleep, not the session. Give the session a fresh
-                                // full window rather than counting time it had no opportunity to emit in.
-                                Volatile.Write(ref lastLineTicks, pollAt.Ticks);
-                                continue;
-
-                            case StallVerdict.KeepWaiting:
-                                continue;
-                        }
-
-                        stallFired = true;
                         try
                         {
                             abortCts.Cancel();
@@ -198,9 +167,8 @@ public sealed class ClaudePromptRunner : IPromptRunner
                         {
                             // The run already finished and the source was disposed.
                         }
-                        return;
-                    }
-                });
+                    },
+                    stallCts.Token));
             }
 
             ProcessResult process;
@@ -252,9 +220,9 @@ public sealed class ClaudePromptRunner : IPromptRunner
             // now), and reported as its own kind. `!result.HasResult` keeps it from ever DISCARDING a
             // verdict — if the child raced the kill and produced a terminal result anyway, that result
             // is the answer, exactly as the #452 fail-fast below treats its own abort.
-            if (stallFired && !result.HasResult)
+            if (stall is { Stalled: true } && !result.HasResult)
             {
-                var silentFor = TimeSpan.FromTicks(DateTime.UtcNow.Ticks - Volatile.Read(ref lastLineTicks));
+                TimeSpan silentFor = stall.SilentFor();
                 return new PromptResult
                 {
                     Completed = false,
@@ -570,48 +538,6 @@ public sealed class ClaudePromptRunner : IPromptRunner
             "\n",
             new[] { result.ResultText, result.Subtype, process.StandardError, NonStreamStdout(process.StandardOutput) }
                 .Where(s => !string.IsNullOrWhiteSpace(s)));
-    }
-
-    /// <summary>What a single stall-watchdog poll concluded (issue #517).</summary>
-    internal enum StallVerdict
-    {
-        /// <summary>Silence is within the bound; keep polling.</summary>
-        KeepWaiting,
-
-        /// <summary>The MACHINE was not running between polls (sleep / hibernate / a hard freeze).</summary>
-        Suspended,
-
-        /// <summary>The session has genuinely produced nothing for longer than the bound.</summary>
-        Stalled
-    }
-
-    /// <summary>
-    /// A poll that took vastly longer than its own interval means the machine was SUSPENDED, not that the
-    /// session went silent — so the gap must not be counted as silence (issue #517).
-    ///
-    /// <para><b>Why this is not a heuristic about load.</b> The watchdog polls at <c>stallBound / 20</c> —
-    /// about 60 seconds at the shipped bound — so the two cases are separated by orders of magnitude, not
-    /// by a margin: a two-hour gap in a one-minute loop is unambiguous. The factor below only has to be
-    /// larger than the worst scheduling delay a running machine can impose.</para>
-    ///
-    /// <para><b>And the failure direction is the safe one.</b> Misreading a genuine stall as a suspend
-    /// costs one more bound-length window before the kill; misreading a suspend as a stall KILLS HEALTHY
-    /// WORK, which is the whole defect #504 set out to remove. When the two are hard to tell apart, wait.</para>
-    ///
-    /// <para>Pure and <c>internal</c> so the decision is testable: the loop that calls it reads
-    /// <c>DateTime.UtcNow</c> directly, which is exactly why the wall-clock bug shipped untested.</para>
-    /// </summary>
-    internal static StallVerdict ClassifySilence(
-        TimeSpan silent, TimeSpan sincePreviousPoll, TimeSpan poll, TimeSpan stallBound)
-    {
-        const int SuspendFactor = 4;
-
-        if (poll > TimeSpan.Zero && sincePreviousPoll > poll * SuspendFactor)
-        {
-            return StallVerdict.Suspended;
-        }
-
-        return silent >= stallBound ? StallVerdict.Stalled : StallVerdict.KeepWaiting;
     }
 
     /// <summary>
