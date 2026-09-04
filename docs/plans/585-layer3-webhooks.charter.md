@@ -1031,8 +1031,8 @@ Replace the sentence at line 1715 (which is already stale — `GUARDRAILS_TELEME
 |---|---|
 | A `ws:` / SSE endpoint | **Superseded** (§2.1). Not a follow-up. #585 closes with layer 3. |
 | Batched delivery | **Rejected outright** (§4.1) — the rate does not justify it and it forks the body shape. Not deferred. |
-| An HMAC body signature (`X-Guardrails-Signature`) | **New issue.** Real value (body integrity, which the auth header does not give); needs a documented canonicalization + verification recipe. |
-| Multiple endpoints | **New issue.** Blocker named: per-endpoint credentials. One `GUARDRAILS_ON_EVENT_AUTH` across two endpoints sends B's token to A. |
+| An HMAC body signature (`X-Guardrails-Signature`) | **#604.** Real value (body integrity, which the auth header does not give); needs a documented canonicalization + verification recipe. |
+| Multiple endpoints | **#605.** Blocker named: per-endpoint credentials. One `GUARDRAILS_ON_EVENT_AUTH` across two endpoints sends B's token to A. |
 | Sender-side kind filtering (`--on-event-kinds …`) | **Rejected**, on #585's own rule: *"A consumer filters on fields, never on a `kind` allowlist… an unrecognized `kind` must remain a visible row."* An allowlist at the **sender** is strictly worse than one at the receiver — a kind added later is silently never delivered, and the receiver cannot tell. Filtering belongs at the receiver, where a missed kind is at least visible. |
 | A `webhook-dropped` event kind | **Rejected** (§5.4) — self-referential; a failing drop-notice emits another. |
 | A `run.json` webhook section | **Rejected** (§5.4) — the consumer can compute the exact drop set by diffing against `events.jsonl`. |
