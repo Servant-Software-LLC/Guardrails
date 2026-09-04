@@ -1712,8 +1712,12 @@ detail:
   ambient toolchain; hermeticity is scoped to the namespace the harness owns.
 
 Harness-process knobs that the harness reads from its OWN environment rather than passing to a child
-— `GUARDRAILS_WORKTREE_ROOT` (§2) is the only one — are consumed in the parent and are correspondingly
-not visible to a child, since no row above declares them.
+— `GUARDRAILS_WORKTREE_ROOT` (§2), `GUARDRAILS_TELEMETRY` and `GUARDRAILS_TELEMETRY_CORPUS_ROOT`
+(§15), and `GUARDRAILS_ON_EVENT` / `GUARDRAILS_ON_EVENT_AUTH` (§8.3) — are consumed in the parent and
+are correspondingly **not visible to a child**, since no row above declares them. For
+`GUARDRAILS_ON_EVENT_AUTH` that is a security property, not a side effect: the hermeticity rule above
+is what keeps a webhook credential out of every action, guardrail script and merge worker, and it is
+why the variable is named inside this namespace rather than outside it.
 
 **Recorded action outcome — verify, don't replay (issue #62).** `GUARDRAILS_ACTION_RESULT`
 / `_STDOUT` / `_STDERR` hand a guardrail the action's *already-captured* result, so it can
@@ -3797,7 +3801,8 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | Field | Meaning |
 |---|---|
 | `kind` | the event discriminator, kebab-case (table below) |
-| `seq` | a monotonic, 1-based counter within this PROCESS's bracket, assigned under the writer's append lock. **`seq`, not `at`, is the ordering key.** It restarts at 1 for a resume, which appends a fresh bracket to the same file. |
+| `seq` | a monotonic, 1-based counter within this PROCESS's bracket, assigned under the writer's append lock. **`seq`, not `at`, is the ordering key.** It restarts at 1 for a resume, which appends a fresh bracket to the same file — so `seq` is unique only together with `bracket`. |
+| `bracket` | an id for THIS process's append bracket — `<unix-ms>-<4 hex>`, e.g. `1756948327104-a3f9` — generated once per `RunEventStream` and stamped under the same lock. It is what makes `seq` a usable key: a resume reuses the `runId` and restarts `seq` at 1, so `(runId, seq)` collides across brackets while **`(runId, bracket, seq)` identifies a row uniquely and for all time**. Treat it as OPAQUE for equality; its millisecond prefix additionally lets a reader order two brackets, which is the only way a consumer that never sees file order (§8.3) can apply the "take the LAST `run-finished`" rule below. It is NOT a clock to compute elapsed time from, for the same reason `at` is not. Added by #585 layer 3 (§8.3), where the collision stops being a curiosity: a webhook receiver deduplicating on `(runId, seq)` would silently discard an entire resumed run. |
 | `at` | when the row was WRITTEN (ISO-8601 UTC), stamped under the same lock. Not a domain timestamp — `startedAt`/`endedAt` are those. Its resolution is the platform clock tick (~15.6 ms on Windows), so concurrent rows can share an `at`; that is why `seq` exists. |
 | `runId` | the run's id, passed to the writer by the composition root. |
 
@@ -3865,7 +3870,9 @@ after one belong to a later process (a resume, or — see above — a second con
 an already-complete run re-fires the terminal gate with no attempt burned (§7) and emits its own
 bracket with no `task-started` rows at all: every task was already green, so the terminal row is the
 only one. **A `run-finished` with no `task-started` before it in that process's tail is a completed
-resume, not a stalled run.**
+resume, not a stalled run.** Each process's rows carry a distinct `bracket` (above), so "which
+`run-finished` is mine?" is answerable by key rather than only by position — which is the form a
+§8.3 webhook receiver needs, since it never sees file order at all.
 
 **`run-finished` is a durable FILE event first.** A `/events` subscriber can miss the terminal row:
 the run appends it and tears the log server down microseconds later. A client whose connection
@@ -3905,6 +3912,122 @@ Consequences a reader needs:
   an internal round-trip format between two halves of one feature, and its spelling is an
   implementation detail of that round trip. A reader comparing the two files will see the
   difference; this paragraph is why.
+
+### 8.3 Webhook delivery of the event stream (`--on-event <url>`) — issue #585 layer 3
+
+With `--on-event <url>` (or `GUARDRAILS_ON_EVENT`), `guardrails run` **POSTs each §8.1 row to that
+URL as it is written**. It is the same projection, delivered rather than served: one `RunEventStream`
+writes the row once, appends it to `events.jsonl`, and hands the same serialized line to a sink that
+queues it for delivery. There is no second row shape and no second `seq`.
+
+**The run is never affected.** A delivery failure — a timeout, any status, a full queue, a shutdown
+with rows still pending — **cannot change the run's exit code, its verdict, its journal, or its
+timing** beyond a bounded drain at shutdown. `events.jsonl` remains the durable record, and a
+consumer that must be complete re-reads it.
+
+**The request.**
+
+| | |
+|---|---|
+| Method / body | `POST`, `Content-Type: application/json; charset=utf-8`, exactly **one** §8.1 row per request. Never batched. |
+| `User-Agent` | `guardrails/<version>` |
+| `X-Guardrails-Delivery-Id` | `<runId>:<bracket>:<seq>` — **the idempotency key**, pre-assembled so a receiver can deduplicate without parsing the body. Stable across retries of the same row. |
+| `X-Guardrails-Event-Kind` | the row's `kind`, so a receiver can route or ignore without parsing |
+| `X-Guardrails-Delivery-Attempt` | 1-based; a value > 1 means this row was POSTed before |
+| `Authorization` | the verbatim value of `GUARDRAILS_ON_EVENT_AUTH`, when set |
+
+**The body is the `events.jsonl` line, with exactly ONE documented divergence.** `detail` — the only
+free-text field on the row (§8.1: a failing guardrail's reason, or a settled task's summary) — is
+**withheld by default**, carrying the fixed string `(detail withheld; pass --on-event-detail)`. With
+`--on-event-detail` it is the file's value, truncated at 2000 characters with a `…[truncated]`
+suffix. The field is always PRESENT so a receiver can never read "withheld" as "nothing to report".
+Every other field is byte-identical to the file line, and `events.jsonl` itself is never altered by
+either mode.
+
+**Why `detail` is withheld by default.** It is the one field that can carry an absolute path, a
+fragment of source, or model-authored prose: for a script guardrail it is the first line of the
+child process's stdout, uncapped (a compiler error naming a file, an assertion with its stack); for
+a prompt guardrail it is the judge's own text; on `task-settled` it can embed an absolute
+`feedback.md` path or an agent's `needs human:` question verbatim. `faultKind` was narrowed to a
+type name for exactly this reason (§8.1); the same bar applied to the whole row set produces this
+default. The rest of the row is closed token sets, numbers, and author-controlled names.
+
+**What a receiver is promised.**
+
+- Deliveries within one `(runId, bracket)` are **attempted in strictly increasing `seq` order** (one
+  serial pump). A retry delays later rows; it never lets them overtake.
+- **Arrival** order is not guaranteed behind a load balancer. Order by `seq`, never by `at` or by
+  receipt time.
+- **`seq` is not contiguous.** A gap means a row was DROPPED — it is in `events.jsonl` and was never
+  delivered. This is the reconciliation path, and it is the reason delivery is allowed to fail.
+- A `runId` yields **more than one `run-finished`** across a resume or a concurrent process; each
+  bracket has its own.
+- **Any 2xx is success and the response body is ignored** (read to ≤8 KB, discarded). There is no
+  acknowledgment protocol and no reply a receiver can send that changes the run.
+
+**Failure policy.** Retryable: `408`, `429`, `5xx`, connection/DNS/TLS failure, and the per-attempt
+timeout. **Not retryable:** `3xx` (redirects are never followed) and every other `4xx` — a
+byte-identical retry of a rejected request only wastes the budget. Bounds: **4 attempts**, backoff
+**1 s / 2 s / 4 s** with jitter, **10 s** per attempt, and a hard **45 s** ceiling per row. After
+**5 consecutive rows** exhaust every attempt the endpoint is marked failing **for the rest of the
+run**: later rows are dropped on arrival with no HTTP attempted. The circuit does not re-close.
+In-memory queue capacity is 1024 rows; a full queue drops its **oldest** entry, never the incoming
+one, so a stalled pump cannot make the terminal row the one that is lost.
+
+**Shutdown, and what the terminal row is actually promised.** At teardown the harness stops retrying
+altogether — one attempt per row — drains the backlog for up to **10 s**, and then, **always and
+regardless of the circuit or the backlog, spends one further attempt (up to 10 s) on the LAST row
+enqueued**, which on every normal path is `run-finished`. Worst-case teardown is therefore ~20 s.
+**On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely and the terminal attempt is
+bounded at ~500 ms** — because the CLI host allows the whole process about **two seconds** to unwind
+after SIGINT (System.CommandLine's default `ProcessTerminationTimeout`), which the log server's own
+shutdown drain (§12.2) must also fit inside. So on Ctrl-C, delivery of `run-finished` is a single
+best-effort attempt and nothing more; as everywhere else here, **the file is the record.**
+
+**Every drop is recorded, in ONE place.** A console line prints at the end of every run that used
+`--on-event` — **including when nothing was dropped**, because silence on success is the defect
+§8.1 exists to remove — carrying delivered and dropped counts, whether the circuit opened, and
+whether the delivery pump itself faulted. There is deliberately **no per-drop log file**: a consumer
+computes its own drop set exactly, by diffing the `(bracket, seq)` values it received against
+`events.jsonl`, and a file written during teardown is a way for a delivery mechanism to fail a run.
+There is deliberately **no `webhook-dropped` event kind**: such a row would itself be queued for
+delivery, so a failing drop-notice would emit another. There is deliberately **no `run.json`
+field**: a consumer computes its own drop set exactly, by diffing the `(bracket, seq)` values it
+received against `events.jsonl`.
+
+**Configuration.** One endpoint per run.
+
+| Surface | Meaning |
+|---|---|
+| `--on-event <url>` | the endpoint. **Not repeatable** — a second occurrence is a startup error. |
+| `GUARDRAILS_ON_EVENT` | same, used only when the flag is absent (§5.1) |
+| `GUARDRAILS_ON_EVENT_AUTH` | the verbatim `Authorization` header value, e.g. `Bearer …`. **Environment only** — never a flag (shell history, `ps`, `/proc/<pid>/cmdline`) and never a file. Rejected at startup if it contains CR or LF. |
+| `--on-event-detail` | include the `detail` field (above). Default off. |
+
+**There is deliberately no `guardrails.json` key for the URL.** Three reasons, the third decisive:
+a machine concern belongs in the environment (§2's own rule for `worktreeRoot`); the URL is
+frequently itself a credential and `guardrails.json` is committed *and hashed into
+`PlanDefinitionHash`* (the reason `apiKeyEnv` holds only a variable NAME, §9); and **`guardrails.json`
+is a file a model can write** — a URL readable from the plan folder would be an agent-writable
+egress channel for the run's own guardrail output. Keeping the endpoint on the command line and in
+the operator's environment is what makes the SSRF question moot: the URL comes from the operator,
+never from content the run processes.
+
+**Security posture — this is the first mechanism in the harness that sends run content off the
+machine.** `GET /events` (§12.2) serves these same rows and is bound to loopback precisely because
+logs may echo secrets. Constraints, all enforced at startup or in the client: the scheme must be
+`http` or `https`; **redirects are never followed** (a 3xx could move the payload and the
+`Authorization` header to a host the operator never named); TLS validation is always on and there is
+no opt-out flag; plain `http` to a non-loopback host prints a warning but proceeds; loopback and
+private addresses are explicitly allowed, because an agent monitor on `127.0.0.1` is the primary use
+case. The auth value is never logged, journaled, or written to any file, and **every message the
+harness prints about webhooks shows the URL as `<scheme>://<host>[:<port>]/…`, never its path or
+query** — for many webhook services the path is the credential, and a full URL in a redirected
+`run.log` is a live leak. Delivery errors are reported as an exception TYPE NAME plus an HTTP status
+code, never `ex.Message`, which routinely contains the whole request URI. The secret's
+`GUARDRAILS_` prefix is load-bearing rather than cosmetic: §5.1's hermeticity rule (#442) strips
+every unlisted `GUARDRAILS_*` variable from every child process, so the webhook credential cannot
+reach an action, a guardrail script, or the AI-merge worker.
 
 ---
 
@@ -6497,7 +6620,9 @@ an empty body — correct, because the server does not start until after every p
 so an empty stream there means the file genuinely holds nothing. On shutdown the stream performs one
 final read before closing, so a run's terminal `run-finished` row is delivered rather than lost to
 the poll interval; delivery is still best-effort, and a client whose connection closes re-reads the
-file (§8.1).
+file (§8.1). The same rows can also be **pushed** rather than served: `guardrails run --on-event
+<url>` POSTs each one to an operator-supplied endpoint (§8.3). That is delivery of this same
+projection, not a second stream — and it is the one path on which these rows leave the machine.
 
 The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
 / `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —
