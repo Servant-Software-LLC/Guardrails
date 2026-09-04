@@ -2057,9 +2057,14 @@ log → re-emit the failure-signal lines at the very end**, bounded so the re-em
 
 1. Capture the runner's combined output (`$out = dotnet test … 2>&1`).
 2. Emit the full log first (so the attempt's saved output is complete).
-3. On failure, `Select-String` the failure-signal lines (`[FAIL]`, `Error Message:`, `Assert.`,
-   `Exception`, `Stack Trace:`, `Expected:`, `Actual:`), bound them (~40 lines), and re-emit them
-   under a clear header at the END.
+3. On failure, re-emit the failure **BLOCK** — every line from a `Failed <name>` / `Error Message:`
+   header until the `Passed!`/`Failed!` summary — bounded (~40 lines), under a clear header at the
+   END, with a loud `(no failure block matched …)` line when nothing matched. **Not a line
+   allowlist.** An allowlist keyed on `[FAIL]` / `Error Message:` / `Assert.` / `Exception` /
+   `Stack Trace:` / `Expected:` / `Actual:` was the old form and it silently drops two things:
+   a `DoesNotContain`/`Contains` failure's `String:` / `Found:` payload — for a negative assertion
+   `Found:` IS the finding — and every stack FRAME, leaving `Stack Trace:` as a label with nothing
+   under it. Measured against real runner output; `stacks/dotnet.md §4.2` carries the capture (#608).
 4. Print the single actionable reason line last.
 
 This is **deterministic** — it does not depend on logger ordering. You MAY *also* raise verbosity
