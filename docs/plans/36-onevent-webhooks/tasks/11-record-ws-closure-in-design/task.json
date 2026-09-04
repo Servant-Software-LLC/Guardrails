@@ -1,0 +1,8 @@
+{
+  "description": "Record the review closure in the layer-3 design of record: the ws: endpoint is superseded rather than deferred, and the charter review settled all five open questions",
+  "stableId": "ws5nc6",
+  "dependsOn": [],
+  "writeScope": [
+    "docs/plans/585-layer3-webhooks-contract.md"
+  ]
+}

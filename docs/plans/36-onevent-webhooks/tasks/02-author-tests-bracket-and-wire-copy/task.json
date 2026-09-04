@@ -1,0 +1,13 @@
+{
+  "description": "Author RED tests for the bracket field and the onRow wire copy, plus the compile-only stubs they bind to",
+  "stableId": "w3n6qk",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunEvents/RunEventBracketTests.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/GuardrailFailureReason.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

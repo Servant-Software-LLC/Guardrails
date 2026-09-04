@@ -1,0 +1,13 @@
+{
+  "description": "Wire --on-event into the CLI for real: options, env fallbacks, early validation, and the WebhookEventSink lifetime at the composition root",
+  "dependsOn": [
+    "08-author-tests-cli-wiring-and-delivery"
+  ],
+  "stableId": "p4nz9h",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

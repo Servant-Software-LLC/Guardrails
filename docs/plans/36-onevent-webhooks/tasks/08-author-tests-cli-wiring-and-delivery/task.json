@@ -1,0 +1,14 @@
+{
+  "description": "Author the RED integration proof that a real run delivers events to a loopback webhook receiver, plus the minimal CLI stubs that make it compile",
+  "dependsOn": [
+    "07-implement-webhook-dispatcher"
+  ],
+  "stableId": "k7wq2f",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/WebhookDeliveryTests.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

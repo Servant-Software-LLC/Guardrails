@@ -1,0 +1,8 @@
+{
+  "description": "Add --on-event to the guardrails-domain-knowledge contract quick-reference: the delivery key, the never-affects-the-run rule, and the withheld detail field",
+  "stableId": "dk9wz4",
+  "dependsOn": [],
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ]
+}
