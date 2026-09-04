@@ -2495,8 +2495,8 @@ public static class RunCommand
     /// need to keep a real run off the operator's own corpus.
     ///
     /// <para>This names WHERE the corpus lives, never WHETHER collection happens. The opt-out
-    /// (<see cref="TelemetryCorpusStore.OptOutEnvVar"/><c>=off</c>) is read inside the store and nowhere
-    /// else — least of all here, where a second copy of that rule could silently disagree with the verb.</para>
+    /// (<see cref="TelemetryCollectionSwitch.OptOutEnvVar"/><c>=off</c>) is decided by that single switch
+    /// and nowhere else — no second copy of that rule lives here to silently disagree with the verb.</para>
     /// </summary>
     private const string TelemetryCorpusRootEnvVar = "GUARDRAILS_TELEMETRY_CORPUS_ROOT";
 
@@ -2516,9 +2516,10 @@ public static class RunCommand
     /// <para><b>Both policy questions are settled elsewhere, by calling rather than re-deriving.</b> WHERE
     /// the corpus lives comes from <see cref="TelemetryCommand.ResolveCorpusRoot"/> — the very member the
     /// <c>telemetry</c> verb resolves through, so the verb and the run can never point at two different
-    /// corpora — and WHETHER collection is on is honoured by going through
-    /// <see cref="TelemetryCorpusStore.Append"/>, which checks the opt-out itself and writes nothing when it
-    /// is set. Neither rule is restated in this file.</para>
+    /// corpora — and WHETHER collection is on comes from
+    /// <see cref="TelemetryCollectionSwitch.IsEnabledFromEnvironment"/>, the single definition the verb
+    /// resolves through too, handed to the store as constructor state. Neither rule is restated in this
+    /// file.</para>
     /// </summary>
     private static void IngestRunTelemetry(Core.Model.PlanDefinition plan, IConsoleIo io)
     {
@@ -2530,8 +2531,13 @@ public static class RunCommand
             corpusRoot = TelemetryCommand.ResolveCorpusRoot(
                 Environment.GetEnvironmentVariable(TelemetryCorpusRootEnvVar));
 
+            // The opt-out is resolved HERE, at the composition root, and handed to the store — it is no
+            // longer re-read inside the write path. See TelemetryCollectionSwitch for the concurrency
+            // defect that moved it.
             TelemetryIngest.IngestPlanFolder(
-                plan.PlanDirectory, new TelemetryCorpusStore(corpusRoot), TelemetryRepoDimension(plan));
+                plan.PlanDirectory,
+                new TelemetryCorpusStore(corpusRoot, TelemetryCollectionSwitch.IsEnabledFromEnvironment()),
+                TelemetryRepoDimension(plan));
         }
         catch (Exception ex)
         {

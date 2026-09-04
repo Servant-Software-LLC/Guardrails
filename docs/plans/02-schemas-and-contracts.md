@@ -7690,10 +7690,22 @@ scope at all.
 ### 15.6 Opt-out and purge
 
 Collection is **ON by default**. The opt-out is the environment variable `GUARDRAILS_TELEMETRY=off` — any
-other value, or unset, means collection is on. It is checked **inside `TelemetryCorpusStore`**, and the
-verb and run-end ingest both honour it by going through the store rather than re-reading the environment:
-two mechanisms for one decision is how a machine ends up opted out of one path and not the other, which is
-worse than no opt-out because the operator believes collection is off.
+other value, or unset, means collection is on. Only that exact token disables collection: `false`, `0` and
+`no` all leave it ON, because an operator who typed one and believed collection was off for months is a
+worse outcome than a typo that did nothing.
+
+**One definition, resolved at the edge.** `TelemetryCollectionSwitch` owns the rule — `IsEnabled(string?)`
+as a pure function, `IsEnabledFromEnvironment()` as the single environment read. Composition roots (the
+`telemetry` verb and `RunCommand`'s run-end ingest) resolve it once and pass the answer to
+`TelemetryCorpusStore` as constructor state. Two mechanisms for one decision is how a machine ends up
+opted out of one path and not the other; this is still one mechanism, just resolved at the edge.
+
+**Why it is no longer read inside `Append`.** It used to be, and that made every write depend on
+PROCESS-GLOBAL state at the instant of the write. Under the concurrent whole-solution profile (#566) that
+produced a measured failure: six telemetry tests, each with a correctly isolated corpus root, all reported
+their own corpus empty because one concurrent test had set `GUARDRAILS_TELEMETRY=off` around its own
+invocation. A store's behavior must follow how it was BUILT, not what the process happens to look like —
+the same repair `GitEnvironmentCollection` names for the analogous `GIT_DIR` coupling.
 
 `guardrails telemetry purge` removes every row under the corpus root, and is safe on an empty corpus.
 
