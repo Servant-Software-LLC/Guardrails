@@ -766,8 +766,12 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
         timeoutCts.CancelAfter(invocation.Timeout);
         using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
 
-        var heartbeat = new TurnHeartbeat();
-        Task? stallWatchdog = StartStallWatchdog(invocation.StallBound, heartbeat, stallCts);
+        // Null when no bound was asked for — and then nothing polices silence at all, which is this
+        // field's documented contract rather than a gap.
+        StallWatch? heartbeat = invocation.StallBound is { } stallBound && stallBound > TimeSpan.Zero
+            ? new StallWatch(stallBound)
+            : null;
+        Task? stallWatchdog = StartStallWatchdog(heartbeat, stallCts);
 
         try
         {
@@ -785,7 +789,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, stallCts.Token)
                 .ConfigureAwait(false);
 
-            heartbeat.Beat();
+            heartbeat?.Beat();
 
             if (!response.IsSuccessStatusCode)
             {
@@ -837,7 +841,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// nothing to say, which is the silent direction.</para>
     /// </summary>
     private static async Task<StreamedTurn> ReadStreamedTurnAsync(
-        HttpResponseMessage response, StreamWriter? streamLog, TurnHeartbeat heartbeat, CancellationToken cancellationToken)
+        HttpResponseMessage response, StreamWriter? streamLog, StallWatch? heartbeat, CancellationToken cancellationToken)
     {
         var content = new StringBuilder();
         var toolCalls = new SortedDictionary<int, ToolCallAccumulator>();
@@ -855,7 +859,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
 
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                heartbeat.Beat();
+                heartbeat?.Beat();
 
                 if (!line.StartsWith(SseDataPrefix, StringComparison.Ordinal))
                 {
@@ -1276,9 +1280,9 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// A cancellation that did NOT come from the caller: either the stall watchdog fired (silence) or
     /// the per-attempt clock expired (duration). Two different facts, two different kinds.
     /// </summary>
-    private PromptResult CancellationFailure(PromptInvocation invocation, TurnHeartbeat heartbeat, string model)
+    private PromptResult CancellationFailure(PromptInvocation invocation, StallWatch? heartbeat, string model)
     {
-        if (heartbeat.Stalled)
+        if (heartbeat is { Stalled: true })
         {
             return new PromptResult
             {
@@ -2304,63 +2308,48 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
     /// is an Action-role site — so this is honoured as a CONTRACT rather than a current path. It is
     /// implemented now because a runner that could only honour it by being rewritten is one that will
     /// not be, and because streaming is what makes honouring it possible at all.
+    ///
+    /// <para><b>The verdict is <see cref="StallWatch.Observe"/>'s, not this loop's (issue #517).</b> This
+    /// watchdog used to ask <c>SilentFor() &lt; bound</c> and nothing else, so a machine that SLEPT for
+    /// longer than the bound woke to a watchdog that killed the turn instantly and reported <c>stalled</c>
+    /// — a diagnosis that is wrong in the direction that looks authoritative, because the request was
+    /// suspended rather than wedged. #517's discrimination shipped into
+    /// <see cref="ClaudePromptRunner"/> alone and this runner — the LOCAL-INFERENCE one, i.e. the runner
+    /// an unattended overnight run is most likely to be sitting on — kept the naked comparison. Both now
+    /// drive the same object.</para>
+    ///
+    /// <para>Null <paramref name="watch"/> = no bound was asked for = nothing to police.</para>
+    ///
+    /// <para><paramref name="delay"/> is the test seam and nothing else: null means
+    /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/>, which is what every production path passes.
+    /// It is here because the ONLY way to observe this watchdog's decision across a machine suspend is to
+    /// jump its clock, and a test that jumped the real one would be measuring the machine.</para>
     /// </summary>
-    private static Task? StartStallWatchdog(TimeSpan? stallBound, TurnHeartbeat heartbeat, CancellationTokenSource stallCts)
+    internal static Task? StartStallWatchdog(
+        StallWatch? watch,
+        CancellationTokenSource stallCts,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
-        if (stallBound is not { } bound || bound <= TimeSpan.Zero)
+        ArgumentNullException.ThrowIfNull(stallCts);
+
+        if (watch is null)
         {
             return null;
         }
 
-        TimeSpan poll = TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, bound.Ticks / 20));
-
-        return Task.Run(async () =>
-        {
-            while (true)
-            {
-                try
+        // The loop, the verdict and the #517 window reset all live on the watch — the same object
+        // ClaudePromptRunner drives. Abandoning the turn is this runner's own business, so only that is
+        // spelled here.
+        return Task.Run(
+            () => watch.WatchAsync(
+                delay ?? Task.Delay,
+                () =>
                 {
-                    await Task.Delay(poll, stallCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    return; // the turn finished; nothing to police
-                }
-                catch (ObjectDisposedException)
-                {
-                    return; // the turn finished and the source went with it
-                }
-
-                if (heartbeat.SilentFor() < bound)
-                {
-                    continue;
-                }
-
-                heartbeat.MarkStalled();
-                try { stallCts.Cancel(); }
-                catch (ObjectDisposedException) { /* the turn already finished */ }
-                return;
-            }
-        }, CancellationToken.None);
-    }
-
-    /// <summary>
-    /// Last-frame clock for one turn, shared between the SSE reader and the watchdog thread. The
-    /// stall flag is written by the watchdog and read after the turn unwinds, so both go through
-    /// <see cref="Volatile"/> rather than a lock.
-    /// </summary>
-    private sealed class TurnHeartbeat
-    {
-        private long _ticks = DateTime.UtcNow.Ticks;
-        private int _stalled;
-
-        internal void Beat() => Volatile.Write(ref _ticks, DateTime.UtcNow.Ticks);
-
-        internal TimeSpan SilentFor() => TimeSpan.FromTicks(DateTime.UtcNow.Ticks - Volatile.Read(ref _ticks));
-
-        internal void MarkStalled() => Volatile.Write(ref _stalled, 1);
-
-        internal bool Stalled => Volatile.Read(ref _stalled) == 1;
+                    try { stallCts.Cancel(); }
+                    catch (ObjectDisposedException) { /* the turn already finished */ }
+                },
+                stallCts.Token),
+            CancellationToken.None);
     }
 
     // ── the rendered transcript (issue #27's sibling for this runner) ───────────────────────────
