@@ -1088,8 +1088,48 @@ public static class DiagnosticCodes
     /// </summary>
     public const string PromptInstructsUngrantedCommand = "GR2071";
 
-    // CURRENT next-free code: GR2072. GR2071 (PromptInstructsUngrantedCommand) is the last taken code
-    // above — GR2059 is the last CONTIGUOUS one; GR2061 remains reserved-by-name gap (GR2062 was TAKEN by
+    /// <summary>
+    /// GR2072 (WARNING) — the RUNNING binary predates checks the SOURCE TREE declares (issue #564,
+    /// SSOT §16). Every other code on this ladder is about the PLAN. This one is about the TOOL, and it
+    /// exists because the tool's silence was doing more damage than any plan defect on the list:
+    /// <c>validate</c> reported clean and skipped every check the installed binary predated, saying
+    /// nothing either way.
+    ///
+    /// <para><b>The measured defect.</b> Same plan (<c>docs/plans/28-local-inference-runner</c>), same
+    /// command, same exit code — <b>4 findings from a build of master, 0 from the installed 1.12.0</b>,
+    /// which was tagged before GR2068/GR2069 merged. It was caught only because a verification agent
+    /// string-searched the installed DLL for <c>GR2068</c> before trusting the zero. That is not a
+    /// repeatable defence, and it is the worst failure shape this product has: a gate reporting clean
+    /// because it does not know about the check, occurring in Guardrails.</para>
+    ///
+    /// <para><b>Fires only inside a Guardrails checkout.</b> The comparison needs a source of truth
+    /// reachable without a network call, and the only one is this repository's own
+    /// <c>DiagnosticCodes.cs</c> (<see cref="CheckSetProbe"/>). That is also precisely where the defect
+    /// bites: here a diagnostic is authored, merged, and then immediately used to validate the next
+    /// plan. Everywhere else a tool lagging its source is normal and harmless, and everywhere else this
+    /// code is silent — a warning that fired for people merely using the released tool would be the
+    /// muting failure (#229) with extra steps.</para>
+    ///
+    /// <para><b>WARNING, and it must stay one.</b> Running an older tool against a newer tree is
+    /// legitimate: a release build, a CI pinned to a version, a contributor who has not updated, or a
+    /// deliberate reproduction against a shipped binary. Blocking would break all of those and would be
+    /// a worse cure than the disease. The goal is that a green <c>validate</c> can be <i>trusted or
+    /// discounted</i>, not that it becomes an error — so the exit code is untouched.</para>
+    ///
+    /// <para><b>The companion is unconditional.</b> This code only fires when the comparison is both
+    /// possible and negative; <c>validate</c> separately prints its check-set line on EVERY run
+    /// (version, code count, highest code, and whether a comparison was made at all), so the silent
+    /// case is impossible even where the comparison cannot be made. The diagnostic is the loud half;
+    /// the summary line is the half that is always correct.</para>
+    /// </summary>
+    public const string CheckSetPredatesSourceTree = "GR2072";
+
+    // CURRENT next-free code: GR2073. GR2072 (CheckSetPredatesSourceTree) is the last taken code
+    // above, and is the first code on this ladder that is NOT about the plan — it reports the TOOL
+    // (issue #564). That is deliberate and not a precedent to widen: it lives here because the codes
+    // are the greppable, test-assertable surface a reviewer already reads, and a fact this important
+    // must not arrive as unstructured prose.
+    // GR2059 is the last CONTIGUOUS code; GR2061 remains a reserved-by-name gap (GR2062 was TAKEN by
     // doc 19 Milestone B, #477; GR2063 by #402). GR2066 is NO LONGER a gap: plan 28 §3.7/§7's
     // Action-reachability error is implemented and ships above as OpenAiCompatActionReachable.
     // GR2068 and GR2069 were taken TOGETHER by plan 31 §4 (#553): the handoff-table path-coverage
@@ -1109,7 +1149,7 @@ public static class DiagnosticCodes
     //     defect at any commit in this repository — see §3.4. Do not allocate without a positive control.
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2072 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2073 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave

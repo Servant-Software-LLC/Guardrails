@@ -75,6 +75,19 @@ jobs:
       - name: Test (Integration)
         run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
 
+      # Issue #566, mirrored here ON PURPOSE. The two steps above run the assemblies SEQUENTIALLY, so
+      # one always has the machine to itself; `dotnet test Guardrails.sln` runs them CONCURRENTLY and is
+      # the only profile in which contention-sensitive failures can arise at all. ci.yml gained this job
+      # and release.yml did not, which would have left the gate that PUBLISHES TO NUGET weaker than the
+      # gate for an ordinary PR.
+      #
+      # That asymmetry is not hypothetical: it is exactly what happened once before, when ci.yml was
+      # fixed for skipped-test visibility and release.yml kept the gap - and it cost a released version.
+      # If a test invocation is added to ci.yml, it belongs here too; a release gate that tests LESS than
+      # CI can publish a defect CI would have caught.
+      - name: Test (whole solution, concurrent)
+        run: dotnet test Guardrails.sln --configuration Release --no-build
+
   # Pre-publish packaged-tool smoke (#171): pack the tool with the TAG version (the same
   # derivation the publish job uses), install it to an isolated --tool-path, run
   # `skills install` + `--version`, and FAIL on a missing skills/ payload, an unstamped

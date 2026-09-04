@@ -44,6 +44,10 @@ jobs:
       - name: Build
         run: dotnet build Guardrails.sln --configuration Release --no-restore
 
+      # Kept per-project ON PURPOSE even though solution-wide-test (below) covers the same tests: a red
+      # X here NAMES the assembly, which is worth a step. What it cannot do is produce CONTENTION —
+      # these are sequential, so one assembly always has the machine to itself. That is the gap #566
+      # is about; solution-wide-test closes it.
       - name: Test (Core)
         run: dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --configuration Release --no-build
 
@@ -56,6 +60,60 @@ jobs:
       # plan changes without regenerating the diagram, this fails CI. (#3)
       - name: Example diagram is fresh (graph --check)
         run: dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph examples/hello-guardrails/hello-guardrails --check
+
+  # Issue #566 — run the suite the way a CONTRIBUTOR runs it. `dotnet test Guardrails.sln` executes the
+  # Core and Integration assemblies CONCURRENTLY; the per-project steps above run them one after the
+  # other, so the oversubscription that a whole-solution run creates cannot arise there at all. The gate
+  # was therefore structurally blind to a whole class of defect — and not theoretically. Five fragile
+  # tests shipped in one week and were caught, respectively, by: the terminal gate on a merged tree
+  # (CircuitOpensAtExactlyFiveConsecutiveFailures), `dotnet test Guardrails.sln` and nothing else
+  # (BackoffScheduleIsOneTwoFourWithJitter, NoNoticeTextEverContainsTheAuthValue), the macOS runner and
+  # nothing else (FullQueueDropsTheOldestNotTheNewest), and human review (CircuitNeverCloses, which had
+  # silently stopped testing anything). TWO OF THE FIVE would have merged green under the old shape.
+  #
+  # All three OSes, not just one. macOS is where contention bit hardest — FullQueueDropsTheOldestNotThe-
+  # Newest failed there on a commit a sibling macOS run passed — but "hardest" is not "only", and the
+  # mechanisms differ per platform (process-spawn cost on Windows, scheduler behaviour on Linux, the
+  # weaker macOS runner). On a PUBLIC repository GitHub-hosted runners are free, so the marginal cost is
+  # this job's own wall-clock, spent in parallel with the matrix above rather than added to it.
+  #
+  # REQUIRED, not advisory. `continue-on-error: true` would make it a green tick that certifies nothing,
+  # which is the exact failure shape this repo has already paid for twice (tests skipping silently in
+  # CI; a GR2060 control that had never once fired). If this job goes red the answer is to fix the test
+  # it names — a timing-sensitive test that only survives a machine it has to itself is a real defect,
+  # not a CI inconvenience.
+  #
+  # It duplicates restore+build rather than appending a third step to build-and-test: a separate job
+  # keeps the check name unambiguous and keeps the whole-solution run off the other job's critical path.
+  # fetch-depth: 0 is required here for the same reason it is above (ProducerCoverageCorpusTests reasons
+  # over history and SKIPS, silently, on a shallow clone).
+  solution-wide-test:
+    name: solution-wide-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore Guardrails.sln --locked-mode
+
+      - name: Build
+        run: dotnet build Guardrails.sln --configuration Release --no-restore
+
+      # The load-bearing line of this whole job: ONE invocation, both assemblies, concurrently.
+      - name: Test (whole solution — both assemblies concurrently)
+        run: dotnet test Guardrails.sln --configuration Release --no-build
 
   # End-to-end packaged-tool smoke (#171): pack the REAL tool package, install it to an
   # isolated --tool-path, run `skills install` + `--version`, and FAIL if the skills/ payload

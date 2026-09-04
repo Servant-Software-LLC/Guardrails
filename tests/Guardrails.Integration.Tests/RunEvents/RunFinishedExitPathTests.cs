@@ -174,7 +174,20 @@ public sealed class RunFinishedExitPathTests
         MethodInfo method = typeof(RunCommand).GetMethod("ExecuteAsync", BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("RunCommand.ExecuteAsync was not found by reflection.");
 
-        var task = (Task)method.Invoke(null, [plan, observer, null, null, null, null, CancellationToken.None])!;
+        // #596 added a WorktreeModeResolution parameter, and this reflective call did not follow it - the
+        // three tests in this class began failing with TargetParameterCountException in 2-7ms, which is
+        // the tell: an arity mismatch fails at Invoke, before any test logic runs. Reflection is what
+        // makes that possible; a direct call would not have compiled, and the compiler would have named
+        // the change. Passing a real resolution rather than null so the method under test is exercised
+        // with the shape production hands it. SerialByConfiguration: these tests want RunAsync to throw
+        // before any task runs, so no worktree machinery should be wired at all.
+        var serialMode = new WorktreeModeResolution
+        {
+            Enabled = false,
+            Reason = WorktreeModeReason.SerialByConfiguration,
+        };
+
+        var task = (Task)method.Invoke(null, [plan, observer, null, null, null, null, serialMode, CancellationToken.None])!;
 
         try
         {

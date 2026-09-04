@@ -199,6 +199,56 @@ public sealed record DeliverySection
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Detail { get; init; }
+
+    /// <summary>
+    /// Present ONLY when an operator override (<c>--merge-on-success</c>, SSOT §5.3) delivered this run's
+    /// work PAST the autonomous-mode interlock — the machine decision that would otherwise have held it on
+    /// the plan branch (issue #597). Absent (never <c>null</c> noise) on every run where the override was
+    /// not needed, which is nearly all of them.
+    /// <para>
+    /// <b>The gap this closes.</b> The override reached <see cref="Execution.RunReport"/> and the console
+    /// banner and STOPPED there: nothing under <c>Journal/</c> persisted it. Console output is ephemeral
+    /// unless someone thought to redirect it, so a week later a forced delivery was indistinguishable from
+    /// a delivery that was never suppressed at all — for the one action in the system that deliberately
+    /// bypasses a safety interlock. That is this repo's recurring defect class (a mechanism whose evidence
+    /// exists only where nobody kept it) sitting on its own audit trail.
+    /// </para>
+    /// <para>
+    /// It is recorded whenever the override was in force at the delivery attempt, INCLUDING an attempt the
+    /// merge then refused (<see cref="DeliveryOutcome.Conflict"/> and friends): "the operator overrode the
+    /// interlock and the merge then conflicted" is a true and useful thing for a post-mortem to be able to
+    /// read.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForcedDeliveryRecord? ForcedPastDecision { get; init; }
+}
+
+/// <summary>
+/// WHICH machine decision an operator override delivered past (SSOT §7 <c>delivery.forcedPastDecision</c>,
+/// issue #597). Carries the same pair the console banner names — the decision token and the SUBJECT, the
+/// task or wave the machine decided at — plus the boundary, so the entry can be found in the document's own
+/// <c>decisions[]</c> without re-deriving anything from prose.
+/// </summary>
+public sealed record ForcedDeliveryRecord
+{
+    /// <summary>
+    /// The overridden decision's token: <c>proceeded-best-guess</c> or <c>proceeded-unreviewed</c> — the
+    /// two <c>decisions[]</c> tokens that suppress delivery (<c>RunOutcomePolicy.SuppressingDecision</c>).
+    /// </summary>
+    public required string Decision { get; init; }
+
+    /// <summary>
+    /// The unit the decision concerned — the task id or wave dir. This is the half a reader acts on: it is
+    /// what tells them WHERE the machine judged, so they can go and check that judgment after the fact.
+    /// </summary>
+    public required string Subject { get; init; }
+
+    /// <summary>
+    /// The decision's boundary discriminator (<c>task</c> / <c>wave</c> / <c>drift</c>), so the matching
+    /// entry in the document's <c>decisions[]</c> is locatable without guessing.
+    /// </summary>
+    public required string Boundary { get; init; }
 }
 
 /// <summary>

@@ -1,6 +1,8 @@
 using System.CommandLine;
 using System.Diagnostics;
+using System.Text.Json;
 using Guardrails.Cli.Commands;
+using Guardrails.Core.Journal;
 using Guardrails.Core.Review;
 
 namespace Guardrails.Integration.Tests;
@@ -87,6 +89,86 @@ public sealed class RunOutcomeWiringTests
         // "unreviewed wave" flag — absent from CURRENT output (the mid-run decision headline says only "ran
         // UNREVIEWED (N task(s))"), so this FAILS now and goes green when task 10 wires the rendering.
         Assert.Contains("unreviewed wave", output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Issue #597, the POSITIVE half of the same interlock, driven through the REAL <c>run</c> command: with
+    /// <c>--merge-on-success</c> the operator override LIFTS the #361 delivery suppression and the work is
+    /// actually delivered to the user's branch.
+    ///
+    /// <para><b>The defect this pins.</b> SSOT §5.3 has always said the default-OFF is "overridable ONLY by
+    /// an explicit <c>--merge-on-success</c>", but the Scheduler gated on
+    /// <c>plan.Config.MergeOnSuccessExplicit</c> — the RAW MANIFEST KEY — while the flag resolved only into
+    /// <c>Config.MergeOnSuccess</c>. So the flag could not lift the suppression at all, and the
+    /// "*** WORK NOT DELIVERED ***" banner recommended a command that provably could not work: the measured
+    /// re-run re-ran a full terminal gate (~9 minutes) and reprinted the byte-identical banner.</para>
+    ///
+    /// <para>This is the exact fixture the sibling test above runs unflagged — where delivery IS suppressed
+    /// and the user's branch does NOT advance — so the pair is two-sided over one scenario: same plan, one
+    /// flag, opposite delivery outcomes. Against pre-#597 code THIS test fails (HEAD unchanged, the
+    /// undelivered banner present); the sibling keeps passing, which is what proves the flag is the only
+    /// difference.</para>
+    /// </summary>
+    [Fact]
+    public async Task ProceedUnreviewed_Run_WithMergeOnSuccessFlag_DeliversPastTheInterlock_AndSaysSo()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
+
+        string planDir = CreateProceedUnreviewedPlan(repo.RepoPath);
+
+        (int exit, string output) = await RunViaCliAsync(
+            "run", planDir, "--no-ui", "--no-log-server", "--merge-on-success");
+
+        // ── The override FIRED: the verified work reached the user's branch ───────────────────────────
+        Assert.NotEqual(initialHead, repo.HeadSha());       // user branch advanced — delivery happened
+        Assert.Equal(originalBranch, repo.CurrentBranch()); // still on the user's own branch (not detached)
+
+        // ── And the run SAID so rather than presenting a quiet green ──────────────────────────────────
+        // Forcing delivery past a machine decision is an operator override of a safety interlock; it is
+        // legitimate, and it is announced.
+        Assert.Contains("DELIVERY FORCED PAST A MACHINE DECISION", output, StringComparison.Ordinal);
+        Assert.Contains("proceeded-unreviewed", output, StringComparison.Ordinal);
+
+        // ── The undelivered banner must NOT print: nothing is stranded ────────────────────────────────
+        Assert.DoesNotContain("WORK NOT DELIVERED", output, StringComparison.OrdinalIgnoreCase);
+
+        // ── The unreviewed flag is INDELIBLE — delivering does not launder it ─────────────────────────
+        // Exit 5 (ExitCodes.ProceededUnreviewed) and the "ran with N unreviewed waves" flag stand, because
+        // the run really did proceed through a wave no human reviewed. The override changes where the work
+        // LIVES, never what the run IS.
+        Assert.Equal(5, exit);
+        Assert.Contains("unreviewed wave", output, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(ReviewMarker.PathFor(planDir)),
+            "delivering under --merge-on-success must still NOT forge state/guardrails-review.json (§5 floor 3).");
+
+        // ── The DURABLE audit trail (SSOT §7 delivery.forcedPastDecision) ─────────────────────────────
+        // Everything asserted above is console output, which survives only if someone thought to redirect
+        // it. The bypass of a safety interlock must be reconstructable from disk alone — otherwise, a week
+        // later, this run is indistinguishable from one whose delivery was never suppressed. Read the REAL
+        // run.json the REAL run wrote, and require both halves the banner named.
+        // Read the raw bytes, not the typed model: the consumer this record exists for — a post-mortem, or
+        // #496's unattended pipeline — reads run.json without linking this assembly, so the WIRE shape is
+        // what has to be right.
+        using JsonDocument runJson = JsonDocument.Parse(
+            File.ReadAllText(RunJournal.PathFor(planDir)));
+
+        JsonElement delivery = runJson.RootElement.GetProperty("delivery");
+        Assert.True(delivery.GetProperty("delivered").GetBoolean());
+
+        JsonElement forced = delivery.GetProperty("forcedPastDecision");
+        Assert.Equal("proceeded-unreviewed", forced.GetProperty("decision").GetString());
+        Assert.Equal("wave-02-build", forced.GetProperty("subject").GetString());
+        Assert.Equal("wave", forced.GetProperty("boundary").GetString());
+
+        // And the overridden decision is findable in the document's own decisions[] via the recorded
+        // boundary + subject — the record points AT the evidence rather than restating it.
+        Assert.Contains(
+            runJson.RootElement.GetProperty("decisions").EnumerateArray(),
+            d => d.GetProperty("boundary").GetString() == "wave"
+                 && d.GetProperty("subject").GetString() == "wave-02-build"
+                 && d.GetProperty("decision").GetString() == "proceeded-unreviewed");
     }
 
     // ── The #120 driver: the REAL `run` command in-process (never `new Scheduler(...)`) ───────────────

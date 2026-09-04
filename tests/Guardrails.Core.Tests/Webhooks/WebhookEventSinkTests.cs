@@ -964,9 +964,10 @@ public sealed class WebhookEventSinkTests
     {
         // Every teardown budget has a cancelled variant — the pump shutdown grace did not, so a Ctrl-C
         // teardown spent the full 2s grace on top of the 500ms terminal attempt. MEASURED: DisposeAsync
-        // took 2510 ms on a cancelled run, against the ~2 s the whole process is given after SIGINT
-        // (System.CommandLine's default ProcessTerminationTimeout, #603) — and before
-        // logServer.DisposeAsync() and its own 5 s drain have even started.
+        // took 2510 ms on a cancelled run, against the 2 s the whole process was then given after SIGINT
+        // (System.CommandLine's default ProcessTerminationTimeout) — and before logServer.DisposeAsync()
+        // and its own 5 s drain had even started. #603 has since set a deliberate 15 s ceiling, derived
+        // partly FROM these budgets, so keeping them frugal is what keeps that ceiling honest.
         //
         // The production trigger needs no hostile fake: .NET's DNS resolution is not reliably
         // cancellable, so `--on-event https://does-not-resolve/` plus Ctrl-C parks the pump inside

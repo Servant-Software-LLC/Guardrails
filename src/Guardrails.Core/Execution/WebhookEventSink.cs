@@ -250,8 +250,11 @@ public sealed class WebhookEventSink : IAsyncDisposable
             // never returns, until this bounded grace period gives up waiting for it. The grace has a
             // CANCELLED variant like every other budget here (§5.2): .NET's DNS resolution is not
             // reliably cancellable, so an unresolvable endpoint parks the pump for the WHOLE grace, and
-            // on Ctrl-C the entire process gets about two seconds (#603) — which logServer.DisposeAsync
-            // and its own 5 s drain must also fit inside, AFTER this returns.
+            // and on Ctrl-C the whole process unwind is bounded by a deliberate ceiling (15 s, set by
+            // #603 in CliInvocation) — which logServer.DisposeAsync and its own 5 s drain must also fit
+            // inside, AFTER this returns. That ceiling was 2 s by library default when this variant was
+            // added, which is why the cancelled budgets here are deliberately frugal and stay that way:
+            // the SSOT rule is that raising any teardown budget means raising the ceiling with it.
             _pumpCts.Cancel();
             Task pumpWait = await Task.WhenAny(_pumpTask, Task.Delay(pumpGrace)).ConfigureAwait(false);
             bool pumpStoppedCleanly = ReferenceEquals(pumpWait, _pumpTask);
@@ -651,9 +654,11 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// <summary>
     /// Pump shutdown grace when the run was cancelled (§3.3 step 4, §5.2). Every other budget here has
     /// a cancelled variant and this one did not, so a Ctrl-C teardown spent the FULL 2 s grace on top
-    /// of the 500 ms terminal attempt — measured at 2510 ms — against the ~2 s the whole process is
-    /// given after SIGINT (#603), and before <c>logServer.DisposeAsync()</c> and its own 5 s drain even
-    /// begin. The production trigger needs no hostile fake: .NET's DNS resolution is not reliably
+    /// of the 500 ms terminal attempt — measured at 2510 ms — against the 2 s the whole process was
+    /// given after SIGINT by System.CommandLine's default, and before <c>logServer.DisposeAsync()</c> and
+    /// its own 5 s drain even begin. #603 has since replaced that default with a derived 15 s ceiling, but
+    /// this variant stays: the ceiling was sized ASSUMING these budgets are frugal, and the 750 ms
+    /// cancelled sum is one of its inputs. The production trigger needs no hostile fake: .NET's DNS resolution is not reliably
     /// cancellable, so <c>--on-event https://does-not-resolve/</c> plus Ctrl-C parks the pump for the
     /// whole grace.
     /// </summary>

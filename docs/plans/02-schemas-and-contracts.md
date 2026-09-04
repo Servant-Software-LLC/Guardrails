@@ -424,6 +424,22 @@ Two invariants govern the folder, and a future change must honour both:
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
+- **Worktree mode is resolved ONCE PER RUN and handed down (issue #596).** The predicate is
+  `maxParallelism > 1` AND the workspace is a git working tree, and `SchedulerFactory.ResolveWorktreeMode`
+  is its single spelling: the CLI folds it at run start and threads the result to the provider wiring, the
+  Windows junction setup, the MAX_PATH preflight, the end-of-run reclaim, the effective `maxParallelism`
+  stamped into `run.json`'s `environment`, the wave-brief prompt gate, and the plan-preflight / terminal-gate
+  workspace. It was previously re-derived at each of those from a fresh `git rev-parse` subprocess, so two
+  evaluations could disagree **within one run**, in both directions, with nothing on stdout, no observer
+  event, and no journal field — a run could wire worktree mode while journaling itself serial.
+  **An unavailable git is an unknown, not a "no".** The probe is a tri-state: git ran and answered
+  (`true`/`false`), or git could not be RUN at all. The third case keeps the mode the plan REQUESTED and is
+  announced loudly at run start, rather than being read as "not a git repository" and silently demoting a
+  parallel run to serial. Two reasons: GR2015 already certified the workspace as a git repository at
+  validation using a subprocess-free `.git` ancestry walk, so a failure to *spawn* git is no evidence about
+  the workspace; and if git really is unavailable the run halts loudly when it creates the plan branch (the
+  #150 honest-halt `Abort`), which beats a run that quietly changes its own isolation model. A serial plan
+  (`maxParallelism <= 1`) never spawns the probe at all.
 - `transientPauseBudgetSeconds` (default `14400`, i.e. 4h — a long unattended/overnight run must ride
   out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
   cumulative wall-clock a single task may spend
@@ -2004,6 +2020,18 @@ forcing delivery of machine-judged work); neither a `guardrails.json` `mergeOnSu
 delivered-by-default posture silently re-enables it. Delivery is thus never automatic once a best-guess or
 an unreviewed wave shaped the result.
 
+**The override's mechanism is pinned (issue #597).** The Scheduler's gate reads
+`RunConfig.MergeOnSuccessForcedByOperator` — a field set **only** by the CLI `--merge-on-success` flag,
+which no loader writes and no manifest key can reach. It is deliberately NOT `MergeOnSuccessExplicit` (the
+raw `guardrails.json` value, kept for the one-time delivered-by-default notice): reading the manifest key
+inverted this contract in **both** directions — the flag resolved only into `Config.MergeOnSuccess` and so
+could never lift the suppression, while a `"mergeOnSuccess": true` committed to a repo months earlier
+silently could. Measured on a real run: a wholly-green plan-35 run printed the undelivered banner
+recommending `--merge-on-success`, and the re-run with that exact flag re-ran the whole terminal gate
+(~9 minutes) and printed the byte-identical banner. When the override DOES fire, the run says so —
+`RunReport.DeliveryForcedPastDecision` drives a loud `*** DELIVERY FORCED PAST A MACHINE DECISION ***`
+notice naming the decision and its subject, so bypassing a safety interlock is never a quiet green.
+
 > **BREAKING DEFAULT (#340, no CHANGELOG in-repo — recorded here + in `docs/plans/13-merge-on-success-default.md`).**
 > `mergeOnSuccess` flipped from **OFF → ON**: on upgrade, an existing plan that OMITS the key now delivers to
 > the user's branch on a wholly-green run instead of leaving the work on `guardrails/<plan-name>`. Two
@@ -2061,6 +2089,19 @@ passed — a bannered block naming the exact plan branch, the command to deliver
 a manual merge), and the `--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0
 (the warning is a safety notice, not a failure); a delivered run, a non-green run, and a serial-mode run
 print no such warning.
+
+**The warning has TWO cases and must name the right one (issue #597).** `WhollyGreenButUndelivered` covers
+two causes with two different operator responses, and the banner used to render only the first: (a)
+`mergeOnSuccess` genuinely off (config `false` / `--no-merge-on-success`) — the text above; (b) the
+autonomous-mode interlock, where `mergeOnSuccess` is **ON** and a recorded `proceeded-best-guess` /
+`proceeded-unreviewed` held the work back. `RunReport.DeliverySuppressingDecision` (the entry from
+`RunOutcomePolicy.SuppressingDecision`) discriminates them, and case (b) NAMES the decision, its boundary
+and its **subject** — the task or wave the machine decided at — because the operator's first job is to judge
+whether that decision is stale (in the measured case it was: the best-guess belonged to an attempt that
+later halted, and the task was subsequently re-run to a genuine green). Saying "mergeOnSuccess is off" for
+case (b) sends a reader to `guardrails.json`, then to the default in source, then to the release history —
+three dead ends before the real cause, and unreachable at all without source access. The same split applies
+to the durable `delivery.reason` (§8), which recorded the identical wrong cause.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
@@ -2506,18 +2547,41 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
     // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
                                       // (branch-moved, #588) the branch pinned at start + the current HEAD
+    // "forcedPastDecision": {        // #597 — present ONLY when --merge-on-success overrode the #361
+    //   "decision": "proceeded-best-guess",   // autonomous-mode interlock. decision = the suppressing
+    //   "subject": "12-implement-events-endpoint",  // token; subject = the task/wave the machine judged
+    //   "boundary": "task"           // at; boundary + subject locate the entry in decisions[]
+    // }
   }
 }
 ```
 
-**`delivery` — the four reasons nothing was attempted are DISTINGUISHABLE, and that is the point (#542).**
-`outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in three of the
-four cases, holds nothing they need — and in the fourth holds everything. So `reason` separates: (a)
-`mergeOnSuccess` resolved off on a wholly-green run — the case that **strands work**, and the only one that
-sets `planBranch`; (b) the terminal gate did not pass; (c) the run was not wholly green; (d) serial mode,
-where there is no separate plan branch and the work is already in the checkout. `planBranch` is written
-**only** for (a): naming a branch in the serial case would send an operator to merge something that does not
-exist, which is worse than the silence this closed. Written once at the end of the run, after delivery has
+**`delivery` — the reasons nothing was attempted are DISTINGUISHABLE, and that is the point (#542).**
+`outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in most cases,
+holds nothing they need — and in one holds everything. So `reason` separates: (a) `mergeOnSuccess` resolved
+off on a wholly-green run; (a′) delivery suppressed by the **autonomous-mode interlock** on a wholly-green
+run with `mergeOnSuccess` ON, naming the `proceeded-best-guess` / `proceeded-unreviewed` decision and its
+subject (issue #597 — writing (a)'s wording here recorded a cause that was flatly untrue, in the one file an
+unattended pipeline can read); (b) the terminal gate did not pass; (c) the run was not wholly green; (d)
+serial mode, where there is no separate plan branch and the work is already in the checkout. (a) and (a′)
+are the cases that **strand work**, and the only ones that set `planBranch`; naming a branch in the serial
+case would send an operator to merge something that does not exist, which is worse than the silence this
+closed.
+
+**`delivery.forcedPastDecision` — the audit trail for the one action that bypasses an interlock (#597).**
+When `--merge-on-success` overrides the §5.3 autonomous-mode suppression, the object records **that it
+fired** and **which decision it overrode**: `decision` (the `proceeded-best-guess` / `proceeded-unreviewed`
+token), `subject` (the task or wave the machine judged at — the half a reader acts on), and `boundary`, so
+the matching entry in this document's own `decisions[]` is locatable without re-deriving it from `reason`'s
+prose. **Absent** — never `null` noise — on every run where no override fired, which is nearly all of them;
+a present-but-empty key would make "was this run forced?" ambiguous to exactly the reader it exists for.
+It is written whenever the override was in force **at the delivery attempt**, including an attempt the merge
+then refused (`conflict` / `dirty-working-tree` / `hook-rejected`): "the operator overrode the interlock and
+the merge then conflicted" is a true and useful thing for a post-mortem to read. Before this the override
+reached `RunReport` and the console banner and stopped there — and console output is ephemeral unless
+someone thought to redirect it, so a week later a forced delivery was indistinguishable from a delivery that
+was never suppressed at all. That is this repo's recurring defect class (a mechanism whose evidence exists
+only where nobody kept it) sitting on its own audit trail. Written once at the end of the run, after delivery has
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.
@@ -3980,14 +4044,33 @@ regardless of the circuit or the backlog, spends one further attempt (up to 10 s
 enqueued**, which on every normal path is `run-finished`. It then waits up to **2 s** for the delivery
 pump to return before disposing the transport, so worst-case teardown is **~22 s**.
 **On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely, the terminal attempt is bounded
-at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because the CLI host allows the whole
-process about **two seconds** to unwind after SIGINT (System.CommandLine's default
-`ProcessTerminationTimeout`), which the log server's own shutdown drain (§12.2) must also fit inside,
-*after* this one. Every one of those three budgets has a cancelled variant for that reason, the pump
+at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because it is spent *before* the log
+server's own shutdown drain (§12.2), and both have to fit inside **the process termination ceiling**
+below. Every one of those three budgets has a cancelled variant for that reason, the pump
 wait included: it is a last resort against a transport that never returns rather than a scheduled
 cost, but .NET's DNS resolution is not reliably cancellable, so an unresolvable endpoint parks the
 pump for the whole of it. So on Ctrl-C, delivery of `run-finished` is a single best-effort attempt
 and nothing more; as everywhere else here, **the file is the record.**
+
+**The process termination ceiling — 15 s (issue #603).** After SIGINT/SIGTERM, System.CommandLine
+cancels the invocation token and then gives the whole invocation this long to unwind before abandoning
+it and returning `130`. It is set **deliberately**, in `CliInvocation` (`src/Guardrails.Cli/`), and
+passed from `Program.cs`; supplying no `InvocationConfiguration` does not mean "unbounded", it means
+the library's default of **2 s**, under which the log server's 5 s drain (§12.2) alone could not
+finish — so the terminal-row delivery both layers exist to guarantee was structurally unable to
+complete on the one path an operator invokes deliberately.
+
+It is a **ceiling, not a delay**: teardown that finishes in 40 ms still exits in 40 ms, which is what
+makes one number right for `run` and for `plan-hash` alike. Its lower bound is arithmetic — the bounded
+budgets a cancelled run spends **in series** (this section's ~750 ms, then §12.2's 5 s drain and 250 ms
+linger = **6 s**), with the remainder reserved for what no constant bounds: the scheduler's unwind
+(a process-tree kill and reader drain per in-flight task), the journal write, and the worktree exit
+sweep. Its upper bound is a person — past roughly this long an operator concludes the process is hung
+and reaches for a harder kill, and a ceiling nobody waits out delivers nothing.
+
+**The rule that follows: raising any teardown budget means raising this ceiling with it.** A budget
+that no longer fits is not a slower shutdown, it is a silently truncated one. The arithmetic is pinned
+by `ProcessTerminationBudgetTests` rather than left to a comment.
 
 **Every drop is recorded, in ONE place.** A counts line prints at the end of every run that used
 `--on-event` — **including when nothing was dropped**, because silence on success is the defect
@@ -6638,6 +6721,18 @@ file (§8.1). The same rows can also be **pushed** rather than served: `guardrai
 <url>` POSTs each one to an operator-supplied endpoint (§8.3). That is delivery of this same
 projection, not a second stream — and it is the one path on which these rows leave the machine.
 
+**The two budgets that final read depends on**, and what they must fit inside. Disposing the server
+first drains every in-flight request — chiefly a still-parked `/events` stream — for up to **5 s**, so
+that final read-and-flush happens *before* the listener is touched at all; it then returns, and the
+listener is actually stopped **250 ms** later. That linger is not decoration: stopping the listener
+resets every connection the shared request queue still tracks, including one whose response completed
+gracefully, discarding whatever the peer received but has not yet read — and the subscriber can only
+issue that read once dispose has returned. Both budgets are spent after §8.3's and must fit inside the
+process termination ceiling (§8.3), which before #603 they did not. **The linger runs on a foreground
+thread**, for the same reason: it is scheduled *after* dispose returns, and dispose is the last thing a
+run does, so on the thread pool the process would routinely exit before it ran — and process exit
+resets the subscriber's connection exactly as hard as stopping the listener would have.
+
 The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
 / `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —
 the live server no longer renders one (issue #143).
@@ -7258,8 +7353,10 @@ unsatisfiable-guardrail family and #459
 (`UnsatisfiableGuardrailFloor` / `GuardrailScriptDoesNotParse` / `GuardrailRequiresForbiddenToken` /
 `BannedPatternScanTimedOut` / `WaveIntegrationScopeInert`, §4.6/§4.7), **`GR2062` by #477's
 `IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
-(`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), so an unrelated new code should take
-**`GR2071`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+(`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
+`PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
+the first code on this ladder that reports the TOOL rather than the plan), so an unrelated new code should
+take **`GR2073`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
@@ -7599,3 +7696,100 @@ two mechanisms for one decision is how a machine ends up opted out of one path a
 worse than no opt-out because the operator believes collection is off.
 
 `guardrails telemetry purge` removes every row under the corpus root, and is safe on an empty corpus.
+
+## 16. Check-set provenance — what `validate` says about the binary that ran it (issue #564)
+
+*Implementation: `Guardrails.Core.Loading.CheckSetProbe` + `ValidateCommand`. Diagnostic:
+**`GR2072` `CheckSetPredatesSourceTree`**, WARNING.*
+
+Every other section of this document constrains a PLAN. This one constrains the TOOL, because the tool's
+silence was doing more damage than anything on the plan side:
+
+> When the installed `guardrails` is older than the checks in the working tree, `validate` reports **clean**
+> and silently skips every check the binary predates.
+
+**The measured defect.** `GR2068`/`GR2069` (§9.6, handoff path coverage) merged to master at `9bc285c`. The
+installed tool was `1.12.0`, tagged before that. On `docs/plans/28-local-inference-runner`: **4 findings from
+a build of master, 0 from the installed tool** — same plan, same command, same exit code, nothing said either
+way. It was caught only because a verification agent string-searched the installed DLL for `GR2068` before
+trusting the zero, which is not a repeatable defence. This is the worst failure shape the product has, a gate
+reporting clean because it does not know about the check, occurring in Guardrails.
+
+### 16.1 The check-set line — printed on EVERY `validate`
+
+`validate` prints one line immediately **above** its verdict (`OK:` / `FAILED:`), on every run, clean or not:
+
+```
+Check set: guardrails 1.16.0, 77 diagnostic codes (highest GR2072); <comparison clause>
+```
+
+Three facts that cost nothing and are always true — which binary ran, how many codes it carries, and the
+highest code it knows — so two runs are comparable at a glance even where no comparison can be made for the
+reader. The verdict stays the **last** line, because callers tail it.
+
+### 16.2 The comparison — self-hosting only, and labelled as such
+
+The comparison needs a source of truth reachable **without a network call**, and the only one that exists is
+this repository's own `DiagnosticCodes.cs`. So `validate` walks up from the **plan folder** and then from the
+**working directory**, looking for `src/Guardrails.Core/Loading/DiagnosticCodes.cs`. That single path is both
+the checkout MARKER and the DATA, so detection cannot succeed where the data is absent and no other
+repository can produce a false positive. A git worktree of this repo carries the file and is correctly
+treated as the tree being worked on.
+
+Found, it is parsed for `public const string <Name> = "GRxxxx";` declarations — **anchored at line start on
+the declaration form**, so a doc comment, a commented-out line, or a code discussed only in prose is not
+counted. That distinction is load-bearing: `GR2054`, `GR2061` and `GR2070` are RESERVED BY NAME in design
+documents and appear in that file's prose only; counting one as declared would make every released binary
+look permanently behind its own tree, i.e. a warning that always fires, i.e. no warning at all (#229).
+
+The running binary's side is **reflected** from the assembly's `DiagnosticCodes` metadata, never hand-listed:
+a newly authored code joins the census with no second edit to forget, and forgetting it would reintroduce the
+very silence being fixed.
+
+**Both sides are "codes DECLARED", not "checks IMPLEMENTED".** A code declared but not yet wired counts on
+both sides and cancels out, so the *difference* is sound; the absolute count is worded as "diagnostic codes"
+because that is exactly what it is.
+
+Five verdicts, and only one of them warns:
+
+| Verdict | Meaning | GR2072 |
+|---|---|---|
+| `NotCompared` | No checkout found. **Every ordinary user of the released tool.** | no |
+| `SourceUnreadable` | A checkout was found but its `DiagnosticCodes.cs` could not be read, or parsed to **zero** codes | no |
+| `Matches` | Binary and tree declare the same set | no |
+| `BinaryBehindSource` | The tree declares codes the binary lacks — **the #564 shape** | **yes** |
+| `BinaryAheadOfSource` | The binary carries codes the tree lacks, and lacks none of the tree's. Nothing skipped | no |
+
+`SourceUnreadable` is deliberately **not** folded into `NotCompared` or `Matches`. A scanner that degrades
+silently into "agrees" is this issue's own defect wearing the fix's clothes, so a found-but-unparseable source
+gets its own verdict and its own words. `NotCompared` likewise says out loud that no comparison was made
+rather than letting no-news read as good-news.
+
+### 16.3 Warn, never block
+
+`GR2072` is a **WARNING and must stay one**, and `validate`'s exit code is untouched by it in both
+directions: a stale binary neither fails a clean plan nor rescues a broken one. Running an older tool against
+a newer tree is legitimate — a release build, a CI pinned to a version, a contributor who has not updated, a
+deliberate reproduction against a shipped binary — and refusing to validate would break all of those and be a
+worse cure than the disease. **The goal is that a green `validate` can be trusted *or discounted*, not that
+it becomes an error.**
+
+The warning names the version, the count, the source root, and **every missing code with its constant name**
+(truncated past `CheckSetReport.MaxEnumeratedCodes` = 8 with a count), because naming the codes is what the
+verification agent did by hand and is the most actionable form. It carries the remedy: rebuild from source,
+or `dotnet tool update -g ServantSoftware.Guardrails`.
+
+### 16.4 What this does NOT cover
+
+Stated plainly, because a partial fix that reads as complete is the same defect again:
+
+- **`validate` only.** `run`, `plan`, `graph`, `breakdown`, `status` and `mark-reviewed` print no check-set
+  line and emit no `GR2072`, even though several of them validate.
+- **The self-hosting case only.** Outside a Guardrails checkout there is nothing to compare against without a
+  network call, which is out of scope by design. Those runs get the §16.1 line and the explicit
+  `NotCompared` clause, and nothing more.
+- **Codes, not behaviour.** Two binaries declaring the same codes may still implement a check *differently* —
+  a tightened heuristic, a widened extractor. The comparison catches an ABSENT check, which is the silent
+  case; it does not catch a changed one.
+- **No version, tag, or `git describe` comparison.** The binary's version string is reported, never compared
+  against the tree's — a version says nothing about which checks shipped in it, which is the question.

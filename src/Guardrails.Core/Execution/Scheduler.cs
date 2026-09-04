@@ -1129,17 +1129,24 @@ public sealed class Scheduler
         // #361 Phase 4 / doc 12 §1 hard rule (#340): a run whose result was SHAPED BY A MACHINE DECISION
         // (a proceeded-best-guess or proceeded-unreviewed recorded in decisions[]) DEFAULTS delivery OFF —
         // the verified work stays on the plan branch, never auto-delivered — UNLESS the operator EXPLICITLY
-        // forced delivery on (guardrails.json "mergeOnSuccess": true, i.e. MergeOnSuccessExplicit == true;
-        // the CLI --merge-on-success/--no-merge-on-success already resolved into plan.Config.MergeOnSuccess
-        // by RunCommand, and an explicit-ON manifest key is the override signal that reaches the Scheduler).
-        // SuppressesDelivery is the PURE RunOutcomePolicy call (task 03) over the run's recorded decisions[];
-        // the decisions come from the real RunJournal — a unit-test fake journal records none, so nothing is
-        // suppressed there.
+        // forced delivery on. SuppressingDecision is the PURE RunOutcomePolicy call (task 03) over the run's
+        // recorded decisions[]; the decisions come from the real RunJournal — a unit-test fake journal
+        // records none, so nothing is suppressed there.
+        //
+        // #597: the override is the CLI --merge-on-success flag, which is what SSOT §5.3 has always said
+        // ("overridable ONLY by an explicit --merge-on-success; neither a guardrails.json
+        // 'mergeOnSuccess': true nor the #340 delivered-by-default posture silently re-enables it"). This
+        // gate used to read MergeOnSuccessExplicit — the RAW MANIFEST KEY — which inverted the contract in
+        // both directions: the flag resolved only into Config.MergeOnSuccess and so could never lift the
+        // suppression (the banner recommended a command that provably could not work), while a
+        // 'mergeOnSuccess': true committed to the repo long ago silently could. MergeOnSuccessForcedByOperator
+        // is set ONLY by the flag and is unreachable from any manifest, so the interlock is now BOTH liftable
+        // by the documented operator override and un-liftable by a file.
         IReadOnlyList<DecisionEntry> decisions =
             (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
-        bool operatorForcedDelivery = plan.Config.MergeOnSuccessExplicit == true;
-        bool deliverySuppressedByDecision =
-            RunOutcomePolicy.SuppressesDelivery(decisions) && !operatorForcedDelivery;
+        DecisionEntry? suppressingDecision = RunOutcomePolicy.SuppressingDecision(decisions);
+        bool operatorForcedDelivery = plan.Config.MergeOnSuccessForcedByOperator;
+        bool deliverySuppressedByDecision = suppressingDecision is not null && !operatorForcedDelivery;
 
         // The effective delivery gate: mergeOnSuccess enabled AND not suppressed by a machine decision.
         bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
@@ -1160,6 +1167,11 @@ public sealed class Scheduler
         // CompleteDeferredDelivery once — and only once — the gate has PASSED.
         bool terminalGateVerdictPending = plan.PlanGuardrails.Count > 0;
         bool deliverable = report.AllSucceeded && deliver && _worktreeProvider != null && integ != null;
+
+        // #597: the override only "fired" when it actually unlocked a delivery that the interlock would
+        // otherwise have held. Flagging it on a run that had nothing to deliver would announce a bypass
+        // that never happened.
+        bool deliveryForcedPastDecision = suppressingDecision is not null && operatorForcedDelivery && deliverable;
 
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
@@ -1220,6 +1232,8 @@ public sealed class Scheduler
             MergeOnSuccessDetail = mergeDetail,
             DeliveredToBranch = deliveredToBranch,
             WhollyGreenButUndelivered = whollyGreenButUndelivered,
+            DeliverySuppressingDecision = suppressingDecision,
+            DeliveryForcedPastDecision = deliveryForcedPastDecision,
             DeliveryPendingTerminalGate = deliveryPendingTerminalGate,
             UnreviewedWaveCount = RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions)
         };

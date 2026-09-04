@@ -53,7 +53,7 @@ public static class RunCommand
 
         var mergeOnSuccessOption = new Option<bool>("--merge-on-success")
         {
-            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json (delivery is now the DEFAULT — this only matters to override a config 'mergeOnSuccess: false')."
+            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json, AND is the operator override that delivers work a machine decision (proceeded-best-guess / proceeded-unreviewed) would otherwise hold back on the plan branch (#361/#597). Delivery is the DEFAULT, so this flag matters only for those two cases."
         };
 
         var noMergeOnSuccessOption = new Option<bool>("--no-merge-on-success")
@@ -262,9 +262,27 @@ public static class RunCommand
         bool deliveryFromDefaultOnly =
             mergeOnSuccessOverride is null && probe.Plan.Config.MergeOnSuccessExplicit is null;
 
-        if (mergeOnSuccessOverride is { } mergeForced && probe.Plan.Config.MergeOnSuccess != mergeForced)
+        if (mergeOnSuccessOverride is { } mergeForced)
         {
-            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = mergeForced } } };
+            probe = probe with
+            {
+                Plan = probe.Plan with
+                {
+                    Config = probe.Plan.Config with
+                    {
+                        MergeOnSuccess = mergeForced,
+
+                        // #597: --merge-on-success is ALSO the operator override of the autonomous-mode
+                        // delivery interlock (SSOT §5.3), and until now it reached only the config layer.
+                        // A run suppressed by a proceeded-best-guess therefore stayed suppressed no matter
+                        // how the flag was typed — while the banner recommended exactly that command. Set
+                        // the dedicated operator-override field so the Scheduler's gate can honour it.
+                        // (--no-merge-on-success leaves it false: forcing delivery OFF needs no override of
+                        // an interlock that already holds delivery back.)
+                        MergeOnSuccessForcedByOperator = mergeForced
+                    }
+                }
+            };
         }
 
         // --autonomy <value> sets the unified autonomy policy for this run (SSOT §2.1), overriding
@@ -399,15 +417,29 @@ public static class RunCommand
         // recoverable exit by `junctionLifetime` (the method-scoped `using` below covers ALL return/throw
         // paths), and re-allocated FRESH each run — a resume takes any free .a..z letter, since git
         // canonicalized the link away and the deterministic segment subpath resolves the same tree under it.
-        bool worktreeMode = SchedulerFactory.WouldUseWorktreeMode(probe.Plan);
+        // Issue #596: worktree mode is resolved ONCE PER RUN, here, and threaded to every consumer —
+        // the junction setup, the Windows MAX_PATH preflight, the journaled effective maxParallelism, the
+        // plan-preflight / terminal-gate workspace, the wave-brief prompt gate, SchedulerFactory's provider
+        // wiring, and the end-of-run reclaim. It used to be re-derived at each of those from a fresh git
+        // subprocess whose every failure collapsed to `false`, so two evaluations could disagree WITHIN one
+        // run in both directions and say nothing: a run could wire worktree mode while journaling itself
+        // serial. One fold, handed down (the D22a discipline).
+        WorktreeModeResolution worktreeResolution = SchedulerFactory.ResolveWorktreeMode(probe.Plan);
+        bool worktreeMode = worktreeResolution.Enabled;
+
+        // #596's visibility half: git could not be RUN, so nothing here is an answer FROM git. The run keeps
+        // the mode the plan asked for (see ResolveWorktreeMode for why that is the honest choice) — but an
+        // operator must never learn from a post-mortem that the probe silently decided their isolation model.
+        RenderGitProbeFailureWarning(worktreeResolution, probe.Plan, io.Out);
 
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
         // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):
         // a stamp placed after the second load would be silently overwritten by a document read before the
-        // stamp existed. MaxParallelism records the EFFECTIVE concurrency, not the configured one — derived
-        // from the same WouldUseWorktreeMode predicate the Scheduler's own no-provider clamp is keyed on
-        // (ParallelismClampedNoProvider), so the two can never disagree.
+        // stamp existed. MaxParallelism records the EFFECTIVE concurrency, not the configured one — read
+        // from the SINGLE worktree-mode resolution above, which is also what SchedulerFactory wires the
+        // provider on, so the journaled figure and the Scheduler's own no-provider clamp
+        // (ParallelismClampedNoProvider) can never disagree (#596).
         journal.RecordEnvironment(RunEnvironmentProbe.Probe(
             maxParallelism: worktreeMode ? probe.Plan.Config.MaxParallelism : 1,
             harnessVersion: GuardrailsVersion.Current,
@@ -453,7 +485,7 @@ public static class RunCommand
         }
 
         bool preflightsPassed = await PlanPreflightPhase
-            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun)
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution)
             .ConfigureAwait(false);
 
         if (hasPlanPreflights && preflightsPassed)
@@ -530,7 +562,7 @@ public static class RunCommand
         if (probe.Plan.IsWaved && !probe.Plan.Config.AutoBreakdown
             && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
         {
-            breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io);
+            breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io, worktreeResolution);
         }
 
         // The log server's ONLY gate is --no-log-server (issue #552). It used to also require `live`,
@@ -636,7 +668,7 @@ public static class RunCommand
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                         probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
                     diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -645,7 +677,7 @@ public static class RunCommand
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
                     PrintDiagramLink(logsRoot, io);
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
 
                 // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -693,7 +725,7 @@ public static class RunCommand
                         ? null
                         : !report.AllSucceeded
                           || await PlanGuardrailPhase
-                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution)
                               .ConfigureAwait(false);
 
                     if (willEvaluateTerminalGate)
@@ -786,6 +818,13 @@ public static class RunCommand
                     // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                     // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
                     RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
+
+                    // Issue #597 complement: the SAME interlock, overridden. --merge-on-success is the
+                    // documented operator override of #361's delivery suppression, and using it delivers
+                    // machine-decided work to the user's branch — a fact that must be stated, never a quiet
+                    // green. Never fires together with the warning above (that requires delivery held back;
+                    // this requires it went ahead).
+                    RenderForcedDeliveryNotice(report, io.Out);
 
                     // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
                     // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
@@ -1614,7 +1653,8 @@ public static class RunCommand
     /// worktree = no materialized upstream to break down against).
     /// </summary>
     private static IReadOnlyDictionary<string, bool>? ConfirmWaveBreakdownIfInteractive(
-        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
+        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io,
+        WorktreeModeResolution worktreeMode)
     {
         // The upcoming checkpoint = the FIRST not-completed wave with an empty tasks/ folder (skip completed
         // waves and authored-but-not-completed waves, which run before any later stub). This is the wave the
@@ -1641,7 +1681,7 @@ public static class RunCommand
         }
 
         bool briefPresent = File.Exists(Path.Combine(checkpoint.Directory, Core.Model.WaveNode.BriefFileName));
-        if (!briefPresent || !SchedulerFactory.WouldUseWorktreeMode(plan) || Console.IsInputRedirected)
+        if (!briefPresent || !worktreeMode.Enabled || Console.IsInputRedirected)
         {
             return null; // non-eligible or non-interactive → the Scheduler honest-halts per policy.
         }
@@ -1967,6 +2007,22 @@ public static class RunCommand
         string planBranch = "guardrails/" + Path.GetFileName(
             planDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
+        // Issue #597: the DURABLE trace of an operator override of the autonomous-mode delivery interlock.
+        // The override reached the RunReport and the console banner and stopped there — nothing under
+        // Journal/ persisted it — so a week later a forced delivery was indistinguishable from one that was
+        // never suppressed, for the one action in the system that deliberately bypasses a safety interlock.
+        // Computed once and attached to BOTH return paths below: the override is equally a fact when the
+        // merge it unlocked was then refused (conflict / dirty tree / hook).
+        ForcedDeliveryRecord? forcedPastDecision =
+            report.DeliveryForcedPastDecision && report.DeliverySuppressingDecision is { } overridden
+                ? new ForcedDeliveryRecord
+                {
+                    Decision = overridden.Decision,
+                    Subject = overridden.Subject,
+                    Boundary = overridden.Boundary,
+                }
+                : null;
+
         // The merge-back RAN: its own result is the whole story, success or refusal.
         if (report.MergeOnSuccessOutcome is { } outcome)
         {
@@ -1993,6 +2049,7 @@ public static class RunCommand
                 PlanBranch = delivered ? null : planBranch,
                 DeliveredToBranch = report.DeliveredToBranch,
                 Detail = report.MergeOnSuccessDetail,
+                ForcedPastDecision = forcedPastDecision,
             };
         }
 
@@ -2005,9 +2062,21 @@ public static class RunCommand
         // document it is written into. #542 exists so an unattended pipeline with no console has a
         // machine-readable answer, and a wrong one is worse than none. It names no plan branch, for the same
         // reason serial mode does not: in serial mode there is no plan branch to send anyone to.
+        // Issue #597: reason (a) splits in two. The durable record used to say "mergeOnSuccess resolved off"
+        // for a run where mergeOnSuccess was ON and the autonomous-mode interlock (#361) held the work —
+        // a wrong cause written into the one file an unattended pipeline (#496) can read, which is worse
+        // than none. Name the decision AND the task it came from, so the record answers the question the
+        // console banner answers.
         string reason = report.WhollyGreenButUndelivered
-            ? $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
-              + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
+            ? report.DeliverySuppressingDecision is { } suppressing
+                ? $"delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
+                  + $"'{suppressing.Decision}' at '{suppressing.Subject}' ({suppressing.Boundary} boundary), so "
+                  + $"machine-decided work is not auto-delivered; mergeOnSuccess itself is ON. The verified work "
+                  + $"is sitting on '{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' "
+                  + $"destroys it. Judge the decision (decisions[]), then re-run with --merge-on-success to "
+                  + $"override, or merge the branch by hand"
+                : $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
+                  + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
             : report.ExecutedDefinitionDivergence is { } divergence
                 ? $"{divergence.Tasks.Count} task(s) settled against a definition that had already moved on "
                   + "disk, so delivery was blocked (issue #556); every task succeeded and its verified work "
@@ -2026,6 +2095,7 @@ public static class RunCommand
             Outcome = DeliveryOutcome.NotAttempted,
             Reason = reason,
             PlanBranch = report.WhollyGreenButUndelivered ? planBranch : null,
+            ForcedPastDecision = forcedPastDecision,
         };
     }
 
@@ -2045,13 +2115,72 @@ public static class RunCommand
         output.WriteLine();
         output.WriteLine(rule);
         output.WriteLine("*** WORK NOT DELIVERED ***");
-        output.WriteLine(
-            "mergeOnSuccess is off — this fully-green run's verified work is sitting on branch");
-        output.WriteLine($"'{planBranch}', NOT on your checkout.");
-        output.WriteLine(
-            $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
-        output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+
+        // Issue #597: TWO causes, two operator responses. Naming the wrong one cost a measured operator
+        // three dead ends (guardrails.json → the default in source → whether the default had changed since
+        // the tag) before they found RunOutcomePolicy.SuppressesDelivery — a search someone without source
+        // access cannot even start.
+        if (report.DeliverySuppressingDecision is { } suppressing)
+        {
+            output.WriteLine(
+                "mergeOnSuccess is ON. Delivery was held back by the autonomous-mode interlock (#361):");
+            output.WriteLine(
+                $"this run recorded '{suppressing.Decision}' at '{suppressing.Subject}' ({suppressing.Boundary} boundary),");
+            output.WriteLine(
+                "so machine-decided work is never auto-delivered. The verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            output.WriteLine(
+                "JUDGE THE DECISION FIRST — run.json → decisions[]. A best-guess that a later attempt");
+            output.WriteLine(
+                "superseded is stale; one that shaped the result you are looking at is not. Then either:");
+            output.WriteLine(
+                $"  guardrails run {planName} --merge-on-success   (an explicit override of the interlock)");
+            output.WriteLine($"  or merge '{planBranch}' into your branch yourself.");
+        }
+        else
+        {
+            output.WriteLine(
+                "mergeOnSuccess is off — this fully-green run's verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            output.WriteLine(
+                $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
+            output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+        }
+
         output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
+        output.WriteLine(rule);
+    }
+
+    /// <summary>
+    /// Render the loud end-of-run notice for a delivery that an OPERATOR OVERRIDE pushed past the
+    /// autonomous-mode interlock (issue #597; SSOT §5.3). <c>--merge-on-success</c> is the documented
+    /// override of that interlock, and using it is legitimate — but it delivered work a machine decision had
+    /// shaped, so the run must SAY so rather than presenting a quiet green. Silent for every run where the
+    /// override was not needed (<see cref="RunReport.DeliveryForcedPastDecision"/> false), which is nearly
+    /// all of them.
+    /// </summary>
+    public static void RenderForcedDeliveryNotice(RunReport report, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (!report.DeliveryForcedPastDecision || report.DeliverySuppressingDecision is not { } forced)
+        {
+            return;
+        }
+
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine("*** DELIVERY FORCED PAST A MACHINE DECISION ***");
+        output.WriteLine(
+            $"This run recorded '{forced.Decision}' at '{forced.Subject}' ({forced.Boundary} boundary), which");
+        output.WriteLine(
+            "normally holds delivery on the plan branch (#361). --merge-on-success overrode that");
+        output.WriteLine(
+            "interlock on your explicit instruction, so machine-decided work WAS delivered to your");
+        output.WriteLine("branch. Review it as work a machine judged, not as work a human reviewed.");
         output.WriteLine(rule);
     }
 
@@ -2568,13 +2697,17 @@ public static class RunCommand
         IReadOnlySet<string>? waveDriftAuthorized,
         IReadOnlyDictionary<string, bool>? breakdownConfirmations,
         string? junctionRoot,
+        WorktreeModeResolution worktreeMode,
         CancellationToken cancellationToken)
     {
         try
         {
+            // #596: the run's ONE worktree-mode resolution is handed to the factory rather than letting it
+            // re-derive the predicate — the second of the two spellings that could disagree mid-run.
             Scheduler scheduler = SchedulerFactory.Create(
                 plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
-                breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot);
+                breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot,
+                worktreeMode: worktreeMode);
             RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
             return new RunExecution(report, scheduler);
         }
@@ -2591,6 +2724,55 @@ public static class RunCommand
             observer.RunFinished(exitCode: null, faultKind: ex.GetType().Name);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Render the loud run-start notice for issue #596's second defect: the git work-tree probe could not
+    /// be RUN, so this run's worktree-mode answer did not come from git at all.
+    /// <para>
+    /// The predecessor swallowed every probe failure as "not a git repository" and demoted the run to
+    /// serial — changing the run's entire isolation model with no console line, no observer event and no
+    /// journal field to show for it. The harness now keeps the mode the plan REQUESTED (see
+    /// <see cref="SchedulerFactory.ResolveWorktreeMode"/> for why that is the honest answer) and says so
+    /// here, before anything runs. Silent — the overwhelmingly common case — when git answered normally.
+    /// </para>
+    /// <para>
+    /// Public + rendered through a <see cref="TextWriter"/> for the same reason as
+    /// <see cref="RenderUndeliveredWorkWarning"/>: the Cli assembly ships no <c>InternalsVisibleTo</c>, so
+    /// this is the seam its tests drive.
+    /// </para>
+    /// </summary>
+    public static void RenderGitProbeFailureWarning(
+        WorktreeModeResolution resolution, Core.Model.PlanDefinition plan, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (resolution.GitProbeFailure is not { Length: > 0 } failure)
+        {
+            return;
+        }
+
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine("*** GIT WORK-TREE PROBE FAILED ***");
+        output.WriteLine($"git could not be RUN in '{plan.Workspace}':");
+        output.WriteLine($"  {failure}");
+        output.WriteLine(
+            $"That is an UNKNOWN, not an answer, so it is NOT being read as 'not a git repository'. This");
+        output.WriteLine(
+            $"run keeps the worktree mode its plan asked for (maxParallelism {plan.Config.MaxParallelism}) rather than");
+        output.WriteLine(
+            "silently downgrading to serial: the workspace was already certified a git repository at");
+        output.WriteLine(
+            "validation (GR2015), which walks the filesystem and never spawns git. If git really is");
+        output.WriteLine(
+            "unavailable this run will halt loudly when it creates the plan branch — it will not run");
+        output.WriteLine("un-isolated behind your back.");
+        output.WriteLine(rule);
     }
 
     /// <summary>

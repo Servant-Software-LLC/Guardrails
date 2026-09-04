@@ -338,7 +338,7 @@ public sealed class WebhookDeliveryTests
     [Trait("Category", "RunEvents")]
     [Trait("Plan", "36-onevent")]
     [Fact]
-    public async Task AFiveHundredCausesRetriesThenARecordedDropWithExitCodeUnchanged()
+    public async Task AFiveHundredEndsAsARecordedDropWithExitCodeUnchanged()
     {
         // A distinctive path segment: §6.6 requires the console summary to show <scheme>://<host>[:<port>]/…
         // and never the path — this is what makes that check meaningful rather than vacuous.
@@ -364,16 +364,32 @@ public sealed class WebhookDeliveryTests
         }
 
         Assert.NotEmpty(deliveryAttempts);
-        string firstDeliveryId = deliveryAttempts[0].Id;
-        List<int> attemptsForFirstId = deliveryAttempts.Where(t => t.Id == firstDeliveryId).Select(t => t.Attempt).ToList();
-        Assert.True(
-            attemptsForFirstId.Count > 1,
-            $"the first delivery id observed ('{firstDeliveryId}') was attempted only once — retries never happened.");
-        for (int i = 1; i < attemptsForFirstId.Count; i++)
+
+        // The retry COUNT is deliberately not asserted here, and the reason is a contract, not a
+        // concession. Teardown abandons the retry budget by design — §3.3 step 1's `_draining`, one
+        // attempt per row — because retrying during teardown is what starves the terminal row. The first
+        // backoff is ~1s at production scale, and a one-task script plan finishes well inside that, so
+        // whether a retry is observed here depends on whether the run outlasts the backoff. It is a race
+        // by construction, and it FAILED exactly that way on an ubuntu CI runner while passing on its
+        // sibling run of the same commit.
+        //
+        // Nothing is lost. The schedule is pinned DETERMINISTICALLY at unit level, where the time scale
+        // is injectable: WebhookEventSinkTests.BackoffScheduleIsOneTwoFourWithJitter asserts exactly four
+        // attempts and each gap inside its jittered band, and IsRetryableIsTrueForEvery5xx pins the 500.
+        // What THIS test uniquely proves is the whole path through the real CLI: a 500 ends as a RECORDED
+        // drop, the endpoint's path never reaches the console, and the exit code is untouched (ruling 2).
+        //
+        // The ordering check below still runs whenever retries WERE observed — free, and it would catch a
+        // regression that re-POSTed a row with a stale attempt number.
+        foreach (string id in deliveryAttempts.Select(t => t.Id).Distinct())
         {
-            Assert.True(
-                attemptsForFirstId[i] > attemptsForFirstId[i - 1],
-                $"attempt numbers did not increase across retries for '{firstDeliveryId}': {string.Join(",", attemptsForFirstId)}");
+            List<int> attemptsForId = deliveryAttempts.Where(t => t.Id == id).Select(t => t.Attempt).ToList();
+            for (int i = 1; i < attemptsForId.Count; i++)
+            {
+                Assert.True(
+                    attemptsForId[i] > attemptsForId[i - 1],
+                    $"attempt numbers did not increase across retries for '{id}': {string.Join(",", attemptsForId)}");
+            }
         }
 
         // The drop was recorded: a "Webhook: N delivered, M dropped -> url" line with M > 0, and the
