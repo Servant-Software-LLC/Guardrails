@@ -646,6 +646,118 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NeedsHumanKind { get; init; }
+
+    /// <summary>
+    /// OPTIONAL record of the <c>needsHarnessWrite</c> escape hatch this attempt asked for (SSOT §7/§9,
+    /// issue #532 gap 1): what was requested, how much of it landed, and — when nothing did — why.
+    /// <para>
+    /// <b>The gap this closes.</b> The dispositions already existed as first-class values
+    /// (<c>HarnessWriteOutcome.Rejected</c> / <c>.Denied</c> / <c>.NotApplied</c> / <c>.Failed</c>, each
+    /// carrying a reason, plus the applied paths) — they were computed, spent on retry feedback, and then
+    /// DROPPED. So a task that requested harness writes on three consecutive attempts and had all three
+    /// silently ignored (#531) left NOTHING in <c>run.json</c> saying a write had ever been requested, let
+    /// alone what became of it. Diagnosing it meant reading raw <c>action-out-fragment.json</c> out of the
+    /// log dir and then reading harness SOURCE to learn where the key is looked up. That is archaeology,
+    /// and it is exactly what a self-healing agent (#529) cannot do cheaply.
+    /// </para>
+    /// <para>
+    /// Follows the <see cref="NeedsHumanKind"/> precedent one column over: a fragment-derived
+    /// classification, canonicalized at the journal boundary and recorded on the attempt, because
+    /// <c>guardrails status</c> and the static log-site export read ONLY the journal.
+    /// </para>
+    /// <para>
+    /// Additive and backward-compatible: absent (never <c>null</c> noise) on every attempt that requested
+    /// no harness write — which is nearly all of them — and in every journal written before this field
+    /// existed. It rides <see cref="Execution.PendingAttempt"/> as well, or it would land in serial mode
+    /// and silently vanish in the DEFAULT worktree mode; see that record's own doc comments for the worked
+    /// example of that exact defect.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HarnessWriteRecord? HarnessWrite { get; init; }
+}
+
+/// <summary>
+/// What happened to ONE <c>needsHarnessWrite</c> batch (SSOT §7 <c>harnessWrite.disposition</c>, issue
+/// #532). Every value has exactly one producer in <c>Execution.HarnessWrite.ValidateAndApply</c>, so this
+/// is a record of what the harness DID, never a guess reconstructed from a message afterwards.
+/// </summary>
+public enum HarnessWriteDisposition
+{
+    /// <summary>Every entry validated and was written.</summary>
+    Applied,
+
+    /// <summary>Refused by a containment/scope check — a workspace escape, or a path outside <c>writeScope</c>.</summary>
+    Rejected,
+
+    /// <summary>Refused by the #321 permission-file carve-out: the harness never writes <c>.claude/settings*.json</c> on an agent's behalf.</summary>
+    Denied,
+
+    /// <summary>
+    /// In bounds and permitted, but not applicable as written (#437/#445): an unusable payload, an anchor
+    /// that matched zero or several times, <c>edits</c> against a file that does not exist, full-content
+    /// mode against a target too large for it, or two entries targeting one file. Nothing was written and
+    /// every target is byte-identical; the agent can fix it by re-emitting.
+    /// </summary>
+    NotApplied,
+
+    /// <summary>Validated and permitted, but the write itself hit an IO fault.</summary>
+    Failed
+}
+
+/// <summary>
+/// The <c>needsHarnessWrite</c> disposition recorded on an attempt (SSOT §7 <c>harnessWrite</c>, issue
+/// #532 gap 1) — the durable answer to "was a harness write requested here, and what became of it?".
+/// </summary>
+public sealed record HarnessWriteRecord
+{
+    /// <summary>How many file entries the request named (a single-object payload is a batch of one).</summary>
+    public required int Requested { get; init; }
+
+    /// <summary>
+    /// How many were actually written. Either <see cref="Requested"/> or <c>0</c> and never anything
+    /// between, because the batch is ATOMIC (#445) — but it is recorded as a COUNT rather than a boolean
+    /// so the pair reads as the evidence it is: <c>"requested": 3, "applied": 0</c> says at a glance both
+    /// that work was asked for and that none of it happened.
+    /// </summary>
+    public required int Applied { get; init; }
+
+    /// <summary>What happened to the batch as a whole.</summary>
+    public required HarnessWriteDisposition Disposition { get; init; }
+
+    /// <summary>
+    /// The actionable reason the batch was not applied, verbatim as the agent was told it. Absent when
+    /// <see cref="Disposition"/> is <see cref="HarnessWriteDisposition.Applied"/>.
+    /// <para>
+    /// BATCH grain, deliberately, even though the request may name several files: the batch is atomic, so
+    /// one reason governs every entry, and copying that one string onto each of them would be a second
+    /// copy of a single fact — the very thing this file refuses a <c>resolvedModel</c> key for. For a
+    /// multi-entry batch the reason already names the offending array index.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+
+    /// <summary>
+    /// One entry per path the request named, in the order the agent listed them — the half a reader ACTS
+    /// on, because it says WHICH files were at stake. Empty only when the payload was so malformed it
+    /// named no path at all.
+    /// </summary>
+    public IReadOnlyList<HarnessWriteEntry> Entries { get; init; } = [];
+}
+
+/// <summary>One file named by a <c>needsHarnessWrite</c> request (SSOT §7 <c>harnessWrite.entries[]</c>).</summary>
+public sealed record HarnessWriteEntry
+{
+    /// <summary>The destination exactly as the agent spelled it.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>
+    /// This entry's disposition. Equal to the batch's under today's atomic semantics — recorded per entry
+    /// anyway so a reader scanning a multi-file request never has to infer a per-file outcome from a
+    /// batch-level one, and so the shape survives if partial application is ever introduced.
+    /// </summary>
+    public required HarnessWriteDisposition Disposition { get; init; }
 }
 
 /// <summary>

@@ -97,7 +97,8 @@ internal sealed class AttemptJournaler
         ActionRun action,
         GuardrailRunResult guardrails,
         bool isFinal,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        HarnessWriteRecord? harnessWrite = null)
     {
         long? mergeSequence = null;
 
@@ -127,7 +128,7 @@ internal sealed class AttemptJournaler
                         Summary = reason
                     },
                     costUsd: action.CostUsd, usage: action.Usage, turns: action.Turns,
-                    segments: SegmentsFor(action, guardrails));
+                    segments: SegmentsFor(action, guardrails), harnessWrite: harnessWrite);
             }
 
             mergeSequence = reserved;
@@ -151,7 +152,11 @@ internal sealed class AttemptJournaler
             // and Turns off the action above instead of taking them as parameters.
             Segments = SegmentsFor(action, guardrails),
             LogDir = relativeLogDir,
-            Provenance = provenance
+            Provenance = provenance,
+            // #532 gap 1: an APPLIED harness write settles HERE — the write landed and the guardrails then
+            // passed. Recording the disposition only on the failure paths would leave the journal able to
+            // say a harness write was refused and never that one succeeded.
+            HarnessWrite = harnessWrite
         };
         // §7.2 (#274 Part A): stamp the task's definition hash on the serial-mode success settle, so a
         // later resume compares the current definition against it and halts on drift instead of skipping.
@@ -200,7 +205,8 @@ internal sealed class AttemptJournaler
         ActionRun action,
         GuardrailRunResult guardrails,
         bool isFinal,
-        AttemptProvenance? provenance = null)
+        AttemptProvenance? provenance = null,
+        HarnessWriteRecord? harnessWrite = null)
     {
         string? validatedFragmentPath = null;
 
@@ -222,7 +228,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, harnessWrite: harnessWrite);
             }
 
             JsonNode? node;
@@ -234,7 +240,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, harnessWrite: harnessWrite);
             }
 
             if (node is not JsonObject fragObj)
@@ -245,7 +251,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, harnessWrite: harnessWrite);
             }
 
             List<string> foreignKeys = fragObj
@@ -260,7 +266,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = reason },
-                    costUsd: action.CostUsd, usage: action.Usage);
+                    costUsd: action.CostUsd, usage: action.Usage, harnessWrite: harnessWrite);
             }
 
             validatedFragmentPath = fragmentOutPath;
@@ -300,7 +306,12 @@ internal sealed class AttemptJournaler
             // second answer, free to disagree with the journalled one without either looking wrong.
             Bucket = BucketFor(task),
             LogDir = relativeLogDir,
-            Provenance = provenance
+            Provenance = provenance,
+            // #532 gap 1: worktree mode is the DEFAULT, and its settle builds its own AttemptRecord from
+            // this object. Without this line an APPLIED harness write would be journaled in serial runs
+            // only — recording the disposition on failure paths alone, which is the survivorship shape
+            // gap 2 was about, reproduced one field over.
+            HarnessWrite = harnessWrite
         };
 
         return new AttemptResult(new TaskResult
@@ -336,7 +347,8 @@ internal sealed class AttemptJournaler
         AttemptUsage? usage = null,
         AttemptProvenance? provenance = null,
         int? turns = null,
-        AttemptSegments? segments = null)
+        AttemptSegments? segments = null,
+        HarnessWriteRecord? harnessWrite = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -374,7 +386,14 @@ internal sealed class AttemptJournaler
             // method's call sites report "guardrails skipped" and pass an ACTION-only pair — see
             // SegmentsFor on why a half-populated record is the honest one there.
             Segments = segments,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            // #532 gap 1: the path the reported defect actually took. A needsHarnessWrite that was
+            // rejected/denied/not-applied settles HERE, and until now the disposition — computed as a
+            // first-class value right beside the feedback composed from it — was dropped, so run.json did
+            // not record that a write had even been requested. Also carried by the failure sites
+            // DOWNSTREAM of an applied write (write-scope, guardrails): the write happened, and a later
+            // failure must not erase that it did.
+            HarnessWrite = harnessWrite
         };
         _journal.RecordAttempt(
             task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running,
@@ -703,7 +722,8 @@ internal sealed class AttemptJournaler
         IReadOnlyList<GuardrailResult> guardrailResults,
         IReadOnlyList<FailedGuardrail> failedGuardrails,
         AttemptProvenance? provenance = null,
-        AttemptSegments? segments = null)
+        AttemptSegments? segments = null,
+        HarnessWriteRecord? harnessWrite = null)
     {
         Directory.CreateDirectory(logDir);
         AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
@@ -728,7 +748,11 @@ internal sealed class AttemptJournaler
             Segments = segments,
             // #532: same as every other paid halt — the model that ran is the model that is billed.
             Provenance = provenance,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            // #532 gap 1: this halt is DOWNSTREAM of the harness write, so an applied write must not be
+            // erased by the guardrail failure that followed it — "the .claude/ file did land, and the
+            // guardrails failed anyway" is a materially different diagnosis from "nothing was written".
+            HarnessWrite = harnessWrite
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman, bucket: BucketFor(task));
         _observer.AttemptFinished(task, record);
@@ -819,7 +843,8 @@ internal sealed class AttemptJournaler
         AttemptUsage? usage = null,
         AttemptProvenance? provenance = null,
         int? turns = null,
-        AttemptSegments? segments = null)
+        AttemptSegments? segments = null,
+        HarnessWriteRecord? harnessWrite = null)
     {
         var record = new AttemptRecord
         {
@@ -844,7 +869,11 @@ internal sealed class AttemptJournaler
             // Null here is honest for the pre-attempt cancel in ExecuteAsync, where no route was
             // resolved and no model ran — see the note at that call site.
             Provenance = provenance,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            // #532 gap 1: a cancel that lands AFTER the harness write must still say the write happened —
+            // the bytes are on disk in the segment, and a resumed run's operator needs to know that.
+            // Null for the pre-attempt and pre-harness-write cancels, which is honest: nothing was asked.
+            HarnessWrite = harnessWrite
         };
 
         // Back to pending: a resumed run re-attempts this task (SSOT §7 resume rules).

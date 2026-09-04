@@ -2368,6 +2368,34 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
           // outcome, and in every pre-#485 journal. Journaled because `guardrails status` and the static
           // log-site export read ONLY run.json — without it the claim would not survive the run.
           "needsHumanKind": "defective-guardrail",
+          // OPTIONAL record of the `needsHarnessWrite` escape hatch (§9, #191/#437/#445) this attempt asked
+          // for: what was requested, how much of it landed, and — when nothing did — why. The dispositions
+          // already existed as first-class values inside the harness; they were computed, spent on the retry
+          // feedback, and DROPPED, so a task whose harness writes were silently ignored (#531) left nothing
+          // here saying a write had even been requested (#532 gap 1). ABSENT (never null) on every attempt
+          // that requested none — nearly all of them — and in every journal predating this field. Recorded
+          // on EVERY settle downstream of the write, success and failure alike.
+          "harnessWrite": {
+            "requested": 2,         // how many file entries the request named (a single-object payload is a
+                                    //   batch of one)
+            "applied": 0,           // how many were written. Either `requested` or 0 and never between (the
+                                    //   batch is ATOMIC, #445) — a COUNT, not a boolean, so the pair reads as
+                                    //   the evidence it is
+            "disposition": "rejected",  // applied | rejected (containment/writeScope) | denied (the #321
+                                    //   permission-file carve-out) | not-applied (#437/#445 — unusable
+                                    //   payload, bad or ambiguous anchor, wrong mode, duplicate target) |
+                                    //   failed (an IO fault during the write itself)
+            "reason": "path 'docs/NOTES.md' is outside this task's declared writeScope",
+                                    //   the actionable reason, verbatim as the agent was told it. ABSENT when
+                                    //   `disposition` is `applied`. BATCH grain deliberately: the batch is
+                                    //   atomic, so ONE reason governs every entry (and for an array it
+                                    //   already names the offending index) — copying it onto each entry would
+                                    //   be a second copy of one fact
+            "entries": [            // one per path the request named, in the order the agent listed them
+              { "path": "out/a.md",  "disposition": "rejected" },
+              { "path": "docs/b.md", "disposition": "rejected" }
+            ]
+          },
           // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
           // Also mirrored to <attempt>/attempt-provenance.json and, for humans, rendered as
@@ -2606,6 +2634,38 @@ only where nobody kept it) sitting on its own audit trail. Written once at the e
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.
+
+**`harnessWrite` — the escape hatch's disposition, kept (#532 gap 1).** Every disposition in this record was
+ALREADY computed as a first-class value inside `HarnessWrite.ValidateAndApply` — `Rejected(…)`, `Denied(…)`,
+`NotApplied(…)`, `Failed(…)`, each carrying a reason, plus the applied paths — and then dropped once the
+retry feedback had been composed from it. The consequence was measured: a task requested harness writes on
+three consecutive attempts, all three were silently ignored (#531), and NOTHING in `run.json` recorded that a
+write had ever been requested. Diagnosing it meant reading a raw `action-out-fragment.json` out of the log
+dir and then reading harness SOURCE to learn where the key is looked up — archaeology, and precisely what a
+self-healing agent (#529) cannot do cheaply.
+
+Three properties:
+
+* **Recorded on EVERY settle downstream of the write, not only the refusals.** An applied write settles on
+  the SUCCESS path, and in worktree mode — the default — that path builds its own `AttemptRecord` from
+  `PendingAttempt` and never consults the journaller. So the field rides `PendingAttempt` too; without that
+  the journal could say a harness write was *refused* and never that one *succeeded*, which is the
+  survivorship shape gap 2 was about, one field over. The write-scope, guardrail-failure and cancel settles
+  downstream of an applied write carry it for the same reason: a later failure must not erase that the bytes
+  landed.
+* **The four refusals keep distinct tokens.** `rejected` (containment / `writeScope`), `denied` (the #321
+  permission-file carve-out), `not-applied` (#437/#445 — fixable by re-emitting) and `failed` (an IO fault)
+  have three different remedies, and collapsing them would send an agent to widen its `writeScope` for a
+  problem that has nothing to do with scope.
+* **`reason` is BATCH grain; `entries[].disposition` is per entry.** The batch is atomic, so one reason
+  governs the whole request — and for a multi-entry batch it already names the offending array index.
+  Per-entry dispositions are recorded anyway so a reader scanning a multi-file request never infers a
+  per-file outcome from a batch-level one, and so the shape survives if partial application is ever
+  introduced.
+
+Follows the `needsHumanKind` precedent one column over: a fragment-derived classification, canonicalized at
+the journal boundary and recorded on the attempt, because `guardrails status` and the static log-site export
+read ONLY the journal.
 
 **`tasks.<id>.transientPauses[]` — a pause that RESOLVES is evidence too (#115/#515).** Until this field
 existed, only the transient that **exhausted** the per-task pause budget left a durable trace (an attempt
@@ -4568,6 +4628,11 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   the segment's git diff too; this is expected, not redundant — the prospective check prevents the
   attempt from even TRYING an out-of-scope write, the retrospective check is unchanged defense in
   depth) and then the task's own `guardrails/`, exactly as any other successful action does.
+- **The disposition is DURABLE (#532 gap 1).** Whatever happens — applied, rejected, denied, not-applied or
+  failed — it is recorded on the attempt as §7's `harnessWrite` (count requested, count applied, the
+  disposition token, the reason, and every path the request named). Before this the dispositions were
+  computed here, spent on the retry feedback and dropped, so a request that was silently ignored (#531) left
+  nothing in `run.json` saying one had even been made.
 - **Failure classification (runner-agnostic).** A non-success prompt result is classified into a
   `PromptFailureKind` — `Transient` | `OutputCap` | `MaxTurns` | `Timeout` | `Error` — by the runner
   CLASS, which is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an

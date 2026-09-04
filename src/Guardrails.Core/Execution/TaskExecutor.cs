@@ -1187,10 +1187,24 @@ public sealed class TaskExecutor : ITaskExecutor
         // every file resolves before the first byte is written, so a task whose deliverable spans two or
         // more .claude/ files converges in ONE attempt instead of never (a rollback between attempts
         // discards the previous attempt's write, so progress could not accumulate).
+        //
+        // #532 gap 1: whatever happens, the DISPOSITION is journaled onto this attempt. Before this the
+        // dispositions were computed here as first-class values, spent on the retry feedback below, and
+        // then dropped — so a task whose harness writes were silently ignored on three consecutive
+        // attempts (#531) left NOTHING in run.json saying a write had ever been requested. Diagnosing it
+        // meant reading a raw action-out-fragment.json out of the log dir and then reading harness SOURCE
+        // to learn where the key is looked up: archaeology, and exactly what a self-healing agent (#529)
+        // cannot do cheaply. `harnessWriteRecord` is threaded into EVERY journaler call from here to the
+        // end of this method — the failure right below, and equally the write-scope / guardrail / settle
+        // paths downstream, because a write that LANDED must not be erased by a later failure.
+        HarnessWriteRecord? harnessWriteRecord = null;
         if (action.HarnessWriteBatch is { } harnessWriteBatch)
         {
             HarnessWriteOutcome writeOutcome = HarnessWrite.ValidateAndApply(
                 harnessWriteBatch, effectiveWorkspace, task.WriteScope);
+
+            // One producer for the wire shape, next to the flags it reads (HarnessWrite.Describe).
+            harnessWriteRecord = HarnessWrite.Describe(harnessWriteBatch, writeOutcome);
 
             // The control key is consumed either way — it must never reach the fragment-merge check
             // as a foreign/reserved key (mirrors needsHuman being fully consumed pre-merge).
@@ -1236,7 +1250,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     turns: action.Turns,
                     // Same in-between position as the staging failure above: action measured, no
                     // guardrail reached.
-                    segments: AttemptJournaler.SegmentsFor(action));
+                    segments: AttemptJournaler.SegmentsFor(action),
+                    // #532 gap 1: the reported defect's own path — the request, its disposition and the
+                    // reason the agent was given, all durable now instead of feedback-only.
+                    harnessWrite: harnessWriteRecord);
             }
         }
 
@@ -1287,7 +1304,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     turns: action.Turns,
                     // The write-scope check runs BEFORE the task's own guardrails, so this is the last
                     // of the four action-only pairs.
-                    segments: AttemptJournaler.SegmentsFor(action));
+                    segments: AttemptJournaler.SegmentsFor(action),
+                    // #532 gap 1: DOWNSTREAM of an applied harness write — a later failure must not
+                    // erase that the write landed.
+                    harnessWrite: harnessWriteRecord);
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -1356,7 +1376,8 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
                 action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns,
-                segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                harnessWrite: harnessWriteRecord);
         }
 
         if (guardrails.AnyFailed)
@@ -1406,7 +1427,8 @@ public sealed class TaskExecutor : ITaskExecutor
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
                     summary, wallFeedback, guardrails.Results, failedList, provenance: provenance,
-                    segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                    segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                    harnessWrite: harnessWriteRecord);
             }
 
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
@@ -1447,7 +1469,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 // §3.4, and the same sentence one column over: an attempt that burned twenty minutes
                 // before going red is the cost a per-model comparison cannot see today. Both phases ran
                 // here, so both are recorded.
-                segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                harnessWrite: harnessWriteRecord);
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
@@ -1492,11 +1515,13 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!string.IsNullOrEmpty(worktree.WorktreePath) && Directory.Exists(worktree.WorktreePath))
         {
             return _journaler.ValidateFragmentForSettle(
-                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
+                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails,
+                isFinal, provenance, harnessWriteRecord);
         }
 
         return _journaler.CompleteSucceededOrInvalidFragment(
-            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
+            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails,
+            isFinal, provenance, harnessWriteRecord);
     }
 
     /// <summary>
