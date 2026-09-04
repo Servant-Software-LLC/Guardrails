@@ -107,6 +107,28 @@ public static class RunCommand
             Description = "Set the effective maxCostUsd ceiling for this run (overrides guardrails.json). Under --autonomous this satisfies the required cost cap, so the built-in $20 default is not applied."
         };
 
+        // ── Webhook delivery (issue #585 layer 3, design doc 36) ──────────────────────────────────
+        // Task 08 declares and parses these two; it wires neither. Multi-valued and NOT Option<string?>:
+        // a single-arity option would have System.CommandLine 2.0.9 reject a second `--on-event` itself,
+        // with a generic arity message and exit code 1 — measured against this repo's own CLI. That would
+        // detect a repeat but never name the reason §6.4 requires, and it would make
+        // ARepeatedOnEventFlagIsRejected pass against a tree with no validation at all. Task 09 does its
+        // own count check (zero -> env fallback, one -> use it, more than one -> a named validation error)
+        // over the array this declaration parses into. ArgumentArity.OneOrMore (not ZeroOrMore) so a bare
+        // `--on-event` with no value stays a usage error rather than silently meaning "no webhook".
+        // AllowMultipleArgumentsPerToken is left at its default false, so `--on-event a b` cannot silently
+        // collect two values from one occurrence.
+        var onEventOption = new Option<string[]>("--on-event")
+        {
+            Description = "POST each events.jsonl row to <url> as it is written (design doc 36 §8.3). Not repeatable — a second occurrence is a validation error naming the reason (§6.4). Falls back to GUARDRAILS_ON_EVENT when absent.",
+            Arity = ArgumentArity.OneOrMore
+        };
+
+        var onEventDetailOption = new Option<bool>("--on-event-detail")
+        {
+            Description = "Include the free-text 'detail' field in webhook deliveries (design doc 36 §6.3). Withheld by default, carrying the fixed marker '(detail withheld; pass --on-event-detail)'."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -127,6 +149,11 @@ public static class RunCommand
         command.Add(autonomousOption);
         command.Add(dialOption);
         command.Add(maxCostUsdOption);
+
+        // #585 layer 3 (design doc 36): parsed cleanly, then ignored — task 09 reads these and wires
+        // validation, the env fallback, and the WebhookEventSink construction.
+        command.Add(onEventOption);
+        command.Add(onEventDetailOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -534,12 +561,12 @@ public static class RunCommand
                     await using var liveObserver = new LiveRunObserver(
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                         probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
+                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, null, false);
                     (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed);
+                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, null, false);
                     OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
@@ -2391,6 +2418,36 @@ public static class RunCommand
         var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
         var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
         return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
+    }
+
+    /// <summary>
+    /// #585 layer 3 (design doc 36 §3.1) overload: adds <paramref name="onRow"/> and
+    /// <paramref name="includeDetail"/> — task 08's stub; task 09 wires them for real. A NEW overload
+    /// rather than two parameters added onto the six-argument member above: <c>RunCommandObserverWiringTests</c>,
+    /// <c>RunFinishedExitPathTests</c> and <c>ObserverForwardingSweepTests</c> (plan 34, predating this
+    /// plan) call the six-argument shape directly and sit outside this task's write scope, so widening
+    /// that member in place would break their compilation for a change none of them asked for. <see cref="RunAsync"/>'s
+    /// own two call sites use THIS overload instead, which — like the six-argument one — takes
+    /// <paramref name="onRow"/>/<paramref name="includeDetail"/> with NO default value: a defaulted
+    /// parameter would let a production call site silently deliver nothing (the plan-34 §3 swallow
+    /// hazard), so the compiler forces both call sites to state their answer explicitly. The body below
+    /// ignores both and delegates to the unchanged six-argument overload — byte-for-byte the same chain
+    /// today's behaviour builds. Task 09 makes this constructor pass them into <see cref="RunEventStream"/>
+    /// instead of discarding them.
+    /// </summary>
+    public static OnTheFlyDiagramObserver BuildObserverChain(
+        IRunObserver inner,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
+        Func<string, string?>? logUrlForTask,
+        JournalDocument? diagramSeed,
+        Action<EventDelivery>? onRow,
+        bool includeDetail)
+    {
+        _ = onRow;
+        _ = includeDetail;
+        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed);
     }
 
     /// <summary>
