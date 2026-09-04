@@ -217,6 +217,7 @@ public sealed class WebhookEventSink : IAsyncDisposable
             TimeSpan backlogBudget = Scaled(cancelled ? BacklogDrainBudgetCancelled : BacklogDrainBudget);
             TimeSpan terminalBudget = Scaled(cancelled ? TerminalDeliveryTimeoutCancelled : TerminalDeliveryTimeout);
             TimeSpan pumpGrace = Scaled(cancelled ? PumpShutdownGraceCancelled : PumpShutdownGrace);
+            LastPumpGraceUsed = pumpGrace;
 
             // Step 2: backlog phase. Bounded, and skipped entirely when the budget is zero (a cancelled
             // run) — the run's own token only ever selects THIS budget, it is never observed by the
@@ -636,6 +637,15 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// (§3.3 step 4, §5.2). It is a last resort against a transport that never returns, not a
     /// scheduled cost: a pump with nothing left to do returns in microseconds.
     /// </summary>
+    /// <summary>
+    /// The pump-shutdown grace <see cref="DisposeAsync"/> actually selected, exposed so a test can assert
+    /// WHICH budget was chosen rather than how long the machine took to run it. Measuring teardown by wall
+    /// clock cannot separate "our budget is too big" from "this runner is busy": the cancelled budgets sum
+    /// to 750 ms, yet a contended CI runner measured 2.374 s of elapsed time for the same code that takes
+    /// 977 ms locally. The decision is the thing under test; the elapsed time is not.
+    /// </summary>
+    internal TimeSpan LastPumpGraceUsed { get; private set; }
+
     internal static readonly TimeSpan PumpShutdownGrace = TimeSpan.FromSeconds(2);
 
     /// <summary>

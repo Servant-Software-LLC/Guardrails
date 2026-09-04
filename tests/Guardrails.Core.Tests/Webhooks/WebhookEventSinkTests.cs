@@ -1014,9 +1014,20 @@ public sealed class WebhookEventSinkTests
         await sink.DisposeAsync();
         stopwatch.Stop();
 
+        // WHICH BUDGET was selected, not how long the machine took to run it. The wall-clock form of this
+        // assertion (elapsed < 2s) FAILED on a contended windows CI runner at 2.374s while passing locally
+        // at 977ms - for the same code, whose cancelled budgets sum to 750ms. Elapsed time cannot separate
+        // "our budget is too big" from "this runner is busy", so it cannot be the assertion; the arithmetic
+        // check above owns the contract, and this owns the decision.
+        Assert.Equal(WebhookEventSink.PumpShutdownGraceCancelled, sink.LastPumpGraceUsed);
+
+        // A deliberately LOOSE wall-clock sanity bound. It is here to catch a catastrophic regression (the
+        // unscaled 2s grace plus the 500ms terminal attempt was measured at 2510ms of BUDGET alone), not to
+        // police the budget - that is the arithmetic assertion's job. It must stay far enough above the
+        // budget sum to survive a busy runner.
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
-            $"a cancelled teardown took {stopwatch.Elapsed}, which does not fit inside the ~2s the process gets after SIGINT (#603)");
+            stopwatch.Elapsed < TimeSpan.FromSeconds(8),
+            $"a cancelled teardown took {stopwatch.Elapsed}, which is far beyond any plausible scheduling overhead on the 750ms of cancelled budget (#603)");
 
         // Positive control: the terminal attempt was actually SPENT, not skipped. Without this the
         // assertion above could be satisfied by a teardown that gave up on the guarantee the whole
