@@ -43,12 +43,21 @@ public sealed class WebhookEventSink : IAsyncDisposable
 
     private volatile bool _circuitOpen;
 
+    /// <summary>
+    /// Set by <see cref="DisposeAsync"/> step 1 (§3.3: <i>"Complete the channel writer and set
+    /// <c>_draining</c>"</i>) and never cleared. While it is set the pump makes <b>one attempt per
+    /// row</b> — it abandons the retry budget entirely, because §3.3 step 2 states plainly that
+    /// <i>"retrying during teardown is what starves the terminal row"</i>, and SSOT §8.3 promises the
+    /// same thing to receivers: <i>"At teardown the harness stops retrying altogether — one attempt
+    /// per row."</i>
+    /// </summary>
+    private volatile bool _draining;
+
     private readonly object _noticeGate = new();
     private int _consecutiveFailures;
+    private long _deliveryFailureNoticeCount;
     private string? _lastFailureDescription;
     private readonly List<string> _bufferedNotices = [];
-
-    private static readonly TimeSpan PumpShutdownGrace = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// Production entry point. Returns null when there is no <c>--on-event</c> URL. Never throws: the
@@ -119,6 +128,17 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// </summary>
     internal double TimeScale => _timeScale;
 
+    /// <summary>
+    /// TEST READBACK for §5.3's latch. The circuit's operator-visible signal is a notice BUFFERED
+    /// until <see cref="DisposeAsync"/> (deliberately — #145 Bug 1: a console write into an active
+    /// Spectre Live region corrupts the table), so before teardown there is no way to observe that the
+    /// circuit opened. Without this, a test that needs the circuit open first has to poll a PROXY — "a
+    /// request for the fifth failing row arrived" — which is true strictly BEFORE the latch it stands
+    /// for, and is the root of a whole class of races already fixed in this file. Waiting on the state
+    /// itself removes the gap rather than sleeping across it.
+    /// </summary>
+    internal bool CircuitIsOpen => _circuitOpen;
+
     /// <summary>The <c>Action&lt;EventDelivery&gt;</c> callback <c>RunEventStream</c> invokes inside its append lock.</summary>
     public void Emit(EventDelivery delivery)
     {
@@ -130,6 +150,15 @@ public sealed class WebhookEventSink : IAsyncDisposable
             lock (_lastEnqueuedGate)
             {
                 _lastEnqueued = delivery;
+
+                // RESET the settled flag with the row it describes. The flag means "the row CURRENTLY
+                // held by _lastEnqueued has already reached a terminal outcome"; advancing _lastEnqueued
+                // invalidates it. Without this the flag latches true the first time any row settles while
+                // it is still the newest - which is the NORMAL case for this stream, since 8.1 calls it
+                // low-frequency and the pump keeps up - and 3.3 step 3's terminal attempt is then skipped
+                // for the rest of the run. The row lost that way is run-finished: the one row a CI wrapper
+                // exists to receive, silently dropped in exactly the scenario the guarantee was written for.
+                _lastEnqueuedSettled = false;
             }
 
             if (_circuitOpen)
@@ -175,13 +204,19 @@ public sealed class WebhookEventSink : IAsyncDisposable
     {
         try
         {
-            // Step 1: signal wind-down. Completing the writer is also what makes a post-dispose Emit's
-            // TryWrite return false — a counted drop, never a throw.
+            // Step 1: signal wind-down — set _draining, then complete the writer. Completing the writer
+            // is also what makes a post-dispose Emit's TryWrite return false (a counted drop, never a
+            // throw). _draining is set FIRST so that no row the pump dequeues after the completion can
+            // observe a not-yet-draining sink and start a retry schedule this teardown is meant to
+            // abandon; both statements run before this method's first await, so the flag is set before
+            // DisposeAsync yields control to its caller.
+            _draining = true;
             _channel.Writer.TryComplete();
 
             bool cancelled = _runCancellationToken.IsCancellationRequested;
             TimeSpan backlogBudget = Scaled(cancelled ? BacklogDrainBudgetCancelled : BacklogDrainBudget);
             TimeSpan terminalBudget = Scaled(cancelled ? TerminalDeliveryTimeoutCancelled : TerminalDeliveryTimeout);
+            TimeSpan pumpGrace = Scaled(cancelled ? PumpShutdownGraceCancelled : PumpShutdownGrace);
 
             // Step 2: backlog phase. Bounded, and skipped entirely when the budget is zero (a cancelled
             // run) — the run's own token only ever selects THIS budget, it is never observed by the
@@ -211,9 +246,13 @@ public sealed class WebhookEventSink : IAsyncDisposable
             // Step 4: cancel the pump's token, then await it, bounded. Disposing a CancellationTokenSource
             // while a wait is outstanding on it is undefined behaviour, so nothing may touch _pumpCts
             // until every dispatched request has returned — or, as a last resort against a transport that
-            // never returns, until this bounded grace period gives up waiting for it.
+            // never returns, until this bounded grace period gives up waiting for it. The grace has a
+            // CANCELLED variant like every other budget here (§5.2): .NET's DNS resolution is not
+            // reliably cancellable, so an unresolvable endpoint parks the pump for the WHOLE grace, and
+            // on Ctrl-C the entire process gets about two seconds (#603) — which logServer.DisposeAsync
+            // and its own 5 s drain must also fit inside, AFTER this returns.
             _pumpCts.Cancel();
-            Task pumpWait = await Task.WhenAny(_pumpTask, Task.Delay(Scaled(PumpShutdownGrace))).ConfigureAwait(false);
+            Task pumpWait = await Task.WhenAny(_pumpTask, Task.Delay(pumpGrace)).ConfigureAwait(false);
             bool pumpStoppedCleanly = ReferenceEquals(pumpWait, _pumpTask);
 
             // Step 5: the transport goes LAST, after the pump has provably returned (or been given up on).
@@ -227,6 +266,32 @@ public sealed class WebhookEventSink : IAsyncDisposable
                 foreach (string line in _bufferedNotices)
                     SafeNotice(line);
 
+                // §5.4's per-row failure notice is CAPPED. The circuit bounds it only while failures are
+                // CONSECUTIVE; a flapping receiver (200/400/200/400…) resets _consecutiveFailures on every
+                // success, so the circuit never opens and the buffer grows one line per failed row —
+                // measured at 201 console lines for 400 rows, which buries both the summary below and the
+                // undelivered-work warning a green run prints beside it. The suppressed lines carry no
+                // information the collapse does not: the DESCRIPTION of the last one is the only part that
+                // varies, so it is carried here.
+                long suppressed = _deliveryFailureNoticeCount - DeliveryFailureNoticeCap;
+                if (suppressed > 0)
+                {
+                    string plural = suppressed == 1 ? "failure" : "failures";
+                    string last = _lastFailureDescription ?? nameof(TaskCanceledException);
+                    SafeNotice($"Webhook: ... and {suppressed} further delivery {plural} (last: {last}).");
+                }
+
+                // The counts line prints on EVERY run that used --on-event, on EVERY path — §5.4: "a line
+                // that always prints is proof the mechanism ran at all", and the zero-drop case is not
+                // noise because "silence on success is the exact defect this issue is about". It used to
+                // be the `else` of the stopped-early branch, which withheld the numbers on precisely the
+                // path where an operator most needs them. The stopped-early notice is printed IN ADDITION,
+                // after it: it names the rows the counts cannot see, so the pair is what makes a "0
+                // dropped" reading on a faulted pump honest rather than a silent disappearance.
+                long delivered = Interlocked.Read(ref _deliveredCount);
+                long dropped = Interlocked.Read(ref _droppedCount);
+                SafeNotice($"Webhook: {delivered} delivered, {dropped} dropped -> {RedactUrl(_url)}");
+
                 if (!pumpStoppedCleanly)
                 {
                     long neverAttempted;
@@ -235,12 +300,6 @@ public sealed class WebhookEventSink : IAsyncDisposable
 
                     string desc = _lastFailureDescription ?? nameof(TaskCanceledException);
                     SafeNotice($"Webhook: delivery stopped early ({desc}); {neverAttempted} row(s) never attempted.");
-                }
-                else
-                {
-                    long delivered = Interlocked.Read(ref _deliveredCount);
-                    long dropped = Interlocked.Read(ref _droppedCount);
-                    SafeNotice($"Webhook: {delivered} delivered, {dropped} dropped -> {RedactUrl(_url)}");
                 }
             }
         }
@@ -316,6 +375,7 @@ public sealed class WebhookEventSink : IAsyncDisposable
             try { rowCts.CancelAfter(Scaled(PerRowCeiling)); } catch (ObjectDisposedException) { }
 
             AttemptOutcome last = default;
+            bool attempted = false;
 
             for (int attempt = 1; attempt <= MaxAttemptsPerRow; attempt++)
             {
@@ -325,6 +385,7 @@ public sealed class WebhookEventSink : IAsyncDisposable
                 using CancellationTokenSource attemptCts = CancellationTokenSource.CreateLinkedTokenSource(rowCts.Token);
                 attemptCts.CancelAfter(Scaled(PerAttemptTimeout));
 
+                attempted = true;
                 last = await SendOnceAsync(delivery, attempt, attemptCts.Token).ConfigureAwait(false);
 
                 if (last.Delivered)
@@ -332,6 +393,14 @@ public sealed class WebhookEventSink : IAsyncDisposable
                     OnDelivered(delivery, trackCircuit: true);
                     return;
                 }
+
+                // §3.3 step 2: from the moment teardown sets _draining the pump makes ONE attempt per row
+                // and abandons the retry budget entirely — "retrying during teardown is what starves the
+                // terminal row". Re-read here rather than captured before the loop, deliberately: the row
+                // already in flight when teardown began is exactly the one whose remaining three attempts
+                // would eat the backlog budget the rows behind it are waiting on.
+                if (_draining)
+                    break;
 
                 bool retryable = IsRetryable(last.Status, last.Error);
                 if (!retryable || attempt == MaxAttemptsPerRow)
@@ -346,6 +415,20 @@ public sealed class WebhookEventSink : IAsyncDisposable
                 {
                     break;
                 }
+            }
+
+            if (!attempted)
+            {
+                // NEVER SENT — the loop exited on the very first `rowCts.IsCancellationRequested` check,
+                // which is what every row still in the channel sees once DisposeAsync step 4 cancels the
+                // pump's token. This is a plain counted drop and nothing more: no notice, and no
+                // _consecutiveFailures increment. Reporting it as a delivery failure told the operator a
+                // HEALTHY receiver had failed — measured as 6 "delivery failed" notices plus "gave up
+                // after 5 consecutive delivery failures" for an endpoint that answered 200 to every
+                // request it was actually given. Nothing was learned about the endpoint here, because
+                // nothing was sent to it.
+                Interlocked.Increment(ref _droppedCount);
+                return;
             }
 
             OnPermanentFailure(delivery, last.Status, last.Error, trackCircuit: true);
@@ -388,7 +471,13 @@ public sealed class WebhookEventSink : IAsyncDisposable
         lock (_noticeGate)
         {
             _lastFailureDescription = description;
-            _bufferedNotices.Add($"Webhook: delivery failed ({description}).");
+
+            // Buffer the first DeliveryFailureNoticeCap of these and no more; DisposeAsync collapses the
+            // rest into one line carrying the count and the LAST description. The count keeps rising
+            // whether or not a line was buffered — it is what that collapse is computed from.
+            _deliveryFailureNoticeCount++;
+            if (_deliveryFailureNoticeCount <= DeliveryFailureNoticeCap)
+                _bufferedNotices.Add($"Webhook: delivery failed ({description}).");
 
             // §5.3: after 5 CONSECUTIVE rows exhaust their attempts the circuit opens for the rest of
             // the run and never closes. Latched here, once — the notice is buffered rather than printed
@@ -450,9 +539,27 @@ public sealed class WebhookEventSink : IAsyncDisposable
             using HttpResponseMessage response =
                 await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
-            await DrainResponseBodyAsync(response, ct).ConfigureAwait(false);
-
+            // THE VERDICT IS THE STATUS LINE, AND IT IS DECIDED BEFORE THE BODY IS TOUCHED. §4.4 and
+            // SSOT §8.3 both say it verbatim: "Any 2xx is success. The response body is ignored
+            // entirely." Computing `delivered` after the drain made an exception from READING the
+            // response stream reclassify an accepted delivery as a retryable failure — measured as four
+            // POSTs of a row the receiver had already accepted at 200, then reported as a drop. The
+            // triggers are ordinary, not hostile: a receiver that answers 200 and closes without the
+            // body its Content-Length declared, a tunnel (ngrok, cloudflared) resetting, a proxy
+            // truncating.
             bool delivered = (int)response.StatusCode is >= 200 and < 300;
+
+            // The drain exists ONLY to release the connection, so its failure means the connection is
+            // already gone — which is precisely the case in which there is nothing left to release and
+            // nothing to report. It can never change the verdict computed above.
+            try
+            {
+                await DrainResponseBodyAsync(response, ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+
             return new AttemptOutcome(delivered, response.StatusCode, null);
         }
         catch (Exception ex)
@@ -523,6 +630,32 @@ public sealed class WebhookEventSink : IAsyncDisposable
 
     /// <summary>Terminal delivery budget when the run was cancelled — still always spent (§3.3 step 3, §5.2).</summary>
     internal static readonly TimeSpan TerminalDeliveryTimeoutCancelled = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// Bounded wait for the pump to return after step 4 cancels its token, on a normal teardown
+    /// (§3.3 step 4, §5.2). It is a last resort against a transport that never returns, not a
+    /// scheduled cost: a pump with nothing left to do returns in microseconds.
+    /// </summary>
+    internal static readonly TimeSpan PumpShutdownGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Pump shutdown grace when the run was cancelled (§3.3 step 4, §5.2). Every other budget here has
+    /// a cancelled variant and this one did not, so a Ctrl-C teardown spent the FULL 2 s grace on top
+    /// of the 500 ms terminal attempt — measured at 2510 ms — against the ~2 s the whole process is
+    /// given after SIGINT (#603), and before <c>logServer.DisposeAsync()</c> and its own 5 s drain even
+    /// begin. The production trigger needs no hostile fake: .NET's DNS resolution is not reliably
+    /// cancellable, so <c>--on-event https://does-not-resolve/</c> plus Ctrl-C parks the pump for the
+    /// whole grace.
+    /// </summary>
+    internal static readonly TimeSpan PumpShutdownGraceCancelled = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// How many per-row <c>delivery failed</c> notices are printed individually before the rest are
+    /// collapsed into a single counted line (§5.4). The circuit bounds this list only while failures
+    /// are CONSECUTIVE, so a flapping receiver produces one line per failed row without ever opening
+    /// it.
+    /// </summary>
+    internal const int DeliveryFailureNoticeCap = 2;
 
     /// <summary>Cap on the response body read before it is discarded, so a hostile response cannot be buffered (§5.2, §6.5).</summary>
     internal const int ResponseBodyReadCapBytes = 8 * 1024;

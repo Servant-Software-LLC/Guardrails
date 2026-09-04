@@ -111,6 +111,37 @@ public sealed class WebhookEventSinkTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    /// <summary>
+    /// A response body that FAULTS the moment it is read — the shape of a receiver that answers 200 and
+    /// closes without the body its <c>Content-Length</c> declared, a tunnel (ngrok, cloudflared)
+    /// resetting, or a proxy truncating. Reading it is the only thing that fails; the status line has
+    /// already been received.
+    /// </summary>
+    private sealed class FaultingStream : Stream
+    {
+        private static IOException Fault() => new("connection reset while reading the response body");
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw Fault();
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => Task.FromException<int>(Fault());
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+            => ValueTask.FromException<int>(Fault());
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -134,17 +165,43 @@ public sealed class WebhookEventSinkTests
     }
 
     /// <summary>
+    /// Polls until <paramref name="condition"/> holds, or throws with <paramref name="what"/> in the
+    /// message. Every wait in this file is on an OBSERVABLE, never a sleep: the budgets here are
+    /// sub-second at the time scales used, so a fixed delay is a coin flip under parallel test load.
+    /// </summary>
+    private static async Task WaitFor(Func<bool> condition, string what, int timeoutSeconds = 10)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+        while (!condition() && DateTime.UtcNow < deadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+
+        Assert.True(condition(), $"timed out waiting for: {what}");
+    }
+
+    /// <summary>
     /// Asserts <paramref name="actual"/> falls inside <paramref name="scaledStep"/>'s jittered band
     /// (§5.2: <c>[0.5, 1.5)</c>), plus generous slack for timer resolution and scheduler noise —
     /// Windows' own timer granularity alone is ~15 ms.
     /// </summary>
     private static void AssertWithinJitteredBand(TimeSpan actual, TimeSpan scaledStep, TimeSpan slack)
     {
+        (TimeSpan lower, TimeSpan upper) = JitteredBand(scaledStep, slack);
+        Assert.InRange(actual, lower, upper);
+    }
+
+    /// <summary>The same band as a predicate, for deciding whether a measurement is worth re-taking.</summary>
+    private static bool InJitteredBand(TimeSpan actual, TimeSpan scaledStep, TimeSpan slack)
+    {
+        (TimeSpan lower, TimeSpan upper) = JitteredBand(scaledStep, slack);
+        return actual >= lower && actual <= upper;
+    }
+
+    private static (TimeSpan Lower, TimeSpan Upper) JitteredBand(TimeSpan scaledStep, TimeSpan slack)
+    {
         TimeSpan lower = scaledStep * WebhookEventSink.JitterLowerBound - slack;
         if (lower < TimeSpan.Zero)
             lower = TimeSpan.Zero;
-        TimeSpan upper = scaledStep * WebhookEventSink.JitterUpperBound + slack;
-        Assert.InRange(actual, lower, upper);
+        return (lower, scaledStep * WebhookEventSink.JitterUpperBound + slack);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -166,44 +223,73 @@ public sealed class WebhookEventSinkTests
 
         // Behaviour: one row against a transport that returns 503 every time produces exactly 4
         // requests, and the three gaps between them each fall inside their jittered band.
-        var notices = new List<string>();
-        var handler = new RecordingHandler
-        {
-            OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))
-        };
-
         const double scale = 0.2; // 1/2/4s steps -> 200/400/800ms; keeps the test fast but measurable
-        using var cts = new CancellationTokenSource();
-        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token);
-
-        sink.Emit(Row("row-1"));
-
-        // WAIT FOR THE SCHEDULE, do not race the teardown. Disposing immediately makes this test a coin
-        // flip on jitter even on an idle machine: the jittered backoff can reach (1+2+4) * 1.5 * 0.2 =
-        // 2.1s, while DisposeAsync's backlog budget is 10s * 0.2 = 2.0s - and the backlog phase abandons
-        // retries (one attempt per row), so the fourth request is simply never made. Observed as
-        // "Expected: 4 / Actual: 3". Poll for the schedule to complete, then tear down.
-        DateTime attemptsDeadline = DateTime.UtcNow.AddSeconds(30);
-        while (handler.Requests.Count < 4 && DateTime.UtcNow < attemptsDeadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-
-        await sink.DisposeAsync();
-
-        IReadOnlyList<(string DeliveryId, DateTimeOffset At)> requests = handler.Requests;
-        Assert.Equal(4, requests.Count);
-
-        TimeSpan gap1 = requests[1].At - requests[0].At;
-        TimeSpan gap2 = requests[2].At - requests[1].At;
-        TimeSpan gap3 = requests[3].At - requests[2].At;
-
         TimeSpan slack = TimeSpan.FromMilliseconds(150);
-        AssertWithinJitteredBand(gap1, WebhookEventSink.BackoffSteps[0] * scale, slack);
-        AssertWithinJitteredBand(gap2, WebhookEventSink.BackoffSteps[1] * scale, slack);
-        AssertWithinJitteredBand(gap3, WebhookEventSink.BackoffSteps[2] * scale, slack);
 
-        // The one gap comparison that is exact regardless of jitter, since 2.0x always exceeds 1.5x:
-        // jitter exists so a parallel burst of failures does not resynchronize, not to blur the shape.
-        Assert.True(gap3 > gap1);
+        // MEASURE MORE THAN ONCE, and this is not flake tolerance — it is what separates the two things
+        // a wall-clock gap conflates. The gap between two recorded requests is the delay the sink
+        // COMPUTED plus however long the thread pool took to run the timer's continuation, and only the
+        // first of those is under test. When the pool is saturated the second is neither small nor
+        // bounded: it is governed by the runtime's thread-INJECTION rate (~1 per 500 ms once starved),
+        // which quantizes the observed gap near a second whatever the sink asked for.
+        //
+        // MEASURED on this file, at HEAD, before any of the fixes in this commit: alone, this test
+        // passes in ~1s; inside the full 2470-test suite it fails reproducibly with gap1 at 926 ms and
+        // 982 ms against a 450 ms band top. Widening `slack` to cover that would have swallowed the band
+        // whole — 1300 ms of tolerance on a 200 ms step admits a schedule with no backoff at all.
+        //
+        // A WRONG SCHEDULE FAILS EVERY MEASUREMENT; a starved one fails some. So take up to three and
+        // accept the first clean one, with the final measurement asserted unconditionally so a genuine
+        // defect still reports exactly the failure it reports today. Every band below is byte-identical
+        // to what it was; what changed is that one starved sample no longer decides.
+        const int measurements = 3;
+        for (int measurement = 1; ; measurement++)
+        {
+            var notices = new List<string>();
+            var handler = new RecordingHandler
+            {
+                OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))
+            };
+
+            using var cts = new CancellationTokenSource();
+            var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token);
+
+            sink.Emit(Row("row-1"));
+
+            // WAIT FOR THE SCHEDULE, do not race the teardown. Disposing immediately makes this test a
+            // coin flip on jitter even on an idle machine: the jittered backoff can reach
+            // (1+2+4) * 1.5 * 0.2 = 2.1s, while DisposeAsync's backlog budget is 10s * 0.2 = 2.0s - and
+            // the backlog phase abandons retries (one attempt per row), so the fourth request is simply
+            // never made. Observed as "Expected: 4 / Actual: 3". Poll for the schedule, then tear down.
+            await WaitFor(() => handler.Requests.Count >= 4, "the row's full four-attempt schedule", timeoutSeconds: 30);
+
+            await sink.DisposeAsync();
+
+            IReadOnlyList<(string DeliveryId, DateTimeOffset At)> requests = handler.Requests;
+            Assert.Equal(4, requests.Count);
+
+            TimeSpan gap1 = requests[1].At - requests[0].At;
+            TimeSpan gap2 = requests[2].At - requests[1].At;
+            TimeSpan gap3 = requests[3].At - requests[2].At;
+
+            bool last = measurement == measurements;
+            if (!last && !(InJitteredBand(gap1, WebhookEventSink.BackoffSteps[0] * scale, slack)
+                           && InJitteredBand(gap2, WebhookEventSink.BackoffSteps[1] * scale, slack)
+                           && InJitteredBand(gap3, WebhookEventSink.BackoffSteps[2] * scale, slack)
+                           && gap3 > gap1))
+            {
+                continue;
+            }
+
+            AssertWithinJitteredBand(gap1, WebhookEventSink.BackoffSteps[0] * scale, slack);
+            AssertWithinJitteredBand(gap2, WebhookEventSink.BackoffSteps[1] * scale, slack);
+            AssertWithinJitteredBand(gap3, WebhookEventSink.BackoffSteps[2] * scale, slack);
+
+            // The one gap comparison that is exact regardless of jitter, since 2.0x always exceeds 1.5x:
+            // jitter exists so a parallel burst of failures does not resynchronize, not to blur the shape.
+            Assert.True(gap3 > gap1);
+            return;
+        }
     }
 
     [Trait("Category", "RunEvents")]
@@ -225,6 +311,14 @@ public sealed class WebhookEventSinkTests
         // random jitter draw. What is NOT random is that the ceiling always cuts elapsed time to
         // ~PerRowCeiling: if the ceiling were not enforced at all, elapsed would land near the full
         // ~47-50s schedule instead, comfortably outside the assertion below.
+        //
+        // NOTE, since teardown gained `_draining`: this row is emitted and the sink torn down straight
+        // away, so the drain's one-attempt-per-row rule (§3.3 step 2) now bounds the same wall clock the
+        // ceiling does. Both bounds are real and the assertions below hold under either; what this test
+        // still uniquely owns is the CONSTANT above — the ceiling's declared value — and the negative
+        // statement that no path here runs the unbounded schedule out. The ceiling's own wall-clock
+        // signature (45s vs the schedule's ~47s) is only ~4% wide by the design's own choice of numbers,
+        // so it was never the thing this elapsed comparison was discriminating.
         var notices = new List<string>();
         var handler = new RecordingHandler
         {
@@ -296,9 +390,12 @@ public sealed class WebhookEventSinkTests
         // (~59ms) and FAILED inside the full 2470-test suite (~699ms, 12x slower under parallel load),
         // because at timeScale 0.05 every budget here is sub-second. Waiting on the observable makes the
         // ordering deterministic instead of load-dependent.
-        DateTime openDeadline = DateTime.UtcNow.AddSeconds(10);
-        while (handlerA.CountFor("fail-5") == 0 && DateTime.UtcNow < openDeadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
+        //
+        // The observable is now the LATCH ITSELF (CircuitIsOpen), not the arrival of fail-5's request.
+        // Request arrival is a PROXY that is true strictly BEFORE the state it stands for: the pump
+        // records the request, then awaits the response, then settles the row, then latches. Waiting on
+        // the proxy leaves that whole window open.
+        await WaitFor(() => sinkA.CircuitIsOpen, "the circuit to open after five consecutive failures");
 
         sinkA.Emit(Row("dropped-after-open"));
         // TERMINAL-PHASE SENTINEL (design 3.3 step 3): DisposeAsync ALWAYS spends one attempt on the
@@ -355,10 +452,11 @@ public sealed class WebhookEventSinkTests
         // channel reader is never resumed synchronously inside TryWrite. Flipping the handler straight
         // after the burst therefore races the pump and the test thread always wins — all five rows are
         // then served OK, the circuit never opens, and this test silently stops testing anything.
-        DateTime circuitDeadline = DateTime.UtcNow.AddSeconds(10);
-        while (handler.CountFor("open-5") == 0 && DateTime.UtcNow < circuitDeadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        Assert.True(handler.CountFor("open-5") >= 1, "the fifth failing row must be attempted before the transport is flipped — otherwise the circuit never opens and this test proves nothing");
+        //
+        // Wait on the LATCH, not on the arrival of the fifth row's request: the request arrives strictly
+        // before the latch it stands for, so the proxy leaves exactly the window this poll exists to
+        // close.
+        await WaitFor(() => sink.CircuitIsOpen, "the circuit to open after five consecutive failures");
 
         // Flip the transport to succeed and wait comfortably longer than any plausible cooldown at
         // this time scale — there is no half-open probe and no timer, so nothing should change.
@@ -483,12 +581,11 @@ public sealed class WebhookEventSinkTests
 
         release.SetResult();
 
-        // Wait for the circuit to open: the surviving flood rows (the newest QueueCapacity of them)
-        // all fail, so after 5 of them are attempted the circuit must be open.
-        string fifthSurvivor = $"flood-{excess + 4:D5}";
-        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
-        while (handler.CountFor(fifthSurvivor) == 0 && DateTime.UtcNow < deadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
+        // Wait for the circuit to open: the surviving flood rows (the newest QueueCapacity of them) all
+        // fail, so after 5 of them are attempted the circuit must be open. Wait on the LATCH rather than
+        // on the fifth survivor's request arriving — the request is recorded before the row has even
+        // been settled, let alone counted toward the threshold.
+        await WaitFor(() => sink.CircuitIsOpen, "the circuit to open after five consecutive flood failures");
 
         // Source 2: arrival-drops. The circuit is open now, so these must never reach the handler.
         sink.Emit(Row("late-1"));
@@ -581,6 +678,46 @@ public sealed class WebhookEventSinkTests
     [Trait("Category", "RunEvents")]
     [Trait("Plan", "36-onevent")]
     [Fact]
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    public async Task EachRowIsPostedExactlyOnceOnAHealthyEndpoint()
+    {
+        // COMPLETENESS + NO-DUPLICATION, the two directions nothing else asserts. Every other test here
+        // checks that a particular row WAS or WAS NOT attempted; none checks that the delivered set is
+        // exactly the emitted set. An implementation that delivers half the rows, or that double-POSTs
+        // the last one, passes the rest of this file.
+        //
+        // The last row is the one at risk: 3.3 step 3 spends a guaranteed terminal attempt on
+        // _lastEnqueued, so if the "already settled" bookkeeping is wrong in the OTHER direction the
+        // final row is POSTed twice on every green run - invisible to a receiver that dedupes on the
+        // idempotency key, and a real defect for one that does not.
+        var notices = new List<string>();
+        var handler = new RecordingHandler
+        {
+            OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK))
+        };
+
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
+
+        string[] ids = ["row-a", "row-b", "row-c", "row-final"];
+        foreach (string id in ids)
+        {
+            sink.Emit(Row(id));
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+            while (handler.CountFor(id) == 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+
+        await sink.DisposeAsync();
+
+        foreach (string id in ids)
+            Assert.Equal(1, handler.CountFor(id));
+
+        Assert.Equal(ids.Length, handler.Requests.Count);
+    }
+
+    [Fact]
     public async Task TerminalRowIsAttemptedWithTheCircuitOpen()
     {
         // THE MOST IMPORTANT TEST IN THIS FILE — the blocker-3 regression test. `_lastEnqueued`
@@ -596,9 +733,27 @@ public sealed class WebhookEventSinkTests
         using var cts = new CancellationTokenSource();
         var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
 
-        // Open the circuit.
-        for (int i = 0; i < 5; i++)
+        // Open the circuit — the first four together, then the FIFTH ALONE, waiting for it to be
+        // attempted before anything else is emitted.
+        //
+        // That last part is the whole point, and emitting all five back-to-back defeats it. A 400 is
+        // non-retryable, so each row settles on its first attempt and calls MarkSettledIfLastEnqueued.
+        // If the pump is BEHIND (all five emitted at once), _lastEnqueued is already "terminal-row" when
+        // they settle, the delivery ids mismatch, and the settled flag never latches - so the guarantee
+        // fires and this test passes without ever exercising the state it exists to protect. PRODUCTION
+        // is the opposite: 8.1 calls this stream low-frequency, the pump keeps up, and a row settles
+        // while it IS _lastEnqueued. This setup reproduces production.
+        for (int i = 0; i < 4; i++)
             sink.Emit(Row($"open-{i}"));
+
+        sink.Emit(Row("open-4"));
+
+        // Wait on the LATCH. CircuitIsOpen is set inside OnPermanentFailure, AFTER that same method has
+        // already called MarkSettledIfLastEnqueued — so observing the latch proves open-4 settled WHILE
+        // it was _lastEnqueued, which is the exact state this test exists to protect. The previous form
+        // waited for open-4's REQUEST to be recorded and then slept 50ms hoping settlement had followed;
+        // that sleep is the race, and this is the state it was standing in for.
+        await WaitFor(() => sink.CircuitIsOpen, "the circuit to open, which is also proof open-4 settled while it was _lastEnqueued");
 
         // Now let the transport succeed and emit one more, last-enqueued row.
         handler.OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
@@ -647,6 +802,127 @@ public sealed class WebhookEventSinkTests
     [Trait("Category", "RunEvents")]
     [Trait("Plan", "36-onevent")]
     [Fact]
+    public async Task TeardownAbandonsTheRetryBudgetOneAttemptPerRow()
+    {
+        // §3.3 step 1 sets `_draining` and step 2 says what it buys: from there the pump makes "one
+        // attempt per row — it abandons the retry budget entirely", because "retrying during teardown
+        // is what starves the terminal row". SSOT §8.3 promises the same thing to receivers: "At
+        // teardown the harness stops retrying altogether — one attempt per row." The flag did not
+        // exist, so a retryable failure during the drain still consumed the full four-attempt schedule
+        // and the backlog budget behind it.
+        var notices = new List<string>();
+        var release = new TaskCompletionSource();
+        var handler = new RecordingHandler
+        {
+            OnRequest = async (req, _, ct) =>
+            {
+                if (DeliveryIdOf(req) == "head")
+                {
+                    await release.Task.WaitAsync(ct);
+                    return new HttpResponseMessage(HttpStatusCode.OK);
+                }
+
+                // 503 is RETRYABLE (§5.1) — outside teardown this row would be POSTed four times.
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+        };
+
+        // scale 0.2: the backlog drain budget is 10s * 0.2 = 2s, comfortably longer than the retry
+        // schedule this test asserts does NOT happen (first retry would land 100-300ms in), so a
+        // truncated schedule cannot be mistaken for an exhausted budget.
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.2, cts.Token);
+
+        // Park the pump inside the head row's handler so the two rows behind it are still QUEUED when
+        // teardown begins — that is the state §3.3 step 2 is about.
+        sink.Emit(Row("head"));
+        await WaitFor(() => handler.CountFor("head") >= 1, "the pump to be parked inside the head row");
+
+        sink.Emit(Row("drain-me"));
+        sink.Emit(Row("terminal-sentinel"));
+
+        // DisposeAsync runs step 1 SYNCHRONOUSLY — the writer completion and the `_draining` set both
+        // precede its first await — so by the time this call has returned its ValueTask the sink is
+        // draining, and releasing the pump now is deterministic rather than a race.
+        ValueTask disposal = sink.DisposeAsync();
+        release.SetResult();
+        await disposal;
+
+        // EXACTLY ONE. Not "at most four": one attempt per row is the promise, and the retryable status
+        // is what makes the number discriminating.
+        Assert.Equal(1, handler.CountFor("drain-me"));
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    [Fact]
+    public async Task TeardownNeverReportsAFailureForARowItNeverSent()
+    {
+        // A HEALTHY receiver — 200 to everything it is actually given — must never be reported as
+        // having failed. After step 4 cancels the pump's token the pump keeps draining the channel, and
+        // every row still in it gets an already-cancelled per-row token, breaks out of the attempt loop
+        // having sent NOTHING, and used to fall straight through to the permanent-failure path. That
+        // buffered a "delivery failed" notice and incremented the consecutive-failure counter for a row
+        // that was never POSTed — measured, with 40 rows behind one slow row, as 6 "delivery failed"
+        // notices plus "gave up after 5 consecutive delivery failures" against an endpoint that had
+        // answered 200 every single time.
+        //
+        // Nothing was learned about the endpoint, because nothing was sent to it: a never-attempted row
+        // is a plain counted drop, and the counts line plus §8.3's reconciliation path (diff the
+        // received (bracket, seq) set against events.jsonl) is the whole of what it is owed.
+        var notices = new List<string>();
+        var handler = new RecordingHandler
+        {
+            OnRequest = async (_, _, ct) =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+        };
+
+        const double scale = 0.05; // BacklogDrainBudget 10s -> 500ms, so most of the backlog is left over
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, scale, cts.Token);
+
+        for (int i = 0; i < 40; i++)
+            sink.Emit(Row($"backlog-{i:D3}"));
+        sink.Emit(Row("terminal-row"));
+
+        await sink.DisposeAsync();
+
+        // Positive control FIRST: rows really were left undelivered, so the assertions below are not
+        // satisfied by a run in which the drain happened to finish.
+        int dropped = ParseDroppedCount(notices);
+        Assert.True(dropped > 0, $"this test needs an undrained backlog to mean anything; the summary reported {dropped} dropped");
+
+        // THE HEADLINE: no aggregate verdict against the endpoint. The circuit must stay closed and
+        // nothing may claim the harness "gave up after 5 consecutive delivery failures", because the
+        // endpoint produced no failures at all.
+        Assert.False(sink.CircuitIsOpen, "a receiver that answered 200 to every request it was given must never open the circuit");
+        Assert.DoesNotContain(notices, n => n.Contains("gave up", StringComparison.Ordinal));
+        Assert.DoesNotContain(notices, n => n.Contains("further delivery failure", StringComparison.Ordinal));
+
+        // AT MOST ONE per-row failure notice, and its cause is the harness's own cancellation — not the
+        // 39 queued rows. Exactly one row can be IN FLIGHT when step 4 cancels the pump's token (the
+        // pump is serial), and that row genuinely was sent and genuinely was not delivered, so a notice
+        // naming TaskCanceledException is honest about it. Every row BEHIND it was never sent at all,
+        // and it is the count that separates the two: before the fix each of those produced its own
+        // notice and its own _consecutiveFailures increment, which is what manufactured the "gave up"
+        // line above against an endpoint that had answered 200 every time.
+        List<string> failureNotices = [.. notices.Where(n => n.Contains("delivery failed", StringComparison.Ordinal))];
+        Assert.True(
+            failureNotices.Count <= 1,
+            $"only the single in-flight row may be reported as failed; got {failureNotices.Count}:{Environment.NewLine}{string.Join(Environment.NewLine, failureNotices)}");
+        foreach (string notice in failureNotices)
+            Assert.Contains(nameof(TaskCanceledException), notice, StringComparison.Ordinal);
+
+        // And the row the whole feature exists for still got its guaranteed attempt.
+        Assert.Equal(1, handler.CountFor("terminal-row"));
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    [Fact]
     public async Task CancelledPathUsesTheShortBudget()
     {
         Assert.Equal(TimeSpan.FromSeconds(10), WebhookEventSink.BacklogDrainBudget);
@@ -679,6 +955,79 @@ public sealed class WebhookEventSinkTests
         // Exactly one attempt is still spent on the last-enqueued row — always, circuit or no
         // circuit, backlog or no backlog.
         Assert.Equal(1, handler.CountFor("terminal-row"));
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    [Fact]
+    public async Task CancelledTeardownFitsInsideTheProcessBudget()
+    {
+        // Every teardown budget has a cancelled variant — the pump shutdown grace did not, so a Ctrl-C
+        // teardown spent the full 2s grace on top of the 500ms terminal attempt. MEASURED: DisposeAsync
+        // took 2510 ms on a cancelled run, against the ~2 s the whole process is given after SIGINT
+        // (System.CommandLine's default ProcessTerminationTimeout, #603) — and before
+        // logServer.DisposeAsync() and its own 5 s drain have even started.
+        //
+        // The production trigger needs no hostile fake: .NET's DNS resolution is not reliably
+        // cancellable, so `--on-event https://does-not-resolve/` plus Ctrl-C parks the pump inside
+        // SendAsync for the whole grace. The handler below reproduces exactly that — it ignores its own
+        // cancellation token, which is the only property of the real case that matters.
+        Assert.Equal(TimeSpan.FromSeconds(2), WebhookEventSink.PumpShutdownGrace);
+        Assert.Equal(TimeSpan.FromMilliseconds(250), WebhookEventSink.PumpShutdownGraceCancelled);
+
+        // The contract as pure arithmetic, independent of any machine's timing: the three cancelled
+        // budgets must SUM to less than the process budget, since they are spent in series.
+        TimeSpan cancelledTeardownBudget =
+            WebhookEventSink.BacklogDrainBudgetCancelled
+            + WebhookEventSink.TerminalDeliveryTimeoutCancelled
+            + WebhookEventSink.PumpShutdownGraceCancelled;
+        Assert.True(
+            cancelledTeardownBudget < TimeSpan.FromSeconds(2),
+            $"the cancelled teardown budget is {cancelledTeardownBudget}, which does not fit inside the ~2s the process gets after SIGINT (#603)");
+
+        var notices = new List<string>();
+        var handler = new RecordingHandler
+        {
+            OnRequest = async (_, _, _) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10)); // ignores its token, exactly like DNS resolution
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+        };
+
+        // timeScale 1.0, deliberately: this test is ABOUT the real wall-clock cost of a Ctrl-C teardown,
+        // so scaling the budgets down would scale away the thing being measured.
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, timeScale: 1.0, cts.Token);
+
+        // The pump must be PARKED INSIDE SendAsync before the token is cancelled: once the run's token
+        // is cancelled the pump drops rows on arrival without attempting them (§3.3), so a sink that was
+        // already cancelled at construction has a pump that returns instantly and the grace is never
+        // spent. Ctrl-C during an in-flight POST is the real shape.
+        sink.Emit(Row("in-flight"));
+        await WaitFor(() => handler.CountFor("in-flight") >= 1, "the pump to be parked inside an in-flight POST");
+
+        sink.Emit(Row("terminal-row"));
+        cts.Cancel();
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await sink.DisposeAsync();
+        stopwatch.Stop();
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"a cancelled teardown took {stopwatch.Elapsed}, which does not fit inside the ~2s the process gets after SIGINT (#603)");
+
+        // Positive control: the terminal attempt was actually SPENT, not skipped. Without this the
+        // assertion above could be satisfied by a teardown that gave up on the guarantee the whole
+        // feature exists for.
+        Assert.True(
+            stopwatch.Elapsed >= WebhookEventSink.TerminalDeliveryTimeoutCancelled,
+            $"the terminal attempt was never spent: teardown took only {stopwatch.Elapsed}");
+
+        // Second positive control: the pump really was still stuck, so the grace was the bound that
+        // ended step 4 rather than a pump that had already returned.
+        Assert.Contains(notices, n => n.Contains("stopped early", StringComparison.Ordinal));
     }
 
     [Trait("Category", "RunEvents")]
@@ -722,7 +1071,100 @@ public sealed class WebhookEventSinkTests
         string faultNotice = Assert.Single(
             notices, n => n.Contains("stopped early", StringComparison.Ordinal));
         Assert.Contains("never attempted", faultNotice, StringComparison.Ordinal);
-        Assert.DoesNotContain("0 dropped", faultNotice, StringComparison.Ordinal);
+
+        // The fault notice must NAME a non-zero number of unreached rows — that count is the whole
+        // reason it is not a silent disappearance, and "0 row(s) never attempted" beside a stalled pump
+        // would be the same defect wearing a different sentence.
+        Match neverAttempted = Regex.Match(faultNotice, @"(\d+) row\(s\) never attempted");
+        Assert.True(neverAttempted.Success, $"the fault notice does not name a count: {faultNotice}");
+        Assert.True(
+            int.Parse(neverAttempted.Groups[1].Value) > 0,
+            $"the fault notice claims no rows were left unreached, with the pump stuck inside SendAsync: {faultNotice}");
+
+        // UPDATED EXPECTATION, and the previous one was the right instinct expressed as the wrong
+        // mechanism. This test used to assert `DoesNotContain("0 dropped", faultNotice)`, which held
+        // because the counts line was printed only in the `else` of this branch — i.e. it was WITHHELD
+        // on exactly the path where an operator most needs the numbers. §5.4 requires the counts line on
+        // EVERY run that used --on-event: "a line that always prints is proof the mechanism ran at all",
+        // and it is listed there alongside the stopped-early form, not as an alternative to it. So the
+        // counts line prints here too, and the stopped-early notice prints IN ADDITION.
+        //
+        // What makes a "0 dropped" reading honest on this path is the line beside it naming the rows
+        // that were never reached — the pair, not the suppression of half of it. That pairing is what
+        // this test now pins, and it is strictly more than it asserted before: the old assertion was
+        // satisfiable by printing nothing at all.
+        string summary = Assert.Single(
+            notices, n => n.Contains("delivered", StringComparison.Ordinal) && n.Contains("dropped", StringComparison.Ordinal));
+        Assert.Contains("->", summary, StringComparison.Ordinal);
+        Assert.True(
+            notices.IndexOf(summary) < notices.IndexOf(faultNotice),
+            "the counts line comes first and the stopped-early notice qualifies it; reversing them reads as a summary that supersedes the warning");
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    [Fact]
+    public async Task PerRowFailureNoticesAreCappedAndCollapsed()
+    {
+        Assert.Equal(2, WebhookEventSink.DeliveryFailureNoticeCap);
+
+        // §5.3's circuit is the only thing bounding the per-row "delivery failed" notice, and it bounds
+        // it ONLY while failures are CONSECUTIVE. A flapping receiver resets the counter on every
+        // success, so the circuit never opens and the buffer grows one line per failed row. MEASURED:
+        // 400 rows against a receiver alternating 200/400 produced 201 console lines, burying the §5.4
+        // summary and the green-but-undelivered warning that prints beside it.
+        const int rows = 400;
+        var notices = new List<string>();
+        var handler = new RecordingHandler
+        {
+            // Even rows succeed, odd rows are a hard non-retryable 400: one attempt each, and never two
+            // failures in a row, so _consecutiveFailures never reaches 5.
+            OnRequest = (req, _, _) =>
+            {
+                bool ok = DeliveryIdOf(req).StartsWith("ok-", StringComparison.Ordinal);
+                return Task.FromResult(new HttpResponseMessage(ok ? HttpStatusCode.OK : HttpStatusCode.BadRequest));
+            }
+        };
+
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
+
+        for (int i = 0; i < rows; i++)
+            sink.Emit(Row(i % 2 == 0 ? $"ok-{i:D3}" : $"bad-{i:D3}"));
+
+        // Drain the whole burst BEFORE tearing down: teardown abandons the retry budget and drops what
+        // is left, so a dispose that lands mid-burst would cut the failure count this test is counting.
+        await WaitFor(() => handler.Requests.Count >= rows, $"all {rows} rows to be attempted", timeoutSeconds: 30);
+
+        await sink.DisposeAsync();
+
+        // Positive control: the receiver really did flap, and the circuit really did stay closed — which
+        // is what makes the cap the only bound in play.
+        Assert.False(sink.CircuitIsOpen, "alternating success/failure must never open the circuit; that is why the cap is needed at all");
+
+        const int failures = rows / 2;
+
+        // Exactly two individual failure notices, and one collapse line for the rest.
+        Assert.Equal(
+            WebhookEventSink.DeliveryFailureNoticeCap,
+            notices.Count(n => n.Contains("delivery failed (", StringComparison.Ordinal)));
+
+        string collapsed = Assert.Single(notices, n => n.Contains("further delivery failure", StringComparison.Ordinal));
+        Assert.Contains($"{failures - WebhookEventSink.DeliveryFailureNoticeCap} further delivery failures", collapsed, StringComparison.Ordinal);
+
+        // The collapse carries the LAST failure's description, so the suppressed lines cost no
+        // information the operator did not already have twice over — and it stays inside §5.4's closing
+        // rule (a status code or an exception TYPE NAME, never ex.Message, never the URL).
+        Assert.Contains("400", collapsed, StringComparison.Ordinal);
+        Assert.DoesNotContain(DefaultUrl.AbsolutePath, collapsed, StringComparison.Ordinal);
+
+        // The summary is no longer buried: 201 lines becomes a handful, and the counts are exact.
+        Assert.True(notices.Count <= 5, $"expected a handful of notices, got {notices.Count}:{Environment.NewLine}{string.Join(Environment.NewLine, notices)}");
+
+        string summary = Assert.Single(
+            notices, n => n.Contains("delivered", StringComparison.Ordinal) && n.Contains("dropped", StringComparison.Ordinal));
+        Assert.Contains($"{failures} delivered", summary, StringComparison.Ordinal);
+        Assert.Contains($"{failures} dropped", summary, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -914,5 +1356,53 @@ public sealed class WebhookEventSinkTests
         string summary = Assert.Single(notices, n => n.Contains("delivered", StringComparison.Ordinal));
         Assert.Contains("1 delivered", summary, StringComparison.Ordinal);
         Assert.Contains("0 dropped", summary, StringComparison.Ordinal);
+    }
+
+    [Trait("Category", "RunEvents")]
+    [Trait("Plan", "36-onevent")]
+    [Fact]
+    public async Task A2xxWhoseResponseBodyFaultsIsStillExactlyOneDelivery()
+    {
+        // §4.4 and SSOT §8.3 state the receiver contract verbatim: "Any 2xx is success. The response
+        // body is ignored entirely." The drain exists ONLY to release the connection, so a fault while
+        // reading it means the connection is already gone — there is nothing left to release and
+        // nothing to report, and above all nothing about the STATUS LINE has changed.
+        //
+        // Deciding `delivered` after the drain instead of before it made a body-read fault reclassify
+        // an accepted delivery as a retryable failure: measured as FOUR POSTs of a row the receiver had
+        // already accepted at 200, then reported to the operator as a drop. The triggers are ordinary —
+        // a receiver that answers 200 and closes without its declared Content-Length body, an
+        // ngrok/cloudflared tunnel resetting, a proxy truncating — so a real receiver could be POSTed
+        // the same task-settled row four times and still be told the run had dropped it.
+        var notices = new List<string>();
+        var handler = new RecordingHandler
+        {
+            OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new FaultingStream())
+            })
+        };
+
+        using var cts = new CancellationTokenSource();
+        var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
+
+        sink.Emit(Row("accepted-at-200"));
+        await WaitFor(() => handler.CountFor("accepted-at-200") >= 1, "the row to be POSTed at least once");
+
+        await sink.DisposeAsync();
+
+        // ONE POST, not four: the 2xx settled the row on its first attempt.
+        Assert.Equal(1, handler.CountFor("accepted-at-200"));
+
+        // …and it is reported as delivered, not dropped. Both halves matter: an implementation that
+        // stopped retrying but still counted the row a drop would satisfy the assertion above while
+        // still telling the operator a receiver that accepted the row had rejected it.
+        string summary = Assert.Single(
+            notices, n => n.Contains("delivered", StringComparison.Ordinal) && n.Contains("dropped", StringComparison.Ordinal));
+        Assert.Contains("1 delivered", summary, StringComparison.Ordinal);
+        Assert.Contains("0 dropped", summary, StringComparison.Ordinal);
+
+        // No failure was reported at all — a 2xx is not a failure however its body behaved.
+        Assert.DoesNotContain(notices, n => n.Contains("delivery failed", StringComparison.Ordinal));
     }
 }

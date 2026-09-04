@@ -3977,17 +3977,31 @@ one, so a stalled pump cannot make the terminal row the one that is lost.
 **Shutdown, and what the terminal row is actually promised.** At teardown the harness stops retrying
 altogether — one attempt per row — drains the backlog for up to **10 s**, and then, **always and
 regardless of the circuit or the backlog, spends one further attempt (up to 10 s) on the LAST row
-enqueued**, which on every normal path is `run-finished`. Worst-case teardown is therefore ~20 s.
-**On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely and the terminal attempt is
-bounded at ~500 ms** — because the CLI host allows the whole process about **two seconds** to unwind
-after SIGINT (System.CommandLine's default `ProcessTerminationTimeout`), which the log server's own
-shutdown drain (§12.2) must also fit inside. So on Ctrl-C, delivery of `run-finished` is a single
-best-effort attempt and nothing more; as everywhere else here, **the file is the record.**
+enqueued**, which on every normal path is `run-finished`. It then waits up to **2 s** for the delivery
+pump to return before disposing the transport, so worst-case teardown is **~22 s**.
+**On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely, the terminal attempt is bounded
+at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because the CLI host allows the whole
+process about **two seconds** to unwind after SIGINT (System.CommandLine's default
+`ProcessTerminationTimeout`), which the log server's own shutdown drain (§12.2) must also fit inside,
+*after* this one. Every one of those three budgets has a cancelled variant for that reason, the pump
+wait included: it is a last resort against a transport that never returns rather than a scheduled
+cost, but .NET's DNS resolution is not reliably cancellable, so an unresolvable endpoint parks the
+pump for the whole of it. So on Ctrl-C, delivery of `run-finished` is a single best-effort attempt
+and nothing more; as everywhere else here, **the file is the record.**
 
-**Every drop is recorded, in ONE place.** A console line prints at the end of every run that used
+**Every drop is recorded, in ONE place.** A counts line prints at the end of every run that used
 `--on-event` — **including when nothing was dropped**, because silence on success is the defect
-§8.1 exists to remove — carrying delivered and dropped counts, whether the circuit opened, and
-whether the delivery pump itself faulted. There is deliberately **no per-drop log file**: a consumer
+§8.1 exists to remove, and **including when the delivery pump itself faulted**, which is the path an
+operator most needs the numbers on. Whether the circuit opened, and whether the pump faulted, are
+reported on their own lines **beside** that one rather than in place of it: the counts describe what
+the sink knows, and the notice next to them names the rows it never reached.
+The per-row `delivery failed` notice is **capped at 2**, with the remainder collapsed into a single
+counted line carrying the last failure's description — the circuit bounds that list only while
+failures are CONSECUTIVE, so a flapping receiver never opens it and would otherwise print one line
+per failed row. A row the harness never SENT — one still queued when teardown cancels the pump — is a
+plain counted drop: no notice, and no contribution to the circuit's consecutive-failure count,
+because nothing was learned about an endpoint nothing was sent to. There is deliberately **no
+per-drop log file**: a consumer
 computes its own drop set exactly, by diffing the `(bracket, seq)` values it received against
 `events.jsonl`, and a file written during teardown is a way for a delivery mechanism to fail a run.
 There is deliberately **no `webhook-dropped` event kind**: such a row would itself be queued for

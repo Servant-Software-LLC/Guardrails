@@ -390,12 +390,14 @@ Layer 3 takes the corrected lesson as a construction rule, not a hope:
    | 1 | Complete the channel writer and set `_draining` | Signals wind-down. From here the pump makes **one attempt per row** — it abandons the retry budget entirely (see step 2). |
    | 2 | **Backlog phase**: the pump keeps delivering in `seq` order, one attempt each, until the queue empties or `BacklogDrainBudget` expires (**10 s**, and **0 s when the run was cancelled**). Anything left is counted as a drop. | Retrying during teardown is what starves the terminal row (blocker 3). |
    | 3 | **Terminal phase, which ALWAYS runs**: if `_lastEnqueued` was not delivered, make exactly **one** attempt at it, bounded by `TerminalDeliveryTimeout` (**10 s**, **500 ms** when cancelled), **ignoring the circuit and ignoring the backlog**. | This is the guarantee the whole feature exists for, and it is why §5.3's circuit no longer costs `run-finished`. |
-   | 4 | Cancel the pump's token, then **`await` the pump, bounded** | `LogServer.cs:102-105` documents the trap verbatim: *"disposing that CancellationTokenSource while a wait is outstanding on it is undefined behaviour, so nothing may touch it until every dispatched request has returned."* A cancelled token does not mean `SendAsync` has returned. |
+   | 4 | Cancel the pump's token, then **`await` the pump, bounded** by `PumpShutdownGrace` (**2 s**, **250 ms** when cancelled) | `LogServer.cs:102-105` documents the trap verbatim: *"disposing that CancellationTokenSource while a wait is outstanding on it is undefined behaviour, so nothing may touch it until every dispatched request has returned."* A cancelled token does not mean `SendAsync` has returned. **It needs a cancelled variant like every other budget here** — .NET's DNS resolution is not reliably cancellable, so an unresolvable endpoint parks the pump for the WHOLE grace, and step 4 is spent *after* step 3 and *before* the log server's own drain. |
    | 5 | Dispose the `HttpClient`, then the `CancellationTokenSource` | The transport goes **last**, after the pump has provably returned — the corrected §9.3 rule. |
-   | 6 | Emit the buffered notices + the summary through `onNotice` (§5.4) | Last, so the counts are final and no console write races the live table (§5.3). |
+   | 6 | Emit the buffered notices, then the **counts line (always)**, then the stopped-early notice if the pump did not return (§5.4) | Last, so the counts are final and no console write races the live table (§5.3). The counts line is **not** the alternative to the stopped-early notice: §5.4 requires it on *every* run that used `--on-event`, and withholding it on the faulted-pump path withholds the numbers on the one path an operator most needs them. |
 
-   Worst-case teardown cost is therefore **20 s** on a normal exit and **~500 ms** on a cancelled one —
-   both stated as numbers rather than left to be multiplied out.
+   Worst-case teardown cost is therefore **22 s** on a normal exit (10 s backlog + 10 s terminal + 2 s
+   pump grace) and **~750 ms** on a cancelled one (0 + 500 ms + 250 ms) — both stated as numbers rather
+   than left to be multiplied out, and the cancelled figure has to fit inside the process budget in
+   step 4 below, alongside everything else that unwinds after SIGINT.
 
 3. **`DisposeAsync` MUST NOT THROW — the contract covers teardown as strictly as it covers `Emit`.**
    This is where the first draft violated its own ruling. `await using` puts the dispose in a
@@ -417,11 +419,20 @@ Layer 3 takes the corrected lesson as a construction rule, not a hope:
    budget that layer 2's own drain (`ShutdownDrainTimeout`, 5 s) paid ~10 measured variants to win.
 
    **Decision: the cancelled path skips the backlog entirely and spends ~500 ms on one attempt at the
-   terminal row.** Loopback RTT is routinely sub-millisecond, so that is a real chance rather than a
-   gesture, and it leaves the remaining budget to the log server. **§8.3 says plainly that on Ctrl-C the
-   terminal row's delivery is a single best-effort attempt, and the file is the record.** The run's
-   cancellation token is passed to the dispatcher **only to select the budget** — the drain itself never
-   observes it, because a token that is already cancelled would otherwise skip the drain entirely.
+   terminal row, then at most 250 ms waiting for the pump — ~750 ms in total.** Loopback RTT is
+   routinely sub-millisecond, so that is a real chance rather than a gesture, and it leaves the
+   remaining budget to the log server. **§8.3 says plainly that on Ctrl-C the terminal row's delivery is
+   a single best-effort attempt, and the file is the record.** The run's cancellation token is passed to
+   the dispatcher **only to select the budget** — the drain itself never observes it, because a token
+   that is already cancelled would otherwise skip the drain entirely.
+
+   **Every budget spent here needs a cancelled variant, and the pump-shutdown grace is the one that is
+   easy to forget** because it is a *last resort against a transport that never returns* rather than a
+   scheduled cost — a pump with nothing left to do returns in microseconds, so it reads as free. It is
+   not: .NET's DNS resolution is not reliably cancellable, so `--on-event https://does-not-resolve/`
+   plus Ctrl-C parks the pump inside `SendAsync` for the entire grace. With the grace flat at 2 s a
+   cancelled teardown was **measured at 2510 ms** — 500 ms terminal + 2000 ms grace — over the whole
+   two-second process budget on its own, before `logServer.DisposeAsync()` and its 5 s drain even start.
 
    **Explicitly NOT taken:** raising `ProcessTerminationTimeout`. It is a cross-cutting change to every
    command's Ctrl-C behavior, it is a maintainer UX call rather than layer 3's to make, and layer 2's
@@ -578,7 +589,9 @@ unit-tested directly — no HTTP server needed to prove the classification.
 | Queue capacity | **1024** rows, `DropOldest` | a run emits hundreds, so this only fills when the pump is stalled — which is exactly when dropping is correct, and `DropOldest` is what keeps the terminal row from being the one dropped (§3.2) |
 | **Backlog drain budget** | **10 s** normally, **0 s** when the run was cancelled | §3.3 step 2. Retries are abandoned for the whole drain — one attempt per row |
 | **Terminal delivery timeout** | **10 s** normally, **500 ms** when the run was cancelled | §3.3 step 3. Always spent, circuit or no circuit, backlog or no backlog |
-| Worst-case teardown | **20 s** normally, **~500 ms** cancelled | the sum of the two above, stated so nobody has to add them up |
+| **Pump shutdown grace** | **2 s** normally, **250 ms** when the run was cancelled | §3.3 step 4. A last resort against a transport that never returns — a pump with nothing left to do returns in microseconds — so it reads as free and is not: DNS resolution is not reliably cancellable, and an unresolvable endpoint parks the pump for the whole grace |
+| Worst-case teardown | **22 s** normally, **~750 ms** cancelled | the sum of the three above, stated so nobody has to add them up. The cancelled figure is the one with a hard external constraint: the whole process gets ~2 s after SIGINT (§3.3 step 4), and the log server's own 5 s drain runs *after* this one |
+| Per-row failure notices printed individually | **2**, then collapsed into one counted line | §5.4. §5.3's circuit bounds this list only while failures are CONSECUTIVE, so a flapping receiver (200/400/200/400…) never opens it and prints one line per failed row — measured at 201 console lines for 400 rows |
 | `detail` cap when included | **2000 chars** — `GuardrailFailureReason.MaxChars` (`src/Guardrails.Core/Execution/GuardrailFailureReason.cs:25`), **promoted from `private const` to `internal const`** so there is ONE owner of the number rather than a copy that drifts | an existing in-repo precedent for capping exactly this kind of text, and it stops one runaway compiler line becoming a multi-megabyte POST |
 | Response body read | **≤ 8 KB, discarded** | releases the connection without buffering a hostile response |
 
@@ -636,6 +649,40 @@ that always prints is proof the mechanism ran at all. The fourth form matters fo
 pump's `Task` is retained and its fault is **observed**, because `Task.WhenAny(pump, delay)` does not
 throw on a faulted pump, and a summary reading "0 dropped" while rows sit in a dead channel would be the
 silent disappearance §2.2 mocks the shell shim for.
+
+**"Always" includes the faulted-pump path, and the counts line and the stopped-early notice are ADDITIVE,
+not alternatives.** The forms above are a menu, not a switch. Making the stopped-early notice *replace*
+the counts line withholds the numbers on precisely the path where an operator most needs them, and it
+does so under the banner of the rule that exists to stop exactly that — so the two print together, counts
+first and the stopped-early notice qualifying them. That pairing is also what makes a "0 dropped" reading
+honest when the pump is stuck: the counts describe what the sink *knows*, the line beside them names the
+rows it never reached.
+
+**The per-row `delivery failed` notice is CAPPED at 2, with the rest collapsed into one counted line.**
+
+```
+Webhook: delivery failed (400 BadRequest).
+Webhook: delivery failed (400 BadRequest).
+Webhook: ... and 198 further delivery failures (last: 400 BadRequest).
+Webhook: 200 delivered, 200 dropped -> https://hooks.example.com/…
+```
+
+§5.3's circuit was the only thing bounding that list, and it bounds it **only while failures are
+CONSECUTIVE**: a flapping receiver resets the counter on every success, so the circuit never opens and
+the buffer grows one line per failed row. **Measured: 400 rows against a receiver alternating 200/400
+produced 201 console lines**, burying the summary above and the green-but-undelivered warning that prints
+beside it. The suppressed lines carry no information the collapse does not — only the DESCRIPTION varies,
+and the last one is carried — so the cap costs nothing and the §8.3 reconciliation path (diff the received
+`(bracket, seq)` set against `events.jsonl`) remains the exact per-row record it always was.
+
+**A row the harness never SENT is a plain counted drop — no notice, and no contribution to the circuit's
+consecutive-failure count.** After step 4 cancels the pump's token the pump keeps draining the channel,
+and every row still in it breaks out of the attempt loop having sent nothing. Reporting those as delivery
+failures tells the operator a *healthy* receiver failed: **measured, with 40 rows behind one slow row
+against an endpoint that answered 200 to every request it was actually given, as 6 "delivery failed"
+notices plus "gave up after 5 consecutive delivery failures."** Nothing was learned about the endpoint,
+because nothing was sent to it. The one row that CAN be in flight when step 4 fires is a different case
+and does earn a notice — it was sent, and it was not delivered.
 
 **CUT: `logs/<runId>/webhooks.log`.** The first draft had a per-drop file beside `events.jsonl`. It does
 not earn its keep, and three of the four things said in its favor were wrong:
@@ -943,17 +990,31 @@ Append to that paragraph (currently ending line 3869):
 > **Shutdown, and what the terminal row is actually promised.** At teardown the harness stops retrying
 > altogether — one attempt per row — drains the backlog for up to **10 s**, and then, **always and
 > regardless of the circuit or the backlog, spends one further attempt (up to 10 s) on the LAST row
-> enqueued**, which on every normal path is `run-finished`. Worst-case teardown is therefore ~20 s.
-> **On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely and the terminal attempt is
-> bounded at ~500 ms** — because the CLI host allows the whole process about **two seconds** to unwind
-> after SIGINT (System.CommandLine's default `ProcessTerminationTimeout`), which the log server's own
-> shutdown drain (§12.2) must also fit inside. So on Ctrl-C, delivery of `run-finished` is a single
-> best-effort attempt and nothing more; as everywhere else here, **the file is the record.**
+> enqueued**, which on every normal path is `run-finished`. It then waits up to **2 s** for the delivery
+> pump to return before disposing the transport, so worst-case teardown is **~22 s**.
+> **On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely, the terminal attempt is bounded
+> at ~500 ms and the pump wait at ~250 ms — ~750 ms in total** — because the CLI host allows the whole
+> process about **two seconds** to unwind after SIGINT (System.CommandLine's default
+> `ProcessTerminationTimeout`), which the log server's own shutdown drain (§12.2) must also fit inside,
+> *after* this one. Every one of those three budgets has a cancelled variant for that reason, the pump
+> wait included: it is a last resort against a transport that never returns rather than a scheduled
+> cost, but .NET's DNS resolution is not reliably cancellable, so an unresolvable endpoint parks the
+> pump for the whole of it. So on Ctrl-C, delivery of `run-finished` is a single best-effort attempt
+> and nothing more; as everywhere else here, **the file is the record.**
 >
-> **Every drop is recorded, in ONE place.** A console line prints at the end of every run that used
+> **Every drop is recorded, in ONE place.** A counts line prints at the end of every run that used
 > `--on-event` — **including when nothing was dropped**, because silence on success is the defect
-> §8.1 exists to remove — carrying delivered and dropped counts, whether the circuit opened, and
-> whether the delivery pump itself faulted. There is deliberately **no per-drop log file**: a consumer
+> §8.1 exists to remove, and **including when the delivery pump itself faulted**, which is the path an
+> operator most needs the numbers on. Whether the circuit opened, and whether the pump faulted, are
+> reported on their own lines **beside** that one rather than in place of it: the counts describe what
+> the sink knows, and the notice next to them names the rows it never reached.
+> The per-row `delivery failed` notice is **capped at 2**, with the remainder collapsed into a single
+> counted line carrying the last failure's description — the circuit bounds that list only while
+> failures are CONSECUTIVE, so a flapping receiver never opens it and would otherwise print one line
+> per failed row. A row the harness never SENT — one still queued when teardown cancels the pump — is a
+> plain counted drop: no notice, and no contribution to the circuit's consecutive-failure count,
+> because nothing was learned about an endpoint nothing was sent to. There is deliberately **no
+> per-drop log file**: a consumer
 > computes its own drop set exactly, by diffing the `(bracket, seq)` values it received against
 > `events.jsonl`, and a file written during teardown is a way for a delivery mechanism to fail a run.
 > There is deliberately **no `webhook-dropped` event kind**: such a row would itself be queued for
