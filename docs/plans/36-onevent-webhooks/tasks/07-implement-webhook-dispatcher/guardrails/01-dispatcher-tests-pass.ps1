@@ -29,7 +29,9 @@ if ($code -ne 0) {
     Write-Output "=== Failures ==="
     # #179 re-emit: the assertion / exception / stack-trace detail is re-printed at the END of stdout
     # so the WHY survives into the ~60-line retry-feedback tail the agent actually reads, instead of
-    # being truncated away above the [FAIL] names.
+    # being truncated away mid-run. Note [FAIL] is NOT dead - xunit.v3 emits both
+    # "[xUnit.net ...] <FQN> [FAIL]" diagnostics and "  Failed <FQN> [15 ms]" block headers, so test
+    # NAMES were never the thing that went missing. What went missing is below.
     # BLOCK capture rather than a line-pattern allowlist, and the difference was MEASURED against
     # this repo's exact stack (net10.0, xunit.v3 3.2.2, xunit.runner.visualstudio 3.1.5,
     # Microsoft.NET.Test.Sdk 18.6.0). A real failure block is:
@@ -46,14 +48,16 @@ if ($code -ne 0) {
     # String:/Found: payload, and a THROWN test's only detail line, which is of the form
     # "System.InvalidOperationException : boom". That last one is this task's common case - a
     # half-built dispatcher fails by throwing, not by asserting (#608).
+    $detail = @()
     $emit = $false
-    $any = $false
     foreach ($line in ($log -split "`r?`n")) {
         if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
         elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
-        if ($emit) { Write-Output $line; $any = $true }
+        if ($emit) { $detail += $line }
     }
-    if (-not $any) {
+    $detail = $detail | Select-Object -First 40             # bound it so the block fits the ~60-line tail
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else {
         Write-Output "(no failure block matched - the runner's output format may have changed; read the full log above)"
     }
     Write-Output ""

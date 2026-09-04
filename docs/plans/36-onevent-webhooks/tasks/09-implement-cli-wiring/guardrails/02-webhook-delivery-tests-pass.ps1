@@ -25,8 +25,9 @@
 #          has run, so it fails the #125 union-safe test and must NOT be tagged scope:"integration" - that
 #          is the #250 mistake, and it would deadlock this task behind its own dependents.
 #
-#          Re-emits the assertion/exception lines at the END so they reach the harness's ~60-line
-#          retry-feedback tail (#179).
+#          Re-emits the runner's whole failure BLOCK at the END so it reaches the harness's ~60-line
+#          retry-feedback tail (#179), using the block-capture form (#608) rather than a line
+#          allowlist - see the comment at the capture itself for what an allowlist drops here.
 #
 # ORDERING (cheapest-first, #478 rule 4). Guardrail 01 is a ~1s source grep over ONE file; this is a
 #          ~2min integration run. Under guardrailMode failFast, 01 has ALREADY PASSED whenever this
@@ -52,8 +53,12 @@ $filter = 'Category=RunEvents&FullyQualifiedName~WebhookDeliveryTests'
 # exiting 0 over five STALE tests still compiled into the assembly after their source file had been
 # deleted. A single-guardrail `revalidate` re-runs this out of order, so it cannot rely on a build
 # guardrail having gone first.
-# NO -v q on the TEST command: it suppresses the Error Message / Expected / Actual / Stack Trace block,
-# leaving only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
+# NO -v q on the TEST command (#462): it suppresses the WHOLE failure block - the `Failed <name>` header,
+# `Error Message:`, the assertion line, `Stack Trace:` and its frames - leaving only "[FAIL] <name>", so
+# the block capture below starts on nothing and re-emits nothing. The guardrail would still fail and
+# still name the failing tests; only the WHY would be gone, with nothing in the output saying so. A
+# correctly-written re-emit is voided by one flag on the line above it. `validate` rejects the pair
+# mechanically (GR2037 entry #462).
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-webhook-forward-$PID"
 Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never read a PREVIOUS attempt's TRX
 $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo `
@@ -70,14 +75,37 @@ $failures = @()
 # EXIT CODE FIRST, guard second (#455, forward polarity): a test host that never ran exits NON-zero with
 # no summary, so checking the exit code first reports its real error instead of blaming the filter.
 if ($testExit -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:|error CS' |
-        ForEach-Object { $_.Line } |
-        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    # BLOCK capture, not a line allowlist (#608) - the plan-breakdown SSOT form, references/stacks/
+    # dotnet.md 4.2. Start at a failure header, stop at the run summary, take everything between.
+    #
+    # WHY THIS FILE SPECIFICALLY, and it is not cosmetic. Two re-emit patterns were in circulation and
+    # each failed in the OPPOSITE direction: the old allowlist
+    # ('\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:') has no `at ` branch,
+    # so it kept `Stack Trace:` as a LABEL FOLLOWED BY NOTHING and dropped the String:/Found: payload of
+    # a Contains/DoesNotContain failure; a drifted variant kept the frames and dropped the assertion
+    # headline plus a thrown test's only detail line. Both look correct on the page, which is how each
+    # survived. This guardrail is the REAL-SEAM PROOF for the whole feature, so it is where losing them
+    # costs the most: the stack FRAME is what says which of the ten integration tests broke and where,
+    # and a DeliveredBodiesMatchEventsJsonlLineForLine failure re-emits the String:/Found: payload
+    # carrying the actual divergent bytes - the one thing that makes a byte-equality failure diagnosable
+    # at all. An allowlist needs maintenance as assertion types change; a block capture does not.
+    #
+    # `error CS` is folded in as a THIRD start condition rather than dropped, because this same pipeline
+    # serves the compile-failure path (no --no-build, so a broken tree surfaces here). A build failure
+    # has no `Passed!`/`Failed!` terminator, so emit simply latches on to EOF and the bound below caps
+    # it - which is the right shape: the error lines plus the `N Error(s)` summary all reach the tail.
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:' -or $line -match 'error CS') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40             # bound the block so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     if ($text -match 'error CS') {
         $failures += "the log contains 'error CS' - this is a COMPILE failure, not a test failure. Fix the compiler errors above; do not touch the tests (they are outside your write scope)."
     }
