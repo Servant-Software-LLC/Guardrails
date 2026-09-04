@@ -99,6 +99,87 @@ public sealed class DeliveryRecordTests
         Assert.Contains("12-implement-events-endpoint", d.Reason!, StringComparison.Ordinal);
         Assert.Contains("interlock", d.Reason!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("mergeOnSuccess resolved off", d.Reason!, StringComparison.Ordinal);
+
+        // The interlock HELD, so no override fired — the audit object must be absent.
+        Assert.Null(d.ForcedPastDecision);
+    }
+
+    /// <summary>
+    /// Issue #597 — the same interlock, OVERRIDDEN. <c>--merge-on-success</c> is the documented operator
+    /// override of #361's delivery suppression, and it is the one action in the system that deliberately
+    /// bypasses a safety interlock. Before this, it left NO durable trace: the fact lived on
+    /// <see cref="RunReport"/> and in the console banner and nowhere on disk, so a delivery forced past a
+    /// machine decision was indistinguishable, after the terminal closed, from one that was never
+    /// suppressed. The record must carry the same pair the banner names — the decision token and the task.
+    /// </summary>
+    [Fact]
+    public void AForcedDelivery_RecordsThatTheInterlockWasOverridden_AndWhichDecision()
+    {
+        RunReport report = Report(outcome: MergeOnSuccessResult.FastForwarded, deliveredToBranch: "master") with
+        {
+            DeliverySuppressingDecision = new DecisionEntry
+            {
+                Boundary = "task",
+                Policy = "auto",
+                Decision = DecisionTokens.ProceededBestGuess,
+                Subject = "12-implement-events-endpoint",
+                Headline = "best-guessed at the needs-human gate"
+            },
+            DeliveryForcedPastDecision = true
+        };
+
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.True(d.Delivered);
+        Assert.Equal(DeliveryOutcome.FastForwarded, d.Outcome);
+
+        Assert.NotNull(d.ForcedPastDecision);
+        Assert.Equal(DecisionTokens.ProceededBestGuess, d.ForcedPastDecision!.Decision);
+        Assert.Equal("12-implement-events-endpoint", d.ForcedPastDecision.Subject);
+        Assert.Equal("task", d.ForcedPastDecision.Boundary);
+    }
+
+    /// <summary>
+    /// The override is a fact about the DELIVERY ATTEMPT, not about its success: an override that unlocked
+    /// a merge the user's dirty tree then refused still happened, and a post-mortem asking "why did this
+    /// run try to deliver machine-decided work?" needs the answer on the refused run too.
+    /// </summary>
+    [Fact]
+    public void AForcedDeliveryTheMergeThenRefused_StillRecordsTheOverride()
+    {
+        RunReport report = Report(outcome: MergeOnSuccessResult.Conflict) with
+        {
+            DeliverySuppressingDecision = new DecisionEntry
+            {
+                Boundary = "wave",
+                Policy = "auto",
+                Decision = DecisionTokens.ProceededUnreviewed,
+                Subject = "wave-02-build",
+                Headline = "proceeded through an unreviewed wave"
+            },
+            DeliveryForcedPastDecision = true
+        };
+
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.False(d.Delivered);
+        Assert.Equal(DeliveryOutcome.Conflict, d.Outcome);
+        Assert.NotNull(d.ForcedPastDecision);
+        Assert.Equal(DecisionTokens.ProceededUnreviewed, d.ForcedPastDecision!.Decision);
+        Assert.Equal("wave-02-build", d.ForcedPastDecision.Subject);
+    }
+
+    [Fact]
+    public void AnOrdinaryDelivery_RecordsNoOverride()
+    {
+        // The load-bearing negative: nearly every run. Recording an override here would claim a bypass
+        // that never happened, of an interlock that never engaged.
+        DeliverySection d = RunCommand.DescribeDelivery(
+            Report(outcome: MergeOnSuccessResult.FastForwarded, deliveredToBranch: "master"),
+            terminalGatePassed: true, PlanDir);
+
+        Assert.True(d.Delivered);
+        Assert.Null(d.ForcedPastDecision);
     }
 
     [Theory]

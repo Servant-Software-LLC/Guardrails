@@ -1,6 +1,8 @@
 using System.CommandLine;
 using System.Diagnostics;
+using System.Text.Json;
 using Guardrails.Cli.Commands;
+using Guardrails.Core.Journal;
 using Guardrails.Core.Review;
 
 namespace Guardrails.Integration.Tests;
@@ -140,6 +142,33 @@ public sealed class RunOutcomeWiringTests
         Assert.Contains("unreviewed wave", output, StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(ReviewMarker.PathFor(planDir)),
             "delivering under --merge-on-success must still NOT forge state/guardrails-review.json (§5 floor 3).");
+
+        // ── The DURABLE audit trail (SSOT §7 delivery.forcedPastDecision) ─────────────────────────────
+        // Everything asserted above is console output, which survives only if someone thought to redirect
+        // it. The bypass of a safety interlock must be reconstructable from disk alone — otherwise, a week
+        // later, this run is indistinguishable from one whose delivery was never suppressed. Read the REAL
+        // run.json the REAL run wrote, and require both halves the banner named.
+        // Read the raw bytes, not the typed model: the consumer this record exists for — a post-mortem, or
+        // #496's unattended pipeline — reads run.json without linking this assembly, so the WIRE shape is
+        // what has to be right.
+        using JsonDocument runJson = JsonDocument.Parse(
+            File.ReadAllText(RunJournal.PathFor(planDir)));
+
+        JsonElement delivery = runJson.RootElement.GetProperty("delivery");
+        Assert.True(delivery.GetProperty("delivered").GetBoolean());
+
+        JsonElement forced = delivery.GetProperty("forcedPastDecision");
+        Assert.Equal("proceeded-unreviewed", forced.GetProperty("decision").GetString());
+        Assert.Equal("wave-02-build", forced.GetProperty("subject").GetString());
+        Assert.Equal("wave", forced.GetProperty("boundary").GetString());
+
+        // And the overridden decision is findable in the document's own decisions[] via the recorded
+        // boundary + subject — the record points AT the evidence rather than restating it.
+        Assert.Contains(
+            runJson.RootElement.GetProperty("decisions").EnumerateArray(),
+            d => d.GetProperty("boundary").GetString() == "wave"
+                 && d.GetProperty("subject").GetString() == "wave-02-build"
+                 && d.GetProperty("decision").GetString() == "proceeded-unreviewed");
     }
 
     // ── The #120 driver: the REAL `run` command in-process (never `new Scheduler(...)`) ───────────────
