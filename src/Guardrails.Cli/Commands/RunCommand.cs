@@ -108,16 +108,15 @@ public static class RunCommand
         };
 
         // ── Webhook delivery (issue #585 layer 3, design doc 36) ──────────────────────────────────
-        // Task 08 declares and parses these two; it wires neither. Multi-valued and NOT Option<string?>:
-        // a single-arity option would have System.CommandLine 2.0.9 reject a second `--on-event` itself,
-        // with a generic arity message and exit code 1 — measured against this repo's own CLI. That would
-        // detect a repeat but never name the reason §6.4 requires, and it would make
-        // ARepeatedOnEventFlagIsRejected pass against a tree with no validation at all. Task 09 does its
-        // own count check (zero -> env fallback, one -> use it, more than one -> a named validation error)
-        // over the array this declaration parses into. ArgumentArity.OneOrMore (not ZeroOrMore) so a bare
-        // `--on-event` with no value stays a usage error rather than silently meaning "no webhook".
-        // AllowMultipleArgumentsPerToken is left at its default false, so `--on-event a b` cannot silently
-        // collect two values from one occurrence.
+        // Multi-valued and NOT Option<string?>: a single-arity option would have System.CommandLine 2.0.9
+        // reject a second `--on-event` itself, with a generic arity message and exit code 1 — measured
+        // against this repo's own CLI. That would detect a repeat but never name the reason §6.4 requires,
+        // and it would make ARepeatedOnEventFlagIsRejected pass against a tree with no validation at all.
+        // RunAsync does its own count check (zero -> env fallback, one -> use it, more than one -> a named
+        // validation error) over the array this declaration parses into, beside the --autonomy parse.
+        // ArgumentArity.OneOrMore (not ZeroOrMore) so a bare `--on-event` with no value stays a usage error
+        // rather than silently meaning "no webhook". AllowMultipleArgumentsPerToken is left at its default
+        // false, so `--on-event a b` cannot silently collect two values from one occurrence.
         var onEventOption = new Option<string[]>("--on-event")
         {
             Description = "POST each events.jsonl row to <url> as it is written (design doc 36 §8.3). Not repeatable — a second occurrence is a validation error naming the reason (§6.4). Falls back to GUARDRAILS_ON_EVENT when absent.",
@@ -150,8 +149,8 @@ public static class RunCommand
         command.Add(dialOption);
         command.Add(maxCostUsdOption);
 
-        // #585 layer 3 (design doc 36): parsed cleanly, then ignored — task 09 reads these and wires
-        // validation, the env fallback, and the WebhookEventSink construction.
+        // #585 layer 3 (design doc 36): validated and wired in RunAsync — the env fallback, the startup
+        // checks, and the WebhookEventSink construction.
         command.Add(onEventOption);
         command.Add(onEventDetailOption);
 
@@ -173,6 +172,8 @@ public static class RunCommand
             bool autonomous = parseResult.GetValue(autonomousOption);
             string? dial = parseResult.GetValue(dialOption);
             decimal? maxCostUsd = parseResult.GetValue(maxCostUsdOption);
+            string[]? onEventValues = parseResult.GetValue(onEventOption);
+            bool onEventDetail = parseResult.GetValue(onEventDetailOption);
 
             // #340 delivery tri-state: --merge-on-success forces ON, --no-merge-on-success forces OFF,
             // neither leaves it to guardrails.json (which itself now defaults ON). Passing BOTH is a
@@ -217,14 +218,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -292,6 +293,64 @@ public static class RunCommand
         if (autonomyOverride is { } policy && probe.Plan.Config.AutonomyPolicy != policy)
         {
             probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { AutonomyPolicy = policy } } };
+        }
+
+        // #585 layer 3 (design doc 36 §6.4/§6.5) — webhook delivery configuration. Validated HERE, beside
+        // the --autonomy parse above and well before RunJournal.LoadOrCreate below (the first write of run
+        // state): a bad value must exit before ANY run state is touched.
+        // ABadSchemeExitsOneBeforeTheRun, ARepeatedOnEventFlagIsRejected and ACrLfAuthValueIsRejected each
+        // assert run.json does not exist afterward — placing this after LoadOrCreate would make all three
+        // fail while the behaviour looked correct to a human reading the console.
+        string? onEventAuth = Environment.GetEnvironmentVariable("GUARDRAILS_ON_EVENT_AUTH");
+        if (onEventAuth is not null && (onEventAuth.Contains('\r') || onEventAuth.Contains('\n')))
+        {
+            io.Out.WriteLine(
+                "GUARDRAILS_ON_EVENT_AUTH contains a carriage return (CR) or line feed (LF) character — "
+                + "rejected as a header-injection defense (design doc 36 §6.4). The value is never echoed; "
+                + "fix the environment variable and retry.");
+            return ExitCodes.HarnessError;
+        }
+
+        if (onEventValues is { Length: > 1 })
+        {
+            io.Out.WriteLine(
+                $"--on-event was given {onEventValues.Length} times; it may be given only once — a silent "
+                + "last-wins could send this run's events to an endpoint the operator did not choose "
+                + "(design doc 36 §6.4).");
+            return ExitCodes.HarnessError;
+        }
+
+        string? onEventRaw = onEventValues is { Length: 1 }
+            ? onEventValues[0]
+            : Environment.GetEnvironmentVariable("GUARDRAILS_ON_EVENT");
+
+        Uri? onEventUrl = null;
+        if (!string.IsNullOrWhiteSpace(onEventRaw))
+        {
+            bool parsedOk = Uri.TryCreate(onEventRaw, UriKind.Absolute, out Uri? parsedUrl);
+            bool validScheme = parsedOk
+                && (parsedUrl!.Scheme == Uri.UriSchemeHttp || parsedUrl.Scheme == Uri.UriSchemeHttps);
+            if (!validScheme)
+            {
+                string schemeDescription = parsedOk ? $"'{parsedUrl!.Scheme}'" : "unrecognised (not an absolute URL)";
+                io.Out.WriteLine(
+                    $"--on-event URL scheme is {schemeDescription}; only 'http' and 'https' are supported "
+                    + "(design doc 36 §6.5).");
+                return ExitCodes.HarnessError;
+            }
+
+            onEventUrl = parsedUrl;
+
+            // §6.5: loopback and private addresses are explicitly ALLOWED (an agent-side monitor on
+            // 127.0.0.1 is the primary use case) — this is a WARNING, never a rejection, and it fires only
+            // for plain http to a host that is not loopback.
+            if (onEventUrl!.Scheme == Uri.UriSchemeHttp && !onEventUrl.IsLoopback)
+            {
+                io.Out.WriteLine(
+                    $"WARNING: --on-event target {WebhookEventSink.RedactUrl(onEventUrl)} uses plain http "
+                    + "to a non-loopback host — the payload and Authorization header would cross the "
+                    + "network unencrypted (design doc 36 §6.5).");
+            }
         }
 
         // Apply the autonomous-mode dial/cost overrides (doc 12 §3.4) to the EFFECTIVE run config. The command
@@ -531,6 +590,21 @@ public static class RunCommand
             // (every node pending until an event fires).
             JournalDocument? diagramSeed = TryReadJournalForSeed(probe.Plan.PlanDirectory);
 
+            // #585 layer 3 (design doc 36 §3.3) — construct the sink HERE, and `await using` (not a
+            // manual try/finally): that places its DisposeAsync in a compiler-emitted finally spanning the
+            // RunFinished bracket below and every `return exitCode;` in this method, so the unwind order
+            // becomes RunFinished's own `finally` (line ~772) -> this dispose -> logServer.DisposeAsync()
+            // (the outer `finally`, below the closing brace of this whole try) — verified against the
+            // actual brace structure, not merely asserted. Plan 35 §9.3 measured what happens when a
+            // "best-effort" drain runs after its transport is already torn down: 0% effective, every
+            // single time. onEventUrl is null when --on-event/GUARDRAILS_ON_EVENT are both absent, so
+            // TryStart returns null and this is a no-op — TryStart itself never throws (§6.4: the URL was
+            // already validated, above, before any run state was touched).
+            string userAgent = $"guardrails/{GuardrailsVersion.Current}";
+            await using var eventSink = WebhookEventSink.TryStart(
+                onEventUrl, onEventAuth, userAgent, io.Out.WriteLine, cancellationToken);
+            Action<EventDelivery>? onRow = eventSink is null ? null : eventSink.Emit;
+
             RunReport report;
             Scheduler scheduler;
 
@@ -561,12 +635,12 @@ public static class RunCommand
                     await using var liveObserver = new LiveRunObserver(
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                         probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, null, false);
+                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
                     (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, null, false);
+                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
                     OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
@@ -2414,26 +2488,22 @@ public static class RunCommand
         Func<string, string?>? logUrlForTask,
         JournalDocument? diagramSeed)
     {
-        var eventsProjection = new RunEventStream(inner, logsRoot, runId);
-        var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
-        var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
-        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
+        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed, onRow: null, includeDetail: false);
     }
 
     /// <summary>
-    /// #585 layer 3 (design doc 36 §3.1) overload: adds <paramref name="onRow"/> and
-    /// <paramref name="includeDetail"/> — task 08's stub; task 09 wires them for real. A NEW overload
-    /// rather than two parameters added onto the six-argument member above: <c>RunCommandObserverWiringTests</c>,
+    /// #585 layer 3 (design doc 36 §3.1) overload: adds <paramref name="onRow"/> (the webhook dispatcher's
+    /// <c>Emit</c>, or null when no <c>--on-event</c> URL is configured) and <paramref name="includeDetail"/>
+    /// (<c>--on-event-detail</c>), and is the one that actually builds the chain — the six-argument overload
+    /// above delegates to this one with <c>onRow: null, includeDetail: false</c>. A NEW overload rather than
+    /// two parameters added onto the six-argument member: <c>RunCommandObserverWiringTests</c>,
     /// <c>RunFinishedExitPathTests</c> and <c>ObserverForwardingSweepTests</c> (plan 34, predating this
     /// plan) call the six-argument shape directly and sit outside this task's write scope, so widening
     /// that member in place would break their compilation for a change none of them asked for. <see cref="RunAsync"/>'s
-    /// own two call sites use THIS overload instead, which — like the six-argument one — takes
-    /// <paramref name="onRow"/>/<paramref name="includeDetail"/> with NO default value: a defaulted
-    /// parameter would let a production call site silently deliver nothing (the plan-34 §3 swallow
-    /// hazard), so the compiler forces both call sites to state their answer explicitly. The body below
-    /// ignores both and delegates to the unchanged six-argument overload — byte-for-byte the same chain
-    /// today's behaviour builds. Task 09 makes this constructor pass them into <see cref="RunEventStream"/>
-    /// instead of discarding them.
+    /// own two call sites use THIS overload, which takes <paramref name="onRow"/>/<paramref name="includeDetail"/>
+    /// with NO default value: a defaulted parameter would let a production call site silently deliver
+    /// nothing (the plan-34 §3 swallow hazard), so the compiler forces both call sites to state their
+    /// answer explicitly.
     /// </summary>
     public static OnTheFlyDiagramObserver BuildObserverChain(
         IRunObserver inner,
@@ -2445,9 +2515,10 @@ public static class RunCommand
         Action<EventDelivery>? onRow,
         bool includeDetail)
     {
-        _ = onRow;
-        _ = includeDetail;
-        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed);
+        var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
+        var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
+        var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
+        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
     }
 
     /// <summary>
