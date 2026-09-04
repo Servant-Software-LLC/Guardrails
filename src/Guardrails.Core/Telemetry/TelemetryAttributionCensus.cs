@@ -13,8 +13,17 @@ namespace Guardrails.Core.Telemetry;
 /// a real model; 313 are <c>None</c>. §3.3a's decision is that Phase 1 owns the SPLIT, not the repair:
 /// <i>"what fraction of the 313 <c>None</c> rows are script actions — correct by construction, since a
 /// script invokes no model — versus a genuine recording gap. Until that number exists, 'close it' has no
-/// defined scope."</i> So the census counts; the repair ships as #577. Nothing here changes how
+/// defined scope."</i> So the census counts; the repair shipped as #577. Nothing here changes how
 /// attribution is RECORDED.</para>
+///
+/// <para><b>The repair has since landed, and this census is now the second opinion rather than the only
+/// one.</b> <see cref="TelemetryIngest"/> stamps every row it writes with a
+/// <see cref="ModelAttribution"/> token (SSOT §15.2b), so a post-#577 corpus answers this question from
+/// its own rows without any plan-folder join at all. This verb still earns its place for the rows written
+/// BEFORE that column existed, and as an independent check that the ETL's stamping agrees with what the
+/// plan folders actually say — which is why both read the action kind through the SAME
+/// <see cref="TaskActionKindReader"/>, and why a disagreement between them would be a bug in one of the
+/// two rather than an ambiguity in the data.</para>
 ///
 /// <para><b>Why it answers from the PLAN FOLDERS and not from the corpus.</b> A corpus row cannot be
 /// joined back to the task definition that would answer the question: <see cref="TelemetryRow"/> carries
@@ -37,22 +46,6 @@ namespace Guardrails.Core.Telemetry;
 /// </summary>
 public static class TelemetryAttributionCensus
 {
-    /// <summary>
-    /// The prompt-action suffix and the action-file prefix, SSOT §3's convention: exactly one
-    /// <c>action.*</c> file in the task folder, and <c>.prompt.md</c> is what makes it a prompt.
-    /// <c>PlanLoader</c> owns the same two spellings privately (it decides what RUNS); they are restated
-    /// here the way <see cref="TelemetryIngest"/> already restates the journal's status tokens — one
-    /// convention, several independent readers — because loading a whole plan through <c>PlanLoader</c>
-    /// would demand a valid <c>guardrails.json</c> and clean validation from a folder the census only
-    /// wants to read two facts out of.
-    /// </summary>
-    private const string PromptExtension = ".prompt.md";
-    private const string ActionFilePrefix = "action.";
-
-    /// <summary>The two path segments the census reads a task definition from (SSOT §3).</summary>
-    private const string TasksDirectoryName = "tasks";
-    private const string TaskDefinitionFileName = "task.json";
-
     /// <summary>
     /// What a folder with no leaf name (a drive root) is reported as. SSOT §15.1 keeps absolute paths out
     /// of this artifact, so the one path shape with no name to print says so rather than falling back to
@@ -218,7 +211,9 @@ public static class TelemetryAttributionCensus
 
             int rowsNamingNoModel = task.Attempts.Count(NamesNoModel);
 
-            (ActionKind? kind, string? undecidable) = ReadActionKind(planFolder, taskId);
+            // The SAME reader TelemetryIngest stamps ModelAttribution with (#577), so the census and the
+            // corpus can never disagree about whether a given task was a script.
+            (ActionKind? kind, string? undecidable) = TaskActionKindReader.Read(planFolder, taskId);
             if (kind is null)
             {
                 // Named, and counted NOWHERE (SSOT §15.4's rule for an unrecognised guardrail failure:
@@ -264,78 +259,6 @@ public static class TelemetryAttributionCensus
     /// </summary>
     private static bool NamesNoModel(AttemptRecord attempt) =>
         string.IsNullOrWhiteSpace(attempt.Provenance?.Model);
-
-    /// <summary>
-    /// The action KIND of <c>tasks/&lt;taskId&gt;/task.json</c>, or — when it cannot be decided — a
-    /// message saying why, for <see cref="AttributionCensusResult.UnreadableDefinitions"/>.
-    ///
-    /// <para>Decided the way SSOT §3 decides it and in the same order <c>PlanLoader</c> does: an explicit
-    /// <c>action.path</c> first, else the single <c>action.*</c> file in the task folder, and
-    /// <c>.prompt.md</c> is what makes either a prompt. An explicit <c>action.path</c> is read for its
-    /// EXTENSION only and is deliberately not required to exist — whether the action file is still on disk
-    /// decides whether that task could RUN today, which is not the question this census asks about a run
-    /// that already happened.</para>
-    ///
-    /// <para>Zero or several <c>action.*</c> files is undecidable rather than a guess: SSOT §3 makes both
-    /// a validation error, so a folder in that state cannot be told apart as script-versus-prompt, and the
-    /// only honest answer is to name it and count it nowhere.</para>
-    /// </summary>
-    private static (ActionKind? Kind, string? Undecidable) ReadActionKind(string planFolder, string taskId)
-    {
-        string taskFolder = Path.Combine(planFolder, TasksDirectoryName, taskId);
-        string definitionPath = Path.Combine(taskFolder, TaskDefinitionFileName);
-
-        RawTask? definition;
-        try
-        {
-            // PlanJson.Options is the SAME reader every manifest read uses, comments and trailing commas
-            // included: a hand-edited task.json the harness itself accepts must not read as malformed here.
-            definition = JsonSerializer.Deserialize<RawTask>(File.ReadAllText(definitionPath), PlanJson.Options);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            return (null, $"{TaskDefinitionFileName} could not be read: {ex.Message}");
-        }
-
-        if (definition is null)
-        {
-            return (null, $"{TaskDefinitionFileName} deserialized to null");
-        }
-
-        if (definition.Action?.Path is { } declaredPath && !string.IsNullOrWhiteSpace(declaredPath))
-        {
-            return (KindFor(declaredPath), null);
-        }
-
-        string[] candidates;
-        try
-        {
-            candidates = Directory
-                .EnumerateFiles(taskFolder)
-                .Where(f => Path.GetFileName(f).StartsWith(ActionFilePrefix, StringComparison.Ordinal))
-                .Order(StringComparer.Ordinal)
-                .ToArray();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return (null, $"the task folder could not be listed: {ex.Message}");
-        }
-
-        return candidates.Length switch
-        {
-            1 => (KindFor(candidates[0]), null),
-            0 => (null, "no action.* file, so the action kind is undecidable"),
-            _ => (null,
-                $"{candidates.Length} action.* files ({string.Join(", ", candidates.Select(Path.GetFileName))}), "
-                + "so the action kind is undecidable")
-        };
-    }
-
-    /// <summary>SSOT §3: a <c>.prompt.md</c> path is a prompt action; anything else is a script.</summary>
-    private static ActionKind KindFor(string path) =>
-        path.EndsWith(PromptExtension, StringComparison.OrdinalIgnoreCase)
-            ? ActionKind.Prompt
-            : ActionKind.Script;
 
     /// <summary>A folder that carries no journal — the reported no-op, stated as one.</summary>
     private static string NoJournal(string folder) =>

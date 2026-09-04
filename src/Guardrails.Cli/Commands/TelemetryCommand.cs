@@ -30,14 +30,15 @@ namespace Guardrails.Cli.Commands;
 /// else does: WHERE the corpus lives (<see cref="ResolveCorpusRoot"/>) and how corpus rows are
 /// rendered.</para>
 ///
-/// <para><b>The opt-out is the store's, not this verb's.</b> Charter §9's collection-default decision
-/// puts collection ON by default with <c>GUARDRAILS_TELEMETRY=off</c> as the single off switch, and
-/// that switch is checked inside <see cref="TelemetryCorpusStore.Append"/>. This verb therefore does
-/// NOT read the variable, does not offer a second switch (no flag, no config key), and honours the
-/// opt-out by the only mechanism that cannot drift from run-end ingest: it calls the store and the
-/// store writes nothing. What <c>ingest</c> reports afterwards is measured — the row count on disk
-/// before and after — so a suppressed write is reported as a suppressed write rather than as a
-/// receipt for rows that were never recorded.</para>
+/// <para><b>The opt-out is <see cref="TelemetryCollectionSwitch"/>'s, and this verb is one of the two
+/// composition roots that resolve it.</b> Charter §9's collection-default decision puts collection ON by
+/// default with <c>GUARDRAILS_TELEMETRY=off</c> as the single off switch. This verb does not restate that
+/// rule and does not offer a second switch (no flag, no config key): it asks the switch once and hands the
+/// answer to <see cref="TelemetryCorpusStore"/> as constructor state, which is the only mechanism that
+/// cannot drift from run-end ingest. The store itself no longer reads the environment — see
+/// <see cref="TelemetryCollectionSwitch"/> for the concurrency defect that moved it. What <c>ingest</c>
+/// reports afterwards is measured — the row count on disk before and after — so a suppressed write is
+/// reported as a suppressed write rather than as a receipt for rows that were never recorded.</para>
 ///
 /// <para><b>An insufficient-evidence stratum's rendering is part of the contract, not a free choice.</b>
 /// <c>Report_PrintsTheStratifiedTable</c> (in <c>TelemetryCommandTests</c>) pins a stratum below
@@ -119,11 +120,21 @@ public static class TelemetryCommand
     /// <summary>The wire token an attempt row carries when that attempt went green (SSOT §7).</summary>
     private static readonly string SucceededOutcomeToken = JournalJson.OutcomeToken(AttemptOutcome.Succeeded);
 
-    /// <summary>The <c>telemetry</c> command group.</summary>
-    public static Command Create(IConsoleIo io)
+    /// <summary>
+    /// The <c>telemetry</c> command group.
+    ///
+    /// <para><paramref name="collectionEnabled"/> is the opt-out decision (SSOT §15.6), injectable so a
+    /// test can drive the opted-out path WITHOUT mutating the process environment. That matters: the
+    /// variable is process-global, and a test that set it around its own invocation used to silently
+    /// suppress every concurrent write in the process — see <see cref="TelemetryCollectionSwitch"/>.
+    /// Production passes nothing and gets the environment.</para>
+    /// </summary>
+    public static Command Create(IConsoleIo io, Func<bool>? collectionEnabled = null)
     {
+        collectionEnabled ??= TelemetryCollectionSwitch.IsEnabledFromEnvironment;
+
         var command = new Command("telemetry", "Work with the local model-evidence telemetry corpus.");
-        command.Add(BuildIngestLeaf(io));
+        command.Add(BuildIngestLeaf(io, collectionEnabled));
         command.Add(BuildReportLeaf(io));
         command.Add(BuildCensusLeaf(io));
         command.Add(BuildPurgeLeaf(io));
@@ -152,7 +163,7 @@ public static class TelemetryCommand
                 CorpusLeafDirectoryName)
             : overrideRoot;
 
-    private static Command BuildIngestLeaf(IConsoleIo io)
+    private static Command BuildIngestLeaf(IConsoleIo io, Func<bool> collectionEnabled)
     {
         var folderArgument = FolderArgument.Create(
             "Path to a plan folder (contains state/run.json) to ingest telemetry from. A folder with no "
@@ -168,7 +179,7 @@ public static class TelemetryCommand
         command.SetAction(parseResult =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
-            return RunIngest(folder, parseResult.GetValue(corpusRootOption), io);
+            return RunIngest(folder, parseResult.GetValue(corpusRootOption), io, collectionEnabled());
         });
 
         return command;
@@ -243,7 +254,8 @@ public static class TelemetryCommand
     /// <para>A folder with no journal is REPORTED and skipped, never an error: backfill exists to be
     /// pointed at a directory of plans, some of which were never run.</para>
     /// </summary>
-    private static int RunIngest(string planFolder, string? corpusRootOverride, IConsoleIo io)
+    private static int RunIngest(
+        string planFolder, string? corpusRootOverride, IConsoleIo io, bool collectionEnabled)
     {
         if (!Directory.Exists(planFolder))
         {
@@ -255,7 +267,7 @@ public static class TelemetryCommand
         }
 
         string corpusRoot = ResolveCorpusRoot(corpusRootOverride);
-        var store = new TelemetryCorpusStore(corpusRoot);
+        var store = new TelemetryCorpusStore(corpusRoot, collectionEnabled);
 
         long rowsBefore = CountRows(corpusRoot);
 

@@ -13,7 +13,7 @@ namespace Guardrails.Core.Telemetry;
 public sealed record TelemetryRow
 {
     /// <summary>The current row shape. Bump whenever a field is added, renamed, or reinterpreted.</summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>The shape of this row — see <see cref="CurrentSchemaVersion"/>.</summary>
     public required int SchemaVersion { get; init; }
@@ -38,6 +38,21 @@ public sealed record TelemetryRow
 
     /// <summary>The fully resolved model the attempt ran on. Null for a script attempt.</summary>
     public string? Model { get; init; }
+
+    /// <summary>
+    /// WHY <see cref="Model"/> reads the way it does — one of the <see cref="Telemetry.ModelAttribution"/>
+    /// tokens (SSOT §15.2b, issue #577). Null ONLY on a row written before this column existed
+    /// (<c>schemaVersion &lt; 3</c>), which is exactly how a reader tells the pre-repair era apart from a
+    /// row whose attribution is genuinely absent — the era boundary becomes checkable ON THE ROW instead of
+    /// against a date the reader has to know.
+    ///
+    /// <para>Without this column <c>model: null</c> meant three unrelated things at once — a task-grain
+    /// summary row, a script action, or a prompt attempt whose route was lost — and the only way to tell
+    /// them apart was to join the corpus back to the plan folders on disk, which is impossible once a plan
+    /// folder is deleted. That ambiguity is what made "76% of rows name no usable model" true and
+    /// misleading at the same time.</para>
+    /// </summary>
+    public string? ModelAttribution { get; init; }
 
     /// <summary>The resolved <c>promptRunners</c> block name. Null for a script attempt.</summary>
     public string? Runner { get; init; }

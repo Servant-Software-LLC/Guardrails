@@ -1,4 +1,6 @@
+using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Model;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Core.Telemetry;
@@ -55,8 +57,18 @@ public static class TelemetryIngest
     /// attempt row per attempt (retries included) — using <paramref name="repo"/> for every row's
     /// required <see cref="TelemetryRow.Repo"/> (the journal does not know its own repo). Idempotent on
     /// the store's own <c>(runId, taskId, attempt)</c> key: re-ingesting the SAME journal adds no rows.
+    ///
+    /// <para><paramref name="planFolder"/> is the plan folder this journal came from, used ONLY to decide
+    /// whether a task's action was a script or a prompt when the attempt names no model — the fact that
+    /// tells <see cref="ModelAttribution.ScriptAction"/> (correct) apart from
+    /// <see cref="ModelAttribution.NotRecorded"/> (a defect). The journal cannot answer it:
+    /// <see cref="AttemptRecord.Provenance"/> is omitted for a script attempt AND for a prompt attempt
+    /// whose route was never recorded, so <c>provenance == null</c> is exactly the ambiguity #577 is about.
+    /// Null (the journal-only overload) attributes such rows <see cref="ModelAttribution.Unknown"/> rather
+    /// than guessing.</para>
     /// </summary>
-    public static void Ingest(JournalDocument journal, TelemetryCorpusStore corpusStore, string repo)
+    public static void Ingest(
+        JournalDocument journal, TelemetryCorpusStore corpusStore, string repo, string? planFolder = null)
     {
         foreach ((string taskId, TaskJournalEntry task) in journal.Tasks)
         {
@@ -79,6 +91,9 @@ public static class TelemetryIngest
                 StartedAt = firstAttempt.StartedAt,
                 EndedAt = lastAttempt.EndedAt,
                 Outcome = TaskStatusToken(task.Status),
+                // Correct by construction, and now SAYS so: a row summarizing several attempts cannot
+                // carry one attempt's route, which is a different fact from "the route was lost".
+                ModelAttribution = Telemetry.ModelAttribution.TaskGrain,
                 Tier = declaredProvenance?.Tier,
                 TierSource = TierSourceToken(declaredProvenance?.TierSource),
                 Repo = repo,
@@ -92,12 +107,23 @@ public static class TelemetryIngest
                 SkillVersion = environment?.SkillVersion
             });
 
+            // Resolved ONCE per task and only when some attempt actually needs it. The action kind is a
+            // TASK fact (constant across the task's own retries), and reading it costs a directory listing
+            // plus a task.json parse — worth skipping entirely for the common case where every attempt
+            // already names its model and there is nothing to explain.
+            ActionKind? actionKind = null;
+            if (planFolder is not null && task.Attempts.Any(a => string.IsNullOrWhiteSpace(a.Provenance?.Model)))
+            {
+                (actionKind, _) = TaskActionKindReader.Read(planFolder, taskId);
+            }
+
             foreach (AttemptRecord attempt in task.Attempts)
             {
                 AttemptProvenance? provenance = attempt.Provenance;
 
                 corpusStore.Append(new TelemetryRow
                 {
+                    ModelAttribution = AttributionFor(provenance?.Model, actionKind),
                     SchemaVersion = TelemetryRow.CurrentSchemaVersion,
                     RunId = journal.RunId,
                     TaskId = taskId,
@@ -148,8 +174,44 @@ public static class TelemetryIngest
             return false;
         }
 
-        Ingest(JournalReader.Read(journalPath), corpusStore, repo);
+        // The plan folder goes through so an attempt naming no model can be attributed script-versus-defect
+        // (#577). This is the production path — both `telemetry ingest` and run-end ingest come here — so
+        // the attribution is resolved wherever it is actually resolvable.
+        Ingest(JournalReader.Read(journalPath), corpusStore, repo, planFolderPath);
         return true;
+    }
+
+    /// <summary>
+    /// The attempt row's <see cref="TelemetryRow.ModelAttribution"/> — WHY the model column reads as it
+    /// does (#577). The order is the order of certainty: a named model explains itself; only when there is
+    /// none does the action kind have to be consulted.
+    ///
+    /// <para>The <c>(cli default)</c> sentinel is deliberately NOT folded into
+    /// <see cref="ModelAttribution.Recorded"/>. It is a truthful statement that no named route was
+    /// resolved, not a model identity, and pooling those rows with a real model's would attribute their
+    /// cost and outcomes to a model nobody recorded — the flattering-number failure this column exists to
+    /// prevent.</para>
+    ///
+    /// <para>A null <paramref name="actionKind"/> means the kind was undecidable or unavailable, and is
+    /// reported as <see cref="ModelAttribution.Unknown"/> rather than assumed either way: booking it as
+    /// <see cref="ModelAttribution.NotRecorded"/> would invent a defect, and as
+    /// <see cref="ModelAttribution.ScriptAction"/> would excuse a real one.</para>
+    /// </summary>
+    private static string AttributionFor(string? model, ActionKind? actionKind)
+    {
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            return model == PromptExecutionSupport.CliDefaultModelDisplay
+                ? Telemetry.ModelAttribution.CliDefault
+                : Telemetry.ModelAttribution.Recorded;
+        }
+
+        return actionKind switch
+        {
+            ActionKind.Script => Telemetry.ModelAttribution.ScriptAction,
+            ActionKind.Prompt => Telemetry.ModelAttribution.NotRecorded,
+            _ => Telemetry.ModelAttribution.Unknown
+        };
     }
 
     /// <summary>

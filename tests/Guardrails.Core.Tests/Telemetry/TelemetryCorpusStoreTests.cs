@@ -140,20 +140,14 @@ public sealed class TelemetryCorpusStoreTests : IDisposable
     [Trait("Category", "ModelEvidence")]
     public void Append_WhenCollectionDisabled_WritesNothing()
     {
-        string? original = Environment.GetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar);
-        try
-        {
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, "off");
+        // Constructor state, NOT a process-wide environment variable. Mutating the environment here used to
+        // suppress every concurrent test's writes too — see TelemetryCollectionSwitchTests for the measured
+        // six-test CI failure that produced. The env→bool mapping is proven there as a pure function; what
+        // this test owns is the store's behavior once the decision is made.
+        var store = new TelemetryCorpusStore(corpusRoot, collectionEnabled: false);
+        store.Append(Row());
 
-            var store = new TelemetryCorpusStore(corpusRoot);
-            store.Append(Row());
-
-            AssertNoFilesUnder(corpusRoot);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, original);
-        }
+        AssertNoFilesUnder(corpusRoot);
     }
 
     // --- 6. purge --------------------------------------------------------------------------------
