@@ -101,6 +101,13 @@ public static class SchedulerFactory
     /// integration cwds under it (short) while git canonicalizes it back to the real root in its own
     /// registrations. Null ⇒ segments are built under the real <see cref="WorktreeRootFor"/> result.
     /// </param>
+    /// <param name="worktreeMode">
+    /// The run's ONE worktree-mode answer (issue #596), resolved once by the caller that owns the run and
+    /// handed down so this wiring cannot disagree with the CLI's junction setup, MAX_PATH preflight,
+    /// end-of-run reclaim, journaled effective <c>maxParallelism</c>, wave-brief gate, or plan-phase
+    /// workspace. Null (an embedded caller with no run of its own) ⇒ resolved here via
+    /// <see cref="ResolveWorktreeMode"/>.
+    /// </param>
     public static Scheduler Create(
         PlanDefinition plan,
         ProcessRunner processRunner,
@@ -110,7 +117,8 @@ public static class SchedulerFactory
         IReadOnlySet<string>? waveDriftAuthorized = null,
         IOverwatchInteraction? overwatchInteraction = null,
         IReadOnlyDictionary<string, bool>? breakdownConfirmations = null,
-        string? junctionRoot = null)
+        string? junctionRoot = null,
+        WorktreeModeResolution? worktreeMode = null)
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatchInteraction);
 
@@ -137,7 +145,12 @@ public static class SchedulerFactory
         IWorktreeProvider? worktreeProvider = null;
         IAiMergeWorker? aiMergeWorker = null;
         WaveBreakdownInvoker? breakdownInvoker = null;
-        if (plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace))
+
+        // Issue #596: the predicate is NOT re-spelled here. A caller that owns the run
+        // (RunCommand) resolves worktree mode ONCE and hands it down, so this wiring and the CLI's five
+        // other consumers can never disagree within a run — the silent both-directions split #596 was
+        // filed on. Resolving here is the fallback for an embedded caller that has no resolution of its own.
+        if ((worktreeMode ?? ResolveWorktreeMode(plan)).Enabled)
         {
             // The prompt-runner registry the worktree collaborators need is rebuilt from the same
             // inputs CreateExecutor used (a cheap, pure construction) — kept local to this branch so
@@ -301,49 +314,77 @@ public static class SchedulerFactory
     }
 
     /// <summary>
-    /// True when a real <c>run</c> of <paramref name="plan"/> would use WORKTREE mode (segment
-    /// worktrees + a plan branch), i.e. <c>maxParallelism &gt; 1</c> AND the workspace is a git
-    /// repository — the exact condition <see cref="Create"/> wires a <see cref="GitWorktreeProvider"/>
-    /// on. Exposed so the re-validate-only path (issue #102) can REFUSE worktree mode: a human's
-    /// in-place fix lives in their own checkout, which a fresh isolated segment worktree would not
-    /// contain, so verifying it there would be meaningless.
+    /// Resolve — <b>ONCE</b> — whether a real <c>run</c> of <paramref name="plan"/> uses WORKTREE mode
+    /// (segment worktrees + a plan branch). This is the SINGLE spelling of the predicate (issue #596):
+    /// <see cref="Create"/>'s provider wiring, the CLI's junction setup / MAX_PATH preflight /
+    /// end-of-run reclaim / journaled effective <c>maxParallelism</c> / wave-brief gate, the plan-phase
+    /// workspace, and the re-validate refusal all read the resolution this returns rather than
+    /// re-deriving it. Callers that own a run resolve here and HAND THE RESULT DOWN
+    /// (<see cref="Create"/>'s <c>worktreeMode</c> parameter); nothing re-runs the probe mid-run.
+    /// <para>
+    /// <b>An unavailable git is an unknown, never a "no" (issue #596).</b> The predecessor swallowed
+    /// every probe failure as <c>false</c>, which silently downgraded a parallel run to serial — a
+    /// change of the run's entire isolation model that no console line, observer event or journal field
+    /// disclosed. When git cannot be RUN we therefore keep the plan's REQUESTED mode
+    /// (<c>maxParallelism &gt; 1</c> ⇒ worktree) and record the failure on
+    /// <see cref="WorktreeModeResolution.GitProbeFailure"/> for the CLI to announce. Two reasons that is
+    /// the honest answer rather than a demotion: (1) the workspace's git-ness was already certified at
+    /// load time by GR2015, whose check is a subprocess-free <c>.git</c> ancestry walk — a failure to
+    /// SPAWN git is no evidence at all about the workspace; and (2) if git really is unavailable the
+    /// worktree provider fails loudly when it creates the plan branch (the #150 honest-halt Abort), which
+    /// is strictly better than a run that quietly changes what it is.
+    /// </para>
     /// </summary>
-    public static bool WouldUseWorktreeMode(PlanDefinition plan) =>
-        plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace);
+    /// <param name="plan">The plan whose run is being resolved.</param>
+    /// <param name="gitProbe">
+    /// The work-tree probe; defaults to <see cref="ProcessGitWorkTreeProbe.Instance"/>. Injectable so the
+    /// unavailable-git branch is testable without uninstalling git.
+    /// </param>
+    public static WorktreeModeResolution ResolveWorktreeMode(
+        PlanDefinition plan, IGitWorkTreeProbe? gitProbe = null)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        // Serial is REQUESTED, not demoted — and git is not a dependency of a serial run, so the probe
+        // must not even be spawned (SSOT §1: the shared-workspace model needs no repository).
+        if (plan.Config.MaxParallelism <= 1)
+        {
+            return new WorktreeModeResolution
+            {
+                Enabled = false,
+                Reason = WorktreeModeReason.SerialByConfiguration
+            };
+        }
+
+        GitWorkTreeProbeResult probed = (gitProbe ?? ProcessGitWorkTreeProbe.Instance).Probe(plan.Workspace);
+
+        if (probed.InsideWorkTree is { } answered)
+        {
+            return new WorktreeModeResolution
+            {
+                Enabled = answered,
+                Reason = answered
+                    ? WorktreeModeReason.WorktreeMode
+                    : WorktreeModeReason.WorkspaceNotAGitRepository
+            };
+        }
+
+        return new WorktreeModeResolution
+        {
+            Enabled = true,
+            Reason = WorktreeModeReason.WorktreeMode,
+            GitProbeFailure = probed.Failure ?? "git could not be run (no detail reported)."
+        };
+    }
 
     /// <summary>
-    /// True when <paramref name="workspace"/> is inside a git working tree (worktree mode's hard
-    /// dependency). Runs <c>git rev-parse --is-inside-work-tree</c>; any failure (git absent, not a
-    /// repo) yields false so the run falls back to serial rather than throwing.
+    /// True when a real <c>run</c> of <paramref name="plan"/> would use WORKTREE mode — the boolean face
+    /// of <see cref="ResolveWorktreeMode"/>, for the single-shot callers that own no run and therefore
+    /// have nothing to hand down (the re-validate-only refusal, issue #102: a human's in-place fix lives
+    /// in their own checkout, which a fresh isolated segment worktree would not contain, so verifying it
+    /// there would be meaningless).
     /// </summary>
-    private static bool IsGitRepository(string workspace)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("git")
-            {
-                WorkingDirectory = workspace,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                // Issue #457: pin UTF-8 on every git stream (this one is ASCII-only, kept uniform).
-                StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
-                StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
-            };
-            psi.ArgumentList.Add("rev-parse");
-            psi.ArgumentList.Add("--is-inside-work-tree");
-            using Process? proc = Process.Start(psi);
-            if (proc is null) return false;
-            string stdout = proc.StandardOutput.ReadToEnd();
-            proc.StandardError.ReadToEnd();
-            proc.WaitForExit();
-            return proc.ExitCode == 0 && stdout.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    public static bool WouldUseWorktreeMode(PlanDefinition plan) => ResolveWorktreeMode(plan).Enabled;
 
     /// <summary>
     /// The environment variable that overrides the harness-owned worktree ROOT (issue #383, SSOT §2).

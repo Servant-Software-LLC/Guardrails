@@ -58,7 +58,8 @@ public static class PlanGuardrailPhase
         TextWriter? heartbeatOut,
         string? runId,
         CancellationToken cancellationToken,
-        string? junctionRoot = null)
+        string? junctionRoot = null,
+        WorktreeModeResolution? worktreeMode = null)
     {
         if (plan.PlanGuardrails.Count == 0)
         {
@@ -68,7 +69,7 @@ public static class PlanGuardrailPhase
         }
 
         string currentHash = PlanHash.Compute(plan);
-        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken, junctionRoot);
+        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken, junctionRoot, worktreeMode);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
         var reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);

@@ -88,7 +88,8 @@ public static class PlanPreflightPhase
         ProcessRunner processRunner,
         TextWriter? heartbeatOut,
         CancellationToken cancellationToken,
-        string? junctionRoot = null)
+        string? junctionRoot = null,
+        WorktreeModeResolution? worktreeMode = null)
     {
         // Committed sample pairs come FIRST — before BOTH short-circuits below — and this placement is
         // the whole point of the step (plan of record 26 §3/§7, issue #510).
@@ -145,7 +146,7 @@ public static class PlanPreflightPhase
             return true;
         }
 
-        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken, junctionRoot);
+        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken, junctionRoot, worktreeMode);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
         var reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);

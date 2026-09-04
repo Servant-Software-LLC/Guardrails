@@ -424,6 +424,22 @@ Two invariants govern the folder, and a future change must honour both:
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
+- **Worktree mode is resolved ONCE PER RUN and handed down (issue #596).** The predicate is
+  `maxParallelism > 1` AND the workspace is a git working tree, and `SchedulerFactory.ResolveWorktreeMode`
+  is its single spelling: the CLI folds it at run start and threads the result to the provider wiring, the
+  Windows junction setup, the MAX_PATH preflight, the end-of-run reclaim, the effective `maxParallelism`
+  stamped into `run.json`'s `environment`, the wave-brief prompt gate, and the plan-preflight / terminal-gate
+  workspace. It was previously re-derived at each of those from a fresh `git rev-parse` subprocess, so two
+  evaluations could disagree **within one run**, in both directions, with nothing on stdout, no observer
+  event, and no journal field — a run could wire worktree mode while journaling itself serial.
+  **An unavailable git is an unknown, not a "no".** The probe is a tri-state: git ran and answered
+  (`true`/`false`), or git could not be RUN at all. The third case keeps the mode the plan REQUESTED and is
+  announced loudly at run start, rather than being read as "not a git repository" and silently demoting a
+  parallel run to serial. Two reasons: GR2015 already certified the workspace as a git repository at
+  validation using a subprocess-free `.git` ancestry walk, so a failure to *spawn* git is no evidence about
+  the workspace; and if git really is unavailable the run halts loudly when it creates the plan branch (the
+  #150 honest-halt `Abort`), which beats a run that quietly changes its own isolation model. A serial plan
+  (`maxParallelism <= 1`) never spawns the probe at all.
 - `transientPauseBudgetSeconds` (default `14400`, i.e. 4h — a long unattended/overnight run must ride
   out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
   cumulative wall-clock a single task may spend
