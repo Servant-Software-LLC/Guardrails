@@ -2385,7 +2385,7 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                     //   permission-file carve-out) | not-applied (#437/#445 — unusable
                                     //   payload, bad or ambiguous anchor, wrong mode, duplicate target) |
                                     //   failed (an IO fault during the write itself)
-            "reason": "path 'docs/NOTES.md' is outside this task's declared writeScope",
+            "reason": "needsHarnessWrite[1] (of 2 entries) failed, so the WHOLE batch was abandoned — NOTHING was written and all 2 target files are byte-identical. path 'docs/b.md' is outside this task's declared writeScope",
                                     //   the actionable reason, verbatim as the agent was told it. ABSENT when
                                     //   `disposition` is `applied`. BATCH grain deliberately: the batch is
                                     //   atomic, so ONE reason governs every entry (and for an array it
