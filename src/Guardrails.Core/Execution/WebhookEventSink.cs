@@ -57,7 +57,24 @@ public sealed class WebhookEventSink
 
     /// <summary>Whether a failed delivery attempt should be retried (§5.1). Pure — no I/O, no clock.</summary>
     internal static bool IsRetryable(HttpStatusCode? status, Exception? error)
-        => throw new NotImplementedException("task 05");
+    {
+        if (status is not HttpStatusCode value)
+        {
+            // No status was received at all — a transport-level exception (connection refused, DNS
+            // failure, TLS handshake failure, socket error, per-attempt timeout, or anything else the
+            // client threw). §5.1's last row is deliberately conservative: retry, whatever it was.
+            return true;
+        }
+
+        int code = (int)value;
+
+        return code switch
+        {
+            408 or 429 => true,
+            >= 500 and <= 599 => true,
+            _ => false,
+        };
+    }
 
     /// <summary>
     /// Renders <paramref name="url"/> as <c>&lt;scheme&gt;://&lt;host&gt;[:&lt;port&gt;]/…</c> — never
@@ -66,5 +83,9 @@ public sealed class WebhookEventSink
     /// assembly that <c>InternalsVisibleTo</c> does not cover.
     /// </summary>
     public static string RedactUrl(Uri url)
-        => throw new NotImplementedException("task 05");
+    {
+        string port = url.IsDefaultPort ? string.Empty : $":{url.Port}";
+        string elided = url.PathAndQuery == "/" ? string.Empty : "/…";
+        return $"{url.Scheme}://{url.Host}{port}{elided}";
+    }
 }
