@@ -279,6 +279,17 @@ public sealed class WebhookEventSinkTests
         for (int i = 1; i <= 4; i++)
             sinkA.Emit(Row($"fail-{i}"));
         sinkA.Emit(Row("fail-5"));
+
+        // POLL, do not hope. Emit only ENQUEUES; the pump delivers on its own task. "dropped-after-open"
+        // is only meaningful once the five consecutive failures have ACTUALLY been attempted and opened
+        // the circuit - emitting it immediately races the pump. Measured: this test passes in isolation
+        // (~59ms) and FAILED inside the full 2470-test suite (~699ms, 12x slower under parallel load),
+        // because at timeScale 0.05 every budget here is sub-second. Waiting on the observable makes the
+        // ordering deterministic instead of load-dependent.
+        DateTime openDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (handlerA.CountFor("fail-5") == 0 && DateTime.UtcNow < openDeadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+
         sinkA.Emit(Row("dropped-after-open"));
         // TERMINAL-PHASE SENTINEL (design 3.3 step 3): DisposeAsync ALWAYS spends one attempt on the
         // LAST-ENQUEUED row, ignoring the circuit - that is precisely the guarantee
