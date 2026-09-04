@@ -66,10 +66,14 @@ namespace Guardrails.Integration.Tests;
 /// exempt and a plain <c>exit 0</c> check validates clean. It APPENDS to a log file outside the repo, which
 /// is how "not evaluated" is asserted as a FACT rather than as a wording.</para>
 ///
-/// <para><b><c>mergeOnSuccess</c> is set EXPLICITLY true, which is a stronger pin than omitting it.</b> An
-/// explicit manifest key sets <c>MergeOnSuccessExplicit</c>, which forces
-/// <c>RunOutcomePolicy.SuppressesDelivery</c>'s decision-driven suppression OFF in
-/// <c>Scheduler.Finalize</c>. So the ONLY thing that can hold the merge back is <c>RunReport.AllSucceeded</c>
+/// <para><b><c>mergeOnSuccess</c> is set EXPLICITLY true, which is a stronger pin than omitting it.</b> It
+/// removes the #340 default from the picture entirely, and the fixture's <c>autonomyPolicy: "halt"</c>
+/// records no <c>proceeded-best-guess</c> / <c>proceeded-unreviewed</c> decision, so
+/// <c>RunOutcomePolicy.SuppressingDecision</c> is null and the #361 delivery interlock never engages.
+/// (Issue #597 note: the interlock's override is <c>RunConfig.MergeOnSuccessForcedByOperator</c>, set only
+/// by the CLI <c>--merge-on-success</c> flag — a manifest key deliberately cannot lift it, per SSOT §5.3.
+/// That does not change this fixture, which has no suppressing decision to lift.)
+/// So the ONLY thing that can hold the merge back is <c>RunReport.AllSucceeded</c>
 /// — §6.5's one seam, <i>"no new delivery path is introduced"</i>. An implementation that blocks delivery by
 /// recording a delivery-suppressing decision token instead of by adding the <c>AllSucceeded</c> term does not
 /// pass P9.</para>

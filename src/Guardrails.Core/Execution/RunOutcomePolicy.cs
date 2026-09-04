@@ -31,7 +31,26 @@ public static class RunOutcomePolicy
     /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
     /// <returns>Whether auto-delivery must be suppressed.</returns>
     public static bool SuppressesDelivery(IEnumerable<DecisionEntry> decisions) =>
-        decisions.Any(d =>
+        SuppressingDecision(decisions) is not null;
+
+    /// <summary>
+    /// The FIRST decision that suppresses delivery, or <c>null</c> when none does — the same predicate as
+    /// <see cref="SuppressesDelivery"/>, spelled once, but returning the EVIDENCE rather than a bare bool.
+    /// <para>
+    /// <b>Why the entry and not a boolean (issue #597).</b> The end-of-run "work not delivered" banner used
+    /// to name <c>mergeOnSuccess</c> as the cause for every suppression, including this one — where
+    /// <c>mergeOnSuccess</c> is ON and the real cause is the autonomous-mode interlock. An operator who
+    /// checked <c>guardrails.json</c> (no key), then the default in source (<c>true</c>), then whether the
+    /// default had changed (it had not), still had not found the cause; someone without source access could
+    /// not get past the first step. The banner and the durable <c>delivery.reason</c> can only name the
+    /// cause — <i>which</i> decision, at <i>which</i> task — if the policy hands them the entry, so the
+    /// operator can judge whether the machine's guess is stale before deciding to deliver.
+    /// </para>
+    /// </summary>
+    /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
+    /// <returns>The first <c>proceeded-best-guess</c> / <c>proceeded-unreviewed</c> entry, else null.</returns>
+    public static DecisionEntry? SuppressingDecision(IEnumerable<DecisionEntry> decisions) =>
+        decisions.FirstOrDefault(d =>
             d.Decision == DecisionTokens.ProceededBestGuess ||
             d.Decision == DecisionTokens.ProceededUnreviewed);
 

@@ -2020,6 +2020,18 @@ forcing delivery of machine-judged work); neither a `guardrails.json` `mergeOnSu
 delivered-by-default posture silently re-enables it. Delivery is thus never automatic once a best-guess or
 an unreviewed wave shaped the result.
 
+**The override's mechanism is pinned (issue #597).** The Scheduler's gate reads
+`RunConfig.MergeOnSuccessForcedByOperator` — a field set **only** by the CLI `--merge-on-success` flag,
+which no loader writes and no manifest key can reach. It is deliberately NOT `MergeOnSuccessExplicit` (the
+raw `guardrails.json` value, kept for the one-time delivered-by-default notice): reading the manifest key
+inverted this contract in **both** directions — the flag resolved only into `Config.MergeOnSuccess` and so
+could never lift the suppression, while a `"mergeOnSuccess": true` committed to a repo months earlier
+silently could. Measured on a real run: a wholly-green plan-35 run printed the undelivered banner
+recommending `--merge-on-success`, and the re-run with that exact flag re-ran the whole terminal gate
+(~9 minutes) and printed the byte-identical banner. When the override DOES fire, the run says so —
+`RunReport.DeliveryForcedPastDecision` drives a loud `*** DELIVERY FORCED PAST A MACHINE DECISION ***`
+notice naming the decision and its subject, so bypassing a safety interlock is never a quiet green.
+
 > **BREAKING DEFAULT (#340, no CHANGELOG in-repo — recorded here + in `docs/plans/13-merge-on-success-default.md`).**
 > `mergeOnSuccess` flipped from **OFF → ON**: on upgrade, an existing plan that OMITS the key now delivers to
 > the user's branch on a wholly-green run instead of leaving the work on `guardrails/<plan-name>`. Two
@@ -2077,6 +2089,19 @@ passed — a bannered block naming the exact plan branch, the command to deliver
 a manual merge), and the `--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0
 (the warning is a safety notice, not a failure); a delivered run, a non-green run, and a serial-mode run
 print no such warning.
+
+**The warning has TWO cases and must name the right one (issue #597).** `WhollyGreenButUndelivered` covers
+two causes with two different operator responses, and the banner used to render only the first: (a)
+`mergeOnSuccess` genuinely off (config `false` / `--no-merge-on-success`) — the text above; (b) the
+autonomous-mode interlock, where `mergeOnSuccess` is **ON** and a recorded `proceeded-best-guess` /
+`proceeded-unreviewed` held the work back. `RunReport.DeliverySuppressingDecision` (the entry from
+`RunOutcomePolicy.SuppressingDecision`) discriminates them, and case (b) NAMES the decision, its boundary
+and its **subject** — the task or wave the machine decided at — because the operator's first job is to judge
+whether that decision is stale (in the measured case it was: the best-guess belonged to an attempt that
+later halted, and the task was subsequently re-run to a genuine green). Saying "mergeOnSuccess is off" for
+case (b) sends a reader to `guardrails.json`, then to the default in source, then to the release history —
+three dead ends before the real cause, and unreachable at all without source access. The same split applies
+to the durable `delivery.reason` (§8), which recorded the identical wrong cause.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
@@ -2526,14 +2551,17 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
 }
 ```
 
-**`delivery` — the four reasons nothing was attempted are DISTINGUISHABLE, and that is the point (#542).**
-`outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in three of the
-four cases, holds nothing they need — and in the fourth holds everything. So `reason` separates: (a)
-`mergeOnSuccess` resolved off on a wholly-green run — the case that **strands work**, and the only one that
-sets `planBranch`; (b) the terminal gate did not pass; (c) the run was not wholly green; (d) serial mode,
-where there is no separate plan branch and the work is already in the checkout. `planBranch` is written
-**only** for (a): naming a branch in the serial case would send an operator to merge something that does not
-exist, which is worse than the silence this closed. Written once at the end of the run, after delivery has
+**`delivery` — the reasons nothing was attempted are DISTINGUISHABLE, and that is the point (#542).**
+`outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in most cases,
+holds nothing they need — and in one holds everything. So `reason` separates: (a) `mergeOnSuccess` resolved
+off on a wholly-green run; (a′) delivery suppressed by the **autonomous-mode interlock** on a wholly-green
+run with `mergeOnSuccess` ON, naming the `proceeded-best-guess` / `proceeded-unreviewed` decision and its
+subject (issue #597 — writing (a)'s wording here recorded a cause that was flatly untrue, in the one file an
+unattended pipeline can read); (b) the terminal gate did not pass; (c) the run was not wholly green; (d)
+serial mode, where there is no separate plan branch and the work is already in the checkout. (a) and (a′)
+are the cases that **strand work**, and the only ones that set `planBranch`; naming a branch in the serial
+case would send an operator to merge something that does not exist, which is worse than the silence this
+closed. Written once at the end of the run, after delivery has
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.

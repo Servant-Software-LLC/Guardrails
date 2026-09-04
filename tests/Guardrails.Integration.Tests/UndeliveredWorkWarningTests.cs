@@ -95,6 +95,109 @@ public sealed class UndeliveredWorkWarningTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Issue #597 — the banner's TWO causes. WhollyGreenButUndelivered covers both "mergeOnSuccess is
+    // genuinely off" and "the #361 autonomous-mode interlock held the work back", and the banner used to
+    // render only the first. On a suppression-by-decision run BOTH halves of that text were false:
+    // mergeOnSuccess was ON (the #340 default), and the recommended --merge-on-success could not lift the
+    // interlock. The measured operator burned three dead ends (guardrails.json → the default in source →
+    // the release history) before finding the real cause in RunOutcomePolicy.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static DecisionEntry BestGuessAt(string subject) => new()
+    {
+        Boundary = "task",
+        Policy = "auto",
+        Decision = DecisionTokens.ProceededBestGuess,
+        Subject = subject,
+        Headline = "best-guessed at the needs-human gate"
+    };
+
+    private static RunReport SuppressedReport(DecisionEntry? suppressing) =>
+        new()
+        {
+            Tasks = [new TaskResult { TaskId = "01-do-thing", Outcome = TaskOutcome.Succeeded, Summary = "ok" }],
+            WhollyGreenButUndelivered = true,
+            DeliverySuppressingDecision = suppressing
+        };
+
+    [Fact]
+    public void SuppressedByMachineDecision_NamesTheDecisionAndItsTask_NotMergeOnSuccess()
+    {
+        string rendered = Render(
+            SuppressedReport(BestGuessAt("12-implement-events-endpoint")),
+            terminalGatePassed: true, planDirectory: Path.Combine("repo", "35-event-vocabulary"));
+
+        Assert.Contains(Marker, rendered);
+
+        // The REAL cause, and the task it came from — so the operator can judge whether it is stale.
+        Assert.Contains("proceeded-best-guess", rendered, StringComparison.Ordinal);
+        Assert.Contains("12-implement-events-endpoint", rendered, StringComparison.Ordinal);
+        Assert.Contains("interlock", rendered, StringComparison.OrdinalIgnoreCase);
+
+        // The false cause must be GONE. Naming mergeOnSuccess as off, when it is on, is the whole defect.
+        Assert.DoesNotContain("mergeOnSuccess is off", rendered, StringComparison.Ordinal);
+
+        // The remedy is still given (the flag now genuinely works), plus the manual merge and the risk.
+        Assert.Contains("--merge-on-success", rendered, StringComparison.Ordinal);
+        Assert.Contains("'guardrails/35-event-vocabulary'", rendered, StringComparison.Ordinal);
+        Assert.Contains("--fresh", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenuinelyOff_KeepsTheOriginalWording()
+    {
+        // The load-bearing negative: with NO suppressing decision the cause really IS mergeOnSuccess, and
+        // the shipped text stays exactly as it was — this change adds a case, it does not replace one.
+        string rendered = Render(
+            SuppressedReport(suppressing: null),
+            terminalGatePassed: true, planDirectory: Path.Combine("repo", "27-operator-visibility"));
+
+        Assert.Contains(Marker, rendered);
+        Assert.Contains("mergeOnSuccess is off", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("interlock", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--merge-on-success", rendered, StringComparison.Ordinal);
+    }
+
+    // ── The override's own notice: delivery that WENT AHEAD past a machine decision ────────────
+
+    private static string RenderForced(RunReport report)
+    {
+        using var writer = new StringWriter();
+        RunCommand.RenderForcedDeliveryNotice(report, writer);
+        return writer.ToString();
+    }
+
+    [Fact]
+    public void ForcedDelivery_IsAnnounced_NamingTheDecisionItOverrode()
+    {
+        var report = new RunReport
+        {
+            Tasks = [new TaskResult { TaskId = "01-do-thing", Outcome = TaskOutcome.Succeeded, Summary = "ok" }],
+            MergeOnSuccessOutcome = MergeOnSuccessResult.FastForwarded,
+            DeliveredToBranch = "master",
+            DeliverySuppressingDecision = BestGuessAt("12-implement-events-endpoint"),
+            DeliveryForcedPastDecision = true
+        };
+
+        string rendered = RenderForced(report);
+
+        Assert.Contains("DELIVERY FORCED PAST A MACHINE DECISION", rendered, StringComparison.Ordinal);
+        Assert.Contains("proceeded-best-guess", rendered, StringComparison.Ordinal);
+        Assert.Contains("12-implement-events-endpoint", rendered, StringComparison.Ordinal);
+        Assert.Contains("--merge-on-success", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrdinaryDelivery_PrintsNoForcedNotice()
+    {
+        // Nearly every run: no interlock was in play, so announcing an override would be a lie.
+        Assert.Equal(string.Empty, RenderForced(DeliveredReport("master")));
+
+        // And a run that merely RECORDED a decision without the override having fired stays silent too.
+        Assert.Equal(string.Empty, RenderForced(SuppressedReport(BestGuessAt("01-thing"))));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     // #340 delivered-by-default notice — the delivered-case complement of the undelivered warning.
     // Fires ONLY when delivery RAN (DeliveredToBranch non-null) AND it fired purely because of the new
     // default (no config key, no CLI flag). The two NEVER fire together.

@@ -276,6 +276,38 @@ public sealed record RunReport
     public bool WhollyGreenButUndelivered { get; init; }
 
     /// <summary>
+    /// WHY delivery was suppressed, when the cause was a MACHINE DECISION rather than <c>mergeOnSuccess</c>
+    /// being off (issue #597): the first <c>proceeded-best-guess</c> / <c>proceeded-unreviewed</c> entry the
+    /// run recorded (<see cref="RunOutcomePolicy.SuppressingDecision"/>), carrying the boundary, the token,
+    /// and the SUBJECT — the task or wave the machine decided at. Null when no such decision was recorded.
+    /// <para>
+    /// <b>The defect this closes.</b> <see cref="WhollyGreenButUndelivered"/> is one boolean covering two
+    /// causes with two different operator responses, and the CLI rendered only one of them: "mergeOnSuccess
+    /// is off — deliver it with <c>--merge-on-success</c>". On a suppression-by-decision run BOTH halves of
+    /// that were false — <c>mergeOnSuccess</c> was ON (the #340 default), and the recommended command could
+    /// not lift the interlock — and the durable <c>delivery.reason</c> in <c>run.json</c> recorded the same
+    /// wrong cause. Carrying the entry lets both surfaces name the real one, and name the task it came from
+    /// so the operator can judge whether the guess is stale.
+    /// </para>
+    /// <para>
+    /// It is set whenever such a decision exists, INDEPENDENTLY of whether the interlock actually held —
+    /// a run that delivered under an operator override still recorded the decision, and
+    /// <see cref="DeliveryForcedPastDecision"/> is what says the override fired.
+    /// </para>
+    /// </summary>
+    public DecisionEntry? DeliverySuppressingDecision { get; init; }
+
+    /// <summary>
+    /// True when an OPERATOR OVERRIDE (<c>--merge-on-success</c>, SSOT §5.3) lifted the autonomous-mode
+    /// delivery interlock and this run's machine-decided work was delivered anyway (issue #597). Set only
+    /// when the override actually MATTERED: a suppressing decision was recorded
+    /// (<see cref="DeliverySuppressingDecision"/>) AND delivery went ahead because of the flag. The CLI
+    /// renders it as a loud end-of-run notice — forcing delivery past a safety interlock is a thing an
+    /// operator should see recorded, not a silent success.
+    /// </summary>
+    public bool DeliveryForcedPastDecision { get; init; }
+
+    /// <summary>
     /// True when this run drained wholly green with delivery resolved ON, but the delivery was HELD BACK
     /// because the plan declares a terminal gate (<c>&lt;plan&gt;/guardrails/</c>) whose verdict the
     /// Scheduler does not have (issue #457).

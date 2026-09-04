@@ -89,6 +89,59 @@ public sealed class RunOutcomeWiringTests
         Assert.Contains("unreviewed wave", output, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Issue #597, the POSITIVE half of the same interlock, driven through the REAL <c>run</c> command: with
+    /// <c>--merge-on-success</c> the operator override LIFTS the #361 delivery suppression and the work is
+    /// actually delivered to the user's branch.
+    ///
+    /// <para><b>The defect this pins.</b> SSOT §5.3 has always said the default-OFF is "overridable ONLY by
+    /// an explicit <c>--merge-on-success</c>", but the Scheduler gated on
+    /// <c>plan.Config.MergeOnSuccessExplicit</c> — the RAW MANIFEST KEY — while the flag resolved only into
+    /// <c>Config.MergeOnSuccess</c>. So the flag could not lift the suppression at all, and the
+    /// "*** WORK NOT DELIVERED ***" banner recommended a command that provably could not work: the measured
+    /// re-run re-ran a full terminal gate (~9 minutes) and reprinted the byte-identical banner.</para>
+    ///
+    /// <para>This is the exact fixture the sibling test above runs unflagged — where delivery IS suppressed
+    /// and the user's branch does NOT advance — so the pair is two-sided over one scenario: same plan, one
+    /// flag, opposite delivery outcomes. Against pre-#597 code THIS test fails (HEAD unchanged, the
+    /// undelivered banner present); the sibling keeps passing, which is what proves the flag is the only
+    /// difference.</para>
+    /// </summary>
+    [Fact]
+    public async Task ProceedUnreviewed_Run_WithMergeOnSuccessFlag_DeliversPastTheInterlock_AndSaysSo()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
+
+        string planDir = CreateProceedUnreviewedPlan(repo.RepoPath);
+
+        (int exit, string output) = await RunViaCliAsync(
+            "run", planDir, "--no-ui", "--no-log-server", "--merge-on-success");
+
+        // ── The override FIRED: the verified work reached the user's branch ───────────────────────────
+        Assert.NotEqual(initialHead, repo.HeadSha());       // user branch advanced — delivery happened
+        Assert.Equal(originalBranch, repo.CurrentBranch()); // still on the user's own branch (not detached)
+
+        // ── And the run SAID so rather than presenting a quiet green ──────────────────────────────────
+        // Forcing delivery past a machine decision is an operator override of a safety interlock; it is
+        // legitimate, and it is announced.
+        Assert.Contains("DELIVERY FORCED PAST A MACHINE DECISION", output, StringComparison.Ordinal);
+        Assert.Contains("proceeded-unreviewed", output, StringComparison.Ordinal);
+
+        // ── The undelivered banner must NOT print: nothing is stranded ────────────────────────────────
+        Assert.DoesNotContain("WORK NOT DELIVERED", output, StringComparison.OrdinalIgnoreCase);
+
+        // ── The unreviewed flag is INDELIBLE — delivering does not launder it ─────────────────────────
+        // Exit 5 (ExitCodes.ProceededUnreviewed) and the "ran with N unreviewed waves" flag stand, because
+        // the run really did proceed through a wave no human reviewed. The override changes where the work
+        // LIVES, never what the run IS.
+        Assert.Equal(5, exit);
+        Assert.Contains("unreviewed wave", output, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(ReviewMarker.PathFor(planDir)),
+            "delivering under --merge-on-success must still NOT forge state/guardrails-review.json (§5 floor 3).");
+    }
+
     // ── The #120 driver: the REAL `run` command in-process (never `new Scheduler(...)`) ───────────────
 
     private static async Task<(int ExitCode, string Output)> RunViaCliAsync(params string[] args)
