@@ -265,10 +265,41 @@ public static class AttachCommand
                 break;
 
             case "AttemptFinished":
+            {
+                // The five REQUIRED AttemptRecord members are REQUIRED off the wire too — a line missing
+                // any one of them throws FormatException here, which ReplayNewLines catches and skips
+                // (forward-compatible with a malformed or torn line) rather than rendering a record this
+                // replay had to invent sentinel values for.
+                string? model = OptionalString(node, "model");
+                string? runner = OptionalString(node, "runner");
+                string? tier = OptionalString(node, "tier");
+                string? tierSourceToken = OptionalString(node, "tierSource");
+                AttemptProvenance? provenance = model is null && runner is null && tier is null && tierSourceToken is null
+                    ? null
+                    : new AttemptProvenance
+                    {
+                        Model = model,
+                        Runner = runner,
+                        Tier = tier,
+                        TierSource = tierSourceToken is null ? null : Enum.Parse<TierSource>(tierSourceToken)
+                    };
+
                 renderer.AttemptFinished(
-                    TaskFor(node, taskById), RequireInt(node, "attempt"),
-                    Enum.Parse<AttemptOutcome>(RequireString(node, "outcome")));
+                    TaskFor(node, taskById),
+                    new AttemptRecord
+                    {
+                        Attempt = RequireInt(node, "attempt"),
+                        StartedAt = RequireDateTimeOffset(node, "startedAt"),
+                        EndedAt = RequireDateTimeOffset(node, "endedAt"),
+                        Outcome = Enum.Parse<AttemptOutcome>(RequireString(node, "outcome")),
+                        LogDir = RequireString(node, "logDir"),
+                        CostUsd = node["costUsd"]?.GetValue<decimal>(),
+                        Turns = node["turns"]?.GetValue<int>(),
+                        NeedsHumanKind = OptionalString(node, "needsHumanKind"),
+                        Provenance = provenance
+                    });
                 break;
+            }
 
             case "TaskFinished":
                 renderer.TaskFinished(new TaskResult
@@ -307,7 +338,11 @@ public static class AttachCommand
 
             default:
                 // An event type this replay has no wire-shape decision for yet (a wave/cleanup/decision
-                // event, or a future addition) — skip it rather than fail the whole replay over it.
+                // event, or a future addition) — skip it rather than fail the whole replay over it. This
+                // DELIBERATELY includes "RunFinished": LiveRunObserver renders nothing from it, and an
+                // attaching client built against an older harness must not crash the moment a newer
+                // stream starts appending a run-scoped member it has never seen. Do not "fix" this by
+                // adding a case for it.
                 break;
         }
     }
@@ -327,6 +362,9 @@ public static class AttachCommand
 
     private static int RequireInt(JsonNode node, string field) =>
         node[field]?.GetValue<int>() ?? throw new FormatException($"observer.jsonl line is missing '{field}'.");
+
+    private static DateTimeOffset RequireDateTimeOffset(JsonNode node, string field) =>
+        node[field]?.GetValue<DateTimeOffset>() ?? throw new FormatException($"observer.jsonl line is missing '{field}'.");
 
     private static bool RequireBool(JsonNode node, string field) =>
         node[field]?.GetValue<bool>() ?? throw new FormatException($"observer.jsonl line is missing '{field}'.");

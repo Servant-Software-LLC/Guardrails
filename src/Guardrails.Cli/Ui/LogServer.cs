@@ -32,7 +32,10 @@ namespace Guardrails.Cli.Ui;
 ///     which <see cref="Core.Execution.RunEventStream"/> keeps appended to: a late subscriber first
 ///     receives every row already on disk, then subsequent rows as they are appended, one parseable
 ///     JSON object per line, over the same connection; an empty (not-yet-started) stream when the file
-///     does not exist yet, never a 404.</item>
+///     does not exist yet, never a 404. On shutdown, <see cref="WriteEventsStream"/> makes a best-effort
+///     attempt to deliver a row landing in the final poll interval (e.g. the terminal <c>run-finished</c>
+///     row) before the connection ends — best-effort, not a guarantee: the file on disk is always the
+///     durable record, and a subscriber whose connection drops for its own reasons re-reads it there.</item>
 ///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
 ///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
 ///     available attempt number, and the files in the selected attempt (default = latest), with a
@@ -66,6 +69,27 @@ public sealed class LogServer : IAsyncDisposable
 
     /// <summary>How often <see cref="WriteEventsStream"/> re-checks <c>events.jsonl</c> for growth once it has caught up.</summary>
     private static readonly TimeSpan EventsPollInterval = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>
+    /// Upper bound on how long <see cref="DisposeAsync"/> waits for in-flight requests (chiefly a
+    /// still-parked <c>GET /events</c> stream) to notice <see cref="_shutdown"/> and return before it
+    /// stops the listener. Generous relative to <see cref="EventsPollInterval"/> so the normal path (a
+    /// handler waking on cancellation and returning within milliseconds) never brushes it — this only
+    /// bounds a pathological handler, and shutdown proceeds regardless once it expires.
+    /// </summary>
+    private static readonly TimeSpan ShutdownDrainTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long <see cref="FinishTeardownAsync"/> waits before actually stopping the listener, once
+    /// <see cref="DisposeAsync"/> has already returned. A subscriber's next read of an already-flushed
+    /// final row can only be issued after <see cref="DisposeAsync"/> returns, and the shared HTTP.sys
+    /// request queue resets every connection it still tracks the instant the listener stops — including
+    /// one whose response already completed gracefully — discarding whatever the peer has received but
+    /// not yet read. This linger is the subscriber's only real window to read before that reset lands.
+    /// Generous relative to loopback round-trip latency (routinely sub-millisecond) without meaningfully
+    /// delaying real shutdown.
+    /// </summary>
+    private static readonly TimeSpan ListenerTeardownLinger = TimeSpan.FromMilliseconds(250);
 
     private readonly HttpListener _listener;
     private readonly string _logsRoot;
@@ -801,19 +825,8 @@ public sealed class LogServer : IAsyncDisposable
             var buffer = new byte[8192];
             using var pending = new MemoryStream();
 
-            while (!_shutdown.IsCancellationRequested)
+            void EmitLines(int read)
             {
-                int read = fs.Read(buffer, 0, buffer.Length);
-                if (read == 0)
-                {
-                    if (_shutdown.Token.WaitHandle.WaitOne(EventsPollInterval))
-                    {
-                        return; // shutting down
-                    }
-
-                    continue;
-                }
-
                 for (int i = 0; i < read; i++)
                 {
                     if (buffer[i] == (byte)'\n')
@@ -829,6 +842,45 @@ public sealed class LogServer : IAsyncDisposable
                 }
 
                 output.Flush();
+            }
+
+            while (!_shutdown.IsCancellationRequested)
+            {
+                int read = fs.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                {
+                    if (_shutdown.Token.WaitHandle.WaitOne(EventsPollInterval))
+                    {
+                        // Shutdown was signalled while parked in this wait. DisposeAsync now waits for
+                        // this request to notice _shutdown and return before it lets the listener be torn
+                        // down (see the comment there), so a row appended in this last poll interval —
+                        // e.g. the run-finished row, written the instant before the caller disposes this
+                        // server — has a real window to be attempted here rather than silently dropped.
+                        try
+                        {
+                            int finalRead = fs.Read(buffer, 0, buffer.Length);
+                            if (finalRead > 0)
+                            {
+                                EmitLines(finalRead);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // The row is already durable in events.jsonl, so a failure here only costs
+                            // this one live subscriber the row — reported distinctly rather than through
+                            // the catch-all below, so a genuine failure is never indistinguishable from a
+                            // clean, successful delivery.
+                            Console.Error.WriteLine(
+                                $"[log-server] final /events flush on shutdown failed: {ex.GetType().Name}: {ex.Message}");
+                        }
+
+                        return;
+                    }
+
+                    continue;
+                }
+
+                EmitLines(read);
             }
         }
         catch (Exception)
@@ -1095,6 +1147,48 @@ public sealed class LogServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _shutdown.Cancel();
+
+        // Wait for every dispatched request (including a still-polling GET /events stream) to notice
+        // _shutdown and return, giving WriteEventsStream's final read-and-flush (see the comment there)
+        // a real chance to complete before the listener is touched at all. Bounded by
+        // ShutdownDrainTimeout so a pathological handler can never hang shutdown: every handler has
+        // already been signalled by _shutdown.Cancel() above, and this stream's own poll interval is
+        // 150ms, so the normal path costs milliseconds.
+        Task[] pending;
+        lock (_inFlightLock)
+        {
+            pending = _inFlightRequests.ToArray();
+        }
+
+        try { await Task.WhenAny(Task.WhenAll(pending), Task.Delay(ShutdownDrainTimeout)).ConfigureAwait(false); }
+        catch (Exception) { /* individual request faults are already handled in HandleAndClose */ }
+
+        // The listener's actual teardown runs afterward, deliberately NOT awaited here — see
+        // FinishTeardownAsync for why returning before it runs is what makes a subscriber's read of an
+        // already-flushed final row survive shutdown.
+        _ = FinishTeardownAsync();
+    }
+
+    /// <summary>
+    /// Stops and closes the shared <see cref="HttpListener"/>. Confirmed empirically: even once a
+    /// handler's final write has completed with no exception (the wait in <see cref="DisposeAsync"/>
+    /// already guarantees that), the underlying HTTP.sys request queue still tracks that connection —
+    /// a completed HTTP response does not by itself end the TCP connection, since HTTP/1.1 keep-alive
+    /// leaves it open awaiting reuse. <c>Stop()</c>/<c>Close()</c> tears the WHOLE queue down at the
+    /// kernel level, which resets every connection it still tracks; a TCP reset discards whatever the
+    /// peer has already received but not yet read off its own socket, regardless of how long ago the
+    /// write completed on this side. The one lever available from here is WHEN that reset lands relative
+    /// to the subscriber's own next read: a subscriber can only attempt that read once
+    /// <see cref="DisposeAsync"/> has returned (its own code is sequenced that way), so if this ran
+    /// inline on <see cref="DisposeAsync"/>'s await chain — no matter how long it waited first — the
+    /// reset would always land before the read is even issued. Deferring the reset itself past that
+    /// point, with a brief linger, is what gives an already-flushed row a real window to be read before
+    /// the shared queue goes away underneath it.
+    /// </summary>
+    private async Task FinishTeardownAsync()
+    {
+        await Task.Delay(ListenerTeardownLinger).ConfigureAwait(false);
+
         try { _listener.Stop(); } catch (Exception) { /* already stopped */ }
         try { _listener.Close(); } catch (Exception) { /* already closed */ }
 
@@ -1102,16 +1196,6 @@ public sealed class LogServer : IAsyncDisposable
         {
             try { await _acceptLoop.ConfigureAwait(false); } catch (Exception) { /* loop ended */ }
         }
-
-        // Wait for every dispatched request (including a still-polling GET /events stream) to notice
-        // _shutdown and return before disposing it out from under them.
-        Task[] pending;
-        lock (_inFlightLock)
-        {
-            pending = _inFlightRequests.ToArray();
-        }
-
-        try { await Task.WhenAll(pending).ConfigureAwait(false); } catch (Exception) { /* individual request faults are already handled in HandleAndClose */ }
 
         _shutdown.Dispose();
     }

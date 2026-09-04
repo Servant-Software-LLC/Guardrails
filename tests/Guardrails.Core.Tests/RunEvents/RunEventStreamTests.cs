@@ -58,7 +58,7 @@ public sealed class RunEventStreamTests
         public void AttemptRouteResolved(
             TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier) =>
             Calls.Add(nameof(AttemptRouteResolved));
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) => Calls.Add(nameof(AttemptFinished));
+        public void AttemptFinished(TaskNode task, AttemptRecord record) => Calls.Add(nameof(AttemptFinished));
         public void TaskFinished(TaskResult result) => Calls.Add(nameof(TaskFinished));
         public void GuardrailFinished(TaskNode task, GuardrailResult result) => Calls.Add(nameof(GuardrailFinished));
         public void PlanHashMismatch(string previousPlanHash) => Calls.Add(nameof(PlanHashMismatch));
@@ -81,6 +81,16 @@ public sealed class RunEventStreamTests
             WaveNode? authoredWave) => Calls.Add(nameof(WaveBreakdownFinished));
     }
 
+    /// <summary>A minimal <see cref="AttemptRecord"/> fixture — only <c>Attempt</c>/<c>Outcome</c> matter to these tests.</summary>
+    private static AttemptRecord AttemptRecordFixture(int attempt, AttemptOutcome outcome) => new()
+    {
+        Attempt = attempt,
+        StartedAt = DateTimeOffset.UtcNow,
+        EndedAt = DateTimeOffset.UtcNow,
+        Outcome = outcome,
+        LogDir = "logs/fixture"
+    };
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Tests
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -92,10 +102,10 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 2, AttemptOutcome.GuardrailFailed);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.GuardrailFailed));
 
             List<string> lines = ReadEventLines(dir);
             Assert.Single(lines);
@@ -123,10 +133,10 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 1, outcome);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
 
@@ -148,13 +158,13 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode taskA = FlatTask("01-first");
             TaskNode taskB = FlatTask("02-second");
 
-            ((IRunObserver)stream).AttemptFinished(taskA, 1, AttemptOutcome.Succeeded);
-            ((IRunObserver)stream).AttemptFinished(taskA, 2, AttemptOutcome.MaxTurns);
-            ((IRunObserver)stream).AttemptFinished(taskB, 1, AttemptOutcome.GuardrailFailed);
+            ((IRunObserver)stream).AttemptFinished(taskA, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
+            ((IRunObserver)stream).AttemptFinished(taskA, AttemptRecordFixture(2, AttemptOutcome.MaxTurns));
+            ((IRunObserver)stream).AttemptFinished(taskB, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
 
             List<string> lines = ReadEventLines(dir);
             Assert.Equal(3, lines.Count);
@@ -183,10 +193,10 @@ public sealed class RunEventStreamTests
         {
             string runDir = Path.Combine(dir, "my-test-run");
             Directory.CreateDirectory(runDir);
-            var stream = new RunEventStream(IRunObserver.Null, runDir);
+            var stream = new RunEventStream(IRunObserver.Null, runDir, Path.GetFileName(runDir));
             TaskNode task = FlatTask("01-first");
 
-            ((IRunObserver)stream).AttemptFinished(task, 3, AttemptOutcome.RateLimited);
+            ((IRunObserver)stream).AttemptFinished(task, AttemptRecordFixture(3, AttemptOutcome.RateLimited));
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(runDir).Single()).RootElement;
 
@@ -218,7 +228,7 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            var stream = new RunEventStream(IRunObserver.Null, dir);
+            var stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
             ((IRunObserver)stream).TaskStarting(task);
@@ -243,16 +253,16 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir);
+            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
             stream.TaskStarting(task);
             stream.AttemptStarting(task, 1, 3);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = false, Reason = "no file" });
-            stream.AttemptFinished(task, 1, AttemptOutcome.GuardrailFailed);
+            stream.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
             stream.AttemptStarting(task, 2, 3);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
-            stream.AttemptFinished(task, 2, AttemptOutcome.Succeeded);
+            stream.AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.Succeeded));
             stream.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });
 
             List<string> kinds =
@@ -284,7 +294,7 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir)).AttemptStarting(FlatTask("01-first"), 2, 5);
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).AttemptStarting(FlatTask("01-first"), 2, 5);
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
             Assert.Equal(2, root.GetProperty("attempt").GetInt32());
@@ -306,7 +316,7 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir);
+            IRunObserver stream = new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir));
             TaskNode task = FlatTask("01-first");
 
             stream.GuardrailFinished(task, new GuardrailResult { Name = "02-fails", Passed = false, Reason = "out/x.txt missing" });
@@ -343,7 +353,7 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir))
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir)))
                 .TaskFinished(new TaskResult { TaskId = "01-first", Outcome = outcome, Summary = "s" });
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
@@ -375,7 +385,7 @@ public sealed class RunEventStreamTests
         string dir = NewTempDirectory();
         try
         {
-            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir)).TaskStarting(FlatTask("01-first"));
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).TaskStarting(FlatTask("01-first"));
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
 
@@ -407,7 +417,7 @@ public sealed class RunEventStreamTests
         try
         {
             var inner = new RecordingObserver();
-            IRunObserver decorator = new RunEventStream(inner, dir);
+            IRunObserver decorator = new RunEventStream(inner, dir, Path.GetFileName(dir));
 
             TaskNode task = FlatTask("01-first");
             TaskNode waveTask = task with { Id = "wave-01-x/01-first", WaveDir = "wave-01-x" };
@@ -450,7 +460,7 @@ public sealed class RunEventStreamTests
             decorator.AttemptStarting(task, 1, 3);
             decorator.AttemptModelResolved(task, 1, "claude-sonnet-5", requestedModel: null);
             decorator.AttemptRouteResolved(task, 1, "claude", "claude-sonnet-5", tier: null, requestedTier: null);
-            decorator.AttemptFinished(task, 1, AttemptOutcome.Succeeded);
+            decorator.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
             decorator.TaskFinished(taskResult);
             decorator.GuardrailFinished(task, guardrailResult);
             decorator.PlanHashMismatch("sha256:old");

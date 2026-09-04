@@ -101,16 +101,49 @@ public sealed class ObserverProjection : IRunObserver
         _inner.AttemptRouteResolved(task, attempt, runner, model, tier, requestedTier);
     }
 
-    public void AttemptFinished(TaskNode task, int attempt, Journal.AttemptOutcome outcome)
+    /// <summary>
+    /// Flattens the WHOLE <see cref="Journal.AttemptRecord"/> onto the line, not just <c>attempt</c>/
+    /// <c>outcome</c> — every <c>required</c> member (<c>startedAt</c>/<c>endedAt</c>/<c>logDir</c>
+    /// besides the two already carried) plus every optional the record actually holds. A replay
+    /// rebuilding this record off the wire (<c>AttachCommand</c>) needs the required five to construct
+    /// one at all; omitting even one turns every replay of this attempt into a silently skipped line.
+    /// </summary>
+    public void AttemptFinished(TaskNode task, Journal.AttemptRecord record)
     {
         Append(new JsonObject
         {
             ["member"] = "AttemptFinished",
             ["taskId"] = task.Id,
-            ["attempt"] = attempt,
-            ["outcome"] = outcome.ToString()
+            ["attempt"] = record.Attempt,
+            ["startedAt"] = JsonValue.Create(record.StartedAt),
+            ["endedAt"] = JsonValue.Create(record.EndedAt),
+            ["outcome"] = record.Outcome.ToString(),
+            ["logDir"] = record.LogDir,
+            ["costUsd"] = JsonValue.Create(record.CostUsd),
+            ["turns"] = JsonValue.Create(record.Turns),
+            ["needsHumanKind"] = record.NeedsHumanKind,
+            ["model"] = record.Provenance?.Model,
+            ["runner"] = record.Provenance?.Runner,
+            ["tier"] = record.Provenance?.Tier,
+            ["tierSource"] = record.Provenance?.TierSource?.ToString()
         });
-        _inner.AttemptFinished(task, attempt, outcome);
+        _inner.AttemptFinished(task, record);
+    }
+
+    /// <summary>
+    /// Recorded as its OWN line, not merely forwarded: this class's documented contract above is "every
+    /// call is appended … and forwarded" — a run-scoped member that only forwarded would make that "every"
+    /// false for the one call that brackets the whole stream.
+    /// </summary>
+    public void RunFinished(int? exitCode, string? faultKind)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "RunFinished",
+            ["exitCode"] = JsonValue.Create(exitCode),
+            ["faultKind"] = faultKind
+        });
+        _inner.RunFinished(exitCode, faultKind);
     }
 
     public void TaskFinished(TaskResult result)

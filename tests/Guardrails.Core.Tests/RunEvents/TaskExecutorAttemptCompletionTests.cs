@@ -153,8 +153,8 @@ public sealed class TaskExecutorAttemptCompletionTests
 
         public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
 
-        public void AttemptFinished(TaskNode task, int attempt, AttemptOutcome outcome) =>
-            Calls.Add((task, attempt, outcome));
+        public void AttemptFinished(TaskNode task, AttemptRecord record) =>
+            Calls.Add((task, record.Attempt, record.Outcome));
     }
 
     /// <summary>

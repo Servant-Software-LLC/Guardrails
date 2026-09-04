@@ -4506,6 +4506,11 @@ public sealed class Scheduler
         _journal.RecordSettleWithAttempt(
             task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash,
             bucket: pending.Bucket);
+        // SSOT §15.2a: this is the worktree SUCCESS path's only route to this event. A worktree settle
+        // that ends needs-human instead (a failed union re-verify, an unresolvable AI-merge, a non-FF
+        // integration failure) calls RecordSettle(..., NeedsHuman, null) above and builds no AttemptRecord
+        // at all, so it still raises nothing here — a separate, deliberately unfixed gap.
+        _observer.AttemptFinished(task, record);
     }
 
     /// <summary>

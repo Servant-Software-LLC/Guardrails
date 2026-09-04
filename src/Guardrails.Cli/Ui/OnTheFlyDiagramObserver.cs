@@ -233,8 +233,11 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // cleanly and drops the per-attempt outcome in every mode (the VerifierAdvisoryFound lesson again).
     // This observer does not ACT on it: an attempt's outcome is not a shape of the DAG, so it forwards
     // and nothing else.
-    public void AttemptFinished(TaskNode task, int attempt, Core.Journal.AttemptOutcome outcome) =>
-        _inner.AttemptFinished(task, attempt, outcome);
+    public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record) =>
+        _inner.AttemptFinished(task, record);
+
+    /// <inheritdoc/>
+    public void RunFinished(int? exitCode, string? faultKind) => _inner.RunFinished(exitCode, faultKind);
 
     public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
 
