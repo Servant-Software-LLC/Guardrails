@@ -1,0 +1,9 @@
+{
+  "description": "Author the RED unit tests pinning the section 5.1 retry truth table and the section 6.6 redacted-URL renderer, and land WebhookEventSink.cs as throwing stubs plus the section 5.2 bounds",
+  "stableId": "whp4ax",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Webhooks/WebhookPolicyTests.cs",
+    "src/Guardrails.Core/Execution/WebhookEventSink.cs"
+  ]
+}

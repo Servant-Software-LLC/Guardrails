@@ -347,14 +347,21 @@ failure-signal lines at the very end**:
 $out = dotnet test tests/Inventory.Tests --filter "Category=Stats&FullyQualifiedName~StatsCalculatorTests" --no-build --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }                 # full log first (for the attempt's saved output)
 if ($LASTEXITCODE -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } |
-        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    # BLOCK capture, not a line allowlist (#608): start at a failure header, stop at the summary,
+    # and take everything between. A line allowlist drops the lines it was not told about, and the
+    # note below shows which ones those are.
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40             # bound the block so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "Stats tests failing - flag not implemented to spec (see failure details above)"
     exit 1
 }
@@ -367,6 +374,44 @@ Notes that make it robust:
   `tests-pass` guardrail also carries the `Total:`-keyed **zero-match guard** (§4.3), because the
   narrowed `--filter` above exits **0** when it matches nothing. §4.3's forward form is what you emit;
   this block is the re-emit half of it, shown alone.
+- **Why a BLOCK capture and not a line allowlist (#608).** This was a `Select-String` allowlist —
+  `'\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:'` — and an allowlist
+  looks correct on the page, which is how it survived. It is not, and the reason is only visible
+  against real output. **Measured** on a probe project matching this repo's stack (net10.0, xunit.v3
+  3.2.2, xunit.runner.visualstudio 3.1.5, Microsoft.NET.Test.Sdk 18.6.0), a failure block is:
+
+  ```
+  [xUnit.net 00:00:00.74]     Probe.WebhookPolicyTests.RedactedUrlNeverContainsThePath [FAIL]
+    Failed Probe.WebhookPolicyTests.RedactedUrlNeverContainsThePath [15 ms]
+    Error Message:
+     Assert.DoesNotContain() Failure: Sub-string found
+                                           ↓ (pos 45)
+  String: ···" -> https://hooks.example.com/services/T00/B11/XyZ"
+  Found:  "/services/T00/B11/XyZ"
+    Stack Trace:
+       at Probe.WebhookPolicyTests.RedactedUrlNeverContainsThePath() in …\Probe.cs:line 13
+     at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+    Failed Probe.WebhookPolicyTests.ThrowsInsteadOfAsserting [< 1 ms]
+    Error Message:
+     System.InvalidOperationException : boom
+  ```
+
+  The allowlist kept 14 of those 33 lines and **dropped two things that matter**: the
+  **`String:` / `Found:` payload** of a `DoesNotContain`/`Contains` failure — for a negative
+  assertion, `Found:` IS the finding, so the tail said a redaction test failed but not what leaked —
+  and **every stack FRAME**, since there is no `at ` branch, leaving `Stack Trace:` as a label
+  followed by nothing. The block form keeps all of it and needs no maintenance as assertion types
+  change; that is the whole argument for it. Two details that make the old pattern look righter than
+  it is, so check them before "simplifying" this back: **`Expected:` and `Actual:` sit at COLUMN 0**,
+  not indented as an older sample here showed, and **`[FAIL]` is alive** — xunit.v3 emits both
+  `[xUnit.net …] <FQN> [FAIL]` diagnostics and `  Failed <FQN> [15 ms]` block headers, so an
+  allowlist keyed on `[FAIL]` really does capture test NAMES. Name capture was never the defect.
+- **Beware the weaker variant.** A hand-copied form
+  (`'^\s*(Error Message|Expected|Actual|Stack Trace|\s+at )'`) is in circulation and is worse than
+  either: it keeps the frames but drops the assertion headline AND a thrown test's only detail line,
+  so `Error Message:` is followed by nothing on any test that throws rather than asserts — the
+  common shape while an implementation is half-built. If you are copying a re-emit from an existing
+  plan folder rather than from here, check it against the block above.
 - **`-v q` on the test command DELETES exactly what this block re-emits (#462).** The flag suppresses the
   whole failure block — `Error Message:`, the assertion line, `Expected:`, `Actual:`, `Stack Trace:` —
   leaving only `[FAIL] <name>`, so the `Select-String` above matches nothing and re-emits nothing. The
@@ -645,14 +690,18 @@ $out | ForEach-Object { Write-Output $_ }                  # full log first (for
 # EXIT CODE FIRST, guard second (#455): a test host that never ran exits NON-zero with no summary,
 # so checking the exit code first reports its real error instead of blaming the filter.
 if ($testExit -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } |
-        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {                              # BLOCK capture, not a line allowlist (#608)
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40                            # bound so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "StatsCalculatorTests failing - the Stats behavior is not implemented to spec (see failure details above)"
     exit 1
 }
@@ -2131,14 +2180,21 @@ reaches the halt feedback (#179):
 $out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }                  # full log first (for the attempt's saved output)
 if ($LASTEXITCODE -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } |
-        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    # BLOCK capture, not a line allowlist (#608): start at a failure header, stop at the summary,
+    # and take everything between. A line allowlist drops the lines it was not told about, and the
+    # note below shows which ones those are.
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40             # bound the block so it fits the ~60-line tail
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "the existing tests in tests/Inventory.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181)"
     exit 1
 }

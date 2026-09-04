@@ -625,7 +625,9 @@ optional:
   only the test NAMES in the tail and the next attempt sees WHAT failed, not WHY (it then
   retries blind — plan-0009 burned 12 attempts). For any guardrail that asserts tests PASS, use
   the catalogue's capture → emit-full-log → re-emit-failure-lines-at-the-end pattern (catalogue
-  → "Failure detail must reach the retry tail"; .NET regex in `stacks/dotnet.md §4.2`). The
+  → "Failure detail must reach the retry tail"; .NET form in `stacks/dotnet.md §4.2`, which is a
+  BLOCK capture and deliberately **not** a line allowlist — an allowlist drops the `String:`/`Found:`
+  payload and the stack frames, measured, #608). The
   INVERSE TDD-red checks (`tests-fail-on-stubs`, where a non-zero exit is success) do NOT
   re-emit. This is in addition to — not a replacement for — the single actionable reason line.
   **Never carry `-v q` onto a `dotnet test` guardrail** — measured, it suppresses the entire

@@ -149,12 +149,18 @@ detail at the END so a red baseline's WHY reaches the halt feedback (#179; `stac
 $out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } | Select-Object -First 40
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {                              # BLOCK capture, not a line allowlist (#608)
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the halt feedback) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "the existing tests in tests/Inventory.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181)"
     exit 1
 }
@@ -345,12 +351,18 @@ $out | ForEach-Object { Write-Output $_ }
 # checking the exit code first reports its real error instead of blaming the filter (and sending the
 # retry agent to rename a correctly-named test class - the one file it IS allowed to edit).
 if ($testExit -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } | Select-Object -First 40
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {                              # BLOCK capture, not a line allowlist (#608)
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "Stats tests failing - flag not implemented to spec (see failure details above)"
     exit 1
 }
@@ -459,12 +471,18 @@ would re-run it at every intermediate union and, on any TDD plan, red-halt a cor
 $out = dotnet test --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } | Select-Object -First 40
+    $detail = @()
+    $emit = $false
+    foreach ($line in $out) {                              # BLOCK capture, not a line allowlist (#608)
+        if ($line -match '^\s*Failed\s+\S' -or $line -match '^\s*Error Message:') { $emit = $true }
+        elseif ($line -match '^(Passed!|Failed!)') { $emit = $false }
+        if ($emit) { $detail += $line }
+    }
+    $detail = $detail | Select-Object -First 40
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no failure block matched - the runner's output format may have changed; inspect the full log above)" }
     Write-Output "full suite has failures after the --stats work (see failure details above)"
     exit 1
 }

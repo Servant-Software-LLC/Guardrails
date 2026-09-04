@@ -1,0 +1,10 @@
+{
+  "description": "Implement IsRetryable as a pure function over the section 5.1 truth table and the section 6.6 redacted-URL renderer, turning WebhookPolicyTests green",
+  "stableId": "whp5bt",
+  "dependsOn": [
+    "04-author-tests-webhook-policy"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/WebhookEventSink.cs"
+  ]
+}

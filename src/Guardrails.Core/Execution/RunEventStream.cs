@@ -43,10 +43,18 @@ namespace Guardrails.Core.Execution;
 /// <para><b>Row shape.</b> The row is the telemetry corpus row (<see cref="Telemetry.TelemetryRow"/>)
 /// emitted LIVE rather than at settle: <c>runId</c>/<c>taskId</c>/<c>attempt</c>/<c>outcome</c> are the
 /// same fields, the same wire tokens (<see cref="Journal.JournalJson.OutcomeToken"/>), that the settled
-/// row carries. <c>kind</c> and <c>at</c> exist only because a live stream needs them and a settled row
-/// does not: <c>kind</c> discriminates the event, <c>at</c> is when it was observed. Fields that do not
-/// apply to a kind are OMITTED rather than written null, so a consumer testing for a field's presence
-/// gets a straight answer.</para>
+/// row carries. <c>kind</c>, <c>at</c> and <c>bracket</c> exist only because a live stream needs them
+/// and a settled row does not: <c>kind</c> discriminates the event, <c>at</c> is when it was observed,
+/// and <c>bracket</c> (design §4.2) is what makes the delivery key <c>(runId, bracket, seq)</c> rather
+/// than <c>(runId, seq)</c> — <c>seq</c> restarts at 1 in every new process, so a resumed run re-emits
+/// <c>seq: 1</c> under the SAME <c>runId</c>, and a receiver deduplicating on <c>(runId, seq)</c> alone
+/// would silently discard an entire resumed run. Fields that do not apply to a kind are OMITTED rather
+/// than written null, so a consumer testing for a field's presence gets a straight answer.</para>
+///
+/// <para><b>The wire copy</b> a webhook dispatcher receives through <c>onRow</c> (issue #585 layer 3,
+/// design §3.1) differs from this file's line in EXACTLY ONE field, and only ever <c>detail</c> — and
+/// only when the row HAS one: withheld by default, or capped when <c>includeDetail</c> opts in (§6.3).
+/// Every other field, including <c>bracket</c> itself, is byte-identical between the two.</para>
 /// </summary>
 public sealed class RunEventStream : IRunObserver
 {
@@ -65,10 +73,21 @@ public sealed class RunEventStream : IRunObserver
     private readonly IRunObserver _inner;
     private readonly string _directory;
     private readonly string _runId;
+    private readonly Action<EventDelivery>? _onRow;
+    private readonly bool _includeDetail;
     private readonly object _gate = new();
 
     /// <summary>The last <c>seq</c> assigned. Mutated only inside <see cref="_gate"/>.</summary>
     private int _seq;
+
+    /// <summary>
+    /// <c>&lt;unix-ms&gt;-&lt;4 lowercase hex&gt;</c>, generated ONCE per process here in the constructor
+    /// and stamped on every row (design §4.2). The millisecond prefix is what lets a receiver ORDER two
+    /// brackets across a resume; the random suffix is what keeps two processes that start in the same
+    /// millisecond distinct. Deliberately NOT a timestamp anyone should compute elapsed time from — same
+    /// reason <see cref="EventRow.At"/> is not.
+    /// </summary>
+    private readonly string _bracket;
 
     /// <param name="inner">The real observer every event is forwarded to.</param>
     /// <param name="directory">The run's log directory; events land in <c>events.jsonl</c> underneath it.</param>
@@ -76,11 +95,27 @@ public sealed class RunEventStream : IRunObserver
     /// The run's own id, as the composition root already knows it — never derived from
     /// <paramref name="directory"/>'s name, which merely resembles it.
     /// </param>
-    public RunEventStream(IRunObserver inner, string directory, string runId)
+    /// <param name="onRow">
+    /// OPTIONAL second destination for each row (#585 layer 3): the delivery the webhook dispatcher queues.
+    /// Invoked on the RUN's own thread, INSIDE the append lock, so it MUST return in microseconds and MUST
+    /// NOT throw — a throw here would propagate into a Scheduler worker while holding <c>_gate</c>, and a
+    /// delivery mechanism is never permitted to affect the run (§8.3). Enqueue and return; a full queue is a
+    /// recorded DROP, never a wait. Null = no webhook endpoint, and the byte-identical behavior of today.
+    /// </param>
+    /// <param name="includeDetail">
+    /// Whether <paramref name="onRow"/>'s copy carries the free-text <c>detail</c> field (§8.3). The
+    /// events.jsonl row is NEVER affected either way.
+    /// </param>
+    public RunEventStream(
+        IRunObserver inner, string directory, string runId,
+        Action<EventDelivery>? onRow = null, bool includeDetail = false)
     {
         _inner = inner;
         _directory = directory;
         _runId = runId;
+        _onRow = onRow;
+        _includeDetail = includeDetail;
+        _bracket = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Random.Shared.Next(0x1_0000):x4}";
     }
 
     /// <inheritdoc/>
@@ -255,13 +290,61 @@ public sealed class RunEventStream : IRunObserver
     {
         lock (_gate)
         {
-            EventRow stamped = row with { Seq = ++_seq, At = DateTimeOffset.UtcNow };
+            EventRow stamped = row with { Seq = ++_seq, At = DateTimeOffset.UtcNow, Bracket = _bracket };
             string line = JsonSerializer.Serialize(stamped, LineOptions);
 
             Directory.CreateDirectory(_directory);
             File.AppendAllText(Path.Combine(_directory, "events.jsonl"), line + "\n", Utf8NoBom);
+
+            if (_onRow is not null)
+            {
+                // The wire copy differs from the file line in EXACTLY ONE field, and only ever `detail`
+                // (§8.3) — and only when the row HAS one. A null stays null, so a task-started /
+                // attempt-started / run-finished / PASSING guardrail-finished row serializes to a
+                // byte-identical string, and a receiver never sees a withheld marker where there was
+                // nothing to withhold.
+                EventRow wire = stamped.Detail is null
+                    ? stamped
+                    : stamped with { Detail = _includeDetail ? CapDetail(stamped.Detail) : DetailWithheld };
+
+                string wireLine = ReferenceEquals(wire, stamped) ? line : JsonSerializer.Serialize(wire, LineOptions);
+
+                // The contract on `onRow`'s doc comment says the callback must not throw. A public
+                // delegate parameter cannot ENFORCE that — a test double or a future second consumer can
+                // throw — and a throw escaping here would propagate into a Scheduler worker while holding
+                // `_gate`. Belt as well as braces.
+                try
+                {
+                    _onRow(new EventDelivery($"{_runId}:{_bracket}:{stamped.Seq}", stamped.Kind, wireLine));
+                }
+                catch (Exception)
+                {
+                    // A delivery mechanism may never affect the run (§8.3): swallow, don't rethrow, don't log.
+                }
+            }
         }
     }
+
+    /// <summary>
+    /// The fixed marker a withheld <c>detail</c> carries on the wire (design §6.3) — PRESENT on the wire
+    /// row rather than the field being omitted, so a receiver can never read "withheld" as "the guardrail
+    /// had nothing to say". A §8.3 WIRE concept that lives here, in the row WRITER, rather than in
+    /// <see cref="GuardrailFailureReason"/> or the dispatcher: this class already owns the row shape, so
+    /// design §10 has it also own the wire copy's shape, as its one deliberate seam-crossing.
+    /// </summary>
+    private const string DetailWithheld = "(detail withheld; pass --on-event-detail)";
+
+    /// <summary>
+    /// <paramref name="detail"/> unchanged when it is at most <see cref="GuardrailFailureReason.MaxChars"/>
+    /// characters; otherwise the FIRST <see cref="GuardrailFailureReason.MaxChars"/> characters followed
+    /// by <c>…[truncated]</c> (design §6.3). References the constant rather than copying the literal
+    /// <c>2000</c> — task 02 promoted it to <c>internal const</c> precisely so the number has one owner.
+    /// Lives beside <see cref="DetailWithheld"/> for the same seam-crossing reason given there.
+    /// </summary>
+    private static string CapDetail(string detail) =>
+        detail.Length <= GuardrailFailureReason.MaxChars
+            ? detail
+            : detail[..GuardrailFailureReason.MaxChars] + "…[truncated]";
 
     /// <summary>
     /// The kebab wire token for a <see cref="TaskOutcome"/>, matching
@@ -309,6 +392,12 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary>Stamped by <see cref="AppendLine"/>, never by a caller — see its doc comment.</summary>
         public DateTimeOffset At { get; init; }
+
+        /// <summary>
+        /// Stamped by <see cref="AppendLine"/> from <see cref="_bracket"/>, generated once per process —
+        /// see that field's doc comment. On every row, like <see cref="Seq"/> and <see cref="At"/>.
+        /// </summary>
+        public string? Bracket { get; init; }
 
         public required string RunId { get; init; }
 
@@ -364,3 +453,10 @@ public sealed class RunEventStream : IRunObserver
         public string? NeedsHumanKind { get; init; }
     }
 }
+
+/// <summary>
+/// One row on its way OFF the machine (§8.3). Carries the three values the delivery's headers need
+/// alongside the body, so the dispatcher never re-parses the JSON it was just handed — which would be a
+/// third serialization round-trip per row and a failure mode nobody has specified.
+/// </summary>
+public readonly record struct EventDelivery(string DeliveryId, string Kind, string JsonLine);

@@ -1,0 +1,11 @@
+{
+  "description": "Stamp bracket on every events.jsonl row and deliver the wire copy through the onRow callback inside the append lock",
+  "stableId": "r7v2bx",
+  "dependsOn": [
+    "02-author-tests-bracket-and-wire-copy"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/GuardrailFailureReason.cs"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "description": "Land the layer-3 schema changes in the SSOT: the `bracket` field on the section 8.1 row, and the new section 8.3 webhook delivery contract",
+  "stableId": "br7kq2",
+  "dependsOn": [],
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

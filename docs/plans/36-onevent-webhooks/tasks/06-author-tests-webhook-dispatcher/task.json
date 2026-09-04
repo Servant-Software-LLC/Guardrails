@@ -1,0 +1,15 @@
+{
+  "description": "Author the RED unit tests for the dispatcher - the section 5.2 bounds, the section 5.3 circuit, drop accounting, the six-step teardown of section 3.3, and the negative notice-redaction assertions - plus the member stubs they compile against",
+  "stableId": "whd6cm",
+  "dependsOn": [
+    "03-implement-bracket-and-wire-copy",
+    "05-implement-webhook-policy"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Webhooks/WebhookEventSinkTests.cs",
+    "src/Guardrails.Core/Execution/WebhookEventSink.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

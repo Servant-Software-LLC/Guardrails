@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "charterVersion": "0.26.0",
+  "plan": "585-layer3-webhooks.charter.md",
+  "planSha256": "54fcd5dccbe1e7fee6912a5da9e376d9b48c837eb0e61d2adaa53e5488b859ef",
+  "answers": null,
+  "answersSha256": null,
+  "handoff": "36-onevent-webhooks.md",
+  "handoffSha256": "553696b1655e5d5096d9208f8764343e8ba23e31eacb9fdc8e791e034092f468",
+  "malformedQuestions": 0,
+  "gate": {
+    "flagPassed": true,
+    "needsHuman": false,
+    "exitCode": 0,
+    "blockers": [],
+    "unmatchedAnswerIds": []
+  },
+  "questions": [
+    {
+      "id": "bracket-field",
+      "title": "Add a \u0060bracket\u0060 field to the \u00A78.1 row shape, one week after #595 settled it?",
+      "sourceLine": 547,
+      "answered": true,
+      "answer": [
+        "Add \u0060bracket\u0060 to the row (design\u0027s proposal)"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "circuit-breaker",
+      "title": "Should the circuit breaker be able to re-close, so a recovered endpoint still gets \u0060run-finished\u0060?",
+      "sourceLine": 671,
+      "answered": true,
+      "answer": [
+        "Always attempt \u0060run-finished\u0060 even when the circuit is open"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "detail-default",
+      "title": "Withhold \u0060detail\u0060 from webhook deliveries by default?",
+      "sourceLine": 854,
+      "answered": true,
+      "answer": [
+        "Withhold by default; \u0060--on-event-detail\u0060 opts in"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "detail-optin-flag",
+      "title": "Is \u0060--on-event-detail\u0060 worth shipping, or is it the cheapest thing to cut?",
+      "sourceLine": 858,
+      "answered": true,
+      "answer": [
+        "Ship it \u2014 the opt-in is the point of a default"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "untracked-deferrals",
+      "title": "Two deferrals in \u00A78 say \u0027New issue\u0027 but name none \u2014 file them now?",
+      "sourceLine": 1049,
+      "answered": true,
+      "answer": [
+        "File both now (HMAC signature, multiple endpoints)"
+      ],
+      "answerSource": "inline"
+    }
+  ]
+}

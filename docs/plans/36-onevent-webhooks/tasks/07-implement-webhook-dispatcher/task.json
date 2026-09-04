@@ -1,0 +1,13 @@
+{
+  "description": "Implement the dispatcher: the bounded DropOldest channel with counting drops, one retained pump, the latched circuit with its buffered notice, the always-printing summary, and the six-step DisposeAsync of section 3.3",
+  "stableId": "whd7dn",
+  "dependsOn": [
+    "06-author-tests-webhook-dispatcher"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/WebhookEventSink.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

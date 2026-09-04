@@ -216,6 +216,16 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "in no plan's writeScope by construction. The row is added by hand because it needs the " +
             "breakdown commit's own sha, which does not exist when the plan's tasks are authored - which is " +
             "precisely why it keeps being forgotten, and why the fix belongs in /plan-breakdown (#587)"),
+        new("docs/plans/36-onevent-webhooks", "aecfd3e", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. The FOURTH " +
+            "consecutive plan to trip this table, and the first where that was PREDICTED rather than " +
+            "discovered: the row above says the fix belongs in /plan-breakdown (#587), so plan 36's " +
+            "breakdown checked the tripwire before committing, watched it go red on the commit that " +
+            "created the folder, and added this row in the next one. That is the whole catch-22 stated " +
+            "plainly - the row needs the breakdown commit's own sha, which cannot exist until the commit " +
+            "that breaks the test has been made. Knowing it in advance turned a red terminal gate into " +
+            "two commits; it did not make the row automatic, which is why #601 tracks graduating this " +
+            "class of tripwire into a deterministic check"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,
