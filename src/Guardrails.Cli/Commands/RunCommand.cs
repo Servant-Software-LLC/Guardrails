@@ -2007,6 +2007,22 @@ public static class RunCommand
         string planBranch = "guardrails/" + Path.GetFileName(
             planDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
+        // Issue #597: the DURABLE trace of an operator override of the autonomous-mode delivery interlock.
+        // The override reached the RunReport and the console banner and stopped there — nothing under
+        // Journal/ persisted it — so a week later a forced delivery was indistinguishable from one that was
+        // never suppressed, for the one action in the system that deliberately bypasses a safety interlock.
+        // Computed once and attached to BOTH return paths below: the override is equally a fact when the
+        // merge it unlocked was then refused (conflict / dirty tree / hook).
+        ForcedDeliveryRecord? forcedPastDecision =
+            report.DeliveryForcedPastDecision && report.DeliverySuppressingDecision is { } overridden
+                ? new ForcedDeliveryRecord
+                {
+                    Decision = overridden.Decision,
+                    Subject = overridden.Subject,
+                    Boundary = overridden.Boundary,
+                }
+                : null;
+
         // The merge-back RAN: its own result is the whole story, success or refusal.
         if (report.MergeOnSuccessOutcome is { } outcome)
         {
@@ -2033,6 +2049,7 @@ public static class RunCommand
                 PlanBranch = delivered ? null : planBranch,
                 DeliveredToBranch = report.DeliveredToBranch,
                 Detail = report.MergeOnSuccessDetail,
+                ForcedPastDecision = forcedPastDecision,
             };
         }
 
@@ -2078,6 +2095,7 @@ public static class RunCommand
             Outcome = DeliveryOutcome.NotAttempted,
             Reason = reason,
             PlanBranch = report.WhollyGreenButUndelivered ? planBranch : null,
+            ForcedPastDecision = forcedPastDecision,
         };
     }
 

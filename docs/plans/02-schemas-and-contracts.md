@@ -2547,6 +2547,11 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
     // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
                                       // (branch-moved, #588) the branch pinned at start + the current HEAD
+    // "forcedPastDecision": {        // #597 — present ONLY when --merge-on-success overrode the #361
+    //   "decision": "proceeded-best-guess",   // autonomous-mode interlock. decision = the suppressing
+    //   "subject": "12-implement-events-endpoint",  // token; subject = the task/wave the machine judged
+    //   "boundary": "task"           // at; boundary + subject locate the entry in decisions[]
+    // }
   }
 }
 ```
@@ -2561,7 +2566,22 @@ unattended pipeline can read); (b) the terminal gate did not pass; (c) the run w
 serial mode, where there is no separate plan branch and the work is already in the checkout. (a) and (a′)
 are the cases that **strand work**, and the only ones that set `planBranch`; naming a branch in the serial
 case would send an operator to merge something that does not exist, which is worse than the silence this
-closed. Written once at the end of the run, after delivery has
+closed.
+
+**`delivery.forcedPastDecision` — the audit trail for the one action that bypasses an interlock (#597).**
+When `--merge-on-success` overrides the §5.3 autonomous-mode suppression, the object records **that it
+fired** and **which decision it overrode**: `decision` (the `proceeded-best-guess` / `proceeded-unreviewed`
+token), `subject` (the task or wave the machine judged at — the half a reader acts on), and `boundary`, so
+the matching entry in this document's own `decisions[]` is locatable without re-deriving it from `reason`'s
+prose. **Absent** — never `null` noise — on every run where no override fired, which is nearly all of them;
+a present-but-empty key would make "was this run forced?" ambiguous to exactly the reader it exists for.
+It is written whenever the override was in force **at the delivery attempt**, including an attempt the merge
+then refused (`conflict` / `dirty-working-tree` / `hook-rejected`): "the operator overrode the interlock and
+the merge then conflicted" is a true and useful thing for a post-mortem to read. Before this the override
+reached `RunReport` and the console banner and stopped there — and console output is ephemeral unless
+someone thought to redirect it, so a week later a forced delivery was indistinguishable from a delivery that
+was never suppressed at all. That is this repo's recurring defect class (a mechanism whose evidence exists
+only where nobody kept it) sitting on its own audit trail. Written once at the end of the run, after delivery has
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.

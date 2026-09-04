@@ -138,6 +138,78 @@ public sealed class RunJournalDeliveryTests : IDisposable
         Assert.Null(reloaded.PlanBranch);
     }
 
+    /// <summary>
+    /// Issue #597 — the AUDIT TRAIL for the one action that deliberately bypasses a safety interlock. An
+    /// operator override (<c>--merge-on-success</c>) delivering work past a machine decision reached the
+    /// <c>RunReport</c> and the console banner and STOPPED there: nothing under <c>Journal/</c> persisted
+    /// it. Console output is ephemeral unless someone thought to redirect it, so a week later a forced
+    /// delivery was indistinguishable from a delivery that was never suppressed at all.
+    /// <para>
+    /// The assertion is deliberately made on the RELOAD, not on the in-memory section: a record only
+    /// readable in the process that wrote it answers nothing after the terminal is closed, which is the
+    /// entire complaint. Both halves the banner names must survive — the decision TOKEN and the SUBJECT,
+    /// the task the machine judged at, which is the half a reader acts on.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AForcedDelivery_RecordsWhichDecisionItOverrode_AndSurvivesAReload()
+    {
+        PlanDefinition plan = BuildPlan();
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        journal.RecordDelivery(new DeliverySection
+        {
+            Delivered = true,
+            Outcome = DeliveryOutcome.FastForwarded,
+            DeliveredToBranch = "master",
+            ForcedPastDecision = new ForcedDeliveryRecord
+            {
+                Decision = "proceeded-best-guess",
+                Subject = "12-implement-events-endpoint",
+                Boundary = "task",
+            },
+        });
+
+        DeliverySection reloaded = RunJournal.LoadOrCreate(plan).Document.Delivery!;
+
+        Assert.True(reloaded.Delivered);
+        Assert.NotNull(reloaded.ForcedPastDecision);
+        Assert.Equal("proceeded-best-guess", reloaded.ForcedPastDecision!.Decision);
+        Assert.Equal("12-implement-events-endpoint", reloaded.ForcedPastDecision.Subject);
+        Assert.Equal("task", reloaded.ForcedPastDecision.Boundary);
+
+        // And it is on DISK under the SSOT §7 wire name, camelCase like every other journal field — a
+        // consumer reading run.json without linking this assembly must find it where the schema says.
+        string onDisk = File.ReadAllText(Path.Combine(plan.PlanDirectory, "state", "run.json"));
+        Assert.Contains("\"forcedPastDecision\"", onDisk, StringComparison.Ordinal);
+        Assert.Contains("\"proceeded-best-guess\"", onDisk, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The load-bearing NEGATIVE: an ordinary delivery — no interlock in play — writes no such object.
+    /// Absent, not <c>null</c> noise (the §7 rule every optional journal section follows), because a
+    /// present-but-empty key would make "was this run forced?" ambiguous to exactly the reader the record
+    /// exists for.
+    /// </summary>
+    [Fact]
+    public void AnOrdinaryDelivery_WritesNoForcedPastDecisionKeyAtAll()
+    {
+        PlanDefinition plan = BuildPlan();
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        journal.RecordDelivery(new DeliverySection
+        {
+            Delivered = true,
+            Outcome = DeliveryOutcome.FastForwarded,
+            DeliveredToBranch = "master",
+        });
+
+        Assert.Null(RunJournal.LoadOrCreate(plan).Document.Delivery!.ForcedPastDecision);
+
+        string onDisk = File.ReadAllText(Path.Combine(plan.PlanDirectory, "state", "run.json"));
+        Assert.DoesNotContain("forcedPastDecision", onDisk, StringComparison.Ordinal);
+    }
+
     private PlanDefinition BuildPlan()
     {
         string planDir = Path.Combine(_tempDir, "plan");
