@@ -6,6 +6,10 @@
 # MEASURED BASELINES (#478), all against docs/plans/585-layer3-webhooks-contract.md as it stands:
 #          heading  (?m)^##\s+12\.        = 0   (the document ends at section 11)
 #          charter                        = 0   (case-insensitive: neither 'charter' nor 'Charter')
+#          charter, in the FIRST 40 LINES = 0   <-- re-measured 2026-09-04 for the deliverable-2 clause
+#                                                below; the document is 1208 lines, so this window ends
+#                                                around 1160 lines above section 12 and cannot be
+#                                                satisfied from it
 #          all five                       = 0
 #          ws:                            = 16  <-- DOCUMENT-WIDE, and that is the trap
 #          superseded                     = 5   <-- DOCUMENT-WIDE (section 2.1's own heading)
@@ -36,10 +40,19 @@
 #          section 2.1 already states a closure using the words 'superseded' and 'ws:' in exactly the
 #          form clause 2 and clause 3 ask for.
 #
-# KNOWN LIMIT, stated rather than papered over: the stale '**Status:** proposed ... draft PR for
-#          inline review' line at the top of the document is part of the deliverable but is NOT
-#          asserted here. A required-ABSENT clause on that phrase would misfire on the legitimate
-#          record that QUOTES the old status while superseding it. It is left to review.
+# DELIVERABLE 2 IS ASSERTED TOO, and by a SCOPED REQUIRED-PRESENT clause rather than a required-absent
+#          one. The document's fourth paragraph still reads '**Status:** proposed ... draft PR for
+#          inline review'; correcting it is half of this task. An earlier version of this file declared
+#          that a KNOWN LIMIT on the grounds that a required-ABSENT clause on 'draft PR' would misfire
+#          on a legitimate record that QUOTES the old status while superseding it. That reasoning about
+#          required-absent is correct and is why no such clause exists - but it does not follow that
+#          the deliverable is unassertable. The clause below instead requires the word CHARTER within
+#          the document's FIRST 40 LINES: measured 0 today (see the baselines above - 'charter' appears
+#          ZERO times document-wide, in either case), so it is armed by construction, and a corrected
+#          status line naming Charter as the review vehicle is the only realistic way to satisfy it.
+#          It cannot be satisfied from section 12, which begins around line 1200. A quotation of the
+#          old status is untouched by a require-present clause, so the misfire the limit worried about
+#          is structurally impossible here.
 $ErrorActionPreference = 'Continue'
 $path = 'docs/plans/585-layer3-webhooks-contract.md'
 
@@ -102,6 +115,17 @@ foreach ($c in $clauses) {
     }
 }
 
+# DELIVERABLE 2 - the stale status line. Scoped to the document's HEAD, for the reason in the header:
+# a require-present clause cannot misfire on a quotation, and 'charter' measures 0 document-wide today
+# so the scope is belt-and-braces rather than the thing doing the work. Lines are counted over the
+# comment-stripped text; the document carries zero HTML comments today, so the two are identical, and
+# a charter round-trip that introduced some would only widen the window - never far enough to reach
+# section 12, which begins around line 1200.
+$headLines = @($doc -split "`r?`n" | Select-Object -First 40)
+if (($headLines -join "`n") -notmatch 'charter') {
+    $failures.Add("MISSING FROM THE DOCUMENT'S FIRST 40 LINES - Charter named as the review vehicle. The fourth paragraph still reads '**Status:** proposed. To be delivered as a **draft PR for inline review**' - which is no longer true; the review has happened, in Charter. Correct that line in place: say the design is reviewed and settled, and name Charter rather than a draft PR (a design of record is reviewed in Charter; a PR is a code-review vehicle). This clause is REQUIRE-PRESENT, so it is satisfied by naming Charter - not by deleting anything, and a sentence that QUOTES the old status while superseding it is fine.")
+}
+
 # Substance floor. A LOWER BOUND, never a quality judgement. Measured: a single line carrying all five
 # tokens under a '## 12.' heading satisfied every clause above and exited 0. Five non-blank lines is
 # still a small section - this task is deliberately small - and it is more than a word list.
@@ -120,5 +144,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output "$path records the review closure in section 12: the ws: endpoint superseded (not deferred), #585 closable with the implementation, and the Charter review settling all five open questions."
+Write-Output "$path records the review closure in section 12: the ws: endpoint superseded (not deferred), #585 closable with the implementation, and the Charter review settling all five open questions - and its opening status paragraph names Charter rather than the draft PR it used to promise."
 exit 0

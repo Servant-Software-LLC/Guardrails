@@ -34,16 +34,34 @@
 #          or on the unwind order: those are HOW, they have more than one correct spelling, and the tests
 #          above already fail if any of them is wrong.
 #
-# Author-time smoke test (#302), re-runnable (#468):
-#   $env:GR_SUBJECT='docs/plans/36-onevent-webhooks/tasks/09-implement-cli-wiring/samples/01-composition-root-constructs-the-sink.valid.cs';   ./01-composition-root-constructs-the-sink.ps1  # expect 0
-#   $env:GR_SUBJECT='docs/plans/36-onevent-webhooks/tasks/09-implement-cli-wiring/samples/01-composition-root-constructs-the-sink.invalid.cs'; ./01-composition-root-constructs-the-sink.ps1  # expect 1
+# THE SAMPLE SUBJECT ARRIVES AS THE POSITIONAL ARGUMENT, NEVER FROM THE ENVIRONMENT - and that is a
+#          correctness requirement, not a style choice. `SampleVerifier.RunSampleAsync` binds the sample
+#          BOTH ways (`src/Guardrails.Core/Samples/SampleVerifier.cs`: the absolute path as the
+#          guardrail's first positional argument AND in `GR_SUBJECT`), so either spelling satisfies
+#          `guardrails samples verify` and the pre-DAG sample preflight. Only ONE of them is safe here.
+#          `GR_SUBJECT` is OUTSIDE the `GUARDRAILS_` prefix, so `ProcessRunner.ApplyEnvironment` does not
+#          strip it (it filters on `HarnessEnvPrefix`, ProcessRunner.cs:152 and :203) - and a PowerShell
+#          `$env:` assignment persists for the whole session. An operator who ran the documented smoke
+#          test and then `guardrails run` in the same shell got THIS guardrail certifying the VALID
+#          SAMPLE while RunCommand.cs was never opened: measured exit 0. Section 6.4 argues the
+#          `GUARDRAILS_` namespace is load-bearing precisely because it is hermetic, and this file sat
+#          outside it. The positional argument cannot leak that way: a real run launches a guardrail as
+#          `pwsh -File <script>` with the definition's own args, and this guardrail declares none, so
+#          $args is EMPTY at run time by construction and the default below is the only reachable
+#          subject. Do NOT reintroduce an env-var override, and do NOT rename the env var either - the
+#          name is the HARNESS's constant (SampleVerifier.SubjectEnvironmentVariable), so renaming it
+#          here would leave the committed pair unverifiable and fail the pre-DAG preflight.
+#
+# Author-time smoke test (#302), re-runnable (#468) - no environment variable to leave set behind you:
+#   ./01-composition-root-constructs-the-sink.ps1 'docs/plans/36-onevent-webhooks/tasks/09-implement-cli-wiring/samples/01-composition-root-constructs-the-sink.valid.cs'    # expect 0
+#   ./01-composition-root-constructs-the-sink.ps1 'docs/plans/36-onevent-webhooks/tasks/09-implement-cli-wiring/samples/01-composition-root-constructs-the-sink.invalid.cs'  # expect 1
 #
 # Measured baseline (#478) on the untouched tree, 2026-09-04 - MEASURED, not assumed:
 #   WebhookEventSink                              -> 0 occurrences in src/Guardrails.Cli/Commands/RunCommand.cs
 #   WebhookEventSink\s*\.\s*TryStart\s*\(         -> 0 occurrences in the same file
 #   (and 0 occurrences of "WebhookEventSink" anywhere across src/ and tests/ - the type is created by
 #    this plan's task 04/07. Expected 0; no exemption needed.)
-$f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { "src/Guardrails.Cli/Commands/RunCommand.cs" }
+$f = if ($args.Count -ge 1 -and $args[0]) { $args[0] } else { "src/Guardrails.Cli/Commands/RunCommand.cs" }
 
 # PRECONDITION - the only early exit: the clause below would crash on a missing subject.
 if (-not (Test-Path $f)) {

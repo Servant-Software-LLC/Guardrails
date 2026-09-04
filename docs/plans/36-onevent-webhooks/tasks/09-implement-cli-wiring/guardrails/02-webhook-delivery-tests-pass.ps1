@@ -5,15 +5,25 @@
 #          here drives the REAL CLI against a REAL loopback HttpListener, so only the wired path can
 #          satisfy it.
 #
-#          It is also the forward half of a real TDD pair. Task 08 authored these ten methods and proved
-#          nine of them RED against the unwired CLI
+#          It is also the forward half of a real TDD pair. Task 08 authored these thirteen methods and
+#          proved twelve of them RED against the unwired CLI
 #          (tasks/08-author-tests-cli-wiring-and-delivery/guardrails/02-tests-fail-on-current-code.ps1);
-#          this census requires all TEN Passed after the wiring lands - including
+#          this census requires all THIRTEEN Passed after the wiring lands - including
 #          AReceiverThatNeverBindsLeavesExitCodeUntouched, which is task 08's declared exemption from the
 #          red bar (nothing delivers there, so "delivery did not affect the run" is trivially true) and
 #          is NOT exempt here: it is the only thing standing between this task and a dispatcher that
 #          quietly changes the run's exit code when the endpoint is dead. The two manifests name the same
-#          ten methods and must stay in lockstep.
+#          thirteen methods and must stay in lockstep.
+#
+#          Behaviours 11-13 are the SS6.4/SS6.5 startup-validation surface: a non-http(s) scheme, a
+#          repeated --on-event, and CR/LF in GUARDRAILS_ON_EVENT_AUTH. Before they were added, that
+#          surface had no guardrail clause and no test name anywhere in this plan, and omitting all of it
+#          shipped FULLY GREEN - new Uri("ftp://x") parses, TryStart accepts it, the POST throws
+#          NotSupportedException, IsRetryable calls that transient, the sink retries and records a drop,
+#          and the exit code is untouched BY CONTRACT. Each of the three requires ExitCodes.HarnessError
+#          (1) AND that <plan>/state/run.json was never created, which is SS6.5's real requirement: an
+#          invalid endpoint must never surface mid-run. That second clause is what pins the check ABOVE
+#          RunJournal.LoadOrCreate rather than merely somewhere in RunAsync.
 #
 #          The suite exit code alone cannot tell a behaviour that PASSED from one that was never merged
 #          in or was [Skip]ped out. This task's writeScope is src/Guardrails.Cli/ only, so its agent
@@ -85,7 +95,7 @@ if ($testExit -ne 0) {
     # a Contains/DoesNotContain failure; a drifted variant kept the frames and dropped the assertion
     # headline plus a thrown test's only detail line. Both look correct on the page, which is how each
     # survived. This guardrail is the REAL-SEAM PROOF for the whole feature, so it is where losing them
-    # costs the most: the stack FRAME is what says which of the ten integration tests broke and where,
+    # costs the most: the stack FRAME is what says which of the thirteen integration tests broke and where,
     # and a DeliveredBodiesMatchEventsJsonlLineForLine failure re-emits the String:/Found: payload
     # carrying the actual divergent bytes - the one thing that makes a byte-equality failure diagnosable
     # at all. An allowlist needs maintenance as assertion types change; a block capture does not.
@@ -109,12 +119,12 @@ if ($testExit -ne 0) {
     if ($text -match 'error CS') {
         $failures += "the log contains 'error CS' - this is a COMPILE failure, not a test failure. Fix the compiler errors above; do not touch the tests (they are outside your write scope)."
     }
-    $failures += "WebhookDeliveryTests is failing - the CLI does not deliver events to the endpoint the way the tests require (see failure details above). Guardrail 01-composition-root-constructs-the-sink.ps1 ran BEFORE this one and PASSED, so RunCommand.cs provably calls WebhookEventSink.TryStart: do not go looking for a missing construction. The fault is BEHAVIORAL - the sink is built but something about lifetime, teardown order, the onRow/includeDetail threading, the env fallbacks, or the header/detail contract is wrong. Read the per-behaviour findings below: they name which of the ten deliveries is not proven."
+    $failures += "WebhookDeliveryTests is failing - the CLI does not deliver events to the endpoint the way the tests require (see failure details above). Guardrail 01-composition-root-constructs-the-sink.ps1 ran BEFORE this one and PASSED, so RunCommand.cs provably calls WebhookEventSink.TryStart: do not go looking for a missing construction. The fault is BEHAVIORAL - the sink is built but something about lifetime, teardown order, the onRow/includeDetail threading, the env fallbacks, the startup validation and its PLACEMENT, or the header/detail contract is wrong. Read the per-behaviour findings below: they name which of the thirteen behaviours is not proven."
 }
 
 # ZERO-MATCH GUARD (#455). Key on the EXECUTED count (Passed + Failed); 'Total:' would also count
-# [Skip]ped tests, so a suite of ten skips would read as ten. PRECONDITION exit: with zero executed the
-# census below would report all ten behaviours unbound, a confident wrong message aimed at a file this
+# [Skip]ped tests, so a suite of thirteen skips would read as thirteen. PRECONDITION exit: with zero executed the
+# census below would report all thirteen behaviours unbound, a confident wrong message aimed at a file this
 # task may not even edit.
 $ran = ([regex]::Matches($text, '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
@@ -156,6 +166,12 @@ $manifest = [ordered]@{
     'a 500 causes retries then a RECORDED drop, exit code unchanged'                   = 'AFiveHundredCausesRetriesThenARecordedDropWithExitCodeUnchanged'
     'the env fallbacks supply the endpoint and its auth when no flag is passed'        = 'EnvVarSuppliesTheEndpointWhenTheFlagIsAbsent'
     'an endpoint that never binds leaves the exit code untouched'                      = 'AReceiverThatNeverBindsLeavesExitCodeUntouched'
+    # SS6.4/SS6.5 startup validation. Each asserts exit 1 AND that <plan>/state/run.json was never
+    # created, so each one also pins the CHECK'S PLACEMENT - above RunJournal.LoadOrCreate, beside the
+    # --autonomy parse - not merely its existence.
+    'a non-http(s) scheme exits 1 before any run state is touched'                     = 'ABadSchemeExitsOneBeforeTheRun'
+    'a repeated --on-event is DETECTED, not silently last-wins'                        = 'ARepeatedOnEventFlagIsRejected'
+    'CR/LF in GUARDRAILS_ON_EVENT_AUTH is rejected without echoing the secret'         = 'ACrLfAuthValueIsRejected'
 }
 
 foreach ($behaviour in $manifest.Keys) {

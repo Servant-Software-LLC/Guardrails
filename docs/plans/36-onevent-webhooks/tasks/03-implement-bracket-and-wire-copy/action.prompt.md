@@ -111,7 +111,13 @@ differs from the file line in exactly one field, only ever `detail`, and only wh
 
 - **`GuardrailFailureReason`** — task 02 already promoted the one keyword. Leave `Tail`,
   `MaxTailLines` and the class doc alone.
-- **The existing kinds and fields.** 41 `Category=RunEvents` tests pin them; `bracket` is additive.
+- **The existing kinds and fields.** The `Category=RunEvents` suite pins them and `bracket` is
+  additive, so none of them moves. Do not take a count on trust — the authority is the command, not
+  the number: `dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --filter
+  "Category=RunEvents"` reported 49 passing on this branch at authoring time (2026-09-04; an earlier
+  draft of this prompt carried 41, copied from plan 35 before master moved). Your guardrail
+  `02-existing-runevents-unregressed.ps1` re-runs exactly that set minus this plan's own intentional
+  red, and it is what actually holds you to this.
 - **The `onRow` / `includeDetail` defaults.** They stay defaulted here on purpose: "no webhook" is
   correct for a run without `--on-event` and for the ~20 existing test constructions, which must keep
   compiling unchanged. (The CLI's `BuildObserverChain` parameter in a later task is deliberately NOT

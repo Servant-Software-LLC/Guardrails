@@ -9,16 +9,28 @@
 # Boundary, stated because a green census must not be over-read: this proves each test is COUPLED to
 #          the code path (it fails while the behaviour is absent), NOT that its assertion is correct.
 #          An invoking-then-hollow test is red here, green after, and passes.
-# DECLARED EXEMPTIONS: NONE - and that is a claim, not an omission. Every one of the fourteen pinned
-#          behaviours drives Emit, TryStart, the internal test constructor or DisposeAsync, and this
-#          task lands all four as `throw new NotImplementedException()`. The two bounds tests
-#          (BackoffScheduleIsOneTwoFourWithJitter, PerRowCeilingIsFortyFiveSeconds) are the rows that
-#          COULD have been green-on-stub, because the constants they read already exist - the prompt
-#          requires each to assert the enforced BEHAVIOUR as well as the constant, which is what
-#          keeps them red. That is deliberately stronger than exempting them: an exemption would have
-#          let a constant-only assertion stand for an unenforced bound. If a later edit makes a row
-#          green-against-the-stub AND green-against-a-correct-implementation, ADD it here with its
-#          structural reason; never delete the row.
+# DECLARED EXEMPTIONS: NONE - and that is a claim, not an omission. Every one of the sixteen pinned
+#          behaviours drives Emit, TryStart, the internal test constructor, DisposeAsync or the two
+#          internal readbacks, and this task lands every one of them as
+#          `throw new NotImplementedException()`. THREE bounds tests
+#          (BackoffScheduleIsOneTwoFourWithJitter, PerRowCeilingIsFortyFiveSeconds,
+#          ResponseBodyIsCappedAtEightKilobytes) are the rows that COULD have been green-on-stub,
+#          because the constants they read already exist - the prompt requires each to assert the
+#          enforced BEHAVIOUR as well as the constant, which is what keeps them red. That is
+#          deliberately stronger than exempting them: an exemption would have let a constant-only
+#          assertion stand for an unenforced bound. If a later edit makes a row green-against-the-stub
+#          AND green-against-a-correct-implementation, ADD it here with its structural reason; never
+#          delete the row.
+# THE ONE ROW THAT WITNESSES PRODUCTION CONSTRUCTION: TryStartBuildsANonRedirectingClientAtRealTimeScale
+#          is the ONLY pinned behaviour that calls the real TryStart - every other test in the file
+#          takes the internal constructor and substitutes both the handler and the timeScale away. So
+#          it is the single witness for all three of TryStart's production-only decisions:
+#          AllowAutoRedirect=false (SS6.5 - a redirect can move the POST, with its Authorization
+#          header, to a host the operator never named), timeScale=1.0 (a stray debugging 0.001 ships a
+#          10 ms per-attempt timeout), and the fact that TryStart is what sets them. Without this row
+#          both values could be wrong in production while every unit test here and every integration
+#          test in task 08 stayed green - the unit tests inject their own, and the integration tests
+#          would merely run FASTER. Deleting or weakening this row silently restores that hole.
 # Measured baseline (authoring time): WebhookEventSinkTests matches 0 tests in src/ and tests/ today
 #          (the class does not exist), and Category=RunEvents in Guardrails.Core.Tests selects 41
 #          passing tests. The zero-match precondition below is therefore ARMED, not pre-satisfied.
@@ -71,7 +83,15 @@ try {
         'CancelledPathUsesTheShortBudget',
         'AFaultedPumpIsReportedNotSummarizedAsZero',
         'NoNoticeTextEverContainsTheAuthValue',
-        'NoNoticeTextEverContainsTheUrlPath'
+        'NoNoticeTextEverContainsTheUrlPath',
+        # The production construction path (SS6.5/SS5.2). Red on the stub because TryStart itself
+        # throws; green only when task 07 builds a NON-redirecting client at a scale of 1.0 AND backs
+        # the two readbacks with the handler/field the sink actually holds.
+        'TryStartBuildsANonRedirectingClientAtRealTimeScale',
+        # The one SS5.2 bound with no test above it. Red on the stub because Emit/the internal ctor
+        # throw; a constant-only version would be GREEN here, which is why the prompt requires the
+        # counted-bytes behaviour too.
+        'ResponseBodyIsCappedAtEightKilobytes'
     )
 
     foreach ($name in $mustFail) {
@@ -83,7 +103,7 @@ try {
             $problems.Add("[$name] was SKIPPED. A skipped test is invisible evidence loss - it is neither red nor green, and it certifies nothing about the behaviour it names.")
         }
         elseif ($hit.outcome -ne 'Failed') {
-            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Failed'. It passes against a tree where Emit, TryStart, the internal test constructor and DisposeAsync all throw NotImplementedException, so it is not coupled to the code path it claims to test. The usual causes: it asserts only the value of a named constant task 04 already landed instead of the behaviour that enforces it, a stub returns a default (DisposeAsync as ValueTask.CompletedTask) instead of throwing, or it is a 'never contains' assertion over a collection nothing ever filled.")
+            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Failed'. It passes against a tree where Emit, TryStart, the internal test constructor, DisposeAsync and the two internal readbacks (HandlerAllowsAutoRedirect, TimeScale) ALL throw NotImplementedException, so it is not coupled to the code path it claims to test. The usual causes: it asserts only the value of a named constant task 04 already landed instead of the behaviour that enforces it (the three bounds rows), a stub returns a default instead of throwing (DisposeAsync as ValueTask.CompletedTask, or a readback written as an auto-property), or it is a 'never contains' assertion over a collection nothing ever filled.")
         }
     }
 

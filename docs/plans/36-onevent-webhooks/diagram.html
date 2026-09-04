@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=4bbfaa6d4c2e487135aed0e2b49262efc374648562ad5bee201afea33e97757a -->
+<!-- guardrails:graph v1 source-sha256=aef3761c30c522a80e02e84de7936f2e5c69a106c0af8ea48b5df7e122b1f9cf -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -110,8 +110,9 @@
   end
   style task_01_update_ssot_event_schema fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_author_tests_bracket_and_wire_copy["02-author-tests-bracket-and-wire-copy"]
-    task_02_author_tests_bracket_and_wire_copy_gr_0["01-tests-build"]:::guardrail
-    task_02_author_tests_bracket_and_wire_copy_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_0["01-stubs-are-real"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_1["02-tests-build"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_2["03-tests-fail-on-stubs"]:::guardrail
   end
   style task_02_author_tests_bracket_and_wire_copy fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_implement_bracket_and_wire_copy["03-implement-bracket-and-wire-copy"]
@@ -183,8 +184,9 @@
   click plan_preflights_0 href "preflights/01-baseline-core-runevents-green.ps1" "01-baseline-core-runevents-green" _blank
   click plan_preflights_1 href "preflights/02-baseline-integration-runevents-green.ps1" "02-baseline-integration-runevents-green" _blank
   click task_01_update_ssot_event_schema_gr_0 href "tasks/01-update-ssot-event-schema/guardrails/01-ssot-contract-present.ps1" "01-ssot-contract-present" _blank
-  click task_02_author_tests_bracket_and_wire_copy_gr_0 href "tasks/02-author-tests-bracket-and-wire-copy/guardrails/01-tests-build.ps1" "01-tests-build" _blank
-  click task_02_author_tests_bracket_and_wire_copy_gr_1 href "tasks/02-author-tests-bracket-and-wire-copy/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_02_author_tests_bracket_and_wire_copy_gr_0 href "tasks/02-author-tests-bracket-and-wire-copy/guardrails/01-stubs-are-real.ps1" "01-stubs-are-real" _blank
+  click task_02_author_tests_bracket_and_wire_copy_gr_1 href "tasks/02-author-tests-bracket-and-wire-copy/guardrails/02-tests-build.ps1" "02-tests-build" _blank
+  click task_02_author_tests_bracket_and_wire_copy_gr_2 href "tasks/02-author-tests-bracket-and-wire-copy/guardrails/03-tests-fail-on-stubs.ps1" "03-tests-fail-on-stubs" _blank
   click task_03_implement_bracket_and_wire_copy_gr_0 href "tasks/03-implement-bracket-and-wire-copy/guardrails/01-bracket-tests-pass.ps1" "01-bracket-tests-pass" _blank
   click task_03_implement_bracket_and_wire_copy_gr_1 href "tasks/03-implement-bracket-and-wire-copy/guardrails/02-existing-runevents-unregressed.ps1" "02-existing-runevents-unregressed" _blank
   click task_04_author_tests_webhook_policy_gr_0 href "tasks/04-author-tests-webhook-policy/guardrails/01-tests-build.ps1" "01-tests-build" _blank

@@ -35,6 +35,21 @@ record.
 re-argue any decision, and do not touch the eleven sections that already exist beyond the one line
 named below.
 
+### Which file is the design of record — read this before you open anything
+
+Three near-identical copies of this design sit side by side in `docs/plans/`. You are editing exactly
+one of them, and that is deliberate:
+
+| File | What it is | Your action |
+|---|---|---|
+| `585-layer3-webhooks-contract.md` | **The design of record.** The living document a future reader is pointed at. | **EDIT THIS ONE — it is your only write scope.** |
+| `585-layer3-webhooks.charter.md` | The **reviewed charter** — the exact bytes the human annotated, carrying its `charter-format-version` marker and its review stamps. | **NEVER EDIT.** It is hash-stamped and `charter verify` depends on those bytes; changing so much as a space breaks the custody chain that proves *this* review happened over *these* words. An immutable review artifact is the whole point of it. |
+| `36-onevent-webhooks.md` | The **flattened handoff** the current run executes from, with the five `:::question` answers folded in inline. | **Read-only.** Read the settled answers here (section 2 of your task below needs them); it is a generated hand-over, not the record. |
+
+Do not "keep them in sync" — they are three different artifacts with three different jobs, and the
+divergence between them is intentional. The harness enforces this: your `writeScope` is the single
+contract file, and an edit to either of the others fails the task immediately.
+
 **Scope boundary (harness-enforced):** Write only to
 `docs/plans/585-layer3-webhooks-contract.md`. After this task completes the harness runs a `git diff`
 check and rejects any edit outside that one file. An out-of-scope edit fails the task immediately and

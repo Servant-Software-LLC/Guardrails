@@ -96,9 +96,18 @@ private const int MaxChars = 2000;
 to `internal const int MaxChars = 2000;`. Nothing else in that file moves — not `MaxTailLines`, not
 `Tail`, not the class doc. `Guardrails.Core.csproj` already carries
 `<InternalsVisibleTo Include="Guardrails.Core.Tests" />`, so the test below can then reference
-`GuardrailFailureReason.MaxChars` directly. **That reference IS the proof of this promotion** — there
-is no source-shape check for the visibility keyword, deliberately (#468): a test that would not
-compile if the constant were still `private` carries it better than a regex over the file.
+`GuardrailFailureReason.MaxChars` directly — and it should.
+
+**All three stubs above are checked directly**, by `guardrails/01-stubs-are-real.ps1`, the first and
+cheapest guardrail on this task: it greps `src/Guardrails.Core/Execution/RunEventStream.cs` for a
+`record struct EventDelivery` declaration and
+`src/Guardrails.Core/Execution/GuardrailFailureReason.cs` for `internal const int MaxChars`. Both
+measure **zero** on the tree you start from, so both are real work. An earlier version of this plan
+relied on the tests' *references* to carry that proof transitively — "it would not compile if the
+stub were missing" — and that was measured false: a `RunEventBracketTests` naming none of the three
+compiles, and every guardrail on this task went green over it. Write the references anyway (they are
+the natural way to write these tests), but the stubs are the deliverable and they are asserted on
+their own.
 
 ### The tests
 

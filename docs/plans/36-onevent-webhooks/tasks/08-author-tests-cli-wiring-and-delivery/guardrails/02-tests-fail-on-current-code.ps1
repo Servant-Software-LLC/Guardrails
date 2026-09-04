@@ -5,12 +5,24 @@
 #          behaviour, each observed Failed in the runner's OWN TRX - never merely discovered by name,
 #          which a hollow body satisfies exactly as a comment satisfies a token floor.
 #
-#          The vacuity hazard is unusually live in THIS file. Five of these ten behaviours are naturally
-#          written as "every delivered body has property P" or "no delivered body contains X" - both of
-#          which are TRUE over the empty set, and the empty set is precisely the state of the tree this
-#          task authors against (the options are declared, nothing delivers). The action prompt therefore
-#          requires a non-empty assertion FIRST in each of those; this census is what proves the agent
-#          actually wrote it.
+#          The vacuity hazard is unusually live in THIS file. Five of these thirteen behaviours are
+#          naturally written as "every delivered body has property P" or "no delivered body contains X" -
+#          both of which are TRUE over the empty set, and the empty set is precisely the state of the tree
+#          this task authors against (the options are declared, nothing delivers). The action prompt
+#          therefore requires a non-empty assertion FIRST in each of those; this census is what proves the
+#          agent actually wrote it.
+#
+#          Behaviours 11-13 are a DIFFERENT subject and were added after an adversarial pass measured
+#          that the SS6.4/SS6.5 startup-validation surface had no guardrail clause and no test name
+#          anywhere in this plan - four stated deliverables (non-http(s) scheme rejected, a repeated
+#          --on-event DETECTED, CR/LF in GUARDRAILS_ON_EVENT_AUTH rejected, plain http to a non-loopback
+#          host warned) with zero witnesses. The omission ships FULLY GREEN today and that is why it
+#          needs a census row rather than a code comment: new Uri("ftp://x") parses, TryStart accepts it,
+#          the POST throws NotSupportedException, IsRetryable calls that transient, the sink retries and
+#          records a drop, and the run's exit code is untouched BY CONTRACT (SS5 preamble). All ten
+#          delivery tests use valid loopback URLs, so not one of them goes red. Each of the three asserts
+#          ExitCodes.HarnessError (1) AND that <plan>/state/run.json was never created - SS6.5's actual
+#          requirement, that an invalid endpoint can never surface mid-run.
 #
 # DECLARED EXEMPTION: 'AReceiverThatNeverBindsLeavesExitCodeUntouched' - its entire content is that the
 #          delivery mechanism does NOT affect the run, and a mechanism that does nothing at all satisfies
@@ -25,6 +37,19 @@
 #          exit-code-unchanged clause that is trivially true here - but its other two clauses (retries
 #          observed on one delivery id, a Webhook: summary line reporting a nonzero drop count) cannot be
 #          satisfied by a CLI that never POSTs. It is required RED.
+#
+#          'ARepeatedOnEventFlagIsRejected' is likewise NOT exempt, and it is the row whose redness
+#          depends on a declaration choice, so it is written down here as well as in the prompt.
+#          MEASURED on this repo's System.CommandLine 2.0.9: a SINGLE-ARITY option given twice is
+#          rejected BY THE PARSER, with a generic message and exit code 1 -
+#          `guardrails graph <folder> --format mermaid --format dot` prints "Option '--format' expects a
+#          single argument but 2 were provided." and exits 1. Declared as Option<string?>, this test
+#          would therefore be GREEN against a tree with no --on-event validation at all, and this census
+#          would fail the task for a test that is doing nothing wrong. The action prompt's Deliverable
+#          2(a) therefore requires --on-event to be MULTI-VALUED (Option<string[]>,
+#          Arity = ArgumentArity.OneOrMore) so the duplicate parses and the MISSING validation is what
+#          the test observes. If a retry ever reports this row green, check the option's declaration
+#          before touching the test.
 #
 # Culture pin: this census reads the TRX (schema tokens, NOT localized), so the guard does not depend on
 # it - kept so the logged summary is readable and the pair stays copy-pasteable with the forward half in
@@ -54,6 +79,12 @@ $manifest = [ordered]@{
     'a 500 causes retries then a RECORDED drop, exit code unchanged'            = 'AFiveHundredCausesRetriesThenARecordedDropWithExitCodeUnchanged'
     'the env fallbacks supply the endpoint and its auth when no flag is passed' = 'EnvVarSuppliesTheEndpointWhenTheFlagIsAbsent'
     'an endpoint that never binds leaves the exit code untouched (contrast case)' = @{ Name = 'AReceiverThatNeverBindsLeavesExitCodeUntouched'; Expect = 'Executed' }
+    # SS6.4/SS6.5 startup validation. Red because NONE of it exists on this tree: the run proceeds to
+    # green and returns 0, and <plan>/state/run.json IS created - so each of these fails on both of its
+    # clauses, not merely on a message match.
+    'a non-http(s) scheme exits 1 before any run state is touched'              = 'ABadSchemeExitsOneBeforeTheRun'
+    'a repeated --on-event is DETECTED, not silently last-wins'                 = 'ARepeatedOnEventFlagIsRejected'
+    'CR/LF in GUARDRAILS_ON_EVENT_AUTH is rejected without echoing the secret'  = 'ACrLfAuthValueIsRejected'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-webhook-census-$PID"
@@ -68,7 +99,7 @@ $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 
 $out | ForEach-Object { Write-Output $_ }
 
 # PRECONDITION - the ONE legitimate early exit, and it comes FIRST because this guardrail has INVERSE
-# polarity (#455): a non-zero exit is the EXPECTED state here, so the exit code cannot distinguish "nine
+# polarity (#455): a non-zero exit is the EXPECTED state here, so the exit code cannot distinguish "twelve
 # tests failed as designed" from "the host crashed". Only the TRX can. No TRX means the run never happened
 # (host failed to start, wrong project path, or a malformed --filter, which exits 0 SILENTLY). Diagnose
 # THAT; falling through would print "every behaviour unbound", a confident wrong message aimed at the one
@@ -116,7 +147,7 @@ foreach ($behaviour in $manifest.Keys) {
     $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
     if ($notRed.Count -gt 0) {
         $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
-        $failures += "$behaviour -> '$name' is $seen on the UNWIRED tree, not Failed. Nothing POSTs anywhere yet, so a test that passes here never observed a delivery: it is asserting over an empty set (a foreach with no non-empty check, or a 'no body contains X' negative), or it never drove the CLI at all. Assert FIRST that at least one request arrived, then assert the property. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on the UNWIRED tree, not Failed. For a DELIVERY behaviour (1-10): nothing POSTs anywhere yet, so a test that passes here never observed a delivery - it is asserting over an empty set (a foreach with no non-empty check, or a 'no body contains X' negative), or it never drove the CLI at all. Assert FIRST that at least one request arrived, then assert the property. For a STARTUP-VALIDATION behaviour (ABadSchemeExitsOneBeforeTheRun / ARepeatedOnEventFlagIsRejected / ACrLfAuthValueIsRejected): none of that validation exists on this tree, so the run proceeds to green, returns 0 and DOES create <plan>/state/run.json - a green here means the test is not actually asserting both clauses (exit code 1 AND File.Exists(RunJournal.PathFor(planDir)) false), or, for the repeated-flag row specifically, that --on-event was declared single-arity so System.CommandLine rejected the duplicate itself with its own generic message and exit 1 (see this file's header - the fix is the DECLARATION in Deliverable 2(a), not the test). ('NotExecuted' = [Fact(Skip=...)].)"
     }
 }
 

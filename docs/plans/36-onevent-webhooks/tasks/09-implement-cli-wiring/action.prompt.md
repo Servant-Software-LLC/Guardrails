@@ -64,8 +64,18 @@ scrolling to a remembered offset:
 Task 08 declared `--on-event <url>` and `--on-event-detail` and then ignored them. Make them real:
 
 - `--on-event <url>` — the endpoint. **Not repeatable**: passing it twice is a validation error naming
-  the reason, so declare the option such that a second occurrence is **DETECTED**, not silently
-  last-wins. Silent last-wins is how an operator sends their run to the wrong endpoint and never learns.
+  the reason, so a second occurrence must be **DETECTED**, not silently last-wins. Silent last-wins is
+  how an operator sends their run to the wrong endpoint and never learns.
+
+  Task 08 declared it **multi-valued** (`Option<string[]>`, `Arity = ArgumentArity.OneOrMore`) and that
+  shape is deliberate — **keep it**. A single-arity `Option<string?>` would have System.CommandLine
+  2.0.9 reject the duplicate itself with a generic message ("Option '--on-event' expects a single
+  argument but 2 were provided" — measured on this repo's CLI), which detects the duplicate but does
+  **not** name the reason §6.4 asks for, and which would have made
+  `ARepeatedOnEventFlagIsRejected` pass against a tree carrying no validation at all. So *you* do the
+  count check: zero values (absent, which may surface as `null` **or** an empty array — handle both) →
+  fall through to `GUARDRAILS_ON_EVENT`; exactly one → use it; more than one → the validation error
+  below. Do not narrow the option back to a single-arity one to simplify the read.
 - `GUARDRAILS_ON_EVENT` — the endpoint, used **only when the flag is absent**, so a CI job sets it once.
   Single URL only.
 - `GUARDRAILS_ON_EVENT_AUTH` — the verbatim `Authorization` header value (e.g. `Bearer abc123`).
@@ -82,11 +92,25 @@ the same posture as an unparseable `--autonomy` — and on a bad value return `E
 **before any run state is touched**. An invalid URL must never surface mid-run, and `WebhookEventSink.TryStart`
 must therefore never throw.
 
-Reject, each with a message naming the actual problem:
+**The observable form of "before any run state is touched" is the journal**, and three integration
+tests assert it: `RunJournal.LoadOrCreate` is the first thing `RunAsync` does that writes run state, and
+it writes `<plan>/state/run.json` (`RunJournal.PathFor`). Each of `ABadSchemeExitsOneBeforeTheRun`,
+`ARepeatedOnEventFlagIsRejected` and `ACrLfAuthValueIsRejected` runs a **fresh** plan folder and asserts
+that file does **not** exist afterwards. Put the checks above that call — beside the `--autonomy` parse,
+which is already there — and all three pass for free. Put them after it and all three fail while the
+behaviour looks correct to a human reading the console.
+
+Reject, each with a message naming the actual problem, and each returning `ExitCodes.HarnessError` (1):
 - **Scheme is not `http` or `https`.** Check with `Uri.TryCreate(…, UriKind.Absolute)` plus a scheme test
-  — the same shape as `PlanValidator.IsAbsoluteHttpUrl`. Name the scheme you found.
-- **`--on-event` given more than once.**
-- **CR or LF anywhere in the `GUARDRAILS_ON_EVENT_AUTH` value** — header-injection defense.
+  — the same shape as `PlanValidator.IsAbsoluteHttpUrl`. **Name the scheme you found** (`ftp`, not
+  "invalid URL"): a message that does not say what was wrong is indistinguishable from a bad plan folder.
+- **`--on-event` given more than once.** Name the option and say it may be given only **once**, with the
+  reason — one endpoint, and a silent last-wins would send the run somewhere the operator did not choose.
+- **CR or LF anywhere in the `GUARDRAILS_ON_EVENT_AUTH` value** — header-injection defense. Name the
+  **variable** and the CR/LF rule, and **never print the value**, not even the offending fragment: §6.4
+  is unconditional that it is never echoed, logged, journaled, or written to any file, and a validation
+  error is exactly where an implementation is tempted to echo its input back.
+  `ACrLfAuthValueIsRejected` asserts both halves.
 
 And **warn** (one line, not an error) on plain `http` to a **non-loopback** host: the auth header and the
 payload would cross the network in the clear, but a sidecar on a private network is a legitimate reason
@@ -168,4 +192,5 @@ not harmonize them in either direction — and if you find yourself adding a def
 ### Done when
 
 `dotnet test tests/Guardrails.Integration.Tests --filter "Category=RunEvents&FullyQualifiedName~WebhookDeliveryTests"`
-is green — all ten methods — and `RunCommand.cs` actually calls `WebhookEventSink.TryStart`.
+is green — all thirteen methods, the ten delivery behaviours and the three startup-validation ones —
+and `RunCommand.cs` actually calls `WebhookEventSink.TryStart`.

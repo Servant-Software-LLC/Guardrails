@@ -29,7 +29,8 @@
 ## Task
 
 Author the end-to-end proof that `--on-event` actually delivers — a real `guardrails run` against a real
-loopback `HttpListener` — **written RED**, together with the two minimal CLI stubs that let it compile.
+loopback `HttpListener` — **and** that a bad `--on-event` configuration is rejected at startup, both
+**written RED**, together with the two minimal CLI stubs that let them compile.
 
 Create `tests/Guardrails.Integration.Tests/RunEvents/WebhookDeliveryTests.cs` and make the two stub edits
 to `src/Guardrails.Cli/Commands/RunCommand.cs` described under **Deliverable 2** below.
@@ -66,7 +67,9 @@ these are what would have caught it and did not exist.
   wrote. You will need a local `InvokeAsync` helper that returns **both** the exit code and `OutText`;
   the one in `RunFinishedExitPathTests` discards the console text.
 - Design `docs/plans/36-onevent-webhooks.md` §3.3 (lifetime and teardown), §4.3 (headers), §4.4 (the
-  receiver contract), §6.3 (`detail` withheld by default), §6.6 (how the URL is displayed).
+  receiver contract), §6.3 (`detail` withheld by default), **§6.4 (the configuration surface — the
+  not-repeatable rule and the env-only secret), §6.5 (SSRF, redirects, TLS — the scheme check, the
+  CR/LF rule, the plain-`http` warning)**, §6.6 (how the URL is displayed).
 
 ### Deliverable 1 — the test class
 
@@ -75,10 +78,12 @@ Class name is pinned: **`WebhookDeliveryTests`**, in
 `[Trait("Category", "RunEvents")]` and `[Trait("Plan", "36-onevent")]`. The `Plan` trait exists only so
 this plan's baseline preflights can exclude its intentional red — never filter on it yourself.
 
-Every test starts a real `HttpListener` bound to `http://127.0.0.1:<free port>/`, runs a real plan
-through the real CLI with `--no-ui --no-log-server --on-event <that url>`, and asserts on what the
-listener actually received. Capture, per request: the full request body, every request header, and the
-arrival order.
+Every **delivery** test (behaviours 1–10) starts a real `HttpListener` bound to
+`http://127.0.0.1:<free port>/`, runs a real plan through the real CLI with
+`--no-ui --no-log-server --on-event <that url>`, and asserts on what the listener actually received.
+Capture, per request: the full request body, every request header, and the arrival order. The three
+**startup-validation** tests (11–13) bind nothing at all — the CLI must reject the configuration before
+the DAG starts, so a listener would only hide a delivery that must never happen.
 
 **Two fixture rules that are easy to get wrong and expensive to debug:**
 
@@ -91,7 +96,13 @@ arrival order.
   feature — and task 09 cannot edit this file, so it would dead-end that task at `needsHuman`. Every
   assertion must actually reach the listener's captured state.
 
-#### The ten behaviours — these exact method names
+#### The thirteen behaviours — these exact method names
+
+Behaviours 1–10 are about **delivery**; 11–13 are the §6.4/§6.5 **startup-validation** surface, which
+no guardrail and no test name anywhere in this plan covered until they were added. They are cheap —
+no `HttpListener`, no delivery, an immediate exit — and they are the only thing standing between the
+design's stated security constraints and a tree where every one of them can be absent and the whole
+plan still reports green.
 
 **1. `RowsArriveAtALoopbackReceiver`**
 At least one POST arrives, and the received bodies' `kind` values include both `task-started` and
@@ -188,12 +199,83 @@ listening). Assert the run's exit code equals the exit code of the identical pla
 `--on-event`. Same wall-clock note as (8). **This one is a declared exemption from the red bar** — see
 below.
 
-#### Nine of these must be RED; the tenth is a declared exemption
+---
+
+**Startup validation (design §6.4 and §6.5).** These three are cheap: no `HttpListener`, no port, no
+delivery, and no waiting on a retry schedule — the CLI must reject the configuration and exit before
+the DAG starts. Use the smallest green `ScriptPlanBuilder` plan that validates, a **fresh** folder per
+test, and `--no-ui --no-log-server` as above.
+
+**How all three assert "before any run state was touched", and that clause is the whole point.** §6.5
+requires an invalid endpoint to be rejected at startup so it can never surface mid-run; task 09 places
+the check beside the other option parsing, the same posture as an unparseable `--autonomy`. The
+observable form of that is the journal: `RunJournal.LoadOrCreate` is the first thing the run path does
+that writes run state, and it writes `<plan>/state/run.json` — `RunJournal.PathFor(planDir)`. A fresh
+`ScriptPlanBuilder` folder has never run, so that file does not exist when the test begins. Each of the
+three therefore asserts, after the invocation:
+
+- the exit code is **`ExitCodes.HarnessError` (1)**;
+- the console text names the **actual** problem (each test pins its own wording below);
+- **`File.Exists(RunJournal.PathFor(planDir))` is `false`** — no journal, so no run state, so the
+  rejection happened *before* the run and not during it.
+
+On today's tree all three fail on **both** the exit code and the journal, because none of this
+validation exists: the run proceeds to green and returns 0. That is exactly the omission the trio makes
+visible. Without it, `new Uri("ftp://x")` parses fine, `TryStart` accepts it, the POST throws
+`NotSupportedException`, `IsRetryable` classifies that as transient, the sink retries and records a
+drop, and the exit code is untouched *by contract* (§5's preamble) — a wholly green run shipping a
+scheme check nobody wrote.
+
+**11. `ABadSchemeExitsOneBeforeTheRun`**
+Run with `--on-event ftp://example.invalid/hook`. Assert the three clauses above, and that the message
+**names the scheme it found** (`ftp`) alongside the option. A message that only says "invalid URL"
+cannot be told apart from a bad plan folder, and §6.5 asks for one that names the scheme.
+
+**12. `ARepeatedOnEventFlagIsRejected`**
+Run with `--on-event` given **twice**, two different loopback URLs, neither with a listener. Assert the
+three clauses above, and that the message names `--on-event` and says it may be given only **once**.
+§6.4: *"Not repeatable. Passing it twice is a validation error naming the reason."* Silent last-wins is
+how an operator sends their run to the wrong endpoint and never finds out.
+
+**This test constrains how Deliverable 2 declares the option, and the reason was MEASURED rather than
+assumed.** Declared as a single-arity `Option<string?>`, System.CommandLine 2.0.9 rejects the second
+occurrence *itself*, with its own generic message and exit code 1 — measured against this repo's own
+CLI: `guardrails graph <folder> --format mermaid --format dot` prints *"Option '--format' expects a
+single argument but 2 were provided."* and exits **1**. That would make this test **pass against a tree
+carrying no validation whatsoever** — a false green, and exactly the hollow red the census below exists
+to catch. So Deliverable 2(a) declares `--on-event` **multi-valued**, accepting repetition without
+erroring, and task 09 does the count check itself with a message naming the reason. That is not a
+test-shaped distortion: §6.4 asks for a message *naming the reason*, and System.CommandLine's arity
+error names an argument count instead.
+
+**13. `ACrLfAuthValueIsRejected`**
+Set `GUARDRAILS_ON_EVENT_AUTH` to a value containing CR/LF with a **distinctive** secret inside it —
+`"Bearer sup3r-s3cret-t0k3n\r\nX-Injected: 1"` — and pass a perfectly valid
+`--on-event http://127.0.0.1:<free port>/` with nothing listening on it (the run must never reach a
+POST). A valid URL is deliberate: it puts the CR/LF check, not the URL check, on trial. Assert the three
+clauses above, plus **both halves** of §6.4's secret rule:
+
+- POSITIVE: the message names the variable `GUARDRAILS_ON_EVENT_AUTH` and says a CR or LF is not
+  allowed in it;
+- NEGATIVE: the message contains neither the whole value nor the distinctive token
+  (`sup3r-s3cret-t0k3n`). §6.4 is unconditional — the value is *"never logged, echoed, journaled, or
+  written to any file"* — and a validation error is precisely where a well-meaning implementation echoes
+  the offending input back. Assert the positive half FIRST, or the negative one is satisfied by a
+  console that printed nothing at all (#176).
+
+The rule it enforces is a header-injection defense (§6.5): a bare CR/LF inside a header value is how an
+attacker-controlled token appends headers of its own to the request. Set and restore the variable in a
+`try`/`finally`, the same idiom as (9) — restore, never blanket-clear. xUnit does not parallelize
+*within* a class, so this test and (9) cannot collide with each other; the **cross-class** hazard (9)
+describes is unchanged, and two env-mutating tests in this file strengthen rather than weaken the case
+for a collection attribute.
+
+#### Twelve of these must be RED; the thirteenth is a declared exemption
 
 `tasks/08-author-tests-cli-wiring-and-delivery/guardrails/02-tests-fail-on-current-code.ps1` is a
-**per-test red census**: it reads the runner's own TRX and requires each of methods 1–9 to be recorded
-`Failed`. A test named for a behaviour whose body never invokes the subject passes on this tree and hides
-behind its genuinely-failing siblings, so a suite-level non-zero exit certifies nothing.
+**per-test red census**: it reads the runner's own TRX and requires each of methods 1–9 and 11–13 to be
+recorded `Failed`. A test named for a behaviour whose body never invokes the subject passes on this tree
+and hides behind its genuinely-failing siblings, so a suite-level non-zero exit certifies nothing.
 
 **`AReceiverThatNeverBindsLeavesExitCodeUntouched` is the exemption, and the reason is structural:** its
 whole content is that the delivery mechanism does *not* affect the run, and a mechanism that does nothing
@@ -210,8 +292,27 @@ guardrails are written on the measured fact that `RunCommand.cs` does not refere
 **(a) Declare the two options — declared, parsed, and then ignored.**
 Grep `src/Guardrails.Cli/Commands/RunCommand.cs` for `autonomyOption` to find where this command declares
 and adds its options, and add two beside them in the same idiom:
-- `--on-event <url>` — a `string?` option. Give it a Description naming the endpoint and §8.3.
+- `--on-event <url>` — a **multi-valued** option: `Option<string[]>` with
+  `Arity = ArgumentArity.OneOrMore` (the arity idiom this repo already uses — see
+  `src/Guardrails.Cli/Commands/ResetCommand.cs`). Leave `AllowMultipleArgumentsPerToken` `false`, so
+  `--on-event a b` does not silently collect two values from one occurrence. Give it a Description
+  naming the endpoint and §8.3, and stating that it may be given only once.
 - `--on-event-detail` — a `bool` flag. Give it a Description pointing at the withheld-by-default rule.
+
+> **Multi-valued, and NOT `Option<string?>` — this is load-bearing and it was measured.** Behaviour
+> (12) requires `--on-event` twice to be rejected with a message *naming the reason* (§6.4). A
+> single-arity `Option<string?>` makes System.CommandLine 2.0.9 reject the duplicate on its own, with a
+> generic arity message and exit code 1: measured against this repo's CLI,
+> `guardrails graph <folder> --format mermaid --format dot` prints *"Option '--format' expects a single
+> argument but 2 were provided."* and exits **1**. Declared that way, `ARepeatedOnEventFlagIsRejected`
+> would go GREEN here — against a tree with no `--on-event` validation of any kind — and the red census
+> would fail this task for a test that is doing nothing wrong. Multi-valued keeps the duplicate
+> *parseable*, so the absence of validation is what the test sees, and task 09 supplies the count check
+> and the message. `ArgumentArity.OneOrMore` rather than `ZeroOrMore` so a bare `--on-event` with no
+> value stays a usage error instead of quietly meaning "no webhook".
+>
+> You still **ignore** the parsed value here. Reading it into a local (or discarding it) is fine; acting
+> on it is task 09's.
 
 Declare them, read them out of the parse result if that is the local idiom, and **go no further**: no
 validation, no `GUARDRAILS_ON_EVENT` / `GUARDRAILS_ON_EVENT_AUTH` fallback, no sink. All of that is task
@@ -253,10 +354,10 @@ the real sink's callback and flag.
 - Do **not** implement validation, env fallbacks, or `await using` lifetime — task 09 owns all of it.
 - Do **not** edit `RunEventStream.cs`, `WebhookEventSink.cs`, or any other file. They are out of scope,
   and an out-of-scope edit consumes a retry.
-- Do **not** weaken an assertion to make a test green. Nine of these are supposed to be red right now.
+- Do **not** weaken an assertion to make a test green. Twelve of these are supposed to be red right now.
 
 ### Done when
 
-`tests/Guardrails.Integration.Tests` builds; methods 1–9 all **execute and fail** under
+`tests/Guardrails.Integration.Tests` builds; methods 1–9 and 11–13 all **execute and fail** under
 `--filter "Category=RunEvents&FullyQualifiedName~WebhookDeliveryTests"`; and
 `AReceiverThatNeverBindsLeavesExitCodeUntouched` **executes** (green is expected there).

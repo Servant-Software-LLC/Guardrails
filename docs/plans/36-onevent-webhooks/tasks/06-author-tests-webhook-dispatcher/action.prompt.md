@@ -29,8 +29,8 @@
 ## Task
 
 Author the tests that specify the webhook **dispatcher** — the queue, the pump, the circuit, the drop
-accounting, the six-step teardown, and the rule that no notice ever prints a credential — and add the
-member **stubs** they compile against.
+accounting, the six-step teardown, the production construction path, and the rule that no notice ever
+prints a credential — and add the member **stubs** they compile against.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/Webhooks/WebhookEventSinkTests.cs`, `src/Guardrails.Core/Execution/WebhookEventSink.cs`. After this task completes the harness runs a
 `git diff` check and rejects any edit outside that surface - production files, other test files, the
@@ -76,24 +76,51 @@ public sealed class WebhookEventSink : IAsyncDisposable
         Uri url, string? auth, string userAgent, Action<string> onNotice,
         HttpMessageHandler handler, double timeScale, CancellationToken cancellationToken)
         => throw new NotImplementedException("task 07");
+
+    // PRODUCTION-ONLY READBACKS, and they exist for exactly one test (behaviour 15 below).
+    // TryStart is the ONLY path that decides either value, and every other test in this file
+    // substitutes both away through the internal constructor - so without these two properties
+    // there is no way, anywhere in this plan, to observe what TryStart actually built.
+    //
+    // bool? and not bool, deliberately: null when the sink's handler is NOT a SocketsHttpHandler
+    // (the injected-fake path), the flag's real value when it is. That nullability is what lets
+    // test 15 assert BOTH sides and so rule out a hard-coded `=> false`.
+    internal bool? HandlerAllowsAutoRedirect => throw new NotImplementedException("task 07");
+
+    // The scale the sink is ACTUALLY using: 1.0 on the TryStart path, whatever the internal
+    // constructor was handed on the test path.
+    internal double TimeScale => throw new NotImplementedException("task 07");
 }
 ```
 
-**Every stubbed member throws `NotImplementedException`. `DisposeAsync` included.** A
-`=> ValueTask.CompletedTask` stub would make both `DisposeAsyncNeverThrows…` tests pass against a tree
-where teardown does not exist, and the red census reads that as "not coupled to the code path" and
-fails this task. The same trap applies to any stub that returns a default instead of throwing.
+**Every stubbed member throws `NotImplementedException`. `DisposeAsync` included, and the two
+readbacks included** — they are properties, so give them expression bodies that throw rather than
+auto-properties that return a default. A `=> ValueTask.CompletedTask` stub would make both
+`DisposeAsyncNeverThrows…` tests pass against a tree where teardown does not exist, and the red census
+reads that as "not coupled to the code path" and fails this task. The same trap applies to any stub
+that returns a default instead of throwing.
 
 **The two seam parameters, and why each is legitimate rather than test-shaped design damage:**
 
 - **`HttpMessageHandler handler`** — the HTTP transport is a PROCESS boundary. Faking it is correct
   and expected: it is what lets every bound, the circuit and the teardown be proven in-process with
   no listener bound and no port. Production goes through `TryStart`, which builds the real
-  `new SocketsHttpHandler { AllowAutoRedirect = false }` (§6.5) and is the ONLY path that does — so
-  the production handler configuration cannot be bypassed by accident.
+  `new SocketsHttpHandler { AllowAutoRedirect = false }` (§6.5), and it is the **only** path that
+  does.
+  **Read that last fact the right way round.** An earlier draft of this prompt closed the sentence
+  with *"— so the production handler configuration cannot be bypassed by accident."* That is
+  backwards, and the adversarial pass measured it: being the only path and being untested is
+  precisely what leaves the configuration **unwitnessed**. Flip `AllowAutoRedirect` to `true`, or
+  leave a debugging `timeScale` of `0.001` in `TryStart`, and nothing in this plan goes red — every
+  test in this file injects its own handler and its own scale, and every integration test in task 08
+  is merely *faster*. Behaviour **15** below,
+  `TryStartBuildsANonRedirectingClientAtRealTimeScale`, is the single witness for all three of
+  `TryStart`'s production-only decisions, and it is the only test in this file that calls `TryStart`
+  at all.
 - **`double timeScale`** — every duration bound in §5.2 (the per-attempt timeout, the three backoff
   steps, the per-row ceiling, the backlog drain budget and the terminal delivery timeout) is
-  multiplied by it. `TryStart` never passes it; production is `1.0`. Without it,
+  multiplied by it. `TryStart` takes no scale parameter — production always runs at **`1.0`**, and
+  behaviour 15 is what asserts that rather than assuming it. Without the seam,
   `CircuitOpensAtExactlyFiveConsecutiveFailures` alone costs 5 rows × (1 + 2 + 4) s ≈ **35 seconds of
   sleeping**, and three of the tests below need the circuit open before they start. A unit suite that
   sleeps two minutes on every attempt of task 07 and on every CI run is a guardrail people delete.
@@ -135,7 +162,7 @@ about that record. Capture notices with a plain `List<string>` behind the `Actio
 
 ### The behaviours — these exact method names
 
-The fourteen names below are pinned. The census reads them out of the runner's TRX, so a renamed or
+The sixteen names below are pinned. The census reads them out of the runner's TRX, so a renamed or
 merged test reads as an unbound behaviour.
 
 **The bounds (design §5.2).**
@@ -276,7 +303,63 @@ issue is about, and a line that always prints is proof the mechanism ran at all.
 For Slack and webhook.site **the URL path IS the credential**; this test and #13 are the reason the
 renderer exists.
 
+**The production construction path — three values only `TryStart` decides (design §6.5, §5.2).**
+
+**15. `TryStartBuildsANonRedirectingClientAtRealTimeScale`**
+The only test in this file that calls the **real** `TryStart`. Everything above takes the internal
+constructor and substitutes both the handler and the scale, which is why three production values
+otherwise have no witness anywhere in this plan: `AllowAutoRedirect = false`, the real time scale, and
+the fact that it is `TryStart` that sets them.
+
+**No `HttpListener`, and no bound port.** `TryStart` builds a client; it does not connect. Point it at
+a loopback URL on a port nothing is listening on, emit **no rows**, and `await using` it so the pump
+starts and stops cleanly — with nothing enqueued, `DisposeAsync`'s terminal phase has no
+`_lastEnqueued` to attempt, so not one byte goes near the network.
+
+Assert **both sides of both values**, because a one-sided assertion is satisfiable by a literal:
+- through `TryStart`: `HandlerAllowsAutoRedirect` is **`false`** and `TimeScale` is **`1.0`**;
+- through the internal test constructor, with your fake handler and a scale of your own choosing (say
+  `0.01`): `HandlerAllowsAutoRedirect` is **`null`** — the fake is not a `SocketsHttpHandler` — and
+  `TimeScale` is **`0.01`**.
+
+The second bullet is the control that makes the first mean something. A task-07 implementation that
+hard-codes `=> false` or `=> 1.0` passes the `TryStart` side and fails the constructor side; only a
+readback genuinely derived from the handler and the field the sink holds passes both.
+
+Why this is worth a pinned test rather than a code comment: §6.5 says a redirect can move the POST —
+**with its `Authorization` header and its payload** — to a host the operator never named. Leave
+`AllowAutoRedirect` at its default `true` and nothing in this plan goes red, *and* `IsRetryable`'s
+`3xx` row (tasks 04/05) silently becomes dead code, because a following client never surfaces a 3xx to
+classify. The `timeScale` half is the same defect from the other side: a stray `0.001` left in
+`TryStart` after debugging ships a **10 ms** per-attempt timeout and instant retries in production, and
+nothing red anywhere would say so.
+
+**The response-body cap (design §5.2) — the one bound in that table with no test above.**
+
+**16. `ResponseBodyIsCappedAtEightKilobytes`**
+Assert the constant — the response-body read cap task 04 landed is **8 KB** — **and assert the
+behaviour**. This is the THIRD row in this file carrying trap 1's hazard: the constant already exists,
+so a constant-only test is GREEN against the stub and the census reads that as uncoupled.
+
+Behaviour: a fake handler that answers `200` with a body far larger than the cap (64 KB is plenty),
+served through a stream that **counts the bytes actually read from it**. Emit one row, dispose, then
+assert all three:
+- the counted bytes are **≤ 8192** — the cap is enforced, not merely declared;
+- the counted bytes are **> 0** — POSITIVE CONTROL. The body is read *and discarded*, and reading it
+  is what releases the connection; a response never read at all would satisfy "≤ 8192" while proving
+  nothing;
+- the row still counts as **delivered** — any 2xx is a success, and capping the read must not turn one
+  into a failure. Read that off the summary line (`1 delivered, 0 dropped`).
+
+That third assertion is not padding: it is what rules out the tempting wrong implementation,
+`HttpClient.MaxResponseContentBufferSize`, which **throws** when the body exceeds the limit and so
+converts a delivered row into a failed one. And the first rules out the default one: `HttpClient`'s
+default `HttpCompletionOption.ResponseContentRead` buffers the WHOLE body before your code can cap
+anything, so a chatty — or hostile — endpoint returning 50 MB is buffered in full on the pump's
+thread. §5.2's *"releases the connection without buffering a hostile response"* is a claim about **how**
+the body is read, and this test is what makes it one.
+
 ### Done when
 
-`Guardrails.Core.Tests` **compiles** and all fourteen tests **fail** against the stubs. Failing is the
+`Guardrails.Core.Tests` **compiles** and all sixteen tests **fail** against the stubs. Failing is the
 deliverable; not compiling is a mistake to fix. Do NOT implement the dispatcher — that is task 07.

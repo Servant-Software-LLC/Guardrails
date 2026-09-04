@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=4bbfaa6d4c2e487135aed0e2b49262efc374648562ad5bee201afea33e97757a -->
+<!-- guardrails:graph v1 source-sha256=aef3761c30c522a80e02e84de7936f2e5c69a106c0af8ea48b5df7e122b1f9cf -->
 
 ```mermaid
 flowchart TD
@@ -12,8 +12,9 @@ flowchart TD
   end
   style task_01_update_ssot_event_schema fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_author_tests_bracket_and_wire_copy["02-author-tests-bracket-and-wire-copy"]
-    task_02_author_tests_bracket_and_wire_copy_gr_0["01-tests-build"]:::guardrail
-    task_02_author_tests_bracket_and_wire_copy_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_0["01-stubs-are-real"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_1["02-tests-build"]:::guardrail
+    task_02_author_tests_bracket_and_wire_copy_gr_2["03-tests-fail-on-stubs"]:::guardrail
   end
   style task_02_author_tests_bracket_and_wire_copy fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_implement_bracket_and_wire_copy["03-implement-bracket-and-wire-copy"]

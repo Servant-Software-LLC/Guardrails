@@ -82,6 +82,20 @@ by rewriting a constant — two tests assert those values directly.
   framework behaviour the code does not state is the silent-dependency pattern this repo keeps
   getting burned by). `Timeout` is set **per request via a `CancellationTokenSource`**, not on the
   client. Only `TryStart` builds this; the internal test constructor takes the handler it is given.
+  **`TryStart` takes no scale parameter: it runs at a `timeScale` of exactly `1.0`.**
+- **The two internal readbacks task 06 stubbed — `HandlerAllowsAutoRedirect` and `TimeScale` — must
+  return what the sink ACTUALLY holds, never a literal.** `TryStart` is the only path in the product
+  that decides either value, and every unit test but one substitutes both away through the internal
+  constructor, so these two properties are the entire evidence base for §6.5's no-redirect rule and
+  for production running at real time. Derive them:
+  - `HandlerAllowsAutoRedirect` → `(<the handler this sink holds> as SocketsHttpHandler)?.AllowAutoRedirect`
+    — so it is `false` on the `TryStart` path and **`null`** on the injected-fake path, because a fake
+    is not a `SocketsHttpHandler`.
+  - `TimeScale` → the scale field the constructor stored.
+
+  `TryStartBuildsANonRedirectingClientAtRealTimeScale` asserts **both** sides of both values precisely
+  so that a hard-coded `=> false` or `=> 1.0` fails. Writing one is not a shortcut past the test; it is
+  the wrong implementation the test was shaped to catch.
 
 ### 2. Retry and the circuit (§5.2, §5.3)
 
@@ -90,6 +104,15 @@ per-attempt timeout, and a **hard 45 s per-row ceiling enforced by a per-row `Ca
 so the schedule can never exceed it however the attempt timings fall. Classification is `IsRetryable`
 — call it, do not re-derive it. Any 2xx is success; the response body is read to at most 8 KB and
 **discarded**, which releases the connection without buffering a hostile response.
+
+**"Read to at most 8 KB" is a statement about HOW, and two obvious spellings both get it wrong.**
+Send with `HttpCompletionOption.ResponseHeadersRead` and copy at most the cap off the response stream,
+then dispose it. The default `HttpCompletionOption.ResponseContentRead` buffers the WHOLE body before
+your code can cap anything — a 50 MB reply is fully buffered on the pump's thread, which is the exact
+thing the cap exists to prevent. And `HttpClient.MaxResponseContentBufferSize` is not the answer
+either: it **throws** past the limit, converting a delivered row into a failed one.
+`ResponseBodyIsCappedAtEightKilobytes` counts the bytes actually pulled from the response stream **and**
+asserts the row is still reported delivered, so it fails both spellings.
 
 After **5 consecutive rows** exhaust their attempts the endpoint is marked failing for the rest of the
 run: later rows are dropped on arrival, counted, no HTTP attempted. A delivered row resets the
