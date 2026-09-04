@@ -17,8 +17,12 @@ namespace Guardrails.Core.Execution;
 ///   as clean green.</item>
 /// </list>
 ///
-/// <para>STUB (TDD red): both members throw so the authored tests COMPILE but FAIL until a later task
-/// implements the real logic. Mirrors the throwing-stub convention used elsewhere in wave 3/4.</para>
+/// <para>These members are the SINGLE source of the delivery-suppression verdict and of the evidence for
+/// it: <c>SuppressesDelivery</c> is defined in terms of <c>SuppressingDecision</c>, so the answer and the
+/// decision it rests on cannot drift apart. That coupling is deliberate - a banner, a journal record and
+/// an exit code that each re-derived "was delivery suppressed?" independently is how one of them ends up
+/// naming a cause the others do not agree with (#597, where the banner blamed a config key for a
+/// suppression a recorded decision had caused).</para>
 /// </summary>
 public static class RunOutcomePolicy
 {
