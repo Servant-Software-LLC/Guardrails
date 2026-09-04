@@ -1,17 +1,62 @@
 using System.Net;
+using System.Net.Http;
 
 namespace Guardrails.Core.Execution;
 
 /// <summary>
 /// Delivers each `events.jsonl` row to an operator-supplied webhook endpoint (#585 layer 3 —
-/// docs/plans/585-layer3-webhooks-contract.md). This file currently holds only the two PURE policy
-/// functions (§5.1, §6.6) as throwing stubs and the §5.2 schedule as named constants — task 05
-/// implements the two functions; task 06/07 add the channel, the pump, the <c>HttpClient</c> and
-/// disposal, none of which belong here yet.
+/// docs/plans/585-layer3-webhooks-contract.md). Task 05 implemented the two pure policy functions
+/// (§5.1, §6.6) below the member stubs; the member stubs themselves — the queue, the pump, the
+/// circuit, the six-step teardown and the production construction path — are task 07's job. Task 06
+/// (this task) adds only the throwing stubs that <c>WebhookEventSinkTests</c> compiles against.
 /// </summary>
-public sealed class WebhookEventSink
+public sealed class WebhookEventSink : IAsyncDisposable
 {
-    // ── §5.2 — the retry schedule, unasserted here; task 06's tests are what pin these numbers ──
+    // ── member stubs — task 07 implements every one of these (§3, §6.5) ────────────────────────
+
+    /// <summary>
+    /// Production entry point. Returns null when there is no <c>--on-event</c> URL. Never throws: the
+    /// CLI validates the URL EARLY, before any run state is touched (design §6.4, task 09).
+    /// </summary>
+    public static WebhookEventSink? TryStart(
+        Uri? url, string? auth, string userAgent, Action<string> onNotice, CancellationToken cancellationToken)
+        => throw new NotImplementedException("task 07");
+
+    /// <summary>The <c>Action&lt;EventDelivery&gt;</c> callback <c>RunEventStream</c> invokes inside its append lock.</summary>
+    public void Emit(EventDelivery delivery) => throw new NotImplementedException("task 07");
+
+    public ValueTask DisposeAsync() => throw new NotImplementedException("task 07");
+
+    /// <summary>
+    /// TEST SEAM. Internal, and <c>Guardrails.Core.csproj</c> already carries
+    /// <c>&lt;InternalsVisibleTo Include="Guardrails.Core.Tests" /&gt;</c> (measured: line 27).
+    /// </summary>
+    internal WebhookEventSink(
+        Uri url, string? auth, string userAgent, Action<string> onNotice,
+        HttpMessageHandler handler, double timeScale, CancellationToken cancellationToken)
+        => throw new NotImplementedException("task 07");
+
+    /// <summary>
+    /// PRODUCTION-ONLY READBACK, and it exists for exactly one test (behaviour 15 of
+    /// <c>WebhookEventSinkTests</c>). <see cref="TryStart"/> is the ONLY path that decides this value,
+    /// and every other test in that file substitutes the handler away through the internal
+    /// constructor — so without this property there is no way, anywhere in this plan, to observe what
+    /// <see cref="TryStart"/> actually built.
+    ///
+    /// <c>bool?</c> and not <c>bool</c>, deliberately: null when the sink's handler is NOT a
+    /// <see cref="System.Net.Http.SocketsHttpHandler"/> (the injected-fake path), the flag's real
+    /// value when it is. That nullability is what lets the test assert BOTH sides and so rule out a
+    /// hard-coded <c>=&gt; false</c>.
+    /// </summary>
+    internal bool? HandlerAllowsAutoRedirect => throw new NotImplementedException("task 07");
+
+    /// <summary>
+    /// The scale the sink is ACTUALLY using: 1.0 on the <see cref="TryStart"/> path, whatever the
+    /// internal constructor was handed on the test path.
+    /// </summary>
+    internal double TimeScale => throw new NotImplementedException("task 07");
+
+    // ── §5.2 — the retry schedule ────────────────────────────────────────────────────────────────
 
     /// <summary>Initial attempt + retries allowed for one row before it is counted a drop (§5.2).</summary>
     internal const int MaxAttemptsPerRow = 4;
