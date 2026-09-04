@@ -60,7 +60,7 @@ products. I split them deliberately: **structured fields always, free text on re
 
 | Item | Placement |
 |------|-----------|
-| `IEventSink` seam + the sink call in `RunEventStream` | **harness** — `Guardrails.Core.Execution` |
+| The `onRow` callback parameter + `EventDelivery` + the wire-copy block in `RunEventStream` | **harness** — `Guardrails.Core.Execution` |
 | `WebhookEventSink` (queue, pump, retry, circuit, drop accounting) | **harness** — `Guardrails.Core.Execution` |
 | `--on-event`, `--on-event-detail`, env fallback, URL validation, lifetime | **harness** — `Guardrails.Cli`, one command |
 | `bracket` on the §8.1 row | **schema** — `02-schemas-and-contracts.md` §8.1 (§4.2 is why it lands here and not later) |
@@ -188,8 +188,8 @@ reported by something that cannot silently disappear.
 
 ### 3.1 The seam: fed by `RunEventStream`, NOT a sibling of it
 
-**Decision: `RunEventStream` gains an optional `IEventSink`, and hands it the already-stamped,
-already-serialized line from inside its append lock. The webhook dispatcher implements that sink.**
+**Decision: `RunEventStream` gains an optional `onRow` callback, and invokes it with the already-stamped,
+already-serialized line from inside its append lock. The webhook dispatcher supplies that callback.**
 
 The obvious shape — a third decorator in `BuildObserverChain`, sibling to `RunEventStream` and
 `ObserverProjection` — is **wrong, and it is wrong for a reason that is easy to miss.** A sibling
@@ -212,32 +212,35 @@ decorator would have to build its own `EventRow` from the `IRunObserver` call, w
 Feeding the sink from inside `AppendLine` makes the identity structural rather than coincidental: **one
 `EventRow`, one `seq`, one `at`, one `bracket`, one `JsonSerializer.Serialize` call, two destinations.**
 
-```csharp
-// src/Guardrails.Core/Execution/IEventSink.cs — NEW
-/// <summary>
-/// A second destination for the §8.1 rows RunEventStream writes: the row leaves the process as well as
-/// landing in events.jsonl. There is exactly one implementation (WebhookEventSink) and the seam exists
-/// for two reasons that are not speculative: it keeps HttpClient and delivery policy out of
-/// RunEventStream, and it is the ONLY way a test can prove the wire body and the file line are the same
-/// bytes without standing up a server.
-/// </summary>
-public interface IEventSink
-{
-    /// <summary>
-    /// Whether this sink receives the free-text <c>detail</c> field (§8.3). False = the wire copy
-    /// carries a fixed withheld marker instead. The file row is NEVER affected either way.
-    /// </summary>
-    bool IncludeDetail { get; }
+**The seam is a callback parameter, NOT an interface** — corrected by the adversarial pass, which was right on
+two counts. A one-implementation `IEventSink` is speculative abstraction, and putting `IncludeDetail` on it
+inverted the ownership: the *writer* owns the row shape, so it must own what the wire copy looks like rather
+than asking the sink for the sink's policy. Both ctor parameters go on `RunEventStream`, which is where the
+row already lives:
 
-    /// <summary>
-    /// Hand off ONE complete §8.3 JSON line. Called on the run's own thread, INSIDE
-    /// RunEventStream's append lock. It MUST return in microseconds and it MUST NOT throw:
-    /// a throw here propagates into the harness's hot path holding a lock, and a delivery
-    /// mechanism is not permitted to affect the run (#585 layer 3 ruling 2). Implementations
-    /// enqueue and return; a full queue is a recorded DROP, never a wait.
-    /// </summary>
-    void Emit(string jsonLine);
-}
+```csharp
+// src/Guardrails.Core/Execution/RunEventStream.cs
+/// <param name="onRow">
+/// OPTIONAL second destination for each row (#585 layer 3): the delivery the webhook dispatcher queues.
+/// Invoked on the RUN's own thread, INSIDE the append lock, so it MUST return in microseconds and MUST
+/// NOT throw — a throw here would propagate into a Scheduler worker while holding <c>_gate</c>, and a
+/// delivery mechanism is never permitted to affect the run (§8.3). Enqueue and return; a full queue is a
+/// recorded DROP, never a wait. Null = no webhook endpoint, and the byte-identical behavior of today.
+/// </param>
+/// <param name="includeDetail">
+/// Whether <paramref name="onRow"/>'s copy carries the free-text <c>detail</c> field (§8.3). The
+/// events.jsonl row is NEVER affected either way.
+/// </param>
+public RunEventStream(
+    IRunObserver inner, string directory, string runId,
+    Action<EventDelivery>? onRow = null, bool includeDetail = false)
+
+/// <summary>
+/// One row on its way OFF the machine (§8.3). Carries the three values the delivery's headers need
+/// alongside the body, so the dispatcher never re-parses the JSON it was just handed — which would be a
+/// third serialization round-trip per row and a failure mode nobody has specified.
+/// </summary>
+public readonly record struct EventDelivery(string DeliveryId, string Kind, string JsonLine);
 ```
 
 And the change inside `RunEventStream.AppendLine` — the whole of it:
@@ -251,16 +254,23 @@ lock (_gate)
     Directory.CreateDirectory(_directory);
     File.AppendAllText(Path.Combine(_directory, "events.jsonl"), line + "\n", Utf8NoBom);
 
-    if (_sink is not null)
+    if (_onRow is not null)
     {
-        // The wire copy differs from the file line in EXACTLY ONE field, and only ever `detail`
-        // (§8.3). When the row has no detail — every kind but guardrail-finished and task-settled —
-        // `with` produces an equal record and this serializes to the identical string.
-        EventRow wire = stamped with
-        {
-            Detail = _sink.IncludeDetail ? CapDetail(stamped.Detail) : DetailWithheld
-        };
-        _sink.Emit(JsonSerializer.Serialize(wire, LineOptions));
+        // The wire copy differs from the file line in EXACTLY ONE field, and only ever `detail` (§8.3) —
+        // and only when the row HAS one. A null stays null, so a task-started / attempt-started /
+        // run-finished / PASSING guardrail-finished row serializes to a byte-identical string, and a
+        // receiver never sees a withheld marker where there was nothing to withhold.
+        EventRow wire = stamped.Detail is null
+            ? stamped
+            : stamped with { Detail = includeDetail ? CapDetail(stamped.Detail) : DetailWithheld };
+
+        string wireLine = ReferenceEquals(wire, stamped) ? line : JsonSerializer.Serialize(wire, LineOptions);
+
+        // The contract above says the callback must not throw. A public delegate parameter cannot
+        // ENFORCE that — a test double or a future second consumer can throw — and a throw escaping here
+        // holds `_gate` inside a Scheduler worker. Belt as well as braces.
+        try { _onRow(new EventDelivery($"{_runId}:{_bracket}:{stamped.Seq}", stamped.Kind, wireLine)); }
+        catch (Exception) { /* a delivery mechanism may never affect the run (§8.3) */ }
     }
 }
 ```
@@ -281,7 +291,7 @@ Three properties, each deliberate:
 
 `WebhookEventSink` (`src/Guardrails.Core/Execution/WebhookEventSink.cs`):
 
-- A **bounded `Channel<string>`**, capacity **1024**, **`FullMode = DropOldest`**, created with the
+- A **bounded `Channel<EventDelivery>`**, capacity **1024**, **`FullMode = DropOldest`**, created with the
   `Channel.CreateBounded<T>(BoundedChannelOptions, Action<T> itemDropped)` overload so every displaced
   row is counted rather than vanishing. `Emit` calls `TryWrite`, which never blocks.
 
@@ -292,15 +302,21 @@ Three properties, each deliberate:
   late-attaching supervisor cares least about. Ordering is unaffected (dropping from the head leaves
   the tail in order); a gap is already the documented meaning of a drop (§4.4).
 
+- **`Emit` also stores the delivery in a `_lastEnqueued` field** (a plain volatile write, under the same
+  append lock, so it is the true tail). This is what §3.3's guaranteed terminal attempt reaches for, and
+  it is why the dispatcher needs **no** knowledge of the event vocabulary to protect the terminal row:
+  `run-finished` is by construction the last row a process emits, so "the last enqueued row" *is* it on
+  every normal path, with no `kind` comparison anywhere.
 - **The `itemDropped` callback runs on the RUN's thread, inside the append lock**, so it may do exactly
-  two things: `Interlocked.Increment` a counter and record the delivery id in a field. **Every
-  `webhooks.log` write happens on the pump thread or during dispose — never on the run's thread.** File
-  IO under the append lock would be the one way this design could measurably slow a run.
-- The whole of `Emit` is inside a `catch (Exception)` that increments the drop counter — the seam's
-  "must not throw" contract is enforced by the implementation, not merely asserted in a doc comment.
+  two things: `Interlocked.Increment` a counter and record the delivery id in a field. **No file IO and
+  no console write ever happens on the run's thread** — that would be the one way this design could
+  measurably slow a run, and §5.4 is why there is no per-drop file to write at all.
+- The whole of `Emit` is inside a `catch (Exception)` that increments the drop counter — belt as well as
+  the braces `AppendLine` already puts around the callback (§3.1).
 - **One** background pump task started in the constructor, reading `ReadAllAsync`. One pump, not a fan-out:
   serial delivery is what keeps arrival in `seq` order, and a retrying row delays later rows rather than
-  being overtaken by them.
+  being overtaken by them. **Its `Task` is retained and awaited** (§3.3) — an unobserved pump that faults
+  is the silent disappearance §2.2 mocks the shell shim for, so a faulted pump is reported in the summary.
 - A single `HttpClient` built on `new SocketsHttpHandler { AllowAutoRedirect = false }` (§6.5), with
   `Timeout` set per-request via a `CancellationTokenSource`, not on the client.
 
@@ -314,6 +330,8 @@ Three properties, each deliberate:
 | Blocking POST inline in the observer call | Stalls the run on someone else's server. Violates ruling 2 in the most direct way available. |
 | `Task.Run(() => Post(row))` fire-and-forget per row | Unbounded concurrency (a slow endpoint spawns a task per row), no ordering, no back-pressure signal, and unobserved exceptions. A channel is strictly better and no larger. |
 | `IProgressSink` / a new `IRunObserver` member | Wrong seam: this is not an observation, it is a second destination for an existing projection. Adding an interface member would put the swallow hazard (plan 34 §3) in play for zero benefit. |
+| **A dedicated `IEventSink` interface** (the first draft's shape) | Speculative abstraction: one implementation, and both stated justifications fail. "Keeps `HttpClient` out of `RunEventStream`" is equally true of a delegate; "the only way a test can prove wire/file byte-identity without a server" is false — a lambda collecting deliveries does it. And putting `IncludeDetail` on the *sink* inverted ownership: `RunEventStream` owns the row shape, so it must own what the wire copy looks like. **Cut on the adversarial pass; it deleted a file and a handoff task.** |
+| The dispatcher **re-parsing** the JSON line to build its headers | A third JSON operation per row, and a parse failure with no specified behavior, to recover values the writer had in hand. `EventDelivery` carries them alongside the body instead. |
 
 ### 3.3 Lifetime and teardown — the `LogServer` lesson, applied
 
@@ -326,19 +344,29 @@ Plan 35 §9.3 is the recorded cost of getting exactly this wrong one surface ove
 drained in-flight requests **three lines too late**, after `_listener.Stop()` had already torn down the
 shared HTTP.sys request queue, so the "best-effort" final delivery of `run-finished` failed *every single
 time* across ~10 measured variants. The finding, verbatim: **"A 'best-effort' mechanism that is 0%
-effective is not best-effort; it is dead code."** The fix was to move the drain above the teardown, and
-`LogServer` now additionally defers the listener stop behind a 250 ms linger
+effective is not best-effort; it is dead code."** The fix was to move the drain above the **transport**
+teardown, and `LogServer` now additionally defers the listener stop behind a 250 ms linger
 (`src/Guardrails.Cli/Ui/LogServer.cs:1147-1201`).
 
-Layer 3 takes that lesson as a construction rule, not a hope:
+**The lesson stated correctly, because the first draft inverted it and the inversion caused two of this
+document's blockers.** `LogServer.DisposeAsync` **cancels first** (`LogServer.cs:1149`) and always did;
+what moved was the drain, above `_listener.Stop()`. So the rule is not "cancel last" — it is:
+
+> **Signal wind-down first. Drain second. Tear the transport down last.**
+
+The first draft's "keep the full retry budget through the drain and cancel at the end" is what loses the
+terminal row, and it is exactly how blocker 3 below arises. Layer 3's transport is the `HttpClient`, so
+that is what must be disposed last, after the pump has provably returned.
+
+Layer 3 takes the corrected lesson as a construction rule, not a hope:
 
 1. **The sink is constructed BEFORE the observer chain and disposed AFTER the `RunFinished` bracket.**
    Concretely, in `RunCommand.RunAsync`, on the line after `diagramSeed` is read (`:505`) and before
    the `OnTheFlyDiagramObserver? diagramObserver = null;` bracket opens (`:518`):
 
    ```csharp
-   await using var eventSink = WebhookEventSink.TryStart(
-       onEventUrl, onEventAuth, onEventDetail, userAgent, logsRoot, io.Out.WriteLine);  // null when no URL
+   await using var eventSink = WebhookEventSink.TryStart(   // null when no --on-event URL
+       onEventUrl, onEventAuth, userAgent, io.Out.WriteLine, cancellationToken);
    ```
 
    **Verified against the real brace structure rather than assumed** — this is the claim whose failure
@@ -355,17 +383,54 @@ Layer 3 takes that lesson as a construction rule, not a hope:
    That is the only correct order, and nothing between `:506` and `:521` can return past the
    construction.
 
-2. **`DisposeAsync` drains before it cancels.** In order: complete the channel writer; `await` the pump
-   bounded by `Task.WhenAny(pump, Task.Delay(DrainTimeout))`; only then cancel the pump's token, count
-   anything still unsent as a drop, dispose the `HttpClient`, and emit the summary line (§5.4). **The
-   cancellation is the last step, not the first** — that inversion is the whole of the #35 bug.
+2. **`DisposeAsync` runs six steps in this order, and every one of them is load-bearing.**
 
-3. **The drain does NOT observe the run's cancellation token.** On a Ctrl-C run, `run-finished` carries
-   `exitCode: 3` and is precisely the event a supervisor most needs; cancelling the drain would drop it.
-   The 30-second hard bound is what keeps Ctrl-C from being taken hostage.
+   | # | Step | Why it is where it is |
+   |---|---|---|
+   | 1 | Complete the channel writer and set `_draining` | Signals wind-down. From here the pump makes **one attempt per row** — it abandons the retry budget entirely (see step 2). |
+   | 2 | **Backlog phase**: the pump keeps delivering in `seq` order, one attempt each, until the queue empties or `BacklogDrainBudget` expires (**10 s**, and **0 s when the run was cancelled**). Anything left is counted as a drop. | Retrying during teardown is what starves the terminal row (blocker 3). |
+   | 3 | **Terminal phase, which ALWAYS runs**: if `_lastEnqueued` was not delivered, make exactly **one** attempt at it, bounded by `TerminalDeliveryTimeout` (**10 s**, **500 ms** when cancelled), **ignoring the circuit and ignoring the backlog**. | This is the guarantee the whole feature exists for, and it is why §5.3's circuit no longer costs `run-finished`. |
+   | 4 | Cancel the pump's token, then **`await` the pump, bounded** | `LogServer.cs:102-105` documents the trap verbatim: *"disposing that CancellationTokenSource while a wait is outstanding on it is undefined behaviour, so nothing may touch it until every dispatched request has returned."* A cancelled token does not mean `SendAsync` has returned. |
+   | 5 | Dispose the `HttpClient`, then the `CancellationTokenSource` | The transport goes **last**, after the pump has provably returned — the corrected §9.3 rule. |
+   | 6 | Emit the buffered notices + the summary through `onNotice` (§5.4) | Last, so the counts are final and no console write races the live table (§5.3). |
 
-4. **A test pins the ordering, not a comment.** An integration test runs a real plan against a real
-   loopback `HttpListener` and asserts a `run-finished` body arrives. Per plan 35's own measurement,
+   Worst-case teardown cost is therefore **20 s** on a normal exit and **~500 ms** on a cancelled one —
+   both stated as numbers rather than left to be multiplied out.
+
+3. **`DisposeAsync` MUST NOT THROW — the contract covers teardown as strictly as it covers `Emit`.**
+   This is where the first draft violated its own ruling. `await using` puts the dispose in a
+   compiler-emitted `finally` spanning to `RunCommand.cs:747`, so **an exception thrown there replaces
+   the in-flight `return exitCode;` from `:714` — turning a wholly-green run into an unhandled
+   exception** — and on the fault path replaces the original exception, destroying the diagnosis. The
+   repo already knows this shape: `RunCommand.cs:676` wraps a journal write in
+   `catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)` for
+   exactly this reason. So the whole body of `DisposeAsync` sits inside a `catch (Exception)`, and
+   §8.3 states it. **Cutting the per-drop log file (§5.4) removes the largest source of a throw here
+   outright**, which is most of why it was cut.
+
+4. **The Ctrl-C contract, decided rather than assumed.** `src/Guardrails.Cli/Program.cs` is six lines and
+   passes **no `InvocationConfiguration`**, so System.CommandLine 2.0.9's default applies —
+   `~/.nuget/packages/system.commandline/2.0.9/lib/net8.0/System.CommandLine.xml:774-779`: *"If not
+   provided, a default timeout of 2 seconds is enforced."* **The entire Ctrl-C unwind — Scheduler
+   cancellation, journal writes, `RunFinished`, this drain, and `logServer.DisposeAsync()` — must fit in
+   two seconds**, so the first draft's 30 s drain was unreachable, and worse, it would have eaten the
+   budget that layer 2's own drain (`ShutdownDrainTimeout`, 5 s) paid ~10 measured variants to win.
+
+   **Decision: the cancelled path skips the backlog entirely and spends ~500 ms on one attempt at the
+   terminal row.** Loopback RTT is routinely sub-millisecond, so that is a real chance rather than a
+   gesture, and it leaves the remaining budget to the log server. **§8.3 says plainly that on Ctrl-C the
+   terminal row's delivery is a single best-effort attempt, and the file is the record.** The run's
+   cancellation token is passed to the dispatcher **only to select the budget** — the drain itself never
+   observes it, because a token that is already cancelled would otherwise skip the drain entirely.
+
+   **Explicitly NOT taken:** raising `ProcessTerminationTimeout`. It is a cross-cutting change to every
+   command's Ctrl-C behavior, it is a maintainer UX call rather than layer 3's to make, and layer 2's
+   drain already exceeds the 2 s budget today. **Filed as a follow-up** (§11) — the observation belongs
+   to the CLI host, not to webhooks.
+
+5. **A test pins the ordering, not a comment.** An integration test runs a real plan against a real
+   loopback `HttpListener` and asserts a `run-finished` body arrives — and a second asserts it still
+   arrives when the endpoint is slow enough to have backed the pump up. Per plan 35's own measurement,
    this is the assertion that would have caught the `LogServer` defect and did not exist.
 
 **Post-dispose emissions.** After `DisposeAsync` returns, `RunEventStream` still exists; a late row
@@ -404,9 +469,17 @@ reader survives this because rows arrive in file order and a bracket can be segm
 currently tells it the key is — **silently discards the entire resumed run.** Nothing anywhere reports
 it. That is #585's own defect shape, manufactured by layer 3.
 
-**`bracket`** is a short random id (8 hex chars from a `Guid`) generated once in `RunEventStream`'s
+**`bracket`** is `<unix-ms>-<4 hex>` — e.g. `1756948327104-a3f9` — generated once in `RunEventStream`'s
 constructor and stamped on every row inside the append lock, exactly like `seq` and `at`. Zero call-site
 changes: one field on `EventRow`, one line in `AppendLine`, one line in the constructor.
+
+**Why not 8 random hex characters, which was the first draft's answer.** A pure random id gives identity
+but no **ordering**, and a receiver holding rows from two brackets could not tell which process was later
+— so §8.1's "take the LAST `run-finished` as current" would have had no wire analog at all, while §4.2
+claimed answering that question as a *benefit* of the field. A millisecond prefix closes the gap for
+free; the random suffix keeps two processes starting in the same millisecond distinct. It is an opaque
+token for equality and a sortable one when a receiver needs to order brackets — and it is deliberately
+NOT a timestamp anyone should compute elapsed time from, for the same reason `at` is not (§8.1).
 
 | Rejected | Why |
 |---|---|
@@ -422,7 +495,10 @@ is the one carrying the bracket whose rows you were receiving. §8.1's current g
 
 ### 4.3 Headers
 
-Three custom headers, each earning its keep, plus the two standard ones:
+Three custom headers, each earning its keep, plus the two standard ones. **Two of the three values come
+in on the `EventDelivery` (§3.1) rather than being recovered from the body** — the dispatcher never parses
+the JSON it was handed, which is what keeps §4.1's "the body is opaque to the dispatcher" true rather than
+aspirational:
 
 | Header | Value | Why it exists |
 |---|---|---|
@@ -496,60 +572,79 @@ unit-tested directly — no HTTP server needed to prove the classification.
 | Per-attempt timeout | **10 s** | matches `PlanPreflightPhase.EndpointProbeTimeout`; a receiver slower than this is not healthy |
 | **Hard per-row ceiling** | **45 s** | enforced by a per-row `CancellationTokenSource`, so the schedule can never exceed it however the attempt timings fall. Stated as a number rather than left to be multiplied out of the schedule. |
 | Queue capacity | **1024** rows, `DropOldest` | a run emits hundreds, so this only fills when the pump is stalled — which is exactly when dropping is correct, and `DropOldest` is what keeps the terminal row from being the one dropped (§3.2) |
-| Shutdown drain bound | **30 s** | §3.3. Paid only in the narrow "endpoint died near the end" case; in the healthy case it costs milliseconds and with the circuit open it costs nothing |
+| **Backlog drain budget** | **10 s** normally, **0 s** when the run was cancelled | §3.3 step 2. Retries are abandoned for the whole drain — one attempt per row |
+| **Terminal delivery timeout** | **10 s** normally, **500 ms** when the run was cancelled | §3.3 step 3. Always spent, circuit or no circuit, backlog or no backlog |
+| Worst-case teardown | **20 s** normally, **~500 ms** cancelled | the sum of the two above, stated so nobody has to add them up |
 | `detail` cap when included | **2000 chars** — `GuardrailFailureReason.MaxChars` (`src/Guardrails.Core/Execution/GuardrailFailureReason.cs:25`), **promoted from `private const` to `internal const`** so there is ONE owner of the number rather than a copy that drifts | an existing in-repo precedent for capping exactly this kind of text, and it stops one runaway compiler line becoming a multi-megabyte POST |
 | Response body read | **≤ 8 KB, discarded** | releases the connection without buffering a hostile response |
 
 ### 5.3 The circuit: give up loudly, once
 
 **After 5 CONSECUTIVE rows exhaust all their attempts, the endpoint is marked failing for the rest of
-the run.** Subsequent rows are dropped on arrival — counted, no HTTP attempted — and one console line
-prints at the moment it opens:
+the run.** Subsequent rows are dropped on arrival — counted, no HTTP attempted. **It never closes.** No
+half-open probe, no timer. Rationale: 5 rows × 4 attempts = 20 consecutive failed POSTs is not a
+transient, a half-open state machine is real complexity for a case the durable file already covers, and
+"when does it re-open?" is a question with no good answer that anyone would have to keep answering.
+
+**The circuit does NOT suppress the terminal delivery.** §3.3 step 3 always spends one attempt on the
+last-enqueued row, whatever the circuit says. So the cost the first draft agonized over — an open circuit
+dropping `run-finished` — **does not exist any more**, and it is not the mechanism that needed fixing.
+
+**The notice is BUFFERED, not printed when the circuit opens — and that correction is #145 Bug 1.**
+The first draft had the pump write one console line at the moment the circuit opened, mid-run. That is a
+console write from a background thread while the Spectre `Live` region is active: `await using var
+liveObserver` is constructed at `RunCommand.cs:534` and disposed at the end of the `if (live)` block at
+`:539`, so the region covers the entire DAG — exactly when a circuit opens. The constraint is stated in
+the code three lines above the construction (`RunCommand.cs:526-528`): *"any console write into an active
+Live region corrupts the table (#145 Bug 1)."* So the notice is buffered and flushed with the end-of-run
+summary at `:747`, where the region is long gone.
 
 ```
-Webhook: giving up on https://hooks.example.com/… after 5 consecutive delivery failures (last: HttpRequestException). Events keep landing in events.jsonl; the run is unaffected.
+Webhook: gave up at 14:22:07 after 5 consecutive delivery failures (last: HttpRequestException).
 ```
 
-**It never closes.** No half-open probe, no timer. Rationale: 5 rows × 4 attempts = 20 consecutive
-failed POSTs is not a transient, a half-open state machine is real complexity for a case the durable
-file already covers, and "when does it re-open?" is a question with no good answer that anyone would
-have to keep answering.
-
-**What it buys, and why one mechanism does two jobs:** it bounds wasted work on a dead endpoint, it
-makes shutdown instant instead of a 30-second drain, and it is the natural place for the EARLY warning.
-The alternative — no circuit, one warning on first exhaustion — gets the warning but keeps 800 pointless
-POSTs and the full drain. One mechanism, three benefits, ~15 lines.
-
-**The cost, stated plainly, and it is real: an open circuit drops `run-finished` too.** I considered a
-special case — always attempt the terminal row once even when open — and rejected it, because it would
-make the dispatcher read `kind`, i.e. know the vocabulary, which is the one thing §4.1 buys by keeping
-the body opaque. The covering mechanism is the one already in the contract: a consumer that must not
-miss the terminal event re-reads the file. **This is the design decision I hold least firmly — see
-§9.**
+**What buffering costs, honestly.** The circuit's third justification in the first draft was an EARLY
+warning, and buffering removes it: the operator now learns at the end, which is when the summary tells
+them anyway. Two justifications survive and they are enough for ~15 lines — it bounds wasted work on a
+dead endpoint (no 800 pointless POSTs), and it makes the backlog phase of teardown instant. **Surfacing
+a live delivery-health indicator inside the table is a `guardrails-ux` question, not a webhook one**, and
+is filed rather than smuggled in here (§11).
 
 ### 5.4 Where a drop is RECORDED
 
-Ruling 2 is *"never affect the run"*, not *"never tell anyone."* Two surfaces, chosen deliberately:
+Ruling 2 is *"never affect the run"*, not *"never tell anyone."* **ONE surface**, and the first draft's
+second one was cut on the adversarial pass:
 
-**1. One console line at the end of every run that used `--on-event`, INCLUDING at zero drops.** Emitted
-by `WebhookEventSink.DisposeAsync` through the `onNotice` callback, so it fires on the normal path, the
-halt path, and the unwinding-fault path alike, and after the final counts are known:
+**One console line at the end of every run that used `--on-event`, INCLUDING at zero drops.** Emitted by
+`WebhookEventSink.DisposeAsync` through the `onNotice` callback, so it fires on the normal path, the halt
+path, and the unwinding-fault path alike, after the final counts are known and after the live region is
+gone:
 
 ```
 Webhook: 211 delivered, 0 dropped -> https://hooks.example.com/…
-Webhook: 197 delivered, 14 dropped (endpoint failing since 14:22:07) -> https://hooks.example.com/…
+Webhook: 197 delivered, 14 dropped -> https://hooks.example.com/…
+Webhook: gave up at 14:22:07 after 5 consecutive delivery failures (last: HttpRequestException).
+Webhook: delivery stopped early (TaskCanceledException); 6 row(s) never attempted.
 ```
 
 The zero-drop line is not noise: **silence on success is the exact defect this issue is about.** A line
-that always prints is proof the mechanism ran at all.
+that always prints is proof the mechanism ran at all. The fourth form matters for the same reason — the
+pump's `Task` is retained and its fault is **observed**, because `Task.WhenAny(pump, delay)` does not
+throw on a faulted pump, and a summary reading "0 dropped" while rows sit in a dead channel would be the
+silent disappearance §2.2 mocks the shell shim for.
 
-**2. `logs/<runId>/webhooks.log`** — a plain text file beside `events.jsonl`, one line per drop
-(`<at> <deliveryId> <kind> dropped after <n> attempts: <reason token>`) plus a final summary line. It
-sits in the run's own log directory, which is where a post-mortem already goes, and it costs no schema
-change at all (invariant #6). **It is deliberately not exposed by the log server:** `LogServer`'s routes
-are `/`, `/diagram.html`, `/events` and `/tasks/{id}/…` — it serves no arbitrary file under
-`logs/<runId>/`, and adding a route for this one would be new surface on a listener whose class comment
-is about *not* exposing things. A file the operator opens is enough.
+**CUT: `logs/<runId>/webhooks.log`.** The first draft had a per-drop file beside `events.jsonl`. It does
+not earn its keep, and three of the four things said in its favor were wrong:
+
+| Claim made for it | What is actually true |
+|---|---|
+| "the log viewer already serves it" | **False.** `LogServer.cs:399`/`:413` say the opposite in the code — the routes are an explicit allowlist, *"rather than a wildcard static file server over `_logsRoot`"*, and tests pin that nothing else under `logs/<runId>/` is served. Making the claim true means adding a route, which is unscoped work on a listener whose class comment is about *not* exposing things. |
+| "a durable record of which rows were dropped" | Undercut by this very section's own better argument: a consumer computes the **exact** drop set by diffing the `(bracket, seq)` values it received against `events.jsonl`. The file would be a second, weaker owner of a fact the durable record already holds — the objection this design raises against a `run.json` field. |
+| "the console summary is ephemeral" | It is captured by `> run.log`, which is how an unattended run is already read (#552). |
+| — | And it was **the largest source of a throw inside `DisposeAsync`** (§3.3 step 3): a file open in an editor, a full disk, or `MAX_PATH` on a deep plan folder would have turned a green run into an unhandled exception. |
+
+Cutting it removes a file format, a deliverable, and a way to fail the run. The counts stay; the detail
+was always computable.
 
 | Rejected | Why |
 |---|---|
@@ -558,7 +653,7 @@ is about *not* exposing things. A file the operator opens is enough.
 | **Silence on success** | See above. |
 | **Failing the run, or a nonzero exit code, on drops** | Ruling 2. |
 
-**And a rule that is easy to get wrong:** the drop lines and the console summary print **the exception's
+**And a rule that is easy to get wrong:** every notice and the console summary print **the exception's
 TYPE NAME and the HTTP status code only — never `ex.Message`, and never the full URL.** A
 `HttpRequestException` message routinely contains the whole request URI, and for many webhook services
 (Slack, webhook.site) **the URL path IS the credential**. This is the `faultKind` posture applied to the
@@ -599,7 +694,7 @@ path, a token, or source text?*
 | `taskId` | a task folder name, or `wave/task` on a waved plan. Never absolute, never `..` | **safe** — it does disclose the plan's task names, which is the point of the feature |
 | `runner`, `tier` | `promptRunners` registry key and `easy`\|`medium`\|`hard` — both config-declared | **safe** |
 | `model` | **provider-echoed and unvalidated**: `TaskExecutor.cs:839-849` overwrites the resolved model with `ObservedModel`, scraped verbatim from the provider's own JSON | **low risk, accepted residual.** It is a model id. A hostile local endpoint could put junk there — but that same string already lands in `run.json` and the telemetry corpus, so this is not a new exposure and the operator who pointed at a hostile endpoint has a larger problem. |
-| **`detail` on `guardrail-finished`** | `GuardrailResult.Reason` — for a script guardrail, the **first non-empty line of the child's stdout, uncapped** (`GuardrailRunner.cs:384-404`); for a prompt guardrail, the judge's free prose read verbatim from the verdict file (`:283-293`) | **UNSAFE.** Routinely carries absolute paths (`C:\...\Foo.cs(42,13): error CS0103: …`) and **source fragments** — and #179 deliberately made generated test guardrails re-emit assertion text and stack traces at the end of stdout, so this is by design, not by accident. A guardrail script can echo anything, including an env var. |
+| **`detail` on `guardrail-finished`** | `GuardrailResult.Reason` — for a script guardrail, the **first non-empty line of the child's stdout, uncapped** (`GuardrailRunner.cs:384-404`); for a prompt guardrail, the judge's free prose read verbatim from the verdict file (`:283-293`) | **UNSAFE.** Routinely carries absolute paths (`C:\...\Foo.cs(42,13): error CS0103: …`) and source fragments — a compiler error quotes the offending expression, an assertion quotes expected and actual. A guardrail script can echo anything, including an env var. **Citation corrected on the adversarial pass:** the first draft cited #179 (test guardrails re-emitting assertions and stack traces) as evidence. That output lands in `GuardrailResult.Output`, which feeds retry feedback and never reaches this row — only `FirstNonEmptyLine(StandardOutput)` does. The conclusion is unchanged and the wrong support is removed. |
 | **`detail` on `task-settled`** | `TaskResult.Summary`, ~40 assignment sites | **UNSAFE.** Splices absolute paths (`Scheduler.cs:4384` and `:4341` embed the absolute `feedback.md` path; `AttemptJournaler.cs:646` embeds permission-wall paths) and **raw model prose** (`AttemptJournaler.cs:543` = `$"needs human: {question}"`, straight from the agent's own state fragment; `Overwatch.cs:381` = the overwatch model's diagnosis). Not capped anywhere. |
 
 **Finding, and it corrects the issue's own framing.** #585's layer-3 comment says `faultKind` "is the
@@ -641,9 +736,23 @@ the closed set `JournalJson.OutcomeToken` writes — **`max-turns`** and **`guar
 `timeout`, `output-cap`, `rate-limited`, `permission-denied`, `no-route`, `task-preflight-failed` and
 the rest. Every one of them is **always sent**, in both modes. #585's own words are *"`reason` is not
 optional… it is the difference between the two responses,"* and #595 settled that `outcome` **is** that
-field. `detail` adds the guardrail's own prose on top of an already-actionable row. The default
-therefore still answers the question the issue was filed over, and the flag is one word for the operator
-who owns both ends.
+field. `detail` adds the guardrail's own prose on top of an already-actionable row — and `guardrail`
+(the failing guardrail's name) and `passed` are always sent too, so a withheld-detail receiver knows
+*which* guardrail failed, not merely that one did. The default therefore still answers the question the
+issue was filed over, and the flag is one word for the operator who owns both ends.
+
+**Where that defense is INCOMPLETE, and the adversarial pass is right about it.** `outcome` answers the
+max-turns-versus-guardrail-failure case. It does **not** carry a `needs-human` **question**:
+`AttemptJournaler.cs:543` splices `$"needs human: {question}"` into `TaskResult.Summary`, which becomes
+`task-settled`'s `detail`. With detail withheld, a supervisor gets `outcome: needs-human` plus
+`needsHumanKind: blocked-work` and must **read a file to learn what was actually asked** — the obligation
+#585 exists to delete, on the path #361's resume-time answer injection depends on.
+
+That is not a reason to flip the default; it is a reason the **question needs a carrier that is not
+`detail`.** `needsHumanKind` is a closed token and safe; the question is free text authored by a model
+and is not. A dedicated field with its own disclosure rule is the right answer and it is **not this
+change** — filed as a follow-up (§11), because inventing one here would be exactly the vocabulary fork
+this design spends §4.1 refusing.
 
 ### 6.4 The configuration surface
 
@@ -717,10 +826,16 @@ not apply. The constraints below exist for the residual cases and for clear fail
 
 ### 6.6 How the URL is displayed
 
-**The console summary, `webhooks.log`, and every warning print the URL as `<scheme>://<host>[:<port>]/…`
-— scheme, host, port, and a fixed `/…` when there is any path or query. Never the path. Never the query
+**The console summary and every notice and warning print the URL as `<scheme>://<host>[:<port>]/…` —
+scheme, host, port, and a fixed `/…` when there is any path or query. Never the path. Never the query
 string.** A Slack webhook URL printed in full into a redirected `run.log` that an operator later pastes
 into a GitHub issue is a live credential leak, and it would be caused by our own success message.
+
+**The renderer lives in Core, with the dispatcher — not in the CLI.** Both the startup plain-`http`
+warning (CLI) and every runtime notice (Core) need it, and the negative test that asserts no URL path
+ever reaches a notice runs against Core. Splitting it across the two assemblies would put one row of
+§10's handoff table across two tasks with the assertion stranded between them — `GR2069`
+`HandoffRowSplitAcrossTasks`, caught on the adversarial pass and fixed by giving it one owner.
 
 ---
 
@@ -734,7 +849,7 @@ Replace the `seq` row (currently line 3798) and add one row after it:
  | `kind` | the event discriminator, kebab-case (table below) |
 -| `seq` | a monotonic, 1-based counter within this PROCESS's bracket, assigned under the writer's append lock. **`seq`, not `at`, is the ordering key.** It restarts at 1 for a resume, which appends a fresh bracket to the same file. |
 +| `seq` | a monotonic, 1-based counter within this PROCESS's bracket, assigned under the writer's append lock. **`seq`, not `at`, is the ordering key.** It restarts at 1 for a resume, which appends a fresh bracket to the same file — so `seq` is unique only together with `bracket`. |
-+| `bracket` | an opaque 8-hex-character id for THIS process's append bracket, generated once per `RunEventStream` and stamped under the same lock. It is what makes `seq` a usable key: a resume reuses the `runId` and restarts `seq` at 1, so `(runId, seq)` collides across brackets while **`(runId, bracket, seq)` identifies a row uniquely and for all time**. Added by #585 layer 3 (§8.3), where the collision stops being a curiosity: a webhook receiver deduplicating on `(runId, seq)` would silently discard an entire resumed run. |
++| `bracket` | an id for THIS process's append bracket — `<unix-ms>-<4 hex>`, e.g. `1756948327104-a3f9` — generated once per `RunEventStream` and stamped under the same lock. It is what makes `seq` a usable key: a resume reuses the `runId` and restarts `seq` at 1, so `(runId, seq)` collides across brackets while **`(runId, bracket, seq)` identifies a row uniquely and for all time**. Treat it as OPAQUE for equality; its millisecond prefix additionally lets a reader order two brackets, which is the only way a consumer that never sees file order (§8.3) can apply the "take the LAST `run-finished`" rule below. It is NOT a clock to compute elapsed time from, for the same reason `at` is not. Added by #585 layer 3 (§8.3), where the collision stops being a curiosity: a webhook receiver deduplicating on `(runId, seq)` would silently discard an entire resumed run. |
  | `at` | when the row was WRITTEN (ISO-8601 UTC), stamped under the same lock. …
 ```
 
@@ -805,17 +920,26 @@ Append to that paragraph (currently ending line 3869):
 > byte-identical retry of a rejected request only wastes the budget. Bounds: **4 attempts**, backoff
 > **1 s / 2 s / 4 s** with jitter, **10 s** per attempt, and a hard **45 s** ceiling per row. After
 > **5 consecutive rows** exhaust every attempt the endpoint is marked failing **for the rest of the
-> run**: later rows are dropped on arrival with no HTTP attempted, and one console line says so at the
-> moment it happens. The circuit does not re-close. In-memory queue capacity is 1024 rows; a full
-> queue drops rather than waits. At shutdown the queue is drained for up to **30 s** before the pump
-> is cancelled — the drain deliberately does **not** observe the run's cancellation token, because
-> `run-finished` with `exitCode: 3` is precisely the event a cancelled run's supervisor needs. A full
-> queue drops its **oldest** entry, never the incoming one, so a stalled pump cannot make the terminal
-> row the one that is lost.
+> run**: later rows are dropped on arrival with no HTTP attempted. The circuit does not re-close.
+> In-memory queue capacity is 1024 rows; a full queue drops its **oldest** entry, never the incoming
+> one, so a stalled pump cannot make the terminal row the one that is lost.
 >
-> **Every drop is recorded, in two places.** A console line prints at the end of every run that used
+> **Shutdown, and what the terminal row is actually promised.** At teardown the harness stops retrying
+> altogether — one attempt per row — drains the backlog for up to **10 s**, and then, **always and
+> regardless of the circuit or the backlog, spends one further attempt (up to 10 s) on the LAST row
+> enqueued**, which on every normal path is `run-finished`. Worst-case teardown is therefore ~20 s.
+> **On a CANCELLED run (Ctrl-C) the backlog phase is skipped entirely and the terminal attempt is
+> bounded at ~500 ms** — because the CLI host allows the whole process about **two seconds** to unwind
+> after SIGINT (System.CommandLine's default `ProcessTerminationTimeout`), which the log server's own
+> shutdown drain (§12.2) must also fit inside. So on Ctrl-C, delivery of `run-finished` is a single
+> best-effort attempt and nothing more; as everywhere else here, **the file is the record.**
+>
+> **Every drop is recorded, in ONE place.** A console line prints at the end of every run that used
 > `--on-event` — **including when nothing was dropped**, because silence on success is the defect
-> §8.1 exists to remove — and `logs/<runId>/webhooks.log` carries one line per drop plus a summary.
+> §8.1 exists to remove — carrying delivered and dropped counts, whether the circuit opened, and
+> whether the delivery pump itself faulted. There is deliberately **no per-drop log file**: a consumer
+> computes its own drop set exactly, by diffing the `(bracket, seq)` values it received against
+> `events.jsonl`, and a file written during teardown is a way for a delivery mechanism to fail a run.
 > There is deliberately **no `webhook-dropped` event kind**: such a row would itself be queued for
 > delivery, so a failing drop-notice would emit another. There is deliberately **no `run.json`
 > field**: a consumer computes its own drop set exactly, by diffing the `(bracket, seq)` values it
@@ -892,6 +1016,8 @@ Replace the sentence at line 1715 (which is already stale — `GUARDRAILS_TELEME
 | Sender-side kind filtering (`--on-event-kinds …`) | **Rejected**, on #585's own rule: *"A consumer filters on fields, never on a `kind` allowlist… an unrecognized `kind` must remain a visible row."* An allowlist at the **sender** is strictly worse than one at the receiver — a kind added later is silently never delivered, and the receiver cannot tell. Filtering belongs at the receiver, where a missed kind is at least visible. |
 | A `webhook-dropped` event kind | **Rejected** (§5.4) — self-referential; a failing drop-notice emits another. |
 | A `run.json` webhook section | **Rejected** (§5.4) — the consumer can compute the exact drop set by diffing against `events.jsonl`. |
+| A per-drop `logs/<runId>/webhooks.log` | **Designed, then CUT on the adversarial pass** (§5.4). Three of the four arguments for it were false, and it was the largest way a delivery mechanism could have failed a run. The counts survive in the console summary; the detail was always computable. |
+| A dedicated `IEventSink` interface | **Designed, then CUT** (§3.1) — one implementation, both justifications false, and it inverted who owns the row shape. |
 | A durable outbound spool / redelivery on the next run / a dead-letter replay verb | **Out of scope** — it is the delivery-guarantee product, not the notifier one (see "Ambiguity named"). If it is ever wanted it needs its own crash and resume semantics, and it starts by asking whether `events.jsonl` + a replay tool is not simply the answer. |
 | Capping or relativizing `detail` **in `events.jsonl`** | **Out of scope** (§6.3). The file is loopback-only and full fidelity is what a post-mortem needs. |
 | Webhooks from `guardrails logs` / `guardrails attach` | **Out of scope.** The dispatcher's lifetime is a run's. A post-mortem viewer replaying a finished file has no delivery semantics worth building. |
@@ -911,24 +1037,56 @@ changing the design:**
 | `IRunObserver` is genuinely called concurrently, so two `seq` counters can disagree | `IRunObserver.cs:8-9` — *"Implementations MUST be thread-safe — M4 workers emit events concurrently"* | **Held**, and it is the premise the whole central decision rests on (§3.1). |
 | The `User-Agent` version can be read in Core | **FALSE.** `GuardrailsVersion` is in `Guardrails.Cli`, which references Core, not the reverse | Design changed: the value is **injected** (§4.3). Reading Core's own assembly would have silently reported `1.0.0`. |
 | `GuardrailFailureReason.MaxChars` can be reused | **FALSE.** It is `private const` inside an `internal static class` | Design changed: promote it to `internal` so the 2000 has one owner rather than a copied literal (§5.2). |
-| The log viewer would serve `webhooks.log` | **FALSE.** `LogServer` routes are `/`, `/diagram.html`, `/events`, `/tasks/{id}/…` — no arbitrary file under `logs/<runId>/` | Claim removed, and the design now says explicitly that adding such a route is *not* wanted (§5.4). |
+| The log viewer would serve `webhooks.log` | **FALSE.** `LogServer` routes are an explicit allowlist — `LogServer.cs:399`/`:413` say so in the code, *"rather than a wildcard static file server over `_logsRoot`"* | The claim was one of four supports for the per-drop file, three of which turned out false. **The file itself was cut** (§5.4). |
 | A full queue drops the newest row | True of the first draft's `FullMode` choice — **and it would have made `run-finished` the guaranteed casualty** of a stalled pump | Design changed to `DropOldest` with the `itemDropped` counting overload (§3.2). |
 
+### What the INDEPENDENT adversarial pass found
 
-**The strongest counter-argument, and it is SUSTAINED as a real cost: §5.3's circuit drops
-`run-finished`.** An endpoint that fails five rows early in a long run has its circuit opened, and the
-terminal event — the single row a CI wrapper exists to receive — is never attempted, hours later, when
-the endpoint may well have recovered. I rejected the fix (always attempt the terminal row once, even
-when open) because it makes the dispatcher read `kind`, and §4.1's whole value is that the body is
-opaque to it.
+Run by a non-authoring agent, per the standing rule that the adversarial pass must not be run by the
+author. It sustained three of the design's central claims — the §3.3 lifetime and unwind order, the §3.1
+`seq` race (`Scheduler.cs:1109-1111` really does `Task.Run` per worker), and the §4.2 collision (a full
+test sweep found **zero** exact-JSON or property-count assertions on event rows, so `bracket` breaks
+nothing) — and it falsified **five blockers**. Every one is fixed above; recorded here because "the
+author's own critique missed five things" is the most useful fact in this document.
 
-**That reasoning is defensible but it is not obviously right, and I would not defend it hard.** The
-counter-counter is short: "the dispatcher already reads `kind` to set `X-Guardrails-Event-Kind`" — which
-is true, and it collapses my layering objection to a preference. What survives is the empirical claim: a
-circuit opens only after 20 consecutive failed POSTs, and an endpoint in that state is unlikely to
-answer the 21st. **If review disagrees, the change is ~10 lines and it cuts cleanly in**: on the final
-drain, attempt the last queued row once regardless of circuit state. I have flagged it in the summary as
-the first thing to push back on.
+| # | What it found | Fix |
+|---|---|---|
+| B1 | **`DisposeAsync` throwing turns a green run red.** The first draft made `Emit` exception-proof by contract and left teardown unguarded — while `await using` puts that dispose in a `finally` spanning to `RunCommand.cs:747`, where an `IOException` **replaces the in-flight `return exitCode;`**. Ruling 2 violated on a path the design never bounded. | §3.3 step 3: the whole body is inside `catch (Exception)`, and §8.3 says so. Cutting the per-drop file (§5.4) removed the largest source. |
+| B2 | **The Ctrl-C reasoning was fiction.** `Program.cs` passes no `InvocationConfiguration`, so System.CommandLine 2.0.9's default **2-second** `ProcessTerminationTimeout` applies. The 30 s drain was unreachable — and it would have starved layer 2's own 5 s drain, regressing the plan-35 §9.3 fix on that path. | §3.3 step 4: a decided contract — cancelled runs skip the backlog and spend ~500 ms on the terminal row. `ProcessTerminationTimeout` is filed, not changed here. |
+| B3 | **A slow endpoint starves `run-finished` before the circuit can help** (above). | §3.3 steps 2–3. |
+| B4 | **The mid-run circuit notice re-introduces #145 Bug 1** — a console write from the pump thread while the Spectre `Live` region is active (`RunCommand.cs:526-528` states the constraint three lines above the construction at `:534`). | §5.3: the notice is buffered and flushed with the end-of-run summary. |
+| B5 | **`HttpClient` disposed without awaiting the cancelled pump** — the trap `LogServer.cs:102-105` documents verbatim, done backwards one object over. | §3.3 steps 4–5: cancel → await the pump → dispose the transport. |
+
+And nine weaker findings, all applied: the §3.1 snippet emitted a withheld marker on rows that never had
+a `detail` (W1); it lacked the `try`/`catch` its own test required (W2); `void Emit(string)` could not
+produce §4.3's headers without re-parsing the body it was handed (W3 → `EventDelivery`); the plan-35
+§9.3 citation **inverted the lesson**, and the inverted rule is what caused B3 and B5 (W4); the URL
+renderer was split across two handoff tasks with a test stranded between them, a `GR2069` shape in a
+document that claims to apply that check (W6); §6.3's defense did not cover the `needs-human` question
+(W8 → §11 follow-up); a faulted pump under-reported (W9); the #179 citation was wrong even though its
+conclusion held (N1); and `bracket` as pure random gave identity without ordering (N2).
+
+
+**The strongest counter-argument — SUSTAINED, and the independent pass found the version of it that
+actually mattered.** The first draft agonized over the wrong case. It conceded that an OPEN circuit drops
+`run-finished`, defended the trade, and flagged it for review. The pass pointed at the **closed** circuit
+instead, which is both likelier and worse: a slow-but-alive endpoint near the end of a run backs the
+serial pump up by as much as 5 × 45 s = **225 seconds** without ever tripping the 5-consecutive-failure
+threshold, the terminal row sits behind that backlog, the 30-second drain expires nowhere near it, and
+`run-finished` is dropped **deterministically, in the exact scenario the feature exists for.** Plan 35
+§9.3's own verdict applies unchanged: *a best-effort mechanism that is 0% effective in its headline case
+is dead code.*
+
+**The fix is structural rather than a special case, and it removed my "least firmly held" item entirely.**
+Teardown abandons the retry budget and always spends one attempt on the LAST ENQUEUED row, ignoring both
+the circuit and the backlog (§3.3 steps 2–3). And because `run-finished` is by construction the last row
+a process emits, the dispatcher protects it **without reading `kind` at all** — so the layering objection
+that made me reject the special case is not paid either. The pass was also right that the objection was
+already hollow: the dispatcher does see `kind`, for the routing header.
+
+**What remains a real cost.** An open circuit still drops every *intermediate* row from that point on.
+That is the intended behavior, and the covering mechanism is the contract's own: a consumer that must be
+complete re-reads `events.jsonl`.
 
 **Second: the `bracket` field is scope creep into a contract that shipped last week.** Layer 3 was told
 to build on the settled vocabulary, not re-decide it, and this adds a field to every row on every layer.
@@ -945,13 +1103,15 @@ thing I would expect pushback on**, and it also cuts cleanly: flipping the defau
 to the flag (`--on-event-no-detail`). I would rather be argued out of a safe default than into an unsafe
 one.
 
-**Fourth: `IEventSink` is an interface with exactly one implementation — speculative abstraction.**
-Partly true. **Response:** it earns its keep on two grounds that are not speculative. It keeps
-`HttpClient`, retry policy and a background pump out of `RunEventStream`, whose job is to write a line.
-And it is the **only** way a test can assert the wire body and the file line are the same bytes without
-standing up an HTTP server — which is the one assertion that structurally prevents the vocabulary fork
-this whole design is organized around. If it were a three-member interface I would drop it; at two
-members, one of which is a bool, it is a seam and not a framework.
+**Fourth: `IEventSink` was an interface with exactly one implementation — speculative abstraction.
+CONCEDED IN FULL; it is cut.** My defense was that it kept `HttpClient` out of `RunEventStream` and was
+the only way to test wire/file byte-identity without a server. The first is equally true of a delegate;
+the second is simply false — a lambda collecting deliveries proves it. And the pass found a third thing I
+had missed: `IncludeDetail` on the sink was an **ownership inversion**, the row writer asking the sink
+for the sink's policy, when `RunEventStream` owns the row shape and must own the wire copy's. Cutting it
+deleted a file, deleted a handoff task, and fixed the ownership. **This is the finding I am least proud
+of and most glad of** — I had written the justification for the interface into its own XML doc, which is
+how a speculative abstraction survives review: it arrives pre-argued.
 
 **Fifth: serializing every row twice, and doing it inside a lock.** Real. **Response:** §8.1 declares
 this stream low-frequency by contract; the second serialization is of a record that is `Equals`-equal to
@@ -989,20 +1149,25 @@ and each row is deliverable by a single task's `writeScope` (#553 / `GR2068` `Ha
 | # | Agent | filesTouched | Deliverable |
 |---|---|---|---|
 | 1 | `guardrails-architect` | `docs/plans/02-schemas-and-contracts.md` | §7 Edits 1–5 verbatim. Lands **with** task 3, not after (invariant #4). |
-| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/IEventSink.cs` | The new seam: `bool IncludeDetail { get; }` and `void Emit(string jsonLine)`, with the "called inside the append lock; must not block; must not throw" XML doc of §3.1 verbatim. |
-| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunEventStream.cs`, `src/Guardrails.Core/Execution/GuardrailFailureReason.cs` | `bracket` on `EventRow` + generated in the ctor + stamped in `AppendLine`; the `IEventSink? sink = null` ctor parameter (**defaulted here on purpose** — "no sink" is the correct behavior for a run without `--on-event` and for the 20-odd existing test constructions, which then compile unchanged; contrast task 7, where `BuildObserverChain`'s parameter is deliberately NOT defaulted); the wire-copy block of §3.1 including `CapDetail` and the `DetailWithheld` constant. Promote `GuardrailFailureReason.MaxChars` to `internal const`. Update the class doc's row-shape paragraph. |
-| 4 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/RunEvents/` | Written **RED** against tasks 2–3: `bracket` present, stable within a process, distinct across two `RunEventStream` instances; **the wire line equals the file line byte-for-byte for every kind with no `detail`**; withheld-marker and cap behavior; `seq`/`bracket` under concurrent writers; a sink that throws does not propagate into `AppendLine`. |
-| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/WebhookEventSink.cs` | The dispatcher: bounded channel, one pump, `internal static bool IsRetryable(...)` as a pure function, the §5.2 bounds as named constants, the §5.3 circuit, `webhooks.log`, the `onNotice` summary, and the **drain-before-cancel** `DisposeAsync` of §3.3 with a comment citing plan 35 §9.3. `SocketsHttpHandler { AllowAutoRedirect = false }`. Errors reported as type name + status only. |
-| 6 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Webhooks/` | `IsRetryable` truth table (every row of §5.1); backoff schedule and the 45 s ceiling; circuit opens at exactly 5 and never closes; **a full queue drops the OLDEST and the newest row still gets through** (the `run-finished` property, §3.2) and every drop is counted; `DisposeAsync` drains before cancelling and the summary fires on the fault path; **a negative assertion that neither the auth value nor the URL path appears in `webhooks.log` or the notice text** — construct the sink with a secret-shaped token and a secret-shaped URL path and assert neither string appears in either output, the same shape as the existing `faultKind`-carries-no-message test. |
-| 7 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | `--on-event` / `--on-event-detail` options + `GUARDRAILS_ON_EVENT` / `_AUTH` fallbacks. **Validation runs EARLY, beside the other option parsing, and a bad value exits `ExitCodes.HarnessError` (1) before any run state is touched** — the same posture as an unparseable `--autonomy`; an invalid URL must not surface mid-run, and `TryStart` must therefore never throw. Validate: scheme is `http`/`https`; the flag occurs at most once (declare it so a second occurrence is *detected*, not silently last-wins); no CR/LF in the auth value; warn on plain `http` to a non-loopback host. Add the redacted URL renderer of §6.6. Place `WebhookEventSink.TryStart` at `:506` with `await using` per §3.3. Thread the new `IEventSink?` parameter through `BuildObserverChain` (`:2382`) to both call sites (`:537`, `:542`). **No default value on THAT parameter** — a defaulted one lets a production call site silently deliver nothing, which is the plan-34 §3 swallow hazard; contrast task 3, where defaulting the `RunEventStream` ctor parameter is correct. |
-| 8 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/RunEvents/` | The composition-root and end-to-end proofs, and this is the row that matters most (#382). A real run against a real loopback `HttpListener`: rows arrive, **`run-finished` arrives** (the plan-35 §9.3 assertion that did not exist), bodies match `events.jsonl` line-for-line, headers are exactly §4.3, `detail` is withheld without the flag and present with it, a receiver returning 500 causes retries and then a recorded drop with the exit code unchanged, and a receiver that never binds leaves the run's exit code and timing untouched. |
-| 9 | `guardrails-skill-author` | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | The contract quick-reference gains `--on-event`: the delivery key `(runId, bracket, seq)`, "a failed delivery never affects the run", and "`detail` is withheld unless `--on-event-detail`". |
-| 10 | `guardrails-architect` | `docs/plans/585-layer3-webhooks-contract.md` | Fold the draft-PR review outcome back into this document, and record the `ws:` closure so #585 can be closed with the implementation. |
+| 2 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/RunEvents/` | Written **RED** against task 3's shape: `bracket` present, `<unix-ms>-<4hex>`, stable within a process and distinct across two `RunEventStream` instances; **the wire line equals the file line byte-for-byte for every kind with no `detail`** — including a PASSING `guardrail-finished`, which is where the first draft's snippet was wrong; withheld-marker and cap behavior on the two kinds that do carry one; `seq`/`bracket` under concurrent writers; **a callback that throws does not propagate into `AppendLine`**. |
+| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/RunEventStream.cs`, `src/Guardrails.Core/Execution/GuardrailFailureReason.cs` | `bracket` on `EventRow` + generated in the ctor + stamped in `AppendLine`; the `EventDelivery` record struct; the `Action<EventDelivery>? onRow = null, bool includeDetail = false` ctor parameters (**defaulted here on purpose** — "no webhook" is correct for a run without `--on-event` and for the 20-odd existing test constructions, which then compile unchanged; contrast task 6, where `BuildObserverChain`'s parameter is deliberately NOT defaulted); the wire-copy block of §3.1 **including its null-detail guard and its `try`/`catch`**; `CapDetail` and `DetailWithheld`. Promote `GuardrailFailureReason.MaxChars` to `internal const`. Update the class doc's row-shape paragraph. |
+| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/WebhookEventSink.cs` | The dispatcher: bounded `DropOldest` channel with the counting `itemDropped` overload, `_lastEnqueued`, one retained pump, `internal static bool IsRetryable(...)` as a pure function, the §5.2 bounds as named constants, the §5.3 circuit with its **buffered** notice, the redacted-URL renderer of §6.6, the `onNotice` summary, and the six-step `DisposeAsync` of §3.3 — **backlog phase → guaranteed terminal attempt → cancel → await pump → dispose transport → report**, whole body inside `catch (Exception)`, with a comment citing plan 35 §9.3 and the corrected rule. `SocketsHttpHandler { AllowAutoRedirect = false }`. Errors reported as type name + status only. |
+| 5 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/Webhooks/` | `IsRetryable` truth table (every row of §5.1); backoff schedule and the 45 s ceiling; circuit opens at exactly 5 and never closes; a full queue drops the OLDEST and the newest row still gets through, every drop counted; **`DisposeAsync` never throws** (inject a failing notice sink and a failing transport); **the terminal row is attempted even with the circuit open AND with a backlog** — the blocker-3 regression test; the cancelled-path budget is the short one; a faulted pump is reported rather than summarized as zero; **a negative assertion that neither the auth value nor the URL path reaches any notice text.** |
+| 6 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | `--on-event` / `--on-event-detail` options + `GUARDRAILS_ON_EVENT` / `_AUTH` fallbacks. **Validation runs EARLY, beside the other option parsing, and a bad value exits `ExitCodes.HarnessError` (1) before any run state is touched** — the same posture as an unparseable `--autonomy`; an invalid URL must not surface mid-run, and `TryStart` must therefore never throw. Validate: scheme is `http`/`https`; the flag occurs at most once (declare it so a second occurrence is *detected*, not silently last-wins); no CR/LF in the auth value; warn on plain `http` to a non-loopback host. Place `WebhookEventSink.TryStart` at `:506` with `await using` per §3.3, passing the CLI's `GuardrailsVersion`-derived `User-Agent` and the run's `CancellationToken`. Thread `onRow`/`includeDetail` through `BuildObserverChain` (`:2382`) to both call sites (`:537`, `:542`). **No default values on THOSE parameters** — a defaulted one lets a production call site silently deliver nothing, the plan-34 §3 swallow hazard; contrast task 3. |
+| 7 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/RunEvents/` | The composition-root and end-to-end proofs, and this is the row that matters most (#382). A real run against a real loopback `HttpListener`: rows arrive, **`run-finished` arrives** (the plan-35 §9.3 assertion that did not exist), **and it still arrives when the receiver is slow enough to have backed the pump up**; bodies match `events.jsonl` line-for-line; headers are exactly §4.3; `detail` is withheld without the flag and present with it; a receiver returning 500 causes retries and then a recorded drop **with the exit code unchanged**; a receiver that never binds leaves the run's exit code and timing untouched. |
+| 8 | `guardrails-skill-author` | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | The contract quick-reference gains `--on-event`: the delivery key `(runId, bracket, seq)`, "a failed delivery never affects the run", and "`detail` is withheld unless `--on-event-detail`". |
+| 9 | `guardrails-architect` | `docs/plans/585-layer3-webhooks-contract.md` | Fold the draft-PR review outcome back into this document, and record the `ws:` closure so #585 can be closed with the implementation. |
 
-**Sequencing.** 1 ∥ 2 → 4 (RED) → 3 → 5 → 6 → 7 → 8 → 9 → 10. Tasks 1 and 2 are independent and may run
-in parallel. Task 4 is authored against tasks 2–3's shape and must fail before task 3 lands. Task 8 is
-the gate: nothing here is proven by unit tests alone, because the defect class this feature is exposed
-to — a correctly-implemented projection swallowed by the composition root — is invisible to them.
+**Sequencing.** 1 ∥ 2 (RED) → 3 → 4 → 5 → 6 → 7 → 8 → 9. Tasks 1 and 2 are independent and may run in
+parallel; task 2 is authored against task 3's shape and must fail before task 3 lands. Task 7 is the
+gate: nothing here is proven by unit tests alone, because the defect class this feature is exposed to —
+a correctly-implemented projection swallowed by the composition root — is invisible to them.
+
+**One deliberate seam-crossing, named rather than hidden.** `CapDetail` and `DetailWithheld` are §8.3
+*wire* concepts implemented in task 3's *row writer*. That follows from cutting `IEventSink`: the writer
+owns the row shape, so it owns the wire copy's shape too. The cost is that half the §8.3 payload contract
+lives in `RunEventStream` and half in `WebhookEventSink`. I take that over the ownership inversion the
+interface created, but it is the one place a reader will have to look in two files.
 
 ---
 
@@ -1020,5 +1185,24 @@ to — a correctly-implemented projection swallowed by the composition root — 
 4. **New issue: HMAC body signing for `--on-event`** (§8).
 5. **New issue: multiple `--on-event` endpoints**, with the per-endpoint-credential blocker stated so
    the next proposal starts from it (§8).
+6. **New issue: the CLI host gives the whole process ~2 seconds to unwind after Ctrl-C.**
+   `src/Guardrails.Cli/Program.cs` passes no `InvocationConfiguration`, so System.CommandLine's default
+   `ProcessTerminationTimeout` applies. **This is not a layer-3 problem** — `LogServer`'s own
+   `ShutdownDrainTimeout` is **5 seconds** and therefore already exceeds it, so plan 35's hard-won
+   terminal-row delivery is truncated on the cancelled path *today*. Layer 3 adapts to the budget
+   (§3.3 step 4) rather than raising it, because the timeout governs every command and the trade —
+   a Ctrl-C that is genuinely held for longer — is a maintainer UX call. **Found by the adversarial
+   pass on this design; it belongs to the CLI host.**
+7. **New issue: the `needs-human` question has no carrier but `detail`.** `AttemptJournaler.cs:543`
+   splices `$"needs human: {question}"` into `TaskResult.Summary` → `task-settled.detail`, so with
+   detail withheld a supervisor learns *that* a task needs a human and not *what was asked* — the
+   filesystem read #585 exists to remove, on the path #361's answer injection depends on. The right fix
+   is a field designed for the question with its own disclosure rule, not widening `detail`. §6.3 states
+   the gap rather than papering over it.
+8. **New issue (`guardrails-ux`): surface delivery health in the live table.** §5.3's circuit notice is
+   buffered to the end of the run because a console write into an active Spectre `Live` region corrupts
+   it (#145 Bug 1). An operator watching a two-hour run should be able to see that webhook delivery has
+   stopped without waiting for the summary — but that is a live-table design question, not a webhook
+   one, and smuggling it in here would be the scope creep this document keeps refusing elsewhere.
 6. **#585 itself:** on merge, close it — layer 3 completes the three layers, and §2.1 closes the `ws:`
    question on the record rather than leaving it open behind the issue.
