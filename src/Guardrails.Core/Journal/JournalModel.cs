@@ -477,6 +477,85 @@ public sealed record TaskJournalEntry
 
     /// <summary>Attempt records in attempt order (1-based).</summary>
     public IReadOnlyList<AttemptRecord> Attempts { get; init; } = [];
+
+    /// <summary>
+    /// OPTIONAL, append-only log of the class-(b) transient PAUSES this task took (SSOT §7
+    /// <c>transientPauses[]</c>, issue #515) — one entry per <see cref="Execution.TransientBackoff"/> backoff,
+    /// written AT THE PAUSE rather than at any settle.
+    /// <para>
+    /// <b>The gap this closes.</b> A transient that paused and then RESOLVED — the #115 happy path, and the
+    /// entire point of the feature — left no durable trace whatever: only the EXHAUSTED path
+    /// (<c>AttemptJournaler.RateLimitExhausted</c>) recorded anything, and the resolving pause reached the
+    /// <see cref="Execution.IRunObserver"/> and nothing else. So "did this run hit provider trouble?" was
+    /// unanswerable once the console scrolled away, which is the difference between "the model is flaky
+    /// today" and "my plan is wrong". It also defeats the feature's own justification: #115 pauses WITHOUT
+    /// consuming retry budget because a provider stall is not the task's fault, and that trade is only
+    /// auditable if the pauses are counted. A task that quietly paused six times was, in every durable
+    /// record, identical to one that ran clean.
+    /// </para>
+    /// <para>
+    /// <b>TASK grain, not attempt grain, and that is mechanical.</b> A pause happens BETWEEN attempt
+    /// launches — the paused attempt re-runs under the SAME attempt number, and no
+    /// <see cref="AttemptRecord"/> exists for it yet — so there is no attempt record to hang it off at the
+    /// moment it happens. The budget it spends is per-task too (one
+    /// <see cref="Execution.TransientBackoff"/> per task), which is the same grain. Each entry names the
+    /// attempt number it paused, so the association is not lost.
+    /// </para>
+    /// <para>
+    /// Additive and backward-compatible: absent (never <c>null</c> noise) on the overwhelming majority of
+    /// tasks, which never pause, and in every journal written before this field existed.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<TransientPauseRecord>? TransientPauses { get; init; }
+}
+
+/// <summary>
+/// ONE class-(b) transient pause (SSOT §7 <c>tasks.&lt;id&gt;.transientPauses[]</c>, issues #115/#515): the
+/// harness met a retryable provider condition (429/503/529, "overloaded", a rate/session/usage limit), backed
+/// off, and re-ran the SAME attempt without consuming the retry budget.
+/// <para>
+/// Written BEFORE the wait, not after it. A run killed mid-pause must still say it was pausing and why —
+/// recording only on the far side of the delay would lose exactly the pauses that were long enough to matter.
+/// </para>
+/// </summary>
+public sealed record TransientPauseRecord
+{
+    /// <summary>1-based ordinal of this pause within the task's own pause budget.</summary>
+    public required int Pause { get; init; }
+
+    /// <summary>
+    /// The attempt number that was paused and is about to be re-run. NOT a new attempt: the #115 contract is
+    /// that a transient pause does not consume the retry budget, so the re-run reuses this number and this
+    /// attempt's log dir.
+    /// </summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>UTC time the pause BEGAN (ISO-8601) — stamped before the wait, see the type remarks.</summary>
+    public required DateTimeOffset At { get; init; }
+
+    /// <summary>
+    /// The operator-facing cause, as the runner reported it — the same text
+    /// <see cref="Execution.IRunObserver.PromptPaused"/> receives.
+    /// </summary>
+    public required string Reason { get; init; }
+
+    /// <summary>
+    /// The backoff this pause waited, in seconds — the <see cref="Execution.TransientBackoff.NextDelay"/>
+    /// value, already clamped to the task's remaining pause budget. Seconds as a number rather than a
+    /// <c>TimeSpan</c> because <c>run.json</c> is a wire format read by humans and by tooling that never
+    /// links against this assembly.
+    /// </summary>
+    public required double WaitSeconds { get; init; }
+
+    /// <summary>
+    /// The reset hint the runner parsed out of the provider's message ("3pm", "in 2 hours"), when it gave
+    /// one. Absent (never <c>null</c> noise) when it did not. It is ALSO folded into
+    /// <see cref="Reason"/>'s prose — this field is the machine-readable half, so a reader does not have to
+    /// re-parse the sentence the harness already parsed.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResetHint { get; init; }
 }
 
 /// <summary>One attempt of one task (SSOT §7 attempt record).</summary>

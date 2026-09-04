@@ -891,6 +891,13 @@ internal sealed class AttemptJournaler
 /// flaky/nondeterministic-script escape hatch.
 /// </para>
 /// </summary>
+/// <remarks>
+/// <see cref="TransientResetHint"/> (issue #515) is the MACHINE-READABLE half of
+/// <see cref="TransientReason"/>: the runner already parsed a reset time out of the provider's message
+/// (<c>ActionRun.ResetHint</c>) and the executor folds it into the reason's prose. Carrying it separately
+/// lets the journal record it as a field instead of making every later reader re-parse the sentence the
+/// harness had already parsed. Null when the provider named no reset time, which is most of the time.
+/// </remarks>
 internal sealed record AttemptResult(
     TaskResult Result,
     string? FeedbackPath,
@@ -898,4 +905,5 @@ internal sealed record AttemptResult(
     AttemptOutcome? Outcome = null,
     bool ActionWasNoOp = false,
     string? GuardrailFailureFingerprint = null,
-    string? ActionOutputFingerprint = null);
+    string? ActionOutputFingerprint = null,
+    string? TransientResetHint = null);

@@ -2424,6 +2424,27 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
             }
           }
         }
+      ],
+      // OPTIONAL, append-only log of the class-(b) transient PAUSES this task took (#115/#515) — one entry
+      // per TransientBackoff backoff, written AT THE PAUSE and BEFORE the wait (a run killed mid-pause must
+      // still say it was pausing and why). TASK grain, not attempt grain, and that is mechanical: a pause
+      // happens BETWEEN attempt launches — the paused attempt re-runs under the SAME number, which IS the
+      // no-retry-consumed contract — so no attempt record exists yet to hang it off, and the budget it
+      // spends is per-task anyway. Each entry names the attempt it paused, so nothing is lost.
+      // ABSENT (never null noise, never an empty array) on the overwhelming majority of tasks, which never
+      // pause, and in every journal written before this field existed.
+      "transientPauses": [
+        {
+          "pause": 1,               // 1-based ordinal within THIS task's pause budget
+          "attempt": 1,             // the attempt suspended and about to be re-run (same number, same log dir)
+          "at": "2026-06-10T16-31-02Z",   // when the pause BEGAN — stamped before the wait
+          "reason": "usage limit reached (resets 11:20am)",  // as IRunObserver.PromptPaused receives it
+          "waitSeconds": 2,         // the backoff this pause waited, already clamped to the remaining budget.
+                                    //   Seconds as a NUMBER — run.json is read by humans and by tooling that
+                                    //   never links against this assembly
+          "resetHint": "11:20am"    // OPTIONAL machine-readable half of `reason`'s prose, when the provider
+                                    //   named a reset time. ABSENT when it did not
+        }
       ]
     }
   },
@@ -2585,6 +2606,34 @@ only where nobody kept it) sitting on its own audit trail. Written once at the e
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.
+
+**`tasks.<id>.transientPauses[]` — a pause that RESOLVES is evidence too (#115/#515).** Until this field
+existed, only the transient that **exhausted** the per-task pause budget left a durable trace (an attempt
+record with `outcome: "rate-limited"`). The pause that CLEARED — the #115 happy path, and the entire point
+of the feature — reached `IRunObserver.PromptPaused` and nothing else, so a task that quietly paused six
+times and then went green was, in every durable record, byte-identical to one that ran clean. "Did this run
+hit provider trouble?" therefore became unanswerable the moment the console scrolled away — which is the
+difference between *"the model is flaky today"* and *"my plan is wrong"*. It also left the feature's own
+justification unauditable: #115 pauses **without consuming retry budget** because a provider stall is not
+the task's fault, and that trade can only be checked if the pauses are counted.
+
+Three properties are load-bearing:
+
+* **Written at the pause, BEFORE the wait.** A run killed mid-pause must still say it was pausing and why;
+  recording on the far side of the delay would lose exactly the long pauses that matter most. `run.json` is
+  persisted atomically per call, so the entry is on disk before the first second of the backoff elapses.
+* **TASK grain, not attempt grain** — mechanical, not stylistic. A pause happens BETWEEN attempt launches:
+  the paused attempt re-runs under the **same** attempt number (that IS the no-retry-consumed contract), so
+  no `AttemptRecord` exists yet to hang it off. The budget it spends is per-task too (one `TransientBackoff`
+  per task). Each entry carries `attempt`, so the association is not lost.
+* **Unconditional.** The `decisions[]` `blocker-retried` entry the autonomous layer already wrote for a
+  resolved transient is only reached when the autonomy dial is wired (`Scheduler.ClassifyTaskGateAsync` runs
+  behind an escalation sink), so an ordinary run recorded nothing at all. This does not replace that entry —
+  it is the record every run gets.
+
+Consumers: `guardrails status` prints a per-task **Provider pauses** ledger, and the end-of-run summary
+prints one line naming the pause count, the tasks and the cumulative wait — sourced from the shipped
+`TaskResult.ResolvedTransient` signal rather than a second count of its own.
 
 **Removed field — `worktreeJunctionRoot` (issue #419).** Earlier revisions journaled the Windows
 short-junction root here (it was the field that made the junction durable RUN STATE — forcing a resume onto

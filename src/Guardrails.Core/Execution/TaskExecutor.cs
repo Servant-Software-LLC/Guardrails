@@ -239,7 +239,32 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 string reason = attempt.TransientReason ?? "transient infrastructure error";
                 TimeSpan delay = backoff.NextDelay();
-                _observer.PromptPaused(task, reason, delay, backoff.PauseCount + 1);
+                int pauseOrdinal = backoff.PauseCount + 1;
+
+                // #515: journal the pause WHERE IT HAPPENS, not only where the budget runs out. Before this,
+                // a transient that paused and then RESOLVED — the #115 happy path — reached the observer and
+                // nothing else: run.json carried no trace, so "did this run hit provider trouble?" was
+                // unanswerable the moment the console scrolled away, and the feature's own trade (pause
+                // WITHOUT burning retry budget, because a provider stall is not the task's fault) was
+                // unauditable. Only the EXHAUSTED path below recorded anything.
+                //
+                // BEFORE the wait, deliberately: a run killed mid-pause must still say it was pausing and
+                // why, and recording on the far side of the delay would lose exactly the long pauses that
+                // matter most. The journal persists atomically per call, so the entry is on disk before the
+                // first second of the backoff elapses.
+                _journal.RecordTransientPause(task.Id, new TransientPauseRecord
+                {
+                    Pause = pauseOrdinal,
+                    // The attempt this pause suspends — it re-runs under the SAME number (that IS the
+                    // no-retry-consumed contract), so this is not a forward reference to a new attempt.
+                    Attempt = attemptNumber,
+                    At = DateTimeOffset.UtcNow,
+                    Reason = reason,
+                    WaitSeconds = delay.TotalSeconds,
+                    ResetHint = attempt.TransientResetHint
+                });
+
+                _observer.PromptPaused(task, reason, delay, pauseOrdinal);
                 await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -956,7 +981,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = $"paused (transient): {reason}"
                 },
                 FeedbackPath: null,
-                TransientReason: reason);
+                TransientReason: reason,
+                // #515: the parsed reset hint travels BESIDE the prose, not only inside it. The reason
+                // string above already embeds it for the operator; the journal wants the field.
+                TransientResetHint: action.ResetHint is { Length: > 0 } ? action.ResetHint : null);
         }
 
         // --- #86 EAGER permission-wall halt ---------------------------------------------
