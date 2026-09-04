@@ -280,6 +280,12 @@ public sealed class WebhookEventSinkTests
             sinkA.Emit(Row($"fail-{i}"));
         sinkA.Emit(Row("fail-5"));
         sinkA.Emit(Row("dropped-after-open"));
+        // TERMINAL-PHASE SENTINEL (design 3.3 step 3): DisposeAsync ALWAYS spends one attempt on the
+        // LAST-ENQUEUED row, ignoring the circuit - that is precisely the guarantee
+        // TerminalRowIsAttemptedWithTheCircuitOpen pins. Without a trailing row here, the row asserted
+        // to get ZERO attempts would itself BE the terminal row and would be attempted exactly once,
+        // so the assertion below would contradict the spec rather than test it.
+        sinkA.Emit(Row("terminal-sentinel-a"));
 
         await sinkA.DisposeAsync();
 
@@ -324,6 +330,15 @@ public sealed class WebhookEventSinkTests
         for (int i = 1; i <= 5; i++)
             sink.Emit(Row($"open-{i}"));
 
+        // POLL BEFORE THE FLIP. Emit only enqueues; the pump delivers on its own task, and a blocked
+        // channel reader is never resumed synchronously inside TryWrite. Flipping the handler straight
+        // after the burst therefore races the pump and the test thread always wins — all five rows are
+        // then served OK, the circuit never opens, and this test silently stops testing anything.
+        DateTime circuitDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (handler.CountFor("open-5") == 0 && DateTime.UtcNow < circuitDeadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        Assert.True(handler.CountFor("open-5") >= 1, "the fifth failing row must be attempted before the transport is flipped — otherwise the circuit never opens and this test proves nothing");
+
         // Flip the transport to succeed and wait comfortably longer than any plausible cooldown at
         // this time scale — there is no half-open probe and no timer, so nothing should change.
         handler.OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
@@ -331,6 +346,12 @@ public sealed class WebhookEventSinkTests
 
         sink.Emit(Row("after-cooldown-1"));
         sink.Emit(Row("after-cooldown-2"));
+        // TERMINAL-PHASE SENTINEL (design 3.3 step 3): DisposeAsync ALWAYS spends one attempt on the
+        // LAST-ENQUEUED row, ignoring the circuit - that is precisely the guarantee
+        // TerminalRowIsAttemptedWithTheCircuitOpen pins. Without a trailing row here, the row asserted
+        // to get ZERO attempts would itself BE the terminal row and would be attempted exactly once,
+        // so the assertion below would contradict the spec rather than test it.
+        sink.Emit(Row("terminal-sentinel-c"));
 
         await sink.DisposeAsync();
 
@@ -439,6 +460,12 @@ public sealed class WebhookEventSinkTests
         // Source 2: arrival-drops. The circuit is open now, so these must never reach the handler.
         sink.Emit(Row("late-1"));
         sink.Emit(Row("late-2"));
+        // TERMINAL-PHASE SENTINEL (design 3.3 step 3): DisposeAsync ALWAYS spends one attempt on the
+        // LAST-ENQUEUED row, ignoring the circuit - that is precisely the guarantee
+        // TerminalRowIsAttemptedWithTheCircuitOpen pins. Without a trailing row here, the row asserted
+        // to get ZERO attempts would itself BE the terminal row and would be attempted exactly once,
+        // so the assertion below would contradict the spec rather than test it.
+        sink.Emit(Row("terminal-sentinel-b"));
 
         await sink.DisposeAsync();
 
