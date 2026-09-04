@@ -409,8 +409,20 @@ public sealed class WebhookEventSinkTests
         using var cts = new CancellationTokenSource();
         var sink = new WebhookEventSink(DefaultUrl, null, "guardrails/test", notices.Add, handler, 0.05, cts.Token);
 
-        // Row 0 is dequeued by the pump and blocks it immediately; everything after fills the queue.
+        // Row 0 is dequeued by the pump and blocks it; everything after fills the queue. WAIT for that
+        // to have actually happened - "blocks it immediately" was an assumption, not a fact. Emit only
+        // ENQUEUES; if the flood starts before the pump has entered the handler, the pump dequeues
+        // row-00001 (and possibly more) as they arrive, so those rows are ATTEMPTED rather than
+        // displaced and the DoesNotContain assertions below fail with "Item found in set". Observed on
+        // a macOS CI runner, on the same commit that passed macOS in a sibling run - a pure race.
+        // RecordingHandler records a request BEFORE invoking OnRequest, so this poll is exactly the
+        // signal that the pump is inside the blocking handler.
         sink.Emit(Row("row-00000"));
+
+        DateTime pumpBlockedDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (handler.CountFor("row-00000") == 0 && DateTime.UtcNow < pumpBlockedDeadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        Assert.True(handler.CountFor("row-00000") >= 1, "the pump must be blocked on row 0 before the flood starts, or the rows this test expects to be displaced are attempted instead");
 
         const int excess = 100; // comfortably more than capacity
         const int total = WebhookEventSink.QueueCapacity + excess;
