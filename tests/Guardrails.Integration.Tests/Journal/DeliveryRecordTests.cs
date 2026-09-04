@@ -66,6 +66,41 @@ public sealed class DeliveryRecordTests
         Assert.Contains(PlanBranch, d.Reason, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Issue #597: the SAME "nothing was delivered" outcome, a DIFFERENT cause. When the #361
+    /// autonomous-mode interlock held a wholly-green run's work back, <c>mergeOnSuccess</c> was ON — so
+    /// recording "mergeOnSuccess resolved off" wrote a flatly untrue cause into the one file an unattended
+    /// pipeline (#496) can read, and a wrong answer there is worse than none. The record must name the
+    /// decision AND its subject, exactly as the console banner does.
+    /// </summary>
+    [Fact]
+    public void AGreenRunSuppressedByAMachineDecision_RecordsThatCause_NotMergeOnSuccess()
+    {
+        RunReport report = Report(whollyGreenButUndelivered: true) with
+        {
+            DeliverySuppressingDecision = new DecisionEntry
+            {
+                Boundary = "task",
+                Policy = "auto",
+                Decision = DecisionTokens.ProceededBestGuess,
+                Subject = "12-implement-events-endpoint",
+                Headline = "best-guessed at the needs-human gate"
+            }
+        };
+
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.False(d.Delivered);
+        Assert.Equal(DeliveryOutcome.NotAttempted, d.Outcome);
+        Assert.Equal(PlanBranch, d.PlanBranch); // still the case that STRANDS work
+        Assert.NotNull(d.Reason);
+
+        Assert.Contains("proceeded-best-guess", d.Reason!, StringComparison.Ordinal);
+        Assert.Contains("12-implement-events-endpoint", d.Reason!, StringComparison.Ordinal);
+        Assert.Contains("interlock", d.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("mergeOnSuccess resolved off", d.Reason!, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(MergeOnSuccessResult.FastForwarded, DeliveryOutcome.FastForwarded)]
     [InlineData(MergeOnSuccessResult.Merged, DeliveryOutcome.Merged)]

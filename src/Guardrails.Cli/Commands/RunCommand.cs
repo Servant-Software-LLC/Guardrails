@@ -53,7 +53,7 @@ public static class RunCommand
 
         var mergeOnSuccessOption = new Option<bool>("--merge-on-success")
         {
-            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json (delivery is now the DEFAULT — this only matters to override a config 'mergeOnSuccess: false')."
+            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json, AND is the operator override that delivers work a machine decision (proceeded-best-guess / proceeded-unreviewed) would otherwise hold back on the plan branch (#361/#597). Delivery is the DEFAULT, so this flag matters only for those two cases."
         };
 
         var noMergeOnSuccessOption = new Option<bool>("--no-merge-on-success")
@@ -262,9 +262,27 @@ public static class RunCommand
         bool deliveryFromDefaultOnly =
             mergeOnSuccessOverride is null && probe.Plan.Config.MergeOnSuccessExplicit is null;
 
-        if (mergeOnSuccessOverride is { } mergeForced && probe.Plan.Config.MergeOnSuccess != mergeForced)
+        if (mergeOnSuccessOverride is { } mergeForced)
         {
-            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = mergeForced } } };
+            probe = probe with
+            {
+                Plan = probe.Plan with
+                {
+                    Config = probe.Plan.Config with
+                    {
+                        MergeOnSuccess = mergeForced,
+
+                        // #597: --merge-on-success is ALSO the operator override of the autonomous-mode
+                        // delivery interlock (SSOT §5.3), and until now it reached only the config layer.
+                        // A run suppressed by a proceeded-best-guess therefore stayed suppressed no matter
+                        // how the flag was typed — while the banner recommended exactly that command. Set
+                        // the dedicated operator-override field so the Scheduler's gate can honour it.
+                        // (--no-merge-on-success leaves it false: forcing delivery OFF needs no override of
+                        // an interlock that already holds delivery back.)
+                        MergeOnSuccessForcedByOperator = mergeForced
+                    }
+                }
+            };
         }
 
         // --autonomy <value> sets the unified autonomy policy for this run (SSOT §2.1), overriding
@@ -800,6 +818,13 @@ public static class RunCommand
                     // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                     // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
                     RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
+
+                    // Issue #597 complement: the SAME interlock, overridden. --merge-on-success is the
+                    // documented operator override of #361's delivery suppression, and using it delivers
+                    // machine-decided work to the user's branch — a fact that must be stated, never a quiet
+                    // green. Never fires together with the warning above (that requires delivery held back;
+                    // this requires it went ahead).
+                    RenderForcedDeliveryNotice(report, io.Out);
 
                     // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
                     // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
@@ -2020,9 +2045,21 @@ public static class RunCommand
         // document it is written into. #542 exists so an unattended pipeline with no console has a
         // machine-readable answer, and a wrong one is worse than none. It names no plan branch, for the same
         // reason serial mode does not: in serial mode there is no plan branch to send anyone to.
+        // Issue #597: reason (a) splits in two. The durable record used to say "mergeOnSuccess resolved off"
+        // for a run where mergeOnSuccess was ON and the autonomous-mode interlock (#361) held the work —
+        // a wrong cause written into the one file an unattended pipeline (#496) can read, which is worse
+        // than none. Name the decision AND the task it came from, so the record answers the question the
+        // console banner answers.
         string reason = report.WhollyGreenButUndelivered
-            ? $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
-              + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
+            ? report.DeliverySuppressingDecision is { } suppressing
+                ? $"delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
+                  + $"'{suppressing.Decision}' at '{suppressing.Subject}' ({suppressing.Boundary} boundary), so "
+                  + $"machine-decided work is not auto-delivered; mergeOnSuccess itself is ON. The verified work "
+                  + $"is sitting on '{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' "
+                  + $"destroys it. Judge the decision (decisions[]), then re-run with --merge-on-success to "
+                  + $"override, or merge the branch by hand"
+                : $"mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on "
+                  + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it"
             : report.ExecutedDefinitionDivergence is { } divergence
                 ? $"{divergence.Tasks.Count} task(s) settled against a definition that had already moved on "
                   + "disk, so delivery was blocked (issue #556); every task succeeded and its verified work "
@@ -2060,13 +2097,72 @@ public static class RunCommand
         output.WriteLine();
         output.WriteLine(rule);
         output.WriteLine("*** WORK NOT DELIVERED ***");
-        output.WriteLine(
-            "mergeOnSuccess is off — this fully-green run's verified work is sitting on branch");
-        output.WriteLine($"'{planBranch}', NOT on your checkout.");
-        output.WriteLine(
-            $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
-        output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+
+        // Issue #597: TWO causes, two operator responses. Naming the wrong one cost a measured operator
+        // three dead ends (guardrails.json → the default in source → whether the default had changed since
+        // the tag) before they found RunOutcomePolicy.SuppressesDelivery — a search someone without source
+        // access cannot even start.
+        if (report.DeliverySuppressingDecision is { } suppressing)
+        {
+            output.WriteLine(
+                "mergeOnSuccess is ON. Delivery was held back by the autonomous-mode interlock (#361):");
+            output.WriteLine(
+                $"this run recorded '{suppressing.Decision}' at '{suppressing.Subject}' ({suppressing.Boundary} boundary),");
+            output.WriteLine(
+                "so machine-decided work is never auto-delivered. The verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            output.WriteLine(
+                "JUDGE THE DECISION FIRST — run.json → decisions[]. A best-guess that a later attempt");
+            output.WriteLine(
+                "superseded is stale; one that shaped the result you are looking at is not. Then either:");
+            output.WriteLine(
+                $"  guardrails run {planName} --merge-on-success   (an explicit override of the interlock)");
+            output.WriteLine($"  or merge '{planBranch}' into your branch yourself.");
+        }
+        else
+        {
+            output.WriteLine(
+                "mergeOnSuccess is off — this fully-green run's verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            output.WriteLine(
+                $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
+            output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+        }
+
         output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
+        output.WriteLine(rule);
+    }
+
+    /// <summary>
+    /// Render the loud end-of-run notice for a delivery that an OPERATOR OVERRIDE pushed past the
+    /// autonomous-mode interlock (issue #597; SSOT §5.3). <c>--merge-on-success</c> is the documented
+    /// override of that interlock, and using it is legitimate — but it delivered work a machine decision had
+    /// shaped, so the run must SAY so rather than presenting a quiet green. Silent for every run where the
+    /// override was not needed (<see cref="RunReport.DeliveryForcedPastDecision"/> false), which is nearly
+    /// all of them.
+    /// </summary>
+    public static void RenderForcedDeliveryNotice(RunReport report, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (!report.DeliveryForcedPastDecision || report.DeliverySuppressingDecision is not { } forced)
+        {
+            return;
+        }
+
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine("*** DELIVERY FORCED PAST A MACHINE DECISION ***");
+        output.WriteLine(
+            $"This run recorded '{forced.Decision}' at '{forced.Subject}' ({forced.Boundary} boundary), which");
+        output.WriteLine(
+            "normally holds delivery on the plan branch (#361). --merge-on-success overrode that");
+        output.WriteLine(
+            "interlock on your explicit instruction, so machine-decided work WAS delivered to your");
+        output.WriteLine("branch. Review it as work a machine judged, not as work a human reviewed.");
         output.WriteLine(rule);
     }
 

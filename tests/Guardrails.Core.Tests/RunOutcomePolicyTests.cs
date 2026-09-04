@@ -133,4 +133,58 @@ public sealed class RunOutcomePolicyTests
         Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions));
         Assert.Equal(0, RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions));
     }
+
+    // ── The EVIDENCE, not just the verdict (issue #597) ────────────────────────────────────────────
+
+    [Fact]
+    public void SuppressingDecision_ReturnsTheFirstSuppressingEntry_WithItsSubject()
+    {
+        // #597: the banner and the durable delivery.reason must name WHICH decision, at WHICH task. A bare
+        // boolean is what let both surfaces report "mergeOnSuccess is off" for a run where mergeOnSuccess
+        // was ON and the #361 interlock held the work — three dead ends for the operator who chased it.
+        var decisions = new[]
+        {
+            Decision(DecisionTokens.Escalated, "12-implement-events-endpoint"),
+            Decision(DecisionTokens.ProceededBestGuess, "12-implement-events-endpoint"),
+            Decision(DecisionTokens.ProceededUnreviewed, "wave-07-later")
+        };
+
+        DecisionEntry? suppressing = RunOutcomePolicy.SuppressingDecision(decisions);
+
+        Assert.NotNull(suppressing);
+        Assert.Equal(DecisionTokens.ProceededBestGuess, suppressing!.Decision);
+        Assert.Equal("12-implement-events-endpoint", suppressing.Subject);
+    }
+
+    [Fact]
+    public void SuppressingDecision_IsNull_WhenOnlyOrdinaryDecisionsWereRecorded()
+    {
+        // The load-bearing negative: an ordinary run has NO suppressing decision, so the CLI keeps rendering
+        // the plain "mergeOnSuccess is off" case rather than inventing an interlock that never engaged.
+        var ordinary = new[] { Decision(DecisionTokens.Escalated), Decision(DecisionTokens.Halted) };
+
+        Assert.Null(RunOutcomePolicy.SuppressingDecision(ordinary));
+        Assert.Null(RunOutcomePolicy.SuppressingDecision(Array.Empty<DecisionEntry>()));
+    }
+
+    [Fact]
+    public void SuppressingDecision_AndSuppressesDelivery_AreTheSamePredicate()
+    {
+        // One predicate, one spelling: SuppressesDelivery is now defined as "SuppressingDecision is not
+        // null", so the verdict and the evidence can never disagree about the same decisions[].
+        DecisionEntry[][] streams =
+        [
+            [],
+            [Decision(DecisionTokens.Halted)],
+            [Decision(DecisionTokens.ProceededBestGuess)],
+            [Decision(DecisionTokens.Escalated), Decision(DecisionTokens.ProceededUnreviewed)]
+        ];
+
+        foreach (DecisionEntry[] stream in streams)
+        {
+            Assert.Equal(
+                RunOutcomePolicy.SuppressesDelivery(stream),
+                RunOutcomePolicy.SuppressingDecision(stream) is not null);
+        }
+    }
 }

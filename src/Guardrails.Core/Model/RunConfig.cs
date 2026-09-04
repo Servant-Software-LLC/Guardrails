@@ -113,6 +113,31 @@ public sealed record RunConfig
     public bool? MergeOnSuccessExplicit { get; init; }
 
     /// <summary>
+    /// The OPERATOR OVERRIDE of the autonomous-mode delivery interlock (SSOT §5.3, issues #361/#597): true
+    /// only when the CLI <c>--merge-on-success</c> flag was typed for THIS run. It is <b>not</b> a
+    /// <c>guardrails.json</c> field and no loader ever sets it — the manifest cannot reach it, by design.
+    /// <para>
+    /// <b>The defect this closes (#597).</b> §5.3 says a run that recorded a <c>proceeded-best-guess</c> or
+    /// <c>proceeded-unreviewed</c> decision defaults delivery OFF and that the default-OFF is overridable
+    /// "<i>only by an explicit <c>--merge-on-success</c></i>; neither a <c>guardrails.json</c>
+    /// <c>mergeOnSuccess: true</c> nor the #340 delivered-by-default posture silently re-enables it". The
+    /// Scheduler implemented that gate as <see cref="MergeOnSuccessExplicit"/> — the RAW MANIFEST KEY —
+    /// which got it exactly backwards in both directions: the CLI flag (which resolves into
+    /// <see cref="MergeOnSuccess"/> and never touched the manifest field) could not lift the suppression at
+    /// all, while a <c>mergeOnSuccess: true</c> committed to a repo months earlier silently could. The
+    /// measured cost was a wholly-green run whose banner recommended <c>--merge-on-success</c>, followed by
+    /// a nine-minute re-run that re-ran the whole terminal gate and printed the byte-identical banner.
+    /// </para>
+    /// <para>
+    /// A separate field rather than reusing <see cref="MergeOnSuccessExplicit"/> because the two answer
+    /// different questions: that one records what the MANIFEST said (for the one-time delivered-by-default
+    /// notice); this one records that a HUMAN typed an override of a safety interlock on the command line
+    /// for this run. Only the second may lift the interlock, and it is impossible to trip from a file.
+    /// </para>
+    /// </summary>
+    public bool MergeOnSuccessForcedByOperator { get; init; }
+
+    /// <summary>
     /// Opt-in auto-file of the needs-human triage GH issue (SSOT §9, plan 08 Decision 8). Default
     /// false — triage only DRAFTS the issue into <c>feedback.md</c> and files nothing to a remote.
     /// When true (and gated behind a configured GH repo + token) the harness auto-files; flows to
