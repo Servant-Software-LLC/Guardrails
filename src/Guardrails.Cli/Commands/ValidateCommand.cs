@@ -28,6 +28,15 @@ public static class ValidateCommand
     {
         PlanProbe.Result result = PlanProbe.LoadAndValidate(folder);
 
+        // Issue #564: which CHECK SET produced the verdict below. Computed before anything is printed
+        // so the GR2072 warning (binary predates the tree's checks) travels with the plan diagnostics
+        // rather than trailing them. The plan folder is searched first, the working directory second,
+        // so `validate ../other/plan` run from inside a Guardrails checkout is still covered.
+        Core.Loading.CheckSetReport checkSet = Core.Loading.CheckSetProbe.Describe(
+            GuardrailsVersion.Current,
+            SafeFullPath(folder),
+            Directory.GetCurrentDirectory());
+
         // The review-marker nudge (GR2025, WARNING — SSOT §13, issue #79) is surfaced at the command
         // layer, not inside the pure semantic validator: a missing/stale /guardrails-review marker is
         // an honest nudge, never a gate. Append it to the printed diagnostics; a warning never fails
@@ -50,7 +59,18 @@ public static class ValidateCommand
                 result.Plan, Core.Review.ReviewNudgeSurface.Validate));
         }
 
+        if (checkSet.StaleBinaryWarning is { } staleBinary)
+        {
+            diagnostics.Add(staleBinary);
+        }
+
         PlanProbe.PrintDiagnostics(diagnostics, io.Out);
+
+        // The check set is printed on EVERY run, immediately above the verdict it scopes — a clean
+        // result is only as good as the checks that produced it, and before #564 nothing said what
+        // those were. It sits BEFORE the verdict so the verdict stays the last line, which is what
+        // callers tail. GR2072 never changes the exit code (warnings never do).
+        io.Out.WriteLine(checkSet.SummaryLine);
 
         if (result.HasErrors)
         {
@@ -61,5 +81,22 @@ public static class ValidateCommand
 
         io.Out.WriteLine("OK: plan is valid.");
         return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// The absolute form of <paramref name="folder"/>, or null when the path cannot be resolved.
+    /// The check-set probe is provenance reporting, never a gate: a malformed folder argument must
+    /// reach the loader's own GR1001, not throw out of a reporting call.
+    /// </summary>
+    private static string? SafeFullPath(string folder)
+    {
+        try
+        {
+            return Path.GetFullPath(folder);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            return null;
+        }
     }
 }

@@ -171,7 +171,10 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   **GR2071** (PromptInstructsUngrantedCommand — a task's `action.prompt.md` INSTRUCTS a shell command
   the task's own effective `allowedTools` refuse, so the agent hits a wall on its first turn; WARNING,
   static, #587 check A / SSOT §4.9) is TAKEN too.
-  Next free: **GR1011 / GR2072** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  **GR2072** (CheckSetPredatesSourceTree — the running binary predates checks the working tree declares;
+  WARNING, `validate` only, self-hosting case only, #564/SSOT §16) is TAKEN too, and is the first code on
+  this ladder that reports the TOOL rather than the plan.
+  Next free: **GR1011 / GR2073** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is

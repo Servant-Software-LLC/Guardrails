@@ -7258,8 +7258,10 @@ unsatisfiable-guardrail family and #459
 (`UnsatisfiableGuardrailFloor` / `GuardrailScriptDoesNotParse` / `GuardrailRequiresForbiddenToken` /
 `BannedPatternScanTimedOut` / `WaveIntegrationScopeInert`, §4.6/§4.7), **`GR2062` by #477's
 `IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
-(`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), so an unrelated new code should take
-**`GR2071`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+(`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
+`PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
+the first code on this ladder that reports the TOOL rather than the plan), so an unrelated new code should
+take **`GR2073`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
@@ -7599,3 +7601,100 @@ two mechanisms for one decision is how a machine ends up opted out of one path a
 worse than no opt-out because the operator believes collection is off.
 
 `guardrails telemetry purge` removes every row under the corpus root, and is safe on an empty corpus.
+
+## 16. Check-set provenance — what `validate` says about the binary that ran it (issue #564)
+
+*Implementation: `Guardrails.Core.Loading.CheckSetProbe` + `ValidateCommand`. Diagnostic:
+**`GR2072` `CheckSetPredatesSourceTree`**, WARNING.*
+
+Every other section of this document constrains a PLAN. This one constrains the TOOL, because the tool's
+silence was doing more damage than anything on the plan side:
+
+> When the installed `guardrails` is older than the checks in the working tree, `validate` reports **clean**
+> and silently skips every check the binary predates.
+
+**The measured defect.** `GR2068`/`GR2069` (§9.6, handoff path coverage) merged to master at `9bc285c`. The
+installed tool was `1.12.0`, tagged before that. On `docs/plans/28-local-inference-runner`: **4 findings from
+a build of master, 0 from the installed tool** — same plan, same command, same exit code, nothing said either
+way. It was caught only because a verification agent string-searched the installed DLL for `GR2068` before
+trusting the zero, which is not a repeatable defence. This is the worst failure shape the product has, a gate
+reporting clean because it does not know about the check, occurring in Guardrails.
+
+### 16.1 The check-set line — printed on EVERY `validate`
+
+`validate` prints one line immediately **above** its verdict (`OK:` / `FAILED:`), on every run, clean or not:
+
+```
+Check set: guardrails 1.16.0, 77 diagnostic codes (highest GR2072); <comparison clause>
+```
+
+Three facts that cost nothing and are always true — which binary ran, how many codes it carries, and the
+highest code it knows — so two runs are comparable at a glance even where no comparison can be made for the
+reader. The verdict stays the **last** line, because callers tail it.
+
+### 16.2 The comparison — self-hosting only, and labelled as such
+
+The comparison needs a source of truth reachable **without a network call**, and the only one that exists is
+this repository's own `DiagnosticCodes.cs`. So `validate` walks up from the **plan folder** and then from the
+**working directory**, looking for `src/Guardrails.Core/Loading/DiagnosticCodes.cs`. That single path is both
+the checkout MARKER and the DATA, so detection cannot succeed where the data is absent and no other
+repository can produce a false positive. A git worktree of this repo carries the file and is correctly
+treated as the tree being worked on.
+
+Found, it is parsed for `public const string <Name> = "GRxxxx";` declarations — **anchored at line start on
+the declaration form**, so a doc comment, a commented-out line, or a code discussed only in prose is not
+counted. That distinction is load-bearing: `GR2054`, `GR2061` and `GR2070` are RESERVED BY NAME in design
+documents and appear in that file's prose only; counting one as declared would make every released binary
+look permanently behind its own tree, i.e. a warning that always fires, i.e. no warning at all (#229).
+
+The running binary's side is **reflected** from the assembly's `DiagnosticCodes` metadata, never hand-listed:
+a newly authored code joins the census with no second edit to forget, and forgetting it would reintroduce the
+very silence being fixed.
+
+**Both sides are "codes DECLARED", not "checks IMPLEMENTED".** A code declared but not yet wired counts on
+both sides and cancels out, so the *difference* is sound; the absolute count is worded as "diagnostic codes"
+because that is exactly what it is.
+
+Five verdicts, and only one of them warns:
+
+| Verdict | Meaning | GR2072 |
+|---|---|---|
+| `NotCompared` | No checkout found. **Every ordinary user of the released tool.** | no |
+| `SourceUnreadable` | A checkout was found but its `DiagnosticCodes.cs` could not be read, or parsed to **zero** codes | no |
+| `Matches` | Binary and tree declare the same set | no |
+| `BinaryBehindSource` | The tree declares codes the binary lacks — **the #564 shape** | **yes** |
+| `BinaryAheadOfSource` | The binary carries codes the tree lacks, and lacks none of the tree's. Nothing skipped | no |
+
+`SourceUnreadable` is deliberately **not** folded into `NotCompared` or `Matches`. A scanner that degrades
+silently into "agrees" is this issue's own defect wearing the fix's clothes, so a found-but-unparseable source
+gets its own verdict and its own words. `NotCompared` likewise says out loud that no comparison was made
+rather than letting no-news read as good-news.
+
+### 16.3 Warn, never block
+
+`GR2072` is a **WARNING and must stay one**, and `validate`'s exit code is untouched by it in both
+directions: a stale binary neither fails a clean plan nor rescues a broken one. Running an older tool against
+a newer tree is legitimate — a release build, a CI pinned to a version, a contributor who has not updated, a
+deliberate reproduction against a shipped binary — and refusing to validate would break all of those and be a
+worse cure than the disease. **The goal is that a green `validate` can be trusted *or discounted*, not that
+it becomes an error.**
+
+The warning names the version, the count, the source root, and **every missing code with its constant name**
+(truncated past `CheckSetReport.MaxEnumeratedCodes` = 8 with a count), because naming the codes is what the
+verification agent did by hand and is the most actionable form. It carries the remedy: rebuild from source,
+or `dotnet tool update -g ServantSoftware.Guardrails`.
+
+### 16.4 What this does NOT cover
+
+Stated plainly, because a partial fix that reads as complete is the same defect again:
+
+- **`validate` only.** `run`, `plan`, `graph`, `breakdown`, `status` and `mark-reviewed` print no check-set
+  line and emit no `GR2072`, even though several of them validate.
+- **The self-hosting case only.** Outside a Guardrails checkout there is nothing to compare against without a
+  network call, which is out of scope by design. Those runs get the §16.1 line and the explicit
+  `NotCompared` clause, and nothing more.
+- **Codes, not behaviour.** Two binaries declaring the same codes may still implement a check *differently* —
+  a tightened heuristic, a widened extractor. The comparison catches an ABSENT check, which is the silent
+  case; it does not catch a changed one.
+- **No version, tag, or `git describe` comparison.** The binary's version string is reported, never compared
+  against the tree's — a version says nothing about which checks shipped in it, which is the question.
