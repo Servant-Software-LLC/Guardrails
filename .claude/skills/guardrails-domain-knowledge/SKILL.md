@@ -44,6 +44,19 @@ pre-DAG halts (plan validation, a preflight failure, a declined drift confirm) w
 the full kind list are the SSOT, not duplicated here: `docs/plans/02-schemas-and-contracts.md`
 sections 8.1 (`events.jsonl`) and 8.2 (`observer.jsonl`).
 
+**Delivering the stream, not just serving it:** `guardrails run --on-event <url>` (or
+`GUARDRAILS_ON_EVENT`) POSTs each `events.jsonl` row to that endpoint as it is written -- the
+same projection, delivered rather than served. The delivery key is `(runId, bracket, seq)`:
+`bracket` is a field stamped on every row alongside `seq`, and it matters because `seq` alone
+restarts at 1 on a resume, so a receiver deduplicating on `(runId, seq)` silently discards an
+entire resumed run. **A failed delivery never affects the run** -- not its exit code, its
+verdict, or its journal; `events.jsonl` stays the durable record and a consumer that must be
+complete re-reads it. `detail` is withheld by default -- the field is always present, carrying
+a fixed marker, so a receiver never reads "withheld" as "nothing to report" -- and sent
+verbatim only with `--on-event-detail`. Headers, retry policy, the shutdown guarantee for the
+terminal row, and the security posture are the SSOT, not duplicated here:
+`docs/plans/02-schemas-and-contracts.md` section 8.3 (`--on-event` webhook delivery).
+
 ## The model
 
 - **Plan folder** `<plan-name>/` generated next to `<plan-name>.md`:
