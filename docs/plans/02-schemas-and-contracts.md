@@ -7511,7 +7511,13 @@ Every row carries `schemaVersion` (the corpus outlives any one build, so a row m
 is), `runId`, `taskId`, `attempt`, `startedAt`, `endedAt`, `outcome`, `repo`, and the resolved route:
 `model`, `runner`, `kind`, `tier`, `tierSource`, `effort`.
 
-**`schemaVersion` is 2 as of plan 30 Phase 1 (#548).** Phase 1 added thirteen columns: the
+**`schemaVersion` is 3 as of issue #577.** Version 3 adds exactly one column, `modelAttribution`
+(§15.2b) — the reason a row's `model` reads the way it does. The bump matters for the usual reason and
+for one more: because the column is written on EVERY row of both grains from version 3 onward, its
+ABSENCE is a reliable marker of the pre-repair era. A reader no longer has to know a boundary date to
+tell "this row predates model attribution" from "this row's attribution is genuinely absent."
+
+**`schemaVersion` was 2 as of plan 30 Phase 1 (#548).** Phase 1 added thirteen columns: the
 task-fingerprint bucket `bucket` (§15.2a, §15.5), the provider's model digest `modelDigest` (§15.2a), the
 attempt envelope `turns` / `actionMs` / `guardrailMs`, route warmth `routeWarm`, and the run-environment
 profile `host` / `os` / `cpuCount` / `totalMemoryBytes` / `maxParallelism` / `harnessVersion` /
@@ -7573,6 +7579,66 @@ is permanently null: the Claude CLI stream carries a model TAG and no fingerprin
 row carries a digest only where the engine volunteers `system_fingerprint`, which many engines do not.
 Null therefore means "the provider exposed none", never "the harness lost it" — a future reader who does
 not find this written down will read the nulls as a defect and go looking for one that is not there.
+
+### 15.2b `modelAttribution` — why a row names no model (issue #577)
+
+`model: null` used to mean three unrelated things at once, and nothing in the row said which. Split
+across the 806-row operator corpus, the 413 rows naming no model were:
+
+| category | rows | verdict |
+|---|---|---|
+| task-grain sentinel (`attempt == 0`) | 319 | correct by construction |
+| script action | 2 | correct by construction |
+| prompt attempt with no journalled route | 93 | **the defect** |
+
+So 77% of the "missing" attribution was never missing. The headline "76% of rows name no usable model"
+was true and misleading at once — the corpus could not distinguish a row that SHOULD name a model from
+one that never could.
+
+**Why the ambiguity could not be resolved after the fact.** The journal omits `AttemptRecord.provenance`
+for a script attempt AND for a prompt attempt whose route was never recorded, so `provenance == null`
+carries no information about which. The only place both facts exist together is the plan folder: the
+journal beside `tasks/<id>/action.*`. That join is impossible for any row whose plan folder has since
+been deleted — 41 such rows in the corpus, and 120 unreadable task definitions in the census — so the
+answer has to be written at ingest time or not at all.
+
+**The column.** Every row of both grains carries one of six tokens:
+
+| token | meaning | in the attributable denominator? |
+|---|---|---|
+| `recorded` | `model` names a real, fully resolved model | yes |
+| `cli-default` | `model` is the `(cli default)` sentinel — the attempt ran a model, but no NAMED route resolved | yes |
+| `not-recorded` | **defect** — a prompt attempt whose route was never journalled | yes |
+| `script-action` | correct by construction — a script invokes no model | no |
+| `task-grain` | correct by construction — the `attempt == 0` summary row | no |
+| `unknown` | the action kind was undecidable (unreadable/absent/ambiguous `task.json`), or the ETL had no plan folder | no |
+
+`cli-default` is deliberately NOT folded into `recorded`. The sentinel is a truthful statement that no
+named route resolved, not a model identity; pooling those 134 corpus rows with a real model's would
+attribute their cost and outcomes to a model nobody recorded — the flattering-number failure this column
+exists to prevent. And `unknown` is counted in neither camp, applying §15.4's standing rule (recorded,
+never guessed at): booking it as `not-recorded` would invent a defect, booking it as `script-action`
+would excuse a real one.
+
+**The invariant, pinned by `TelemetryModelAttributionTests`:** a PROMPT action's attempt row is
+`recorded`, `cli-default`, or — as a defect — `not-recorded`, and NEVER `script-action`; a SCRIPT
+action's attempt row is `script-action` and never `not-recorded`. The two cases that both render an empty
+`model` column must stay distinguishable in the data.
+
+**Where the kind comes from.** `TaskActionKindReader` reads `tasks/<taskId>/action.*` by SSOT §3's rule
+(explicit `action.path` first, else the single `action.*` file; `.prompt.md` makes it a prompt). It is
+shared verbatim with `TelemetryAttributionCensus` — one spelling, two readers — so the census can never
+call a task a script while the corpus records a defect on the same row. `TelemetryIngest.IngestPlanFolder`
+supplies the plan folder; the bare-journal `Ingest` overload attributes `unknown` rather than guessing.
+
+**The pre-repair corpus is handled by a boundary, not a backfill or a re-baseline** — the same call
+recorded on #548 for the §3.1 provenance era, and for the same reasons, plus one specific to this defect:
+every one of the 93 defect rows predates `2026-08-31`, and a backfill cannot attribute a row whose task
+folder no longer exists, because script-versus-prompt is read FROM that folder. A partial backfill would
+leave a corpus that is part-repaired and part-not with no column saying which, which is exactly the
+era-mixing the boundary exists to prevent. `schemaVersion >= 3` (equivalently, a non-null
+`modelAttribution`) is the per-row form of that boundary, and is what an analysis should filter on —
+`telemetry report` already excludes pre-boundary rows from the stratified table by date.
 
 ### 15.3 Ingest
 
