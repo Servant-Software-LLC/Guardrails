@@ -1757,7 +1757,7 @@ public sealed class TaskExecutor : ITaskExecutor
             // absent whenever no rung resolved (a pin, the legacy path, a no-route). Recording the
             // REQUESTED rung here instead would make a climb invisible in the record.
             Tier = route?.Tier,
-            TierSource = TierSourceFor(task.Action, route),
+            TierSource = TierProvenance.SourceFor(task.Action, route),
             // The route's effort is RECORDED, not passed to the CLI: the Claude runner exposes no
             // effort/thinking flag today and PromptRunnerSettings carries no field for one, so spelling
             // an argv flag here would invent a vendor knob that does not exist. When a runner CLASS
@@ -1789,44 +1789,6 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static Journal.AttemptProvenance? JudgeOnlyProvenance(Journal.AttemptJudge? judge) =>
         judge is null ? null : new Journal.AttemptProvenance { Judge = judge };
-
-    /// <summary>
-    /// WHICH SITE supplied this attempt's rung (DoR §12.4, D31) — READ from the resolution's §6.1 branch
-    /// and from the origin <c>PlanLoader</c> recorded when it collapsed the tier at load:
-    /// <list type="bullet">
-    ///   <item>a full pin ⇒ <see cref="Journal.TierSource.Override"/>. "Bypasses tier resolution
-    ///     entirely" governs what is SELECTED, not what is LOGGED: §12.4 gives each v1 value exactly one
-    ///     producer, and a pin is override's. <c>provenance.tier</c> stays absent beside it, because no
-    ///     rung resolved.</item>
-    ///   <item><see cref="TierOrigin.Task"/> ⇒ <c>task</c>, <see cref="TierOrigin.PlanDefault"/> ⇒
-    ///     <c>plan-default</c> — with the rung that was served recorded beside it.</item>
-    ///   <item>the LEGACY path (no rung anywhere) ⇒ ABSENT. Nothing resolved and nothing was overridden,
-    ///     and §12.4 deliberately has no enum value for it — "absent" and "override" are different facts
-    ///     about how the attempt got its model, and a reader must be able to tell them apart.</item>
-    /// </list>
-    ///
-    /// <para><b>The origin is READ, never reconstructed.</b> Deriving it by comparing the action's own
-    /// tier against the plan-wide default is <c>PlanValidator</c>'s shipped workaround, and it is wrong
-    /// in the most ordinary case there is: a task that explicitly writes the same token the plan already
-    /// defaults to would be attributed to the plan. <see cref="ActionDefinition.TierOrigin"/> exists
-    /// precisely so this mapping is a lookup.</para>
-    /// </summary>
-    private static Journal.TierSource? TierSourceFor(ActionDefinition action, TierResolution? route) =>
-        route switch
-        {
-            // A script attempt: no route, no rung, nothing to source.
-            null => null,
-            { Pinned: true } => Journal.TierSource.Override,
-            { Legacy: true } => null,
-            _ => action.TierOrigin switch
-            {
-                TierOrigin.Task => Journal.TierSource.Task,
-                TierOrigin.PlanDefault => Journal.TierSource.PlanDefault,
-                // TierOrigin.None means no tier was written anywhere, which cannot co-exist with a
-                // tier-resolved route in a loaded plan. Defensive, and absent is the honest answer.
-                _ => null
-            }
-        };
 
     /// <summary>
     /// The tool grants an agent attempt of <paramref name="task"/> runs under, resolved through the

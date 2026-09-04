@@ -4906,6 +4906,23 @@ unambiguous, not a margin call) means the MACHINE was not running, and the silen
 than counted. The tie deliberately breaks toward waiting: misreading a stall as a suspend costs one more
 window, while misreading a suspend as a stall kills healthy work — the defect #504 exists to remove.
 
+> **Do not "fix" this by switching to a monotonic clock.** The wall clock here is the mechanism, not the
+> bug: a clock that DOES advance across suspend is what makes the poll gap visible at all. On Windows —
+> the platform this was reported from — neither candidate excludes suspend. Measured on one machine 4.8
+> days after boot, at one instant: `QueryUnbiasedInterruptTime` 359,578 s (excludes sleep by definition)
+> against `Environment.TickCount64` 413,689 s, `Stopwatch`/QPC 413,723 s and wall-clock-since-boot
+> 413,698 s — both "monotonic" candidates track the wall clock and sit ~15 h ahead of unbiased time. (They
+> DO exclude suspend on Linux and macOS, where they map to `CLOCK_MONOTONIC` / `mach_absolute_time`; the
+> divergence is Windows-specific.) Swapping the clock would look like a fix and change nothing.
+
+**One watchdog, every runner that bounds silence.** The clock, the `stallBound / 20` cadence, the verdict
+and the window reset live on `Core/Prompts/StallWatch.cs`; `ClaudePromptRunner` and
+`OpenAiCompatPromptRunner` both drive it, and a new runner honouring `PromptInvocation.StallBound` drives
+it too rather than spelling a loop of its own. #517 originally shipped into the Claude runner ALONE while
+this section described it as the harness's behaviour, leaving the openai-compat (local-inference) runner —
+the one an unattended overnight run is most likely to be sitting on — killing suspended turns as
+`stalled`. A bound written twice is a bound that is wrong in one of the two places.
+
 **The transient classifier reads the FAILURE, never the agent's content (issue #516).** Its fallback path
 (no usable terminal result — #115's instant rejection) takes `stderr`, the terminal envelope, and only
 those stdout lines that are NOT well-formed stream envelopes. Handing it the whole teed stdout made the

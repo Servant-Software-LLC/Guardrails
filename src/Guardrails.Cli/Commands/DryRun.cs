@@ -2,6 +2,7 @@ using Guardrails.Core.Execution;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Cli.Commands;
@@ -87,13 +88,13 @@ public static class DryRun
         JournalDocument? journal, IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes, TextWriter output)
     {
         output.WriteLine("Per-task resolution:");
-        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"RETRY BUDGET",-13} RESUME");
-        output.WriteLine(new string('-', 90));
+        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"TIER",-26} {"RETRY BUDGET",-13} RESUME");
+        output.WriteLine(new string('-', 105));
 
         foreach (TaskNode task in plan.Tasks)
         {
             string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
-            string runner = task.Action.Kind == ActionKind.Prompt ? ResolveRunner(plan, task) : "-";
+            TierResolution? route = PreviewRoute(plan, task);
             int retries = task.Retries ?? plan.Config.DefaultRetries;
             int budget = 1 + retries; // SSOT §2: defaultRetries are AFTER the first attempt.
             // §7.2 (#274 Part A): an already-succeeded task whose definition changed since it settled would
@@ -103,7 +104,9 @@ public static class DryRun
                 ? "HALT (definition drift)"
                 : WouldSkip(task, statuses) ? "SKIP (succeeded)" : "run";
 
-            output.WriteLine($"  {task.Id,-36} {kind,-7} {runner,-10} {budget,-13} {resume}");
+            output.WriteLine(
+                $"  {task.Id,-36} {kind,-7} {RunnerCell(plan, task, route),-10} " +
+                $"{TierCell(task, route),-26} {budget,-13} {resume}");
         }
 
         output.WriteLine();
@@ -179,26 +182,127 @@ public static class DryRun
     }
 
     /// <summary>
-    /// The runner a prompt task would use: its explicit <c>action.runner</c>, else
-    /// <c>promptRunners.default</c> if it resolves, else the sole declared runner. Mirrors the
-    /// registry's default resolution; falls back to a readable label if nothing resolves
-    /// (validation would already have flagged that as an error).
+    /// The route a prompt task's first attempt would launch on — <b>resolved by CALLING the resolver the
+    /// run itself calls</b> (<see cref="TierResolver.Resolve"/>), with the same arguments
+    /// <c>TaskExecutor.ResolveRoute</c> passes, so the preview cannot answer §6.1 differently from the
+    /// attempt it is previewing (issue #549).
+    ///
+    /// <para><b>This method deliberately decides nothing.</b> The shipped preview re-implemented the
+    /// PRE-TIERING precedence here — <c>action.runner</c> else <c>promptRunners.default</c> — which on a
+    /// well-formed tiered config named exactly the block the operator did NOT tag the task for, and said
+    /// so with no hint it was guessing. A second copy of §6.1 is how the two drifted apart; there is now
+    /// one, and this is not it.</para>
+    ///
+    /// <para>Null for a SCRIPT action: no model, no route, nothing to resolve — the same null
+    /// <c>TaskExecutor.ResolveRoute</c> returns there. The CLI-level default model is null because the
+    /// harness exposes no such setting, exactly as both run-time call sites pass it.</para>
     /// </summary>
-    private static string ResolveRunner(PlanDefinition plan, TaskNode task)
+    private static TierResolution? PreviewRoute(PlanDefinition plan, TaskNode task) =>
+        task.Action.Kind == ActionKind.Prompt
+            ? TierResolver.Resolve(task.Action, plan.Config, cliDefaultModel: null)
+            : null;
+
+    /// <summary>
+    /// The RUNNER cell: the <c>promptRunners</c> block this task's first attempt would dispatch to,
+    /// asked of <see cref="PromptRunnerRegistry.DispatchNameFor"/> — the one expression
+    /// <c>ActionRunner</c> hands the registry — so the preview names the block the run would actually
+    /// invoke rather than one derived alongside it.
+    ///
+    /// <para>Two honest non-answers, both distinguishable from a block name: <c>(no route)</c> is §6.2's
+    /// <see cref="TierResolution.NoRoute"/> — nothing serves the rung asked for or any stronger one — and
+    /// <c>(unresolved)</c> is a plan that names no runner and has no default to fall back on. Neither is
+    /// ever silently replaced by a plausible block name: reporting <c>sonnet</c> for work that will not
+    /// run is the failure shape this whole fix is about.</para>
+    ///
+    /// <para><b><c>(no route)</c> is a defensive residual, and deliberately so.</b> A dry run VALIDATES
+    /// before it prints, and GR2048 is that same condition asked at validate time — so an unservable rung
+    /// exits before any row is rendered (pinned by
+    /// <c>DryRunRoutePreviewTests.AnUnservableRungIsRefusedBeforeAnyRowIsPrinted</c>). It is spelled
+    /// anyway because the alternative when the two gates ever disagree is printing the default block,
+    /// which is #549 again.</para>
+    /// </summary>
+    private static string RunnerCell(PlanDefinition plan, TaskNode task, TierResolution? route)
     {
-        if (task.Action.Runner is { } explicitRunner)
+        if (route is null)
         {
-            return explicitRunner;
+            return "-";   // a script action dispatches no runner at all
         }
 
-        if (plan.Config.DefaultPromptRunner is { } named && plan.Config.PromptRunnerNames.Contains(named))
+        if (route.NoRoute)
         {
-            return named;
+            return "(no route)";
         }
 
-        return plan.Config.PromptRunnerNames.Count == 1
-            ? plan.Config.PromptRunnerNames.Single()
-            : "(unresolved)";
+        return PromptRunnerRegistry.DispatchNameFor(
+            plan.Config, route, task.Action.Runner, FrontmatterRunner(task)) ?? "(unresolved)";
+    }
+
+    /// <summary>
+    /// The TIER cell — the rung this attempt resolved at and WHICH SITE supplied it, in the same
+    /// vocabulary the attempt's own <c>attempt-route.log</c> and <c>run.json</c> provenance use
+    /// (<c>task</c> / <c>plan-default</c> / <c>override</c>, via
+    /// <see cref="TierProvenance.SourceFor"/> and <see cref="JournalJson.TierSourceToken"/>). Without it
+    /// the RUNNER column is an answer with no working shown: <c>opus</c> beside <c>hard (task)</c> says
+    /// the task asked for it, while <c>opus</c> beside <c>hard (plan-default)</c> says the plan did — and
+    /// those have different fixes.
+    ///
+    /// <para>A §6.2 CLIMB prints BOTH rungs (<c>easy -&gt; medium (task)</c>): "served at medium" alone
+    /// reads as an ordinary medium task unless the rung it replaced is sitting beside it — the same
+    /// reason the route log carries them as a pair.</para>
+    ///
+    /// <para><c>-</c> means no rung was resolved and none was asked for: a script action, or the LEGACY
+    /// path (Invariant 7 — an untagged task in a plan with no <c>tiering.defaultTier</c>, which runs
+    /// exactly as it did before tiering existed). A PIN prints <c>(override)</c> rather than a dash,
+    /// because "no rung" and "a human named the block outright" are different facts.</para>
+    /// </summary>
+    private static string TierCell(TaskNode task, TierResolution? route)
+    {
+        if (route is null)
+        {
+            return "-";
+        }
+
+        string? source = TierProvenance.SourceFor(task.Action, route) is { } tierSource
+            ? JournalJson.TierSourceToken(tierSource)
+            : null;
+
+        // A pin resolves no rung at all (§6.1 item 1 bypasses resolution), so there is nothing to print
+        // but the provenance — which is exactly the fact that distinguishes it from the legacy path.
+        if (route.Pinned)
+        {
+            return source is null ? "-" : $"({source})";
+        }
+
+        // The rung ASKED for, which survives even a no-route settle; the served rung is null there.
+        string? requested = route.RequestedTier;
+        if (requested is null)
+        {
+            return "-";   // the legacy path: no action.tier, no tiering.defaultTier, nothing resolved
+        }
+
+        string rungs = route.Climbed && route.Tier is { } served ? $"{requested} -> {served}" : requested;
+        return source is null ? rungs : $"{rungs} ({source})";
+    }
+
+    /// <summary>
+    /// The prompt file's frontmatter <c>runner</c>, the LAST name in the dispatch order — read here
+    /// because the preview must reproduce the whole expression, not the part that is cheap to reach.
+    ///
+    /// <para>Best-effort by design, like <see cref="IsDrifted"/> above: a dry run is advisory and must
+    /// never crash or touch state, so an unreadable or malformed <c>action.prompt.md</c> yields null (the
+    /// registry default is then previewed) rather than an exception. The real run would fail honestly on
+    /// the same file; the preview is not the gate.</para>
+    /// </summary>
+    private static string? FrontmatterRunner(TaskNode task)
+    {
+        try
+        {
+            return PromptFileParser.Parse(File.ReadAllText(task.Action.Path)).File?.Frontmatter.Runner;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static bool WouldSkip(TaskNode task, IReadOnlyDictionary<string, JournalTaskStatus> statuses) =>

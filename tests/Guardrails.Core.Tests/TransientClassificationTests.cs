@@ -6,6 +6,11 @@ namespace Guardrails.Core.Tests;
 /// The two transient-classification defects found on the Stage 3 dogfood: #517 (the stall bound counted
 /// machine SLEEP as silence) and #516 (the classifier's fallback scanned the whole teed stdout, making the
 /// harness's own source a false-positive trigger for its own classifier).
+///
+/// <para>The #517 half pins the pure RULE, which now lives on <see cref="StallWatch"/> — shared by every
+/// runner that bounds silence, rather than owned by <see cref="ClaudePromptRunner"/> alone.
+/// <c>StallWatchTests</c> covers the state that rule moves, and <c>OpenAiCompatStallWatchdogTests</c>
+/// covers the runner that used to ask a different question entirely.</para>
 /// </summary>
 public sealed class TransientClassificationTests
 {
@@ -20,10 +25,10 @@ public sealed class TransientClassificationTests
         // The reported case: a laptop asleep for two hours. On resume the wall clock shows far more than
         // the bound of "silence" — but the session had no opportunity to emit, and killing it here reports
         // a bound it never violated.
-        ClaudePromptRunner.StallVerdict v = ClaudePromptRunner.ClassifySilence(
+        StallVerdict v = StallWatch.Classify(
             silent: TimeSpan.FromHours(2), sincePreviousPoll: TimeSpan.FromHours(2), Poll, Bound);
 
-        Assert.Equal(ClaudePromptRunner.StallVerdict.Suspended, v);
+        Assert.Equal(StallVerdict.Suspended, v);
     }
 
     [Fact]
@@ -31,19 +36,19 @@ public sealed class TransientClassificationTests
     {
         // The other half: polls arriving on schedule, and nothing on the stream for longer than the bound.
         // That is what the bound exists for and it must still fire.
-        ClaudePromptRunner.StallVerdict v = ClaudePromptRunner.ClassifySilence(
+        StallVerdict v = StallWatch.Classify(
             silent: Bound + TimeSpan.FromMinutes(1), sincePreviousPoll: Poll, Poll, Bound);
 
-        Assert.Equal(ClaudePromptRunner.StallVerdict.Stalled, v);
+        Assert.Equal(StallVerdict.Stalled, v);
     }
 
     [Fact]
     public void AHealthySessionIsLeftAlone()
     {
-        ClaudePromptRunner.StallVerdict v = ClaudePromptRunner.ClassifySilence(
+        StallVerdict v = StallWatch.Classify(
             silent: TimeSpan.FromMinutes(3), sincePreviousPoll: Poll, Poll, Bound);
 
-        Assert.Equal(ClaudePromptRunner.StallVerdict.KeepWaiting, v);
+        Assert.Equal(StallVerdict.KeepWaiting, v);
     }
 
     [Theory]
@@ -54,10 +59,10 @@ public sealed class TransientClassificationTests
         // The separation is orders of magnitude (a 2-hour gap in a 1-minute loop), so the factor only has
         // to clear the worst delay a RUNNING machine imposes. A poll arriving 2-3x late is still a running
         // machine, and a genuine stall underneath it must still be caught.
-        ClaudePromptRunner.StallVerdict v = ClaudePromptRunner.ClassifySilence(
+        StallVerdict v = StallWatch.Classify(
             silent: Bound + TimeSpan.FromMinutes(1), sincePreviousPoll: Poll * factor, Poll, Bound);
 
-        Assert.Equal(ClaudePromptRunner.StallVerdict.Stalled, v);
+        Assert.Equal(StallVerdict.Stalled, v);
     }
 
     [Fact]
@@ -66,10 +71,10 @@ public sealed class TransientClassificationTests
         // A suspend verdict costs one more bound-length window before a real stall is killed. A stall
         // verdict on a suspended machine kills work that was fine — the exact defect #504 removed. The
         // tie must break toward waiting, and this pins that direction.
-        ClaudePromptRunner.StallVerdict v = ClaudePromptRunner.ClassifySilence(
+        StallVerdict v = StallWatch.Classify(
             silent: TimeSpan.FromDays(1), sincePreviousPoll: TimeSpan.FromDays(1), Poll, Bound);
 
-        Assert.NotEqual(ClaudePromptRunner.StallVerdict.Stalled, v);
+        Assert.NotEqual(StallVerdict.Stalled, v);
     }
 
     // ---- #516: the classifier must not read the agent's own reading -------------------------------
