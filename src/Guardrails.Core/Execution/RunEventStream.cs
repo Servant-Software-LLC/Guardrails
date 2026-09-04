@@ -76,11 +76,29 @@ public sealed class RunEventStream : IRunObserver
     /// The run's own id, as the composition root already knows it — never derived from
     /// <paramref name="directory"/>'s name, which merely resembles it.
     /// </param>
-    public RunEventStream(IRunObserver inner, string directory, string runId)
+    /// <param name="onRow">
+    /// OPTIONAL second destination for each row (#585 layer 3): the delivery the webhook dispatcher queues.
+    /// Invoked on the RUN's own thread, INSIDE the append lock, so it MUST return in microseconds and MUST
+    /// NOT throw — a throw here would propagate into a Scheduler worker while holding <c>_gate</c>, and a
+    /// delivery mechanism is never permitted to affect the run (§8.3). Enqueue and return; a full queue is a
+    /// recorded DROP, never a wait. Null = no webhook endpoint, and the byte-identical behavior of today.
+    /// </param>
+    /// <param name="includeDetail">
+    /// Whether <paramref name="onRow"/>'s copy carries the free-text <c>detail</c> field (§8.3). The
+    /// events.jsonl row is NEVER affected either way.
+    /// </param>
+    public RunEventStream(
+        IRunObserver inner, string directory, string runId,
+        Action<EventDelivery>? onRow = null, bool includeDetail = false)
     {
         _inner = inner;
         _directory = directory;
         _runId = runId;
+
+        // Accepted and ignored: task 03 stores these and feeds the wire copy from inside the append lock
+        // (design §3.1). Stubbed here only so RunEventBracketTests COMPILES against the shape it asserts.
+        _ = onRow;
+        _ = includeDetail;
     }
 
     /// <inheritdoc/>
@@ -364,3 +382,10 @@ public sealed class RunEventStream : IRunObserver
         public string? NeedsHumanKind { get; init; }
     }
 }
+
+/// <summary>
+/// One row on its way OFF the machine (§8.3). Carries the three values the delivery's headers need
+/// alongside the body, so the dispatcher never re-parses the JSON it was just handed — which would be a
+/// third serialization round-trip per row and a failure mode nobody has specified.
+/// </summary>
+public readonly record struct EventDelivery(string DeliveryId, string Kind, string JsonLine);
