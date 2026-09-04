@@ -228,6 +228,24 @@ public sealed class Stage2PlanHarness : IDisposable
         };
     }
 
+    /// <summary>
+    /// Write <paramref name="spec"/> as a real plan folder and STOP — no scheduler, no executor, no
+    /// runner. The seam a PRE-RUN surface needs: <c>guardrails run --dry-run</c> is defined by touching
+    /// nothing, so a test of the preview cannot go through <see cref="RunAsync"/> without destroying the
+    /// very property it is checking.
+    ///
+    /// <para>Same emitter as <see cref="RunAsync"/>'s, deliberately: a preview is only worth testing
+    /// against the plan shape a real run would execute, and a second fixture writer would let the two
+    /// drift exactly as #549's second resolver did.</para>
+    /// </summary>
+    /// <returns>The plan folder path (also <see cref="PlanRoot"/>).</returns>
+    public string WritePlanOnly(Stage2PlanSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        WritePlan(spec);
+        return _root;
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {
@@ -380,6 +398,12 @@ public sealed class Stage2PlanHarness : IDisposable
             ["description"] = task.Description,
             ["dependsOn"] = ToJsonArray(task.DependsOn),
             ["retries"] = task.EffectiveRetries(),
+            // SSOT §3.4 / GR2041: `writeScope` is MANDATORY — omitting it is a validation error, not a
+            // default. The run path (PlanLoader + Scheduler) never asked for it, so the harness could get
+            // away without one until a PRE-RUN surface — `--dry-run`, which validates — started using
+            // these fixtures. An empty list is the honest value: the fake runner writes nothing to the
+            // repo.
+            ["writeScope"] = ToJsonArray(task.WriteScope),
             ["action"] = action
         };
 
@@ -710,6 +734,14 @@ public sealed record Stage2TaskSpec
 
     /// <summary>The manifest <c>dependsOn</c> list.</summary>
     public IReadOnlyList<string> DependsOn { get; init; } = [];
+
+    /// <summary>
+    /// The manifest <c>writeScope</c> (SSOT §3.4). Empty — the default — declares "writes nothing to the
+    /// repo", which is true of every task here: the runner is faked and produces no workspace edits. It is
+    /// emitted rather than omitted because omission is GR2041, and a fixture only the LOADER accepts is
+    /// useless to any surface that validates.
+    /// </summary>
+    public IReadOnlyList<string> WriteScope { get; init; } = [];
 
     /// <summary>The task's <c>action.tier</c>. Null = untagged (the plan-wide default, if any, applies).</summary>
     public string? Tier { get; init; }

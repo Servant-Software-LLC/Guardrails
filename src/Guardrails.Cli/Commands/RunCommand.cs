@@ -38,7 +38,7 @@ public static class RunCommand
 
         var dryRunOption = new Option<bool>("--dry-run")
         {
-            Description = "Validate and preview tiers + per-task resolution + resume skips, then exit 0 without running or touching state."
+            Description = "Validate and preview the dependency tiers, the per-task resolution (runner, model tier, retry budget) and resume skips, then exit 0 without running or touching state."
         };
 
         var noLogServerOption = new Option<bool>("--no-log-server")
