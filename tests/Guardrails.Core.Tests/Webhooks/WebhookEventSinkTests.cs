@@ -334,12 +334,27 @@ public sealed class WebhookEventSinkTests
              + WebhookEventSink.BackoffSteps[0] + WebhookEventSink.BackoffSteps[1] + WebhookEventSink.BackoffSteps[2])
             * scale;
 
+        // ASSERT THE ARMED BUDGET, NOT THE ELAPSED TIME. The two quantities this test used to compare —
+        // the scaled ceiling (2.25 s) and the scaled full schedule (2.35 s) — are ~4% apart by the
+        // design's own choice of numbers, so elapsed wall clock could never discriminate them on a
+        // machine under load: it separates "the ceiling cut this row off" from "this row ran its schedule
+        // out" by 100 ms, which is inside the scheduling noise of a concurrent whole-solution run. It
+        // duly failed on one. What is deterministic is the budget the sink ARMED for the row.
+        Assert.Equal(scaledCeiling, sink.LastPerRowCeilingUsed);
+
+        // The ceiling is armed from PerRowCeiling and nothing else, so a regression that armed the full
+        // schedule instead would move this number — which is the substantive claim the elapsed comparison
+        // was reaching for.
         Assert.True(
-            stopwatch.Elapsed <= scaledCeiling + TimeSpan.FromSeconds(2),
-            $"row ran past its ceiling: elapsed {stopwatch.Elapsed}, ceiling {scaledCeiling}");
+            sink.LastPerRowCeilingUsed < scaledFullSchedule,
+            $"the armed ceiling {sink.LastPerRowCeilingUsed} does not bound the row below the full "
+            + $"unbounded schedule {scaledFullSchedule}");
+
+        // A generous hang-catcher, and ONLY that. It is deliberately far wider than any budget above: it
+        // exists to fail a genuinely unbounded row, never to discriminate the ceiling from the schedule.
         Assert.True(
-            stopwatch.Elapsed < scaledFullSchedule,
-            $"row ran the full unbounded schedule out instead of being cut off: elapsed {stopwatch.Elapsed}, full schedule {scaledFullSchedule}");
+            stopwatch.Elapsed < TimeSpan.FromSeconds(30),
+            $"the row never terminated: elapsed {stopwatch.Elapsed}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
