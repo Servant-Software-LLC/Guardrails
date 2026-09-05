@@ -1,0 +1,14 @@
+{
+  "description": "Author RED tests that drive the REAL TaskExecutor retry loop and assert an attempt after a guardrail failure resolves one rung stronger, while a timeout does not escalate",
+  "stableId": "v2p6hn",
+  "dependsOn": [
+    "02-implement-escalation-ladder",
+    "04-implement-escalated-provenance"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Escalation/RetryLoopEscalationTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

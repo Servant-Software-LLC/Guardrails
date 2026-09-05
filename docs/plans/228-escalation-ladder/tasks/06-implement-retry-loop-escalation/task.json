@@ -1,0 +1,13 @@
+{
+  "description": "Wire the ladder into TaskExecutor's retry loop: count guardrail-failed attempts, apply the ladder at route resolution, and record escalatedFrom in the attempt provenance",
+  "stableId": "h4d8sy",
+  "dependsOn": [
+    "05-author-tests-retry-loop-escalation"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}
