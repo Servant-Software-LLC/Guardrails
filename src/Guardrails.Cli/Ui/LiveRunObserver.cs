@@ -45,7 +45,8 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
     // Task lookup for the Model column's pending-row seed (RebuildRows) — a TaskLiveRow carries only the
     // id, not the TaskNode, so this is how a pending cell reads task.Action.Tier / task.Action.Kind.
-    private readonly Dictionary<string, TaskNode> _taskById;
+    // Replaced wholesale by the #404 mid-run splice; read and written under _gate.
+    private Dictionary<string, TaskNode> _taskById;
 
     // The LAUNCH event's (runner, tier, climbed) per task (design 29 §4.2/§4.3), written by
     // AttemptRouteResolved and read back by AttemptModelResolved — the post-action event has only model
@@ -56,6 +57,11 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     // In-flight wave phases (issue #469): the JIT breakdown, and — per design 23 §9 — the shape #476's wave
     // gates will reuse. Driven by the SAME 1 Hz ticker as _running; no new timer and no new lock.
     private readonly Dictionary<string, PhaseState> _phases = new(StringComparer.Ordinal);
+
+    // Waves that have RUN a JIT breakdown this session — distinct from _phases, which is only the IN-FLIGHT
+    // ones. #404's splice gives such a wave real tasks, and without this the row plan would drop its phase
+    // row at the exact moment the breakdown finally had an outcome to report (design 37 §5.2 B2).
+    private readonly HashSet<string> _breakdownWaves = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _liveLoop;
     private readonly Timer _ticker;
@@ -65,8 +71,12 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     // #379 collapse-completed-waves state. For a FLAT plan (or --all-tasks) these stay inert and the
     // table is the pre-#379 flat one-row-per-task list; for a WAVED plan the row set is (re)planned via
     // LiveTableRows as each wave settles, collapsing completed waves to a single summary row.
-    private readonly IReadOnlyList<TaskNode> _tasks;
-    private readonly IReadOnlyList<WaveNode> _waves;
+    //
+    // MUTABLE since #404: the run may LOAD a wave as an empty JIT stub and only learn its tasks half an
+    // hour later, at WaveBreakdownFinished. Both are replaced wholesale by SpliceWave and are read and
+    // written only under _gate — the same discipline every other piece of table state here follows.
+    private IReadOnlyList<TaskNode> _tasks;
+    private IReadOnlyList<WaveNode> _waves;
     private readonly bool _showAllTasks;
     private readonly HashSet<string> _completedWaves = new(StringComparer.Ordinal);
     private LiveDisplayContext? _context;
@@ -612,6 +622,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         lock (_gate)
         {
             _phases[phase.Key] = phase;
+            _breakdownWaves.Add(context.WaveDir);
 
             // The TWO one-shot entries (design 37 §4.4 #7–#8). Line 2 is the breakdown log dir — the fallback
             // when OSC 8 links are unsupported — and both are rare (once per JIT wave), so both are kept.
@@ -645,21 +656,40 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         lock (_gate)
         {
             _phases.Remove(key); // stop the clock — the outcome is terminal
-            if (!_rowByKey.TryGetValue(key, out int row))
+            if (_rowByKey.TryGetValue(key, out int row))
             {
-                return;
+                string colour = failureKind is null ? "green" : "red";
+                string status = BreakdownProgress.TerminalStatus(BreakdownProgress.TerminalWord(failureKind), elapsed);
+                string detail = Markup.Escape(BreakdownProgress.TerminalDetail(failureKind, snapshot));
+                if (WavePageLinkMarkup(context.WaveDir, "logs") is { } link)
+                {
+                    detail = $"{detail} · {link}";
+                }
+
+                _table.UpdateCell(row, 1, new Markup($"[{colour}]{Markup.Escape(status)}[/]"));
+                _table.UpdateCell(row, 2, new Markup(detail));
             }
 
-            string colour = failureKind is null ? "green" : "red";
-            string status = BreakdownProgress.TerminalStatus(BreakdownProgress.TerminalWord(failureKind), elapsed);
-            string detail = Markup.Escape(BreakdownProgress.TerminalDetail(failureKind, snapshot));
-            if (WavePageLinkMarkup(context.WaveDir, "logs") is { } link)
+            // #404: the wave the run will PROCEED with, spliced into the row plan so its eleven tasks stop
+            // running for forty minutes behind a single settled row. The settled phase row STAYS above them
+            // — it is the wave's authoring provenance (time spent, folders written, a link into the
+            // breakdown evidence) and the only place those numbers appear live — and RebuildRows carries
+            // its just-written cells across.
+            //
+            // authoredWave is non-null ONLY where the run will proceed: Scheduler passes
+            // `proceeding ? authoredWave : null`, so its non-null-ness IS the "this wave is going to run"
+            // signal, which is why this is the splice trigger rather than WaveStarting. Every escalate/halt
+            // path passes null, takes none of this, and leaves the table byte-identical to before.
+            if (authoredWave is not null)
             {
-                detail = $"{detail} · {link}";
+                (IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves) =
+                    SpliceWave(_tasks, _waves, authoredWave);
+                _tasks = tasks;
+                _waves = waves;
+                _taskById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+                RebuildRows();
             }
 
-            _table.UpdateCell(row, 1, new Markup($"[{colour}]{Markup.Escape(status)}[/]"));
-            _table.UpdateCell(row, 2, new Markup(detail));
             _context?.Refresh();
         }
     }
@@ -826,26 +856,55 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     }
 
     /// <summary>
-    /// (Re)build the table's rows + the <see cref="_rowByTask"/> index map from the current
-    /// <see cref="_completedWaves"/> set (issue #379). Called once at construction and again each time a
-    /// wave settles (from <see cref="WaveFinished"/>) to collapse it. Safe because a rebuild only ever
-    /// happens at a wave boundary, where the hard barrier (SSOT §14.4) guarantees every task in a
-    /// not-yet-completed later wave is still <c>pending</c> — so re-seeding later rows to pending never
-    /// discards live progress, and the just-completed wave's rows are intentionally replaced by its
-    /// summary line. Caller holds <see cref="_gate"/> (or runs single-threaded during the ctor).
+    /// (Re)build the table's rows + the <see cref="_rowByKey"/> index map from the current
+    /// <see cref="_tasks"/>/<see cref="_waves"/>/<see cref="_completedWaves"/> state. Called at
+    /// construction, each time a wave settles (<see cref="WaveFinished"/>, to collapse it, issue #379), and
+    /// — since #404 — each time a JIT wave is spliced in mid-run. Caller holds <see cref="_gate"/> (or runs
+    /// single-threaded during the ctor).
+    ///
+    /// <para><b>Every keyed row's rendered CELLS survive the rebuild</b> (design 37 §0.4). #379's original
+    /// safety argument was positional: a rebuild only happened at a wave boundary, where the hard barrier
+    /// (SSOT §14.4) guarantees every task in a not-yet-completed later wave is still <c>pending</c>, so
+    /// re-seeding those rows to <c>pending</c> discarded nothing. That argument does not survive #404. Under
+    /// <c>--all-tasks</c> the collapse rebuild is guarded off entirely, so before #404 this ran exactly once,
+    /// at construction; a mid-run splice makes it run again with completed tasks on screen, and re-seeding
+    /// would flip every green <c>succeeded</c> back to grey <c>pending</c>. Carrying the cells across
+    /// retires that latent fragility for every caller instead of adding a second special case for this one.
+    /// A COLLAPSED wave's task rows are still dropped — they are not in the new row plan at all, which is
+    /// #379's whole point.</para>
     /// </summary>
     private void RebuildRows()
     {
+        // Snapshot the rendered cells of every keyed row BEFORE the table is cleared. Keyed rows only: a
+        // wave summary line is derived state and is regenerated from _completedWaves each time.
+        // TableRowCollection is enumerable but not indexable in Spectre 0.51.1, hence the materialisation.
+        List<TableRow> existing = [.. _table.Rows];
+        var preserved = new Dictionary<string, IRenderable[]>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, int> entry in _rowByKey)
+        {
+            if (entry.Value < existing.Count)
+            {
+                preserved[entry.Key] = [.. existing[entry.Value]];
+            }
+        }
+
         _rowByKey.Clear();
         _table.Rows.Clear();
 
-        IReadOnlyList<LiveTableRow> rows = LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks);
+        IReadOnlyList<LiveTableRow> rows =
+            LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks, _breakdownWaves);
         for (int i = 0; i < rows.Count; i++)
         {
             switch (rows[i])
             {
                 case TaskLiveRow task:
                     _rowByKey[task.TaskId] = i;
+                    if (preserved.TryGetValue(task.TaskId, out IRenderable[]? taskCells))
+                    {
+                        _table.AddRow(taskCells);
+                        break;
+                    }
+
                     _table.AddRow(
                         new Markup(Markup.Escape(task.TaskId)),
                         new Markup("[grey]pending[/]"),
@@ -861,10 +920,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     break;
                 case WavePhaseLiveRow phase:
                     // Issue #469: the row exists from RUN START, so a two-wave JIT plan is legible as a
-                    // two-wave plan before anything happens, and the breakdown has a row to update when it
-                    // begins — no mid-run rebuild, no new race. No new glyph: only the `—` every other row
-                    // already prints.
+                    // two-wave plan before anything happens, and the breakdown has a row to update the
+                    // moment it begins. No new glyph: only the `—` every other row already prints. Its
+                    // SETTLED cells (18m42s · 5 task folders · logs) are preserved across #404's splice
+                    // rebuild by the same mechanism as a task row — that authoring provenance is the only
+                    // place those numbers appear live, and §5.2's B2 keeps the row.
                     _rowByKey[phase.BreakdownKey] = i;
+                    if (preserved.TryGetValue(phase.BreakdownKey, out IRenderable[]? phaseCells))
+                    {
+                        _table.AddRow(phaseCells);
+                        break;
+                    }
+
                     _table.AddRow(
                         new Markup($"{Markup.Escape(phase.WaveDir)} — JIT breakdown"),
                         new Markup("[grey]pending[/]"),
@@ -873,6 +940,41 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// The row plan after a freshly-authored wave replaces its own JIT stub (#404) — pure over the row plan,
+    /// mirroring <c>Scheduler.SpliceAuthoredWave</c>: the ONE wave whose <see cref="WaveNode.Dir"/> matches
+    /// is replaced, and the flattened task list is re-derived as the union in strict wave order (SSOT §14.2),
+    /// never appended to. Deriving rather than appending is what keeps the row order the loader's order even
+    /// if several waves are authored across one run.
+    ///
+    /// <para>A wave this table was never told about — a FLAT plan, or an <c>attach</c> against a different
+    /// plan — returns the inputs unchanged rather than growing a row set the operator's plan does not have.
+    /// </para>
+    ///
+    /// <para>Public (not private) for the same reason <see cref="StatusMarkup"/> and <see cref="ModelCell"/>
+    /// are: the Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure function IS the test seam.</para>
+    /// </summary>
+    public static (IReadOnlyList<TaskNode> Tasks, IReadOnlyList<WaveNode> Waves) SpliceWave(
+        IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves, WaveNode authoredWave)
+    {
+        ArgumentNullException.ThrowIfNull(tasks);
+        ArgumentNullException.ThrowIfNull(waves);
+        ArgumentNullException.ThrowIfNull(authoredWave);
+
+        if (!waves.Any(w => string.Equals(w.Dir, authoredWave.Dir, StringComparison.Ordinal)))
+        {
+            return (tasks, waves);
+        }
+
+        List<WaveNode> spliced =
+        [
+            .. waves.Select(w =>
+                string.Equals(w.Dir, authoredWave.Dir, StringComparison.Ordinal) ? authoredWave : w)
+        ];
+
+        return ([.. spliced.SelectMany(w => w.Tasks)], spliced);
     }
 
     /// <summary>
