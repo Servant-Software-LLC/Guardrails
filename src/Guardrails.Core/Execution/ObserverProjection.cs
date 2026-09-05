@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using Guardrails.Core.Model;
@@ -40,18 +41,67 @@ public sealed class ObserverProjection : IRunObserver
 
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
+    /// <summary>
+    /// The member carrying WHEN the recorded call happened. Every line has one (issue #637).
+    /// <para><b>Why the line needs its own clock.</b> <c>guardrails attach</c> replays this file into a real
+    /// <c>LiveRunObserver</c>, and that observer starts a task's timer from <i>the moment it observes
+    /// <c>TaskStarting</c></i>. That is exactly right live and exactly wrong on replay: an operator attaching
+    /// to an unattended run saw a task that had been running for twenty minutes show a clock starting from
+    /// zero — and re-attaching reset it again. The failure is in the reassuring direction, on the surface
+    /// whose first job is answering "is this thing stuck?".</para>
+    /// <para>Recording the time HERE rather than having attach infer it from <c>run.json</c> keeps this file
+    /// self-sufficient, which is what attach's own design assumes: it replays a recorded call sequence, and a
+    /// replay that must consult a second file for its clock is not a replay. It is also the rule #585 already
+    /// set for the event stream — a timestamp records when the event OCCURRED, not when a reader got to it.</para>
+    /// </summary>
+    public const string OccurredAtMember = "at";
+
     private readonly IRunObserver _inner;
     private readonly string _directory;
+    private readonly Func<DateTimeOffset> _now;
     private readonly object _writeLock = new();
 
     /// <param name="inner">The real observer (live or console) every call is forwarded to, verbatim.</param>
     /// <param name="directory">
     /// The run's <c>logs/&lt;runId&gt;/</c> tree — <c>observer.jsonl</c> is appended to inside it.
     /// </param>
-    public ObserverProjection(IRunObserver inner, string directory)
+    /// <param name="now">
+    /// The occurrence clock stamped onto every line, injectable so a test can assert the recorded value
+    /// rather than race one. Defaults to <see cref="DateTimeOffset.UtcNow"/>.
+    /// </param>
+    public ObserverProjection(IRunObserver inner, string directory, Func<DateTimeOffset>? now = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _directory = directory ?? throw new ArgumentNullException(nameof(directory));
+        _now = now ?? (() => DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// The occurrence time recorded on one <c>observer.jsonl</c> line, or <c>null</c> when the line carries
+    /// none or carries something unparseable. This lives beside the writer on purpose — the producer and the
+    /// reader of a format belong together, and <c>Guardrails.Cli</c> has no <c>InternalsVisibleTo</c>, so a
+    /// pure function here is the seam a test can actually reach (<c>ConsoleRunObserver</c>'s precedent).
+    ///
+    /// <para><b>Null is a first-class answer, not a defect.</b> Every run recorded before #637 has lines
+    /// without this member, and those files must still replay — the caller falls back to its own wall clock,
+    /// which is precisely today's behaviour. An unparseable value is treated the same way for the same
+    /// reason: a replay that refuses to render is worse than one whose clock is no better than it was.</para>
+    /// </summary>
+    public static DateTimeOffset? OccurredAt(JsonNode? line)
+    {
+        JsonNode? at = line?[OccurredAtMember];
+        if (at is null)
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParse(
+            at.GetValue<string?>(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out DateTimeOffset parsed)
+            ? parsed
+            : null;
     }
 
     public void TaskStarting(TaskNode task)
@@ -338,6 +388,11 @@ public sealed class ObserverProjection : IRunObserver
     /// </summary>
     private void Append(JsonObject line)
     {
+        // Stamped centrally rather than at each of the member methods: "every line carries one" is then a
+        // property of the writer, not a convention fifteen call sites have to keep remembering. Round-trip
+        // ("O") so the value survives a parse exactly, offset included.
+        line[OccurredAtMember] = JsonValue.Create(_now().ToString("O", CultureInfo.InvariantCulture));
+
         string json = line.ToJsonString();
         lock (_writeLock)
         {

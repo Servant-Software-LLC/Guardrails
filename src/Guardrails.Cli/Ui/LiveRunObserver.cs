@@ -1,4 +1,4 @@
-using Guardrails.Cli.Commands;
+﻿using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 using Spectre.Console;
@@ -65,6 +65,26 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _liveLoop;
     private readonly Timer _ticker;
+
+    /// <summary>
+    /// When a REPLAY is driving this observer, the time the call being replayed actually happened; null on a
+    /// live run, where observing a call and the call happening are the same instant (issue #637).
+    ///
+    /// <para>Every clock this class starts is seeded from <see cref="StartedNow"/> rather than
+    /// <see cref="DateTimeOffset.UtcNow"/> directly, because <c>guardrails attach</c> replays a recorded call
+    /// sequence into a real instance of this class. Stamping <c>UtcNow</c> there restarts a running task's
+    /// timer at zero — a task wedged for an hour renders as freshly started, and each re-attach resets the
+    /// evidence. That is wrong in the reassuring direction on the one surface an operator opens to ask
+    /// whether a run is stuck.</para>
+    ///
+    /// <para>Set by <c>AttachCommand</c> immediately before dispatching each replayed line and read only
+    /// inside that dispatch, so no lock is needed: the replay loop is single-threaded, and the ticker reads
+    /// the seeded value (never this field) under <c>_gate</c>.</para>
+    /// </summary>
+    internal DateTimeOffset? ReplayOccurredAt { get; set; }
+
+    /// <summary>The instant a clock started here should be dated from — the replayed time, else now.</summary>
+    private DateTimeOffset StartedNow => ReplayOccurredAt ?? DateTimeOffset.UtcNow;
     private readonly Func<string, string?>? _logUrlForTask;
     private readonly string? _planDirectory;
     private readonly string? _runId;
@@ -196,7 +216,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                 return;
             }
 
-            _running[task.Id] = new RunningState(DateTimeOffset.UtcNow, "running");
+            _running[task.Id] = new RunningState(StartedNow, "running");
         }
 
         Update(task.Id, "[yellow]running[/]", LogLinkMarkup(task.Id) ?? string.Empty);
@@ -616,7 +636,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         {
             Key = WavePhaseLiveRow.KeyFor(context.WaveDir, WavePhaseLiveRow.BreakdownPhase),
             Context = context,
-            Since = DateTimeOffset.UtcNow
+            Since = StartedNow
         };
 
         lock (_gate)

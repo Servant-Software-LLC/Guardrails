@@ -186,6 +186,16 @@ public static class AttachCommand
                 continue;
             }
 
+            // #637: date the replayed call from WHEN IT HAPPENED, not from when this terminal got to it.
+            // Without this the live observer stamps UtcNow, so attaching to a run whose task started twenty
+            // minutes ago shows that task's clock starting from zero — and every re-attach resets it again.
+            // Null (a pre-#637 log, or an unparseable value) leaves the observer on its own wall clock,
+            // which is exactly the behaviour those files already had.
+            if (renderer is LiveRunObserver live)
+            {
+                live.ReplayOccurredAt = ObserverProjection.OccurredAt(node);
+            }
+
             try
             {
                 Dispatch(node, renderer, taskById);
