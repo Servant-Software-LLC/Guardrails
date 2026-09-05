@@ -34,7 +34,11 @@ namespace Guardrails.Integration.Tests.RunEvents;
 /// <para><b>Why the assertions below are shaped the way they are.</b> <c>AttachCommand</c> has no public
 /// replay method - its rendered <c>stdout</c> (via the real <see cref="Guardrails.Cli.Ui.LiveRunObserver"/>
 /// it drives) is the only observable surface, and that surface renders exactly two facts off an
-/// <c>AttemptFinished</c> event: the attempt number and the outcome. Tests 2 and 3 below therefore prove
+/// <c>AttemptFinished</c> event: the attempt number and the outcome. Design 37 §4.4 #1 moved WHERE they are
+/// rendered - from an out-of-band <c>attempt &lt;id&gt; attempt N: Outcome</c> line into the row's Detail
+/// cell, <c>attempt N Outcome</c> - and made a SUCCEEDED attempt render nothing at all, so every fixture
+/// below carries a non-succeeded outcome. The two facts, and this file's proof, are unchanged.
+/// Tests 2 and 3 below therefore prove
 /// "replayed, not silently skipped" the only way that is actually observable - by pairing a normal
 /// event with a HAND-BUILT negative control that is missing one required member. Today, since
 /// <c>AttachCommand</c> does not yet require that member off the wire, the missing-member line
@@ -85,14 +89,22 @@ public sealed class ObserverRecordRoundTripTests
     /// (it omits the same three members on every call). This is the ONLY way to prove attach's replay
     /// can tell a complete event apart from an incomplete one.
     /// </summary>
-    private static string AttemptFinishedLineMissing(string taskId, int attempt, string omittedField)
+    /// <param name="outcome">
+    /// Deliberately a NON-succeeded outcome. Design 37 §4.4 #1 moved the live surface's rendering of a
+    /// finished attempt from an out-of-band line into the row's Detail cell, and a SUCCEEDED attempt now
+    /// renders nothing at all (the task's own <c>succeeded</c> status arrives milliseconds later and would
+    /// overwrite it). A negative control carrying <c>Succeeded</c> would therefore be invisible whether attach
+    /// skipped it or replayed it — a vacuous assertion. The control must be renderable to discriminate.
+    /// </param>
+    private static string AttemptFinishedLineMissing(
+        string taskId, int attempt, string omittedField, string outcome)
     {
         var line = new JsonObject
         {
             ["member"] = "AttemptFinished",
             ["taskId"] = taskId,
             ["attempt"] = attempt,
-            ["outcome"] = "Succeeded",
+            ["outcome"] = outcome,
             ["startedAt"] = JsonValue.Create(DateTimeOffset.UtcNow),
             ["endedAt"] = JsonValue.Create(DateTimeOffset.UtcNow),
             ["logDir"] = $"logs/fixture/{taskId}/attempt-{attempt}"
@@ -277,9 +289,12 @@ public sealed class ObserverRecordRoundTripTests
         projection.AttemptFinished(task, new AttemptRecord
         {
             Attempt = 7,
+            // NOT Succeeded — see AttemptFinishedLineMissing's remarks. Design 37 §4.4 #1 makes a succeeded
+            // attempt render nothing, so both halves of this test would be invisible and the fixture would
+            // stop discriminating "replayed" from "skipped".
             StartedAt = DateTimeOffset.UtcNow,
             EndedAt = DateTimeOffset.UtcNow,
-            Outcome = AttemptOutcome.Succeeded,
+            Outcome = AttemptOutcome.ActionFailed,
             LogDir = "logs/fixture/01-first/attempt-7"
         });
 
@@ -288,19 +303,20 @@ public sealed class ObserverRecordRoundTripTests
         // from "skipped" — a renderer that always prints SOMETHING for every line would pass the
         // assertion above no matter what attach actually did with a malformed event.
         File.AppendAllText(
-            observerJsonlPath, AttemptFinishedLineMissing(task.Id, attempt: 13, omittedField: "logDir") + "\n");
+            observerJsonlPath,
+            AttemptFinishedLineMissing(task.Id, attempt: 13, omittedField: "logDir", outcome: "Timeout") + "\n");
 
         (int exitCode, string output, string error) = await InvokeAttachOutOfProcessAsync(plan.PlanDir);
         Assert.Equal(ExitCodes.Success, exitCode);
         string combined = output + error;
 
-        Assert.Contains("attempt 7:", combined, StringComparison.Ordinal);
+        Assert.Contains("attempt 7 ActionFailed", combined, StringComparison.Ordinal);
 
         // A required member never reached the wire: attach must SKIP the whole event rather than render
         // it with a guessed/sentinel value standing in for the one field it could not read. Today it
         // does not — AttachCommand.Dispatch fills a sentinel LogDir instead of requiring one off the
         // wire — so attempt 13 (wrongly) still shows, and this assertion is what makes the test fail.
-        Assert.DoesNotContain("attempt 13:", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt 13 Timeout", combined, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -332,18 +348,19 @@ public sealed class ObserverRecordRoundTripTests
         // A second, independent negative control (endedAt this time, not logDir) — proving the gap is
         // not specific to one field.
         File.AppendAllText(
-            observerJsonlPath, AttemptFinishedLineMissing(task.Id, attempt: 21, omittedField: "endedAt") + "\n");
+            observerJsonlPath,
+            AttemptFinishedLineMissing(task.Id, attempt: 21, omittedField: "endedAt", outcome: "Timeout") + "\n");
 
         (int exitCode, string output, string error) = await InvokeAttachOutOfProcessAsync(plan.PlanDir);
         Assert.Equal(ExitCodes.Success, exitCode);
         string combined = output + error;
 
         // The values that came back are the values that went in — at minimum the attempt number and
-        // the outcome, read off attach's rendered output (its only observable surface).
-        Assert.Contains("attempt 9:", combined, StringComparison.Ordinal);
-        Assert.Contains("GuardrailFailed", combined, StringComparison.Ordinal);
+        // the outcome, read off attach's rendered output (its only observable surface, which design 37
+        // §4.4 #1 moved from an out-of-band line into the row's Detail cell).
+        Assert.Contains("attempt 9 GuardrailFailed", combined, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("attempt 21:", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt 21 Timeout", combined, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
