@@ -187,7 +187,25 @@ public sealed class RunFinishedExitPathTests
             Reason = WorktreeModeReason.SerialByConfiguration,
         };
 
-        var task = (Task)method.Invoke(null, [plan, observer, null, null, null, null, serialMode, CancellationToken.None])!;
+        object?[] arguments = [plan, observer, null, null, null, null, serialMode, CancellationToken.None];
+
+        // …and the comment above is the whole reason for this guard. #596's parameter arrived here as
+        // "TargetParameterCountException : Parameter count mismatch" — an error that names neither the
+        // method, nor the parameter, nor which side moved, on three tests at once across every OS. The
+        // diagnosis cost a full red CI. The arity is knowable HERE, cheaply, so the next signature change
+        // reports what it did instead of leaving the reader to bisect for it.
+        ParameterInfo[] parameters = method.GetParameters();
+        if (parameters.Length != arguments.Length)
+        {
+            throw new InvalidOperationException(
+                $"RunCommand.ExecuteAsync now takes {parameters.Length} parameters, not the " +
+                $"{arguments.Length} this helper passes: " +
+                string.Join(", ", parameters.Select(p => $"{p.ParameterType.Name} {p.Name}")) +
+                ". Update the argument list above to match — this is a reflective call, so the compiler " +
+                "could not tell you.");
+        }
+
+        var task = (Task)method.Invoke(null, arguments)!;
 
         try
         {
