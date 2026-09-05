@@ -4135,6 +4135,21 @@ Consequences a reader needs:
   the replay also swallows and skips. So a SHAPE change to a member that this file's writer and the
   replay disagree about produces a silently incomplete replay, not an error. Any change to a
   projected member's fields must be covered by a writer→replay round-trip test.
+- **Every line carries `at` — WHEN the call happened, not when a reader reached it (issue #637).** A
+  round-trip (`"O"`) timestamp, stamped centrally by the writer so "every line has one" is a property
+  of the writer rather than a convention fifteen call sites must remember. The replay dates each
+  call from it, and this is load-bearing rather than decorative: `LiveRunObserver` starts a task's
+  clock when it *observes* `TaskStarting`, which is correct live and wrong on replay — attaching to a
+  run whose task started twenty minutes ago showed that task's timer starting from **zero**, and each
+  re-attach reset it again. On the one surface an operator opens to ask "is this stuck?", that is
+  wrong in the reassuring direction. Reading the time from `run.json` instead was rejected: attach
+  replays a recorded call sequence, and a replay that must consult a second file for its clock is not
+  a replay — it is also a second source of truth that can disagree with this one.
+  **`at` is OPTIONAL on read**: every run recorded before #637 lacks it, and those files must still
+  replay, so a missing or unparseable value falls the reader back to its own wall clock — exactly the
+  behaviour those logs already had. `ObserverProjection.OccurredAt` is the one reader, and it lives
+  beside the writer because a format's producer and parser belong together (and because
+  `Guardrails.Cli` has no `InternalsVisibleTo`, so a pure function here is the seam a test can reach).
 - **`observer.jsonl` and `events.jsonl` spell shared enums differently, on purpose.** This file
   writes `outcome` as the enum's `ToString()` (`GuardrailFailed`), because the replay parses it back
   with `Enum.Parse`; §8.1 writes the kebab wire token (`guardrail-failed`), because that is the

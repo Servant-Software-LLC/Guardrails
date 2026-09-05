@@ -235,6 +235,80 @@ public sealed class ObserverProjectionTests
         Assert.Equal(nameof(AttemptOutcome.GuardrailFailed), json?["outcome"]?.GetValue<string>());
     }
 
+    /// <summary>
+    /// #637. Every line carries WHEN the call happened, and the value is the writer's clock rather than the
+    /// reader's. This is what lets <c>guardrails attach</c> date a replayed <c>TaskStarting</c> from the
+    /// task's real start instead of from the moment the attaching terminal reached the line — without it, a
+    /// task that has been running for twenty minutes renders a clock starting at zero.
+    /// <para>Asserted on the RECORDED VALUE against an injected clock rather than on elapsed wall time: a
+    /// duration assertion cannot tell a wrong stamp from a busy runner.</para>
+    /// </summary>
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void EveryLine_CarriesTheOccurrenceTime_FromTheWritersClock()
+    {
+        using var tree = new TempTree();
+        TaskNode task = FlatTask("01-first");
+        var stamped = new DateTimeOffset(2026, 9, 5, 9, 21, 5, TimeSpan.Zero);
+        var projection = new ObserverProjection(IRunObserver.Null, tree.Root, () => stamped);
+
+        projection.TaskStarting(task);
+        projection.AttemptStarting(task, attempt: 1, budget: 3);
+
+        string[] lines = File.ReadAllLines(Path.Combine(tree.Root, "observer.jsonl"));
+        Assert.Equal(2, lines.Length);
+
+        // EVERY line, not just the one the bug was noticed on — the stamp is applied centrally, and a
+        // regression that reinstated it per-member would leave exactly one kind of line without it.
+        foreach (string line in lines)
+        {
+            JsonNode? json = JsonNode.Parse(line);
+            Assert.Equal(stamped, ObserverProjection.OccurredAt(json));
+        }
+    }
+
+    /// <summary>
+    /// #637's back-compat half, and it is the reason <see cref="ObserverProjection.OccurredAt"/> returns a
+    /// nullable rather than throwing or defaulting to "now" itself. Every run recorded before this shipped
+    /// has lines with no <c>at</c>, and those files must still replay — the caller falls back to its own
+    /// clock, which is precisely the behaviour they already had. A malformed value is treated identically:
+    /// a replay that refuses to render is worse than one whose clock is no better than it was.
+    /// </summary>
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void OccurredAt_IsNull_ForAPreFeatureLine_AndForAMalformedOne()
+    {
+        Assert.Null(ObserverProjection.OccurredAt(
+            JsonNode.Parse("""{"member":"TaskStarting","taskId":"01-first"}""")));
+
+        Assert.Null(ObserverProjection.OccurredAt(
+            JsonNode.Parse("""{"member":"TaskStarting","taskId":"01-first","at":"not-a-time"}""")));
+
+        Assert.Null(ObserverProjection.OccurredAt(null));
+    }
+
+    /// <summary>
+    /// The stamp survives a JSON round-trip EXACTLY, offset included — the point of writing it round-trip
+    /// ("O") rather than with a default format. A value that loses its offset would silently shift a
+    /// replayed clock by the reader's UTC difference, which is the same class of wrongness this fixes.
+    /// </summary>
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void TheOccurrenceTime_RoundTripsWithItsOffset()
+    {
+        using var tree = new TempTree();
+        var stamped = new DateTimeOffset(2026, 9, 5, 11, 2, 3, 456, TimeSpan.FromHours(-7));
+        var projection = new ObserverProjection(IRunObserver.Null, tree.Root, () => stamped);
+
+        projection.TaskStarting(FlatTask("01-first"));
+
+        string line = Assert.Single(File.ReadAllLines(Path.Combine(tree.Root, "observer.jsonl")));
+        DateTimeOffset? read = ObserverProjection.OccurredAt(JsonNode.Parse(line));
+
+        Assert.Equal(stamped, read);
+        Assert.Equal(stamped.Offset, read!.Value.Offset);
+    }
+
     [Trait("Category", "RunEvents")]
     [Fact]
     public void Decorator_ForwardsEveryObservedCallToTheInner()
