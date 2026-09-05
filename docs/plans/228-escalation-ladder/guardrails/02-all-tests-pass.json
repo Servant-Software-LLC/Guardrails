@@ -1,0 +1,3 @@
+{
+  "description": "Full test suite - catches regressions in all existing tests and verifies this plan's new tests pass on the merged HEAD"
+}

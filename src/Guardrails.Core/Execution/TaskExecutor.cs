@@ -165,6 +165,12 @@ public sealed class TaskExecutor : ITaskExecutor
         // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
         int maxTurnsRetries = 0;
+        // One escalation counter for guardrail-failed attempts (issue #228): a guardrail failure indicts
+        // the MODEL's work, not the infrastructure around it, so — unlike the two counters above —
+        // it climbs the escalation ladder for the NEXT attempt's route instead of widening a clock or a
+        // turn budget. A timeout, a max-turns stop, a transient pause, or a permission wall never
+        // increments it; each of those already has its own counter and its own remedy.
+        int guardrailFailedRetries = 0;
 
         // #174 / #182 no-op-deadlock short-circuit: the previous guardrail-failed attempt's no-op flag,
         // failure fingerprint, and (serial mode) action-output fingerprint. When the CURRENT attempt is
@@ -196,7 +202,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                    permissionWalls, cancellationToken)
+                    guardrailFailedRetries, permissionWalls, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -239,7 +245,32 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 string reason = attempt.TransientReason ?? "transient infrastructure error";
                 TimeSpan delay = backoff.NextDelay();
-                _observer.PromptPaused(task, reason, delay, backoff.PauseCount + 1);
+                int pauseOrdinal = backoff.PauseCount + 1;
+
+                // #515: journal the pause WHERE IT HAPPENS, not only where the budget runs out. Before this,
+                // a transient that paused and then RESOLVED — the #115 happy path — reached the observer and
+                // nothing else: run.json carried no trace, so "did this run hit provider trouble?" was
+                // unanswerable the moment the console scrolled away, and the feature's own trade (pause
+                // WITHOUT burning retry budget, because a provider stall is not the task's fault) was
+                // unauditable. Only the EXHAUSTED path below recorded anything.
+                //
+                // BEFORE the wait, deliberately: a run killed mid-pause must still say it was pausing and
+                // why, and recording on the far side of the delay would lose exactly the long pauses that
+                // matter most. The journal persists atomically per call, so the entry is on disk before the
+                // first second of the backoff elapses.
+                _journal.RecordTransientPause(task.Id, new TransientPauseRecord
+                {
+                    Pause = pauseOrdinal,
+                    // The attempt this pause suspends — it re-runs under the SAME number (that IS the
+                    // no-retry-consumed contract), so this is not a forward reference to a new attempt.
+                    Attempt = attemptNumber,
+                    At = DateTimeOffset.UtcNow,
+                    Reason = reason,
+                    WaitSeconds = delay.TotalSeconds,
+                    ResetHint = attempt.TransientResetHint
+                });
+
+                _observer.PromptPaused(task, reason, delay, pauseOrdinal);
                 await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -257,6 +288,14 @@ public sealed class TaskExecutor : ITaskExecutor
             if (attempt.Outcome is AttemptOutcome.MaxTurns)
             {
                 maxTurnsRetries++;
+            }
+
+            // A guardrail-failed outcome indicts the MODEL's work, not the infrastructure around it;
+            // count it so the NEXT attempt's route climbs the escalation ladder (issue #228) — a
+            // same-rung retry just re-attempts the identical model against the same guardrails.
+            if (attempt.Outcome is AttemptOutcome.GuardrailFailed)
+            {
+                guardrailFailedRetries++;
             }
 
             // On success, stamp the summary with how long the task took (including any retries)
@@ -666,6 +705,7 @@ public sealed class TaskExecutor : ITaskExecutor
         bool isFinal,
         int timeoutRetries,
         int maxTurnsRetries,
+        int guardrailFailedRetries,
         PermissionWallTracker permissionWalls,
         CancellationToken cancellationToken)
     {
@@ -684,7 +724,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // §6.2's no-route outcome (nothing serves the rung, at it or above it) is settled just below,
         // BEFORE anything launches. Quietly turning it into a legacy launch is the silent fallback D30
         // severed, so it gets its own branch rather than being papered over.
-        TierResolution? route = ResolveRoute(task);
+        TierResolution? route = ResolveRoute(task, guardrailFailedRetries);
 
         // #198: the provenance the harness knows BEFORE the attempt runs — the resolved route, the
         // segment worktree + base commit, and (#382) the declared/injected tool grants. Written to the
@@ -956,7 +996,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = $"paused (transient): {reason}"
                 },
                 FeedbackPath: null,
-                TransientReason: reason);
+                TransientReason: reason,
+                // #515: the parsed reset hint travels BESIDE the prose, not only inside it. The reason
+                // string above already embeds it for the operator; the journal wants the field.
+                TransientResetHint: action.ResetHint is { Length: > 0 } ? action.ResetHint : null);
         }
 
         // --- #86 EAGER permission-wall halt ---------------------------------------------
@@ -1159,10 +1202,24 @@ public sealed class TaskExecutor : ITaskExecutor
         // every file resolves before the first byte is written, so a task whose deliverable spans two or
         // more .claude/ files converges in ONE attempt instead of never (a rollback between attempts
         // discards the previous attempt's write, so progress could not accumulate).
+        //
+        // #532 gap 1: whatever happens, the DISPOSITION is journaled onto this attempt. Before this the
+        // dispositions were computed here as first-class values, spent on the retry feedback below, and
+        // then dropped — so a task whose harness writes were silently ignored on three consecutive
+        // attempts (#531) left NOTHING in run.json saying a write had ever been requested. Diagnosing it
+        // meant reading a raw action-out-fragment.json out of the log dir and then reading harness SOURCE
+        // to learn where the key is looked up: archaeology, and exactly what a self-healing agent (#529)
+        // cannot do cheaply. `harnessWriteRecord` is threaded into EVERY journaler call from here to the
+        // end of this method — the failure right below, and equally the write-scope / guardrail / settle
+        // paths downstream, because a write that LANDED must not be erased by a later failure.
+        HarnessWriteRecord? harnessWriteRecord = null;
         if (action.HarnessWriteBatch is { } harnessWriteBatch)
         {
             HarnessWriteOutcome writeOutcome = HarnessWrite.ValidateAndApply(
                 harnessWriteBatch, effectiveWorkspace, task.WriteScope);
+
+            // One producer for the wire shape, next to the flags it reads (HarnessWrite.Describe).
+            harnessWriteRecord = HarnessWrite.Describe(harnessWriteBatch, writeOutcome);
 
             // The control key is consumed either way — it must never reach the fragment-merge check
             // as a foreign/reserved key (mirrors needsHuman being fully consumed pre-merge).
@@ -1208,7 +1265,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     turns: action.Turns,
                     // Same in-between position as the staging failure above: action measured, no
                     // guardrail reached.
-                    segments: AttemptJournaler.SegmentsFor(action));
+                    segments: AttemptJournaler.SegmentsFor(action),
+                    // #532 gap 1: the reported defect's own path — the request, its disposition and the
+                    // reason the agent was given, all durable now instead of feedback-only.
+                    harnessWrite: harnessWriteRecord);
             }
         }
 
@@ -1259,7 +1319,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     turns: action.Turns,
                     // The write-scope check runs BEFORE the task's own guardrails, so this is the last
                     // of the four action-only pairs.
-                    segments: AttemptJournaler.SegmentsFor(action));
+                    segments: AttemptJournaler.SegmentsFor(action),
+                    // #532 gap 1: DOWNSTREAM of an applied harness write — a later failure must not
+                    // erase that the write landed.
+                    harnessWrite: harnessWriteRecord);
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -1328,7 +1391,8 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
                 action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns,
-                segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                harnessWrite: harnessWriteRecord);
         }
 
         if (guardrails.AnyFailed)
@@ -1378,7 +1442,8 @@ public sealed class TaskExecutor : ITaskExecutor
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
                     summary, wallFeedback, guardrails.Results, failedList, provenance: provenance,
-                    segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                    segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                    harnessWrite: harnessWriteRecord);
             }
 
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
@@ -1419,7 +1484,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 // §3.4, and the same sentence one column over: an attempt that burned twenty minutes
                 // before going red is the cost a per-model comparison cannot see today. Both phases ran
                 // here, so both are recorded.
-                segments: AttemptJournaler.SegmentsFor(action, guardrails));
+                segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                harnessWrite: harnessWriteRecord);
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
@@ -1464,11 +1530,13 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!string.IsNullOrEmpty(worktree.WorktreePath) && Directory.Exists(worktree.WorktreePath))
         {
             return _journaler.ValidateFragmentForSettle(
-                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
+                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails,
+                isFinal, provenance, harnessWriteRecord);
         }
 
         return _journaler.CompleteSucceededOrInvalidFragment(
-            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
+            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails,
+            isFinal, provenance, harnessWriteRecord);
     }
 
     /// <summary>
@@ -1757,7 +1825,11 @@ public sealed class TaskExecutor : ITaskExecutor
             // absent whenever no rung resolved (a pin, the legacy path, a no-route). Recording the
             // REQUESTED rung here instead would make a climb invisible in the record.
             Tier = route?.Tier,
-            TierSource = TierSourceFor(task.Action, route),
+            TierSource = TierProvenance.SourceFor(task.Action, route),
+            // The rung this attempt's route climbed FROM (issue #228) — present only when
+            // EscalationLadder.Apply actually moved the rung, absent otherwise (a pin, the legacy path,
+            // a route the ladder declined to climb, or an ordinary unescalated attempt).
+            EscalatedFrom = route?.EscalatedFrom,
             // The route's effort is RECORDED, not passed to the CLI: the Claude runner exposes no
             // effort/thinking flag today and PromptRunnerSettings carries no field for one, so spelling
             // an argv flag here would invent a vendor knob that does not exist. When a runner CLASS
@@ -1789,44 +1861,6 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static Journal.AttemptProvenance? JudgeOnlyProvenance(Journal.AttemptJudge? judge) =>
         judge is null ? null : new Journal.AttemptProvenance { Judge = judge };
-
-    /// <summary>
-    /// WHICH SITE supplied this attempt's rung (DoR §12.4, D31) — READ from the resolution's §6.1 branch
-    /// and from the origin <c>PlanLoader</c> recorded when it collapsed the tier at load:
-    /// <list type="bullet">
-    ///   <item>a full pin ⇒ <see cref="Journal.TierSource.Override"/>. "Bypasses tier resolution
-    ///     entirely" governs what is SELECTED, not what is LOGGED: §12.4 gives each v1 value exactly one
-    ///     producer, and a pin is override's. <c>provenance.tier</c> stays absent beside it, because no
-    ///     rung resolved.</item>
-    ///   <item><see cref="TierOrigin.Task"/> ⇒ <c>task</c>, <see cref="TierOrigin.PlanDefault"/> ⇒
-    ///     <c>plan-default</c> — with the rung that was served recorded beside it.</item>
-    ///   <item>the LEGACY path (no rung anywhere) ⇒ ABSENT. Nothing resolved and nothing was overridden,
-    ///     and §12.4 deliberately has no enum value for it — "absent" and "override" are different facts
-    ///     about how the attempt got its model, and a reader must be able to tell them apart.</item>
-    /// </list>
-    ///
-    /// <para><b>The origin is READ, never reconstructed.</b> Deriving it by comparing the action's own
-    /// tier against the plan-wide default is <c>PlanValidator</c>'s shipped workaround, and it is wrong
-    /// in the most ordinary case there is: a task that explicitly writes the same token the plan already
-    /// defaults to would be attributed to the plan. <see cref="ActionDefinition.TierOrigin"/> exists
-    /// precisely so this mapping is a lookup.</para>
-    /// </summary>
-    private static Journal.TierSource? TierSourceFor(ActionDefinition action, TierResolution? route) =>
-        route switch
-        {
-            // A script attempt: no route, no rung, nothing to source.
-            null => null,
-            { Pinned: true } => Journal.TierSource.Override,
-            { Legacy: true } => null,
-            _ => action.TierOrigin switch
-            {
-                TierOrigin.Task => Journal.TierSource.Task,
-                TierOrigin.PlanDefault => Journal.TierSource.PlanDefault,
-                // TierOrigin.None means no tier was written anywhere, which cannot co-exist with a
-                // tier-resolved route in a loaded plan. Defensive, and absent is the honest answer.
-                _ => null
-            }
-        };
 
     /// <summary>
     /// The tool grants an agent attempt of <paramref name="task"/> runs under, resolved through the
@@ -2031,11 +2065,22 @@ public sealed class TaskExecutor : ITaskExecutor
     /// <para>The CLI-level default model is null because the harness exposes no such setting today, so
     /// the legacy branch's last rung means "let the runner CLI pick its own default" — the fact the
     /// <c>"(cli default)"</c> display sentinel has always stood for.</para>
+    ///
+    /// <para><b>The escalation ladder (issue #228) slots in here, on top of the resolution above,
+    /// without moving this seam.</b> <paramref name="guardrailFailedRetries"/> is how many of this
+    /// task's PRIOR attempts failed their guardrails; <see cref="EscalationLadder.Apply"/> climbs that
+    /// many rungs above the resolution's own tier and re-resolves against the registry, or returns the
+    /// resolution unchanged for a pinned/legacy/no-route/script resolution, or once escalations is zero.
+    /// A null resolution (a script action) has nothing to climb and is returned as-is.</para>
     /// </summary>
-    private TierResolution? ResolveRoute(TaskNode task) =>
-        task.Action.Kind == ActionKind.Prompt
+    private TierResolution? ResolveRoute(TaskNode task, int guardrailFailedRetries)
+    {
+        TierResolution? route = task.Action.Kind == ActionKind.Prompt
             ? TierResolver.Resolve(task.Action, _plan.Config, cliDefaultModel: null)
             : null;
+
+        return route is null ? null : EscalationLadder.Apply(_plan.Config, route, guardrailFailedRetries);
+    }
 
     /// <summary>
     /// The operator-facing diagnosis a §6.2 no-route settle carries (DoR §12.4) — the text that becomes

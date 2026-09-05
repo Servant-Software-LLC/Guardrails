@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -324,7 +325,9 @@ public sealed class WebhookEventSink : IAsyncDisposable
     private TimeSpan Jittered(TimeSpan step)
     {
         double factor = JitterLowerBound + ((JitterUpperBound - JitterLowerBound) * Random.Shared.NextDouble());
-        return Scaled(step) * factor;
+        TimeSpan delay = Scaled(step) * factor;
+        _computedBackoffs.Enqueue(delay);
+        return delay;
     }
 
     /// <summary>The pump: the ONE background task started in the constructor, reading serially so a retrying row delays later rows rather than being overtaken by them.</summary>
@@ -376,7 +379,9 @@ public sealed class WebhookEventSink : IAsyncDisposable
 
         using (rowCts)
         {
-            try { rowCts.CancelAfter(Scaled(PerRowCeiling)); } catch (ObjectDisposedException) { }
+            TimeSpan rowCeiling = Scaled(PerRowCeiling);
+            LastPerRowCeilingUsed = rowCeiling;
+            try { rowCts.CancelAfter(rowCeiling); } catch (ObjectDisposedException) { }
 
             AttemptOutcome last = default;
             bool attempted = false;
@@ -648,6 +653,29 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// 977 ms locally. The decision is the thing under test; the elapsed time is not.
     /// </summary>
     internal TimeSpan LastPumpGraceUsed { get; private set; }
+
+    /// <summary>
+    /// The per-row ceiling actually armed on the most recent row, exposed for the same reason as
+    /// <see cref="LastPumpGraceUsed"/>. The ceiling's wall-clock signature is only ~4% wide by the
+    /// design's own choice of numbers — the 45 s ceiling against a ~47 s full schedule — so measuring
+    /// elapsed time cannot tell "the ceiling cut this row off" from "this row finished its schedule on a
+    /// busy machine". A test that tried failed on a contended runner. What is deterministic, and what the
+    /// ceiling actually IS, is the budget the sink armed.
+    /// </summary>
+    internal TimeSpan LastPerRowCeilingUsed { get; private set; }
+
+    private readonly ConcurrentQueue<TimeSpan> _computedBackoffs = new();
+
+    /// <summary>
+    /// Test observable, and the same reasoning as <see cref="LastPumpGraceUsed"/> one layer down: the
+    /// backoff delays this sink COMPUTED, in the order it computed them. The gap a test can measure
+    /// between two recorded requests is the delay the sink asked for PLUS however long the thread pool
+    /// took to run the timer's continuation, and only the first of those is ever under test. When the
+    /// pool is saturated the second is neither small nor bounded - it is governed by the runtime's
+    /// thread-INJECTION rate (~1 per 500 ms once starved), which quantizes an observed gap near a second
+    /// whatever the sink asked for. A wrong schedule is a wrong COMPUTATION, so assert the computation.
+    /// </summary>
+    internal IReadOnlyList<TimeSpan> ComputedBackoffs => [.. _computedBackoffs];
 
     internal static readonly TimeSpan PumpShutdownGrace = TimeSpan.FromSeconds(2);
 

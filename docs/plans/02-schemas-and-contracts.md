@@ -645,6 +645,12 @@ with the pin check that produces `override`. It is an **in-memory loader field, 
 nothing declares it, nothing validates it, and writing `tierOrigin` into a `task.json` configures
 nothing.
 
+None of `TierOrigin`'s three states is `escalated`: escalation (the escalation ladder, #228, §7) is a
+**runtime** fact — a previous attempt of this task failed its guardrails — that no declaration site can
+supply, so a reader should not go looking for a fourth `TierOrigin` value. The journal's
+`tierSource: "escalated"` is produced downstream, by the resolver's escalation check, never by the
+loader.
+
 Deriving the origin instead by **comparing** the task's tier to `tiering.defaultTier` is wrong, and
 wrong in the most ordinary case there is: a task that explicitly writes the same token the plan already
 defaults to is then misreported as `plan-default`, and one whose plan has no default at all cannot be
@@ -2368,6 +2374,34 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
           // outcome, and in every pre-#485 journal. Journaled because `guardrails status` and the static
           // log-site export read ONLY run.json — without it the claim would not survive the run.
           "needsHumanKind": "defective-guardrail",
+          // OPTIONAL record of the `needsHarnessWrite` escape hatch (§9, #191/#437/#445) this attempt asked
+          // for: what was requested, how much of it landed, and — when nothing did — why. The dispositions
+          // already existed as first-class values inside the harness; they were computed, spent on the retry
+          // feedback, and DROPPED, so a task whose harness writes were silently ignored (#531) left nothing
+          // here saying a write had even been requested (#532 gap 1). ABSENT (never null) on every attempt
+          // that requested none — nearly all of them — and in every journal predating this field. Recorded
+          // on EVERY settle downstream of the write, success and failure alike.
+          "harnessWrite": {
+            "requested": 2,         // how many file entries the request named (a single-object payload is a
+                                    //   batch of one)
+            "applied": 0,           // how many were written. Either `requested` or 0 and never between (the
+                                    //   batch is ATOMIC, #445) — a COUNT, not a boolean, so the pair reads as
+                                    //   the evidence it is
+            "disposition": "rejected",  // applied | rejected (containment/writeScope) | denied (the #321
+                                    //   permission-file carve-out) | not-applied (#437/#445 — unusable
+                                    //   payload, bad or ambiguous anchor, wrong mode, duplicate target) |
+                                    //   failed (an IO fault during the write itself)
+            "reason": "needsHarnessWrite[1] (of 2 entries) failed, so the WHOLE batch was abandoned — NOTHING was written and all 2 target files are byte-identical. path 'docs/b.md' is outside this task's declared writeScope",
+                                    //   the actionable reason, verbatim as the agent was told it. ABSENT when
+                                    //   `disposition` is `applied`. BATCH grain deliberately: the batch is
+                                    //   atomic, so ONE reason governs every entry (and for an array it
+                                    //   already names the offending index) — copying it onto each entry would
+                                    //   be a second copy of one fact
+            "entries": [            // one per path the request named, in the order the agent listed them
+              { "path": "out/a.md",  "disposition": "rejected" },
+              { "path": "docs/b.md", "disposition": "rejected" }
+            ]
+          },
           // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
           // Also mirrored to <attempt>/attempt-provenance.json and, for humans, rendered as
@@ -2382,14 +2416,24 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                      //   OPTIONAL (#349): what the ROUTE ASKED FOR, written ONLY when it
                                      //   DIFFERS from `model`. Its PRESENCE is the mismatch signal, so it
                                      //   is ABSENT on an ordinary attempt; see the prose below
-            // The five route fields (#201, DoR §12.4). All ABSENT — never null — on a script attempt and in
-            // every journal written before model tiering; see "Per-attempt tier provenance" below.
+            // The five route fields (#201, DoR §12.4), plus the OPTIONAL `escalatedFrom` (#228). All
+            // ABSENT — never null — on a script attempt and in every journal written before model tiering
+            // (`escalatedFrom` is additionally absent on every non-escalated attempt); see "Per-attempt
+            // tier provenance" below.
             "runner": "primary",    // the promptRunners block name the attempt resolved to
             "kind": "claude",       // that block's `kind` as its WIRE TOKEN (not the C# name, not an ordinal)
-            "tier": "hard",         // the rung that SERVED — the requested one unless §9.6's climb moved it.
-                                     //   ABSENT when no rung resolved: a pin, or a legacy fallback
-            "tierSource": "task",   // task | plan-default | override — WHICH SITE supplied the rung; each has
-                                     //   exactly one producer. ABSENT on a legacy fallback
+            "tier": "hard",         // the rung that SERVED — the requested one unless §9.6's climb moved it,
+                                     //   or the escalation ladder (#228, §7) moved it after a prior attempt's
+                                     //   guardrail failure. ABSENT when no rung resolved: a pin, or a legacy
+                                     //   fallback
+            "tierSource": "task",   // task | plan-default | override | escalated — WHICH SITE supplied the
+                                     //   rung; each has exactly one producer. ABSENT on a legacy fallback
+            "escalatedFrom": "medium", // OPTIONAL (#228): the rung the FIRST, un-escalated resolution served
+                                     //   — what this task would have run on had it not climbed. PRESENT only
+                                     //   on an attempt the escalation ladder moved; its presence IS the
+                                     //   escalation signal, so it is ABSENT (never null) on every other
+                                     //   attempt — including one that reached the same tier by §9.6's
+                                     //   capability climb instead (see "Per-attempt tier provenance" below)
             "effort": "xhigh",      // the resolved route's effort, with action.effort applied over it.
                                      //   RECORDED, not yet emitted as a CLI flag (§9). ABSENT when unnamed
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
@@ -2423,6 +2467,27 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                      //   Recorded on EVERY attempt whose judge is weak; ABSENT when it is not
             }
           }
+        }
+      ],
+      // OPTIONAL, append-only log of the class-(b) transient PAUSES this task took (#115/#515) — one entry
+      // per TransientBackoff backoff, written AT THE PAUSE and BEFORE the wait (a run killed mid-pause must
+      // still say it was pausing and why). TASK grain, not attempt grain, and that is mechanical: a pause
+      // happens BETWEEN attempt launches — the paused attempt re-runs under the SAME number, which IS the
+      // no-retry-consumed contract — so no attempt record exists yet to hang it off, and the budget it
+      // spends is per-task anyway. Each entry names the attempt it paused, so nothing is lost.
+      // ABSENT (never null noise, never an empty array) on the overwhelming majority of tasks, which never
+      // pause, and in every journal written before this field existed.
+      "transientPauses": [
+        {
+          "pause": 1,               // 1-based ordinal within THIS task's pause budget
+          "attempt": 1,             // the attempt suspended and about to be re-run (same number, same log dir)
+          "at": "2026-06-10T16-31-02Z",   // when the pause BEGAN — stamped before the wait
+          "reason": "usage limit reached (resets 11:20am)",  // as IRunObserver.PromptPaused receives it
+          "waitSeconds": 2,         // the backoff this pause waited, already clamped to the remaining budget.
+                                    //   Seconds as a NUMBER — run.json is read by humans and by tooling that
+                                    //   never links against this assembly
+          "resetHint": "11:20am"    // OPTIONAL machine-readable half of `reason`'s prose, when the provider
+                                    //   named a reset time. ABSENT when it did not
         }
       ]
     }
@@ -2585,6 +2650,66 @@ only where nobody kept it) sitting on its own audit trail. Written once at the e
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.
+
+**`harnessWrite` — the escape hatch's disposition, kept (#532 gap 1).** Every disposition in this record was
+ALREADY computed as a first-class value inside `HarnessWrite.ValidateAndApply` — `Rejected(…)`, `Denied(…)`,
+`NotApplied(…)`, `Failed(…)`, each carrying a reason, plus the applied paths — and then dropped once the
+retry feedback had been composed from it. The consequence was measured: a task requested harness writes on
+three consecutive attempts, all three were silently ignored (#531), and NOTHING in `run.json` recorded that a
+write had ever been requested. Diagnosing it meant reading a raw `action-out-fragment.json` out of the log
+dir and then reading harness SOURCE to learn where the key is looked up — archaeology, and precisely what a
+self-healing agent (#529) cannot do cheaply.
+
+Three properties:
+
+* **Recorded on EVERY settle downstream of the write, not only the refusals.** An applied write settles on
+  the SUCCESS path, and in worktree mode — the default — that path builds its own `AttemptRecord` from
+  `PendingAttempt` and never consults the journaller. So the field rides `PendingAttempt` too; without that
+  the journal could say a harness write was *refused* and never that one *succeeded*, which is the
+  survivorship shape gap 2 was about, one field over. The write-scope, guardrail-failure and cancel settles
+  downstream of an applied write carry it for the same reason: a later failure must not erase that the bytes
+  landed.
+* **The four refusals keep distinct tokens.** `rejected` (containment / `writeScope`), `denied` (the #321
+  permission-file carve-out), `not-applied` (#437/#445 — fixable by re-emitting) and `failed` (an IO fault)
+  have three different remedies, and collapsing them would send an agent to widen its `writeScope` for a
+  problem that has nothing to do with scope.
+* **`reason` is BATCH grain; `entries[].disposition` is per entry.** The batch is atomic, so one reason
+  governs the whole request — and for a multi-entry batch it already names the offending array index.
+  Per-entry dispositions are recorded anyway so a reader scanning a multi-file request never infers a
+  per-file outcome from a batch-level one, and so the shape survives if partial application is ever
+  introduced.
+
+Follows the `needsHumanKind` precedent one column over: a fragment-derived classification, canonicalized at
+the journal boundary and recorded on the attempt, because `guardrails status` and the static log-site export
+read ONLY the journal.
+
+**`tasks.<id>.transientPauses[]` — a pause that RESOLVES is evidence too (#115/#515).** Until this field
+existed, only the transient that **exhausted** the per-task pause budget left a durable trace (an attempt
+record with `outcome: "rate-limited"`). The pause that CLEARED — the #115 happy path, and the entire point
+of the feature — reached `IRunObserver.PromptPaused` and nothing else, so a task that quietly paused six
+times and then went green was, in every durable record, byte-identical to one that ran clean. "Did this run
+hit provider trouble?" therefore became unanswerable the moment the console scrolled away — which is the
+difference between *"the model is flaky today"* and *"my plan is wrong"*. It also left the feature's own
+justification unauditable: #115 pauses **without consuming retry budget** because a provider stall is not
+the task's fault, and that trade can only be checked if the pauses are counted.
+
+Three properties are load-bearing:
+
+* **Written at the pause, BEFORE the wait.** A run killed mid-pause must still say it was pausing and why;
+  recording on the far side of the delay would lose exactly the long pauses that matter most. `run.json` is
+  persisted atomically per call, so the entry is on disk before the first second of the backoff elapses.
+* **TASK grain, not attempt grain** — mechanical, not stylistic. A pause happens BETWEEN attempt launches:
+  the paused attempt re-runs under the **same** attempt number (that IS the no-retry-consumed contract), so
+  no `AttemptRecord` exists yet to hang it off. The budget it spends is per-task too (one `TransientBackoff`
+  per task). Each entry carries `attempt`, so the association is not lost.
+* **Unconditional.** The `decisions[]` `blocker-retried` entry the autonomous layer already wrote for a
+  resolved transient is only reached when the autonomy dial is wired (`Scheduler.ClassifyTaskGateAsync` runs
+  behind an escalation sink), so an ordinary run recorded nothing at all. This does not replace that entry —
+  it is the record every run gets.
+
+Consumers: `guardrails status` prints a per-task **Provider pauses** ledger, and the end-of-run summary
+prints one line naming the pause count, the tasks and the cumulative wait — sourced from the shipped
+`TaskResult.ResolvedTransient` signal rather than a second count of its own.
 
 **Removed field — `worktreeJunctionRoot` (issue #419).** Earlier revisions journaled the Windows
 short-junction root here (it was the field that made the junction durable RUN STATE — forcing a resume onto
@@ -2757,13 +2882,38 @@ what the harness did rather than a guess reconstructed afterwards:
 | `"task"` | the task's own `action.tier` — or a judge guardrail's frontmatter `tier` — supplied the rung | the rung that served |
 | `"plan-default"` | the task declared none, and the plan-wide `tiering.defaultTier` supplied it | the rung that served |
 | `"override"` | a full `action.runner`/`action.model` **pin** bypassed resolution entirely (§9.6, precedence item 1) | **absent** — no rung resolved |
+| `"escalated"` | the **escalation ladder** (#228) climbed one rung because a PREVIOUS attempt of this task failed its guardrails | the rung actually served after the climb |
 | *(absent)* | the **legacy fallback**: no effective tier anywhere, so nothing resolved and nothing was overridden | absent |
 
 There is deliberately **no enum value for the legacy path** (D30). "Absent" and `"override"` are
 different facts about how the attempt got its model, and a reader must be able to tell them apart —
-inventing a fourth token for "nothing happened" would erase that distinction. Conversely a pin DOES
+inventing a fifth token for "nothing happened" would erase that distinction. Conversely a pin DOES
 record: *"bypasses tier resolution entirely"* governs what is **selected**, not what is **logged**
 (D31), so a pinned attempt still says why it took the route it took, with `tier` absent beside it.
+
+**`"escalated"` — the escalation ladder (#228).** A budget-consuming `guardrail-failed` outcome on one
+attempt makes the *next* attempt resolve one rung stronger, with `provenance.tier` recording the rung
+actually served after the climb. Three things a reader cannot get from the table alone:
+
+- **The trigger is `guardrail-failed` only.** A timeout, a max-turns stop, a transient pause and a
+  permission wall each have their own counter and their own remedy, and none of them escalates —
+  conflating them would spend a stronger model on an infrastructure or clock problem and misreport it
+  as "this task was too hard."
+- **An escalated attempt draws from the SAME retry pool** as an ordinary retry: one rung climbed per
+  guardrail failure, total attempts unchanged, no budget reset and no new cumulative cap.
+- **`escalated` is not `Climbed`.** A capability climb (`Candidates(RequestedTier)` was empty, so the
+  resolver walked up inside ONE attempt's resolution, §9.6) and an escalation (a PREVIOUS attempt
+  failed its guardrails) are different facts that can produce the identical `(requestedTier, tier)`
+  pair — a task tagged `easy` that climbed to `medium` for lack of an `easy` candidate looks, on `tier`
+  alone, exactly like one escalated from `easy` to `medium` after a guardrail failure. `tierSource` and
+  `escalatedFrom` are the whole reason a reader can tell the two apart.
+
+**`escalatedFrom`** records the rung the FIRST, un-escalated resolution served — what this task would
+have run on had it not climbed. It is present **only** on an attempt the escalation ladder moved;
+**absent — never null —** on every other attempt, which is what makes its presence the escalation
+signal without a second flag beside it. It sits beside `tier`/`tierSource` in `provenance`, documented
+the same way `requestedModel` is: presence itself is the signal, and an ordinary attempt carries no key
+at all.
 
 **The source is READ, never reconstructed** — it comes from the `TierOrigin` the loader recorded (§3)
 and from which precedence branch the resolver took, never from comparing the task's tier to
@@ -4519,6 +4669,11 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   the segment's git diff too; this is expected, not redundant — the prospective check prevents the
   attempt from even TRYING an out-of-scope write, the retrospective check is unchanged defense in
   depth) and then the task's own `guardrails/`, exactly as any other successful action does.
+- **The disposition is DURABLE (#532 gap 1).** Whatever happens — applied, rejected, denied, not-applied or
+  failed — it is recorded on the attempt as §7's `harnessWrite` (count requested, count applied, the
+  disposition token, the reason, and every path the request named). Before this the dispositions were
+  computed here, spent on the retry feedback and dropped, so a request that was silently ignored (#531) left
+  nothing in `run.json` saying one had even been made.
 - **Failure classification (runner-agnostic).** A non-success prompt result is classified into a
   `PromptFailureKind` — `Transient` | `OutputCap` | `MaxTurns` | `Timeout` | `Error` — by the runner
   CLASS, which is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an
@@ -4905,6 +5060,23 @@ interval: a gap vastly exceeding it (the poll runs at `stallBound / 20` — ~60s
 unambiguous, not a margin call) means the MACHINE was not running, and the silence window is reset rather
 than counted. The tie deliberately breaks toward waiting: misreading a stall as a suspend costs one more
 window, while misreading a suspend as a stall kills healthy work — the defect #504 exists to remove.
+
+> **Do not "fix" this by switching to a monotonic clock.** The wall clock here is the mechanism, not the
+> bug: a clock that DOES advance across suspend is what makes the poll gap visible at all. On Windows —
+> the platform this was reported from — neither candidate excludes suspend. Measured on one machine 4.8
+> days after boot, at one instant: `QueryUnbiasedInterruptTime` 359,578 s (excludes sleep by definition)
+> against `Environment.TickCount64` 413,689 s, `Stopwatch`/QPC 413,723 s and wall-clock-since-boot
+> 413,698 s — both "monotonic" candidates track the wall clock and sit ~15 h ahead of unbiased time. (They
+> DO exclude suspend on Linux and macOS, where they map to `CLOCK_MONOTONIC` / `mach_absolute_time`; the
+> divergence is Windows-specific.) Swapping the clock would look like a fix and change nothing.
+
+**One watchdog, every runner that bounds silence.** The clock, the `stallBound / 20` cadence, the verdict
+and the window reset live on `Core/Prompts/StallWatch.cs`; `ClaudePromptRunner` and
+`OpenAiCompatPromptRunner` both drive it, and a new runner honouring `PromptInvocation.StallBound` drives
+it too rather than spelling a loop of its own. #517 originally shipped into the Claude runner ALONE while
+this section described it as the harness's behaviour, leaving the openai-compat (local-inference) runner —
+the one an unattended overnight run is most likely to be sitting on — killing suspended turns as
+`stalled`. A bound written twice is a bound that is wrong in one of the two places.
 
 **The transient classifier reads the FAILURE, never the agent's content (issue #516).** Its fallback path
 (no usable terminal result — #115's instant rejection) takes `stderr`, the terminal envelope, and only
@@ -5419,7 +5591,7 @@ deliberately distinct from an explicit `false` ("stated cheap") — the distinct
 NOT-costly**, because an un-annotated registry must stay routable; only an explicit `true` excludes a block.
 
 **The costly floor.** `costly: true` blocks are excluded from `Candidates(R)` at **every** rung — their
-own, a climbed-to stronger rung, and (later) a ladder escalation or a judge bump. It is a hard floor on
+own, a climbed-to stronger rung, and a ladder escalation (#228, §7) or a judge bump. It is a hard floor on
 **harness autonomy**, with no override, no `--force` and no autonomy dial. The only paths to a costly
 model are an explicit **task pin** (`action.runner`/`action.model`) or the registry **`default` pointer**
 — both user assignments. Everything else is the harness choosing, and the harness does not choose.
@@ -7511,7 +7683,13 @@ Every row carries `schemaVersion` (the corpus outlives any one build, so a row m
 is), `runId`, `taskId`, `attempt`, `startedAt`, `endedAt`, `outcome`, `repo`, and the resolved route:
 `model`, `runner`, `kind`, `tier`, `tierSource`, `effort`.
 
-**`schemaVersion` is 2 as of plan 30 Phase 1 (#548).** Phase 1 added thirteen columns: the
+**`schemaVersion` is 3 as of issue #577.** Version 3 adds exactly one column, `modelAttribution`
+(§15.2b) — the reason a row's `model` reads the way it does. The bump matters for the usual reason and
+for one more: because the column is written on EVERY row of both grains from version 3 onward, its
+ABSENCE is a reliable marker of the pre-repair era. A reader no longer has to know a boundary date to
+tell "this row predates model attribution" from "this row's attribution is genuinely absent."
+
+**`schemaVersion` was 2 as of plan 30 Phase 1 (#548).** Phase 1 added thirteen columns: the
 task-fingerprint bucket `bucket` (§15.2a, §15.5), the provider's model digest `modelDigest` (§15.2a), the
 attempt envelope `turns` / `actionMs` / `guardrailMs`, route warmth `routeWarm`, and the run-environment
 profile `host` / `os` / `cpuCount` / `totalMemoryBytes` / `maxParallelism` / `harnessVersion` /
@@ -7573,6 +7751,66 @@ is permanently null: the Claude CLI stream carries a model TAG and no fingerprin
 row carries a digest only where the engine volunteers `system_fingerprint`, which many engines do not.
 Null therefore means "the provider exposed none", never "the harness lost it" — a future reader who does
 not find this written down will read the nulls as a defect and go looking for one that is not there.
+
+### 15.2b `modelAttribution` — why a row names no model (issue #577)
+
+`model: null` used to mean three unrelated things at once, and nothing in the row said which. Split
+across the 806-row operator corpus, the 413 rows naming no model were:
+
+| category | rows | verdict |
+|---|---|---|
+| task-grain sentinel (`attempt == 0`) | 319 | correct by construction |
+| script action | 2 | correct by construction |
+| prompt attempt with no journalled route | 93 | **the defect** |
+
+So 77% of the "missing" attribution was never missing. The headline "76% of rows name no usable model"
+was true and misleading at once — the corpus could not distinguish a row that SHOULD name a model from
+one that never could.
+
+**Why the ambiguity could not be resolved after the fact.** The journal omits `AttemptRecord.provenance`
+for a script attempt AND for a prompt attempt whose route was never recorded, so `provenance == null`
+carries no information about which. The only place both facts exist together is the plan folder: the
+journal beside `tasks/<id>/action.*`. That join is impossible for any row whose plan folder has since
+been deleted — 41 such rows in the corpus, and 120 unreadable task definitions in the census — so the
+answer has to be written at ingest time or not at all.
+
+**The column.** Every row of both grains carries one of six tokens:
+
+| token | meaning | in the attributable denominator? |
+|---|---|---|
+| `recorded` | `model` names a real, fully resolved model | yes |
+| `cli-default` | `model` is the `(cli default)` sentinel — the attempt ran a model, but no NAMED route resolved | yes |
+| `not-recorded` | **defect** — a prompt attempt whose route was never journalled | yes |
+| `script-action` | correct by construction — a script invokes no model | no |
+| `task-grain` | correct by construction — the `attempt == 0` summary row | no |
+| `unknown` | the action kind was undecidable (unreadable/absent/ambiguous `task.json`), or the ETL had no plan folder | no |
+
+`cli-default` is deliberately NOT folded into `recorded`. The sentinel is a truthful statement that no
+named route resolved, not a model identity; pooling those 134 corpus rows with a real model's would
+attribute their cost and outcomes to a model nobody recorded — the flattering-number failure this column
+exists to prevent. And `unknown` is counted in neither camp, applying §15.4's standing rule (recorded,
+never guessed at): booking it as `not-recorded` would invent a defect, booking it as `script-action`
+would excuse a real one.
+
+**The invariant, pinned by `TelemetryModelAttributionTests`:** a PROMPT action's attempt row is
+`recorded`, `cli-default`, or — as a defect — `not-recorded`, and NEVER `script-action`; a SCRIPT
+action's attempt row is `script-action` and never `not-recorded`. The two cases that both render an empty
+`model` column must stay distinguishable in the data.
+
+**Where the kind comes from.** `TaskActionKindReader` reads `tasks/<taskId>/action.*` by SSOT §3's rule
+(explicit `action.path` first, else the single `action.*` file; `.prompt.md` makes it a prompt). It is
+shared verbatim with `TelemetryAttributionCensus` — one spelling, two readers — so the census can never
+call a task a script while the corpus records a defect on the same row. `TelemetryIngest.IngestPlanFolder`
+supplies the plan folder; the bare-journal `Ingest` overload attributes `unknown` rather than guessing.
+
+**The pre-repair corpus is handled by a boundary, not a backfill or a re-baseline** — the same call
+recorded on #548 for the §3.1 provenance era, and for the same reasons, plus one specific to this defect:
+every one of the 93 defect rows predates `2026-08-31`, and a backfill cannot attribute a row whose task
+folder no longer exists, because script-versus-prompt is read FROM that folder. A partial backfill would
+leave a corpus that is part-repaired and part-not with no column saying which, which is exactly the
+era-mixing the boundary exists to prevent. `schemaVersion >= 3` (equivalently, a non-null
+`modelAttribution`) is the per-row form of that boundary, and is what an analysis should filter on —
+`telemetry report` already excludes pre-boundary rows from the stratified table by date.
 
 ### 15.3 Ingest
 
@@ -7636,6 +7874,19 @@ The constraints are the point, and they are structural rather than conventions a
 - **Attempts-to-green never renders without abandonment rate over the same denominator.** Averaging
   attempts over successes only flatters exactly the model that gives up.
 - **A costless provider reports time and volume, never a fabricated `$0`** (§15.2).
+- **Attribution coverage renders ABOVE the table, unconditionally** (issue #619). A stratified table looks
+  identical over a corpus that attributes 95% of its rows and one that attributes 20%, and nothing in the
+  table says which — so the report states, before the figures it qualifies, how many rows name a real
+  model out of the rows that *could* have named one. The denominator is
+  `recorded + cli-default + not-recorded` (§15.2b's `AttributableTokens`), never every row: dividing by
+  rows that were never going to name a model understates coverage by exactly the margin that made "76% of
+  rows name no usable model" read as a catastrophe when 77% of it was correct by construction. Only
+  `recorded` counts as **comparable** — `cli-default` is attributable and honest but is not a model
+  identity, so pooling it would attribute cost and outcomes to a model nobody recorded. The excluded
+  groups are named individually with their counts, never summed into an "other", because three facts
+  sharing one number is the defect §15.2b exists to prevent. The block prints even when coverage is
+  perfect: a section that appears only on trouble teaches the reader that its absence means "fine", and
+  the first time it is missing because of a bug, nobody notices.
 - **Two model fingerprints never pool**, even under the same model string — as of Phase 1 this is
   operative rather than aspirational. The fingerprint folds in `modelDigest` when the row carries one
   (`kind/runner/model@digest`), so a re-quantized model under a stable tag no longer pools with its
@@ -7690,10 +7941,22 @@ scope at all.
 ### 15.6 Opt-out and purge
 
 Collection is **ON by default**. The opt-out is the environment variable `GUARDRAILS_TELEMETRY=off` — any
-other value, or unset, means collection is on. It is checked **inside `TelemetryCorpusStore`**, and the
-verb and run-end ingest both honour it by going through the store rather than re-reading the environment:
-two mechanisms for one decision is how a machine ends up opted out of one path and not the other, which is
-worse than no opt-out because the operator believes collection is off.
+other value, or unset, means collection is on. Only that exact token disables collection: `false`, `0` and
+`no` all leave it ON, because an operator who typed one and believed collection was off for months is a
+worse outcome than a typo that did nothing.
+
+**One definition, resolved at the edge.** `TelemetryCollectionSwitch` owns the rule — `IsEnabled(string?)`
+as a pure function, `IsEnabledFromEnvironment()` as the single environment read. Composition roots (the
+`telemetry` verb and `RunCommand`'s run-end ingest) resolve it once and pass the answer to
+`TelemetryCorpusStore` as constructor state. Two mechanisms for one decision is how a machine ends up
+opted out of one path and not the other; this is still one mechanism, just resolved at the edge.
+
+**Why it is no longer read inside `Append`.** It used to be, and that made every write depend on
+PROCESS-GLOBAL state at the instant of the write. Under the concurrent whole-solution profile (#566) that
+produced a measured failure: six telemetry tests, each with a correctly isolated corpus root, all reported
+their own corpus empty because one concurrent test had set `GUARDRAILS_TELEMETRY=off` around its own
+invocation. A store's behavior must follow how it was BUILT, not what the process happens to look like —
+the same repair `GitEnvironmentCollection` names for the analogous `GIT_DIR` coupling.
 
 `guardrails telemetry purge` removes every row under the corpus root, and is safe on an empty corpus.
 

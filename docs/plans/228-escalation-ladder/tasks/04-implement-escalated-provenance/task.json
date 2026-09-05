@@ -1,0 +1,11 @@
+{
+  "description": "Map an escalated route onto TierSource.Escalated and give it its wire token, so the journal tells an escalated attempt apart from a capability climb",
+  "stableId": "j5b9wc",
+  "dependsOn": [
+    "03-author-tests-escalated-provenance"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/TierProvenance.cs",
+    "src/Guardrails.Core/Journal/JournalJson.cs"
+  ]
+}

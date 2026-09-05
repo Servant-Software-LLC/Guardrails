@@ -38,7 +38,7 @@ public static class RunCommand
 
         var dryRunOption = new Option<bool>("--dry-run")
         {
-            Description = "Validate and preview tiers + per-task resolution + resume skips, then exit 0 without running or touching state."
+            Description = "Validate and preview the dependency tiers, the per-task resolution (runner, model tier, retry budget) and resume skips, then exit 0 without running or touching state."
         };
 
         var noLogServerOption = new Option<bool>("--no-log-server")
@@ -2495,8 +2495,8 @@ public static class RunCommand
     /// need to keep a real run off the operator's own corpus.
     ///
     /// <para>This names WHERE the corpus lives, never WHETHER collection happens. The opt-out
-    /// (<see cref="TelemetryCorpusStore.OptOutEnvVar"/><c>=off</c>) is read inside the store and nowhere
-    /// else — least of all here, where a second copy of that rule could silently disagree with the verb.</para>
+    /// (<see cref="TelemetryCollectionSwitch.OptOutEnvVar"/><c>=off</c>) is decided by that single switch
+    /// and nowhere else — no second copy of that rule lives here to silently disagree with the verb.</para>
     /// </summary>
     private const string TelemetryCorpusRootEnvVar = "GUARDRAILS_TELEMETRY_CORPUS_ROOT";
 
@@ -2516,9 +2516,10 @@ public static class RunCommand
     /// <para><b>Both policy questions are settled elsewhere, by calling rather than re-deriving.</b> WHERE
     /// the corpus lives comes from <see cref="TelemetryCommand.ResolveCorpusRoot"/> — the very member the
     /// <c>telemetry</c> verb resolves through, so the verb and the run can never point at two different
-    /// corpora — and WHETHER collection is on is honoured by going through
-    /// <see cref="TelemetryCorpusStore.Append"/>, which checks the opt-out itself and writes nothing when it
-    /// is set. Neither rule is restated in this file.</para>
+    /// corpora — and WHETHER collection is on comes from
+    /// <see cref="TelemetryCollectionSwitch.IsEnabledFromEnvironment"/>, the single definition the verb
+    /// resolves through too, handed to the store as constructor state. Neither rule is restated in this
+    /// file.</para>
     /// </summary>
     private static void IngestRunTelemetry(Core.Model.PlanDefinition plan, IConsoleIo io)
     {
@@ -2530,8 +2531,13 @@ public static class RunCommand
             corpusRoot = TelemetryCommand.ResolveCorpusRoot(
                 Environment.GetEnvironmentVariable(TelemetryCorpusRootEnvVar));
 
+            // The opt-out is resolved HERE, at the composition root, and handed to the store — it is no
+            // longer re-read inside the write path. See TelemetryCollectionSwitch for the concurrency
+            // defect that moved it.
             TelemetryIngest.IngestPlanFolder(
-                plan.PlanDirectory, new TelemetryCorpusStore(corpusRoot), TelemetryRepoDimension(plan));
+                plan.PlanDirectory,
+                new TelemetryCorpusStore(corpusRoot, TelemetryCollectionSwitch.IsEnabledFromEnvironment()),
+                TelemetryRepoDimension(plan));
         }
         catch (Exception ex)
         {
@@ -2842,6 +2848,13 @@ public static class RunCommand
             ? $"Run CANCELLED — {green}/{report.Tasks.Count} task(s) green; in-flight tasks journaled pending. Re-run to resume."
             : $"{green}/{report.Tasks.Count} task(s) green (succeeded or skipped).");
 
+        // #515: a green run that waited out three rate limits is a materially different result from one
+        // that did not, and until now the console said so only in scrolling mid-run lines nobody keeps.
+        if (TransientPauseLine(report.Tasks) is { } pauseLine)
+        {
+            output.WriteLine(pauseLine);
+        }
+
         PrintTotalCost(planDirectory, output);
 
         // Post-mortem pointer for EVERY task, not just failures: a green task whose guardrails
@@ -2865,6 +2878,45 @@ public static class RunCommand
         output.WriteLine($"  each task's attempts are under <task-id>{sep}attempt-N{sep}");
 
         PrintNeedsHumanSections(report, logsRoot, output);
+    }
+
+    /// <summary>
+    /// The end-of-run PROVIDER-PAUSE advisory (issue #515), or null when no task paused — which is nearly
+    /// every run, so the summary stays noise-free.
+    /// <para>
+    /// <b>What it is for.</b> A green run that waited out three rate limits is a materially different
+    /// result from one that sailed through, and the difference decides whether "the model is flaky today"
+    /// or "my plan is wrong". Before this the pauses existed only as mid-run console lines that scroll
+    /// away, so the end-of-run verdict — the thing an operator actually reads — was silent about them.
+    /// </para>
+    /// <para>
+    /// It reads <see cref="TaskResult.ResolvedTransient"/>, the shape the executor ALREADY produces for a
+    /// class-(b) transient that cleared within budget (#115 / doc 12 §4.2), rather than a second count of
+    /// its own: two fields claiming one fact is how they drift. A task whose transient did NOT clear
+    /// settles <see cref="TaskOutcome.RateLimited"/> and is reported by its own summary row, so it is not
+    /// double-counted here.
+    /// </para>
+    /// <para>Pure — public for the same reason <see cref="Hyperlink"/> is: the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>, so the mapping itself is the test seam.</para>
+    /// </summary>
+    public static string? TransientPauseLine(IReadOnlyList<TaskResult> tasks)
+    {
+        List<ResolvedTransient> resolved = tasks
+            .Select(t => t.ResolvedTransient)
+            .OfType<ResolvedTransient>()
+            .ToList();
+
+        if (resolved.Count == 0)
+        {
+            return null;
+        }
+
+        int pauses = resolved.Sum(r => r.Pauses);
+        int waitedSeconds = (int)resolved.Sum(r => r.Waited.TotalSeconds);
+
+        return $"Provider pauses: {pauses} across {resolved.Count} task(s), {waitedSeconds}s waited — these "
+             + "tasks went GREEN after waiting out a transient provider limit; no retry budget was spent. "
+             + "Per-pause detail: state/run.json → tasks.<id>.transientPauses[].";
     }
 
     /// <summary>

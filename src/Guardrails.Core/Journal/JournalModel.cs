@@ -477,6 +477,85 @@ public sealed record TaskJournalEntry
 
     /// <summary>Attempt records in attempt order (1-based).</summary>
     public IReadOnlyList<AttemptRecord> Attempts { get; init; } = [];
+
+    /// <summary>
+    /// OPTIONAL, append-only log of the class-(b) transient PAUSES this task took (SSOT §7
+    /// <c>transientPauses[]</c>, issue #515) — one entry per <see cref="Execution.TransientBackoff"/> backoff,
+    /// written AT THE PAUSE rather than at any settle.
+    /// <para>
+    /// <b>The gap this closes.</b> A transient that paused and then RESOLVED — the #115 happy path, and the
+    /// entire point of the feature — left no durable trace whatever: only the EXHAUSTED path
+    /// (<c>AttemptJournaler.RateLimitExhausted</c>) recorded anything, and the resolving pause reached the
+    /// <see cref="Execution.IRunObserver"/> and nothing else. So "did this run hit provider trouble?" was
+    /// unanswerable once the console scrolled away, which is the difference between "the model is flaky
+    /// today" and "my plan is wrong". It also defeats the feature's own justification: #115 pauses WITHOUT
+    /// consuming retry budget because a provider stall is not the task's fault, and that trade is only
+    /// auditable if the pauses are counted. A task that quietly paused six times was, in every durable
+    /// record, identical to one that ran clean.
+    /// </para>
+    /// <para>
+    /// <b>TASK grain, not attempt grain, and that is mechanical.</b> A pause happens BETWEEN attempt
+    /// launches — the paused attempt re-runs under the SAME attempt number, and no
+    /// <see cref="AttemptRecord"/> exists for it yet — so there is no attempt record to hang it off at the
+    /// moment it happens. The budget it spends is per-task too (one
+    /// <see cref="Execution.TransientBackoff"/> per task), which is the same grain. Each entry names the
+    /// attempt number it paused, so the association is not lost.
+    /// </para>
+    /// <para>
+    /// Additive and backward-compatible: absent (never <c>null</c> noise) on the overwhelming majority of
+    /// tasks, which never pause, and in every journal written before this field existed.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<TransientPauseRecord>? TransientPauses { get; init; }
+}
+
+/// <summary>
+/// ONE class-(b) transient pause (SSOT §7 <c>tasks.&lt;id&gt;.transientPauses[]</c>, issues #115/#515): the
+/// harness met a retryable provider condition (429/503/529, "overloaded", a rate/session/usage limit), backed
+/// off, and re-ran the SAME attempt without consuming the retry budget.
+/// <para>
+/// Written BEFORE the wait, not after it. A run killed mid-pause must still say it was pausing and why —
+/// recording only on the far side of the delay would lose exactly the pauses that were long enough to matter.
+/// </para>
+/// </summary>
+public sealed record TransientPauseRecord
+{
+    /// <summary>1-based ordinal of this pause within the task's own pause budget.</summary>
+    public required int Pause { get; init; }
+
+    /// <summary>
+    /// The attempt number that was paused and is about to be re-run. NOT a new attempt: the #115 contract is
+    /// that a transient pause does not consume the retry budget, so the re-run reuses this number and this
+    /// attempt's log dir.
+    /// </summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>UTC time the pause BEGAN (ISO-8601) — stamped before the wait, see the type remarks.</summary>
+    public required DateTimeOffset At { get; init; }
+
+    /// <summary>
+    /// The operator-facing cause, as the runner reported it — the same text
+    /// <see cref="Execution.IRunObserver.PromptPaused"/> receives.
+    /// </summary>
+    public required string Reason { get; init; }
+
+    /// <summary>
+    /// The backoff this pause waited, in seconds — the <see cref="Execution.TransientBackoff.NextDelay"/>
+    /// value, already clamped to the task's remaining pause budget. Seconds as a number rather than a
+    /// <c>TimeSpan</c> because <c>run.json</c> is a wire format read by humans and by tooling that never
+    /// links against this assembly.
+    /// </summary>
+    public required double WaitSeconds { get; init; }
+
+    /// <summary>
+    /// The reset hint the runner parsed out of the provider's message ("3pm", "in 2 hours"), when it gave
+    /// one. Absent (never <c>null</c> noise) when it did not. It is ALSO folded into
+    /// <see cref="Reason"/>'s prose — this field is the machine-readable half, so a reader does not have to
+    /// re-parse the sentence the harness already parsed.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResetHint { get; init; }
 }
 
 /// <summary>One attempt of one task (SSOT §7 attempt record).</summary>
@@ -567,6 +646,118 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NeedsHumanKind { get; init; }
+
+    /// <summary>
+    /// OPTIONAL record of the <c>needsHarnessWrite</c> escape hatch this attempt asked for (SSOT §7/§9,
+    /// issue #532 gap 1): what was requested, how much of it landed, and — when nothing did — why.
+    /// <para>
+    /// <b>The gap this closes.</b> The dispositions already existed as first-class values
+    /// (<c>HarnessWriteOutcome.Rejected</c> / <c>.Denied</c> / <c>.NotApplied</c> / <c>.Failed</c>, each
+    /// carrying a reason, plus the applied paths) — they were computed, spent on retry feedback, and then
+    /// DROPPED. So a task that requested harness writes on three consecutive attempts and had all three
+    /// silently ignored (#531) left NOTHING in <c>run.json</c> saying a write had ever been requested, let
+    /// alone what became of it. Diagnosing it meant reading raw <c>action-out-fragment.json</c> out of the
+    /// log dir and then reading harness SOURCE to learn where the key is looked up. That is archaeology,
+    /// and it is exactly what a self-healing agent (#529) cannot do cheaply.
+    /// </para>
+    /// <para>
+    /// Follows the <see cref="NeedsHumanKind"/> precedent one column over: a fragment-derived
+    /// classification, canonicalized at the journal boundary and recorded on the attempt, because
+    /// <c>guardrails status</c> and the static log-site export read ONLY the journal.
+    /// </para>
+    /// <para>
+    /// Additive and backward-compatible: absent (never <c>null</c> noise) on every attempt that requested
+    /// no harness write — which is nearly all of them — and in every journal written before this field
+    /// existed. It rides <see cref="Execution.PendingAttempt"/> as well, or it would land in serial mode
+    /// and silently vanish in the DEFAULT worktree mode; see that record's own doc comments for the worked
+    /// example of that exact defect.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HarnessWriteRecord? HarnessWrite { get; init; }
+}
+
+/// <summary>
+/// What happened to ONE <c>needsHarnessWrite</c> batch (SSOT §7 <c>harnessWrite.disposition</c>, issue
+/// #532). Every value has exactly one producer in <c>Execution.HarnessWrite.ValidateAndApply</c>, so this
+/// is a record of what the harness DID, never a guess reconstructed from a message afterwards.
+/// </summary>
+public enum HarnessWriteDisposition
+{
+    /// <summary>Every entry validated and was written.</summary>
+    Applied,
+
+    /// <summary>Refused by a containment/scope check — a workspace escape, or a path outside <c>writeScope</c>.</summary>
+    Rejected,
+
+    /// <summary>Refused by the #321 permission-file carve-out: the harness never writes <c>.claude/settings*.json</c> on an agent's behalf.</summary>
+    Denied,
+
+    /// <summary>
+    /// In bounds and permitted, but not applicable as written (#437/#445): an unusable payload, an anchor
+    /// that matched zero or several times, <c>edits</c> against a file that does not exist, full-content
+    /// mode against a target too large for it, or two entries targeting one file. Nothing was written and
+    /// every target is byte-identical; the agent can fix it by re-emitting.
+    /// </summary>
+    NotApplied,
+
+    /// <summary>Validated and permitted, but the write itself hit an IO fault.</summary>
+    Failed
+}
+
+/// <summary>
+/// The <c>needsHarnessWrite</c> disposition recorded on an attempt (SSOT §7 <c>harnessWrite</c>, issue
+/// #532 gap 1) — the durable answer to "was a harness write requested here, and what became of it?".
+/// </summary>
+public sealed record HarnessWriteRecord
+{
+    /// <summary>How many file entries the request named (a single-object payload is a batch of one).</summary>
+    public required int Requested { get; init; }
+
+    /// <summary>
+    /// How many were actually written. Either <see cref="Requested"/> or <c>0</c> and never anything
+    /// between, because the batch is ATOMIC (#445) — but it is recorded as a COUNT rather than a boolean
+    /// so the pair reads as the evidence it is: <c>"requested": 3, "applied": 0</c> says at a glance both
+    /// that work was asked for and that none of it happened.
+    /// </summary>
+    public required int Applied { get; init; }
+
+    /// <summary>What happened to the batch as a whole.</summary>
+    public required HarnessWriteDisposition Disposition { get; init; }
+
+    /// <summary>
+    /// The actionable reason the batch was not applied, verbatim as the agent was told it. Absent when
+    /// <see cref="Disposition"/> is <see cref="HarnessWriteDisposition.Applied"/>.
+    /// <para>
+    /// BATCH grain, deliberately, even though the request may name several files: the batch is atomic, so
+    /// one reason governs every entry, and copying that one string onto each of them would be a second
+    /// copy of a single fact — the very thing this file refuses a <c>resolvedModel</c> key for. For a
+    /// multi-entry batch the reason already names the offending array index.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+
+    /// <summary>
+    /// One entry per path the request named, in the order the agent listed them — the half a reader ACTS
+    /// on, because it says WHICH files were at stake. Empty only when the payload was so malformed it
+    /// named no path at all.
+    /// </summary>
+    public IReadOnlyList<HarnessWriteEntry> Entries { get; init; } = [];
+}
+
+/// <summary>One file named by a <c>needsHarnessWrite</c> request (SSOT §7 <c>harnessWrite.entries[]</c>).</summary>
+public sealed record HarnessWriteEntry
+{
+    /// <summary>The destination exactly as the agent spelled it.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>
+    /// This entry's disposition. Equal to the batch's under today's atomic semantics — recorded per entry
+    /// anyway so a reader scanning a multi-file request never has to infer a per-file outcome from a
+    /// batch-level one, and so the shape survives if partial application is ever introduced.
+    /// </summary>
+    public required HarnessWriteDisposition Disposition { get; init; }
 }
 
 /// <summary>
@@ -669,7 +860,13 @@ public enum TierSource
     /// still records why it took the route it took, and <c>provenance.tier</c> is absent because no rung
     /// resolved.
     /// </summary>
-    Override
+    Override,
+
+    /// <summary>
+    /// A PREVIOUS attempt of this task failed its guardrails, so the escalation ladder (#228) moved this
+    /// attempt one rung up. The rung it started from is recorded beside it as <c>escalatedFrom</c>.
+    /// </summary>
+    Escalated
 }
 
 /// <summary>
@@ -796,6 +993,14 @@ public sealed record AttemptProvenance
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TierSource? TierSource { get; init; }
+
+    /// <summary>
+    /// The rung the FIRST (un-escalated) resolution of this task served, present ONLY on an attempt the
+    /// escalation ladder (#228) moved. Absent — never null — on every other attempt, which is what makes
+    /// its presence the escalation signal without a second flag beside it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EscalatedFrom { get; init; }
 
     /// <summary>
     /// The reasoning effort the attempt ran at — the resolved route's own <c>effort</c>, with the task's

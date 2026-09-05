@@ -405,6 +405,51 @@ public static class HarnessWrite
     }
 
     /// <summary>
+    /// Turn a request and its outcome into the durable journal record (SSOT §7 <c>harnessWrite</c>, issue
+    /// #532 gap 1) the attempt carries.
+    /// <para>
+    /// <b>Why this exists at all.</b> Every disposition below was ALREADY computed here as a first-class
+    /// value and then dropped on the floor once the retry feedback had been composed from it — so a task
+    /// whose harness writes were silently ignored (#531) left nothing in <c>run.json</c> saying a write had
+    /// even been asked for. Diagnosing that meant reading a raw <c>action-out-fragment.json</c> and then
+    /// reading harness source. This is the same knowledge, kept.
+    /// </para>
+    /// <para>
+    /// It lives HERE, beside <see cref="ValidateAndApply"/>, so the mapping from
+    /// <see cref="HarnessWriteOutcome"/>'s flags to a disposition token has exactly ONE producer. The flag
+    /// order matters and mirrors the retry-feedback switch in <c>TaskExecutor</c>: <c>IsNotApplied</c> and
+    /// <c>IsPolicyDenied</c> both IMPLY <c>WasRejected</c>, so the generic scope arm must come last.
+    /// </para>
+    /// </summary>
+    public static Journal.HarnessWriteRecord Describe(HarnessWriteBatch batch, HarnessWriteOutcome outcome)
+    {
+        Journal.HarnessWriteDisposition disposition = outcome switch
+        {
+            { Succeeded: true } => Journal.HarnessWriteDisposition.Applied,
+            { IsPolicyDenied: true } => Journal.HarnessWriteDisposition.Denied,
+            { IsNotApplied: true } => Journal.HarnessWriteDisposition.NotApplied,
+            { WasRejected: true } => Journal.HarnessWriteDisposition.Rejected,
+            _ => Journal.HarnessWriteDisposition.Failed
+        };
+
+        return new Journal.HarnessWriteRecord
+        {
+            Requested = batch.Paths.Count,
+            // The batch is atomic, so this is Requested or 0 — read off the outcome's own written list
+            // rather than inferred from the disposition, because the outcome is the thing that knows.
+            Applied = outcome.Succeeded ? outcome.WrittenPaths.Count : 0,
+            Disposition = disposition,
+            // Absent on success: there is no reason for a write that happened.
+            Reason = outcome.Succeeded ? null : outcome.FailureReason,
+            Entries = [.. batch.Paths.Select(p => new Journal.HarnessWriteEntry
+            {
+                Path = p,
+                Disposition = disposition
+            })]
+        };
+    }
+
+    /// <summary>
     /// Run one entry's safety checks + duplicate-destination check + mode-specific resolution, returning
     /// either the bytes to write in phase 2 or the failure that aborts the whole batch. Purely
     /// read-only with respect to the workspace.
@@ -968,6 +1013,16 @@ public sealed record HarnessWriteBatch
     /// </summary>
     public required string PathForDisplay { get; init; }
 
+    /// <summary>
+    /// The destinations this payload named, in the order the agent listed them — the LIST behind
+    /// <see cref="PathForDisplay"/>'s joined string. Kept as a list, not derived from
+    /// <see cref="Requests"/>, for the same reason <see cref="PathForDisplay"/> is stored rather than
+    /// derived: an INVALID batch carries no usable <see cref="Requests"/> and must still be able to say
+    /// which files were asked for. The journal record (#532) enumerates this so a rejected multi-file
+    /// request names every file it would have touched, not just the offending one.
+    /// </summary>
+    public IReadOnlyList<string> Paths { get; init; } = [];
+
     /// <summary>A batch of usable entries.</summary>
     public static HarnessWriteBatch Of(params HarnessWriteRequest[] requests) =>
         Of((IReadOnlyList<HarnessWriteRequest>)requests);
@@ -976,15 +1031,21 @@ public sealed record HarnessWriteBatch
     public static HarnessWriteBatch Of(IReadOnlyList<HarnessWriteRequest> requests) => new()
     {
         Requests = requests,
+        Paths = [.. requests.Select(r => r.PathForDisplay)],
         PathForDisplay = Join(requests.Select(r => r.PathForDisplay))
     };
 
     /// <summary>An unusable payload, carrying the actionable reason and whatever paths it named.</summary>
-    public static HarnessWriteBatch Invalid(string reason, IEnumerable<string> paths) => new()
+    public static HarnessWriteBatch Invalid(string reason, IEnumerable<string> paths)
     {
-        InvalidReason = reason,
-        PathForDisplay = Join(paths.Select(p => string.IsNullOrWhiteSpace(p) ? "(no path given)" : p))
-    };
+        List<string> named = [.. paths.Select(p => string.IsNullOrWhiteSpace(p) ? "(no path given)" : p)];
+        return new HarnessWriteBatch
+        {
+            InvalidReason = reason,
+            Paths = named,
+            PathForDisplay = Join(named)
+        };
+    }
 
     private static string Join(IEnumerable<string> paths)
     {

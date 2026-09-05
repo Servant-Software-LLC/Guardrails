@@ -147,6 +147,20 @@ public sealed record TierResolution
     /// <see cref="NoRoute"/>. It never silently drops back to the runner's model.</para>
     /// </summary>
     public bool Legacy { get; init; }
+
+    /// <summary>
+    /// The rung a PREVIOUS attempt of this task served, when a guardrail failure moved this attempt up
+    /// the escalation ladder (<see cref="EscalationLadder.Apply"/>, issue #228); <c>null</c> means no
+    /// escalation happened.
+    ///
+    /// <para><b><see cref="EscalatedFrom"/> is NOT <see cref="Climbed"/>.</b> <see cref="Climbed"/> is
+    /// TRUE when <c>Candidates(RequestedTier)</c> was EMPTY and the resolver walked to a stronger rung
+    /// inside ONE attempt — a CAPABILITY fact ("no configured runner serves the requested rung").
+    /// <see cref="EscalatedFrom"/> is a different reason to be on a higher rung: a previous attempt of
+    /// this task FAILED ITS GUARDRAILS. The two are independent — an escalated attempt may also climb —
+    /// and they must stay separately readable in the journal and the report.</para>
+    /// </summary>
+    public string? EscalatedFrom { get; init; }
 }
 
 /// <summary>

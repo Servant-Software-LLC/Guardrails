@@ -1,0 +1,11 @@
+{
+  "description": "Author RED tests for TierSource.Escalated and the escalatedFrom journal record, plus the two data members in JournalModel.cs they compile against",
+  "stableId": "m8t4rv",
+  "dependsOn": [
+    "01-author-tests-escalation-ladder"
+  ],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Escalation/EscalatedProvenanceTests.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs"
+  ]
+}

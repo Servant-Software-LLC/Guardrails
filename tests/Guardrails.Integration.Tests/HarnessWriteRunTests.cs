@@ -282,6 +282,63 @@ public sealed class HarnessWriteRunTests
             "the harness-written .claude/ file must be committed on the plan branch");
     }
 
+    /// <summary>
+    /// Issue #532 gap 1, through the WORKTREE path — the mode-specific regression guard, and the reason it
+    /// needs its own test rather than riding the serial ones.
+    /// <para>
+    /// The applied case settles on the SUCCESS path, and in worktree mode — the DEFAULT — that path does not
+    /// go through <c>AttemptJournaler</c> at all: <c>ValidateFragmentForSettle</c> hands a
+    /// <see cref="PendingAttempt"/> to <c>Scheduler.RecordSucceededSettle</c>, which builds its OWN
+    /// <see cref="AttemptRecord"/> from that object and never consults the journaller. So the record reaches
+    /// a real worktree run through exactly two lines — <c>PendingAttempt.HarnessWrite</c> and the
+    /// <c>HarnessWrite = pending.HarnessWrite</c> assignment at the settle — and if either is dropped, every
+    /// SERIAL test still passes while the default mode silently journals nothing. That is precisely the
+    /// defect shape <see cref="PendingAttempt.Usage"/>'s own doc comment records for <c>usage</c> (#475) and
+    /// #532 gap 2 records for provenance: a member that lands in serial mode and vanishes in the mode almost
+    /// every run actually uses.
+    /// </para>
+    /// <para>
+    /// The REFUSED cases deliberately have no worktree twin: they settle through
+    /// <c>AttemptJournaler.FailedAttempt</c>, which is the same recorder in both modes, so the serial tests
+    /// in <c>Journal/HarnessWriteRecordTests</c> already cover them and a worktree copy would guard nothing.
+    /// </para>
+    /// <para>Asserts the RAW <c>run.json</c> rather than the typed model, on the <c>DeliveryRecordTests</c>
+    /// precedent — a <c>[JsonIgnore]</c> regression would otherwise pass while the field never reached
+    /// disk.</para>
+    /// </summary>
+    [Fact]
+    public async Task Worktree_AppliedHarnessWrite_IsJournaled_NotJustReachedTheSerialPath()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = WriteHarnessWritePlan(
+            repo.RepoPath, requestedPath: ".claude/skills/foo/SKILL.md", writeScope: "\".claude/**\"");
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+
+        using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(RunJournal.PathFor(planDir)));
+        JsonElement attempts = doc.RootElement.GetProperty("tasks").GetProperty("01-write").GetProperty("attempts");
+        Assert.Equal(1, attempts.GetArrayLength());
+        JsonElement attempt = attempts[0];
+
+        Assert.Equal("succeeded", attempt.GetProperty("outcome").GetString());
+        Assert.True(
+            attempt.TryGetProperty("harnessWrite", out JsonElement write),
+            "the WORKTREE settle journaled no harnessWrite for an APPLIED write (#532 gap 1). The serial "
+            + "path records it via AttemptJournaler; worktree mode builds its own AttemptRecord from "
+            + "PendingAttempt, so the record reaches the DEFAULT mode only through PendingAttempt."
+            + "HarnessWrite and the settle's assignment of it.");
+
+        Assert.Equal("applied", write.GetProperty("disposition").GetString());
+        Assert.Equal(1, write.GetProperty("requested").GetInt32());
+        Assert.Equal(1, write.GetProperty("applied").GetInt32());
+        Assert.False(write.TryGetProperty("reason", out _));   // no reason for a write that happened
+
+        JsonElement entry = Assert.Single(write.GetProperty("entries").EnumerateArray().ToList());
+        Assert.Equal(".claude/skills/foo/SKILL.md", entry.GetProperty("path").GetString());
+        Assert.Equal("applied", entry.GetProperty("disposition").GetString());
+    }
+
     [Fact]
     public async Task Worktree_OutOfScopeRequest_Rejected_ActionableFeedback_EventualNeedsHuman()
     {

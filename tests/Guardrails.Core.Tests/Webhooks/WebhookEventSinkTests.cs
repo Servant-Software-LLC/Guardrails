@@ -224,26 +224,24 @@ public sealed class WebhookEventSinkTests
         // Behaviour: one row against a transport that returns 503 every time produces exactly 4
         // requests, and the three gaps between them each fall inside their jittered band.
         const double scale = 0.2; // 1/2/4s steps -> 200/400/800ms; keeps the test fast but measurable
-        TimeSpan slack = TimeSpan.FromMilliseconds(150);
-
-        // MEASURE MORE THAN ONCE, and this is not flake tolerance — it is what separates the two things
-        // a wall-clock gap conflates. The gap between two recorded requests is the delay the sink
-        // COMPUTED plus however long the thread pool took to run the timer's continuation, and only the
-        // first of those is under test. When the pool is saturated the second is neither small nor
-        // bounded: it is governed by the runtime's thread-INJECTION rate (~1 per 500 ms once starved),
-        // which quantizes the observed gap near a second whatever the sink asked for.
+        // ASSERT THE COMPUTATION, NOT THE DELIVERY. A wall-clock gap between two recorded requests is
+        // the delay the sink COMPUTED plus however long the thread pool took to run the timer's
+        // continuation, and only the first of those is under test. When the pool is saturated the second
+        // is neither small nor bounded: it is governed by the runtime's thread-INJECTION rate (~1 per
+        // 500 ms once starved), which quantizes an observed gap near a second whatever the sink asked
+        // for.
         //
-        // MEASURED on this file, at HEAD, before any of the fixes in this commit: alone, this test
-        // passes in ~1s; inside the full 2470-test suite it fails reproducibly with gap1 at 926 ms and
-        // 982 ms against a 450 ms band top. Widening `slack` to cover that would have swallowed the band
-        // whole — 1300 ms of tolerance on a 200 ms step admits a schedule with no backoff at all.
+        // MEASURED, twice, on exactly this test. Alone it passes in ~1s. Inside the full suite it failed
+        // reproducibly with gap1 at 926 ms and 982 ms against a 450 ms band top — and widening the slack
+        // to cover that would have swallowed the band whole (1300 ms of tolerance on a 200 ms step
+        // admits a schedule with no backoff at all). A take-the-best-of-three mitigation was tried next
+        // and was still not enough: the v1.17.0 ubuntu release run starved all three samples under the
+        // concurrent whole-solution profile (#566).
         //
-        // A WRONG SCHEDULE FAILS EVERY MEASUREMENT; a starved one fails some. So take up to three and
-        // accept the first clean one, with the final measurement asserted unconditionally so a genuine
-        // defect still reports exactly the failure it reports today. Every band below is byte-identical
-        // to what it was; what changed is that one starved sample no longer decides.
-        const int measurements = 3;
-        for (int measurement = 1; ; measurement++)
+        // So stop sampling the delivery. `ComputedBackoffs` is what the sink decided, which is the thing
+        // this test names, and it is unaffected by how busy the machine is. The bands below are the same
+        // bands — what changed is that they are now EXACT, with zero slack, because a computed value has
+        // no scheduling noise in it to tolerate. A wrong schedule is a wrong computation and still fails.
         {
             var notices = new List<string>();
             var handler = new RecordingHandler
@@ -268,27 +266,19 @@ public sealed class WebhookEventSinkTests
             IReadOnlyList<(string DeliveryId, DateTimeOffset At)> requests = handler.Requests;
             Assert.Equal(4, requests.Count);
 
-            TimeSpan gap1 = requests[1].At - requests[0].At;
-            TimeSpan gap2 = requests[2].At - requests[1].At;
-            TimeSpan gap3 = requests[3].At - requests[2].At;
+            // Four attempts means exactly three waits between them — a fourth computed backoff would mean
+            // the sink intended a fifth attempt it never declared, which MaxAttemptsPerRow forbids.
+            IReadOnlyList<TimeSpan> backoffs = sink.ComputedBackoffs;
+            Assert.Equal(3, backoffs.Count);
 
-            bool last = measurement == measurements;
-            if (!last && !(InJitteredBand(gap1, WebhookEventSink.BackoffSteps[0] * scale, slack)
-                           && InJitteredBand(gap2, WebhookEventSink.BackoffSteps[1] * scale, slack)
-                           && InJitteredBand(gap3, WebhookEventSink.BackoffSteps[2] * scale, slack)
-                           && gap3 > gap1))
-            {
-                continue;
-            }
+            AssertWithinJitteredBand(backoffs[0], WebhookEventSink.BackoffSteps[0] * scale, TimeSpan.Zero);
+            AssertWithinJitteredBand(backoffs[1], WebhookEventSink.BackoffSteps[1] * scale, TimeSpan.Zero);
+            AssertWithinJitteredBand(backoffs[2], WebhookEventSink.BackoffSteps[2] * scale, TimeSpan.Zero);
 
-            AssertWithinJitteredBand(gap1, WebhookEventSink.BackoffSteps[0] * scale, slack);
-            AssertWithinJitteredBand(gap2, WebhookEventSink.BackoffSteps[1] * scale, slack);
-            AssertWithinJitteredBand(gap3, WebhookEventSink.BackoffSteps[2] * scale, slack);
-
-            // The one gap comparison that is exact regardless of jitter, since 2.0x always exceeds 1.5x:
-            // jitter exists so a parallel burst of failures does not resynchronize, not to blur the shape.
-            Assert.True(gap3 > gap1);
-            return;
+            // The one comparison that is exact regardless of the jitter draw, since 4s x 0.5 always
+            // exceeds 1s x 1.5: jitter exists so a parallel burst of failures does not resynchronize,
+            // not to blur the shape of the schedule.
+            Assert.True(backoffs[2] > backoffs[0]);
         }
     }
 
@@ -344,12 +334,27 @@ public sealed class WebhookEventSinkTests
              + WebhookEventSink.BackoffSteps[0] + WebhookEventSink.BackoffSteps[1] + WebhookEventSink.BackoffSteps[2])
             * scale;
 
+        // ASSERT THE ARMED BUDGET, NOT THE ELAPSED TIME. The two quantities this test used to compare —
+        // the scaled ceiling (2.25 s) and the scaled full schedule (2.35 s) — are ~4% apart by the
+        // design's own choice of numbers, so elapsed wall clock could never discriminate them on a
+        // machine under load: it separates "the ceiling cut this row off" from "this row ran its schedule
+        // out" by 100 ms, which is inside the scheduling noise of a concurrent whole-solution run. It
+        // duly failed on one. What is deterministic is the budget the sink ARMED for the row.
+        Assert.Equal(scaledCeiling, sink.LastPerRowCeilingUsed);
+
+        // The ceiling is armed from PerRowCeiling and nothing else, so a regression that armed the full
+        // schedule instead would move this number — which is the substantive claim the elapsed comparison
+        // was reaching for.
         Assert.True(
-            stopwatch.Elapsed <= scaledCeiling + TimeSpan.FromSeconds(2),
-            $"row ran past its ceiling: elapsed {stopwatch.Elapsed}, ceiling {scaledCeiling}");
+            sink.LastPerRowCeilingUsed < scaledFullSchedule,
+            $"the armed ceiling {sink.LastPerRowCeilingUsed} does not bound the row below the full "
+            + $"unbounded schedule {scaledFullSchedule}");
+
+        // A generous hang-catcher, and ONLY that. It is deliberately far wider than any budget above: it
+        // exists to fail a genuinely unbounded row, never to discriminate the ceiling from the schedule.
         Assert.True(
-            stopwatch.Elapsed < scaledFullSchedule,
-            $"row ran the full unbounded schedule out instead of being cut off: elapsed {stopwatch.Elapsed}, full schedule {scaledFullSchedule}");
+            stopwatch.Elapsed < TimeSpan.FromSeconds(30),
+            $"the row never terminated: elapsed {stopwatch.Elapsed}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -550,6 +555,7 @@ public sealed class WebhookEventSinkTests
     {
         var notices = new List<string>();
         var release = new TaskCompletionSource();
+        var blockHeadParked = new TaskCompletionSource();
         var handler = new RecordingHandler
         {
             OnRequest = async (req, _, ct) =>
@@ -557,6 +563,7 @@ public sealed class WebhookEventSinkTests
                 string id = DeliveryIdOf(req);
                 if (id == "block-head")
                 {
+                    blockHeadParked.TrySetResult();
                     await release.Task.WaitAsync(ct);
                     return new HttpResponseMessage(HttpStatusCode.OK);
                 }
@@ -574,6 +581,17 @@ public sealed class WebhookEventSinkTests
         // the eviction count here is exact and independent of pump timing: `excess` rows enqueued
         // beyond capacity, so exactly the oldest `excess` of the flood are displaced.
         sink.Emit(Row("block-head"));
+
+        // BARRIER, and the arithmetic below is wrong without it. Everything after this point assumes the
+        // pump is PARKED in the handler holding block-head, so that the flood meets a queue nothing is
+        // draining and exactly the oldest `excess` rows are displaced. Emitting block-head does not
+        // establish that — it only makes it likely. Starve the pump (a concurrent whole-solution run is
+        // enough, #566) and block-head is evicted by the flood before it is ever read; the handler's
+        // blocking branch then never fires, the pump drains CONCURRENTLY with the writer, early flood
+        // rows survive that should have been displaced, and flood-00000 gets the one POST this test
+        // asserts it never gets. Measured exactly that way on ubuntu in the v1.17.0 release run.
+        await blockHeadParked.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
         const int excess = 50;
         const int floodCount = WebhookEventSink.QueueCapacity + excess;
         for (int i = 0; i < floodCount; i++)
@@ -902,17 +920,27 @@ public sealed class WebhookEventSinkTests
         Assert.DoesNotContain(notices, n => n.Contains("gave up", StringComparison.Ordinal));
         Assert.DoesNotContain(notices, n => n.Contains("further delivery failure", StringComparison.Ordinal));
 
-        // AT MOST ONE per-row failure notice, and its cause is the harness's own cancellation — not the
-        // 39 queued rows. Exactly one row can be IN FLIGHT when step 4 cancels the pump's token (the
-        // pump is serial), and that row genuinely was sent and genuinely was not delivered, so a notice
-        // naming TaskCanceledException is honest about it. Every row BEHIND it was never sent at all,
-        // and it is the count that separates the two: before the fix each of those produced its own
-        // notice and its own _consecutiveFailures increment, which is what manufactured the "gave up"
-        // line above against an endpoint that had answered 200 every time.
+        // NO MORE FAILURE NOTICES THAN ROWS ACTUALLY SENT — which is this test's own name, asserted
+        // directly instead of through a proxy. A row that reached the handler genuinely was sent and
+        // genuinely was not delivered, so a notice naming TaskCanceledException is honest about it.
+        // Every row BEHIND it was never sent at all, and before the fix each of those produced its own
+        // notice and its own _consecutiveFailures increment — measured at 6 notices plus "gave up after
+        // 5 consecutive delivery failures" against an endpoint that answered 200 every time. Against
+        // roughly one row actually sent, that is what this bound catches.
+        //
+        // It replaces a `<= 1` count whose stated premise — "exactly one row can be IN FLIGHT when step
+        // 4 cancels the pump's token (the pump is serial)" — is true PER PHASE and false for the
+        // teardown as a whole: §3.3's backlog drain and its terminal delivery are two sending phases,
+        // and each can have its own row in flight when its own budget expires. Both notices are then
+        // truthful and the bound was not, so it failed under load while the property it stood for held
+        // (measured: 2 notices, on the #181 baseline preflight of an unattended run). Counting rows the
+        // handler received needs no premise about how many phases send.
         List<string> failureNotices = [.. notices.Where(n => n.Contains("delivery failed", StringComparison.Ordinal))];
         Assert.True(
-            failureNotices.Count <= 1,
-            $"only the single in-flight row may be reported as failed; got {failureNotices.Count}:{Environment.NewLine}{string.Join(Environment.NewLine, failureNotices)}");
+            failureNotices.Count <= handler.Requests.Count,
+            $"a row that was never sent must never be reported as failed: {failureNotices.Count} failure "
+            + $"notice(s) against {handler.Requests.Count} row(s) actually POSTed:"
+            + $"{Environment.NewLine}{string.Join(Environment.NewLine, failureNotices)}");
         foreach (string notice in failureNotices)
             Assert.Contains(nameof(TaskCanceledException), notice, StringComparison.Ordinal);
 

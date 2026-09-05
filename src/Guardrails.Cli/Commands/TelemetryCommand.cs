@@ -30,14 +30,15 @@ namespace Guardrails.Cli.Commands;
 /// else does: WHERE the corpus lives (<see cref="ResolveCorpusRoot"/>) and how corpus rows are
 /// rendered.</para>
 ///
-/// <para><b>The opt-out is the store's, not this verb's.</b> Charter §9's collection-default decision
-/// puts collection ON by default with <c>GUARDRAILS_TELEMETRY=off</c> as the single off switch, and
-/// that switch is checked inside <see cref="TelemetryCorpusStore.Append"/>. This verb therefore does
-/// NOT read the variable, does not offer a second switch (no flag, no config key), and honours the
-/// opt-out by the only mechanism that cannot drift from run-end ingest: it calls the store and the
-/// store writes nothing. What <c>ingest</c> reports afterwards is measured — the row count on disk
-/// before and after — so a suppressed write is reported as a suppressed write rather than as a
-/// receipt for rows that were never recorded.</para>
+/// <para><b>The opt-out is <see cref="TelemetryCollectionSwitch"/>'s, and this verb is one of the two
+/// composition roots that resolve it.</b> Charter §9's collection-default decision puts collection ON by
+/// default with <c>GUARDRAILS_TELEMETRY=off</c> as the single off switch. This verb does not restate that
+/// rule and does not offer a second switch (no flag, no config key): it asks the switch once and hands the
+/// answer to <see cref="TelemetryCorpusStore"/> as constructor state, which is the only mechanism that
+/// cannot drift from run-end ingest. The store itself no longer reads the environment — see
+/// <see cref="TelemetryCollectionSwitch"/> for the concurrency defect that moved it. What <c>ingest</c>
+/// reports afterwards is measured — the row count on disk before and after — so a suppressed write is
+/// reported as a suppressed write rather than as a receipt for rows that were never recorded.</para>
 ///
 /// <para><b>An insufficient-evidence stratum's rendering is part of the contract, not a free choice.</b>
 /// <c>Report_PrintsTheStratifiedTable</c> (in <c>TelemetryCommandTests</c>) pins a stratum below
@@ -119,11 +120,21 @@ public static class TelemetryCommand
     /// <summary>The wire token an attempt row carries when that attempt went green (SSOT §7).</summary>
     private static readonly string SucceededOutcomeToken = JournalJson.OutcomeToken(AttemptOutcome.Succeeded);
 
-    /// <summary>The <c>telemetry</c> command group.</summary>
-    public static Command Create(IConsoleIo io)
+    /// <summary>
+    /// The <c>telemetry</c> command group.
+    ///
+    /// <para><paramref name="collectionEnabled"/> is the opt-out decision (SSOT §15.6), injectable so a
+    /// test can drive the opted-out path WITHOUT mutating the process environment. That matters: the
+    /// variable is process-global, and a test that set it around its own invocation used to silently
+    /// suppress every concurrent write in the process — see <see cref="TelemetryCollectionSwitch"/>.
+    /// Production passes nothing and gets the environment.</para>
+    /// </summary>
+    public static Command Create(IConsoleIo io, Func<bool>? collectionEnabled = null)
     {
+        collectionEnabled ??= TelemetryCollectionSwitch.IsEnabledFromEnvironment;
+
         var command = new Command("telemetry", "Work with the local model-evidence telemetry corpus.");
-        command.Add(BuildIngestLeaf(io));
+        command.Add(BuildIngestLeaf(io, collectionEnabled));
         command.Add(BuildReportLeaf(io));
         command.Add(BuildCensusLeaf(io));
         command.Add(BuildPurgeLeaf(io));
@@ -152,7 +163,7 @@ public static class TelemetryCommand
                 CorpusLeafDirectoryName)
             : overrideRoot;
 
-    private static Command BuildIngestLeaf(IConsoleIo io)
+    private static Command BuildIngestLeaf(IConsoleIo io, Func<bool> collectionEnabled)
     {
         var folderArgument = FolderArgument.Create(
             "Path to a plan folder (contains state/run.json) to ingest telemetry from. A folder with no "
@@ -168,7 +179,7 @@ public static class TelemetryCommand
         command.SetAction(parseResult =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
-            return RunIngest(folder, parseResult.GetValue(corpusRootOption), io);
+            return RunIngest(folder, parseResult.GetValue(corpusRootOption), io, collectionEnabled());
         });
 
         return command;
@@ -243,7 +254,8 @@ public static class TelemetryCommand
     /// <para>A folder with no journal is REPORTED and skipped, never an error: backfill exists to be
     /// pointed at a directory of plans, some of which were never run.</para>
     /// </summary>
-    private static int RunIngest(string planFolder, string? corpusRootOverride, IConsoleIo io)
+    private static int RunIngest(
+        string planFolder, string? corpusRootOverride, IConsoleIo io, bool collectionEnabled)
     {
         if (!Directory.Exists(planFolder))
         {
@@ -255,7 +267,7 @@ public static class TelemetryCommand
         }
 
         string corpusRoot = ResolveCorpusRoot(corpusRootOverride);
-        var store = new TelemetryCorpusStore(corpusRoot);
+        var store = new TelemetryCorpusStore(corpusRoot, collectionEnabled);
 
         long rowsBefore = CountRows(corpusRoot);
 
@@ -450,6 +462,8 @@ public static class TelemetryCommand
             $"{samples.Count} task(s) over {eraRows.Count} row(s); minimum n for a verdict: "
             + $"{TelemetryReport.DefaultMinimumSampleSize}.");
         io.Out.WriteLine();
+
+        RenderAttributionCoverage(TelemetryAttributionCoverage.Compute(eraRows), io);
 
         RenderTable(report, io);
         RenderLegend(unreadableLines, excludedByEraBoundary, io);
@@ -666,6 +680,70 @@ public static class TelemetryCommand
     /// is charter §6's null-versus-zero distinction, which is invisible in a table cell unless the table
     /// says it.
     /// </summary>
+    /// <summary>
+    /// How much of the data behind the table can participate in a model comparison (issue #619).
+    ///
+    /// <para><b>Why this sits ABOVE the table rather than in the legend.</b> Every figure below it is
+    /// conditioned on this one. A stratified table renders the same way over a corpus that attributes 95%
+    /// of its rows and one that attributes 20%, and nothing in the table itself says which — so a reader
+    /// who never scrolls to a legend entry trusts numbers whose coverage they have not seen. That is the
+    /// silent-in-the-flattering-direction shape #577 was filed about, moved one layer out: the numbers are
+    /// now correct and the reader still cannot tell what they rest on.</para>
+    ///
+    /// <para>Printed unconditionally, including when coverage is perfect. A block that appears only when
+    /// something is wrong trains the reader to equate its absence with "not measured" — and the first time
+    /// it is genuinely absent because of a bug, nobody notices.</para>
+    /// </summary>
+    private static void RenderAttributionCoverage(AttributionCoverage coverage, IConsoleIo io)
+    {
+        io.Out.WriteLine("Attribution coverage, over the row(s) counted above:");
+
+        if (coverage.ComparableShare is { } share)
+        {
+            io.Out.WriteLine(
+                $"  {coverage.Recorded} of {coverage.Attributable} attributable row(s) name a real model "
+                + $"({Percent(share)} comparable).");
+        }
+        else
+        {
+            // Not "0% comparable": no row could have named a model, so there is no coverage question to
+            // answer yet. Reporting a percentage here would assert a total failure of attribution where
+            // the truth is that the denominator is empty.
+            io.Out.WriteLine(
+                "  No row could have named a model, so there is no coverage figure to report.");
+        }
+
+        io.Out.WriteLine(
+            $"    recorded {coverage.Recorded} | cli-default {coverage.CliDefault} "
+            + $"| not-recorded {coverage.NotRecorded}");
+
+        // The excluded groups are NAMED with their reason rather than summed into an "other", because the
+        // whole finding behind #577 was that three different facts had been sharing one number.
+        var outside = new List<string>();
+        if (coverage.TaskGrain > 0) { outside.Add($"task-grain {coverage.TaskGrain}"); }
+        if (coverage.ScriptAction > 0) { outside.Add($"script-action {coverage.ScriptAction}"); }
+        if (coverage.Unknown > 0) { outside.Add($"unknown {coverage.Unknown}"); }
+        if (coverage.PreColumn > 0) { outside.Add($"pre-column {coverage.PreColumn}"); }
+        foreach ((string token, int count) in coverage.Unrecognized)
+        {
+            outside.Add($"{token} {count} (token this build does not define)");
+        }
+
+        if (outside.Count > 0)
+        {
+            io.Out.WriteLine($"    outside the denominator: {string.Join(", ", outside)}");
+        }
+
+        if (coverage.NotRecorded > 0)
+        {
+            io.Out.WriteLine(
+                $"  {coverage.NotRecorded} row(s) SHOULD name a model and do not — see ATTRIBUTION "
+                + "in the legend below.");
+        }
+
+        io.Out.WriteLine();
+    }
+
     private static void RenderLegend(int unreadableLines, int excludedByEraBoundary, IConsoleIo io)
     {
         io.Out.WriteLine();
@@ -684,6 +762,20 @@ public static class TelemetryCommand
         io.Out.WriteLine("               share of the WHOLE stratum that never did — read the two together.");
         io.Out.WriteLine($"  COST         \"{CostNotReported}\" means no attempt in the stratum ever reported a cost.");
         io.Out.WriteLine("               That is not the same claim as $0.00.");
+        io.Out.WriteLine("  ATTRIBUTION  why a row names the model it does, read off the row itself. Only");
+        io.Out.WriteLine("               `recorded` is COMPARABLE — `cli-default` is honest but names the CLI's");
+        io.Out.WriteLine("               own default rather than a model identity, so pooling it with a named");
+        io.Out.WriteLine("               model would attribute its cost and outcomes to a model nobody recorded.");
+        io.Out.WriteLine("               `not-recorded` is the DEFECT: a prompt attempt that cannot say what it");
+        io.Out.WriteLine("               ran on. `task-grain` and `script-action` are correct by construction (a");
+        io.Out.WriteLine("               summary of N attempts has no single route; a script invokes no model),");
+        io.Out.WriteLine("               so both sit outside the denominator — counting them as missing is what");
+        io.Out.WriteLine("               made \"76% of rows name no usable model\" read as a catastrophe when 77%");
+        io.Out.WriteLine("               of it was correct. `unknown` is neither: the action kind could not be");
+        io.Out.WriteLine("               decided, recorded rather than guessed at. `pre-column` rows predate the");
+        io.Out.WriteLine("               column (schemaVersion < 3) — unknowABLE, not unknown, and no backfill");
+        io.Out.WriteLine("               recovers it, since script-vs-prompt is read from a task folder that may");
+        io.Out.WriteLine("               no longer exist.");
         io.Out.WriteLine($"  BOUNDARY     {EraBoundaryLabel} — the table above excludes every row started before this");
         io.Out.WriteLine("               date. A failed attempt before it recorded no provenance at all, so every");
         io.Out.WriteLine("               routed stratum read 100% first-pass by survivorship, not by merit — the");

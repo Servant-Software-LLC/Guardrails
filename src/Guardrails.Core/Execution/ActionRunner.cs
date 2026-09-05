@@ -219,12 +219,17 @@ internal sealed class ActionRunner
         //
         // The frontmatter-or-default expression stays as the FALLBACK, and that is load-bearing rather
         // than defensive style: on the LEGACY path the route's own name is `config.DefaultPromptRunner`,
-        // which can be NULL while PromptRunnerRegistry.ResolveDefault still falls back to the sole
-        // declared block. Reading the route's name unconditionally would regress Invariant 7 for those
-        // plans. `route?.Runner?.Name` — the resolved BLOCK's own name, non-null whenever a block
-        // actually resolved — is preferred over `route?.RunnerName` for that same reason.
+        // which can be NULL while the sole-declared-block fallback still resolves. Reading the route's
+        // name unconditionally would regress Invariant 7 for those plans. `route?.Runner?.Name` — the
+        // resolved BLOCK's own name, non-null whenever a block actually resolved — is preferred over
+        // `route?.RunnerName` for that same reason.
+        //
+        // The whole order now lives ONCE, on the registry (PromptRunnerRegistry.DispatchNameFor), because
+        // `--dry-run` must preview the block this line dispatches to and a second spelling of it is how
+        // #549 happened one rule further up: the preview re-derived precedence instead of asking.
         PromptResult result = await registry.Resolve(
-                route?.Runner?.Name ?? task.Action.Runner ?? promptFile.Frontmatter.Runner)
+                PromptRunnerRegistry.DispatchNameFor(
+                    _plan.Config, route, task.Action.Runner, promptFile.Frontmatter.Runner))
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
         // Promote the staged fragment to its documented final location THE INSTANT the sub-agent
