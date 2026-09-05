@@ -1,0 +1,78 @@
+{
+  // ---------------------------------------------------------------------------
+  // Stryker.NET — the Core EXECUTION half (issue #480).
+  //
+  // ###########################################################################
+  // ## NEVER RUN. UNVALIDATED, AND BLOCKED BY THE SAME DEFECT.               ##
+  // ##                                                                       ##
+  // ## Stryker.NET 4.16.0 silently fails to activate mutants against         ##
+  // ## xunit.v3 test projects and reports every mutant as SURVIVED. Both     ##
+  // ## test projects in this repo are xunit.v3, so this config would produce ##
+  // ## the same fabricated 0.00% as the live-surface one. It is committed    ##
+  // ## for the SCOPE and the EXCLUSION RATIONALE below, which stay valid and ##
+  // ## are the next run to make once the tool is fixed.                      ##
+  // ## See docs/plans/480-mutation-testing-first-run.md.                     ##
+  // ###########################################################################
+  //
+  // Invoke from the REPO ROOT:
+  //     dotnet stryker -f stryker-config.core-execution.json
+  //
+  // ON-DEMAND / SCHEDULED. Not wired into ci.yml — see stryker-config.json for
+  // why that is deliberate.
+  //
+  // Scope: Scheduler.cs and TaskExecutor.cs only. 7,214 lines between them, and
+  // the highest-consequence logic in the product — everything about what runs,
+  // in what order, how often it is retried, and when a run is allowed to be
+  // called green. If a mutant survives anywhere, this is where it costs most.
+  // ---------------------------------------------------------------------------
+  "stryker-config": {
+
+    "solution": "Guardrails.sln",
+    "project": "Guardrails.Core.csproj",
+
+    // Both suites: Core.Tests is the primary oracle, but a large amount of
+    // scheduler behaviour is only exercised end-to-end through the CLI, so
+    // omitting Integration.Tests would manufacture survivors that real tests
+    // do kill.
+    "test-projects": [
+      "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj",
+      "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj"
+    ],
+
+    "mutate": [
+      "**/Execution/Scheduler.cs",
+      "**/Execution/TaskExecutor.cs"
+    ],
+
+    // EXPLICIT TEST EXCLUSIONS — this is a real subtraction from the oracle and
+    // it is stated rather than hidden.
+    //
+    // Core.Tests is not a pure unit suite. These four classes spawn processes,
+    // create git worktrees and NTFS junctions, or walk this repo's git history
+    // at full depth. Under mutation they are the dominant cost and, worse, they
+    // time out under load — and a timeout is scored as a KILL, so leaving them
+    // in would inflate the score with kills that prove nothing.
+    //
+    // The honest cost of this exclusion: any Scheduler/TaskExecutor mutant whose
+    // ONLY killer was one of these four classes will now be reported as a
+    // SURVIVOR. That is the safe direction to be wrong in (a false survivor
+    // wastes triage; a false kill hides a blind test), but survivors in
+    // worktree-lifecycle or process-spawn code paths should be checked against
+    // these classes before being filed as genuine gaps.
+    //
+    // Syntax is `dotnet test --filter` syntax.
+    "test-case-filter": "FullyQualifiedName!~WorktreeJunctionTests&FullyQualifiedName!~WorktreeContainmentHookTests&FullyQualifiedName!~ProcessRunnerHermeticEnvTests&FullyQualifiedName!~ProducerCoverageCorpusTests",
+
+    "coverage-analysis": "perTest",
+    "concurrency": 4,
+    "reporters": ["progress", "html", "json", "cleartext"],
+    "thresholds": { "high": 80, "low": 60, "break": 0 },
+
+    // Higher than the Cli run's 15s: this suite drives whole harness runs with
+    // real child processes, and the timeout formula is per-mutant off the
+    // initial covering-test time.
+    "additional-timeout": 30000,
+
+    "break-on-initial-test-failure": false
+  }
+}

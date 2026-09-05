@@ -1,0 +1,147 @@
+{
+  // ---------------------------------------------------------------------------
+  // Stryker.NET — the LIVE-SURFACE run (issue #480).
+  //
+  // ###########################################################################
+  // ## DO NOT TRUST THE OUTPUT OF THIS RUN YET.                              ##
+  // ##                                                                       ##
+  // ## Stryker.NET 4.16.0 does not work against this repo's xunit.v3 test    ##
+  // ## projects, and it FAILS SILENTLY IN THE FLATTERING DIRECTION'S         ##
+  // ## OPPOSITE: it never activates a mutant, every mutant therefore looks   ##
+  // ## un-killed, and it reports a confident "final mutation score is        ##
+  // ## 0.00 %" over a full report of fabricated survivors. Measured          ##
+  // ## 2026-09-05; see docs/plans/480-mutation-testing-first-run.md.         ##
+  // ##                                                                       ##
+  // ## PROOF: Stryker scored `waves.Count == 0` -> `!=` in LiveTableRows.cs  ##
+  // ## as SURVIVED. Applied by hand, that exact mutant fails 15 of the same  ##
+  // ## 170 tests in 13 seconds.                                              ##
+  // ##                                                                       ##
+  // ## Before believing ANY score from this file, re-run that check. The     ##
+  // ## config's SCOPE is verified correct (right project, right files, right ##
+  // ## 170-test oracle, zero compile-error mutants in scope) — it is the     ##
+  // ## tool's instrumentation that is mute, not the scoping below.           ##
+  // ###########################################################################
+  //
+  // Invoke from the REPO ROOT:
+  //     dotnet stryker -O <some-dir-outside-the-repo> --skip-version-check
+  //
+  // ALWAYS pass -O with a path OUTSIDE the repo. Stryker runs IN PLACE: it swaps a
+  // mutated Guardrails.Cli.dll into tests/**/bin and keeps the original beside it
+  // as Guardrails.Cli.dll.stryker-unchanged. If the run is interrupted, that swap
+  // is NOT undone — a later `dotnet test --no-build` then silently tests MUTATED
+  // code. After any aborted run, restore it before trusting a test result.
+  //
+  // ON-DEMAND / SCHEDULED ONLY. Deliberately NOT wired into ci.yml and it must
+  // never sit on the PR path. See "Cost" below for the measured reason.
+  //
+  // WHY THIS SCOPE, AND NOT "start with Guardrails.Core"
+  // ----------------------------------------------------
+  // Issue #480 originally proposed mutating Guardrails.Core with the integration
+  // project excluded. That scope misses the only defect we have ever MEASURED,
+  // on both axes. On PR #635 a one-line reintroduction of the #372 defect in
+  // src/Guardrails.Cli/Ui/LiveRunObserver.cs survived all 109 observer tests —
+  // Cli code, killed (after the fix) only by tests in Guardrails.Integration.Tests.
+  // Reproducing a KNOWN survivor is the only way to tell a working Stryker config
+  // from a mute one, so the first run points here.
+  //
+  // WHAT THIS CONFIG DOES **NOT** CERTIFY — read before quoting a score
+  // -------------------------------------------------------------------
+  // 1. Stryker's standard mutators (operators, literals, statement/block removal,
+  //    LINQ substitution) CANNOT express the #635 defect, which was a method-call
+  //    substitution (_narrative-append -> _console.MarkupLine). A clean sheet over
+  //    LiveRunObserver.cs is therefore NOT evidence that #372 cannot come back.
+  // 2. The oracle below is a SUBSET of the suite (see test-case-filter). A mutant
+  //    reported as SURVIVED here may well be killed by a test outside the subset.
+  //    Survivors are leads to triage, not proven gaps.
+  // 3. LiveNarrativeCompositeTests.LiveRunObserver_ContainsNoOutOfBandConsoleWrite_*
+  //    reads LiveRunObserver.cs off DISK. Stryker mutates the compiled assembly and
+  //    leaves the .cs file untouched, so that test passes under every mutant and can
+  //    never kill one. It is a real guard; it is simply invisible to this tool.
+  // ---------------------------------------------------------------------------
+  "stryker-config": {
+
+    "solution": "Guardrails.sln",
+
+    // Resolved by NAME among the test project's references. Integration.Tests
+    // references both Core and Cli; this picks the Cli half.
+    "project": "Guardrails.Cli.csproj",
+
+    // Integration.Tests is the ONLY possible oracle for this project:
+    // Guardrails.Core.Tests does not reference Guardrails.Cli at all, so it cannot
+    // execute a single line of it. Nothing is excluded by choice at project level.
+    "test-projects": [
+      "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj"
+    ],
+
+    // The live run table + narrative pane — 1,459 lines, and the exact cluster the
+    // #635 survivor lived in.
+    //
+    // The wider "**/Ui/*.cs" scope (6,372 lines, adding LogServer, LogSiteRenderer
+    // and the two OnTheFly observers) was ATTEMPTED FIRST and abandoned on cost,
+    // not on principle — see the Cost note below. Widening it back is a one-line
+    // change here plus a correspondingly wider test-case-filter.
+    //
+    // Verify the mutated-file list in the report before believing any score: a glob
+    // that silently matches zero files reports a flawless clean sheet.
+    "mutate": [
+      "**/Ui/LiveRunObserver.cs",
+      "**/Ui/LiveNarrative.cs",
+      "**/Ui/LiveTableRows.cs"
+    ],
+
+    // EXPLICIT ORACLE SUBSET — a real subtraction, stated rather than hidden.
+    //
+    // These are the 15 classes (143 tests) that reference LiveRunObserver /
+    // LiveNarrative / LiveTableRows — i.e. every test that CLAIMS to gate this
+    // surface. Restricting to them turns the question into the #635 question,
+    // generalized: "do the tests named as gating the live surface actually pin it?"
+    //
+    // COST, MEASURED ON THIS REPO (Windows, 8 logical cores):
+    //   Stryker must run the oracle TWICE before testing a single mutant — once for
+    //   the initial run and once more to capture per-test coverage. With the full
+    //   1,258-test Integration suite that first pass alone took 50 MINUTES, because
+    //   dozens of those tests spawn real harness runs that themselves invoke
+    //   `dotnet build` and `dotnet test`. Two such passes is ~100 minutes of setup
+    //   before any mutation result exists. Narrowing the oracle is what makes the
+    //   run finish; `coverage-analysis` does not help here, because both of those
+    //   passes are full-suite regardless.
+    //
+    // Syntax is `dotnet test --filter` syntax.
+    "test-case-filter": "FullyQualifiedName~LiveNarrativeTests|FullyQualifiedName~LiveNarrativeCompositeTests|FullyQualifiedName~JitBreakdownVisibilityTests|FullyQualifiedName~NeedsHumanKindRenderingTests|FullyQualifiedName~ModelInRowTests|FullyQualifiedName~MidRunWaveSpliceTests|FullyQualifiedName~MidRunWaveSpliceLogSiteTests|FullyQualifiedName~CollapseCompletedWavesTests|FullyQualifiedName~RunCommandObserverWiringTests|FullyQualifiedName~PostMortemLogsLinkTests|FullyQualifiedName~AttachReplayTests|FullyQualifiedName~RateLimitedRenderingTests|FullyQualifiedName~ObserverRecordRoundTripTests|FullyQualifiedName~AttemptModelRenderingTests|FullyQualifiedName~ObserverForwardingSweepTests",
+
+    // Only the tests that actually cover a mutant are run for it — WHEN IT WORKS.
+    // On this repo the coverage capture pass has been observed to fail outright
+    // ("It looks like the test coverage capture failed. Disable coverage based
+    // optimisation."), after which Stryker runs the FULL filtered oracle against
+    // every mutant. Treat perTest as an optimisation that may silently not apply,
+    // not as a guaranteed cost model. Check the log for that line before quoting a
+    // per-mutant cost.
+    "coverage-analysis": "perTest",
+
+    // 8 logical processors, so Stryker's cores/2 default would be 4. Held at 2
+    // because 4 produced repeated hard failures:
+    //   "Stryker failed to connect to vstest.console ... after 90 seconds ...
+    //    This most often happens because of machine slowness"
+    // Each parallel session is a separate vstest.console + testhost pair, and these
+    // tests additionally spawn real child processes, so the effective process count
+    // is several times the concurrency number.
+    //
+    // ALSO REQUIRED on a slow or busy machine — Stryker has no config key for it:
+    //     VSTEST_CONNECTION_TIMEOUT=900   (seconds)
+    "concurrency": 2,
+
+    "reporters": ["progress", "html", "json", "cleartext"],
+
+    // Report ONLY. break:0 means Stryker never returns non-zero on score. A first
+    // run has no baseline to enforce, and an arbitrary threshold here would be
+    // exactly the kind of gate-that-certifies-nothing this exercise exists to find.
+    "thresholds": { "high": 80, "low": 60, "break": 0 },
+
+    // Raised from the 3000ms default: several of these tests drive a whole harness
+    // run, and the default produces timeout-killed mutants that read as KILLS and
+    // flatter the score.
+    "additional-timeout": 15000,
+
+    "break-on-initial-test-failure": false
+  }
+}
