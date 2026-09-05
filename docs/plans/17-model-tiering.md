@@ -1,4 +1,4 @@
-# 17 — Model tiering, actor + verifier (provider registry + static tier routing; ladder / probes / steering deferred to v2) — design of record (epic #201)
+# 17 — Model tiering, actor + verifier (provider registry + static tier routing; escalation ladder shipped in v1, #228; probes / steering deferred to v2) — design of record (epic #201)
 
 > **Revision 5 (2026-08-17) — two ambiguities the Stage 2 breakdown review could not resolve from
 > the page.** Both were found by *authoring the tasks that had to implement them*, which is the
@@ -159,7 +159,7 @@ The pieces:
 | Per-tier cost/token spend line in the run report | **v1** (#230-lite) | harness (run-summary aggregation over §9.3 provenance) |
 | Provider-unavailability handling (connection failure → shipped #115 pause) | **v1** | harness (§6.3; reuses the shipped `PromptFailureKind` classification) |
 | Budget/limit probes + `guardrails providers status` | **v2 (#227)** | harness (`Guardrails.Core` per-kind probe classes) + CLI |
-| Escalation ladder + `tierSource: "escalated"` provenance | **v2 (#228)** | harness (attempt loop / the same `TierResolver`) |
+| Escalation ladder + `tierSource: "escalated"` provenance | **v1 (#228)** | harness (attempt loop / the same `TierResolver`) |
 | Threshold prompts + ambient steering + `--prefer` | **v2 (#231)** | harness/CLI, governed by the **shared** §2.1 `autonomyPolicy` (new `routing` boundary) — **no new policy field** |
 | Concrete non-Claude runner (local OpenAI-compatible endpoint) | **#223, standalone** | plugs into the `kind` seam (§4.4); its internals are NOT designed here |
 | Prose/free-text steering interpretation; per-model $ pricing tables; overwatcher tier-pinning | **v2 bets** (§10) | — |
@@ -1031,60 +1031,63 @@ records `"floor"` so the cost of the policy is attributable to the policy.
 actor graduates** (§7). *Neither the JIT re-check nor the floor is deferred — both are v1; v2 gives
 them a moving actor to act on, not a new mechanism.*
 
-## 7. The escalation ladder (#228)  [v2 — deferred]
+## 7. The escalation ladder (#228)  [v1 — shipped]
 
-> **DEFERRED TO v2 (named bet, §10). Retained as the ratified design for when v2 builds it — NOT
-> in v1.** v1 has no ladder: a guardrail-failed tagged task simply retries *at the same tier* (the
-> static resolver yields the same block) until its budget is exhausted, then halts honestly to
-> needs-human for a human re-tag or pin. That is correctness-complete because the gate — not the
-> model — certifies. The ladder is a *convenience* that would spend a stronger model automatically
-> on the mis-tagged minority; #230-lite's measurement is what should decide whether it is worth
-> building. **Deferring it also retires the DA pass's BLOCKER (F1) and the OD-A sign-off from the
-> v1 critical path** (see the open-items note at the end of this section).
+> **SHIPPED IN v1, not v2.** The reviewed plan of record for this section,
+> `docs/plans/228-escalation-ladder.charter.md`, settled the one question #201 left open for this
+> issue (the retry-budget question below, D5) and narrowed the trigger set before this shipped.
+> **Two of the decisions this section used to state did not survive that review and are marked
+> where they stand** — D15a's same-tier grace period, and OD-A's last-attempt guarantee — rather
+> than silently deleted. What follows is the shipped design.
 
 A deterministic retry policy — the same family as #94's maxTurns escalation, and like it, part
 of the **deterministic floor**, not an overwatcher judgment (§9.2).
 
-- **Trigger (D15, as amended by D15a):** a budget-consuming failure escalates the next attempt's
-  rung by one *served* rung — but **never before that rung has had one same-tier retry.** The
-  budget-exhaustion outcomes `timeout` / `max-turns` / `output-cap` keep their tier on first
-  occurrence (their shipped escalators — longer clock, more turns, split-the-write feedback — get
-  one same-tier chance) and escalate on a repeat; **`guardrail-failed`, `action-failed` and
-  `invalid-fragment` (and a write-scope violation, which is guardrail-class) now do the same**,
-  where revision 3 escalated them immediately. `transient`/rate-limit pauses never escalate (not
-  failures; no budget consumed). A `needsHuman` signal short-circuits as today (no retry, no
-  ladder).
-- **D15a — the original asymmetry was unintentional (maintainer, Stage 2 charter review,
-  2026-08-16).** Revision 3 granted the exhaustion family a same-tier chance *because those
-  outcomes have shipped escalators*, and escalated logic failures immediately. But a guardrail
-  failure has a shipped escalator too, and it is the strongest one the harness owns: **#179**
-  re-emits the failing assertion / exception / stack detail at the END of stdout precisely so the
-  WHY survives into the ~60-line retry-feedback tail. Escalating on the *first* guardrail failure
-  therefore spends a stronger model while discarding the cheapest fix available — handing the same
-  model its own failure and letting it try again. Applying the stated rationale evenly grants the
-  same chance to both families; the split was an oversight, not a considered trade.
-  **Bound on the grant (so it cannot resurrect a dead attempt):** the same-tier retry is granted
-  **once per rung**, and only where the retry feedback could plausibly change the outcome. A
-  *materially identical* repeat is the **#264** futility signal, and **#174**'s no-op short-circuit
-  already escalates a byte-identical repeat to needs-human on attempt 2 — D15a must not re-open
-  what those rules have already declared futile. An implementer should key the grant on *whether
-  the feedback differed*, not on a flat attempt count.
+- **Trigger — narrowed by the charter to `guardrail-failed` only (D15, DA F5 adopted):** a
+  `guardrail-failed` attempt escalates the very next attempt's rung by one *served* rung,
+  immediately, on the first occurrence — there is no same-tier grace period before it climbs
+  (D15a, superseded below). `action-failed`, `invalid-fragment`, `timeout`, `max-turns` and
+  `output-cap` no longer escalate: each already has its own counter and its own remedy
+  (retry-with-feedback, a longer clock, more turns, split-the-write feedback), and none of them is
+  evidence the *model* was too weak — a `guardrail-failed` outcome is a wrong-*work* signal, while
+  a timeout is a slow-*work* signal with its own clock, and conflating the two would spend a
+  stronger model on an infrastructure problem and misreport it in the run summary as "this task was
+  too hard." `transient`/rate-limit pauses never escalate (not failures; no budget consumed). A
+  `needsHuman` signal short-circuits as today (no retry, no ladder).
+- **D15a — SUPERSEDED (`docs/plans/228-escalation-ladder.charter.md`; the maintainer ratified the
+  charter's budget option A over D15a's option B).** D15a had granted a rung one same-tier retry,
+  with feedback, before climbing: revision 3 gave the budget-exhaustion family
+  (`timeout`/`max-turns`/`output-cap`) that same-tier chance because those outcomes have shipped
+  escalators, while escalating `guardrail-failed` immediately, and D15a corrected the asymmetry by
+  observing that a guardrail failure has a shipped escalator too — **#179**'s end-of-stdout
+  re-emit — and granting it the same one-rung grace, bounded to once per rung and only where the
+  feedback could plausibly change the outcome (deferring to the **#264**/**#174** futility rules).
+  **The charter overturned the grace period, not the observation it was built on:** `feedbackPath`
+  reaches the next attempt regardless of which model runs it — the charter's own key fact — so an
+  escalated attempt is both stronger AND better informed, and the grace period was discarding a
+  rescue for no offsetting benefit. Every guardrail failure now escalates on the first occurrence;
+  there is no same-tier grace period at any rung.
 - **Budget (D5 — the #201/#228 open question, RESOLVED): an escalated attempt draws from the
   SAME retry pool. No reset.** Rationale: a reset multiplies the worst case by ladder height
   (retries × rungs) — unbounded cost growth and a needs-human that arrives attempts later
   than the human configured; `retries` must keep meaning "total tries after the first". The
   sanctioned mechanism for "this task deserves MORE attempts now that it's on a stronger
   model" already exists: an overwatcher budget grant (§9.2), bounded by
-  `MaxCumulativeGrantedRetries` and `maxCostUsd`, gated by `autonomyPolicy`.
-- **Last-attempt guarantee (OD-A — DEFERRED to v2, unresolved):** the intent was that the final
+  `MaxCumulativeGrantedRetries` and `maxCostUsd`, gated by `autonomyPolicy`. This is the charter's
+  ratified **option A** (`docs/plans/228-escalation-ladder.charter.md`) — reached independently
+  here and reaffirmed there, over option B's added same-tier delay (D15a, superseded above) and
+  option C's reset-per-rung budget.
+- **Last-attempt guarantee (OD-A) — NO LONGER IN FORCE.** The intent had been that the final
   budgeted attempt always resolves at the **strongest served rung**, so a task never exhausts its
-  budget without the strongest model getting one shot. The DA pass found this wording is a
-  **BLOCKER as written (F1):** with `retries: 0` the first attempt *is* the final budgeted attempt,
-  so *every* task would resolve at the strongest rung on attempt 1 and the cost thesis inverts;
-  and it contradicts the D15 same-tier retry grant at the budget edge. If v2 builds the ladder,
-  OD-A must be re-scoped (never fires on attempt 1; never overrides a granted same-tier retry) and
-  re-presented for sign-off — informed by #230-lite data on how often tasks actually fail. **This
-  is exactly the sign-off that deferral takes off the v1 critical path.**
+  budget without the strongest model getting one shot. The DA pass found the wording a **BLOCKER as
+  written (F1):** with `retries: 0` the first attempt *is* the final budgeted attempt, so *every*
+  task would resolve at the strongest rung on attempt 1 and the cost thesis inverts; and, as
+  written, its "never override a granted same-tier retry" carve-out depended on the D15a grant that
+  is itself superseded above. OD-A was never built, the charter did not revisit it, and the shipped
+  ladder has no last-attempt jump of any kind — an escalated attempt climbs exactly one rung per
+  `guardrail-failed`, nothing conditioned on which attempt number it is. It remains a conceivable
+  future addition, but re-scoped from scratch against the shipped mechanics, not a resurrection of
+  this wording.
 - **Cap + composition:** the ladder tops out at the strongest *served* rung (never invents
   one); at the top, retries continue at the top until budget exhaustion → the normal
   needs-human path, unchanged. Before escalating INTO a rung, the target's probe state is
@@ -1095,31 +1098,28 @@ of the **deterministic floor**, not an overwatcher judgment (§9.2).
   candidate*. A task's escalation therefore stops below a reserved frontier model rather than
   reaching it, and then exhausts its budget and halts honestly. This is the direct answer to review
   comment 7's *"I don't want re-attempts to reach for Fable at all"*: with `costly: true` the
-  guarantee is structural, not a convention — **and it holds for OD-A's final-attempt jump too**,
-  which is the specific leak the devil's-advocate pass identified (its finding 7, item 3). The
-  proposed `routing.escalationTarget: false` field should be re-examined before it is built:
-  `costly` may already subsume it (§4.2).
+  guarantee is structural, not a convention. The proposed `routing.escalationTarget: false` field
+  should be re-examined before it is built: `costly` may already subsume it (§4.2).
 - **Scope:** per-task only; sibling resolutions and `defaultTier` are unaffected. **Actions
   only** — a judge guardrail is never escalated (a guardrail failure indicts the *work*, not
   the judge; the retry re-runs the action). Judge guardrails still get tier *resolution*
   (§6.1) — just no ladder.
 - **State (invariant 2):** the current rung is derived: base tier + journaled attempt
   outcomes. Resume recomputes it from `run.json`; nothing new is persisted beyond the
-  per-attempt provenance (`tierSource: "escalated"`), which also gives #198/#230 the visible
-  "task X escalated local → frontier on attempt 3" line.
+  per-attempt provenance (`tierSource: "escalated"` and `escalatedFrom`, the rung the FIRST,
+  un-escalated resolution served), which also gives #198/#230 the visible "task X escalated local →
+  frontier on attempt 3" line.
 
-**v2 open items folded into this deferral (decide when/if v2 builds the ladder, with #230-lite
-data in hand — NOT v1 sign-offs):**
+**Items the charter left open — not settled by this round, still open for a future revision:**
 
-- **OD-A re-scope (DA F1):** the last-attempt-at-strongest guarantee must never fire on attempt 1
-  and never override D15's granted same-tier retry — or be dropped for plain +1-per-failure.
-- **D15 trigger set (DA F5):** `action-failed` conflates infrastructure faults with capability;
-  the refinement is to escalate only on `guardrail-failed` (the one outcome that indicts model
-  capability) and give `action-failed` one same-tier retry.
-- **`routing.escalationTarget: false` (DA comment 7):** the field that expresses "serves a tier on
-  first attempt but never *receives* a ladder escalation or the OD-A jump." It is only meaningful
-  once the ladder exists, so it is a **v2** schema field — in v1 the omit-`routing` reservation
-  (§4) already fences a reserved model out of *all* resolver selection.
+- **OD-A re-scope (DA F1) — MOOT.** OD-A itself is no longer in force (above); there is nothing
+  left to re-scope.
+- **D15 trigger set (DA F5) — ADOPTED.** The charter narrowed the trigger set to `guardrail-failed`
+  only, exactly as proposed here; see the Trigger bullet above.
+- **`routing.escalationTarget: false` (DA comment 7):** the field that would express "serves a tier
+  on first attempt but never *receives* a ladder escalation." Still hypothetical: in v1 the
+  omit-`routing` reservation (§4) already fences a reserved model out of *all* resolver selection,
+  so nothing forces this field to exist yet.
 
 ## 8. Steering + threshold prompts (#231)  [v2 — deferred]
 
@@ -1247,8 +1247,9 @@ lands whichever of `resolvedModel` / `effort` is not already present, in the sha
 and #349 then becomes a no-op for those fields. Stage 2's acceptance must therefore assert the
 *end state* of the provenance object, not a delta against an unlanded change. On top of that base,
 per-attempt `provenance` gains **`runner`** (resolved block name), **`kind`**, **`tier`** (the rung
-that resolved), and **`tierSource`** (`task | plan-default | override` in v1; `escalated` is added
-by the v2 ladder — §12.4 now names the single producer of each value, D31); plus an optional
+that resolved), and **`tierSource`** (`task | plan-default | override | escalated` — §12.4 now names
+the single producer of each value, D31; `escalated` is produced by the escalation ladder, #228 §7,
+shipped in v1, not v2); plus an optional
 per-attempt **`usage { inputTokens, outputTokens }`** so a
 costless local provider still shows volume for #230-lite. Absent-not-null throughout; old journals
 read fine.

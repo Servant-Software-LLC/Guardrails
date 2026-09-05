@@ -1,0 +1,11 @@
+{
+  "description": "Move the contract in the same change-set as the code: record the escalated tierSource and the escalatedFrom key in the SSOT, and reconcile the model-tiering DoR's deferred ladder section with what shipped",
+  "stableId": "z9c1te",
+  "dependsOn": [
+    "06-implement-retry-loop-escalation"
+  ],
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    "docs/plans/17-model-tiering.md"
+  ]
+}

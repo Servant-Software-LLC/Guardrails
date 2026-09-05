@@ -1,0 +1,3 @@
+{
+  "description": "Full solution build - catches cross-project compilation errors after all plan tasks merge"
+}

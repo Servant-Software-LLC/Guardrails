@@ -1,0 +1,10 @@
+{
+  "description": "Fill real logic over the EscalationLadder stub so the authored rung-selection tests pass, calling TierResolver.SelectCandidate rather than resolving a second way",
+  "stableId": "q7m2zd",
+  "dependsOn": [
+    "01-author-tests-escalation-ladder"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/EscalationLadder.cs"
+  ]
+}

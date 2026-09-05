@@ -645,6 +645,12 @@ with the pin check that produces `override`. It is an **in-memory loader field, 
 nothing declares it, nothing validates it, and writing `tierOrigin` into a `task.json` configures
 nothing.
 
+None of `TierOrigin`'s three states is `escalated`: escalation (the escalation ladder, #228, §7) is a
+**runtime** fact — a previous attempt of this task failed its guardrails — that no declaration site can
+supply, so a reader should not go looking for a fourth `TierOrigin` value. The journal's
+`tierSource: "escalated"` is produced downstream, by the resolver's escalation check, never by the
+loader.
+
 Deriving the origin instead by **comparing** the task's tier to `tiering.defaultTier` is wrong, and
 wrong in the most ordinary case there is: a task that explicitly writes the same token the plan already
 defaults to is then misreported as `plan-default`, and one whose plan has no default at all cannot be
@@ -2410,14 +2416,24 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                      //   OPTIONAL (#349): what the ROUTE ASKED FOR, written ONLY when it
                                      //   DIFFERS from `model`. Its PRESENCE is the mismatch signal, so it
                                      //   is ABSENT on an ordinary attempt; see the prose below
-            // The five route fields (#201, DoR §12.4). All ABSENT — never null — on a script attempt and in
-            // every journal written before model tiering; see "Per-attempt tier provenance" below.
+            // The five route fields (#201, DoR §12.4), plus the OPTIONAL `escalatedFrom` (#228). All
+            // ABSENT — never null — on a script attempt and in every journal written before model tiering
+            // (`escalatedFrom` is additionally absent on every non-escalated attempt); see "Per-attempt
+            // tier provenance" below.
             "runner": "primary",    // the promptRunners block name the attempt resolved to
             "kind": "claude",       // that block's `kind` as its WIRE TOKEN (not the C# name, not an ordinal)
-            "tier": "hard",         // the rung that SERVED — the requested one unless §9.6's climb moved it.
-                                     //   ABSENT when no rung resolved: a pin, or a legacy fallback
-            "tierSource": "task",   // task | plan-default | override — WHICH SITE supplied the rung; each has
-                                     //   exactly one producer. ABSENT on a legacy fallback
+            "tier": "hard",         // the rung that SERVED — the requested one unless §9.6's climb moved it,
+                                     //   or the escalation ladder (#228, §7) moved it after a prior attempt's
+                                     //   guardrail failure. ABSENT when no rung resolved: a pin, or a legacy
+                                     //   fallback
+            "tierSource": "task",   // task | plan-default | override | escalated — WHICH SITE supplied the
+                                     //   rung; each has exactly one producer. ABSENT on a legacy fallback
+            "escalatedFrom": "medium", // OPTIONAL (#228): the rung the FIRST, un-escalated resolution served
+                                     //   — what this task would have run on had it not climbed. PRESENT only
+                                     //   on an attempt the escalation ladder moved; its presence IS the
+                                     //   escalation signal, so it is ABSENT (never null) on every other
+                                     //   attempt — including one that reached the same tier by §9.6's
+                                     //   capability climb instead (see "Per-attempt tier provenance" below)
             "effort": "xhigh",      // the resolved route's effort, with action.effort applied over it.
                                      //   RECORDED, not yet emitted as a CLI flag (§9). ABSENT when unnamed
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
@@ -2866,13 +2882,38 @@ what the harness did rather than a guess reconstructed afterwards:
 | `"task"` | the task's own `action.tier` — or a judge guardrail's frontmatter `tier` — supplied the rung | the rung that served |
 | `"plan-default"` | the task declared none, and the plan-wide `tiering.defaultTier` supplied it | the rung that served |
 | `"override"` | a full `action.runner`/`action.model` **pin** bypassed resolution entirely (§9.6, precedence item 1) | **absent** — no rung resolved |
+| `"escalated"` | the **escalation ladder** (#228) climbed one rung because a PREVIOUS attempt of this task failed its guardrails | the rung actually served after the climb |
 | *(absent)* | the **legacy fallback**: no effective tier anywhere, so nothing resolved and nothing was overridden | absent |
 
 There is deliberately **no enum value for the legacy path** (D30). "Absent" and `"override"` are
 different facts about how the attempt got its model, and a reader must be able to tell them apart —
-inventing a fourth token for "nothing happened" would erase that distinction. Conversely a pin DOES
+inventing a fifth token for "nothing happened" would erase that distinction. Conversely a pin DOES
 record: *"bypasses tier resolution entirely"* governs what is **selected**, not what is **logged**
 (D31), so a pinned attempt still says why it took the route it took, with `tier` absent beside it.
+
+**`"escalated"` — the escalation ladder (#228).** A budget-consuming `guardrail-failed` outcome on one
+attempt makes the *next* attempt resolve one rung stronger, with `provenance.tier` recording the rung
+actually served after the climb. Three things a reader cannot get from the table alone:
+
+- **The trigger is `guardrail-failed` only.** A timeout, a max-turns stop, a transient pause and a
+  permission wall each have their own counter and their own remedy, and none of them escalates —
+  conflating them would spend a stronger model on an infrastructure or clock problem and misreport it
+  as "this task was too hard."
+- **An escalated attempt draws from the SAME retry pool** as an ordinary retry: one rung climbed per
+  guardrail failure, total attempts unchanged, no budget reset and no new cumulative cap.
+- **`escalated` is not `Climbed`.** A capability climb (`Candidates(RequestedTier)` was empty, so the
+  resolver walked up inside ONE attempt's resolution, §9.6) and an escalation (a PREVIOUS attempt
+  failed its guardrails) are different facts that can produce the identical `(requestedTier, tier)`
+  pair — a task tagged `easy` that climbed to `medium` for lack of an `easy` candidate looks, on `tier`
+  alone, exactly like one escalated from `easy` to `medium` after a guardrail failure. `tierSource` and
+  `escalatedFrom` are the whole reason a reader can tell the two apart.
+
+**`escalatedFrom`** records the rung the FIRST, un-escalated resolution served — what this task would
+have run on had it not climbed. It is present **only** on an attempt the escalation ladder moved;
+**absent — never null —** on every other attempt, which is what makes its presence the escalation
+signal without a second flag beside it. It sits beside `tier`/`tierSource` in `provenance`, documented
+the same way `requestedModel` is: presence itself is the signal, and an ordinary attempt carries no key
+at all.
 
 **The source is READ, never reconstructed** — it comes from the `TierOrigin` the loader recorded (§3)
 and from which precedence branch the resolver took, never from comparing the task's tier to
@@ -5550,7 +5591,7 @@ deliberately distinct from an explicit `false` ("stated cheap") — the distinct
 NOT-costly**, because an un-annotated registry must stay routable; only an explicit `true` excludes a block.
 
 **The costly floor.** `costly: true` blocks are excluded from `Candidates(R)` at **every** rung — their
-own, a climbed-to stronger rung, and (later) a ladder escalation or a judge bump. It is a hard floor on
+own, a climbed-to stronger rung, and a ladder escalation (#228, §7) or a judge bump. It is a hard floor on
 **harness autonomy**, with no override, no `--force` and no autonomy dial. The only paths to a costly
 model are an explicit **task pin** (`action.runner`/`action.model`) or the registry **`default` pointer**
 — both user assignments. Everything else is the harness choosing, and the harness does not choose.

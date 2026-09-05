@@ -191,6 +191,17 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
         new("docs/plans/08-parallel-execution", "e648768", 0, 0),
         new("docs/plans/09-preflight-first-class/example/example-plan", "382ed99", 0, 0,
             "an illustrative example plan, one level deeper than either layout; its gate bodies are simulated"),
+        new("docs/plans/228-escalation-ladder", "adc4cd2", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. The FIFTH " +
+            "consecutive plan to trip this table, and the second where it was PREDICTED: plan 36's row " +
+            "below says the fix belongs in /plan-breakdown (#587), and #587's quality-bar item now spells " +
+            "out the two-commit dance those rows discovered the hard way. This breakdown ran the tripwire " +
+            "BEFORE committing (green, because PlanFolders enumerates from the git TREE and an untracked " +
+            "folder is invisible to it - so unlike plan 35 the mere directory was NOT enough), watched it " +
+            "go red on the commit that added the folder, and added this row in the next one. That is the " +
+            "catch-22 stated plainly: the row needs the breakdown commit's own sha, which cannot exist " +
+            "until the commit that breaks the test has been made. #601 tracks graduating this class of " +
+            "tripwire into a deterministic check"),
         new("docs/plans/24-plan-source-provenance", "1d3e1ce", 0, 0,
             "its folder existed five days earlier at 3d9835f holding only a guardrails.json; a plan with no tasks is a vacuous row"),
         new("docs/plans/26-guardrail-quality-gate", "2d15108", 0, 0),

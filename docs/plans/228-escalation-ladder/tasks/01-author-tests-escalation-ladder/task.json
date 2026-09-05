@@ -1,0 +1,10 @@
+{
+  "description": "Author RED tests for the pure rung-selection ladder, plus the throwing EscalationLadder stub and the TierResolution.EscalatedFrom member they compile against",
+  "stableId": "k3f9a1",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Escalation/EscalationLadderTests.cs",
+    "src/Guardrails.Core/Prompts/EscalationLadder.cs",
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
+  ]
+}

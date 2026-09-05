@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant on the six escalation-seam source files: conflict-marker-free, and each landed contribution is a real construct declared exactly once",
+  "scope": "integration"
+}

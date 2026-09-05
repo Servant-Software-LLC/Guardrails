@@ -165,6 +165,12 @@ public sealed class TaskExecutor : ITaskExecutor
         // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
         int maxTurnsRetries = 0;
+        // One escalation counter for guardrail-failed attempts (issue #228): a guardrail failure indicts
+        // the MODEL's work, not the infrastructure around it, so — unlike the two counters above —
+        // it climbs the escalation ladder for the NEXT attempt's route instead of widening a clock or a
+        // turn budget. A timeout, a max-turns stop, a transient pause, or a permission wall never
+        // increments it; each of those already has its own counter and its own remedy.
+        int guardrailFailedRetries = 0;
 
         // #174 / #182 no-op-deadlock short-circuit: the previous guardrail-failed attempt's no-op flag,
         // failure fingerprint, and (serial mode) action-output fingerprint. When the CURRENT attempt is
@@ -196,7 +202,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                    permissionWalls, cancellationToken)
+                    guardrailFailedRetries, permissionWalls, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -282,6 +288,14 @@ public sealed class TaskExecutor : ITaskExecutor
             if (attempt.Outcome is AttemptOutcome.MaxTurns)
             {
                 maxTurnsRetries++;
+            }
+
+            // A guardrail-failed outcome indicts the MODEL's work, not the infrastructure around it;
+            // count it so the NEXT attempt's route climbs the escalation ladder (issue #228) — a
+            // same-rung retry just re-attempts the identical model against the same guardrails.
+            if (attempt.Outcome is AttemptOutcome.GuardrailFailed)
+            {
+                guardrailFailedRetries++;
             }
 
             // On success, stamp the summary with how long the task took (including any retries)
@@ -691,6 +705,7 @@ public sealed class TaskExecutor : ITaskExecutor
         bool isFinal,
         int timeoutRetries,
         int maxTurnsRetries,
+        int guardrailFailedRetries,
         PermissionWallTracker permissionWalls,
         CancellationToken cancellationToken)
     {
@@ -709,7 +724,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // §6.2's no-route outcome (nothing serves the rung, at it or above it) is settled just below,
         // BEFORE anything launches. Quietly turning it into a legacy launch is the silent fallback D30
         // severed, so it gets its own branch rather than being papered over.
-        TierResolution? route = ResolveRoute(task);
+        TierResolution? route = ResolveRoute(task, guardrailFailedRetries);
 
         // #198: the provenance the harness knows BEFORE the attempt runs — the resolved route, the
         // segment worktree + base commit, and (#382) the declared/injected tool grants. Written to the
@@ -1811,6 +1826,10 @@ public sealed class TaskExecutor : ITaskExecutor
             // REQUESTED rung here instead would make a climb invisible in the record.
             Tier = route?.Tier,
             TierSource = TierProvenance.SourceFor(task.Action, route),
+            // The rung this attempt's route climbed FROM (issue #228) — present only when
+            // EscalationLadder.Apply actually moved the rung, absent otherwise (a pin, the legacy path,
+            // a route the ladder declined to climb, or an ordinary unescalated attempt).
+            EscalatedFrom = route?.EscalatedFrom,
             // The route's effort is RECORDED, not passed to the CLI: the Claude runner exposes no
             // effort/thinking flag today and PromptRunnerSettings carries no field for one, so spelling
             // an argv flag here would invent a vendor knob that does not exist. When a runner CLASS
@@ -2046,11 +2065,22 @@ public sealed class TaskExecutor : ITaskExecutor
     /// <para>The CLI-level default model is null because the harness exposes no such setting today, so
     /// the legacy branch's last rung means "let the runner CLI pick its own default" — the fact the
     /// <c>"(cli default)"</c> display sentinel has always stood for.</para>
+    ///
+    /// <para><b>The escalation ladder (issue #228) slots in here, on top of the resolution above,
+    /// without moving this seam.</b> <paramref name="guardrailFailedRetries"/> is how many of this
+    /// task's PRIOR attempts failed their guardrails; <see cref="EscalationLadder.Apply"/> climbs that
+    /// many rungs above the resolution's own tier and re-resolves against the registry, or returns the
+    /// resolution unchanged for a pinned/legacy/no-route/script resolution, or once escalations is zero.
+    /// A null resolution (a script action) has nothing to climb and is returned as-is.</para>
     /// </summary>
-    private TierResolution? ResolveRoute(TaskNode task) =>
-        task.Action.Kind == ActionKind.Prompt
+    private TierResolution? ResolveRoute(TaskNode task, int guardrailFailedRetries)
+    {
+        TierResolution? route = task.Action.Kind == ActionKind.Prompt
             ? TierResolver.Resolve(task.Action, _plan.Config, cliDefaultModel: null)
             : null;
+
+        return route is null ? null : EscalationLadder.Apply(_plan.Config, route, guardrailFailedRetries);
+    }
 
     /// <summary>
     /// The operator-facing diagnosis a §6.2 no-route settle carries (DoR §12.4) — the text that becomes
