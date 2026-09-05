@@ -68,6 +68,19 @@ public sealed class LiveNarrativeCompositeTests
         Tasks = tasks
     };
 
+    /// <summary>A throwaway tree — the breakdown phase probe stats real paths.</summary>
+    private sealed class TempTree : IDisposable
+    {
+        public string Root { get; } = Path.Combine(Path.GetTempPath(), "gr-372-" + Guid.NewGuid().ToString("N"));
+
+        public TempTree() => Directory.CreateDirectory(Root);
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Root, recursive: true); } catch (Exception) { /* best effort */ }
+        }
+    }
+
     private static DecisionEntry Decision(string boundary, string subject, string headline) => new()
     {
         Boundary = boundary,
@@ -97,6 +110,68 @@ public sealed class LiveNarrativeCompositeTests
     ];
 
     private static bool HasBorderGlyph(string line) => line.IndexOfAny(BorderGlyphs) >= 0;
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // The #372 invariant in its MECHANICAL form.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Design 37 §4.1: "Zero <c>AnsiConsole.MarkupLine</c> calls remain in <see cref="LiveRunObserver"/>.
+    /// That is the #372 invariant, and it is mechanically checkable."
+    ///
+    /// <para>The behavioural tests below prove that the ten emitters they can DRIVE go through the
+    /// composite. This one covers the file — including the two ceiling-notice lines, which fire from the
+    /// 1 Hz ticker only once 25 minutes of a breakdown have elapsed and are therefore not reachable from a
+    /// test without a clock seam none of this design introduces. A source census is the honest instrument
+    /// for those two: it cannot prove they RENDER correctly, but it can prove they are not raw writes,
+    /// which is the whole of #372.</para>
+    ///
+    /// <para>Exactly ONE <c>AnsiConsole.</c> reference is permitted, and it is named: the constructor's
+    /// injection default (§7.4), which resolves a console rather than writing to one.</para>
+    /// </summary>
+    [Fact]
+    public void LiveRunObserver_ContainsNoOutOfBandConsoleWrite_OnlyTheInjectionDefault()
+    {
+        string[] code =
+        [
+            .. File.ReadAllLines(LiveRunObserverSource())
+                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal))
+        ];
+
+        string[] offenders =
+        [
+            .. code.Where(l =>
+                l.Contains("AnsiConsole.MarkupLine", StringComparison.Ordinal)
+                || l.Contains("AnsiConsole.Write", StringComparison.Ordinal)
+                || l.Contains("AnsiConsole.Markup(", StringComparison.Ordinal)
+                || l.Contains("Console.WriteLine", StringComparison.Ordinal)
+                || l.Contains("Console.Write(", StringComparison.Ordinal))
+        ];
+
+        Assert.True(
+            offenders.Length == 0,
+            "LiveRunObserver must never write outside the Live region (#372); found:\n  "
+            + string.Join("\n  ", offenders.Select(l => l.Trim())));
+
+        string[] references = [.. code.Where(l => l.Contains("AnsiConsole.", StringComparison.Ordinal))];
+        string only = Assert.Single(references);
+        Assert.Contains("AnsiConsole.Console", only, StringComparison.Ordinal);
+        Assert.Contains("console ??", only, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The observer's source file, located from THIS file's compile-time path — the same
+    /// <see cref="System.Runtime.CompilerServices.CallerFilePathAttribute"/> mechanism
+    /// <c>Guardrails.Core.Tests.TestPaths</c> uses, so the census cannot mis-root against a build layout.
+    /// </summary>
+    private static string LiveRunObserverSource(
+        [System.Runtime.CompilerServices.CallerFilePath] string thisFile = "")
+    {
+        string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(thisFile)!, "..", ".."));
+        string source = Path.Combine(repoRoot, "src", "Guardrails.Cli", "Ui", "LiveRunObserver.cs");
+        Assert.True(File.Exists(source), $"the census mis-rooted: no LiveRunObserver.cs at {source}");
+        return source;
+    }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // The seam itself.
@@ -339,6 +414,65 @@ public sealed class LiveNarrativeCompositeTests
             l => l.Contains(
                 "model 01-a attempt 2: claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1",
                 StringComparison.Ordinal));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // The remaining §4.4 narrative sites, driven through the injected console in one sweep.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EveryDrivableNarrativeEmitter_RendersInsideTheCompositeAndNeverBesideIt()
+    {
+        using var tree = new TempTree();
+        TestConsole console = Console(140);
+        TaskNode a = Task(null, "01-a");
+        WaveNode w1 = Wave("wave-01-foundation", 1, Task("wave-01-foundation", "01-a"));
+        WaveNode stub = Wave("wave-02-consumers", 2);
+
+        var context = new WaveBreakdownContext
+        {
+            WaveDir = "wave-02-consumers",
+            Index = 2,
+            Total = 2,
+            Ceiling = TimeSpan.FromMinutes(30),
+            TasksDirectory = Path.Combine(tree.Root, "wave-02-consumers", "tasks"),
+            StreamLogPath = Path.Combine(tree.Root, "breakdown", "stream.jsonl"),
+            IntentManifestPath = null,
+            BreakdownLogDir = Path.Combine(tree.Root, "breakdown"),
+            ComposedPromptBytes = 2048
+        };
+
+        await using (var observer = new LiveRunObserver(
+            [a, .. w1.Tasks], waves: [w1, stub], console: console))
+        {
+            observer.PlanHashMismatch("sha256:9f2a");                                   // §4.4 #11
+            observer.OverwatchNoVerdict("01-a", "model returned no JSON block");         // §4.4 #4
+            observer.WaveStarting(w1, 1, 2);                                             // §4.4 #5
+            observer.WaveBreakdownStarting(context);                                     // §4.4 #7-8
+            observer.WaveFinished(w1, Core.Journal.WaveStatus.Completed, skipped: false); // §4.4 #6
+            observer.DecisionRecorded(Decision("drift", "01-a", "Definition drift auto-resolved")); // §4.4 #12
+        }
+
+        IReadOnlyList<string> lines = RenderedLines(console);
+        string[] expected =
+        [
+            "plan manifests changed since the last run",
+            "overwatch: no verdict 01-a — model returned no JSON block",
+            "Wave 1/2: wave-01-foundation — 1 task(s)",
+            "authoring tasks (JIT breakdown). Ceiling 30m00s.",
+            "Breakdown log: " + context.BreakdownLogDir,
+            "Wave wave-01-foundation: completed",
+            "decision:drift  Definition drift auto-resolved: 01-a"
+        ];
+
+        foreach (string text in expected)
+        {
+            Assert.Contains(lines, l => l.Contains(text, StringComparison.Ordinal));
+
+            // …and never on a line that also carries a table border glyph. That conjunction IS #372.
+            Assert.DoesNotContain(
+                lines, l => l.Contains(text, StringComparison.Ordinal) && HasBorderGlyph(l));
+        }
     }
 
     private static Core.Journal.AttemptRecord Attempt(int attempt, Core.Journal.AttemptOutcome outcome) => new()
