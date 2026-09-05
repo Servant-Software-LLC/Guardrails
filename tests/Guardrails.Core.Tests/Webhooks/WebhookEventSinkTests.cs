@@ -920,17 +920,27 @@ public sealed class WebhookEventSinkTests
         Assert.DoesNotContain(notices, n => n.Contains("gave up", StringComparison.Ordinal));
         Assert.DoesNotContain(notices, n => n.Contains("further delivery failure", StringComparison.Ordinal));
 
-        // AT MOST ONE per-row failure notice, and its cause is the harness's own cancellation — not the
-        // 39 queued rows. Exactly one row can be IN FLIGHT when step 4 cancels the pump's token (the
-        // pump is serial), and that row genuinely was sent and genuinely was not delivered, so a notice
-        // naming TaskCanceledException is honest about it. Every row BEHIND it was never sent at all,
-        // and it is the count that separates the two: before the fix each of those produced its own
-        // notice and its own _consecutiveFailures increment, which is what manufactured the "gave up"
-        // line above against an endpoint that had answered 200 every time.
+        // NO MORE FAILURE NOTICES THAN ROWS ACTUALLY SENT — which is this test's own name, asserted
+        // directly instead of through a proxy. A row that reached the handler genuinely was sent and
+        // genuinely was not delivered, so a notice naming TaskCanceledException is honest about it.
+        // Every row BEHIND it was never sent at all, and before the fix each of those produced its own
+        // notice and its own _consecutiveFailures increment — measured at 6 notices plus "gave up after
+        // 5 consecutive delivery failures" against an endpoint that answered 200 every time. Against
+        // roughly one row actually sent, that is what this bound catches.
+        //
+        // It replaces a `<= 1` count whose stated premise — "exactly one row can be IN FLIGHT when step
+        // 4 cancels the pump's token (the pump is serial)" — is true PER PHASE and false for the
+        // teardown as a whole: §3.3's backlog drain and its terminal delivery are two sending phases,
+        // and each can have its own row in flight when its own budget expires. Both notices are then
+        // truthful and the bound was not, so it failed under load while the property it stood for held
+        // (measured: 2 notices, on the #181 baseline preflight of an unattended run). Counting rows the
+        // handler received needs no premise about how many phases send.
         List<string> failureNotices = [.. notices.Where(n => n.Contains("delivery failed", StringComparison.Ordinal))];
         Assert.True(
-            failureNotices.Count <= 1,
-            $"only the single in-flight row may be reported as failed; got {failureNotices.Count}:{Environment.NewLine}{string.Join(Environment.NewLine, failureNotices)}");
+            failureNotices.Count <= handler.Requests.Count,
+            $"a row that was never sent must never be reported as failed: {failureNotices.Count} failure "
+            + $"notice(s) against {handler.Requests.Count} row(s) actually POSTed:"
+            + $"{Environment.NewLine}{string.Join(Environment.NewLine, failureNotices)}");
         foreach (string notice in failureNotices)
             Assert.Contains(nameof(TaskCanceledException), notice, StringComparison.Ordinal);
 
