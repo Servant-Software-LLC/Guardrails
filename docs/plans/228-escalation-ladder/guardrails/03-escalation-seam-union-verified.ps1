@@ -1,10 +1,13 @@
-# catches: a union that dropped a colliding sibling's hunk, left git conflict markers on one of the five
+# catches: a union that dropped a colliding sibling's hunk, left git conflict markers on one of the SIX
 #          source files this plan's PARALLEL branches touch, or duplicated a member the AI-merge saw in
 #          two regions (#175 - two branches appending the same new member to different parts of one file
 #          merge with NO textual conflict marker, leaving a duplicate only the build catches).
 #          Branch A (tasks 01/02) writes EscalationLadder.cs + TierResolution.cs; branch B (tasks 03/04)
-#          writes JournalModel.cs + TierProvenance.cs + JournalJson.cs. They are disjoint by design, and
-#          this check is what makes "by design" observable at every union rather than assumed.
+#          writes JournalModel.cs + TierProvenance.cs + JournalJson.cs; the two join at task 06, which
+#          writes TaskExecutor.cs. That is six, and $touched below lists six - the count in this header
+#          said five while the code scanned six, which is the sort of drift that later gets "corrected"
+#          by deleting a file from the list. They are disjoint by design, and this check is what makes
+#          "by design" observable at every union rather than assumed.
 #
 # scope: "integration" - UNION-SAFE / CONDITIONAL by construction. Every clause GATES on the artifact
 #          being present and then verifies it, so it passes trivially at a union where the contributing
@@ -20,6 +23,19 @@ $ws = $env:GUARDRAILS_WORKSPACE
 if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
 
 $failures = @()
+
+# ── SHARED PATTERNS - written ONCE so the gate and the count can never drift apart ────────────────
+# MODIFIER-TOLERANT (nit c). 'public\s+string\?' broke on 'public required string?' /
+# 'public virtual string?' etc., and this gate is scope:"integration" - a false RED here does not fail
+# one task, it RED-HALTS EVERY UNION in the plan, so brittleness costs more here than its severity
+# suggests. The allowlist is explicit rather than a wildcard: '(?:\w+\s+)*' would also swallow a
+# RETURN TYPE and match 'public string? GetEscalatedFrom {' shapes that are not the member.
+$escalatedFromDecl = 'public\s+(?:(?:required|virtual|override|sealed|new|abstract|static|readonly|partial)\s+)*string\s*\?\s+EscalatedFrom\s*\{'
+# ENUM MEMBER, with an OPTIONAL explicit value (nit b). The old '^\s*Escalated\s*,?\s*$' matched only a
+# bare member, so 'Escalated = 3,' duplicated twice slipped through the very duplicate check this
+# clause exists to be. The line must still be JUST the member - a property declaration starts with a
+# modifier and cannot match.
+$escalatedEnumMember = '(?m)^\s*Escalated\s*(?:=\s*[^,\r\n]+?\s*)?,?\s*$'
 
 # ── 1. conflict-marker freedom over every file this plan's parallel branches touch ────────────────
 # Line-anchored ours/theirs only - a bare '=======' false-fires on a banner or a setext underline (#187).
@@ -49,10 +65,10 @@ if (Test-Path -LiteralPath $resolution) {
         # cannot satisfy the clause (#97/#98).
         $resolutionScan = [regex]::Replace($code, '(?s)/\*.*?\*/', '')
         $resolutionScan = [regex]::Replace($resolutionScan, '(?m)^\s*//.*$', '')
-        if ($resolutionScan -notmatch 'public\s+string\?\s+EscalatedFrom\s*\{') {
+        if ($resolutionScan -notmatch $escalatedFromDecl) {
             $failures += "TierResolution.cs mentions EscalatedFrom but declares no public string? EscalatedFrom property - the union kept the comment and dropped the member"
         }
-        $declared = @([regex]::Matches($resolutionScan, 'public\s+string\?\s+EscalatedFrom\s*\{')).Count
+        $declared = @([regex]::Matches($resolutionScan, $escalatedFromDecl)).Count
         if ($declared -gt 1) {
             $failures += "TierResolution.cs declares EscalatedFrom $declared times - the AI-merge kept two copies of one member (no conflict marker is written for that, #175)"
         }
@@ -65,14 +81,14 @@ if (Test-Path -LiteralPath $journalModel) {
     $journalScan = [regex]::Replace($code, '(?s)/\*.*?\*/', '')
     $journalScan = [regex]::Replace($journalScan, '(?m)^\s*//.*$', '')
     $journalScan = [regex]::Replace($journalScan, '(?m)^\s*///.*$', '')
-    if ($journalScan -match '(?m)^\s*Escalated\s*,?\s*$') {
-        $members = @([regex]::Matches($journalScan, '(?m)^\s*Escalated\s*,?\s*$')).Count
+    if ($journalScan -match $escalatedEnumMember) {
+        $members = @([regex]::Matches($journalScan, $escalatedEnumMember)).Count
         if ($members -gt 1) {
             $failures += "JournalModel.cs declares the TierSource member Escalated $members times - the AI-merge kept two copies (#175)"
         }
     }
     if ($journalScan -match 'EscalatedFrom') {
-        $declared = @([regex]::Matches($journalScan, 'public\s+string\?\s+EscalatedFrom\s*\{')).Count
+        $declared = @([regex]::Matches($journalScan, $escalatedFromDecl)).Count
         if ($declared -lt 1) {
             $failures += "JournalModel.cs mentions EscalatedFrom but declares no public string? EscalatedFrom property on AttemptProvenance - the union kept the comment and dropped the member"
         }

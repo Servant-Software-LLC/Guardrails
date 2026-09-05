@@ -46,7 +46,15 @@ if ($testExit -ne 0) {
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
 if ($ran -lt 1) {
-    Write-Output "exit 0 but ZERO tests executed - this real-seam proof certified nothing. The --filter '$filter' matched no tests, is malformed, or every matched test is [Skip]ped. Check it against RetryLoopEscalationTests, the class task 05 authored."
+    # THE REMEDY MUST BE IN SCOPE. This task's writeScope is src/Guardrails.Core/Execution/TaskExecutor.cs
+    # and nothing else, so "check it against RetryLoopEscalationTests" pointed the retry agent at a file
+    # it is forbidden to touch - an instruction whose only compliant outcome is an out-of-scope edit that
+    # fails the task and burns a retry.
+    # NOTE for future editors: PowerShell does NOT treat \" as an escape inside a double-quoted string
+    # - it ENDS the string, and Write-Output then receives the remains as many arguments and prints
+    # one word per line. Escape an embedded quote as `" (backtick) or "" . Measured: the \" spelling
+    # shipped a message that rendered as 40 single-word lines.
+    Write-Output "exit 0 but ZERO tests executed - this real-seam proof certified nothing. The --filter '$filter' matched no tests, is malformed, or every matched test is [Skip]ped. This is NOT a finding about TaskExecutor.cs and there is no edit to it that fixes it: the test class and the filter string are fixed by contract and both live OUTSIDE this task's writeScope, so do not attempt to repair them and do not reshape TaskExecutor.cs to make a filter match. If the test project simply failed to build or the host failed to start, the log above says so - fix that if it is yours. Otherwise escalate: write a `"needsHuman`" object with kind `"defective-guardrail`" to the state-out path, quoting this message and the file:line that refutes it."
     exit 1
 }
 exit 0

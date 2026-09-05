@@ -7,6 +7,39 @@
 #          asserts the state of every test in the plan, so this task could not go green until a task
 #          that DEPENDS on it has run (a deadlock validate/graph --check cannot see, #455).
 #          Re-emits the assertion/exception lines at the END so they reach the retry-feedback tail (#179).
+#
+# MECHANICAL BACKSTOP (#221). The Climbed prohibition is stated in FOUR of this plan's prompts and was
+#          backed by NOTHING mechanical - four prose restatements of a rule are four chances to be
+#          persuasive and zero chances to be enforced. The clause below is the enforcement, and it runs
+#          FIRST because it is free: an instant regex beats a two-minute dotnet test at telling the
+#          agent it wired the wrong field.
+# Required-forbidden baseline, MEASURED at authoring time (#478): `Climbed` in TierProvenance.cs = 0
+#          hits across the whole file - comments included - so the clause is CLEAN ON ARRIVAL and any
+#          hit it reports was introduced by this task.
+# It anchors on a USE, not a mention (#470/#76): comments and string literals are stripped FIRST, so a
+#          doc comment that explains the distinction ("not to be confused with TierResolution.Climbed")
+#          and an exception message that names the field are both legal. What is left after the strip
+#          is an identifier reference, which is the only thing that can key a mapping.
+
+$ws = $env:GUARDRAILS_WORKSPACE
+if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
+$provenancePath = Join-Path $ws 'src/Guardrails.Core/Prompts/TierProvenance.cs'
+if (Test-Path -LiteralPath $provenancePath) {
+    $src = Get-Content -Raw -LiteralPath $provenancePath
+    # Strip in this order: block comments, then raw/verbatim/regular string literals, then line
+    # comments (which covers /// XML docs). Over-stripping can only WEAKEN this check; under-stripping
+    # is what produces a false RED, so every construct that can legally carry the word is removed.
+    $scan = [regex]::Replace($src,  '(?s)/\*.*?\*/', ' ')
+    $scan = [regex]::Replace($scan, '(?s)""".*?"""', ' ')                   # raw string literal
+    $scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', ' ')                 # verbatim string
+    $scan = [regex]::Replace($scan, '"(?:\\.|[^"\\\r\n])*"', ' ')           # regular / interpolated
+    $scan = [regex]::Replace($scan, '(?m)//.*$', ' ')                       # line + /// XML doc
+    if ($scan -cmatch '\bClimbed\b') {
+        Write-Output "TierProvenance.cs USES TierResolution.Climbed (outside comments and string literals). It must not. Climbed is a CAPABILITY fact - Candidates(RequestedTier) was empty, so the resolver walked up INSIDE ONE ATTEMPT - and escalation is a different fact: a PREVIOUS attempt of this task failed its guardrails. Keying TierSource.Escalated on Climbed sources every no-candidate climb as an escalation, and the journal then cannot answer the one question this feature exists to answer. Key the Escalated arm on EscalatedFrom, and leave Climbed to report itself independently. Naming Climbed in a doc comment or an exception message is fine - this clause strips both before it looks."
+        exit 1
+    }
+}
+
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
 $filter = 'Category=EscalationLadder&FullyQualifiedName~EscalatedProvenanceTests'   # verbatim from task 03's census
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block,

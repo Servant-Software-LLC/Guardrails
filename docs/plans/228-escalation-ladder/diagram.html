@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=66ab14860a71bcdbe1e42f4f3abe2a9aa61f029b634db3942d33a6b5f557ba61 -->
+<!-- guardrails:graph v1 source-sha256=66cc5b25bae08794f71866c05851a9b07353804a7d73b79168f3b235ed81bdf6 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -128,7 +128,7 @@
   end
   style task_05_author_tests_retry_loop_escalation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_06_implement_retry_loop_escalation["06-implement-retry-loop-escalation"]
-    task_06_implement_retry_loop_escalation_gr_0["03-real-seam-tests-pass"]:::guardrail
+    task_06_implement_retry_loop_escalation_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_06_implement_retry_loop_escalation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_07_update_design_docs["07-update-design-docs"]
@@ -161,7 +161,7 @@
   click task_04_implement_escalated_provenance_gr_0 href "tasks/04-implement-escalated-provenance/guardrails/01-provenance-tests-pass.ps1" "01-provenance-tests-pass" _blank
   click task_05_author_tests_retry_loop_escalation_gr_0 href "tasks/05-author-tests-retry-loop-escalation/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_05_author_tests_retry_loop_escalation_gr_1 href "tasks/05-author-tests-retry-loop-escalation/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
-  click task_06_implement_retry_loop_escalation_gr_0 href "tasks/06-implement-retry-loop-escalation/guardrails/03-real-seam-tests-pass.ps1" "03-real-seam-tests-pass" _blank
+  click task_06_implement_retry_loop_escalation_gr_0 href "tasks/06-implement-retry-loop-escalation/guardrails/01-real-seam-tests-pass.ps1" "01-real-seam-tests-pass" _blank
   click task_07_update_design_docs_gr_0 href "tasks/07-update-design-docs/guardrails/01-docs-record-the-ladder.ps1" "01-docs-record-the-ladder" _blank
   click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "Full solution build - catches cross-project compilation errors after all plan tasks merge" _blank
   click plan_guardrails_1 href "guardrails/02-all-tests-pass.ps1" "Full test suite - catches regressions in all existing tests and verifies this plan's new tests pass on the merged HEAD" _blank

@@ -57,7 +57,7 @@ on a stronger rung?"* — plus the two data members they compile against.
 
    Both are pure DATA members: the declaration IS the implementation. Do NOT touch
    `JournalJson.TierSourceToken`, the `TierSourceConverter`, or `TierProvenance.SourceFor` — task
-   `04-implement-escalated-provenance` owns those, and leaving them alone is what makes three of the
+   `04-implement-escalated-provenance` owns those, and leaving them alone is what makes four of the
    five behaviours below genuinely RED.
 
 **Scope boundary (harness-enforced):** Write only to
@@ -96,21 +96,24 @@ prompt, trust the grep and say so in your summary.
 | behaviour | test method name | on the stub tree |
 |---|---|---|
 | an escalated route is sourced `Escalated` | `SourceFor_OnAnEscalatedRoute_IsEscalated` | RED |
-| a CAPABILITY climb that did not escalate is NOT `Escalated` | `SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated` | green — see below |
+| a CAPABILITY climb that did not escalate is NOT `Escalated` — **paired with its mirror** | `SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated` | RED — see below |
 | the wire token for `Escalated` is `escalated` | `TierSourceToken_ForEscalated_IsTheEscalatedWireToken` | RED |
 | the journal round-trips the `escalated` token | `TierSourceConverter_RoundTripsEscalatedThroughTheJournal` | RED |
 | `escalatedFrom` is written only when the attempt escalated | `Provenance_WritesEscalatedFromOnlyWhenTheAttemptEscalated` | green — see below |
 
-Two of the five are **DECLARED EXEMPTIONS** — a correct implementation leaves them GREEN on this tree,
-so the census asserts only that they RAN. They are written, never skipped:
+One of the five is a **DECLARED EXEMPTION** — a correct implementation leaves it GREEN on this tree, so
+the census asserts only that it RAN. It is written, never skipped. The discriminator is **not** exempt,
+and the reason is worth reading:
 
-- `SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated` is the **discriminator**. Build a
-  `TierResolution` with `Climbed = true`, `RequestedTier = "medium"`, `Tier = "hard"` and
-  `EscalatedFrom = null`, and assert `TierProvenance.SourceFor` returns the ORIGIN-derived source
-  (`TierSource.Task` for an `action.tier`), **not** `TierSource.Escalated`. That is true today and must
-  STAY true — demanding it be red would demand a correct implementation fail. Pair it, in the same
-  test, with the mirror: a route carrying `EscalatedFrom = "easy"` **and** `Climbed = true` must be
-  `Escalated` *and* still report `Climbed`, so the two facts are independently readable.
+- `SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated` is the **discriminator**, and it is
+  RED because it has TWO halves. Build a `TierResolution` with `Climbed = true`,
+  `RequestedTier = "medium"`, `Tier = "hard"` and `EscalatedFrom = null`, and assert
+  `TierProvenance.SourceFor` returns the ORIGIN-derived source (`TierSource.Task` for an `action.tier`),
+  **not** `TierSource.Escalated`. That half is true today and must STAY true. On its own it would be
+  satisfied by `Assert.True(true)`, so pair it — in the SAME test method — with the mirror: a route
+  carrying `EscalatedFrom = "easy"` **and** `Climbed = true` must be `Escalated` *and* still report
+  `Climbed`, so the two facts are independently readable. The mirror cannot pass until task 04 adds the
+  `Escalated` arm, which is what makes the whole test red now and green after.
 - `Provenance_WritesEscalatedFromOnlyWhenTheAttemptEscalated` covers a pure data member whose
   declaration IS its implementation — there is no stub-vs-real distinction to be red about. Serialize
   an `AttemptProvenance` with `EscalatedFrom = "easy"` through the journal serializer and assert the
@@ -121,5 +124,5 @@ For the round-trip and key-shape assertions, follow
 `tests/Guardrails.Core.Tests/ModelTiering/JournalTieringSchemaTests.cs` — read it first and reuse its
 serializer helpers rather than inventing a second way to emit and read a journal document.
 
-**The tests MUST COMPILE and FAIL** (the three RED rows). Failing is the point. NOT compiling is a
+**The tests MUST COMPILE and FAIL** (the four RED rows). Failing is the point. NOT compiling is a
 mistake to fix. Do NOT implement the mapping — task 04 does that.

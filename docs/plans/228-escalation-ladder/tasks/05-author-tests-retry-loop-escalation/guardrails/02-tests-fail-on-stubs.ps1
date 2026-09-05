@@ -5,30 +5,41 @@
 #          real-seam proof asserts nothing (#375). One entry per enumerated behaviour, each observed in
 #          the runner's OWN TRX, never merely discovered by name.
 #
-# DECLARED EXEMPTIONS - two rows a CORRECT implementation leaves GREEN on this tree, because nothing
-# escalates yet and their whole job is to STILL be green after task 06 wires the ladder. Demanding red
-# would demand a correct implementation fail. Both assert Expect='Executed' (they ran, not [Skip]ped),
-# and neither is dropped: an undeclared omission is indistinguishable from an oversight.
-#   * 'ATimeoutAttempt_DoesNotEscalateTheNextAttempt' - escalation triggers on guardrail-failed ONLY.
-#     A timeout is evidence of SLOW work, not WRONG work, and has its own counter and its own remedy.
-#     This row is the only thing that catches an over-broad trigger in task 06.
+# NO EXEMPTIONS. This census is 5-of-5 RED, and the two rows that used to be Expect='Executed' are the
+# reason it had to change. An 'Executed' row asserts only that a test RAN, which is exactly what a
+# hollow Assert.True(true) body satisfies - so the two most valuable tests in the file were the two the
+# census could not read. The hole that opens is not theoretical: with both hollow, task 06 can escalate
+# on a TIMEOUT with every guardrail in this plan green, breaking the charter's guardrail-failed-only
+# invariant the maintainer personally settled.
+# The fix is in the ACTION PROMPT, not here: each of those two behaviours now carries a CONTRAST ARM in
+# the same test method, so the whole test is red before task 06 and green after.
+#   * 'ATimeoutAttempt_DoesNotEscalateTheNextAttempt' - a timeout must NOT escalate (its own counter,
+#     its own remedy), AND in the same fixture a GUARDRAIL failure MUST escalate. The second half is
+#     red on this tree, so the row is legitimately Expect='Failed'.
 #   * 'OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst' - a config with no routing
-#     block has nowhere to climb and must degrade to today's behaviour SILENTLY. That is every plan in
-#     existence, so this row is the regression guard for everyone who never asked for tiering.
+#     block has nowhere to climb and must degrade SILENTLY (that is every plan in existence), AND the
+#     same plan with a two-rung registry MUST escalate. Again the second half is red today.
+#   * 'TheEscalatedAttempt_IsInvokedWithTheStrongerBlocksModel' - the silent-failure guard. A ladder
+#     applied in BuildProvenance instead of at ResolveRoute writes "escalated to hard" into the journal
+#     while handing the runner the EASY model: every other row here still passes and the stronger model
+#     never runs. Only an assertion on the INVOCATION catches it.
 # Culture pin: this census reads the TRX (schema tokens, NOT localized), so unlike 4.3 the guard does
 #          not depend on it - keep it anyway so the logged summary is readable.
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $filter = 'Category=EscalationLadder&FullyQualifiedName~RetryLoopEscalationTests'   # SAME string as task 06's forward half
 
 # THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
-# A BARE STRING means Expect='Failed'. A HASHTABLE declares an EXEMPTION (Expect='Executed').
+# A BARE STRING means Expect='Failed'. The HASHTABLE form (Expect='Executed') is retained by the loop
+# below but DELIBERATELY UNUSED here - see the header for why no row in this file is exempt.
 $manifest = [ordered]@{
     'a guardrail-failed attempt makes the next attempt one rung stronger' = 'AGuardrailFailedAttempt_MakesTheNextAttemptResolveOneRungStronger'
     'the escalated attempt records escalated + the rung it came from'     = 'TheEscalatedAttempt_RecordsTierSourceEscalatedAndTheRungItClimbedFrom'
-    # DECLARED EXEMPTION - the trigger discriminator; see this file's header.
-    'DISCRIMINATOR: a TIMEOUT does not escalate'                          = @{ Name = 'ATimeoutAttempt_DoesNotEscalateTheNextAttempt'; Expect = 'Executed' }
-    # DECLARED EXEMPTION - the single-runner degrade; see this file's header.
-    'DEGRADE: a single-runner plan resolves identically every attempt'    = @{ Name = 'OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst'; Expect = 'Executed' }
+    # SILENT-FAILURE GUARD - the journal can say "escalated" while the runner got the old model.
+    'the escalated attempt is INVOKED with the stronger model'            = 'TheEscalatedAttempt_IsInvokedWithTheStrongerBlocksModel'
+    # DISCRIMINATOR + its contrast arm: a timeout does not escalate, a guardrail failure does.
+    'DISCRIMINATOR: a TIMEOUT does not escalate (contrast: a guardrail failure does)' = 'ATimeoutAttempt_DoesNotEscalateTheNextAttempt'
+    # DEGRADE + its contrast arm: a one-block plan never climbs, a two-rung plan does.
+    'DEGRADE: a single-runner plan resolves identically (contrast: a two-rung plan escalates)' = 'OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -84,7 +95,7 @@ foreach ($behaviour in $manifest.Keys) {
     $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
     if ($notRed.Count -gt 0) {
         $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
-        $failures += "$behaviour -> '$name' is $seen on this tree, not Failed. Nothing in the retry loop escalates yet, so a test that does not fail here never asserted on the journal record an escalated attempt would write - it asserts a tautology and certifies nothing. Assert on journal.Document's attempt provenance, never on 'the stub runner was called'. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on this tree, not Failed. Nothing in the retry loop escalates yet, so a test that does not fail here never asserted on the journal record an escalated attempt would write - it asserts a tautology and certifies nothing. Assert on journal.Document's attempt provenance, never on 'the stub runner was called'. If this row's behaviour is a NEGATIVE one (a timeout does not escalate; a single-runner plan does not climb), it is true on this tree by itself - the action prompt pins a CONTRAST ARM in the same test method (a guardrail failure in the same fixture DOES escalate; the same plan with a two-rung registry DOES escalate), and that arm is what makes the row red. Write both halves. ('NotExecuted' = [Fact(Skip=...)].)"
     }
 }
 

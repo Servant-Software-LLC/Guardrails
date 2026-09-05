@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=66ab14860a71bcdbe1e42f4f3abe2a9aa61f029b634db3942d33a6b5f557ba61 -->
+<!-- guardrails:graph v1 source-sha256=66cc5b25bae08794f71866c05851a9b07353804a7d73b79168f3b235ed81bdf6 -->
 
 ```mermaid
 flowchart TD
@@ -30,7 +30,7 @@ flowchart TD
   end
   style task_05_author_tests_retry_loop_escalation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_06_implement_retry_loop_escalation["06-implement-retry-loop-escalation"]
-    task_06_implement_retry_loop_escalation_gr_0["03-real-seam-tests-pass"]:::guardrail
+    task_06_implement_retry_loop_escalation_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_06_implement_retry_loop_escalation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_07_update_design_docs["07-update-design-docs"]

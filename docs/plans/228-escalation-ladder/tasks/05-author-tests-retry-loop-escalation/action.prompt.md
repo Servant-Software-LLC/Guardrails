@@ -57,18 +57,22 @@ Read `tests/Guardrails.Core.Tests/Execution/ModelDigestProvenanceTests.cs` first
 shape: it runs a **real serial run** (`maxParallelism: 1`, no worktree provider) of a single PROMPT
 task through the real `PlanLoader`, `TaskExecutor` and `Scheduler`, with
 `PromptRunnerRegistry.Build(config, factory)` handing back a stub `IPromptRunner` instead of spawning
-the `claude` CLI. That fixture is the harness for all four behaviours here; do not invent a second one.
+the `claude` CLI. That fixture is the harness for all five behaviours here; do not invent a second one.
 
-Two rules about what you may assert, and they are the whole value of this file:
+Three rules about what you must assert, and they are the whole value of this file:
 
 - **Assert on the JOURNAL, not on the stub.** *"The seam was called"* is not an assertion — a fake
   satisfies it whether or not anything is wired. Read `journal.Document`'s attempt records and assert
   on `Provenance.Tier`, `Provenance.TierSource` and `Provenance.EscalatedFrom`: those bytes exist only
-  because `TaskExecutor` resolved a route, threaded it into `BuildProvenance`, and recorded it. You may
-  additionally record what model the stub runner was invoked with (`PromptInvocation` carries it) and
-  assert the ESCALATED attempt was invoked with the stronger block's model — that is a real assertion
-  about production behaviour, not a call count, and it catches an executor that computes an escalated
-  route and then hands the old model to the invocation.
+  because `TaskExecutor` resolved a route, threaded it into `BuildProvenance`, and recorded it.
+- **And record what model the stub runner was actually invoked with** (`PromptInvocation` carries it).
+  This is REQUIRED, not optional, and it has its own row in the table below. It is the only thing
+  standing between the journal and a genuine silent failure: a ladder applied in `BuildProvenance`
+  instead of at `ResolveRoute` makes the journal say *"escalated to hard"* while the runner is handed
+  the easy model — every journal assertion above passes, the operator reads a green escalation, and the
+  stronger model never ran. Capture the invocation your stub receives and assert the ESCALATED attempt
+  was invoked with the STRONGER block's model. That is an assertion about production behaviour, not a
+  call count.
 - **Make attempt 1 fail its GUARDRAILS, not its action.** The trigger is `guardrail-failed` and nothing
   else. Give the fixture task a script guardrail that exits non-zero on the first attempt (the existing
   serial-run fixtures already write real guardrail scripts into a temp plan folder — follow them).
@@ -86,29 +90,36 @@ read that file and reuse its shape rather than spelling a registry a second way.
 |---|---|---|
 | a guardrail-failed attempt makes the NEXT attempt resolve one rung stronger | `AGuardrailFailedAttempt_MakesTheNextAttemptResolveOneRungStronger` | RED |
 | the escalated attempt records `escalated` + the rung it started from | `TheEscalatedAttempt_RecordsTierSourceEscalatedAndTheRungItClimbedFrom` | RED |
-| a TIMEOUT does not escalate | `ATimeoutAttempt_DoesNotEscalateTheNextAttempt` | green — see below |
-| a single-runner plan resolves identically on every attempt | `OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst` | green — see below |
+| the escalated attempt is INVOKED with the stronger block's model | `TheEscalatedAttempt_IsInvokedWithTheStrongerBlocksModel` | RED |
+| a TIMEOUT does not escalate — **but a guardrail failure in the same fixture does** | `ATimeoutAttempt_DoesNotEscalateTheNextAttempt` | RED |
+| a single-runner plan resolves identically on every attempt — **but a two-rung plan escalates** | `OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst` | RED |
 
 Fold one more assertion into the FIRST test rather than giving it a row of its own: the escalated
 attempt still receives the retry `feedbackPath` from the attempt before it. `feedbackPath` is passed to
 the next attempt independently of which model runs it, so escalating must not trade away the #179
 feedback loop — assert the escalated attempt got BOTH a stronger route and the feedback.
 
-Two rows are **DECLARED EXEMPTIONS** — a correct implementation leaves them GREEN on this tree, so the
-census asserts only that they RAN. They are written, never skipped, and they are the two most valuable
-tests in the file:
+**Every row is RED, and the last two are red because each carries a CONTRAST ARM.** Their negative
+half — *"a timeout does not escalate"*, *"a single-runner plan does not escalate"* — is true on this
+tree and would be satisfied by `Assert.True(true)`; a hollow body would pass, and task 06 could then
+escalate on a timeout with every guardrail in this plan green. Pairing each negative with the positive
+it must be distinguished FROM makes the whole test red before task 06 and green after, which is what a
+census can actually check. Write both halves in ONE test method, under the name pinned above:
 
 - `ATimeoutAttempt_DoesNotEscalateTheNextAttempt` — escalation is triggered by `guardrail-failed`
   **only**, never by a timeout, a max-turns stop, a transient pause or a permission wall. A timeout is
   evidence the model produced *slow* work, not *wrong* work, and the harness already has separate
-  counters (`timeoutRetries`, `maxTurnsRetries`) and separate remedies for it. Nothing escalates today,
-  so this passes now; its job is to STILL pass after task 06, which is the only way an over-broad
-  trigger gets caught. Drive a stub runner whose first attempt TIMES OUT and assert attempt 2's
-  provenance is on the SAME rung with `TierSource` unchanged and `EscalatedFrom` absent.
+  counters (`timeoutRetries`, `maxTurnsRetries`) and separate remedies for it. Drive a stub runner
+  whose first attempt TIMES OUT and assert attempt 2's provenance is on the SAME rung with `TierSource`
+  unchanged and `EscalatedFrom` absent — **and in the same fixture with attempt 1 failing its
+  guardrails instead, attempt 2 IS one rung stronger.** The negative half is what catches an over-broad
+  trigger in task 06; the contrast arm is what proves the negative half is measuring anything at all.
 - `OnASingleRunnerPlan_TheSecondAttemptResolvesTheSameRouteAsTheFirst` — a config with ONE
   `promptRunners` block and **no `routing` block at all** has nowhere to climb, and must degrade to
   today's behaviour **silently**: no error, no escalation, the same route on every attempt. This is
-  every plan in existence today, so a regression here breaks everyone. Green now, and must stay green.
+  every plan in existence today, so a regression here breaks everyone — **and the same plan with a
+  two-rung registry DOES escalate.** Without that second half the test cannot tell "correctly declined
+  to climb" from "the ladder is not wired at all", which is precisely the state of this tree.
 
-**The tests MUST COMPILE and FAIL** (the two RED rows). Failing is the point. NOT compiling is a
-mistake to fix. Do NOT wire the retry loop — task 06 does that.
+**The tests MUST COMPILE and FAIL — all five rows.** Failing is the point. NOT compiling is a mistake
+to fix. Do NOT wire the retry loop — task 06 does that.

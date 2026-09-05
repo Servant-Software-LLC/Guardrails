@@ -6,14 +6,21 @@
 #          One entry per enumerated behaviour, each observed in the runner's OWN TRX, never merely
 #          discovered by name, which a hollow body satisfies exactly as a comment satisfies a token floor.
 #
-# DECLARED EXEMPTIONS - two rows a CORRECT implementation leaves GREEN on this tree, so demanding red
-# would demand a correct implementation fail. Both assert Expect='Executed' (they ran, and were not
-# [Skip]ped). Neither is dropped: an undeclared omission is indistinguishable from an oversight.
-#   * 'SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated' is THE discriminator. A route
-#     with Climbed=true and EscalatedFrom=null must map to its ORIGIN-derived source and NOT to
-#     Escalated - which is already true today, and the whole point is that it STAYS true after task 04
-#     adds the Escalated arm. This is the trap the plan exists to avoid: Climbed is a CAPABILITY fact
-#     ("no runner served the requested rung"), escalation is "a previous attempt failed its guardrails".
+# ONE DECLARED EXEMPTION - a single row a CORRECT implementation leaves GREEN on this tree, so
+# demanding red would demand a correct implementation fail. It asserts Expect='Executed' (it ran, and
+# was not [Skip]ped). It is not dropped: an undeclared omission is indistinguishable from an oversight.
+#
+# NOT exempt, and this is the correction: 'SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated'
+# is THE discriminator, and it is RED. Its negative half - a route with Climbed=true and
+# EscalatedFrom=null maps to its ORIGIN-derived source, not to Escalated - is true today, which is
+# exactly why it cannot stand alone: an Assert.True(true) body satisfies it. The action prompt
+# therefore pins it to the MIRROR in the same test method - a route carrying EscalatedFrom="easy" AND
+# Climbed=true must be Escalated and still report Climbed - and that half cannot pass until task 04
+# adds the Escalated arm. The exemption was unnecessary: the test the prompt describes is red on this
+# tree, so Expect='Failed' is the CORRECT reading of it and the census can see a hollow body. This is
+# the trap the plan exists to avoid: Climbed is a CAPABILITY fact ("no runner served the requested
+# rung"), escalation is "a previous attempt failed its guardrails", and only the mirror proves the two
+# are independently readable.
 #   * 'Provenance_WritesEscalatedFromOnlyWhenTheAttemptEscalated' covers a pure DATA member whose
 #     declaration IS its implementation (Step 2 collapse criterion (c)) - task 03 declares
 #     AttemptProvenance.EscalatedFrom with its WhenWritingNull attribute, so correct serialization
@@ -29,10 +36,10 @@ $manifest = [ordered]@{
     'an escalated route is sourced Escalated'                     = 'SourceFor_OnAnEscalatedRoute_IsEscalated'
     'the wire token for Escalated is escalated'                   = 'TierSourceToken_ForEscalated_IsTheEscalatedWireToken'
     'the journal round-trips the escalated token'                 = 'TierSourceConverter_RoundTripsEscalatedThroughTheJournal'
-    # DECLARED EXEMPTION - the discriminator; see this file's header for why a correct implementation
-    # leaves it green. Assert it RAN (present, not [Skip]ped), never that it failed.
-    'DISCRIMINATOR: a capability climb is NOT an escalation'      = @{ Name = 'SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated'; Expect = 'Executed' }
-    # DECLARED EXEMPTION - a pure data member; the declaration IS the implementation.
+    # THE DISCRIMINATOR - RED, not exempt. Its negative half is true today; the MIRROR the prompt pins
+    # into the same test method (EscalatedFrom="easy" AND Climbed=true must be Escalated) is not.
+    'DISCRIMINATOR: a capability climb is NOT an escalation (mirror: an escalated climb IS)' = 'SourceFor_OnACapabilityClimbThatDidNotEscalate_IsNotEscalated'
+    # THE ONE DECLARED EXEMPTION - a pure data member; the declaration IS the implementation.
     'escalatedFrom is written only when the attempt escalated'    = @{ Name = 'Provenance_WritesEscalatedFromOnlyWhenTheAttemptEscalated'; Expect = 'Executed' }
 }
 
@@ -89,7 +96,7 @@ foreach ($behaviour in $manifest.Keys) {
     $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
     if ($notRed.Count -gt 0) {
         $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
-        $failures += "$behaviour -> '$name' is $seen on this tree, not Failed. TierProvenance.SourceFor has no Escalated arm yet and JournalJson throws on an unhandled TierSource, so a test that does not fail here never reaches either - it asserts a tautology and certifies nothing. ('NotExecuted' = [Fact(Skip=...)].)"
+        $failures += "$behaviour -> '$name' is $seen on this tree, not Failed. TierProvenance.SourceFor has no Escalated arm yet and JournalJson throws on an unhandled TierSource, so a test that does not fail here never reaches either - it asserts a tautology and certifies nothing. For the DISCRIMINATOR row specifically: its negative half (Climbed=true, EscalatedFrom=null must NOT be Escalated) is already true today, so it passes on its own - the action prompt pins the MIRROR into the SAME test method (a route with EscalatedFrom='easy' AND Climbed=true must be Escalated and still report Climbed), and that half is what makes the row red. Write both. ('NotExecuted' = [Fact(Skip=...)].)"
     }
 }
 
