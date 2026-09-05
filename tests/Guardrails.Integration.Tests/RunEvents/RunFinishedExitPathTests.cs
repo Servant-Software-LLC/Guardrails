@@ -169,12 +169,40 @@ public sealed class RunFinishedExitPathTests
     /// exception that propagates out. An async method never throws synchronously from the call itself —
     /// the fault is captured on the returned <see cref="Task"/> — so awaiting it is what surfaces it.
     /// </summary>
+    /// <summary>
+    /// The worktree-mode answer these plans actually have. None of them sets <c>maxParallelism</c>, so
+    /// <see cref="WorktreeModeReason.SerialByConfiguration"/> is the truthful resolution rather than a
+    /// demotion (#596), and the git probe is never run. The value cannot affect what these tests assert —
+    /// they fault before any task is scheduled — but it still has to be HONEST: a
+    /// <see cref="WorktreeModeReason.WorkspaceNotAGitRepository"/> here would read as a probe result the
+    /// run never obtained.
+    /// </summary>
+    private static readonly WorktreeModeResolution SerialByConfiguration =
+        new() { Enabled = false, Reason = WorktreeModeReason.SerialByConfiguration };
+
     private static async Task<Exception> CaptureExecuteAsyncThrowAsync(PlanDefinition plan, IRunObserver observer)
     {
         MethodInfo method = typeof(RunCommand).GetMethod("ExecuteAsync", BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("RunCommand.ExecuteAsync was not found by reflection.");
 
-        var task = (Task)method.Invoke(null, [plan, observer, null, null, null, null, CancellationToken.None])!;
+        object?[] arguments =
+            [plan, observer, null, null, null, null, SerialByConfiguration, CancellationToken.None];
+
+        // A reflective call is not compile-checked, so a signature change surfaces here as
+        // TargetParameterCountException — "Parameter count mismatch", naming neither the method nor what
+        // moved. #596 added the worktreeMode parameter and that is exactly what CI reported, on every OS,
+        // with nothing pointing at the cause. This guard turns the next one into a one-line answer.
+        ParameterInfo[] parameters = method.GetParameters();
+        if (parameters.Length != arguments.Length)
+        {
+            throw new InvalidOperationException(
+                $"RunCommand.ExecuteAsync now takes {parameters.Length} parameters, not the " +
+                $"{arguments.Length} this helper passes: " +
+                string.Join(", ", parameters.Select(p => $"{p.ParameterType.Name} {p.Name}")) +
+                ". Update the argument list above to match.");
+        }
+
+        var task = (Task)method.Invoke(null, arguments)!;
 
         try
         {

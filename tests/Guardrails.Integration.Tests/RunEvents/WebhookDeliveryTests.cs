@@ -364,16 +364,32 @@ public sealed class WebhookDeliveryTests
         }
 
         Assert.NotEmpty(deliveryAttempts);
-        string firstDeliveryId = deliveryAttempts[0].Id;
-        List<int> attemptsForFirstId = deliveryAttempts.Where(t => t.Id == firstDeliveryId).Select(t => t.Attempt).ToList();
+
+        // The property under test is "a 500 causes retries", which is about SOME delivery, not about
+        // whichever one the receiver happened to record first. Pinning it to deliveryAttempts[0] made the
+        // test depend on emission order and on how much drain time each delivery got before the run
+        // exited: a run emits several events, and one emitted late can be dropped at the drain deadline
+        // after a single attempt while earlier ones retried normally. That read as "retries never
+        // happened" on the loaded solution-wide job and passed everywhere else — an over-specified
+        // assertion, not a product fault.
+        List<IGrouping<string, (string Id, int Attempt)>> retried =
+            [.. deliveryAttempts.GroupBy(t => t.Id).Where(g => g.Count() > 1)];
+
         Assert.True(
-            attemptsForFirstId.Count > 1,
-            $"the first delivery id observed ('{firstDeliveryId}') was attempted only once — retries never happened.");
-        for (int i = 1; i < attemptsForFirstId.Count; i++)
+            retried.Count > 0,
+            "no delivery id was attempted more than once — retries never happened. Observed: " +
+            string.Join(", ", deliveryAttempts.Select(t => $"{t.Id}#{t.Attempt}")));
+
+        // Every retried delivery must also count UP; a repeat that reuses attempt 1 is not a retry.
+        foreach (IGrouping<string, (string Id, int Attempt)> group in retried)
         {
-            Assert.True(
-                attemptsForFirstId[i] > attemptsForFirstId[i - 1],
-                $"attempt numbers did not increase across retries for '{firstDeliveryId}': {string.Join(",", attemptsForFirstId)}");
+            List<int> attempts = [.. group.Select(t => t.Attempt)];
+            for (int i = 1; i < attempts.Count; i++)
+            {
+                Assert.True(
+                    attempts[i] > attempts[i - 1],
+                    $"attempt numbers did not increase across retries for '{group.Key}': {string.Join(",", attempts)}");
+            }
         }
 
         // The drop was recorded: a "Webhook: N delivered, M dropped -> url" line with M > 0, and the
