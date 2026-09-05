@@ -34,10 +34,18 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     private readonly IRunObserver _inner;
     private readonly string _logsRoot;
     private readonly string _runId;
-    private readonly IReadOnlyList<TaskNode> _tasks;
-    private readonly IReadOnlyList<WaveNode> _waves;
-    private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
     private readonly Func<string, string?>? _liveUrlForTask;
+
+    // The plan this site renders. MUTABLE since #404 and read/written only under _gate: a wave the run
+    // LOADED as an empty JIT stub acquires its real tasks at the barrier, and until it does, a spliced task
+    // is never a row on the plan index (_tasks), its wave page renders the run-start zero-task WaveNode
+    // (_waves / _wavesByDir), and its own static page is never written at all — TaskFinished guards on
+    // _tasksById before calling WriteTaskPageIfHasAttempts. That last one is why this cannot be a follow-up
+    // to the live-table splice: the moment a spliced task gets a table row it also gets a `logs` link, and
+    // without this it points at a page nobody wrote (design 37 §0.1).
+    private IReadOnlyList<TaskNode> _tasks;
+    private IReadOnlyList<WaveNode> _waves;
+    private IReadOnlyDictionary<string, TaskNode> _tasksById;
 
     // Per-task status word, seeded "pending". Mutated and projected under one lock — events arrive
     // from concurrent M4 workers, and the index render reads the whole map, so the two must not race.
@@ -54,8 +62,17 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // CLOCK or the wave page sits frozen for up to 30 minutes. One timer for the phase's duration, disposed
     // the moment it settles; guarded by the same _gate as everything else, and nothing is written to the
     // console at all (this decorator never touches the Spectre live region).
-    private readonly Dictionary<string, WaveNode> _wavesByDir;
+    private Dictionary<string, WaveNode> _wavesByDir;
     private readonly HashSet<string> _phaseWaves = new(StringComparer.Ordinal);
+
+    // The SETTLED breakdown panel per wave, remembered so RenderIndex can keep rendering it after #404's
+    // splice hands the wave back (design 37 §5.6 detail 1). LogSiteRenderer.BreakdownPanel returns null for
+    // a wave that HAS tasks when it is given no decisions[] — which is exactly the during-run case here — so
+    // without this the spliced wave's page would silently lose its breakdown provenance the moment it gained
+    // task rows. The post-run static write derives the same panel from durable decisions[] and is unaffected.
+    private readonly Dictionary<string, LogSiteRenderer.PhasePanel> _settledPhasePanels =
+        new(StringComparer.Ordinal);
+
     private Timer? _phaseTimer;
     private WaveBreakdownContext? _phaseContext;
     private DateTimeOffset _phaseSince;
@@ -106,7 +123,21 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// tasks" page exists and is browsable the moment the run begins. Best-effort. Delegates to the
     /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, IReadOnlyList{WaveNode})"/>.
     /// </summary>
-    public void WriteInitialIndex() => WriteInitialIndex(_logsRoot, _runId, _tasks, _liveUrlForTask, _waves);
+    public void WriteInitialIndex()
+    {
+        IReadOnlyList<TaskNode> tasks;
+        IReadOnlyList<WaveNode> waves;
+        lock (_gate)
+        {
+            // Under the gate for the same reason RenderIndex is: #404 replaces both wholesale mid-run. This
+            // one only ever runs at run start, but reading spliceable state outside the gate anywhere in
+            // this file would make the discipline a coincidence rather than a rule.
+            tasks = _tasks;
+            waves = _waves;
+        }
+
+        WriteInitialIndex(_logsRoot, _runId, tasks, _liveUrlForTask, waves);
+    }
 
     /// <summary>
     /// Write the initial all-pending index (every task <c>pending</c>, plain link, with the during-run
@@ -180,10 +211,19 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         SetStatus(result.TaskId, status, claim);
 
         // Write the finished task's static page so the index's link to it (and the terminal's
-        // post-mortem link, #141 item 1) resolves to a rendered page, not a 404.
-        if (_tasksById.TryGetValue(result.TaskId, out TaskNode? task))
+        // post-mortem link, #141 item 1) resolves to a rendered page, not a 404. Resolved under the gate:
+        // for a JIT-spliced task this map only contains it because WaveBreakdownFinished replaced it, and
+        // reading a stale one here is precisely the #372/#404 "link to a page nobody wrote" defect.
+        TaskNode? task;
+        lock (_gate)
         {
-            TryRender(() => LogSiteRenderer.WriteTaskPageIfHasAttempts(_logsRoot, task, status, claim));
+            _tasksById.TryGetValue(result.TaskId, out task);
+        }
+
+        if (task is not null)
+        {
+            TaskNode settled = task;
+            TryRender(() => LogSiteRenderer.WriteTaskPageIfHasAttempts(_logsRoot, settled, status, claim));
         }
 
         RenderIndex();
@@ -293,10 +333,45 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
         BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
             context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, DateTimeOffset.UtcNow);
-        WritePhasePage(context.WaveDir, LogSiteRenderer.SettledBreakdownPanel(
+        LogSiteRenderer.PhasePanel settled = LogSiteRenderer.SettledBreakdownPanel(
             _logsRoot, context.WaveDir, failureKind, elapsed,
-            BreakdownProgress.TerminalDetail(failureKind, snapshot)));
+            BreakdownProgress.TerminalDetail(failureKind, snapshot));
 
+        lock (_gate)
+        {
+            _settledPhasePanels[context.WaveDir] = settled;
+
+            // #404, the same non-null test the live table splices on: authoredWave is handed on ONLY where
+            // the run will PROCEED with the wave. On the halting path the wave keeps zero tasks and must
+            // STAY in _phaseWaves — the settled phase panel is all there is to show, and RenderIndex would
+            // otherwise re-assert "not yet authored" over it.
+            if (authoredWave is not null)
+            {
+                (IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves) =
+                    LiveRunObserver.SpliceWave(_tasks, _waves, authoredWave);
+                _tasks = tasks;
+                _waves = waves;
+                _tasksById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+                _wavesByDir = waves.ToDictionary(w => w.Dir, StringComparer.Ordinal);
+
+                foreach (TaskNode task in authoredWave.Tasks)
+                {
+                    // Never clobber a status a spliced task already has: the harness dispatches the wave
+                    // immediately, and this observer's own TaskStarting can land before the site catches up.
+                    if (!_statusByTask.ContainsKey(task.Id))
+                    {
+                        _statusByTask[task.Id] = LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending);
+                    }
+                }
+
+                // Hand the wave's page back to RenderIndex. Without this it stays in _phaseWaves forever —
+                // RenderIndex skips it, and the only other writer (WritePhasePage) is driven by a timer that
+                // was just disposed — so the page FREEZES at this frame for the rest of the run.
+                _phaseWaves.Remove(context.WaveDir);
+            }
+        }
+
+        WritePhasePage(context.WaveDir, settled);
         RenderIndex();
     }
 
@@ -344,13 +419,15 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// </summary>
     private void WritePhasePage(string waveDir, LogSiteRenderer.PhasePanel panel)
     {
-        if (!_wavesByDir.TryGetValue(waveDir, out WaveNode? wave))
-        {
-            return;
-        }
-
         lock (_gate)
         {
+            // Resolved INSIDE the gate: #404's splice replaces _wavesByDir wholesale, so a lookup outside it
+            // could read the pre-splice map and write the zero-task wave over the spliced one.
+            if (!_wavesByDir.TryGetValue(waveDir, out WaveNode? wave))
+            {
+                return;
+            }
+
             var statuses = new Dictionary<string, string>(_statusByTask, StringComparer.Ordinal);
             var claims = new Dictionary<string, string?>(_claimByTask, StringComparer.Ordinal);
             string StatusOf(string id) => statuses.TryGetValue(id, out string? s) ? s : "unknown";
@@ -409,9 +486,11 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
             // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
             // waved run's per-wave drill-down refreshes as the wave progresses. A wave whose breakdown
-            // phase has begun is OWNED by WritePhasePage — this render has no idea how the session is
-            // going, so re-asserting "not yet authored" over it would be the wrong answer stated
-            // confidently.
+            // phase is STILL IN FLIGHT is OWNED by WritePhasePage — this render has no idea how the session
+            // is going, so re-asserting "not yet authored" over it would be the wrong answer stated
+            // confidently. A wave whose breakdown has SETTLED is handed back here (#404), carrying the
+            // remembered settled panel: BreakdownPanel would return null for it now that it has tasks, and
+            // a page that lost its provenance is exactly what the hand-back must not cost.
             foreach (WaveNode wave in _waves)
             {
                 WaveNode w = wave;
@@ -419,6 +498,11 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 {
                     continue;
                 }
+
+                LogSiteRenderer.PhasePanel? phase =
+                    _settledPhasePanels.TryGetValue(w.Dir, out LogSiteRenderer.PhasePanel? remembered)
+                        ? remembered
+                        : LogSiteRenderer.BreakdownPanel(_logsRoot, w, decisions: null);
 
                 TryRender(() => LogSiteRenderer.WriteWaveIndex(
                     _logsRoot,
@@ -429,7 +513,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                     includeRefresh: true,
                     halt: null,
                     claimResolver: ClaimOf,
-                    phase: LogSiteRenderer.BreakdownPanel(_logsRoot, w, decisions: null)));
+                    phase: phase));
             }
         }
     }
