@@ -2165,7 +2165,12 @@ Per `references/schemas.md`, exactly:
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
    justifications, any flagged non-executable plan content, and the **Step 7.0d author-time
    smoke-test outcome** (which script guardrails were EXECUTED against valid + invalid samples,
-   and which were deferred as not-runnable-at-author-time with the reason, #302). **Then the
+   and which were deferred as not-runnable-at-author-time with the reason, #302). **Then the research line (#298)** — each research-worthy uncertainty
+   with its disposition: **RESOLVED** (the command run, its output, and the prompt it was pinned into) or
+   **RECOMMENDED** (what would settle it), the latter presented as a decision to take *before*
+   `/guardrails-review`. *"Nothing in this plan qualified"* is a fine answer, stated in one line rather
+   than left silent — it is a claim about the plan, and a reader must be able to tell a measured fact from
+   an assumed one without re-doing the work. **Then the
    structural-claim line (#578)** — for every action prompt that states a fact about the codebase (an
    enumeration, a routing or exclusivity claim, a location), name the claim and the **command you RAN** to
    establish it; a prompt that only ships a command and asserts nothing needs no line, and *"no prompt in
@@ -3883,6 +3888,99 @@ authority for every path/signature the new wave references.
 
 <!-- END ADDED SECTION #254 -->
 
+<!-- BEGIN ADDED SECTION #298 — resolve a foreseeable needsHuman by cheap research at breakdown time (auto-merge friendly; do not merge into prose above) -->
+## Step 5d — Resolve a foreseeable `needsHuman` by CHEAP research, before review (#298)
+
+Runs after the Step 5 insertions and BEFORE Step 6 writes the folder — the answer has to be pinned INTO
+a prompt, and Step 6 is what writes prompts.
+
+**The failure it removes.** A task whose action prompt carries an unresolved *technical/capability*
+question — *"does the tool support syntax X?"*, *"is mechanism Y available at this version?"* — is a
+latent `needsHuman` sitting in the DAG. At run time it halts the harness, pages the operator and burns a
+cycle, and the answer is very often a single command anybody could have run at breakdown time. Resolving
+it here converts a mid-run halt into a settled instruction, at a cost of seconds.
+
+**This is the sibling of #578, on the other axis, and the discipline is identical.** #578 forbids stating
+an unmeasured **structural** claim about the codebase (*"there are N sites"*, *"A funnels through B"*).
+This requires measuring a **capability** claim about a tool, library or version before a run discovers it
+the expensive way. Both are answered by RUNNING something; both ship the command beside the answer; and
+in both the **command outranks the note** when they disagree. If you have internalised #578, this is that
+rule pointed at the environment instead of at the tree.
+
+### The trigger — what counts as a research-worthy uncertainty
+
+Any one of these, noticed while drafting a task's prompt:
+
+- the plan, or your own draft prompt, contains a conditional on an external capability — *"if the SDK
+  supports…"*, *"assuming the CLI has `--flag`"*, *"if that version exposes…"*;
+- the task's completion depends on a fact about a **tool, library, version, API surface or file layout**
+  that no ancestor task and no existing repo code establishes;
+- you are about to write *"check whether … and proceed accordingly"* into an action prompt. **That
+  sentence is the tell.** It reads as thorough and is actually a deferral: it hands a decidable question
+  to an agent that will meet it mid-run with a turn budget and no way to ask.
+
+### The gate — CHEAP AND DETERMINISTIC means all four, not roughly
+
+Resolve it **now** only when every one holds:
+
+1. **One command or one file read**, terminating in seconds.
+2. **No credential, no service, no paid call, no network round-trip you would not make twice.**
+3. **One unambiguous answer** — a version string, an exit code, a symbol present or absent. Not a
+   spectrum, not a recommendation.
+4. **The answer cannot drift between breakdown and run** in a way that matters (a pinned dependency, a
+   checked-in file, an installed toolchain). If it CAN drift, that instability is itself the finding —
+   report it rather than pinning a value that will be stale on arrival.
+
+All four hold ⇒ **RUN IT AND PIN IT.** Any one fails ⇒ **RECOMMEND IT** (below). There is no third
+option and no "pin it with a hedge".
+
+### PIN — the answer, the command that produced it, and the trust order
+
+Write the resolution into the consuming `action.prompt.md` in the #578 three-part form, so the pin stays
+useful when the environment moves under it:
+
+```markdown
+**Resolved at breakdown time.** `dotnet --list-sdks` → `10.0.100`. The `--no-restore` flag exists on this
+SDK, so use it rather than probing for it. **If your own check disagrees, trust your check**, do what it
+says, and say so in your summary.
+```
+
+All three parts are load-bearing, and dropping the third is the one that hurts: a pinned answer with no
+command behind it is indistinguishable from a guess to every later reader, and a pin that outranks the
+tree is exactly the stale-map defect #578 exists to prevent.
+
+**A pinned answer must be one you RAN.** Never pin a conclusion you reasoned to, inferred from a
+changelog, or remembered. The whole value of the pin is that it is a measurement.
+
+### RECOMMEND — everything the gate rejects, surfaced as a decision
+
+For each question that fails the gate, name it in the Step 7.4 report as a decision the human should
+settle **before** `/guardrails-review`, with what you would need in order to answer it. Do not bury it in
+a task description, and do not paper over it with a prompt that tells the agent to figure it out.
+
+### NEVER pin a judgment — the boundary that makes this safe
+
+A **design choice** (which cache, which library, what the API shape should be), anything needing a human
+preference, and anything with an external dependency are **not research**; they are decisions. Pinning
+one is strictly worse than the `needsHuman` it was meant to prevent:
+
+> A wrong pinned answer carries exactly the same confidence as a right one, and the agent has no reason
+> to re-check it. The halt at least surfaced the question to somebody who could answer it.
+
+If a question feels like it wants research but the answer would be an opinion, it fails gate 3 — the
+answer is not unambiguous — and it goes to RECOMMEND. When genuinely unsure which side of the line a
+question sits on, **RECOMMEND it**: an unnecessary recommendation costs the human ten seconds of reading,
+and an unwarranted pin costs a wrong implementation nobody questions.
+
+### Report it (Step 7.4)
+
+State each research-worthy question and its disposition: **RESOLVED** (with the command run, its output,
+and the prompt it was pinned into) or **RECOMMENDED** (with what would settle it). A plan where nothing
+qualified says so in one line — that is a real finding about the plan, not an empty section. This is the
+same reporting bar #578 sets for structural claims, and for the same reason: a reader must be able to
+tell a measured fact from an assumed one without re-doing the work.
+<!-- END ADDED SECTION #298 -->
+
 ## Quality bar (verify before declaring done)
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
@@ -3924,6 +4022,7 @@ authority for every path/signature the new wave references.
 - [ ] Output explicitly presented as a draft for human review.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->
 - [ ] (#578) No action prompt states an **unmeasured** structural claim about the codebase. Where a prompt points at a set of code sites it ships the **command** ("grep this file for `X` and cover every hit") rather than the list — and where it states a count, a routing/exclusivity claim or a location as fact, this pass RAN the command, the command sits in the prompt beside the claim, and the prompt names **the grep, not the number**, as the authority when they disagree. A command followed by a gloss that pre-answers it is the enumerated form wearing a command (the measured plan-30 defect), not a compliance. Line-number pointers take the #203 durable-marker fix — that is this rule's location case, and this rule applies to flat plans and to code no task touches, where #203's wave trigger never fires. The claims and the commands that established them are in the Step 7.4 report, with the `/guardrails-review` #578 probe surfaced. **No `validate` check backs this, deliberately** — the claims are prose and nothing about them is statically decidable.
+- [ ] (#298) **Step 5d ran: every research-worthy uncertainty was RESOLVED by running something, or RECOMMENDED — never deferred into a prompt.** No emitted `action.prompt.md` contains *"check whether … and proceed accordingly"* or any conditional on an unestablished external capability; each question that passed the four-part cheap-and-deterministic gate (one command, no credential/service, one unambiguous answer, cannot drift before the run) was RUN and pinned in the #578 three-part form — the answer, the command that produced it, and *"if your own check disagrees, trust your check"* — and no pin states a conclusion that was reasoned to rather than measured. Every question that failed the gate, and **every design choice / human preference / externally-dependent question regardless of how cheap it looks**, was RECOMMENDED in the report instead: a wrong pin carries the same confidence as a right one and nothing re-checks it, which is strictly worse than the halt it replaced. The Step 7.4 report names each question with its disposition (command + output + the prompt it landed in, or what would settle it); *"nothing qualified"* is stated in one line rather than left silent.
 - [ ] (#94/#204) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring, OR integrates with/extends/describes a same-plan sibling's not-yet-landed implementation) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a). (#203) A task referencing an earlier-wave sibling's code also gets durable-marker + architecture-caveat prompt text (Step 6) — the two are companion fixes for the same situation, not independent bullets.
 - [ ] (#116) Every author-tests task that builds a real git repo reuses a Windows-safe shared `TempGitRepo` fixture (strips read-only before delete, recreates `git rm`/`git mv`-pruned dirs, rolls back via `git reset --hard`, normalizes `core.autocrlf`) OR carries the Windows-Git portability directive; the fixture is authored once and reused, not re-discovered per task (Step 5a; `stacks/dotnet.md §11`).
 - [ ] (#101 / #191) Every PROMPT task whose primary deliverable is a file under `.claude/` (NEW or EXISTING file) carries the verbatim `needsHarnessWrite` escape-hatch instruction in its `action.prompt.md`; AND when the target subdirectory is NEW, it also has a directory-seed SCRIPT task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the injected instruction, seed, and affected path reported (Step 5b). (SCRIPT actions writing `.claude/` are exempt.)
