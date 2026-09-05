@@ -1647,7 +1647,10 @@ task's `writeScope` covered; the run drained its whole DAG before finding out.
 
 Per `references/schemas.md`, exactly:
 
-- Folder = plan filename minus `.md`, beside the plan. Tasks = `NN-verb-object`
+- Folder = plan filename with its **whole** extension stripped, beside the plan — `.md`, and
+  `.charter.md` in full (#411). `tenant-rate-limit.charter.md` → `tenant-rate-limit/`, NEVER
+  `tenant-rate-limit.charter/`: the `.charter` is a marker on the SOURCE document, not part of the
+  plan's name, and the folder outlives the charter that seeded it. Tasks = `NN-verb-object`
   kebab-case; NN follows a valid topological order (human-scanning hint only).
 - `guardrails.json`: version + sensible run config. **Any `.prompt.md` anywhere ⇒
   the `promptRunners` block with a resolvable default is REQUIRED** (else GR2008).
@@ -2994,7 +2997,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 >    surfaced (report + honest-halt), never silently scaffolded.
 <!-- END ADDED SECTION #41/#78 -->
 
-<!-- BEGIN ADDED SECTION #254 — waved plans: nested layout + JIT staged breakdown (auto-merge friendly; do not merge into prose above) -->
+<!-- BEGIN ADDED SECTION #390-393/#500 — Charter ingestion: interactive .charter.md living document (Step 0c) + flattened delegated-decision handoff (Step 0d) (auto-merge friendly; do not merge into prose above) -->
 ## Step 0c — Charter `.charter.md` living-document ingestion (INTERACTIVE only, #390–393)
 
 **Where this runs — attended vs unattended.** Only a session with the **Skill tool** reaches here (the
@@ -3584,6 +3587,10 @@ The Step 7.4 ledger is specified with the rest of the report. Two rules that bel
 - **A settled decision is an INPUT to Step 1, not a work item** — the same status a resolved
   `:::question`'s folded `answer` has on the Step 0c path. It shapes the work-item table, the DAG, and
   the guardrails; it never becomes a task of its own.
+
+<!-- END ADDED SECTION #390-393/#500 -->
+
+<!-- BEGIN ADDED SECTION #254 — waved plans: nested layout + JIT staged breakdown (auto-merge friendly; do not merge into prose above) -->
 
 ## Step 9 — Waved plans: nested layout + JIT staged breakdown (#254)
 
