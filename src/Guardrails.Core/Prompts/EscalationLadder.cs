@@ -19,7 +19,30 @@ public static class EscalationLadder
     /// <c>null</c> when there is none — <paramref name="servedRung"/> is the top rung, is null, or is
     /// not on the ladder at all.
     /// </summary>
-    public static string? NextRung(string? servedRung) => throw new NotImplementedException();
+    public static string? NextRung(string? servedRung)
+    {
+        int index = RungIndex(servedRung);
+
+        return index < 0 || index + 1 >= ActionTiers.All.Count ? null : ActionTiers.All[index + 1];
+    }
+
+    /// <summary>
+    /// <paramref name="rung"/>'s position on <see cref="ActionTiers.All"/>, or -1 when it is null or not
+    /// on the ladder — the same defensive residual <c>TierResolver.RungIndex</c> computes, kept local
+    /// here rather than exposed, since <see cref="NextRung"/> is this file's only consumer.
+    /// </summary>
+    private static int RungIndex(string? rung)
+    {
+        for (int i = 0; i < ActionTiers.All.Count; i++)
+        {
+            if (string.Equals(ActionTiers.All[i], rung, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
 
     /// <summary>
     /// What the retry loop calls before launching an attempt: given the resolution the FIRST attempt of
@@ -27,6 +50,36 @@ public static class EscalationLadder
     /// failed their guardrails (<paramref name="escalations"/>), returns the resolution this attempt
     /// should serve.
     /// </summary>
-    public static TierResolution Apply(RunConfig config, TierResolution route, int escalations) =>
-        throw new NotImplementedException();
+    public static TierResolution Apply(RunConfig config, TierResolution route, int escalations)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(route);
+
+        if (escalations <= 0 || route.Pinned || route.Legacy || route.NoRoute || route.Tier is null)
+        {
+            return route;
+        }
+
+        string servedFromOriginal = route.Tier;
+        TierResolution current = route;
+
+        for (int i = 0; i < escalations; i++)
+        {
+            if (NextRung(current.Tier) is not { } nextRung)
+            {
+                break; // Top of the ladder — keep what we have.
+            }
+
+            TierResolution candidate = TierResolver.SelectCandidate(config, nextRung);
+
+            if (candidate.NoRoute)
+            {
+                break; // Nothing at or above the next rung routes — keep what we have.
+            }
+
+            current = candidate;
+        }
+
+        return ReferenceEquals(current, route) ? route : current with { EscalatedFrom = servedFromOriginal };
+    }
 }
