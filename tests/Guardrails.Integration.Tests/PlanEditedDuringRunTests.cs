@@ -56,6 +56,11 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
     private const string Wave1 = "wave-01-scaffold";
     private const string Wave2 = "wave-02-build";
 
+    /// <summary>P6's JIT-authored pair: the editor writes into its sibling's guardrail (issue #568).</summary>
+    private const string JitEditor = "01-jit-edit";
+
+    private const string JitTarget = "02-jit-target";
+
     /// <summary>The literal §5.4 headline the end-of-run rendering opens with.</summary>
     private const string RenderedHeadline = "PLAN FOLDER EDITED";
 
@@ -303,6 +308,63 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
         Assert.DoesNotContain("nothing was halted", advisory, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ── P6 — issue #568: the watch must cover a wave the run JIT-AUTHORED mid-run ────────────────
+
+    /// <summary>
+    /// Design 37 §6, issue #568. The #545 advisory was structurally blind on the ONE plan shape where
+    /// mid-run editing is normal: a JIT wave's folder is written by the harness WHILE the run is live, so
+    /// its tasks did not exist when <see cref="LivePlanEditWatch"/> was constructed. <c>Poll()</c> and
+    /// <c>Rebaseline()</c> both iterate <c>_plan.Tasks</c>, and the spliced tasks are not in <c>_plan</c> at
+    /// all, so no amount of re-baselining could ever reach them — the watch had to be REBASED onto the
+    /// spliced plan.
+    ///
+    /// <para>The fixture authors a two-task wave-02 whose first task writes into its SIBLING's guardrail in
+    /// the live plan folder — the same out-of-band write P1 uses for the operator, in the folder the
+    /// harness itself wrote thirty seconds earlier. Exactly the case the issue names.</para>
+    ///
+    /// <para>Positive controls first, for the reason P2/P4 state: without them "an observation exists"
+    /// could pass with the JIT path never reached at all.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnOperatorEditInsideAJitAuthoredWave_IsReportedRatherThanBeingStructurallyInvisible()
+    {
+        using var repo = new TempGitRepo("gr-pedr-p6");
+        string planDir = CreateWavedJitPlan(repo.RepoPath, reviewGate: "proceed-unreviewed");
+
+        var stub = new EditingWaveAuthoringRunner(planDir);
+        (RunReport report, RunJournal journal, RecordingObserver observer) =
+            await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken,
+                breakdownInvoker: new WaveBreakdownInvoker(stub));
+
+        // ── The scenario really HAPPENED ────────────────────────────────────────────────────────
+        // The breakdown ran, authored a VALID wave-02, and the run PROCEEDED with it (Option P), so the
+        // spliced tasks actually executed. Without this the assertion below could pass on a halted run.
+        Assert.Equal(1, stub.Invocations);
+        Assert.NotEqual(WaveHaltKind.BreakdownFailed, report.WaveHalt?.Kind);
+        Assert.Contains(report.Tasks, t => t.TaskId == $"{Wave2}/{JitEditor}");
+        Assert.Contains(report.Tasks, t => t.TaskId == $"{Wave2}/{JitTarget}");
+
+        // …and the edit really landed on disk, in the folder the harness authored.
+        Assert.Contains(
+            "# operator edit during the run",
+            File.ReadAllText(Path.Combine(planDir, Wave2, "tasks", JitTarget, "guardrails", Script("01-check"))),
+            StringComparison.Ordinal);
+
+        // ── The pin ─────────────────────────────────────────────────────────────────────────────
+        DecisionEntry entry = Assert.Single(PlanEditEntries(journal));
+        Assert.Equal("observed", entry.Decision);
+        Assert.Contains($"{Wave2}/{JitTarget}", entry.Subject, StringComparison.Ordinal);
+
+        // The LIVE surface saw it too — the durable entry and the observer call are one event, not two
+        // independently-written ones.
+        Assert.Contains(observer.Decisions, d => d.Boundary == "plan-edit");
+
+        // The harness's OWN breakdown output is NOT reported: the wave's five freshly-authored files are
+        // adopted silently through the branch Rebase finally gave a producer. One observation, not three.
+        Assert.DoesNotContain(
+            PlanEditEntries(journal), d => d.Subject.Contains(JitEditor, StringComparison.Ordinal));
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────────────────────
     // Reading the two decision surfaces
     // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -492,20 +554,27 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
     /// checkpoint. Mirrors the shipped <c>WaveBreakdownRunTests</c> / <c>WaveJitCheckpointRunTests</c>
     /// fixtures — a plain repo cannot produce a JIT checkpoint at all.
     /// </summary>
-    private static string CreateWavedJitPlan(string repoPath)
+    private static string CreateWavedJitPlan(string repoPath, string? reviewGate = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "state"));
 
+        // The review gate (doc 12 §5.2) is ABSENT by default, which means `escalate`: the authored wave
+        // halts for a human review pass and never runs. P6 needs it to RUN, so it opts in to Option P
+        // explicitly — the only way a freshly-authored wave proceeds unreviewed.
+        string autonomy = reviewGate is null
+            ? ""
+            : $",\n  \"autonomy\": {{ \"gateThresholds\": {{ \"review-gate\": \"{reviewGate}\" }} }}";
+
         Write(Path.Combine(planDir, "guardrails.json"),
-            """
+            $$"""
             {
               "version": 1,
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,
               "maxParallelism": 2,
-              "autonomyPolicy": "auto"
+              "autonomyPolicy": "auto"{{autonomy}}
             }
             """);
 
@@ -544,6 +613,49 @@ public sealed class PlanEditedDuringRunTests : IClassFixture<HostRepoCleanliness
             WriteExecutable(Path.Combine(taskDir, Script("action")),
                 Ps ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n");
             // deliberately NO guardrails/ folder -> `guardrails validate` fails (zero guardrails).
+
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                ResultText = "authored " + Wave2,
+                CostUsd = 0.1m,
+                Summary = "breakdown authored " + Wave2
+            });
+        }
+    }
+
+    /// <summary>
+    /// P6's stub breakdown runner: authors a VALID two-task wave-02 into the plan folder, so the wave
+    /// passes the deterministic validate gate and (under Option P) actually RUNS. Its first task performs
+    /// the same out-of-band write into the live plan folder that <see cref="MidRunWrite.ModifyTargetGuardrail"/>
+    /// does — but against a guardrail the HARNESS wrote thirty seconds earlier, which is precisely the shape
+    /// issue #568 says the watch was blind to.
+    /// </summary>
+    private sealed class EditingWaveAuthoringRunner(string planDir) : IPromptRunner
+    {
+        public int Invocations { get; private set; }
+
+        public string Name => "breakdown";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
+        {
+            Invocations++;
+
+            // The invoker roots the session at the PLAN directory; write through it exactly as the real
+            // breakdown session would, rather than through the captured planDir.
+            string wave2 = Path.Combine(invocation.WorkingDirectory, Wave2, "tasks");
+            string targetGuardrail =
+                Path.Combine(planDir, Wave2, "tasks", JitTarget, "guardrails", Script("01-check"));
+
+            // A CHAIN, not a fan-out: two leaf tasks would make the wave a parallel topology, which GR2028
+            // requires a wave exit gate for, and the validate gate would reject the authored wave before it
+            // could ever run. The chain is also what orders the edit before the target's dispatch poll.
+            WriteScriptTask(
+                Path.Combine(wave2, JitEditor), "jit-first.txt", dependsOn: null,
+                midRunLine: MidRunLine(MidRunWrite.ModifyTargetGuardrail, targetGuardrail, guardrailsDir: ""));
+            WriteScriptTask(
+                Path.Combine(wave2, JitTarget), "jit-target.txt", dependsOn: JitEditor, midRunLine: null);
 
             return Task.FromResult(new PromptResult
             {

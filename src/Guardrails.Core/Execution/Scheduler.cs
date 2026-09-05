@@ -870,6 +870,18 @@ public sealed class Scheduler
                 // the end-of-run report reflect its real tasks, then fall through to the normal
                 // entry/drain/exit path for this same wave.
                 plan = SpliceAuthoredWave(plan, jit.ProceedWithWave!);
+
+                // #568: the mid-run edit watch was built from the plan as LOADED, where this wave was an
+                // empty stub — so its Poll()/Rebaseline() loops over _plan.Tasks could never reach the tasks
+                // the breakdown just wrote. Rebasing it here is the whole fix, and it is one call rather than
+                // a new IRunObserver member because the Scheduler already HOLDS the spliced plan: routing
+                // this out to the CLI and back would send a Core-side fact on a round trip for nothing.
+                // Under _gate, matching every other watch touch.
+                lock (_gate)
+                {
+                    _planEditWatch?.Rebase(plan);
+                }
+
                 waves = plan.Waves;
                 wave = waves[i];
             }
