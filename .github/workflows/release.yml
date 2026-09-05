@@ -232,11 +232,15 @@ jobs:
           #
           # Upstream: dotnet/runtime#123324 (root cause) and dotnet/runtime#112167 / #88288
           # (the child-spawn stacks that match ours exactly), fixed by dotnet/runtime#127355
-          # — merged 2026-04-29 into `main` (.NET 11) and NOT backported to release/10.0, so
-          # every binary published with the .NET 10 SDK still carries it.
+          # merged 2026-04-29 into `main` (.NET 11). It HAS since been backported:
+          # dotnet/runtime#132710 merged into release/10.0 on 2026-08-26, milestone 10.0.13.
+          # As of this writing the latest published .NET 10 runtime is 10.0.11, so every
+          # binary we publish today still carries the bug.
           #
-          # Cost of disabling: a larger download. Re-enable ONLY once we publish on an SDK
-          # carrying dotnet/runtime#127355, and re-check #443 before you do.
+          # Cost of disabling: a larger download (macOS 38MB -> 83MB, measured 1.2.0 vs 1.3.0).
+          # Re-enable ONLY once a 10.0.x SDK on the runner carries runtime 10.0.13 - there is
+          # no pin to unwind, `dotnet-version: 10.0.x` picks it up - and re-check #443 on
+          # Apple Silicon before you do. Tracked as #444.
           COMPRESS=true
           case "${{ matrix.rid }}" in
             osx-*) COMPRESS=false ;;   # arm64 natively; x64 can run under Rosetta on the same silicon

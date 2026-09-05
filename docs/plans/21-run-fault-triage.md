@@ -1,9 +1,11 @@
 # 21 — Run-boundary fault triage: classifying an abort instead of guessing at it (#453) — design of record
 
-> **Status: DRAFT design-of-record. Not implemented.** Per #106 this document goes out as a **draft PR**
-> for inline review before any implementation milestone starts. Issue: **#453**. Companion (not blocking,
-> not blocked): **#454** (drafts folder + permissioned `guardrails file-issues`). This document does not
-> close either.
+> **Status: DRAFT design-of-record. Not implemented.** This document is reviewed in **Charter**, never as
+> a draft PR: a PR is a code-review vehicle, and opening one for prose spends a 3-OS matrix to put a green
+> tick on something it certifies nothing about. (#106 predates Charter and recorded the older draft-PR
+> habit; the design document itself is still committed here, and a PR is still correct for the
+> implementation that follows.) Issue: **#453**. Companion (not blocking, not blocked): **#454** (drafts
+> folder + permissioned `guardrails file-issues`). This document does not close either.
 
 **One-line statement.** The harness has exactly one place where its own explanation of what happened is a
 **disjunctive guess** — the generic infrastructure-fault abort — and that is the only place a run-boundary
