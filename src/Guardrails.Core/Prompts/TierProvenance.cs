@@ -37,6 +37,11 @@ public static class TierProvenance
     ///     apart.</item>
     ///   <item>a null <paramref name="route"/> (a SCRIPT action) ⇒ ABSENT: no route, no rung, nothing
     ///     to source.</item>
+    ///   <item><see cref="TierResolution.EscalatedFrom"/> non-null ⇒ <see cref="TierSource.Escalated"/>
+    ///     (escalation ladder, #228) — checked ahead of the origin lookup, because a previous attempt's
+    ///     guardrail failure is a stronger claim on "why this rung" than the origin that first requested
+    ///     it. <see cref="TierResolution.Climbed"/> plays no part in this decision: it is a separate,
+    ///     independently-readable capability fact, not a second way to spell escalation.</item>
     /// </list>
     /// </summary>
     public static TierSource? SourceFor(ActionDefinition action, TierResolution? route)
@@ -48,6 +53,7 @@ public static class TierProvenance
             null => null,
             { Pinned: true } => TierSource.Override,
             { Legacy: true } => null,
+            { EscalatedFrom: not null } => TierSource.Escalated,
             _ => action.TierOrigin switch
             {
                 TierOrigin.Task => TierSource.Task,
