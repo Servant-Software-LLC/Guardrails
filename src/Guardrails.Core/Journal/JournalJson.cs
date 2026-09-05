@@ -100,7 +100,8 @@ public static class JournalJson
 
     /// <summary>
     /// The SSOT §7 / DoR §12.4 token for a <see cref="Journal.TierSource"/> (<c>task</c> |
-    /// <c>plan-default</c> | <c>override</c>) — the single source of truth for the kebab spelling of
+    /// <c>plan-default</c> | <c>override</c> | <c>escalated</c>, the last added by the escalation ladder,
+    /// #228) — the single source of truth for the kebab spelling of
     /// <c>provenance.tierSource</c>, reused by the JSON converter and by any run-report labelling
     /// (model tiering #201).
     ///
@@ -115,6 +116,7 @@ public static class JournalJson
         TierSource.Task => "task",
         TierSource.PlanDefault => "plan-default",
         TierSource.Override => "override",
+        TierSource.Escalated => "escalated",
         _ => throw new JsonException($"Unhandled tier source '{source}'.")
     };
 
@@ -178,6 +180,7 @@ public static class JournalJson
                 "task" => TierSource.Task,
                 "plan-default" => TierSource.PlanDefault,
                 "override" => TierSource.Override,
+                "escalated" => TierSource.Escalated,
                 _ => throw new JsonException($"Unknown tier source '{value}'.")
             };
         }
