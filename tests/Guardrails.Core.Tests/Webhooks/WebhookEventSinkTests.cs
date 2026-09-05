@@ -165,6 +165,25 @@ public sealed class WebhookEventSinkTests
     }
 
     /// <summary>
+    /// Rows the stopped-early notice reports as never attempted, or <c>0</c> when teardown printed no such
+    /// notice. Unlike the counts line this notice is CONDITIONAL — <c>DisposeAsync</c> emits it only when
+    /// the pump did not stop inside its grace — so its absence is a legitimate answer (the pump stopped
+    /// cleanly and the counts line already accounts for everything), not a missing fixture. That is why
+    /// this returns 0 where <see cref="ParseDroppedCount"/> throws.
+    /// </summary>
+    private static int ParseNeverAttemptedCount(IEnumerable<string> notices)
+    {
+        foreach (string notice in notices)
+        {
+            Match match = Regex.Match(notice, @"(\d+) row\(s\) never attempted");
+            if (match.Success)
+                return int.Parse(match.Groups[1].Value);
+        }
+
+        return 0;
+    }
+
+    /// <summary>
     /// Polls until <paramref name="condition"/> holds, or throws with <paramref name="what"/> in the
     /// message. Every wait in this file is on an OBSERVABLE, never a sleep: the budgets here are
     /// sub-second at the time scales used, so a fixed delay is a coin flip under parallel test load.
@@ -910,8 +929,28 @@ public sealed class WebhookEventSinkTests
 
         // Positive control FIRST: rows really were left undelivered, so the assertions below are not
         // satisfied by a run in which the drain happened to finish.
+        //
+        // It counts BOTH of the signals teardown uses, because the counts line alone is not one. Step 4
+        // waits only `pumpGrace` for the pump — 2s scaled by this test's 0.05, so 100ms — and then step 6
+        // reads the counters whether or not the pump actually stopped. This handler holds each request
+        // for 300ms, so a request in flight when the token is cancelled CANNOT return inside that grace:
+        // pumpStoppedCleanly is false, the counters are read while the backlog is still sitting in the
+        // channel, and `dropped` legitimately reads 0. DisposeAsync says exactly this in its own words —
+        // the stopped-early notice is what "makes a '0 dropped' reading on a faulted pump honest rather
+        // than a silent disappearance" — and reports the remainder as "N row(s) never attempted".
+        //
+        // So an undrained backlog has two possible signatures and this control accepts either. Keying on
+        // `dropped` alone made the test fail under load (windows-latest, issue #631) while the property
+        // it stands for held perfectly: 41 rows against a 500ms budget were of course not delivered. That
+        // is the same defect as the `<= 1` bound replaced below — a premise about teardown's internals
+        // standing in for the observable being asserted.
         int dropped = ParseDroppedCount(notices);
-        Assert.True(dropped > 0, $"this test needs an undrained backlog to mean anything; the summary reported {dropped} dropped");
+        int neverAttempted = ParseNeverAttemptedCount(notices);
+        Assert.True(
+            dropped + neverAttempted > 0,
+            "this test needs an undrained backlog to mean anything; teardown reported "
+            + $"{dropped} dropped and {neverAttempted} never attempted. Notices:"
+            + $"{Environment.NewLine}{string.Join(Environment.NewLine, notices)}");
 
         // THE HEADLINE: no aggregate verdict against the endpoint. The circuit must stay closed and
         // nothing may claim the harness "gave up after 5 consecutive delivery failures", because the
