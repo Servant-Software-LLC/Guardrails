@@ -1,6 +1,27 @@
 # Design: Auto wave breakdown at JIT checkpoint (#360)
 
-> Status: DRAFT — design-of-record for human review before implementation begins.
+> Status: **SHIPPED** — implemented and on master. Retained as the decision record for Q1–Q5;
+> superseded for phasing by `12-autonomous-mode.md` §9.
+>
+> **Phase-numbering trap — read this before matching PRs to phases.** Doc 12 §9 renumbered the
+> phases below: its *"Phase 1 — inter-wave breakdown invocation (#360 Phase 1/2)"* is **this
+> document's Phase 1 AND Phase 2 combined**. So PR #368, titled *"#360 Phase 1"*, is what shipped
+> Phase 2 here. Matching PR titles against the numbering in §Q4 gives the wrong answer — and did,
+> in the 2026-09 backlog sweep, where #360 read as unfinished until the renumbering was found.
+>
+> **What landed:** `c7c4625a` (Phase 0, PR #363) · `94742136` (the invocation, PR #368) ·
+> `79583201` (`autoBreakdown` default-ON + the skill auto-seeds `brief.md`, PR #376).
+> Contract: SSOT §14.10. Implementation: `WaveBreakdownInvoker`, the `breakdown` prompt-runner
+> profile, and the `BreakdownComplete` / `BreakdownFailed` halts — all wired, not reserved stubs.
+>
+> **Open questions Q1–Q5 are all resolved** in `12-autonomous-mode.md` §10, marked DECIDED:
+> `auto` governs invocation only and the review halt stands at every policy (§10 C); `brief.md`
+> only, no `wave.json` (§10 D); transcript at `logs/<runId>/<wave-dir>/breakdown/` (§10 E).
+>
+> **One deliberate deviation from Q3:** post-breakdown validation runs **in-process**
+> (`Scheduler.ValidatePlanAfterBreakdown` — PlanLoader + PlanValidator), never a subprocess and
+> never the installed tool, for dogfood safety. The design said subprocess; the code says why not.
+>
 > Companion issues: #269 (overwatcher — the architectural home), #254 (waves SSOT §14),
 > #359 (wave-scoped diagram at checkpoint).
 
