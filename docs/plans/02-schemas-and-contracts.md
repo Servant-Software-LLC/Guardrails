@@ -3361,6 +3361,22 @@ and a `TryResolveDrift` that resolved (see the correction below). The Scheduler 
 watch **plan-wide** — never per-task — after each of those five writers; a per-task re-baseline would
 under-cover the three writers whose authority reaches outside the unit they nominally act on.
 
+**What the watch COVERS after a mid-run splice (issue #568, design 37 §6).** The watch is built from the
+plan as **loaded**, so a JIT wave's tasks — which do not exist until the between-wave barrier authors them —
+were originally outside it entirely. `Poll()` and `Rebaseline()` both iterate `_plan.Tasks`, so re-baselining
+could never reach them: the advisory was structurally blind on the one plan shape where mid-run editing is
+*normal*. The Scheduler therefore calls **`LivePlanEditWatch.Rebase(PlanDefinition)`** immediately after
+`SpliceAuthoredWave`, under the same lock as every other watch touch, **replacing** the covered plan. The
+**baseline is deliberately left untouched**: the next `Poll()` then meets each newly-covered task with no
+baseline and adopts it silently through the branch that already existed for exactly this case — the
+freshly-authored files are the harness's own breakdown output, which the rule above says must not fire the
+advisory. Tasks already covered keep their baselines, so an operator edit that landed **before** the splice
+is still the next poll's to report. The stated cost is a **one-poll blind window**: an operator edit landing
+between the splice and the wave's first task dispatch is folded into the adoption. That window is correct to
+be blind (the harness has been writing that folder for the whole breakdown) and is milliseconds wide, since
+the spliced wave is about to drain. This is coverage only — no schema, no wire field, and no `IRunObserver`
+member changes.
+
 **The `Guardrails-Task-Hash` trailer.** A task's integration commit carries a **third** trailer line,
 `Guardrails-Task-Hash: <definitionHash>`, alongside the existing `Guardrails-Task: <taskId>` /
 `Guardrails-Run: <runId>` (§5.3). Like them it is written on the plain FF'd commit as well as on merge

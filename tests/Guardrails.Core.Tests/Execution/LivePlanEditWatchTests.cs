@@ -32,6 +32,11 @@ public sealed class LivePlanEditWatchTests : IDisposable
 {
     private const string TaskA = "01-first";
     private const string TaskB = "02-second";
+
+    /// <summary>A task folder the HARNESS authors mid-run (a JIT wave's breakdown output, #568) — absent
+    /// from the plan the watch was constructed from, and therefore absent from its baseline.</summary>
+    private const string JitTask = "03-jit-authored";
+
     private const string GuardrailLabel = "guardrails/01-check.ps1";
 
     private readonly string _planDir;
@@ -236,6 +241,120 @@ public sealed class LivePlanEditWatchTests : IDisposable
         Assert.Empty(watch.Poll());
     }
 
+    // ── U8..U11 — issue #568: a wave the run JIT-AUTHORED mid-run ────────────────────────────────
+
+    /// <summary>
+    /// The DEFECT, stated as a pin. A JIT wave's tasks are not in the plan the watch was constructed from,
+    /// and both <see cref="LivePlanEditWatch.Poll"/> and <see cref="LivePlanEditWatch.Rebaseline"/> iterate
+    /// that plan's task list — so an operator edit inside the freshly-authored folder is not merely missed,
+    /// it is UNREACHABLE, and no amount of re-baselining changes that. This is why issue #568's candidate
+    /// fix "re-baseline the watch" could not have worked, and why <see cref="LivePlanEditWatch.Rebase"/>
+    /// replaces the plan instead.
+    /// </summary>
+    [Fact]
+    public void WithoutRebase_AnEditInsideAJitAuthoredFolderIsUnreachable_NotMerelyMissed()
+    {
+        var watch = new LivePlanEditWatch(Plan()); // the plan as LOADED: TaskA + TaskB only
+        watch.Poll();
+
+        WriteTaskFolder(JitTask);   // the harness's own breakdown output, mid-run
+        ModifyGuardrail(JitTask);   // …and then an operator edit inside it
+
+        Assert.Empty(watch.Poll());
+
+        // Re-baselining is not the missing step: it walks the same unreachable list.
+        watch.Rebaseline();
+        Assert.Empty(watch.Poll());
+        watch.Rebaseline(JitTask);
+        Assert.Empty(watch.Poll());
+    }
+
+    /// <summary>
+    /// The fix, driven in the order the Scheduler drives it: rebase at the splice, ADOPT at the next task
+    /// dispatch, then report the operator's edit at the boundary after that. Exactly the sequence a real run
+    /// produces — the splice is followed immediately by the wave's first dispatch, milliseconds later.
+    /// </summary>
+    [Fact]
+    public void AfterRebase_AnOperatorEditToANewlyCoveredTaskIsReported()
+    {
+        var watch = new LivePlanEditWatch(Plan());
+        watch.Poll();
+
+        WriteTaskFolder(JitTask);            // the harness authors the wave
+        watch.Rebase(PlanWith(JitTask));     // Scheduler, at the splice
+        watch.Poll();                        // the wave's first task dispatch — adopts the new folder
+
+        ModifyGuardrail(JitTask);            // NOW the operator edits
+
+        PlanEdit edit = Assert.Single(watch.Poll());
+        Assert.Equal(JitTask, edit.TaskId);
+        Assert.Equal(GuardrailLabel, Normalize(Assert.Single(edit.Files).Label));
+    }
+
+    /// <summary>
+    /// The stated cost, pinned so nobody later "fixes" it as a bug: between <see cref="LivePlanEditWatch.Rebase"/>
+    /// and the next <see cref="LivePlanEditWatch.Poll"/> there is a ONE-POLL blind window, and an edit landing
+    /// inside it is folded into the adoption. That window is correct to be blind — the harness itself has been
+    /// writing that folder for the last thirty minutes — and it is milliseconds wide in a real run, because
+    /// the wave the splice just supplied is about to drain.
+    /// </summary>
+    [Fact]
+    public void Rebase_HasAOnePollBlindWindow_AndAnEditInsideItIsFoldedIntoTheAdoption()
+    {
+        var watch = new LivePlanEditWatch(Plan());
+        watch.Poll();
+
+        WriteTaskFolder(JitTask);
+        watch.Rebase(PlanWith(JitTask));
+        ModifyGuardrail(JitTask);            // inside the window
+
+        Assert.Empty(watch.Poll());
+
+        // …and the watch is live from the very next boundary on.
+        ModifyGuardrail(JitTask);
+        Assert.Equal(JitTask, Assert.Single(watch.Poll()).TaskId);
+    }
+
+    /// <summary>
+    /// The BASELINE is left alone, so the newly-covered task's own freshly-authored files are adopted
+    /// SILENTLY through the no-baseline branch that already existed for exactly this case. That branch had
+    /// no producer in production until now; snapshotting inside <see cref="LivePlanEditWatch.Rebase"/>
+    /// instead would leave it dead code AND duplicate the snapshot logic.
+    /// </summary>
+    [Fact]
+    public void Rebase_AdoptsTheHarnessOwnBreakdownOutputSilently_RatherThanBlamingTheOperatorForIt()
+    {
+        var watch = new LivePlanEditWatch(Plan());
+        watch.Poll();
+
+        WriteTaskFolder(JitTask);
+        watch.Rebase(PlanWith(JitTask));
+
+        Assert.Empty(watch.Poll());
+    }
+
+    /// <summary>
+    /// A pending edit to an ALREADY-covered task survives the rebase. Rebase must not act as a plan-wide
+    /// re-baseline: an operator edit that landed before the splice is still the next poll's to report.
+    /// </summary>
+    [Fact]
+    public void Rebase_DoesNotSwallowAPendingEditToAnAlreadyCoveredTask()
+    {
+        var watch = new LivePlanEditWatch(Plan());
+        watch.Poll();
+
+        ModifyGuardrail(TaskB);     // the operator edits, before the splice
+        WriteTaskFolder(JitTask);
+        watch.Rebase(PlanWith(JitTask));
+
+        PlanEdit edit = Assert.Single(watch.Poll());
+        Assert.Equal(TaskB, edit.TaskId);
+    }
+
+    [Fact]
+    public void Rebase_RejectsANullPlan() =>
+        Assert.Throws<ArgumentNullException>(() => new LivePlanEditWatch(Plan()).Rebase(null!));
+
     // ── fixture ──────────────────────────────────────────────────────────────────────────────────
 
     private string TaskDir(string id) => Path.Combine(_planDir, "tasks", id);
@@ -278,6 +397,12 @@ public sealed class LivePlanEditWatchTests : IDisposable
         Workspace = _planDir,
         Config = new RunConfig { Version = 1 },
         Tasks = [Task(TaskA), Task(TaskB)]
+    };
+
+    /// <summary>The plan AFTER a mid-run splice: the loaded tasks plus a JIT-authored one (#568).</summary>
+    private PlanDefinition PlanWith(string jitTaskId) => Plan() with
+    {
+        Tasks = [Task(TaskA), Task(TaskB), Task(jitTaskId)]
     };
 
     private static void Write(string path, string content)

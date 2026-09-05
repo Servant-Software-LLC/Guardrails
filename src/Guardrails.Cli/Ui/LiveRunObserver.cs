@@ -2,6 +2,7 @@ using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 
 namespace Guardrails.Cli.Ui;
 
@@ -10,11 +11,31 @@ namespace Guardrails.Cli.Ui;
 /// events. Used only when the terminal is interactive and <c>--no-ui</c> is absent;
 /// otherwise the plain <see cref="ConsoleRunObserver"/> runs. All mutation is gated —
 /// M4 workers call in concurrently.
+///
+/// <para><b>Nothing is ever written OUT OF BAND (design 37 §4.1, issue #372).</b> Every line this observer
+/// has to say goes into the bounded <see cref="LiveNarrative"/> pane and is rendered as part of the Live
+/// region's target, which becomes <c>Rows([…narrative…, _table])</c> the moment the pane is non-empty and
+/// stays the bare <see cref="_table"/> while it is empty. There must be ZERO <c>AnsiConsole.</c> references
+/// left in this file: a raw write from inside the Live region desynchronises Spectre's repaint bookkeeping
+/// and stamps the table through the line it just wrote. That invariant is asserted, not assumed — see the
+/// <c>LiveNarrativeCompositeTests</c> frame-integrity test, which is why <see cref="IAnsiConsole"/> is
+/// injectable at all (§7.4).</para>
 /// </summary>
 public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly Table _table;
+
+    // The console the Live region runs on (design 37 §7.4). Injected — defaulting to AnsiConsole.Console —
+    // so a TestConsole can drive a whole simulated run and the rendered frames can be ASSERTED. Without it
+    // every claim about what this surface emits is a screenshot in a PR description.
+    private readonly IAnsiConsole _console;
+
+    // The bounded narrative pane (design 37 §4.2). Empty for the dominant plan shape (flat, no advisories),
+    // in which case the Live target stays the bare table and the run renders byte-identically to before.
+    // Read and written under _gate only.
+    private IReadOnlyList<NarrativeEntry> _narrative = [];
+    private int _elided;
 
     // Row index keyed by EITHER a task id or a wave-phase key "<waveDir>/(<phase>)" (issue #469). One map,
     // because a phase row is updated through exactly the same UpdateCell path as a task row — the parenthesised
@@ -24,7 +45,8 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
     // Task lookup for the Model column's pending-row seed (RebuildRows) — a TaskLiveRow carries only the
     // id, not the TaskNode, so this is how a pending cell reads task.Action.Tier / task.Action.Kind.
-    private readonly Dictionary<string, TaskNode> _taskById;
+    // Replaced wholesale by the #404 mid-run splice; read and written under _gate.
+    private Dictionary<string, TaskNode> _taskById;
 
     // The LAUNCH event's (runner, tier, climbed) per task (design 29 §4.2/§4.3), written by
     // AttemptRouteResolved and read back by AttemptModelResolved — the post-action event has only model
@@ -35,6 +57,11 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     // In-flight wave phases (issue #469): the JIT breakdown, and — per design 23 §9 — the shape #476's wave
     // gates will reuse. Driven by the SAME 1 Hz ticker as _running; no new timer and no new lock.
     private readonly Dictionary<string, PhaseState> _phases = new(StringComparer.Ordinal);
+
+    // Waves that have RUN a JIT breakdown this session — distinct from _phases, which is only the IN-FLIGHT
+    // ones. #404's splice gives such a wave real tasks, and without this the row plan would drop its phase
+    // row at the exact moment the breakdown finally had an outcome to report (design 37 §5.2 B2).
+    private readonly HashSet<string> _breakdownWaves = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _liveLoop;
     private readonly Timer _ticker;
@@ -44,8 +71,12 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     // #379 collapse-completed-waves state. For a FLAT plan (or --all-tasks) these stay inert and the
     // table is the pre-#379 flat one-row-per-task list; for a WAVED plan the row set is (re)planned via
     // LiveTableRows as each wave settles, collapsing completed waves to a single summary row.
-    private readonly IReadOnlyList<TaskNode> _tasks;
-    private readonly IReadOnlyList<WaveNode> _waves;
+    //
+    // MUTABLE since #404: the run may LOAD a wave as an empty JIT stub and only learn its tasks half an
+    // hour later, at WaveBreakdownFinished. Both are replaced wholesale by SpliceWave and are read and
+    // written only under _gate — the same discipline every other piece of table state here follows.
+    private IReadOnlyList<TaskNode> _tasks;
+    private IReadOnlyList<WaveNode> _waves;
     private readonly bool _showAllTasks;
     private readonly HashSet<string> _completedWaves = new(StringComparer.Ordinal);
     private LiveDisplayContext? _context;
@@ -101,14 +132,22 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     /// The <c>--all-tasks</c> opt-out (issue #379): when true, NO wave ever collapses — every task keeps
     /// its own row, exactly as a flat plan renders. Ignored for a flat plan (nothing to collapse).
     /// </param>
+    /// <param name="console">
+    /// The console the Live region runs on (design 37 §7.4). Defaults to <see cref="AnsiConsole.Console"/>,
+    /// which is what every production caller wants; a test passes a <c>TestConsole</c> so the rendered frames
+    /// become assertable — the #372 invariant (no line ever carries both narrative text and a table border
+    /// glyph) is a gate rather than an eyeball check because of this parameter.
+    /// </param>
     public LiveRunObserver(
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? logUrlForTask = null,
         string? planDirectory = null,
         string? runId = null,
         IReadOnlyList<WaveNode>? waves = null,
-        bool showAllTasks = false)
+        bool showAllTasks = false,
+        IAnsiConsole? console = null)
     {
+        _console = console ?? AnsiConsole.Console;
         _logUrlForTask = logUrlForTask;
         _planDirectory = planDirectory;
         _runId = runId;
@@ -128,7 +167,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
         RebuildRows();
 
-        _liveLoop = AnsiConsole.Live(_table).StartAsync(async ctx =>
+        _liveLoop = _console.Live(_table).StartAsync(async ctx =>
         {
             lock (_gate)
             {
@@ -178,28 +217,130 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             }
         }
 
-        string detail = "previous attempt failed";
-        if (LogLinkMarkup(task.Id) is { } link)
-        {
-            detail += $" · {link}";
-        }
-
-        Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", detail);
+        // STATUS only. The Detail cell is left exactly as the just-fired AttemptFinished wrote it — design
+        // 37 §5.1's retry row is `retry 2/3 1:12 │ attempt 1 GuardrailFailed · view log`, and re-asserting
+        // the vaguer "previous attempt failed" over it here would overwrite the precise outcome word with a
+        // paraphrase of itself. AttemptFinished always precedes the next AttemptStarting (the executor's
+        // retry loop journals the attempt before looping), and only a NON-succeeded attempt is retried, so
+        // the cell is always populated by the time this fires.
+        Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", null);
     }
 
     public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
     {
-        lock (_gate)
+        // Design 37 §4.4 #1: the TABLE CELL, never a line. This emitter alone contributed ~30 of the ~60
+        // out-of-band lines a 30-task plan produced, and what it carried was the outcome WORD — which on
+        // success duplicates the `succeeded` status arriving milliseconds later from TaskFinished, and on
+        // failure belongs in the Detail cell the operator is already looking at. The per-attempt history it
+        // used to narrate is in the journal, on the task's log page, and in observer.jsonl.
+        if (AttemptDetailCell(record.Outcome, record.Attempt, LogLinkMarkup(task.Id)) is { } detail)
         {
-            // The per-attempt WHY (the gap between AttemptStarting/[retry] and TaskFinished, which fires
-            // only after the WHOLE retry loop settles). Written ABOVE the live region under _gate, exactly
-            // like AttemptModelResolved and OverwatchNoVerdict: the executor raises this from INSIDE the
-            // Spectre live region, and a raw write there corrupts the task table (#145/#372).
-            string colour = record.Outcome == Core.Journal.AttemptOutcome.Succeeded ? "green" : "red";
-            AnsiConsole.MarkupLine(
-                $"[{colour}]attempt[/] [grey]{Markup.Escape(task.Id)}[/] attempt {record.Attempt}: "
-                + $"[{colour}]{Markup.Escape(record.Outcome.ToString())}[/]");
+            Update(task.Id, null, detail);
         }
+    }
+
+    /// <summary>
+    /// A finished attempt's Detail cell (design 37 §4.4 #1) — null on <see cref="Core.Journal.AttemptOutcome.Succeeded"/>,
+    /// because the row is about to carry the task's own settled status and an "attempt N Succeeded" cell would
+    /// be overwritten by it within milliseconds; otherwise the attempt number and the outcome, with the live-log
+    /// link appended when one is wired.
+    ///
+    /// <para><c>GuardrailFailed</c> / <c>ActionFailed</c> / <c>Timeout</c> are
+    /// <see cref="Core.Journal.AttemptOutcome"/>'s OWN words — this introduces no new vocabulary for an
+    /// operator to learn, and no mapping table that could drift from the enum.</para>
+    ///
+    /// <para>Public (not private) for the same reason <see cref="StatusMarkup"/> and <see cref="ModelCell"/>
+    /// are: the Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure function IS the test seam.</para>
+    /// </summary>
+    public static string? AttemptDetailCell(
+        Core.Journal.AttemptOutcome outcome, int attempt, string? logLinkMarkup)
+    {
+        if (outcome == Core.Journal.AttemptOutcome.Succeeded)
+        {
+            return null;
+        }
+
+        string cell = $"attempt {attempt} {Markup.Escape(outcome.ToString())}";
+        return logLinkMarkup is null ? cell : $"{cell} · {logLinkMarkup}";
+    }
+
+    // --- the narrative pane (design 37 §4) ---------------------------------------------------
+
+    /// <summary>
+    /// Append one NON-coalescing entry — a wave transition, a decision, a one-shot notice — and repaint.
+    /// Each is a distinct event, so none of them ever folds into a count (§4.5). Caller holds <see cref="_gate"/>.
+    /// </summary>
+    private void AppendNarrative(string markup)
+    {
+        IReadOnlyList<NarrativeEntry> next = LiveNarrative.Append(
+            _narrative, new NarrativeEntry(markup, null, 1), LiveNarrative.BudgetFor(_console.Profile.Width));
+        _elided += _narrative.Count + 1 - next.Count;
+        _narrative = next;
+        RefreshTarget();
+    }
+
+    /// <summary>
+    /// Append one COALESCING entry under <paramref name="coalesceKey"/> (§4.5). <paramref name="format"/> is
+    /// handed the entry's new occurrence count and renders the whole line — the singular case must stay
+    /// byte-identical to what this surface printed before design 37, and the counted case reads differently
+    /// per emitter, so the wording lives with the emitter and only the BOOKKEEPING lives here.
+    /// Caller holds <see cref="_gate"/>.
+    /// </summary>
+    private void AppendCoalescingNarrative(string coalesceKey, Func<int, string> format)
+    {
+        int at = LiveNarrative.CoalesceIndexOf(_narrative, coalesceKey);
+        int count = at < 0 ? 1 : _narrative[at].Count + 1;
+        IReadOnlyList<NarrativeEntry> next = LiveNarrative.Append(
+            _narrative,
+            new NarrativeEntry(format(count), coalesceKey, count),
+            LiveNarrative.BudgetFor(_console.Profile.Width));
+
+        // A fold replaces in place, so the buffer only GROWS for a genuinely new entry; anything the budget
+        // then dropped off the front is what the elision line counts.
+        _elided += _narrative.Count + (at < 0 ? 1 : 0) - next.Count;
+        _narrative = next;
+        RefreshTarget();
+    }
+
+    /// <summary>
+    /// Re-point the Live region at the current composite and repaint. Called ONLY when the narrative list
+    /// changes (~10–20 times in a whole run under the §4.4 routing) — a cell mutation needs neither, because
+    /// the <see cref="Table"/> instance inside the composite is the same object Spectre re-renders in place.
+    /// Caller holds <see cref="_gate"/>.
+    /// </summary>
+    private void RefreshTarget()
+    {
+        if (_context is null)
+        {
+            return;
+        }
+
+        _context.UpdateTarget(ComposeTarget());
+        _context.Refresh();
+    }
+
+    /// <summary>
+    /// The Live region's target (§4.1): the bare table while the narrative is empty — byte-identical to what
+    /// a flat, advisory-free run rendered before design 37, which is what keeps <c>LiveTableRows.Plan</c>'s
+    /// byte-identity assertions meaningful — and <c>Rows([…narrative…, table])</c> once it is not.
+    /// Caller holds <see cref="_gate"/>.
+    /// </summary>
+    private IRenderable ComposeTarget()
+    {
+        if (_narrative.Count == 0)
+        {
+            return _table;
+        }
+
+        IReadOnlyList<string> lines = LiveNarrative.Render(_narrative, _elided, _planDirectory, _runId);
+        var items = new List<IRenderable>(lines.Count + 1);
+        foreach (string line in lines)
+        {
+            items.Add(new Markup(line));
+        }
+
+        items.Add(_table);
+        return new Rows(items);
     }
 
     /// <summary>
@@ -294,11 +435,10 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
     /// <summary>
     /// The one-shot pre-announcement, five minutes before the kill — the moment it becomes actionable, and
-    /// never repeated (design 23 §5.1). Written above the live region under <see cref="_gate"/>, the shipped
-    /// <see cref="WaveStarting"/> / <see cref="OverwatchNoVerdict"/> idiom for a ONE-SHOT line (#145/#372);
-    /// nothing repeats above the region. Caller holds the gate.
+    /// never repeated (design 23 §5.1). Two narrative entries (design 37 §4.4 #9–#10), which is why this is
+    /// an instance method: nothing writes out of band any more. Caller holds <see cref="_gate"/>.
     /// </summary>
-    private static void MaybeAnnounceCeiling(PhaseState phase, TimeSpan elapsed)
+    private void MaybeAnnounceCeiling(PhaseState phase, TimeSpan elapsed)
     {
         if (phase.CeilingNoticeFired
             || elapsed < TimeSpan.FromMinutes(BreakdownProgress.CeilingNoticeMinutes)
@@ -311,9 +451,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         string wave = Markup.Escape(phase.Context.WaveDir);
         string spent = BreakdownProgress.FormatClock(elapsed);
         string ceiling = BreakdownProgress.FormatClock(phase.Context.Ceiling);
-        AnsiConsole.MarkupLine(
+        AppendNarrative(
             $"[yellow]{wave}: {spent} of a {ceiling} ceiling — the breakdown will be CUT OFF at {ceiling}.[/]");
-        AnsiConsole.MarkupLine(
+        AppendNarrative(
             "  [grey]Let it run. Ctrl+C here ends the authoring session: the harness leaves the wave "
             + "loadable, so the work in flight is lost.[/]");
     }
@@ -432,9 +572,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         lock (_gate)
         {
-            // Above the live region (like PlanHashMismatch/DecisionRecorded) so it segments the table by
-            // wave without mutating table rows (the #145 in-region-write corruption is avoided).
-            AnsiConsole.MarkupLine(
+            // Design 37 §4.4 #5: the table's own segmentation, moved out of ROWS by #145 and staying out —
+            // now as a narrative entry INSIDE the Live region's target rather than a raw write beside it.
+            AppendNarrative(
                 $"[bold]Wave {index}/{total}:[/] {Markup.Escape(wave.Dir)} — {wave.Tasks.Count} task(s)");
 
             // Regenerate the wave-scoped diagram so it reflects the now-authored tasks before
@@ -453,7 +593,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                 : status == Core.Journal.WaveStatus.Completed
                     ? "[green]completed[/]"
                     : $"[red]halted ({Markup.Escape(status.ToString().ToLowerInvariant())})[/]";
-            AnsiConsole.MarkupLine($"[bold]Wave {Markup.Escape(wave.Dir)}:[/] {verb}");
+            AppendNarrative($"[bold]Wave {Markup.Escape(wave.Dir)}:[/] {verb}"); // §4.4 #6
 
             // #379: collapse a COMPLETED wave's per-task rows to a single summary line — its rows are pure
             // noise once settled (logs stay on the static site + live diagram). A HALTED wave keeps its full
@@ -482,14 +622,15 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         lock (_gate)
         {
             _phases[phase.Key] = phase;
+            _breakdownWaves.Add(context.WaveDir);
 
-            // The first of the TWO one-shot lines, above the live region under the gate — the shipped
-            // WaveStarting / DecisionRecorded / OverwatchNoVerdict idiom (#145/#372). Everything that then
-            // repeats per second goes through UpdateCell, never here.
-            AnsiConsole.MarkupLine(
+            // The TWO one-shot entries (design 37 §4.4 #7–#8). Line 2 is the breakdown log dir — the fallback
+            // when OSC 8 links are unsupported — and both are rare (once per JIT wave), so both are kept.
+            // Everything that then repeats per second goes through UpdateCell, never here.
+            AppendNarrative(
                 $"[bold]Wave {context.Index}/{context.Total}:[/] {Markup.Escape(context.WaveDir)} — "
                 + $"authoring tasks (JIT breakdown). Ceiling {BreakdownProgress.FormatClock(context.Ceiling)}.");
-            AnsiConsole.MarkupLine($"  [grey]Breakdown log: {Markup.Escape(context.BreakdownLogDir)}[/]");
+            AppendNarrative($"  [grey]Breakdown log: {Markup.Escape(context.BreakdownLogDir)}[/]");
 
             if (_rowByKey.TryGetValue(phase.Key, out int row))
             {
@@ -515,21 +656,40 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         lock (_gate)
         {
             _phases.Remove(key); // stop the clock — the outcome is terminal
-            if (!_rowByKey.TryGetValue(key, out int row))
+            if (_rowByKey.TryGetValue(key, out int row))
             {
-                return;
+                string colour = failureKind is null ? "green" : "red";
+                string status = BreakdownProgress.TerminalStatus(BreakdownProgress.TerminalWord(failureKind), elapsed);
+                string detail = Markup.Escape(BreakdownProgress.TerminalDetail(failureKind, snapshot));
+                if (WavePageLinkMarkup(context.WaveDir, "logs") is { } link)
+                {
+                    detail = $"{detail} · {link}";
+                }
+
+                _table.UpdateCell(row, 1, new Markup($"[{colour}]{Markup.Escape(status)}[/]"));
+                _table.UpdateCell(row, 2, new Markup(detail));
             }
 
-            string colour = failureKind is null ? "green" : "red";
-            string status = BreakdownProgress.TerminalStatus(BreakdownProgress.TerminalWord(failureKind), elapsed);
-            string detail = Markup.Escape(BreakdownProgress.TerminalDetail(failureKind, snapshot));
-            if (WavePageLinkMarkup(context.WaveDir, "logs") is { } link)
+            // #404: the wave the run will PROCEED with, spliced into the row plan so its eleven tasks stop
+            // running for forty minutes behind a single settled row. The settled phase row STAYS above them
+            // — it is the wave's authoring provenance (time spent, folders written, a link into the
+            // breakdown evidence) and the only place those numbers appear live — and RebuildRows carries
+            // its just-written cells across.
+            //
+            // authoredWave is non-null ONLY where the run will proceed: Scheduler passes
+            // `proceeding ? authoredWave : null`, so its non-null-ness IS the "this wave is going to run"
+            // signal, which is why this is the splice trigger rather than WaveStarting. Every escalate/halt
+            // path passes null, takes none of this, and leaves the table byte-identical to before.
+            if (authoredWave is not null)
             {
-                detail = $"{detail} · {link}";
+                (IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves) =
+                    SpliceWave(_tasks, _waves, authoredWave);
+                _tasks = tasks;
+                _waves = waves;
+                _taskById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+                RebuildRows();
             }
 
-            _table.UpdateCell(row, 1, new Markup($"[{colour}]{Markup.Escape(status)}[/]"));
-            _table.UpdateCell(row, 2, new Markup(detail));
             _context?.Refresh();
         }
     }
@@ -538,7 +698,8 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         lock (_gate)
         {
-            AnsiConsole.MarkupLine(
+            // §4.4 #11: once per run, kept.
+            AppendNarrative(
                 "[bold yellow]WARNING:[/] plan manifests changed since the last run " +
                 $"(previous hash {Markup.Escape(previousPlanHash)}). Resuming anyway; use --fresh for a clean slate.");
         }
@@ -548,11 +709,15 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         lock (_gate)
         {
-            // An autonomy-policy decision (SSOT §2.1/§7). Emitted above the live region (like
-            // PlanHashMismatch) so the operator sees what a decision did — the headline is pre-rendered,
-            // subject names the units. M1 emits only boundary "drift" (a safe drift auto-resolved).
+            // An autonomy-policy decision (SSOT §2.1/§7) — the headline is pre-rendered, subject names the
+            // units. Design 37 §4.4 #12 adds the `decision:<boundary>` prefix: a colourless terminal renders
+            // the green headline alone as an unmarked sentence among wave lines, and ConsoleRunObserver
+            // already prints this token, so adopting it closes a live/plain wording divergence AND makes the
+            // line legible under NO_COLOR. No brackets around the token — this string is Spectre markup, and
+            // `[decision:wave]` would be parsed as a style tag (§5.2's rendered block shows the bare form).
             string subject = string.IsNullOrEmpty(entry.Subject) ? "" : $": {Markup.Escape(entry.Subject)}";
-            AnsiConsole.MarkupLine($"[green]{Markup.Escape(entry.Headline)}[/]{subject}");
+            AppendNarrative(
+                $"[grey]decision:{Markup.Escape(entry.Boundary)}[/]  [green]{Markup.Escape(entry.Headline)}[/]{subject}");
         }
     }
 
@@ -560,51 +725,84 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         lock (_gate)
         {
-            // The DoR §6.5 run-start advisory (#229), one line per affected task. Written above the
-            // live region under _gate exactly like PlanHashMismatch/DecisionRecorded: the Scheduler
-            // raises this from INSIDE the Spectre live region, so a raw Console.Write here corrupts
-            // the task table (#145). Yellow, not red — §12.6 forbids a verifier condition from ever
-            // failing a build, and colouring it as a failure buys the operator a triage they do not
-            // owe. Both strings come from the harness, but both are escaped: a runner name with a
-            // bracket in it would otherwise be read as Spectre markup.
-            AnsiConsole.MarkupLine(
-                $"[yellow]verifier advisory[/] [grey]{Markup.Escape(taskId)}[/]: {Markup.Escape(finding)}");
+            // The DoR §6.5 run-start advisory (#229). COALESCED (design 37 §4.4 #3): it fires once per
+            // affected TASK and is unbounded in the worst case, so a 24-task advisory burst at run start
+            // would evict the whole pane in one second. Scheduler.cs already applies exactly this discipline
+            // one level up — "repeating the same sentence three times before the run starts is how an
+            // operator learns to skip the block entirely" — and this is that rule one level further out.
+            AppendCoalescingNarrative(
+                LiveNarrative.VerifierAdvisoryKey, count => VerifierAdvisoryLine(count, taskId, finding));
         }
     }
+
+    /// <summary>
+    /// The verifier advisory's line (#229, design 37 §4.5). At <paramref name="count"/> 1 this is
+    /// byte-identical to the line this surface printed before design 37, so a single occurrence reads exactly
+    /// as it always did; beyond that it states how many tasks are affected and which one is latest — the fact
+    /// that makes a systemic misconfiguration legible as systemic. Yellow, not red: §12.6 forbids a verifier
+    /// condition from ever failing a build, and colouring it as a failure buys a triage the operator does not
+    /// owe. Both harness strings are escaped — a runner name with a bracket would otherwise be read as markup.
+    /// </summary>
+    public static string VerifierAdvisoryLine(int count, string taskId, string finding) =>
+        count <= 1
+            ? $"[yellow]verifier advisory[/] [grey]{Markup.Escape(taskId)}[/]: {Markup.Escape(finding)}"
+            : $"[yellow]verifier advisory[/] — {count} task(s), latest "
+              + $"[grey]{Markup.Escape(taskId)}[/]: {Markup.Escape(finding)}";
 
     public void OverwatchNoVerdict(string taskId, string reason)
     {
         lock (_gate)
         {
-            // Issue #452. Written ABOVE the live region under _gate, exactly like VerifierAdvisoryFound
-            // and DecisionRecorded: the executor raises this from INSIDE the Spectre live region, and a
-            // raw write there corrupts the task table (#145/#372). Same advisory idiom as the verifier
-            // advisory — yellow, not red — because the overwatcher gates nothing: a no-verdict changes no
-            // task outcome and no exit code. But it must PRINT: before #452 a billed supervisor that
-            // produced nothing was byte-identical, on this surface, to one that had nothing to say.
-            AnsiConsole.MarkupLine(
-                $"[yellow]overwatch: no verdict[/] [grey]{Markup.Escape(taskId)}[/] — {Markup.Escape(reason)}");
+            // Issue #452, COALESCED (design 37 §4.4 #4) — the same shape as the verifier advisory: the same
+            // sentence about a systemic misconfiguration, repeated per task. It must still be SAID: before
+            // #452 a billed supervisor that produced nothing was byte-identical, on this surface, to one that
+            // had nothing to say.
+            AppendCoalescingNarrative(
+                LiveNarrative.OverwatchNoVerdictKey, count => OverwatchNoVerdictLine(count, taskId, reason));
         }
     }
+
+    /// <summary>
+    /// The silent-overwatcher advisory's line (#452, design 37 §4.5). Singular is byte-identical to the
+    /// pre-design-37 line. Yellow, not red — the overwatcher gates nothing: a no-verdict changes no task
+    /// outcome and no exit code.
+    /// </summary>
+    public static string OverwatchNoVerdictLine(int count, string taskId, string reason) =>
+        count <= 1
+            ? $"[yellow]overwatch: no verdict[/] [grey]{Markup.Escape(taskId)}[/] — {Markup.Escape(reason)}"
+            : $"[yellow]overwatch: no verdict[/] — {count} task(s), latest "
+              + $"[grey]{Markup.Escape(taskId)}[/]: {Markup.Escape(reason)}";
+
+    /// <summary>
+    /// The attempt model MISMATCH line (#349, design 37 §4.5). Only ever rendered when a requested model is
+    /// present — design 29 §3.3 binds the Model cell's <c>!</c> to a companion line ONLY in the mismatch case,
+    /// and in the agreeing case the cell alone is the whole disclosure (§4.4 #2). The wording comes from
+    /// <see cref="AttemptModelSummary"/>, the same formatter the plain surface renders, so the two surfaces
+    /// cannot state the same attempt two different ways.
+    /// </summary>
+    public static string ModelMismatchLine(
+        int count, string taskId, int attempt, string model, string? requestedModel) =>
+        count <= 1
+            ? $"[yellow]model[/] [grey]{Markup.Escape(taskId)}[/] attempt {attempt}: "
+              + $"[yellow]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]"
+            : $"[yellow]model MISMATCH[/] — {count} attempt(s), latest [grey]{Markup.Escape(taskId)}[/]: "
+              + $"[yellow]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]";
 
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
     {
         lock (_gate)
         {
-            // Issue #349. Written ABOVE the live region under _gate, exactly like VerifierAdvisoryFound
-            // and OverwatchNoVerdict: the executor raises this from INSIDE the Spectre live region, and a
-            // raw write there corrupts the task table (#145/#372). The TEXT comes from AttemptModelSummary
-            // — the same formatter the plain surface renders — so the two surfaces cannot state the same
-            // attempt two different ways. Both harness strings ride inside it and the whole thing is
-            // escaped: a model id with a bracket would otherwise be read as markup.
-            //
-            // Grey for the agreeing case (a per-attempt disclosure is not news) and the advisory yellow
-            // when a requested model is present — the same presence signal the formatter keys on, spent
-            // here only on colour. Nothing recomputes the comparison; the fold already decided.
-            string colour = requestedModel is null ? "grey" : "yellow";
-            AnsiConsole.MarkupLine(
-                $"[{colour}]model[/] [grey]{Markup.Escape(task.Id)}[/] attempt {attempt}: "
-                + $"[{colour}]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]");
+            // Design 37 §4.4 #2, SPLIT on the presence of a requested model. The AGREEING case is CELL ONLY:
+            // this emitter's own comment already conceded that "a per-attempt disclosure is not news", and
+            // the Model cell is written a few lines below. The MISMATCH case keeps its line — design 29 §3.3
+            // makes the cell's `!` "a POINTER, not a code: it never appears without a companion line" — and
+            // coalesces, because a route misconfiguration repeats per attempt across the whole run.
+            if (requestedModel is not null)
+            {
+                AppendCoalescingNarrative(
+                    LiveNarrative.ModelMismatchKey,
+                    count => ModelMismatchLine(count, task.Id, attempt, model, requestedModel));
+            }
 
             // The CORRECTION over the launch-event cell (design 29 §4.2/§4.3): this event cannot fire
             // until the runner has reported what it ran on (MEASURED at 14m02s+ per attempt), so the cell
@@ -658,26 +856,55 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     }
 
     /// <summary>
-    /// (Re)build the table's rows + the <see cref="_rowByTask"/> index map from the current
-    /// <see cref="_completedWaves"/> set (issue #379). Called once at construction and again each time a
-    /// wave settles (from <see cref="WaveFinished"/>) to collapse it. Safe because a rebuild only ever
-    /// happens at a wave boundary, where the hard barrier (SSOT §14.4) guarantees every task in a
-    /// not-yet-completed later wave is still <c>pending</c> — so re-seeding later rows to pending never
-    /// discards live progress, and the just-completed wave's rows are intentionally replaced by its
-    /// summary line. Caller holds <see cref="_gate"/> (or runs single-threaded during the ctor).
+    /// (Re)build the table's rows + the <see cref="_rowByKey"/> index map from the current
+    /// <see cref="_tasks"/>/<see cref="_waves"/>/<see cref="_completedWaves"/> state. Called at
+    /// construction, each time a wave settles (<see cref="WaveFinished"/>, to collapse it, issue #379), and
+    /// — since #404 — each time a JIT wave is spliced in mid-run. Caller holds <see cref="_gate"/> (or runs
+    /// single-threaded during the ctor).
+    ///
+    /// <para><b>Every keyed row's rendered CELLS survive the rebuild</b> (design 37 §0.4). #379's original
+    /// safety argument was positional: a rebuild only happened at a wave boundary, where the hard barrier
+    /// (SSOT §14.4) guarantees every task in a not-yet-completed later wave is still <c>pending</c>, so
+    /// re-seeding those rows to <c>pending</c> discarded nothing. That argument does not survive #404. Under
+    /// <c>--all-tasks</c> the collapse rebuild is guarded off entirely, so before #404 this ran exactly once,
+    /// at construction; a mid-run splice makes it run again with completed tasks on screen, and re-seeding
+    /// would flip every green <c>succeeded</c> back to grey <c>pending</c>. Carrying the cells across
+    /// retires that latent fragility for every caller instead of adding a second special case for this one.
+    /// A COLLAPSED wave's task rows are still dropped — they are not in the new row plan at all, which is
+    /// #379's whole point.</para>
     /// </summary>
     private void RebuildRows()
     {
+        // Snapshot the rendered cells of every keyed row BEFORE the table is cleared. Keyed rows only: a
+        // wave summary line is derived state and is regenerated from _completedWaves each time.
+        // TableRowCollection is enumerable but not indexable in Spectre 0.51.1, hence the materialisation.
+        List<TableRow> existing = [.. _table.Rows];
+        var preserved = new Dictionary<string, IRenderable[]>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, int> entry in _rowByKey)
+        {
+            if (entry.Value < existing.Count)
+            {
+                preserved[entry.Key] = [.. existing[entry.Value]];
+            }
+        }
+
         _rowByKey.Clear();
         _table.Rows.Clear();
 
-        IReadOnlyList<LiveTableRow> rows = LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks);
+        IReadOnlyList<LiveTableRow> rows =
+            LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks, _breakdownWaves);
         for (int i = 0; i < rows.Count; i++)
         {
             switch (rows[i])
             {
                 case TaskLiveRow task:
                     _rowByKey[task.TaskId] = i;
+                    if (preserved.TryGetValue(task.TaskId, out IRenderable[]? taskCells))
+                    {
+                        _table.AddRow(taskCells);
+                        break;
+                    }
+
                     _table.AddRow(
                         new Markup(Markup.Escape(task.TaskId)),
                         new Markup("[grey]pending[/]"),
@@ -693,10 +920,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     break;
                 case WavePhaseLiveRow phase:
                     // Issue #469: the row exists from RUN START, so a two-wave JIT plan is legible as a
-                    // two-wave plan before anything happens, and the breakdown has a row to update when it
-                    // begins — no mid-run rebuild, no new race. No new glyph: only the `—` every other row
-                    // already prints.
+                    // two-wave plan before anything happens, and the breakdown has a row to update the
+                    // moment it begins. No new glyph: only the `—` every other row already prints. Its
+                    // SETTLED cells (18m42s · 5 task folders · logs) are preserved across #404's splice
+                    // rebuild by the same mechanism as a task row — that authoring provenance is the only
+                    // place those numbers appear live, and §5.2's B2 keeps the row.
                     _rowByKey[phase.BreakdownKey] = i;
+                    if (preserved.TryGetValue(phase.BreakdownKey, out IRenderable[]? phaseCells))
+                    {
+                        _table.AddRow(phaseCells);
+                        break;
+                    }
+
                     _table.AddRow(
                         new Markup($"{Markup.Escape(phase.WaveDir)} — JIT breakdown"),
                         new Markup("[grey]pending[/]"),
@@ -705,6 +940,41 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// The row plan after a freshly-authored wave replaces its own JIT stub (#404) — pure over the row plan,
+    /// mirroring <c>Scheduler.SpliceAuthoredWave</c>: the ONE wave whose <see cref="WaveNode.Dir"/> matches
+    /// is replaced, and the flattened task list is re-derived as the union in strict wave order (SSOT §14.2),
+    /// never appended to. Deriving rather than appending is what keeps the row order the loader's order even
+    /// if several waves are authored across one run.
+    ///
+    /// <para>A wave this table was never told about — a FLAT plan, or an <c>attach</c> against a different
+    /// plan — returns the inputs unchanged rather than growing a row set the operator's plan does not have.
+    /// </para>
+    ///
+    /// <para>Public (not private) for the same reason <see cref="StatusMarkup"/> and <see cref="ModelCell"/>
+    /// are: the Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure function IS the test seam.</para>
+    /// </summary>
+    public static (IReadOnlyList<TaskNode> Tasks, IReadOnlyList<WaveNode> Waves) SpliceWave(
+        IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves, WaveNode authoredWave)
+    {
+        ArgumentNullException.ThrowIfNull(tasks);
+        ArgumentNullException.ThrowIfNull(waves);
+        ArgumentNullException.ThrowIfNull(authoredWave);
+
+        if (!waves.Any(w => string.Equals(w.Dir, authoredWave.Dir, StringComparison.Ordinal)))
+        {
+            return (tasks, waves);
+        }
+
+        List<WaveNode> spliced =
+        [
+            .. waves.Select(w =>
+                string.Equals(w.Dir, authoredWave.Dir, StringComparison.Ordinal) ? authoredWave : w)
+        ];
+
+        return ([.. spliced.SelectMany(w => w.Tasks)], spliced);
     }
 
     /// <summary>

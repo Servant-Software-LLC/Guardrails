@@ -30,8 +30,14 @@ public sealed record WaveSummaryLiveRow(string WaveDir, int TaskCount) : LiveTab
 /// green line and the run read as FINISHED while it was mid-authoring), and an unauthored wave was invisible
 /// from run start (an operator running a two-wave JIT plan had never been shown that a wave 2 exists).
 ///
-/// <para>Because the row exists from run start, no mid-run <c>RebuildRows()</c> is needed and no new race is
-/// introduced. Its cells are keyed <c>"&lt;waveDir&gt;/(&lt;phase&gt;)"</c> and it is named for the GENERAL
+/// <para>Because the row exists from run start, the breakdown never has to wait for a rebuild to acquire a
+/// row to update. <b>It is no longer true that no mid-run <c>RebuildRows()</c> happens</b> — #404's splice
+/// rebuilds the table the moment a JIT wave is authored, replacing this one synthetic row with the settled
+/// phase row plus the wave's real task rows. That rebuild introduces no new race (it runs under the
+/// observer's one gate, like every other table mutation) and loses no rendered state: <c>RebuildRows</c>
+/// carries every keyed row's cells across, this row's settled authoring provenance included.</para>
+///
+/// <para>Its cells are keyed <c>"&lt;waveDir&gt;/(&lt;phase&gt;)"</c> and it is named for the GENERAL
 /// case on purpose: #476 (wave exit gates going silent) reuses this row, this key shape and the existing
 /// 1 Hz ticker as a CONTENT change, not a second mechanism.</para>
 /// </summary>
@@ -79,12 +85,27 @@ public static class LiveTableRows
     /// flat plan, and a waved plan whose waves are all AUTHORED, emit zero phase rows and therefore produce
     /// a byte-identical row list to before. The dominant case costs nothing.
     /// </para>
+    /// <para>
+    /// A wave named in <paramref name="breakdownWaves"/> KEEPS its phase row after #404's mid-run splice has
+    /// given it real tasks (design 37 §5.2 B2). Without this the row would vanish at the exact moment it
+    /// finally had something to report: the settled row is the wave's authoring provenance — the time spent,
+    /// the folder count, and the link into the breakdown evidence — and it is the only place those numbers
+    /// appear on a live surface at all. Omitting the argument reproduces the pre-#404 behaviour exactly, so
+    /// no caller that does not splice can be affected.
+    /// </para>
     /// </summary>
+    /// <param name="breakdownWaves">
+    /// Wave dirs that have RUN a JIT breakdown this session, or null. A wave listed here keeps its phase row
+    /// even once it has tasks. It is a set of dirs rather than a flag on <see cref="WaveNode"/> because the
+    /// fact belongs to the RUN, not to the plan: the same wave loaded from a fully-authored plan has no
+    /// phase to report.
+    /// </param>
     public static IReadOnlyList<LiveTableRow> Plan(
         IReadOnlyList<TaskNode> tasks,
         IReadOnlyList<WaveNode> waves,
         IReadOnlySet<string> completedWaves,
-        bool showAllTasks)
+        bool showAllTasks,
+        IReadOnlySet<string>? breakdownWaves = null)
     {
         if (waves.Count == 0)
         {
@@ -106,8 +127,10 @@ public static class LiveTableRows
             {
                 // An unauthored wave contributes no task rows at all, so without this it contributes NOTHING
                 // — the defect #469 measured. One synthetic phase row stands for the whole wave until its
-                // tasks exist.
-                if (wave.Tasks.Count == 0)
+                // tasks exist, and STAYS above them once #404's splice supplies them (design 37 §5.2 B2):
+                // the settled row is where the authoring cost is reported and the breakdown evidence is
+                // linked, and nothing else on this surface carries either.
+                if (wave.Tasks.Count == 0 || breakdownWaves?.Contains(wave.Dir) == true)
                 {
                     rows.Add(new WavePhaseLiveRow(wave.Dir));
                 }

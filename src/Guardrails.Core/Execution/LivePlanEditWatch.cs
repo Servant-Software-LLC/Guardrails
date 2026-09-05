@@ -53,11 +53,14 @@ public sealed class LivePlanEditWatch
     /// <summary>Suffixes that are editor/merge junk: a vim swap file and git's conflict leftovers.</summary>
     private static readonly string[] IgnoredSuffixes = [".swp", ".orig", ".rej"];
 
-    private readonly PlanDefinition _plan;
+    /// <summary>The plan this watch covers. REPLACED wholesale by <see cref="Rebase"/> after a mid-run
+    /// splice (#568) — not merged into, because <see cref="Poll"/> and <see cref="Rebaseline"/> both iterate
+    /// <c>_plan.Tasks</c> and a JIT wave's tasks are not in the loaded plan at all.</summary>
+    private PlanDefinition _plan;
 
     /// <summary>The tasks this watch covers, keyed by id — so <see cref="Rebaseline"/> can reject an unknown
     /// id without a scan, and without ever falling back to "no known id, therefore re-baseline everything".</summary>
-    private readonly Dictionary<string, TaskNode> _tasks;
+    private Dictionary<string, TaskNode> _tasks;
 
     /// <summary>Last-known definition surface per task id. Replaced wholesale by <see cref="Poll"/> (which
     /// therefore also prunes tasks that left the plan) and per id by <see cref="Rebaseline"/>.</summary>
@@ -68,15 +71,53 @@ public sealed class LivePlanEditWatch
         ArgumentNullException.ThrowIfNull(plan);
 
         _plan = plan;
-        _tasks = new Dictionary<string, TaskNode>(StringComparer.Ordinal);
-        foreach (TaskNode task in plan.Tasks)
-        {
-            _tasks[task.Id] = task;
-        }
+        _tasks = Index(plan);
 
         // Baseline at construction, not at the first poll: an edit made between load and the first scheduler
         // boundary is still an edit made during the run, and the first Poll() should report it.
         _baseline = SnapshotAll(null);
+    }
+
+    /// <summary>
+    /// Replace the plan this watch covers after a mid-run splice (issue #568, design 37 §6) — a JIT wave the
+    /// run LOADED as an empty stub, whose tasks the harness authored at the barrier.
+    ///
+    /// <para><b>The plan is REPLACED, not re-baselined.</b> Re-baselining cannot work: <see cref="Poll"/>
+    /// iterates <c>_plan.Tasks</c> and so does <see cref="Rebaseline"/>, and the spliced tasks are not in
+    /// <c>_plan</c> at all — so before this the #545 advisory was structurally blind on the one plan shape
+    /// where mid-run editing is NORMAL, because JIT breakdown writes the folder while the run is live.</para>
+    ///
+    /// <para><b>The BASELINE is deliberately left alone.</b> The next <see cref="Poll"/> then sees each
+    /// newly-covered task with no baseline and adopts it silently, through the branch that already exists for
+    /// exactly this case — the freshly-authored files are the HARNESS's own breakdown output, not an operator
+    /// edit, and reporting them would blame the operator for the harness's writes (#229's "an advisory that
+    /// fires on the harness's own writes stops being read"). That branch was unreachable in production until
+    /// now; this gives it its producer rather than leaving it dead code beside a duplicate snapshot here.
+    /// Tasks ALREADY covered keep their baselines, so an operator edit that landed before the splice is still
+    /// the next poll's to report.</para>
+    ///
+    /// <para><b>Cost: a one-poll blind window.</b> Between this call and the next <see cref="Poll"/> — the
+    /// very next task dispatch, milliseconds later, since the wave is about to drain — an operator edit to a
+    /// newly-covered task is folded into the adoption. That window is CORRECT to be blind: the harness itself
+    /// has been writing that folder for the last thirty minutes.</para>
+    /// </summary>
+    public void Rebase(PlanDefinition plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        _plan = plan;
+        _tasks = Index(plan);
+    }
+
+    private static Dictionary<string, TaskNode> Index(PlanDefinition plan)
+    {
+        var tasks = new Dictionary<string, TaskNode>(StringComparer.Ordinal);
+        foreach (TaskNode task in plan.Tasks)
+        {
+            tasks[task.Id] = task;
+        }
+
+        return tasks;
     }
 
     /// <summary>Recompute the definition surface, return what changed since the last call, and
