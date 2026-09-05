@@ -860,7 +860,13 @@ public enum TierSource
     /// still records why it took the route it took, and <c>provenance.tier</c> is absent because no rung
     /// resolved.
     /// </summary>
-    Override
+    Override,
+
+    /// <summary>
+    /// A PREVIOUS attempt of this task failed its guardrails, so the escalation ladder (#228) moved this
+    /// attempt one rung up. The rung it started from is recorded beside it as <c>escalatedFrom</c>.
+    /// </summary>
+    Escalated
 }
 
 /// <summary>
@@ -987,6 +993,14 @@ public sealed record AttemptProvenance
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TierSource? TierSource { get; init; }
+
+    /// <summary>
+    /// The rung the FIRST (un-escalated) resolution of this task served, present ONLY on an attempt the
+    /// escalation ladder (#228) moved. Absent — never null — on every other attempt, which is what makes
+    /// its presence the escalation signal without a second flag beside it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EscalatedFrom { get; init; }
 
     /// <summary>
     /// The reasoning effort the attempt ran at — the resolved route's own <c>effort</c>, with the task's
