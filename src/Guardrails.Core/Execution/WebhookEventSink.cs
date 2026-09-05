@@ -379,7 +379,9 @@ public sealed class WebhookEventSink : IAsyncDisposable
 
         using (rowCts)
         {
-            try { rowCts.CancelAfter(Scaled(PerRowCeiling)); } catch (ObjectDisposedException) { }
+            TimeSpan rowCeiling = Scaled(PerRowCeiling);
+            LastPerRowCeilingUsed = rowCeiling;
+            try { rowCts.CancelAfter(rowCeiling); } catch (ObjectDisposedException) { }
 
             AttemptOutcome last = default;
             bool attempted = false;
@@ -651,6 +653,16 @@ public sealed class WebhookEventSink : IAsyncDisposable
     /// 977 ms locally. The decision is the thing under test; the elapsed time is not.
     /// </summary>
     internal TimeSpan LastPumpGraceUsed { get; private set; }
+
+    /// <summary>
+    /// The per-row ceiling actually armed on the most recent row, exposed for the same reason as
+    /// <see cref="LastPumpGraceUsed"/>. The ceiling's wall-clock signature is only ~4% wide by the
+    /// design's own choice of numbers — the 45 s ceiling against a ~47 s full schedule — so measuring
+    /// elapsed time cannot tell "the ceiling cut this row off" from "this row finished its schedule on a
+    /// busy machine". A test that tried failed on a contended runner. What is deterministic, and what the
+    /// ceiling actually IS, is the budget the sink armed.
+    /// </summary>
+    internal TimeSpan LastPerRowCeilingUsed { get; private set; }
 
     private readonly ConcurrentQueue<TimeSpan> _computedBackoffs = new();
 
