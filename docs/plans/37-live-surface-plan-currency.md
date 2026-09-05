@@ -112,7 +112,7 @@ swapped via `LiveDisplayContext.UpdateTarget(IRenderable)` (verified present in 
 
 The empty-narrative special case is deliberate and matches the house discipline (#485/#379's "the dominant case costs nothing"): a flat plan with no advisories and no waves renders **byte-for-byte what it renders today**, so `LiveTableRows.Plan`'s existing byte-identity assertions keep their meaning.
 
-**Zero `AnsiConsole.MarkupLine` calls remain in `LiveRunObserver`.** That is the #372 invariant, and it is mechanically checkable (§7.4).
+**Zero writes of any kind, on any console, remain in `LiveRunObserver`** — not merely zero `AnsiConsole.MarkupLine` calls. That is the #372 invariant, and it is mechanically checkable (§7.4). State it as "zero writes", because §7.4 introduces a *second* console to write through (the injected `_console`), and an invariant phrased against one spelling is passed by the other.
 
 ### 4.2 The resolved scrollback decision
 
@@ -147,6 +147,15 @@ Worst same-instant burst under §4.4's routing:
 
 **The budget only works because of coalescing (§4.5).** Without it, `VerifierAdvisoryFound` fires once per affected task and a 24-task advisory burst at run start would evict the entire pane in one second. State that dependency explicitly to the implementer: if coalescing is dropped, 8 is the wrong number and the design does not hold.
 
+**One burst the table above does not model: per-task decisions.** `DecisionRecorded` fires **per task** and never coalesces. Both overwatch decision sites build `Boundary = "task"`, `Subject = task.Id` (`src/Guardrails.Core/Execution/Overwatch.cs:243-253` for a halt, `:657-667` for a retry/adjust), and §4.5's key list is closed at three — `verifier-advisory`, `overwatch-no-verdict`, `model-mismatch`. So on an autonomous run at `maxParallelism` 4–8, an overwatcher acting on several tasks inside the same second can fill the pane with per-task decision lines and push the wave banner off the top of it.
+
+That is **left uncoalesced deliberately, and it is not a blocker.** Two reasons, recorded so the next person sizing the pane does not have to re-derive them:
+
+1. It degrades honestly. The elision line states how many entries were dropped and names `guardrails attach` to replay them (§5.4) — the failure is a legible loss, not a corrupted display, which is exactly the property §4.2(a) traded for.
+2. Each of those lines is a **distinct halt or retry of a different task**, which is the fact an operator most needs individually. A `decision:task — 4 task(s), latest …` fold would collapse four different tasks' outcomes into one counted sentence and destroy the subject list; losing the wave banner is the cheaper loss.
+
+**If a fourth coalesce key is ever warranted, `decision:task` is it** — and the argument for adding it must be that operators stopped reading those lines, not that §4.3's arithmetic is tidier without them.
+
 ### 4.4 Per-emitter disposition — all 12 sites
 
 | # | Emitter (line) | Frequency | Today | **Disposition** | Reason |
@@ -160,7 +169,7 @@ Worst same-instant burst under §4.4's routing:
 | 7–8 | `WaveBreakdownStarting` **:489, :492** | 2 per JIT wave | scrollback | **narrative** (keep both) | Line 2 is the breakdown log dir — the fallback when OSC 8 links are unsupported. Rare (once per JIT wave). |
 | 9–10 | `MaybeAnnounceCeiling` **:314, :316** | 2, once per JIT wave | scrollback | **narrative** (keep both) | Design 23 §5.1's one-shot pre-announcement, at the moment it becomes actionable. |
 | 11 | `PlanHashMismatch` **:541** | once per run | scrollback | **narrative** (keep) | |
-| 12 | `DecisionRecorded` **:555** | per decision (autonomy + plan-edit observations via `Scheduler.cs:394-401`) | scrollback | **narrative** (keep) + **prefix `decision:<boundary>`** | A colorless terminal renders the current green headline as an unmarked sentence among wave lines. `ConsoleRunObserver.cs:142` already prints `[decision:{entry.Boundary}]`; adopting the token closes a live/plain wording divergence and makes the line legible under `NO_COLOR`. |
+| 12 | `DecisionRecorded` **:555** | per decision — and on the overwatch path that is **per TASK** (`Overwatch.cs:243-253`, `:657-667`, both `Boundary = "task"`/`Subject = task.Id`); also autonomy + plan-edit observations via `Scheduler.cs:394-401` | scrollback | **narrative** (keep, **uncoalesced**) + **prefix `decision:<boundary>`** | A colorless terminal renders the current green headline as an unmarked sentence among wave lines. `ConsoleRunObserver.cs:142` already prints `[decision:{entry.Boundary}]`; adopting the token closes a live/plain wording divergence and makes the line legible under `NO_COLOR`. **Uncoalesced on purpose**: each entry is a different task's halt or retry, and a count would destroy the subject list. §4.3 records what that costs at `maxParallelism` 4–8 and why `decision:task` is the fourth key if one is ever needed. |
 
 Net effect on a 30-task plan: **~60 lines → 0**, because a flat 30-task plan emits no wave lines and (usually) no advisories, so the narrative stays empty and the target stays the bare table.
 
@@ -466,17 +475,37 @@ All four are `public static` for the reason `StatusMarkup` / `ModelCell` / `Post
 
 Add an optional last constructor parameter `IAnsiConsole? console = null`, defaulting to `AnsiConsole.Console`, and replace `AnsiConsole.Live(_table)` at `:131` with `console.Live(_table)` (the extension `AnsiConsoleExtensions.Live(IAnsiConsole, IRenderable)` is verified present in 0.51.1). After §4.4 there are no other `AnsiConsole` references left in the file, so this is a one-line change plus a field.
 
-It is in scope because it converts the *central claim of this fix* from eyeball-only to gated:
+It is in scope because it converts the *central claim of this fix* from eyeball-only to gated — **but only if the assertion is the right one, and the obvious phrasing is not.** The next three paragraphs are a correction to this section, written after the first implementation shipped an assertion that could not fail; they are the load-bearing part of §7.4.
 
-- **The #372 invariant becomes an assertion.** Drive a `TestConsole` through a full simulated run and assert the captured output contains **zero** occurrences of the narrative text outside the composite frame — concretely, that the rendered frames are well-formed (every `╭` has a matching `╮` on the same line, no line contains both narrative text and a border glyph). That is the actual defect, asserted directly.
+**The trap: `TestConsole` has no cursor, so it cannot reproduce the corruption.** #372 is exclusively a cursor-bookkeeping artifact — Spectre moves the cursor up by a remembered height and repaints over a line a raw write pushed down. `TestConsole` is a plain writer with no cursor control; it emits each frame back to back and overprints nothing. So an assertion phrased as *"no rendered line carries both narrative text and a table border glyph"*, or *"every `╭` is closed by a `╮` on the same line"*, **cannot fail for any input** and certifies nothing. An earlier revision of this section prescribed exactly those two, they were implemented, and a mutant that put #372 back verbatim — one `_console.MarkupLine(…)` in `WaveFinished` — passed all 109 tests including the three named as the invariant.
+
+**What `TestConsole` can prove, exactly.** It cannot show the overprint, but it separates the two mechanisms that produce it, and the separation is total:
+
+- a line inside the Live **target** is part of the renderable Spectre repaints, so it is re-emitted in **every** frame from the moment it is appended until the budget evicts it; while
+- a **raw write** reaches the writer exactly once, at the point of emission, and appears in **no later frame**.
+
+So the assertion is: *each narrative line is present in the frame where it first appears **and in every frame after it**, the last frame included.* Frames are delimited by the table's `╰…╯` bottom border, which `TestConsole` runs together with the next frame's first character. Asserting merely *"present somewhere in `console.Output`"* does **not** discriminate — a raw write satisfies that too — and that is the hole the first implementation shipped through.
+
+**The census must be an allowlist over the console TYPE, not a denylist of spellings.** The injection introduces a *second* way to commit #372: `_console.MarkupLine(…)` instead of `AnsiConsole.MarkupLine(…)` — the same defect, reached through the field this section adds, and now the *natural* mistake, because `_console` is the identifier already in scope. A census matching literals (`AnsiConsole.MarkupLine`, `Console.Write(`, …) misses it, and adding a sixth literal only moves the hole to `_console.Write`. Instead: find every identifier the file declares **as an `IAnsiConsole`**, and permit only the non-writing members — `Live` (which creates the region that owns the cursor) and `Profile` (a read, for §4.3's width). Every other member of that interface and its extension surface either writes or moves the cursor, and doing either from inside the region *is* #372.
+
+With those three corrections in place, the injection buys:
+
+- **The #372 invariant as a gate**, in the frame-persistence form above, over the ten emitters a test can drive — plus the source census over the two (`MaybeAnnounceCeiling`'s ceiling notices) that no test can reach without a clock seam this design does not add.
 - **The pane's contents become assertable** — that a 30-task run emits an empty narrative, that a resume emits exactly 4 entries, that the 25th advisory coalesces to one counted entry.
+- **§4.3's width→budget wiring becomes assertable**, which requires a test that actually constructs the observer on a narrow console. `BudgetFor` is pure and exhaustively covered as a function, but a pure function nothing calls at a narrow width is not a *wired* one: with only 100/120/140-column fixtures, deleting the width check and hardcoding `LiveNarrative.DefaultBudget` passes the whole repo while handing a 56-column terminal an 8-entry pane that wraps to 16 rows and eats the table — the exact outcome §4.3's halving exists to prevent. One `Console(56)` case asserting the pane holds 4 closes it.
 - Without it, every claim in §5 is a screenshot in a PR description. This repo's rule is that a prompt may propose and only a deterministic gate may certify; without the injection this fix certifies nothing.
 
 **Cost, stated:** `Spectre.Console.Testing` is **not currently restored** in this solution (checked `~/.nuget/packages`), and there is no central package management (`Directory.Packages.props` absent), so this adds one `PackageReference` to `tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj`. That is the whole cost.
 
 **Note for the test author:** `TestConsole` carries its own exclusivity mode, so the new tests may not need `LiveDisplayCollection`. Verify that before assuming it — if `TestConsole` turns out to share the process-wide `DefaultExclusivityMode`, the new class must join `LiveDisplayCollection.Name` like the others. `tests/Guardrails.Integration.Tests/LiveDisplayCollection.cs` documents exactly why that lock misattributes failures to the test that was tearing down; do not rediscover that.
 
-**What stays eyeball-only, honestly:** whether the composite *looks* right on a real conhost at 24 rows; whether the 8-entry budget feels calm rather than busy over a 40-minute run; whether the elision line's `guardrails attach` pointer reads as an invitation or as an error. `TestConsole` renders to a string with a fixed profile — it proves the bytes, not the experience. The bytes are the regression risk; the experience is the dogfood.
+**What stays eyeball-only, honestly — say this precisely, because the gap is not zero.**
+
+1. **That an escaped write *corrupts*.** The tests prove a line either is or is not part of the Live target. They do **not** prove that a line outside it desynchronises Spectre's repaint bookkeeping and stamps `TableBorder.Rounded` glyphs through the operator's scrollback — that step needs a real cursor, and no harness without one can close it. The dogfood screenshot in #372 is the evidence for that half, and it is the *reason* the escape is a defect, not the proof that the escape happened.
+2. **The two ceiling notices (§4.4 #9–#10)** are covered by the source census only. It proves they are not raw writes; it cannot prove they render correctly, because they fire from the 1 Hz ticker after 25 minutes of a breakdown and this design adds no clock seam.
+3. **Everything about the experience:** whether the composite *looks* right on a real conhost at 24 rows; whether the 8-entry budget feels calm rather than busy over a 40-minute run; whether the elision line's `guardrails attach` pointer reads as an invitation or as an error.
+
+`TestConsole` renders to a string with a fixed profile — it proves the bytes, not the experience. The bytes are the regression risk; the experience is the dogfood.
 
 ### 7.5 `attach` — the wire change, and what it shows until then
 

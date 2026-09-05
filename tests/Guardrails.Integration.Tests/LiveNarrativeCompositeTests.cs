@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
@@ -13,15 +14,28 @@ namespace Guardrails.Integration.Tests;
 /// <c>AnsiConsole.MarkupLine</c> from INSIDE the Spectre Live region. Spectre's <c>LiveRenderable</c>
 /// remembers the height it drew and moves the cursor up by that amount on the next refresh; a raw write
 /// advances the cursor without updating that bookkeeping, so the next repaint lands one row low and stamps
-/// the table's <c>TableBorder.Rounded</c> glyphs THROUGH the line just written. These tests drive a whole
-/// simulated run through an injected <see cref="TestConsole"/> and assert the two halves of the fix:</para>
-/// <list type="number">
-///   <item>every narrative line is PRESENT in the Live region's own rendered output (it went through the
-///     composite, not around it — before the fix these lines went to the global console and would be
-///     absent from this console entirely); and</item>
-///   <item>NO rendered line carries both narrative text and a table border glyph, and every frame's
-///     <c>╭</c> is closed by a <c>╮</c> on the same line — the corruption itself, named and excluded.</item>
+/// the table's <c>TableBorder.Rounded</c> glyphs THROUGH the line just written.</para>
+///
+/// <para><b>What this harness can and cannot prove — read this before adding an assertion here.</b>
+/// <see cref="TestConsole"/> is a plain writer with no cursor control, so it cannot REPRODUCE the overprint;
+/// no harness without a cursor can, and any assertion phrased as "no rendered line carries both narrative
+/// text and a border glyph" is therefore incapable of failing for ANY input. What this harness CAN do is
+/// separate the two mechanisms that produce the overprint, and that separation is exact:</para>
+/// <list type="bullet">
+///   <item>a line inside the Live TARGET is part of the renderable Spectre repaints, so it is re-emitted in
+///     EVERY frame from the moment it is appended until the budget evicts it; while</item>
+///   <item>a raw write reaches the writer exactly ONCE, at the point of emission, and never appears in any
+///     later frame.</item>
 /// </list>
+///
+/// <para>So the discriminator these tests use is <see cref="AssertRenderedInsideTheLiveRegion"/>: present in
+/// the frame where it was emitted AND in every frame after it, the LAST frame included. Asserting merely
+/// "present somewhere in <c>console.Output</c>" does NOT discriminate — a raw write satisfies that too, which
+/// is how #372's own defect, re-introduced through the injected <c>_console</c> field rather than the global
+/// <see cref="AnsiConsole"/>, passed an earlier revision of this whole class.</para>
+///
+/// <para>The residual — that a raw write CORRUPTS rather than merely escapes, on a real cursor-bearing
+/// terminal — stays eyeball-only by construction, and design 37 §7.4 says so in those words.</para>
 ///
 /// <para><b>On <c>LiveDisplayCollection</c>:</b> these tests deliberately do NOT join it, and
 /// <see cref="TestConsole_OwnsItsExclusivityMode_WhichIsWhyThisClassNeedNotJoinLiveDisplayCollection"/>
@@ -34,7 +48,7 @@ namespace Guardrails.Integration.Tests;
 public sealed class LiveNarrativeCompositeTests
 {
     private const char TopLeft = '╭';
-    private const char TopRight = '╮';
+    private const char BottomRight = '╯';
     private static readonly char[] BorderGlyphs = ['╭', '╮', '╰', '╯', '│', '─', '├', '┤', '┬', '┴', '┼'];
 
     private static TestConsole Console(int width = 100) =>
@@ -90,6 +104,10 @@ public sealed class LiveNarrativeCompositeTests
         Headline = headline
     };
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Frames — the anchor every behavioural assertion below hangs off.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
     /// <summary>
     /// The rendered lines, trailing padding removed and blanks dropped.
     ///
@@ -97,8 +115,7 @@ public sealed class LiveNarrativeCompositeTests
     /// <see cref="TestConsole"/> is a plain writer with no cursor control, so it emits each frame back to back
     /// and frame N's closing bottom-right corner runs into frame N+1's first character with no newline
     /// between them. That is an artifact of the harness, not of the renderer, so the corner is treated as the
-    /// frame terminator it is. Everything asserted below is therefore WITHIN one frame — which is exactly the
-    /// scope #372's corruption lived in.</para>
+    /// frame terminator it is.</para>
     /// </summary>
     private static IReadOnlyList<string> RenderedLines(TestConsole console) =>
     [
@@ -109,25 +126,158 @@ public sealed class LiveNarrativeCompositeTests
             .Where(l => l.Length > 0)
     ];
 
+    /// <summary>
+    /// Every frame the Live region painted, in order — each one the WHOLE composite
+    /// (<c>Rows([…narrative…, table])</c>, or the bare table while the pane is empty), terminated by the
+    /// table's bottom-right corner.
+    ///
+    /// <para>Any text left over after the final frame was written OUTSIDE the Live region — the #372 shape,
+    /// in the special case where the offending emitter fired last — so it fails here rather than being
+    /// silently discarded as an incomplete tail.</para>
+    /// </summary>
+    private static IReadOnlyList<IReadOnlyList<string>> Frames(TestConsole console)
+    {
+        var frames = new List<IReadOnlyList<string>>();
+        var current = new List<string>();
+        foreach (string line in RenderedLines(console))
+        {
+            current.Add(line);
+            if (line.Contains(BottomRight, StringComparison.Ordinal))
+            {
+                frames.Add(current);
+                current = [];
+            }
+        }
+
+        Assert.True(
+            current.Count == 0,
+            "text reached the console AFTER the Live region painted its final frame, so it was never part of "
+            + "any frame — an out-of-band write (#372):\n  " + string.Join("\n  ", current));
+
+        Assert.NotEmpty(frames);
+        return frames;
+    }
+
+    /// <summary>The last frame — what is on the operator's screen when the run ends.</summary>
+    private static IReadOnlyList<string> LastFrame(TestConsole console) => Frames(console)[^1];
+
+    /// <summary>
+    /// <b>The #372 discriminator.</b> <paramref name="text"/> must be part of the Live region's TARGET, not
+    /// merely present somewhere in the byte stream: it is asserted present in the frame where it first
+    /// appears and in every frame after that one, the LAST frame included.
+    ///
+    /// <para>A raw write — <c>AnsiConsole.MarkupLine</c>, or the same call reached through the injected
+    /// <c>_console</c> field — reaches the writer once and is absent from every subsequent repaint, so it
+    /// fails here. "Contained in <c>console.Output</c>" does not distinguish the two and must never be the
+    /// assertion.</para>
+    ///
+    /// <para>At least one frame must follow the first appearance, or the property is vacuous (a line emitted
+    /// after the final repaint would trivially satisfy "in the last frame"). Disposal always repaints, so
+    /// every test here clears that bar; the assertion exists so a future test that stops driving events
+    /// cannot quietly go blind.</para>
+    /// </summary>
+    private static void AssertRenderedInsideTheLiveRegion(TestConsole console, string text)
+    {
+        IReadOnlyList<IReadOnlyList<string>> frames = Frames(console);
+        int first = -1;
+        for (int i = 0; i < frames.Count && first < 0; i++)
+        {
+            if (Holds(frames[i], text))
+            {
+                first = i;
+            }
+        }
+
+        Assert.True(
+            first >= 0,
+            $"'{text}' was never rendered inside the Live region at all (searched {frames.Count} frames).");
+
+        Assert.True(
+            first < frames.Count - 1,
+            $"'{text}' appears ONLY in the final frame, so nothing repainted after it and this assertion "
+            + "proves nothing about where it came from — drive one more event before asserting.");
+
+        for (int i = first + 1; i < frames.Count; i++)
+        {
+            Assert.True(
+                Holds(frames[i], text),
+                $"'{text}' was in frame {first} and is GONE from frame {i} of {frames.Count - 1}. That is the "
+                + "signature of a RAW WRITE (#372): emitted once beside the Live region instead of being part "
+                + "of the target Spectre repaints, so it never appears in a later frame.");
+        }
+
+        static bool Holds(IReadOnlyList<string> frame, string text) =>
+            frame.Any(l => l.Contains(text, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> renders in the PANE of the last frame: on a line above the table's top border
+    /// (the composite is <c>Rows([…narrative…, table])</c>) that carries no border glyph of its own, i.e. it
+    /// is a narrative entry rather than the contents of a table cell.
+    ///
+    /// <para>This is a PLACEMENT assertion, not the #372 one — it distinguishes "rendered in the pane" from
+    /// "rendered inside a cell", and cannot detect an out-of-band write.
+    /// <see cref="AssertRenderedInsideTheLiveRegion"/> is the assertion that does that.</para>
+    /// </summary>
+    private static void AssertInThePaneOfTheLastFrame(TestConsole console, string text)
+    {
+        IReadOnlyList<string> frame = LastFrame(console);
+        int at = -1;
+        int table = -1;
+        for (int i = 0; i < frame.Count; i++)
+        {
+            if (at < 0 && frame[i].Contains(text, StringComparison.Ordinal))
+            {
+                at = i;
+            }
+
+            if (table < 0 && frame[i].Contains(TopLeft, StringComparison.Ordinal))
+            {
+                table = i;
+            }
+        }
+
+        Assert.True(at >= 0, $"'{text}' is not in the last rendered frame:\n{string.Join("\n", frame)}");
+        Assert.True(table > at, $"'{text}' rendered at or below the table's top border, not in the pane above it.");
+        Assert.False(
+            HasBorderGlyph(frame[at]),
+            $"'{text}' rendered INSIDE a table cell rather than as a pane entry: '{frame[at]}'");
+    }
+
     private static bool HasBorderGlyph(string line) => line.IndexOfAny(BorderGlyphs) >= 0;
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // The #372 invariant in its MECHANICAL form.
+    // The #372 invariant in its MECHANICAL form — the source census.
     // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The members of an <see cref="IAnsiConsole"/> this file may touch. <c>Live</c> creates the region that
+    /// OWNS the cursor; <c>Profile</c> is a read (the width the §4.3 budget keys off). Every other member of
+    /// that interface and of its extension surface either writes or moves the cursor, and doing either from
+    /// inside the region is exactly #372.
+    /// </summary>
+    private static readonly string[] NonWritingConsoleMembers = ["Live", "Profile"];
 
     /// <summary>
     /// Design 37 §4.1: "Zero <c>AnsiConsole.MarkupLine</c> calls remain in <see cref="LiveRunObserver"/>.
     /// That is the #372 invariant, and it is mechanically checkable."
     ///
-    /// <para>The behavioural tests below prove that the ten emitters they can DRIVE go through the
-    /// composite. This one covers the file — including the two ceiling-notice lines, which fire from the
-    /// 1 Hz ticker only once 25 minutes of a breakdown have elapsed and are therefore not reachable from a
-    /// test without a clock seam none of this design introduces. A source census is the honest instrument
-    /// for those two: it cannot prove they RENDER correctly, but it can prove they are not raw writes,
-    /// which is the whole of #372.</para>
+    /// <para>The behavioural tests below prove that the ten emitters they can DRIVE go through the composite.
+    /// This one covers the file — including the two ceiling-notice lines, which fire from the 1 Hz ticker only
+    /// once 25 minutes of a breakdown have elapsed and are therefore not reachable from a test without a clock
+    /// seam none of this design introduces. A source census is the honest instrument for those two: it cannot
+    /// prove they RENDER correctly, but it can prove they are not raw writes.</para>
     ///
-    /// <para>Exactly ONE <c>AnsiConsole.</c> reference is permitted, and it is named: the constructor's
-    /// injection default (§7.4), which resolves a console rather than writing to one.</para>
+    /// <para><b>The census is by TYPE and by ALLOWLIST, deliberately, because a denylist of spellings does not
+    /// work here.</b> An earlier revision matched five literals — <c>AnsiConsole.MarkupLine</c>,
+    /// <c>AnsiConsole.Write</c>, <c>AnsiConsole.Markup(</c>, <c>Console.WriteLine</c>, <c>Console.Write(</c> —
+    /// and the fix's own injected field defeated all five: <c>_console.MarkupLine(…)</c> matches none of them
+    /// (lowercase <c>_console</c> misses the two case-sensitive <c>Console.Write*</c> literals), so #372
+    /// verbatim, reached through the field the fix introduced, passed the census. Adding a sixth literal would
+    /// have left <c>_console.Write</c> open. So: find every identifier this file declares AS an
+    /// <see cref="IAnsiConsole"/>, and permit only <see cref="NonWritingConsoleMembers"/> on it — a new console
+    /// field under any name is covered the day it is declared, and any write verb fails whatever it is called.
+    /// </para>
     /// </summary>
     [Fact]
     public void LiveRunObserver_ContainsNoOutOfBandConsoleWrite_OnlyTheInjectionDefault()
@@ -138,21 +288,92 @@ public sealed class LiveNarrativeCompositeTests
                 .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal))
         ];
 
-        string[] offenders =
-        [
-            .. code.Where(l =>
-                l.Contains("AnsiConsole.MarkupLine", StringComparison.Ordinal)
-                || l.Contains("AnsiConsole.Write", StringComparison.Ordinal)
-                || l.Contains("AnsiConsole.Markup(", StringComparison.Ordinal)
-                || l.Contains("Console.WriteLine", StringComparison.Ordinal)
-                || l.Contains("Console.Write(", StringComparison.Ordinal))
-        ];
+        // Pass 1 — every identifier DECLARED as an IAnsiConsole (the field, and the ctor parameter), plus
+        // where those declarations sit, so pass 2 does not read a declaration as a use.
+        var consoles = new HashSet<string>(StringComparer.Ordinal);
+        var declaredAt = new Dictionary<int, HashSet<int>>();
+        for (int i = 0; i < code.Length; i++)
+        {
+            foreach (Match decl in Regex.Matches(code[i], @"IAnsiConsole\??\s+([A-Za-z_][A-Za-z0-9_]*)"))
+            {
+                consoles.Add(decl.Groups[1].Value);
+                if (!declaredAt.TryGetValue(i, out HashSet<int>? at))
+                {
+                    declaredAt[i] = at = [];
+                }
+
+                at.Add(decl.Groups[1].Index);
+            }
+        }
+
+        // The census is rooted, not vacuous: if the field is renamed, its type inferred, or the injection
+        // removed, this fails LOUDLY instead of quietly scanning for an identifier that no longer exists and
+        // reporting no offenders. Rename the field here too — do not delete this line to get green.
+        Assert.True(
+            consoles.Contains("_console"),
+            "no `IAnsiConsole _console` is declared in LiveRunObserver.cs, so this census has nothing to scan "
+            + "and would pass vacuously. Found these IAnsiConsole-typed identifiers: ["
+            + string.Join(", ", consoles) + "]");
+
+        // Pass 2 — every USE of one of those identifiers. A member access must name a non-writing member; a
+        // bare use (assignment, or the identifier handed to something else that could write through it) is
+        // legal ONLY on §7.4's injection-default line.
+        var offenders = new List<string>();
+        for (int i = 0; i < code.Length; i++)
+        {
+            foreach (string name in consoles)
+            {
+                string pattern =
+                    $@"(?<![A-Za-z0-9_]){Regex.Escape(name)}(?![A-Za-z0-9_])\s*(?:\.\s*(?<member>[A-Za-z_][A-Za-z0-9_]*))?";
+                foreach (Match use in Regex.Matches(code[i], pattern))
+                {
+                    if (declaredAt.TryGetValue(i, out HashSet<int>? at) && at.Contains(use.Index))
+                    {
+                        continue;
+                    }
+
+                    if (use.Groups["member"].Success)
+                    {
+                        string member = use.Groups["member"].Value;
+                        if (!NonWritingConsoleMembers.Contains(member, StringComparer.Ordinal))
+                        {
+                            offenders.Add($"{name}.{member}  →  {code[i].Trim()}");
+                        }
+
+                        continue;
+                    }
+
+                    if (!code[i].Contains("?? AnsiConsole.Console", StringComparison.Ordinal))
+                    {
+                        offenders.Add($"{name} (not a member access)  →  {code[i].Trim()}");
+                    }
+                }
+            }
+        }
+
+        // The process-global console, under either spelling. `AnsiConsole.Console` is excluded by the
+        // lookbehind — that ONE reference is the injection default, checked against its own rule below.
+        foreach (string line in code)
+        {
+            foreach (Match use in Regex.Matches(line, @"(?<![A-Za-z0-9_.])Console\s*\.\s*[A-Za-z_][A-Za-z0-9_]*"))
+            {
+                offenders.Add($"the process-global console  →  {line.Trim()} (at '{use.Value}')");
+            }
+
+            if (line.Contains("System.Console", StringComparison.Ordinal))
+            {
+                offenders.Add($"the process-global console  →  {line.Trim()}");
+            }
+        }
 
         Assert.True(
-            offenders.Length == 0,
-            "LiveRunObserver must never write outside the Live region (#372); found:\n  "
-            + string.Join("\n  ", offenders.Select(l => l.Trim())));
+            offenders.Count == 0,
+            "LiveRunObserver must never write outside the Live region (#372). Only "
+            + string.Join('/', NonWritingConsoleMembers) + " may be touched on an IAnsiConsole here; found:\n  "
+            + string.Join("\n  ", offenders));
 
+        // Exactly ONE `AnsiConsole.` reference is permitted, and it is named: the constructor's injection
+        // default (§7.4), which RESOLVES a console rather than writing to one.
         string[] references = [.. code.Where(l => l.Contains("AnsiConsole.", StringComparison.Ordinal))];
         string only = Assert.Single(references);
         Assert.Contains("AnsiConsole.Console", only, StringComparison.Ordinal);
@@ -213,9 +434,14 @@ public sealed class LiveNarrativeCompositeTests
         Assert.DoesNotContain("attempt 1: Succeeded", output, StringComparison.Ordinal);
         Assert.DoesNotContain("claude-sonnet-4-5", output, StringComparison.Ordinal);
 
-        // Every non-blank rendered line belongs to the table — there is no pane above it.
-        Assert.All(RenderedLines(console), line => Assert.True(
-            HasBorderGlyph(line), $"a bare-table frame emitted a non-table line: '{line}'"));
+        // Every rendered line of every frame belongs to the table — there is no pane above it, and nothing
+        // was written beside it. On a bare-table run this DOES catch a raw write, because any such line
+        // would be a non-table line in a stream that is otherwise nothing but table.
+        foreach (IReadOnlyList<string> frame in Frames(console))
+        {
+            Assert.All(frame, line => Assert.True(
+                HasBorderGlyph(line), $"a bare-table frame emitted a non-table line: '{line}'"));
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -223,7 +449,7 @@ public sealed class LiveNarrativeCompositeTests
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task ResumeIntoWaveFour_PutsEveryLineInThePane_AndNoLineCarriesBothTextAndABorder()
+    public async Task ResumeIntoWaveFour_KeepsEveryLineInEveryLaterFrame_WhichARawWriteCannotDo()
     {
         TestConsole console = Console();
         WaveNode w1 = Wave("wave-01-foundation", 1, Task("wave-01-foundation", "01-a"));
@@ -242,37 +468,26 @@ public sealed class LiveNarrativeCompositeTests
             observer.TaskStarting(w4.Tasks[0]);
         }
 
-        IReadOnlyList<string> lines = RenderedLines(console);
+        string[] expected =
+        [
+            "Wave wave-01-foundation: already complete — skipped (resume)",
+            "Wave wave-02-consumers: already complete — skipped (resume)",
+            "Wave wave-03-integration: already complete — skipped (resume)",
+            "Wave 4/4: wave-04-delivery — 1 task(s)"
+        ];
 
-        // (1) Every narrative line reached THIS console — i.e. it went through the Live target. Before the
-        //     fix these were AnsiConsole.MarkupLine calls against the global console and would be absent.
-        foreach (string wave in new[] { "wave-01-foundation", "wave-02-consumers", "wave-03-integration" })
+        foreach (string text in expected)
         {
-            Assert.Contains(
-                lines, l => l.Contains($"Wave {wave}: already complete — skipped (resume)", StringComparison.Ordinal));
+            // The #372 property: part of the Live TARGET, so still there four frames later.
+            AssertRenderedInsideTheLiveRegion(console, text);
+
+            // …and in the pane above the table rather than inside a cell.
+            AssertInThePaneOfTheLastFrame(console, text);
         }
 
-        Assert.Contains(lines, l => l.Contains("Wave 4/4: wave-04-delivery — 1 task(s)", StringComparison.Ordinal));
-
-        // (2) THE #372 DEFECT, excluded directly: no line mixes narrative text with a table border glyph.
-        foreach (string line in lines)
-        {
-            if (line.Contains("already complete — skipped (resume)", StringComparison.Ordinal)
-                || line.Contains("wave-04-delivery — 1 task(s)", StringComparison.Ordinal))
-            {
-                Assert.False(
-                    HasBorderGlyph(line),
-                    $"a narrative line was stamped through by the table border (#372): '{line}'");
-            }
-        }
-
-        // (3) Every frame is well-formed: a top-left corner is always closed on its own line.
-        foreach (string line in lines.Where(l => l.Contains(TopLeft, StringComparison.Ordinal)))
-        {
-            Assert.True(
-                line.IndexOf(TopRight, StringComparison.Ordinal) > line.IndexOf(TopLeft, StringComparison.Ordinal),
-                $"a table frame's top border was truncated by an out-of-band write: '{line}'");
-        }
+        // §5.3's rendered block, in order: the four entries, then the table, in ONE frame.
+        IReadOnlyList<string> last = LastFrame(console);
+        Assert.Equal(expected.Length, last.TakeWhile(l => !l.Contains(TopLeft, StringComparison.Ordinal)).Count());
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -295,22 +510,18 @@ public sealed class LiveNarrativeCompositeTests
             }
         }
 
-        IReadOnlyList<string> lines = RenderedLines(console);
-        string[] final = [.. lines.SkipWhile(l => !l.Contains("25 task(s)", StringComparison.Ordinal))];
+        // The FOLDED line only ever exists at its final count, so its first frame is the 25th append's —
+        // and the frames after it (teardown's repaints) are what prove it is in the target, not beside it.
+        AssertRenderedInsideTheLiveRegion(
+            console, "verifier advisory — 25 task(s), latest task-25: judge 'meets-spec' has no verifier condition");
 
-        Assert.NotEmpty(final);
-        Assert.Contains(
-            final,
-            l => l.Contains(
-                "verifier advisory — 25 task(s), latest task-25: judge 'meets-spec' has no verifier condition",
-                StringComparison.Ordinal));
-
-        // The wave line survived a 25-strong burst: that is the coalescing dependency §4.3 names.
-        string lastFrame = string.Join('\n', final);
-        Assert.Contains("Wave 1/1: wave-01-foundation — 1 task(s)", lastFrame, StringComparison.Ordinal);
+        // The wave line survived a 25-strong burst: that is the coalescing dependency §4.3 names. It has been
+        // in every frame since the first, which is the strongest form of "not evicted".
+        AssertRenderedInsideTheLiveRegion(console, "Wave 1/1: wave-01-foundation — 1 task(s)");
 
         // …and no earlier-lines elision was ever needed, because the burst folded rather than pushed.
-        Assert.DoesNotContain("earlier line", lastFrame, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "earlier line", string.Join('\n', LastFrame(console)), StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -332,16 +543,66 @@ public sealed class LiveNarrativeCompositeTests
             }
         }
 
-        IReadOnlyList<string> lines = RenderedLines(console);
-        Assert.Contains(
-            lines,
-            l => l.Contains(
-                "… 6 earlier lines — replay with: guardrails attach docs/plans/model-tiering-stage-2",
-                StringComparison.Ordinal));
+        AssertRenderedInsideTheLiveRegion(
+            console, "… 6 earlier lines — replay with: guardrails attach docs/plans/model-tiering-stage-2");
+        AssertInThePaneOfTheLastFrame(
+            console, "… 6 earlier lines — replay with: guardrails attach docs/plans/model-tiering-stage-2");
 
-        // The 8 kept entries are the most recent 8 — #7 is gone, #14 is present.
-        string tail = string.Join('\n', lines.TakeLast(20));
-        Assert.Contains("Definition drift auto-resolved #14", tail, StringComparison.Ordinal);
+        // The 8 kept entries are the most recent 8: #7 is the oldest survivor, #6 was evicted, #14 is newest.
+        string last = string.Join('\n', LastFrame(console));
+        Assert.Contains("Definition drift auto-resolved #14:", last, StringComparison.Ordinal);
+        Assert.Contains("Definition drift auto-resolved #7:", last, StringComparison.Ordinal);
+        Assert.DoesNotContain("Definition drift auto-resolved #6:", last, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Design 37 §4.3 — the budget is read from the CONSOLE the observer was handed, not baked in. Nothing
+    /// else in the repo constructs a <see cref="LiveRunObserver"/> below 60 columns, so without this test
+    /// deleting the width check and hardcoding <see cref="LiveNarrative.DefaultBudget"/> passes everything:
+    /// a 56-column terminal would then get an 8-entry pane that wraps to 16 rows and eats the table, which
+    /// is the exact outcome §4.3's halving exists to prevent.
+    /// </summary>
+    [Theory]
+    [InlineData(56, 4, 2)]  // §5.5's worked narrow example — NarrowBudget, two entries elided
+    [InlineData(60, 6, 0)]  // the boundary is inclusive on the wide side — all six kept
+    public async Task ThePaneBudgetFollowsTheConsoleWidth(int width, int keptEntries, int elidedEntries)
+    {
+        TestConsole console = Console(width);
+        TaskNode a = Task(null, "01-a");
+
+        // Deliberately terse wording: a 56-column pane wraps a normal decision line across two rendered rows,
+        // and this test is about HOW MANY entries survive, not about wrapping.
+        await using (var observer = new LiveRunObserver([a], console: console))
+        {
+            for (int i = 1; i <= 6; i++)
+            {
+                observer.DecisionRecorded(Decision("drift", $"u{i}", $"d#{i}"));
+            }
+        }
+
+        IReadOnlyList<string> last = LastFrame(console);
+        Assert.Equal(keptEntries, last.Count(l => l.Contains("decision:drift", StringComparison.Ordinal)));
+
+        // The survivors are the most recent ones, and the elision line accounts for the rest.
+        for (int i = 6; i > 6 - keptEntries; i--)
+        {
+            Assert.Contains(last, l => l.Contains($"d#{i}: u{i}", StringComparison.Ordinal));
+        }
+
+        for (int i = 6 - keptEntries; i >= 1; i--)
+        {
+            Assert.DoesNotContain(last, l => l.Contains($"d#{i}: u{i}", StringComparison.Ordinal));
+        }
+
+        string joined = string.Join('\n', last);
+        if (elidedEntries == 0)
+        {
+            Assert.DoesNotContain("earlier line", joined, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains($"… {elidedEntries} earlier lines", joined, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -356,11 +617,9 @@ public sealed class LiveNarrativeCompositeTests
                 "wave", "wave-02-consumers", "Wave 'wave-02-consumers' ran UNREVIEWED (5 task(s))"));
         }
 
-        Assert.Contains(
-            RenderedLines(console),
-            l => l.Contains(
-                "decision:wave  Wave 'wave-02-consumers' ran UNREVIEWED (5 task(s)): wave-02-consumers",
-                StringComparison.Ordinal));
+        const string Line = "decision:wave  Wave 'wave-02-consumers' ran UNREVIEWED (5 task(s)): wave-02-consumers";
+        AssertRenderedInsideTheLiveRegion(console, Line);
+        AssertInThePaneOfTheLastFrame(console, Line);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -381,17 +640,16 @@ public sealed class LiveNarrativeCompositeTests
             observer.AttemptStarting(a, 2, 3);
         }
 
-        IReadOnlyList<string> lines = RenderedLines(console);
-
-        // The cell is inside the table (it has a border glyph on its line), and the vaguer sentence
-        // AttemptStarting used to overwrite it with is gone.
+        // The outcome is a CELL: it persists across every later repaint (a raw line would not), and its line
+        // carries the table's own border glyphs.
+        AssertRenderedInsideTheLiveRegion(console, "attempt 1 GuardrailFailed");
+        AssertRenderedInsideTheLiveRegion(console, "retry 2/3");
         Assert.Contains(
-            lines, l => l.Contains("attempt 1 GuardrailFailed", StringComparison.Ordinal) && HasBorderGlyph(l));
-        Assert.DoesNotContain("previous attempt failed", console.Output, StringComparison.Ordinal);
+            LastFrame(console),
+            l => l.Contains("attempt 1 GuardrailFailed", StringComparison.Ordinal) && HasBorderGlyph(l));
 
-        string tail = string.Join('\n', lines.TakeLast(12));
-        Assert.Contains("retry 2/3", tail, StringComparison.Ordinal);
-        Assert.Contains("attempt 1 GuardrailFailed", tail, StringComparison.Ordinal);
+        // …and the vaguer sentence AttemptStarting used to overwrite it with is gone.
+        Assert.DoesNotContain("previous attempt failed", console.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -409,11 +667,9 @@ public sealed class LiveNarrativeCompositeTests
             observer.AttemptModelResolved(a, 2, "claude-sonnet-4-5", requestedModel: "claude-opus-4-1");
         }
 
-        Assert.Contains(
-            RenderedLines(console),
-            l => l.Contains(
-                "model 01-a attempt 2: claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1",
-                StringComparison.Ordinal));
+        const string Line = "model 01-a attempt 2: claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1";
+        AssertRenderedInsideTheLiveRegion(console, Line);
+        AssertInThePaneOfTheLastFrame(console, Line);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -453,7 +709,6 @@ public sealed class LiveNarrativeCompositeTests
             observer.DecisionRecorded(Decision("drift", "01-a", "Definition drift auto-resolved")); // §4.4 #12
         }
 
-        IReadOnlyList<string> lines = RenderedLines(console);
         string[] expected =
         [
             "plan manifests changed since the last run",
@@ -467,12 +722,20 @@ public sealed class LiveNarrativeCompositeTests
 
         foreach (string text in expected)
         {
-            Assert.Contains(lines, l => l.Contains(text, StringComparison.Ordinal));
+            // THE assertion. Each of these is part of the Live region's TARGET, so it is repainted in every
+            // frame from the one it was appended in through the last — which a write to the same console from
+            // beside the region can never be, whatever verb or spelling that write uses.
+            AssertRenderedInsideTheLiveRegion(console, text);
 
-            // …and never on a line that also carries a table border glyph. That conjunction IS #372.
-            Assert.DoesNotContain(
-                lines, l => l.Contains(text, StringComparison.Ordinal) && HasBorderGlyph(l));
+            // …in the pane, above the table, and never inside a cell.
+            AssertInThePaneOfTheLastFrame(console, text);
         }
+
+        // Seven entries under a budget of eight: nothing was elided, so the last frame IS the whole narrative.
+        // (Asserted as the absence of the elision line rather than as an exact pane-line count, because one of
+        // these entries carries a temp path whose length varies by machine and could wrap at 140 columns.)
+        Assert.DoesNotContain(
+            "earlier line", string.Join('\n', LastFrame(console)), StringComparison.Ordinal);
     }
 
     private static Core.Journal.AttemptRecord Attempt(int attempt, Core.Journal.AttemptOutcome outcome) => new()
