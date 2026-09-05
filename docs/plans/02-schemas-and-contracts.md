@@ -7833,6 +7833,19 @@ The constraints are the point, and they are structural rather than conventions a
 - **Attempts-to-green never renders without abandonment rate over the same denominator.** Averaging
   attempts over successes only flatters exactly the model that gives up.
 - **A costless provider reports time and volume, never a fabricated `$0`** (§15.2).
+- **Attribution coverage renders ABOVE the table, unconditionally** (issue #619). A stratified table looks
+  identical over a corpus that attributes 95% of its rows and one that attributes 20%, and nothing in the
+  table says which — so the report states, before the figures it qualifies, how many rows name a real
+  model out of the rows that *could* have named one. The denominator is
+  `recorded + cli-default + not-recorded` (§15.2b's `AttributableTokens`), never every row: dividing by
+  rows that were never going to name a model understates coverage by exactly the margin that made "76% of
+  rows name no usable model" read as a catastrophe when 77% of it was correct by construction. Only
+  `recorded` counts as **comparable** — `cli-default` is attributable and honest but is not a model
+  identity, so pooling it would attribute cost and outcomes to a model nobody recorded. The excluded
+  groups are named individually with their counts, never summed into an "other", because three facts
+  sharing one number is the defect §15.2b exists to prevent. The block prints even when coverage is
+  perfect: a section that appears only on trouble teaches the reader that its absence means "fine", and
+  the first time it is missing because of a bug, nobody notices.
 - **Two model fingerprints never pool**, even under the same model string — as of Phase 1 this is
   operative rather than aspirational. The fingerprint folds in `modelDigest` when the row carries one
   (`kind/runner/model@digest`), so a re-quantized model under a stable tag no longer pools with its
