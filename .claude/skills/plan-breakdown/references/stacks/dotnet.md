@@ -517,6 +517,11 @@ Measured on the throwaway 3-class fixture (`StatsCalculatorTests` red, `Dispatch
 | `Category=PlanWide` *(the defect)* | `Total: 4` | 1 | **GREEN — tautology.** Non-zero comes from the SIBLING's red test |
 | `Category=PlanWide&FullyQualifiedName~DispatchTests` | `Total: 1` | 0 | RED, correctly — this pair's own tests are not failing |
 
+> **This whole box assumes the runner HONOURS `--filter`.** Under Microsoft.Testing.Platform it does
+> not — the filter is silently ignored and the run widens to the entire suite, landing on the
+> `Total: 4` tautology row above by a route no substring check below can see, because the widening
+> happens AFTER the command is emitted. See **§6a** before trusting a filtered guardrail's scope.
+
 **Pick a DISCRIMINATING substring.** `FullyQualifiedName~` is a **substring** match, so a name that is a
 prefix of a sibling pair's class silently re-widens the filter — measured: `~Dispatch` selects both
 `DispatchTests` and `DispatchRouterTests` (`Total: 2`), while `~DispatchTests` selects only the first
