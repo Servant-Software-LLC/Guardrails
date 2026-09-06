@@ -144,6 +144,42 @@ Two invariants govern the folder, and a future change must honour both:
   sample would perturb every affected `TaskDefinitionHash` and trigger spurious definition-drift halts on
   resume (§7.2) for tasks whose behaviour did not change at all.
 
+**How a sampled guardrail RECEIVES its subject (issue #559).** This is the contract the pre-DAG gate
+enforces, and until #559 it was written down in exactly one place: an incidental line inside a code block
+in a stack-specific reference file. It belongs here, because a guardrail that does not honour it fails at
+`planPreflights` and halts the run before task one.
+
+`SampleVerifier` invokes the guardrail with the sample path **twice over**: as **`argv[0]`** and as the
+environment variable **`GR_SUBJECT`**. A guardrail is sample-aware only if it lets that override the target
+it would otherwise scan:
+
+```powershell
+$f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { "src/Guardrails.Core/Execution/TaskExecutor.cs" }
+```
+
+Three rules follow, and each has been paid for:
+
+- **`GR_SUBJECT` replaces the WHOLE subject list**, not one entry of it. A multi-subject guardrail handed a
+  sample must scan that one file and nothing else — otherwise the untouched repo satisfies (or breaks) the
+  check regardless of which half is under test.
+- **A guardrail that hardcodes its target scans the untouched repo for BOTH halves**, so both exit the same
+  way and the finding reads `ValidHalfFailed`. Measured on plan 31: *"Sample-pair verification FAILED — 11
+  finding(s) over 8 executed pair(s)."* Every committed pair was broken, in the same way, by an author
+  following the skill's own instructions.
+- **The extra-sample naming rule.** The verifier pairs by basename and keys on the SECOND extension being
+  exactly `.valid` or `.invalid`, so an additional case carries its qualifier AFTER the token:
+  `X.invalid-comment-mutation.cs` is skipped as an author-time extra, while `X.comment-mutation.invalid.cs`
+  parses as a lone `.invalid` half with base `X.comment-mutation` and is reported as `OrphanSample`. Both
+  spellings look equally reasonable; only one works. Plan 31 hit this three times.
+
+**Why an author following the skill exactly still produced broken pairs.** `plan-breakdown` Step 7.0d
+prescribed author-time verification as *"execute the guardrail against a hand-written VALID sample"* — which
+an author naturally does by STAGING the sample into the guardrail's real target path. That method works, it
+proves the clauses, and it never exercises the `GR_SUBJECT` path at all. **The prescribed verification and
+the enforced contract were different mechanisms, and the prescribed one passed while the enforced one
+failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one command, and the same
+`SampleVerifier` the pre-DAG gate runs.
+
 ---
 
 ## 2. `guardrails.json` (run configuration)

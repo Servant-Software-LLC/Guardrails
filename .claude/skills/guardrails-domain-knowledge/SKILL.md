@@ -332,6 +332,17 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   in a transcript, not an artifact in the plan folder, so there is nothing mechanical to read and a gate
   that looked rigorous here would certify nothing. Homed here; enforced by `plan-breakdown` (Step 7) and
   `guardrails-review` (section 2b).
+  <br>**How a sampled guardrail RECEIVES its subject (#559).** `SampleVerifier` hands the guardrail the
+  sample path as **`argv[0]`** AND as **`GR_SUBJECT`**, and a sampled guardrail must let that override the
+  target it would otherwise scan; for a MULTI-subject guardrail `GR_SUBJECT` replaces the WHOLE list, not
+  one entry. A guardrail that hardcodes its target scans the untouched repo for BOTH halves, so both exit
+  the same way and the gate reports `ValidHalfFailed` -- halting the run before task one. The extra-sample
+  naming rule is the second trap: the verifier keys on the SECOND extension being exactly
+  `.valid`/`.invalid`, so an extra case reads `X.invalid-<qualifier>.cs`, while
+  `X.<qualifier>.invalid.cs` parses as a lone half and reports `OrphanSample`. **Verify with
+  `guardrails samples verify <folder>`, never by staging the sample into the real target path** -- that
+  proves the clauses and never exercises this contract, which is how plan 31 committed EIGHT pairs that
+  were all broken the same way (11 findings, run halted at planPreflights). SSOT section 1.1.
   <br>**Committed sample pairs are VERIFIED at run time (plan 26).** Beyond the author's smoke-test, the
   harness executes `SampleVerifier` in two entry points:
   - **CLI verb `guardrails samples verify [folder]`** — a read-only command that walks every `tasks/<id>/samples/`
