@@ -31,6 +31,36 @@ public sealed class PermissionWallTracker
     private readonly List<string> _order = new();
 
     /// <summary>
+    /// Did the MOST RECENTLY observed attempt refuse anything at all? (#534)
+    ///
+    /// <para>
+    /// Both halt rules below are about a wall the agent <i>cannot get past</i>. Neither is about a wall it
+    /// has already got past — and the tracker had no way to tell the difference, because it only ever
+    /// accumulated history. Measured on run <c>2026-08-29T16-37-39Z-fc5d</c>, task
+    /// <c>08-record-visibility-surfaces-in-ssot</c>:
+    /// </para>
+    /// <code>
+    /// attempt 1  15 Bash calls,  0 refused   guardrail-failed (anchor mismatch)
+    /// attempt 2  12 Bash calls,  5 refused   guardrail-failed (anchor mismatch)
+    /// attempt 3   0 Bash calls,  0 refused   PERMISSION-DENIED
+    /// </code>
+    /// <para>
+    /// Attempt 3 used <c>Read</c> ×6, <c>Grep</c> ×2, <c>Write</c> ×1 — it had stopped reaching for the
+    /// refused command, re-read both targets, and emitted a well-formed root-level
+    /// <c>needsHarnessWrite</c> with corrected anchors. The wall fired on attempt 2's HISTORY, settled the
+    /// task <c>needs-human</c> with "no further retries", and the corrected fragment was never applied. The
+    /// mechanism designed to stop an agent burning attempts on an unclearable wall threw away the attempt
+    /// that had cleared it. Cost: $1.27 and a plan stalled at task 8 of 8.
+    /// </para>
+    /// <para>
+    /// So an attempt that refused NOTHING settles on its own merits. This does not weaken either rule: a
+    /// structural <c>.claude/</c> wall is detected on the attempt that hits it, and a repeated path halts
+    /// on the attempt that re-hits it — in both cases the current attempt is, by construction, not clean.
+    /// </para>
+    /// </summary>
+    private bool _lastAttemptRefusedSomething;
+
+    /// <summary>
     /// The number of attempts a NON-structural path must be refused on before it triggers an early
     /// halt (issue #86). Two = "refused again on the very next attempt" — the first repeat.
     /// </summary>
@@ -44,6 +74,10 @@ public sealed class PermissionWallTracker
     /// </summary>
     public void Observe(IReadOnlyList<string>? blockedWritePaths)
     {
+        // Set BEFORE the early return: "this attempt refused nothing" is the fact #534 turns on, and it is
+        // exactly the case the early return used to discard.
+        _lastAttemptRefusedSomething = false;
+
         if (blockedWritePaths is null || blockedWritePaths.Count == 0)
         {
             return;
@@ -56,6 +90,8 @@ public sealed class PermissionWallTracker
             {
                 continue;
             }
+
+            _lastAttemptRefusedSomething = true;
 
             if (_attemptsByPath.TryGetValue(path, out int count))
             {
@@ -77,6 +113,14 @@ public sealed class PermissionWallTracker
     /// </summary>
     public PermissionWallDecision ShouldHalt()
     {
+        // #534: an attempt that refused NOTHING is not standing at a wall, whatever its predecessors hit.
+        // Evaluating the accumulated history against a clean attempt is what killed a task that had already
+        // recovered — and discarded the deliverable it recovered with.
+        if (!_lastAttemptRefusedSomething)
+        {
+            return new PermissionWallDecision(Halt: false, StructuralPaths: [], RepeatedPaths: []);
+        }
+
         var structural = new List<string>();
         var repeated = new List<string>();
 
