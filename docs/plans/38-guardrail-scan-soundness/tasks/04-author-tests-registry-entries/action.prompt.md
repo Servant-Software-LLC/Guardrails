@@ -28,8 +28,7 @@
 ## Task
 
 Extend `tests/Guardrails.Core.Tests/BannedPatternRegistryTests.cs` (class
-**`BannedPatternRegistryTests`**, existing traits unchanged) with firing controls for four new GR2037
-entries that do not exist yet. Read `docs/plans/38-guardrail-scan-soundness.md` §7 for what each entry
+**`BannedPatternRegistryTests`**, existing traits unchanged) with firing controls for three new GR2037 entries that do not exist yet. Read `docs/plans/38-guardrail-scan-soundness.md` §7 for what each entry
 catches, and read the existing tests in this file first — follow their shape rather than inventing one.
 
 **Scope boundary (harness-enforced):** Write only to
@@ -66,8 +65,8 @@ Also **update `Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated`** so the 
 entries — `#73`, `#187a`, `#462`, `#608a`, `#608b`, `#561`. That test is the registry's
 deliberate gate on silent growth; raising it here, in the same change as the controls, is the point.
 
-All seven tests MUST fail on the current tree — the four entries do not exist yet, so every firing control
-finds no diagnostic and the curated-set assertion sees three entries where it now expects seven. A test
+All eight tests MUST fail on the current tree — the three entries do not exist yet, so every firing control
+finds no diagnostic and the curated-set assertion sees three entries where it now expects six. A test
 that passes today is not coupled to the entry it claims to pin.
 
 Do **not** author the `mustMatch` / `mustNotMatch` fixtures inside the JSON registry — those ship with

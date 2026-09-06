@@ -10,6 +10,7 @@
 # Measured baseline (#478): on the starting tree the creation index is GREATER than the first-use index
 #          (verified 2026-09-06 on master a3f3e977) - i.e. this clause is RED before the task runs.
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false   # it runs `& git show`; a non-zero native exit is DATA here
 
 $subject = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { 'docs/plans/35-event-vocabulary/tasks/04-author-tests-event-vocabulary/guardrails/02-tests-fail-on-stubs.ps1' }
 if (-not (Test-Path -LiteralPath $subject -PathType Leaf)) {
@@ -21,6 +22,16 @@ $problems = 0
 $raw     = Get-Content -Raw -LiteralPath $subject
 $creation = $raw.IndexOf('$problems = New-Object System.Collections.Generic.List[string]')
 $firstUse = $raw.IndexOf('$problems.Add(')
+
+# The cheapest edit is DUPLICATE, not MOVE: insert a copy above the loop and delete nothing. Both the
+# ordering check and the byte-equality check below pass - the latter strips ALL accumulator lines from
+# both sides, so 1 copy and 2 reduce identically - while the SECOND `New-Object` re-creates $problems
+# after the mustExecute loop has added to it, silently discarding the exempt-row findings. Require one.
+$copies = @([regex]::Matches($raw, [regex]::Escape('$problems = New-Object System.Collections.Generic.List[string]'))).Count
+if ($copies -gt 1) {
+    Write-Output "$subject declares the accumulator $copies times. A DUPLICATE is not a MOVE: the second New-Object re-creates `$problems after the mustExecute loop has added to it, so the exempt-row findings are silently discarded - the same defect this task exists to remove, one line lower. Move the line; do not copy it."
+    exit 1
+}
 
 if ($creation -lt 0) {
     Write-Output "PRECONDITION: no '`$problems = New-Object System.Collections.Generic.List[string]' line in $subject. The accumulator was renamed or restructured; this guardrail binds to that spelling, so reconcile the two."
@@ -42,7 +53,10 @@ try { $headCopy = & git show "HEAD:$subject" 2>$null | Out-String } catch { $hea
 if ($LASTEXITCODE -ne 0) { $headCopy = $null }
 
 if ([string]::IsNullOrWhiteSpace($headCopy)) {
-    Write-Output "NOTE: could not read HEAD:$subject via git, so the no-other-edits check is SKIPPED (the ordering check below still runs). This is expected when the file is newly added; it is not a pass for the rewrite case."
+    # D11: do NOT fail open. This is the strongest clause in the file; silently dropping it on any box
+    # where git resolution differs would leave only the ordering check, which a full rewrite satisfies.
+    Write-Output "PRECONDITION: could not read HEAD:$subject via git, so the no-other-edits check cannot run - and it is the only clause that distinguishes a one-line MOVE from a rewrite. This is a hard failure, not a skip: re-run where `git show` resolves, or the guardrail certifies far less than it claims."
+    exit 1
 }
 else {
     $strip = {

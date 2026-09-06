@@ -83,19 +83,31 @@ Each entry needs `id`, a rationale comment in the file house style, `badPattern`
 `EverySeedEntry_BadPatternMatchesAllMustMatch_AndNoMustNotMatch` compiles every `badPattern` and holds
 you to both fixture arrays, so a malformed entry cannot ship.
 
-**Three constraints that decide whether these entries are worth having:**
+**Four constraints that decide whether these entries are worth having:**
 
-1. **Key on the SHAPE, not on a token.** `#449` keyed on `Get-Content -Raw` is dodged by
-   `Select-String -Path`, `[IO.File]::ReadAllText` or `grep -q`; `#561` keyed on the two spellings
-   `blankKeepingNewlines` / `neutralizeBraces` catches only a copy-paste. Design 38 section 11 names
-   shipping the weaker version as the way this plan fails while looking finished. The authored test
-   `Entry449_Respelled_WholeFileRead_StillFires` exists to hold that line — it is not optional, and it
-   may not be satisfied by adding the respelling as one more literal alternative if a third respelling
-   would then walk through.
+1. **Key on the SHAPE, not on a token.** `#561` keyed on the two spellings `blankKeepingNewlines` /
+   `neutralizeBraces` catches only a copy-paste; key on the ORDER of the two replaces, whatever the
+   helpers are called. Design 38 section 11 names shipping the weaker version as the way this plan fails
+   while looking finished.
+
+   **There is deliberately no `#449` entry, and no test for one.** An earlier draft had both; an
+   independent review measured that the shape a `#449` entry must fire on is *also* the shape of the
+   doctrine's own canonical union guardrail (`examples/parallel-hello/.../01-whole-repo-greeting.ps1`, a
+   raw read feeding `-match '(?m)^<<<<<<<'` with no strip — which is CORRECT without one, because a
+   conflict marker inside a comment is still a conflict marker). Adding one reds
+   `AnchoredConflictMarker_IsClean_NoGr2037`, which task 04 may not edit. Design 38 section 5 records it.
+
 2. **Put a respelling of the BAD shape in `mustMatch`, not only good code in `mustNotMatch`.** A
    `mustNotMatch` array full of obviously-correct scripts proves nothing about whether the pattern
    generalizes.
-3. **`#608a` must NOT also demand `$PSNativeCommandUseErrorActionPreference = $false`.** A guardrail
+3. **`#608b` must NOT reject the `try { ... exit N } finally { ... }` cleanup idiom.** A guardrail that
+   creates a temp directory has to clean it up on the failure path too, so its last line is `}`, not an
+   `exit`. **Three of this plan's own guardrails are written that way**, including
+   `tasks/02/guardrails/04-shim-preserves-real-exit-codes.ps1`. The authored test
+   `Entry608b_TryFinallyCleanupIdiom_IsClean_NoGr2037` pins it: a `#608b` that reds that shape is the
+   false-RED half of exactly the family design 38 section 4.1a says this plan is closing, and it would
+   falsify section 3.4's "0 of 900" claim using this plan's own artifacts as the counterexample.
+4. **`#608a` must NOT also demand `$PSNativeCommandUseErrorActionPreference = $false`.** A guardrail
    that runs no native command does not need that line, and requiring it everywhere would make a
    correct script fail a lint — the false-RED half of the family this plan is closing (design 38
    section 4.1a).

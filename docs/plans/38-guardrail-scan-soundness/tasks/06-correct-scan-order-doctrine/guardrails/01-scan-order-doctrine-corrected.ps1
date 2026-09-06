@@ -61,21 +61,28 @@ foreach ($f in @($catalogue, $stack)) {
         continue
     }
 
-    $corrections = @([regex]::Matches($prose, [regex]::Escape($sentence)))
+    # Flatten ONCE and run BOTH match sets over the flattened text: the presence check and the 1500-char
+    # window share an index space, so flattening only one of them would misplace every window. The window
+    # therefore measures FLATTENED characters - slightly looser than source characters, stated rather than
+    # hidden. Reported line numbers are derived from the ORIGINAL prose so they still point somewhere real.
+    $flat = ConvertTo-Flat $prose
+    $corrections = @([regex]::Matches($flat, [regex]::Escape($sentence)))
     if ($corrections.Count -lt 1) {
         $problems.Add("[$f] does not carry the ordering rule at all. Every site that states the preprocessing order must carry '$sentence' verbatim (#561).")
         continue
     }
 
     $uncorrected = @()
-    foreach ($m in [regex]::Matches($prose, $imperative)) {
+    foreach ($m in [regex]::Matches($flat, $imperative)) {
         $near = $false
         foreach ($c in $corrections) {
             if ([Math]::Abs($c.Index - $m.Index) -le $window) { $near = $true; break }
         }
         if (-not $near) {
-            $line = 1 + @([regex]::Matches($prose.Substring(0, $m.Index), "`n")).Count
-            $uncorrected += "line ~$line ('$($m.Value)')"
+            # locate the same text in the ORIGINAL so the reported line points at something real
+            $orig = [regex]::Match($prose, [regex]::Escape($m.Value))
+            $line = if ($orig.Success) { 1 + @([regex]::Matches($prose.Substring(0, $orig.Index), "`n")).Count } else { 0 }
+            $uncorrected += $(if ($line -gt 0) { "line ~$line ('$($m.Value)')" } else { "'$($m.Value)'" })
         }
     }
     if ($uncorrected.Count -gt 0) {
@@ -87,6 +94,7 @@ foreach ($f in @($catalogue, $stack)) {
 # guardrail opening. NOT asserted: that "ErrorActionPreference = 'Stop'" appears at all - measured, it
 # already occurs in both, so that clause would certify nothing (#478).
 $generator = @($skill, $stack) | ForEach-Object { if (Test-Path -LiteralPath $_ -PathType Leaf) { Get-Prose $_ } } | Where-Object { $_ }
+$generator = @($generator | ForEach-Object { ConvertTo-Flat $_ })
 $adjacent = @($generator | Where-Object {
     $_ -match "(?s)ErrorActionPreference = 'Stop'.{0,200}PSNativeCommandUseErrorActionPreference"
 }).Count
@@ -97,10 +105,11 @@ if ($adjacent -lt 1) {
 # The #428 anti-pattern, bound to a pinned sentence rather than the bare word 'rendered'.
 $cprose = Get-Prose $catalogue
 if ($cprose) {
-    if ($cprose -notmatch [regex]::Escape('the rendered form is not the stored form')) {
+    $cflat = ConvertTo-Flat $cprose
+    if ($cflat -notmatch [regex]::Escape('the rendered form is not the stored form')) {
         $problems.Add("[$catalogue] carries no rendered-vs-stored anti-pattern (#428). The entry must state 'the rendered form is not the stored form' verbatim - the bare word 'rendered' appears in unrelated prose, so keying on it would certify nothing.")
     }
-    if ($cprose -notmatch 'ONE source line') {
+    if ($cflat -notmatch 'ONE source line') {
         $problems.Add("[$catalogue] states no one-source-line rule. The #428 anti-pattern's first remedy is 'prefer a distinctive fragment that sits on ONE source line'; without it the entry names a trap and offers no way out.")
     }
 }

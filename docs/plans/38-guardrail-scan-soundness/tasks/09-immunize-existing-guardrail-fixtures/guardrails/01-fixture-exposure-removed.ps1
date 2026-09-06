@@ -3,9 +3,12 @@
 #          breakage would surface at the TERMINAL GATE, where nothing can fix it (the #587 tripwire shape).
 #          Forbidden-present, so it is SUPPOSED to be red before this task and green after (#478 exempts
 #          this polarity from the measured-zero rule).
-# Measured baseline (2026-09-06, master a3f3e977): 3 files carry an ErrorActionPreference = 'Continue'
-#          fixture and 2 carry a guardrail fixture body that does not end on an exit. Both counts must
-#          reach 0. If your grep finds a DIFFERENT set, the tree moved - trust the grep.
+# Measured baseline (2026-09-06, master a3f3e977): exactly 3 files carry a guardrail fixture setting
+#          ErrorActionPreference = 'Continue', and that is the ONLY count this script checks. #608b has
+#          ZERO collateral - an earlier draft claimed two integration-test files, but those bodies are
+#          stub AGENT RUNNERS (they read stdin and emit {"type":"result"}), which the validator never
+#          scans; that clause was DELETED rather than kept green-on-arrival, and this comment no longer
+#          declares a second count it does not measure. If your grep finds a different set, trust it.
 $ErrorActionPreference = 'Stop'
 
 $problems = New-Object System.Collections.Generic.List[string]

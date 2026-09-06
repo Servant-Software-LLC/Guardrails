@@ -10,6 +10,7 @@
 # Measured baseline (#478): the shim does not exist on the starting tree, so the PRECONDITION below
 #          fires and this guardrail is RED before task 02 runs.
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false   # it runs `& pwsh` and EXPECTS non-zero; a non-zero native exit is DATA here
 
 $shim = 'src/Guardrails.Core/Execution/guardrail-shim.ps1'
 if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {

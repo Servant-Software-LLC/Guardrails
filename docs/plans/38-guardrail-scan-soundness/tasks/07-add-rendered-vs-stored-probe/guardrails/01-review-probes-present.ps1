@@ -72,7 +72,10 @@ foreach ($r in $required) {
 }
 
 # ... and in the file's own probe-bullet shape, so it reads as a probe rather than a stray sentence.
-$anchor = [regex]::Match($flatSection, [regex]::Escape('the rendered form is not the stored form'))
+# IgnoreCase deliberately: the clauses above use PowerShell -match, which is case-INSENSITIVE, so a
+# case-SENSITIVE anchor here would find nothing the moment the sentence opens a paragraph with a
+# capital - skipping the bullet check entirely AND printing the success line that claims it ran.
+$anchor = [regex]::Match($flatSection, [regex]::Escape('the rendered form is not the stored form'), 'IgnoreCase')
 if ($anchor.Success) {
     $before = $flatSection.Substring([Math]::Max(0, $anchor.Index - 800), [Math]::Min(800, $anchor.Index))
     # Both bullet shapes exist in this file - `- **Name** (#NNN):` and `- **Name (#NNN)**:` - so the
