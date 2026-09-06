@@ -134,7 +134,27 @@ live in `tasks/<id>/samples/`, **never** in `tasks/<id>/guardrails/`: the loader
 file in a guardrail folder with no extension allow-list, so a `01-check.valid.cs` sitting there would load as
 a SCRIPT guardrail, satisfy **GR2003** ("task has ≥ 1 guardrail") on its own, and be EXECUTED at run time.
 
-Two invariants govern the folder, and a future change must honour both:
+**`samples/` at THREE altitudes, not one (issue #509).** The folder is legal beside any guardrail folder:
+
+| location | for | status |
+|---|---|---|
+| `tasks/<id>/samples/` | a task guardrail's pair | documented since #468 |
+| `<wave>/samples/` | a wave entry/exit gate's pair | worked all along; documented since #509 |
+| `<plan>/samples/<check>/{valid,invalid}/` | a plan-root guardrail's pair — halves are WORKSPACE TREES, not files (§12.4) | loadable since #509 |
+
+The plan-root slot was a hard **GR2033** error before #509 (`samples` was absent from the loader's
+known plan-root folders), so a plan-terminal or wave-entry gate had literally nowhere to commit a pair —
+while `SampleVerifier` already walked that path and the pre-DAG gate already executed what it found. An
+author who did the discipline correctly had to throw the fixtures away.
+
+**The altitude is the point.** A task guardrail that cannot fail passes one task; a wave-entry or
+plan-terminal gate that cannot fail waves the whole wave — or the whole plan — through. Measured: a
+Stage 3 wave-2 breakdown built a pair for a wave-entry gate and caught a PowerShell array-unwrapping
+defect with it, under which four clauses of that gate could never fail, including the one its own header
+calls load-bearing. **The invalid half caught it; the valid half did not** — under an all-present tree
+everything passes either way.
+
+Two invariants govern the folder at every altitude, and a future change must honour both:
 
 - **`samples/` is not enumerated by the loader.** It is authored content for the review pass, not an
   executable slot. It has no counterpart to the four-folder parser (§4) and never contributes a guardrail,
