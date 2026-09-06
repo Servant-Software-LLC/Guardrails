@@ -134,13 +134,47 @@ public sealed class PromptDenialFailFastTests : IDisposable
         // the abort came from somewhere other than the denials — a false green this assertion refuses.
         Assert.True(File.Exists(childUp), $"the fake CLI never started (no marker at '{childUp}')");
 
-        TimeSpan sinceChildStarted = returnedAtUtc - File.GetLastWriteTimeUtc(childUp);
+        // #518 — ASSERT THE DECISION, NOT THE CLOCK. This was a wall-clock upper bound, retimed twice
+        // (60s, then 30s measured from a marker file to decouple process launch) and false-red BOTH times
+        // under ordinary concurrent load: 63s once, and 1m14s on a developer laptop running the suite
+        // beside other work. A wall-clock bound cannot tell a wrong behaviour from a busy runner, and
+        // every retiming is the same move again — while the tension it sits in is unresolvable, because a
+        // bound low enough to catch a wait-it-out is low enough to lose a loaded box.
+        //
+        // The actual postcondition is not "fast". It is THE CHILD IS DEAD. That is strictly stronger than
+        // any clock: a kill taking 63s under load is still a kill, and — the hole no clock closes — a
+        // runner that reports the abort promptly while LEAKING the child passes every timing bound ever
+        // written here and fails this. The fake stamps its own PID as its first statement, so the process
+        // identity is the child's own claim rather than something inferred from the harness.
+        //
+        // The short poll below is not a re-introduced budget on the harness's behaviour: the kill has
+        // already happened by the time RunAsync returns, and this waits only for the OS to finish reaping
+        // a process that is on its way out. A child that is genuinely leaked never disappears, so the wait
+        // is bounded by observation, not by a guess about machine speed.
         Assert.True(
-            sinceChildStarted < TimeSpan.FromSeconds(30),
-            "the runner must kill the child, not wait it out " +
-            $"(since the child started {sinceChildStarted}; total including launch {stopwatch.Elapsed})");
+            int.TryParse(File.ReadAllText(childUp).Trim(), out int childPid) && childPid > 0,
+            $"the fake CLI did not stamp a usable PID at '{childUp}' (read '{File.ReadAllText(childUp)}')");
 
-        // ... and the abort, not the invocation-timeout backstop, is what ended it.
+        Assert.True(
+            await ProcessIsGoneAsync(childPid),
+            $"the runner returned the #452 abort but the child (pid {childPid}) is STILL RUNNING — it was " +
+            $"leaked, not killed (total elapsed {stopwatch.Elapsed}, which no timing bound would have caught)");
+
+        // ... and the ABORT, not the invocation-timeout backstop, is what ended it.
+        //
+        // KEPT DELIBERATELY, and the reason is worth recording because removing it was tried and was
+        // wrong. #518 asks for decision assertions over wall-clock bounds, and the liveness check above
+        // is one — but it does NOT subsume this. Measured: with `ProcessRunner.KillTree`'s kill removed,
+        // so the child is leaked and only the 2-minute backstop ends it, the liveness check STILL PASSES
+        // (the child is dead by the time RunAsync returns — just 10 minutes later), and so does the
+        // summary assertion, because the summary reads "aborted after 3 …" on both paths. `PromptResult`
+        // carries no mechanism discriminator, so which mechanism ended the child is observable ONLY as
+        // elapsed time, and this line is the one thing that catches that mutant.
+        //
+        // It is also not the shape #518 is about. The bound removed above was 30s against a healthy ~1s
+        // — ~24x headroom, lost twice under ordinary load (63s, then 1m14s). This one is 2 MINUTES
+        // against that same ~1s, and the 1m14s event passed it comfortably. A bound whose two sides are
+        // two orders of magnitude apart is a backstop; one whose sides are within 24x is a race.
         Assert.True(
             stopwatch.Elapsed < InvocationTimeout,
             $"the {InvocationTimeout} invocation-timeout backstop ended the child, not the #452 abort " +
@@ -195,6 +229,42 @@ public sealed class PromptDenialFailFastTests : IDisposable
     /// <paramref name="startedMarkerPath"/> as its first statement so the assertion can start its clock at
     /// "the child is up" rather than at "the harness asked the OS for a process" (see the test).
     /// </summary>
+    /// <summary>
+    /// Whether <paramref name="pid"/> is gone, allowing a bounded moment for the OS to reap a process the
+    /// runner has already killed. Polls rather than sleeping a fixed span, so the healthy path costs one
+    /// check; a genuinely leaked child never disappears and this returns false (#518).
+    /// </summary>
+    private static async Task<bool> ProcessIsGoneAsync(int pid)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (true)
+        {
+            try
+            {
+                using System.Diagnostics.Process live = System.Diagnostics.Process.GetProcessById(pid);
+                if (live.HasExited)
+                {
+                    return true;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return true; // no such process — the normal, already-reaped case
+            }
+            catch (InvalidOperationException)
+            {
+                return true; // raced with reaping
+            }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                return false;
+            }
+
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+    }
+
     private string WriteDenyingCli(string startedMarkerPath) =>
         WriteFakeCli("deny-hang", [DenialLine, DenialLine, DenialLine], sleepSeconds: 600, tail: null,
             startedMarkerPath: startedMarkerPath);
@@ -219,7 +289,7 @@ public sealed class PromptDenialFailFastTests : IDisposable
                 // FIRST statement, and deliberately before the stdin read: the marker's mtime is the
                 // moment the child was genuinely running, which is where the elapsed budget starts.
                 ps1.Append(
-                    $"[System.IO.File]::WriteAllText('{PowerShellQuoted(startedMarkerPath)}', 'up')\r\n");
+                    $"[System.IO.File]::WriteAllText('{PowerShellQuoted(startedMarkerPath)}', $PID)\r\n");
             }
 
             ps1.Append("$null = [Console]::In.ReadToEnd()\r\n");
@@ -250,7 +320,7 @@ public sealed class PromptDenialFailFastTests : IDisposable
         sh.Append("#!/usr/bin/env bash\n");
         if (startedMarkerPath is not null)
         {
-            sh.Append($"printf 'up' > '{ShellQuoted(startedMarkerPath)}'\n");
+            sh.Append($"printf '%s' \"$$\" > '{ShellQuoted(startedMarkerPath)}'\n");
         }
 
         sh.Append("cat > /dev/null\n");

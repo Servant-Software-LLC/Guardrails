@@ -66,6 +66,18 @@ public static class ValidateCommand
 
         PlanProbe.PrintDiagnostics(diagnostics, io.Out);
 
+        // Issue #460: loading errors suppress the semantic half entirely, and the check-set banner below
+        // names the WHOLE set. Without this line the reader is told which checks exist and shown a report
+        // half of them never contributed to - the "recorded but not true" shape, one layer up from the
+        // guardrails it exists to police. Say it BEFORE the banner so the banner is read in its light.
+        if (!result.SemanticValidationRan)
+        {
+            io.Out.WriteLine(
+                "NOTE: semantic validation did NOT run - the loading errors above suppressed it, because a "
+                + "half-loaded model produces cascading diagnostics an author cannot act on. Fix them and "
+                + "re-run: there may be more problems this pass could not see.");
+        }
+
         // The check set is printed on EVERY run, immediately above the verdict it scopes — a clean
         // result is only as good as the checks that produced it, and before #564 nothing said what
         // those were. It sits BEFORE the verdict so the verdict stays the last line, which is what

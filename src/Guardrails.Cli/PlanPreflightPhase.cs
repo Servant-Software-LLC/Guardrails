@@ -224,7 +224,26 @@ public static class PlanPreflightPhase
 
         if (result.Passed)
         {
-            // Nothing to verify, or nothing wrong: no journal section, no console line, no marker touched.
+            // Nothing to verify, or nothing wrong: no journal section, no console line — and, on a plan
+            // that has never failed here, no marker touched.
+            //
+            // Issue #623: the ONE thing this path must not leave alone is a `plan-preflight-failed`
+            // marker written by a PREVIOUS evaluation. The operator's loop is "gate halts → fix the
+            // guardrail → re-run", and before this clause the repaired run wrote nothing, so run.json
+            // kept reporting a pre-DAG failure for a run that passed the pre-DAG phase. It is worst on a
+            // plan declaring no <plan>/preflights/ folder — the reported shape — because the phase then
+            // returns at the Count == 0 short-circuit below and NOTHING downstream corrects the record.
+            //
+            // The marker is DROPPED rather than rewritten to "passed": SSOT §7 is additive, and a plan
+            // with no preflights/ folder must carry no section at all rather than a vacuous passed one.
+            // A plan that DOES declare checks gets a fresh, honest marker from the evaluation below —
+            // which now runs, because clearing the stale failure also clears the skip it was blocking.
+            if (journal.Document.PlanPreflights?.Status == PlanPhaseStatus.PlanPreflightFailed)
+            {
+                PlanPhaseJournalWriter.Update(
+                    plan.PlanDirectory, document => document with { PlanPreflights = null });
+            }
+
             return true;
         }
 

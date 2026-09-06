@@ -23,6 +23,21 @@ public static class PlanProbe
 
         public required IReadOnlyList<Diagnostic> Diagnostics { get; init; }
         public bool HasErrors => Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
+
+        /// <summary>
+        /// Whether the SEMANTIC half (<see cref="PlanValidator"/>) actually ran (issue #460).
+        /// <para>
+        /// Loading and validation are two check sets, and loading errors suppress the second entirely.
+        /// Before this field the caller could not tell a report produced by BOTH from one produced by the
+        /// loader alone, so <c>validate</c> printed its full check-set banner over half a verdict and a
+        /// reader took the usual meaning: these are the problems. There may be more.
+        /// </para>
+        /// <para>
+        /// True when the plan carries no loading errors — including the ordinary healthy case, where it is
+        /// simply "yes, everything ran". False ONLY when loading errors suppressed the semantic pass.
+        /// </para>
+        /// </summary>
+        public bool SemanticValidationRan { get; init; } = true;
     }
 
     /// <summary>
@@ -80,14 +95,25 @@ public static class PlanProbe
 
         var diagnostics = new List<Diagnostic>(loadResult.Diagnostics);
 
-        // Only run semantic validation if loading produced a model and had no fatal errors.
-        if (loadResult.Plan is not null && !loadResult.HasErrors)
+        // Only run semantic validation if loading produced a model and had no fatal errors. Merging the
+        // two sets across this boundary is the better product outcome and is what #460 asks for
+        // eventually, but it is NOT free: a block whose `routing` failed to parse comes back with an
+        // empty `tiers` list, and a validator run over it would emit a spurious "unservable tier"
+        // (GR2048) that the author cannot act on. Cascading false diagnostics is the failure mode this
+        // whole cluster is about, so the boundary stays and the REPORT stops implying it is not there.
+        bool semanticRan = loadResult.Plan is not null && !loadResult.HasErrors;
+        if (semanticRan)
         {
             var validator = new PlanValidator();
-            diagnostics.AddRange(validator.Validate(loadResult.Plan));
+            diagnostics.AddRange(validator.Validate(loadResult.Plan!));
         }
 
-        return new Result { Plan = loadResult.Plan, Diagnostics = diagnostics };
+        return new Result
+        {
+            Plan = loadResult.Plan,
+            Diagnostics = diagnostics,
+            SemanticValidationRan = semanticRan
+        };
     }
 
     /// <summary>Print diagnostics in a stable, scannable format to <paramref name="output"/>.</summary>
