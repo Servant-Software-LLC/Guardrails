@@ -1089,13 +1089,28 @@ public sealed class WebhookEventSinkTests
         // check above owns the contract, and this owns the decision.
         Assert.Equal(WebhookEventSink.PumpShutdownGraceCancelled, sink.LastPumpGraceUsed);
 
-        // A deliberately LOOSE wall-clock sanity bound. It is here to catch a catastrophic regression (the
-        // unscaled 2s grace plus the 500ms terminal attempt was measured at 2510ms of BUDGET alone), not to
-        // police the budget - that is the arithmetic assertion's job. It must stay far enough above the
-        // budget sum to survive a busy runner.
-        Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(8),
-            $"a cancelled teardown took {stopwatch.Elapsed}, which is far beyond any plausible scheduling overhead on the 750ms of cancelled budget (#603)");
+        // THE WALL-CLOCK BOUND IS GONE, and its removal is the point rather than a concession.
+        //
+        // It was a "deliberately loose sanity bound" at 8s, meant to catch a catastrophic regression: the
+        // unscaled 2s grace plus the 500ms terminal attempt, measured at 2510ms of BUDGET alone. It failed
+        // on windows CI at 9.527s — on a job where the Core suite took 4m20s and Integration 10m47s, i.e.
+        // a runner so contended that 9s of scheduling overhead on a 750ms budget is unremarkable.
+        //
+        // It could not have been set correctly. To catch the 2510ms regression it has to sit near 2510ms;
+        // to survive that runner it has to sit above 9.5s. There is no value that is both, so the bound was
+        // a RACE wearing a backstop's name — 8s against a 750ms budget is ~3x the catastrophe it guards, and
+        // the #518 rule is that a backstop's two sides are ORDERS OF MAGNITUDE apart.
+        //
+        // Nothing is lost, because the regression it names is already caught deterministically:
+        //   - "the budget is too big"      the arithmetic assertion above, from CONSTANTS. 2510ms of
+        //                                  budget fails `cancelledTeardownBudget < 2s` outright.
+        //   - "the wrong budget was used"  Assert.Equal on LastPumpGraceUsed, immediately above.
+        //
+        // THE RESIDUAL, stated rather than papered over: neither assertion catches a grace that is selected
+        // correctly and then not HONOURED — 250ms chosen, 2s actually waited. Only a clock sees that, and no
+        // clock can see it on a runner where the noise floor is 9s. Closing it needs the sink to record the
+        // grace it actually SPENT, measured around that one wait rather than around the whole teardown; that
+        // is a production change and belongs to whoever wants the guarantee, not to this test.
 
         // Positive control: the terminal attempt was actually SPENT, not skipped. Without this the
         // assertion above could be satisfied by a teardown that gave up on the guarantee the whole
