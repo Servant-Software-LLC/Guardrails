@@ -164,21 +164,68 @@ public sealed class BannedPatternRegistryTests : IDisposable
             "the backtracking probe must contain no failure-detail token — otherwise the match " +
             "short-circuits and the timing proves nothing about exhausting the search space.");
 
-        Assert.True(stopwatch.Elapsed < RedosBudget,
-            $"#462's badPattern took {stopwatch.Elapsed.TotalMilliseconds:F0} ms on a " +
-            $"{adversarial.Length:N0}-char adversarial guardrail script — the budget is " +
-            $"{RedosBudget.TotalMilliseconds:F0} ms against a {matcher.MatchTimeout.TotalSeconds:F0}s " +
-            "production match timeout (measured ~70 ms on a dev box, so this is a 10x+ regression, not " +
-            "a slow agent). Someone has given the pattern an ambiguous quantifier — two alternatives that " +
-            "can both match the same position, or an unbounded window where {0,4000} was.");
+        // #518 — ASSERT THE SHAPE OF THE COST CURVE, NOT A STOPWATCH READING.
+        //
+        // This was `elapsed < 1000ms`. Healthy is ~70 ms, so the bound carried ~14x headroom — which the
+        // #518 rule classes as a RACE, not a backstop (a backstop's two sides are orders of magnitude
+        // apart). It duly false-red under load while passing at 335 ms isolated on the same tree.
+        //
+        // The load-immune property is the one this test's own header already MEASURED: "doubling the
+        // probe doubles the time, at every size from 4 KB to 260 KB". Linear. Catastrophic backtracking
+        // is superlinear by definition — that is what makes it catastrophic — so the RATIO between two
+        // sizes timed in the SAME run is the real signal, and a busy box inflates both measurements
+        // together and cancels out. A stopwatch reading cannot separate "the pattern got ambiguous" from
+        // "this runner is busy"; a ratio can.
+        //
+        // The hard catastrophe detector is unchanged and load-immune already: RegexMatchTimeoutException
+        // against the production 2s MatchTimeout, asserted by the catch above. This adds the early
+        // warning that the absolute bound was reaching for, without inheriting its fragility.
+        string doubled = BacktrackingProbeScript(candidates: 300);
+        TimeSpan singleCost = TimeMatch(matcher, adversarial);
+        TimeSpan doubleCost = TimeMatch(matcher, doubled);
+
+        // A floor, because a RATIO of two sub-millisecond readings is noise, not evidence. Below it the
+        // cost is so far inside the timeout that only the exception above is meaningful.
+        if (doubleCost > RatioNoiseFloor)
+        {
+            double ratio = doubleCost.TotalMilliseconds / Math.Max(singleCost.TotalMilliseconds, 0.001);
+            Assert.True(
+                ratio < LinearRatioCeiling,
+                $"#462's badPattern cost {ratio:F1}x when the candidate count doubled " +
+                $"({singleCost.TotalMilliseconds:F0} ms -> {doubleCost.TotalMilliseconds:F0} ms). Linear is " +
+                $"~2x and the ceiling is {LinearRatioCeiling}x; a superlinear curve means someone has given " +
+                "the pattern an ambiguous quantifier — two alternatives that can both match the same " +
+                "position, or an unbounded window where {0,4000} was. This is a RATIO measured in this same " +
+                "run, so a loaded runner inflates both readings and cancels out.");
+        }
     }
 
     /// <summary>
-    /// The budget for the #462 backtracking probe: half the shipped 2s match timeout, and ~14x the
-    /// measured dev-box cost (~70 ms), so it is a catastrophe detector rather than a microbenchmark —
-    /// loud on an ambiguity regression, quiet on a loaded 3-OS CI agent.
+    /// Below this, the ratio check is skipped: dividing two sub-millisecond readings measures scheduler
+    /// noise, not the cost curve. At that speed the pattern is so far inside the 2s production timeout
+    /// that the <see cref="RegexMatchTimeoutException"/> path is the only meaningful signal (#518).
     /// </summary>
-    private static readonly TimeSpan RedosBudget = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan RatioNoiseFloor = TimeSpan.FromMilliseconds(20);
+
+    /// <summary>
+    /// The ceiling on cost growth when the candidate count DOUBLES. Linear is ~2x — the measured property
+    /// this probe's header records at every size from 4 KB to 260 KB. Six leaves 3x of slack for JIT,
+    /// GC and a contended scheduler while still being far below the growth an ambiguous quantifier
+    /// produces, which is superlinear and runs away rather than drifting (#518).
+    /// </summary>
+    private const double LinearRatioCeiling = 6.0;
+
+    /// <summary>
+    /// Times one match on the PRODUCTION matcher, letting a genuine catastrophe surface as the timeout
+    /// exception rather than as a number (#518).
+    /// </summary>
+    private static TimeSpan TimeMatch(Regex matcher, string subject)
+    {
+        var sw = Stopwatch.StartNew();
+        matcher.IsMatch(subject);
+        sw.Stop();
+        return sw.Elapsed;
+    }
 
     /// <summary>
     /// The adversarial input for the backtracking check — aimed squarely at #462's measured worst case,
@@ -190,11 +237,11 @@ public sealed class BannedPatternRegistryTests : IDisposable
     /// reach the flag test and fail it. Nothing anywhere contains a failure-detail token, so the overall
     /// match can only fail after the whole space is exhausted — no early exit inflates the result.
     /// </summary>
-    private static string BacktrackingProbeScript()
+    private static string BacktrackingProbeScript(int candidates = 150)
     {
         var script = new StringBuilder();
         script.Append("$log = & dotnet test tests/Big.Tests/Big.Tests.csproj `\n");
-        for (int i = 0; i < 150; i++)
+        for (int i = 0; i < candidates; i++)
         {
             script.Append("    --filter \"Category=Slice").Append(i)
                   .Append("\" -v quiet -v normal -verbosity -vq -v q --nologo `\n");

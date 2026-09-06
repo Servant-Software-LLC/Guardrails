@@ -32,6 +32,13 @@ namespace Guardrails.Integration.Tests.RunEvents;
 [Collection(LiveDisplayCollection.Name)]
 public sealed class AttachReplayTests
 {
+    /// <summary>
+    /// The ceiling for "attach returned rather than hanging" (#518). Deliberately far wider than any
+    /// plausible replay of a one-task run: it exists to fail a `tail -f`-shaped implementation that waits
+    /// for lines that will never arrive, never to discriminate a fast box from a busy one.
+    /// </summary>
+    private static readonly TimeSpan AttachHangCatcher = TimeSpan.FromMinutes(2);
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // CLI plumbing — the SAME in-process pattern LogsCliTests / CliExitCodeTests use.
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -249,9 +256,16 @@ public sealed class AttachReplayTests
         // return on its own; it must not behave like `tail -f` and wait for lines that will never
         // arrive. This is exactly what makes an overnight escalation diagnosable: an operator does not
         // have to guess how long to wait, or send Ctrl-C, before the replay is done.
+        // A GENEROUS HANG-CATCHER, and ONLY that (#518). "Returns on its own rather than tailing forever"
+        // has no non-temporal observable — termination is only visible as time — so this stays a clock.
+        // What changed is its WIDTH: at 10s over a healthy ~1s replay it was a race, and the #518 rule is
+        // that a bound whose two sides are within ~10x measures the machine, while one orders of magnitude
+        // apart measures the code. A hang is unbounded, so any finite ceiling catches it and a wide one
+        // costs nothing — WhenAny returns the instant attach does. It exists to fail a replay that waits
+        // for lines that will never arrive, never to time how fast the box is.
         Task<(int ExitCode, string Output, string Error)> attaching = InvokeAsync("attach", plan.PlanDir);
         Task completed = await Task.WhenAny(
-            attaching, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            attaching, Task.Delay(AttachHangCatcher, TestContext.Current.CancellationToken));
         Assert.Same(attaching, completed);
 
         Assert.Equal(ExitCodes.Success, (await attaching).ExitCode);
