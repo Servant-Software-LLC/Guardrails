@@ -388,6 +388,15 @@ internal sealed class GuardrailRunner
     /// </summary>
     private const int ShimAbortExitCode = 97;
 
+    /// <summary>
+    /// The reason reported for a guardrail the shim caught mid-unwind. Named rather than inlined so a
+    /// test can assert the DECISION exactly, instead of matching a substring of the sentence — a
+    /// `Contains("abort")` goes on passing against any message carrying the word, including one that
+    /// no longer means an abort happened.
+    /// </summary>
+    internal const string AbortedReason =
+        "the guardrail aborted before reaching a verdict -- exit 0 would have been a false PASS";
+
     private static GuardrailResult ToGuardrailResult(GuardrailDefinition guardrail, ProcessResult result)
     {
         if (result.Succeeded)
@@ -405,7 +414,7 @@ internal sealed class GuardrailRunner
             {
                 Name = guardrail.Name,
                 Passed = false,
-                Reason = "the guardrail aborted before reaching a verdict -- exit 0 would have been a false PASS",
+                Reason = AbortedReason,
                 Output = result.StandardError
             };
         }

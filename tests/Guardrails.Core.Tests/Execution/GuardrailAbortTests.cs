@@ -15,7 +15,7 @@ namespace Guardrails.Core.Tests.Execution;
 ///
 /// <para><b>§3.3's two-sided pin.</b> <see cref="AbortedGuardrail_IsNotAPass"/>,
 /// <see cref="AbortedGuardrail_ReasonNamesTheAbort_NotTheFirstStdoutLine"/> and
-/// <see cref="AbortedGuardrail_SurfacesTheInterpreterErrorText"/> are TDD red on today's tree: nothing
+/// <see cref="AbortedGuardrail_SurfacesTheDiagnosisInItsOutput"/> are TDD red on today's tree: nothing
 /// distinguishes an abort from a clean exit 0, so <c>Passed</c> reads true and the reason/output fields a
 /// future fix populates do not exist yet. <see cref="ExitOneGuardrail_StillFails"/>,
 /// <see cref="ExitZeroGuardrail_StillPasses"/> and
@@ -27,6 +27,12 @@ namespace Guardrails.Core.Tests.Execution;
 [Trait("Category", "ScanSoundness")]
 public sealed class GuardrailAbortTests : IDisposable
 {
+    /// <summary>
+    /// The MOTIVATING shape: a typo'd variable, so the method call lands on <c>$null</c> and the
+    /// interpreter unwinds without ever reaching the <c>exit 0</c> two lines below it. This is the defect
+    /// #608 was filed for, and it is used by the one row whose whole claim is <b>not a pass</b> — a claim
+    /// any abnormal unwind satisfies, however the interpreter chooses to die.
+    /// </summary>
     private const string AbortScriptWithoutStdout = """
         $ErrorActionPreference = 'Continue'
         try {
@@ -36,11 +42,35 @@ public sealed class GuardrailAbortTests : IDisposable
         }
         """;
 
+    /// <summary>
+    /// The same unwind, raised by an explicit <c>throw</c> — deliberately, and this is the load-bearing
+    /// choice in this file.
+    ///
+    /// <para>
+    /// These two rows assert what the SHIM decided (exit 97) and what the harness reported because of it.
+    /// Reaching that decision requires the shim's <c>catch</c> to run, which requires the interpreter to
+    /// raise a CATCHABLE TERMINATING error — and a method call on <c>$null</c> is not reliably one.
+    /// Measured on CI (2026-09-06, macos-latest, run 34052570270): pwsh answered the null-method-call with
+    /// its own engine banner, <i>"An error has occurred that was not properly handled. Additional
+    /// information is unavailable."</i>, produced no stdout at all, and never entered the shim's catch —
+    /// so the run took the ordinary failure path and both rows failed on a string neither of them is
+    /// really about. The same tests were green on the same OS one run earlier, which is the tell: the
+    /// trigger is nondeterministic there, not the harness.
+    /// </para>
+    ///
+    /// <para>
+    /// A bare <c>throw</c> is terminating on every platform by definition, so the abort path is reached
+    /// deterministically and the assertions can be about the harness's decision instead of about an
+    /// interpreter's prose. Nothing is weakened: what #608 must prove is that an unwind WITHOUT a verdict
+    /// is not a pass, and a <c>throw</c> is exactly such an unwind. The realistic typo shape stays in
+    /// <see cref="AbortScriptWithoutStdout"/>, where it does not have to survive being quoted.
+    /// </para>
+    /// </summary>
     private const string AbortScriptWithStdout = """
         $ErrorActionPreference = 'Continue'
         try {
             Write-Output 'guardrail starting'
-            $problems.Add("this throws: the list does not exist yet")
+            throw 'the guardrail hit an engine error and never reached a verdict'
             exit 0
         } finally {
         }
@@ -96,19 +126,39 @@ public sealed class GuardrailAbortTests : IDisposable
         GuardrailResult result = await RunGuardrailAsync("02-abort-reason", AbortScriptWithStdout);
 
         Assert.False(result.Passed);
+
+        // The DECISION, not a substring of it: the harness classified this as an abort rather than
+        // reading a verdict off the guardrail's own first line of chatter. Pinning the exact reason means
+        // a future edit that quietly turns the abort back into an ordinary failure fails here, where a
+        // `Contains("abort")` would have gone on passing against any message with the word in it.
+        Assert.Equal(GuardrailRunner.AbortedReason, result.Reason);
         Assert.NotEqual("guardrail starting", result.Reason);
-        Assert.NotNull(result.Reason);
-        Assert.Contains("abort", result.Reason!, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The abort's OUTPUT has to carry a diagnosis to the retry-feedback tail (#179), or a halted agent is
+    /// told only that something went wrong. Two things are asserted, and both are contracts this repo
+    /// owns: the shim's own <c>GUARDRAILS-ABORT</c> marker, and the interpreter's message for THIS unwind
+    /// carried through rather than swallowed.
+    ///
+    /// <para>
+    /// What is deliberately NOT asserted is the interpreter's own wording. This row used to require the
+    /// phrase <c>"null-valued expression"</c> — pwsh's English text for a method call on <c>$null</c>,
+    /// which no platform guarantees and which macOS did not produce (see
+    /// <see cref="AbortScriptWithStdout"/>). A test that fails when an interpreter rewords an error is
+    /// measuring the interpreter, not the harness.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task AbortedGuardrail_SurfacesTheInterpreterErrorText()
+    public async Task AbortedGuardrail_SurfacesTheDiagnosisInItsOutput()
     {
         GuardrailResult result = await RunGuardrailAsync("03-abort-output", AbortScriptWithStdout);
 
         Assert.False(result.Passed);
         Assert.NotNull(result.Output);
-        Assert.Contains("null-valued expression", result.Output!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("GUARDRAILS-ABORT", result.Output!, StringComparison.Ordinal);
+        Assert.Contains(
+            "never reached a verdict", result.Output!, StringComparison.OrdinalIgnoreCase);
     }
 
     // --- the three regression guards: GREEN today, and must stay green ------------------------------
