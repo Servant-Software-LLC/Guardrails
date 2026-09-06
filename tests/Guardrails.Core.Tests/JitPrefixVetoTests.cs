@@ -337,7 +337,7 @@ public sealed class JitPrefixVetoTests
     /// <c>Get-Content</c> form, because that is the shape GR2060's extractor was built to read.
     /// </summary>
     private static readonly string GateBody =
-        "$ErrorActionPreference = 'Continue'\n"
+        "$ErrorActionPreference = 'Stop'\n"
         + "$failures = @()\n"
         + $"$readme = if (Test-Path '{RequiredPath}') {{ Get-Content -Raw '{RequiredPath}' }} else {{ \"\" }}\n"
         + $"if ($readme -cnotmatch '{Witness}') {{\n"
