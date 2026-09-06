@@ -353,28 +353,30 @@ public sealed class ProducerCoverageTests : IDisposable
         repo.CommitFile("docs/tracked-witness.md", "nothing to see here\n", "add a tracked file");
         repo.WriteWorkingFile("docs/untracked-witness.md", "nothing to see here\n");
 
-        var probe = new GitLsFilesProbe(FakeExecutableProbe.With("git"));
+        // #593: the repo is a CONSTRUCTOR ARGUMENT, not a process-global environment variable. This used
+        // to be wrapped in WithGitPointedAt, which set GIT_DIR/GIT_WORK_TREE for the whole process — so any
+        // git child started by a class running in parallel inherited the pointer. That burned the v1.15.0
+        // release: a merge test on windows-latest failed with "fatal: Could not parse object", because git
+        // was resolving a real sha against THIS repo.
+        var probe = new GitLsFilesProbe(FakeExecutableProbe.With("git"), repo.RepoPath);
 
         string trackedSubject = SyntheticPlan(repo.RepoPath, "tracked-subject", "docs/tracked-witness.md");
         string untrackedSubject = SyntheticPlan(repo.RepoPath, "untracked-subject", "docs/untracked-witness.md");
 
         string[] candidates = ["docs/tracked-witness.md", "docs/untracked-witness.md"];
 
-        WithGitPointedAt(repo.RepoPath, () =>
-        {
-            IReadOnlyDictionary<string, bool?> answers = probe.AreTracked(candidates);
+        IReadOnlyDictionary<string, bool?> answers = probe.AreTracked(candidates);
 
-            Assert.True(answers["docs/tracked-witness.md"]);
-            Assert.False(answers["docs/untracked-witness.md"]);
+        Assert.True(answers["docs/tracked-witness.md"]);
+        Assert.False(answers["docs/untracked-witness.md"]);
 
-            // The tracked control: everything else about the two plans is identical, so the verdict below
-            // can only be attributable to what git said about the path.
-            Assert.Single(Findings(trackedSubject, probe));
+        // The tracked control: everything else about the two plans is identical, so the verdict below
+        // can only be attributable to what git said about the path.
+        Assert.Single(Findings(trackedSubject, probe));
 
-            // Condition 6: an untracked file is something no author would put in a writeScope — a generated
-            // artifact, a build output — and must never produce a finding.
-            Assert.Empty(Findings(untrackedSubject, probe));
-        });
+        // Condition 6: an untracked file is something no author would put in a writeScope — a generated
+        // artifact, a build output — and must never produce a finding.
+        Assert.Empty(Findings(untrackedSubject, probe));
     }
 
     // ══ 8. Condition 6 — not-known must never be read as "untracked" ═════════════════════════════════
@@ -822,34 +824,6 @@ public sealed class ProducerCoverageTests : IDisposable
             return (-1, string.Empty, e.Message);
         }
     }
-
-    /// <summary>
-    /// Point every git child process at <paramref name="repoRoot"/> for the duration of
-    /// <paramref name="body"/>. <c>GIT_DIR</c>/<c>GIT_WORK_TREE</c> rather than the process working
-    /// directory: the CWD is global state that other tests read, these two are read by nothing else in this
-    /// suite, and the environment write is still process-wide so it is gated and restored regardless.
-    /// </summary>
-    private static void WithGitPointedAt(string repoRoot, Action body)
-    {
-        lock (GitEnvironmentGate)
-        {
-            string? gitDir = Environment.GetEnvironmentVariable("GIT_DIR");
-            string? workTree = Environment.GetEnvironmentVariable("GIT_WORK_TREE");
-            try
-            {
-                Environment.SetEnvironmentVariable("GIT_DIR", Path.Combine(repoRoot, ".git"));
-                Environment.SetEnvironmentVariable("GIT_WORK_TREE", repoRoot);
-                body();
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable("GIT_DIR", gitDir);
-                Environment.SetEnvironmentVariable("GIT_WORK_TREE", workTree);
-            }
-        }
-    }
-
-    private static readonly object GitEnvironmentGate = new();
 
     /// <summary>
     /// A throwaway single-use git repository in a temp directory, mirroring the one duplicated across

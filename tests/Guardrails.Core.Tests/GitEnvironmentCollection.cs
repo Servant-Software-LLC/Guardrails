@@ -10,24 +10,29 @@ namespace Guardrails.Core.Tests;
 /// throwaway merge repo. The object was perfectly real; git was simply looking in the wrong
 /// repository. The version number was burned for a defect that had nothing to do with the release.</para>
 ///
-/// <para><b>The mechanism.</b> <c>ProducerCoverageTests.WithGitPointedAt</c> points the production
-/// <see cref="Guardrails.Core.Loading.GitLsFilesProbe"/> at a temp repo the only way that probe can be
-/// pointed — by setting <c>GIT_DIR</c> and <c>GIT_WORK_TREE</c>. Those are set with
+/// <para><b>The mechanism, which is now GONE (#593).</b> <c>ProducerCoverageTests.WithGitPointedAt</c>
+/// pointed the production <see cref="Guardrails.Core.Loading.GitLsFilesProbe"/> at a temp repo the only
+/// way that probe could then be pointed — by setting <c>GIT_DIR</c> and <c>GIT_WORK_TREE</c> with
 /// <see cref="System.Environment.SetEnvironmentVariable(string,string)"/>, which mutates the
-/// <b>whole process</b>, and the <c>lock</c> around them is private to that one class. xUnit runs
-/// separate collections in parallel, so any git child started by ANOTHER class during that window
-/// inherits the pointer and silently resolves against the wrong repository. A lock cannot fix this:
-/// the state being shared is not the lock's, it is the process's.</para>
+/// <b>whole process</b>, guarded by a <c>lock</c> private to that one class. xUnit runs separate
+/// collections in parallel, so any git child started by ANOTHER class during that window inherited the
+/// pointer and silently resolved against the wrong repository. A lock could not fix it: the state being
+/// shared was not the lock's, it was the process's.</para>
 ///
-/// <para><b>Why a collection rather than a redesign.</b> Classes in one xUnit collection never run
-/// concurrently, so the window cannot overlap another git child in this assembly — and this assembly
-/// is the whole exposure, since <c>WithGitPointedAt</c> exists nowhere else and the integration suite
-/// runs in its own process. Membership is the cheap, complete fix; it costs a little wall-clock and no
-/// production code, which matters because that probe is GR2060's ERROR-severity oracle.</para>
+/// <para>The repair this file's earlier revision named as "tracked separately" has landed. The probe now
+/// takes an explicit <c>workingDirectory</c>, the test passes its temp repo as a constructor argument, and
+/// <c>WithGitPointedAt</c> — the only process-global git mutation in this assembly — is deleted.</para>
 ///
-/// <para><b>If you add a test class that shells out to git, add it here.</b> The real repair is to give
-/// the probe an explicit working directory so the ambient environment stops being the anchor at all —
-/// tracked separately; this keeps releases from failing on a coin flip in the meantime.</para>
+/// <para><b>So why is this collection still here?</b> Because the issue that produced the repair also
+/// recorded a second symptom that was never explained: <c>ProducerCoverageTests</c> was observed failing
+/// once and passing on re-run, which suggests it can be a <i>victim</i> of something else racing it, not
+/// only the polluter. That is unconfirmed either way, and this collection is what would be hiding it.</para>
+///
+/// <para><b>The condition for deleting this file</b>, stated so the next person does not have to
+/// re-derive it: a run of this assembly WITHOUT the collection, on all three OSes, repeated enough to mean
+/// something. Until then the membership costs a little wall-clock and proves nothing false — whereas
+/// removing it on the strength of "the cause we know about is gone" is exactly the reasoning that spends a
+/// release. <b>If you add a test class that shells out to git, add it here.</b></para>
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class GitEnvironmentCollection
