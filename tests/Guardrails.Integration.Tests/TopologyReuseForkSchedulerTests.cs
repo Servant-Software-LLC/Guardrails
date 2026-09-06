@@ -293,7 +293,7 @@ public sealed class TopologyReuseForkSchedulerTests
 
         Assert.True(report.AllSucceeded,
             "linear chain should settle green: " +
-            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+            Why(report));
 
         int reuseAddCount = SegmentBranchCount(repo.RepoPath);
         int freshBaseline = n; // fresh-per-task would add one segment worktree (branch) per task
@@ -353,7 +353,7 @@ public sealed class TopologyReuseForkSchedulerTests
 
         Assert.True(report.AllSucceeded,
             "fan-out should settle green: " +
-            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+            Why(report));
 
         // Every producer's source file landed on the plan branch — fork siblings descended from the
         // producer's recorded commit (had they forked off the inheritor's advanced tip and lost the
@@ -362,6 +362,84 @@ public sealed class TopologyReuseForkSchedulerTests
         string tree = TempGitRepo.Git(repo.RepoPath, "ls-tree", "-r", "--name-only", planBranch);
         foreach (string id in new[] { "01-p", "02-d1", "03-d2", "04-d3" })
             Assert.Contains($"src/{id}.cs", tree, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The rendering itself, proven rather than assumed (#582). Without this, <see cref="Why"/> could
+    /// silently drop the abort again — a helper whose whole purpose is preserving evidence is a poor place
+    /// to trust that it does.
+    ///
+    /// <para>
+    /// The abort case cannot be produced on demand here (that is the race #582 is about), so it is
+    /// constructed. What is asserted is the property the CI log depends on: an aborted report renders the
+    /// CAUSE as well as the aftermath, and an ordinary failure renders exactly what it did before.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Why_RendersTheAbortCause_NotJustTheCancelledAftermath()
+    {
+        TaskResult[] tasks =
+        [
+            new() { TaskId = "01-p", Outcome = TaskOutcome.Succeeded, Summary = "ok" },
+            new() { TaskId = "02-d1", Outcome = TaskOutcome.Cancelled, Summary = "cancelled" },
+        ];
+
+        var plain = new RunReport { Tasks = tasks };
+        Assert.Equal("01-p=Succeeded, 02-d1=Cancelled", Why(plain));
+
+        var aborted = new RunReport
+        {
+            Tasks = tasks,
+            Abort = new RunAbort
+            {
+                Headline = "git worktree add failed",
+                Remedy = "check the worktree root is writable",
+                Detail = "fatal: '…' already exists"
+            }
+        };
+
+        string rendered = Why(aborted);
+        Assert.Contains("01-p=Succeeded, 02-d1=Cancelled", rendered, StringComparison.Ordinal);
+        Assert.Contains("ABORT: git worktree add failed", rendered, StringComparison.Ordinal);
+        Assert.Contains("remedy: check the worktree root is writable", rendered, StringComparison.Ordinal);
+        Assert.Contains("detail: fatal:", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Why a run did not settle green, in a form that survives into a CI log (#582).
+    ///
+    /// <para>
+    /// Every green assertion in this file used to render the per-task outcomes and NOTHING ELSE. That is
+    /// enough when a task failed a guardrail; it is useless when the SCHEDULER aborted on an
+    /// infrastructure fault, because an abort cancels the dependents and the outcome list reads
+    /// <c>01-p=Succeeded, 02-d1=Cancelled, 03-d2=Cancelled, 04-d3=Cancelled</c> — a shape that describes
+    /// the aftermath and names no cause. <see cref="RunReport.Abort"/> carries the cause, and the message
+    /// threw it away.
+    /// </para>
+    ///
+    /// <para>
+    /// That is exactly what happened to <c>T7_FanOut_ForkSibling_…</c>: it failed once and passed twice on
+    /// IDENTICAL BYTES (PR #581, a markdown-only change, head <c>de4e17c1</c>), in 142 ms of its own — far
+    /// too fast to be the contention story that explains #566, and pointing instead at a git/filesystem
+    /// race in the fork-topology fixture. The next occurrence is the only chance to learn which, and the
+    /// assertion was discarding the one field that would say.
+    /// </para>
+    ///
+    /// <para>
+    /// This does not fix the race. It stops the evidence being destroyed at the moment it exists, which is
+    /// the prerequisite for fixing it — and the reason #582 could only be filed with a list of things
+    /// somebody should establish next time.
+    /// </para>
+    /// </summary>
+    private static string Why(RunReport report)
+    {
+        string outcomes = string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}"));
+        if (report.Abort is not { } abort)
+        {
+            return outcomes;
+        }
+
+        return $"{outcomes}\n  ABORT: {abort.Headline}\n  remedy: {abort.Remedy}\n  detail: {abort.Detail}";
     }
 
     // ── T-8 (W-2 reset on a reused/inherited segment) ───────────────────────────────────────────
@@ -517,7 +595,7 @@ public sealed class TopologyReuseForkSchedulerTests
 
         Assert.True(report.AllSucceeded,
             "fan-in via the union path should settle green: " +
-            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+            Why(report));
 
         // Both producers' files AND the fan-in's file are on the plan branch (the merged tree).
         string tree = TempGitRepo.Git(repo.RepoPath, "ls-tree", "-r", "--name-only", "guardrails/plan");
