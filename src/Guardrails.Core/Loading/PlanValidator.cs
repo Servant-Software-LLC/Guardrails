@@ -1913,6 +1913,79 @@ public sealed class PlanValidator
     public const int OverScopeTurnThreshold = 60;
 
     /// <summary>
+    /// What ONE directory-prefix or glob <c>writeScope</c> entry counts as when measuring blast radius
+    /// (issue #378). The SSOT defines <c>writeScope</c> as "workspace-relative path <b>prefixes / globs</b>"
+    /// (§3.4), but the lint counted ARRAY ENTRIES — so collapsing five files to
+    /// <c>["src/Core/Execution/", "src/Cli/"]</c> took the count from 5 to 2 and silenced all three clauses
+    /// at once, on a <b>strictly larger</b> surface. The lint got quieter as the declared blast radius got
+    /// wider, which is the direction that flatters.
+    /// <para>
+    /// A prefix is an OPEN-ENDED surface: every file under it now, and every file added there later. Four
+    /// is the weight that restores the property the clauses were written against — two prefixes reach
+    /// clause (ii)'s ≥6, and one prefix beside a turn bump reaches clause (i)'s ≥4, which is exactly the
+    /// thrash profile. Deliberately NOT resolved against the filesystem: that would make a plan's
+    /// diagnostics depend on which files happen to exist in the checkout, so the same plan would validate
+    /// differently on two machines.
+    /// </para>
+    /// </summary>
+    public const int WideWriteScopeEntryWeight = 3;
+
+    /// <summary>
+    /// The blast radius a <c>writeScope</c> actually declares: a concrete file path counts 1, a directory
+    /// prefix or glob counts <see cref="WideWriteScopeEntryWeight"/> (issue #378). Measures the surface the
+    /// task may write rather than how many strings the author used to describe it.
+    /// </summary>
+    private static int EffectiveWriteScopeWeight(TaskNode task)
+    {
+        if (task.WriteScope is not { Count: > 0 } scope)
+        {
+            return 0;
+        }
+
+        int weight = 0;
+        foreach (string entry in scope)
+        {
+            string trimmed = entry.Trim();
+            bool wide = trimmed.Length == 0
+                || trimmed.EndsWith('/')
+                || trimmed.EndsWith('\\')
+                || trimmed.Contains('*')
+                || trimmed.Contains('?');
+
+            weight += wide ? WideWriteScopeEntryWeight : 1;
+        }
+
+        return weight;
+    }
+
+    /// <summary>
+    /// The turn budget the RUN will actually use: <c>task.json</c>'s <c>action.maxTurns</c> when present,
+    /// otherwise the prompt file's <c>maxTurns:</c> frontmatter — the same resolution
+    /// <see cref="Execution.ActionRunner"/> performs (issue #378).
+    /// <para>
+    /// The lint read only the first. <c>plan-breakdown</c> explicitly sanctions either site, so two task
+    /// folders differing in exactly that one line — same run-time budget — produced opposite lint
+    /// outcomes: GR2042 fired for the <c>task.json</c> spelling and was absent for the frontmatter one.
+    /// A lint that can be silenced by moving a value between two sanctioned spellings measures the
+    /// spelling, not the budget.
+    /// </para>
+    /// </summary>
+    private static int? EffectiveMaxTurns(TaskNode task)
+    {
+        if (task.Action.MaxTurns is int declared)
+        {
+            return declared;
+        }
+
+        if (task.Action.Kind != ActionKind.Prompt || TryReadAllText(task.Action.Path) is not { } text)
+        {
+            return null;
+        }
+
+        return PromptFileParser.Parse(text).File?.Frontmatter.MaxTurns;
+    }
+
+    /// <summary>
     /// GR2042 (WARNING, issue #378 / SSOT §3.4): the deterministic structural over-scope lint. Reads the
     /// mechanically-checkable over-scope signals sitting in the emitted <c>task.json</c> — <c>writeScope</c>
     /// cardinality, <c>action.maxTurns</c>, and <c>dependsOn</c> fan-in — and warns on the co-occurring
@@ -1927,9 +2000,13 @@ public sealed class PlanValidator
     {
         foreach (TaskNode task in plan.Tasks)
         {
-            int writeScopeCount = task.WriteScope?.Count ?? 0;
+            // Both inputs are NORMALIZED (issue #378): the weight measures the surface a writeScope
+            // declares rather than how many strings describe it, and the budget is the one the run will
+            // actually use. Before this the lint could be silenced two ways without narrowing anything —
+            // collapse the paths to directory prefixes, or move the same bump into prompt frontmatter.
+            int writeScopeCount = EffectiveWriteScopeWeight(task);
             int dependsOnCount = task.DependsOn.Count;
-            int? maxTurns = task.Action.MaxTurns;
+            int? maxTurns = EffectiveMaxTurns(task);
 
             // Each clause is a distinct thrash-and-timeout profile (SSOT §3.4). Build the fired-signal
             // list so the message names exactly WHICH co-occurrence tripped, not a generic "too big".
@@ -1940,13 +2017,13 @@ public sealed class PlanValidator
             {
                 signals.Add(
                     $"action.maxTurns {turns} (>= {OverScopeTurnThreshold}, turn-heavy by the author's own " +
-                    $"budget bump) co-occurs with a {writeScopeCount}-path writeScope");
+                    $"budget bump) co-occurs with a writeScope of weight {writeScopeCount} (a directory prefix or glob counts 3)");
             }
 
             // (ii) a wide blast radius regardless of budget.
             if (writeScopeCount >= 6)
             {
-                signals.Add($"writeScope spans {writeScopeCount} paths (wide blast radius; a one-line " +
+                signals.Add($"writeScope spans weight {writeScopeCount} (wide blast radius; a one-line " +
                     "guardrail miss re-does the whole multi-file change)");
             }
 
@@ -1954,7 +2031,7 @@ public sealed class PlanValidator
             if (dependsOnCount >= 5 && writeScopeCount >= 3)
             {
                 signals.Add($"dependsOn fans in {dependsOnCount} upstream producers into a " +
-                    $"{writeScopeCount}-path writeScope (a fan-in / composition-root sink)");
+                    $"writeScope of weight {writeScopeCount} (a fan-in / composition-root sink)");
             }
 
             if (signals.Count == 0) continue;

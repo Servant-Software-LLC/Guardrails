@@ -109,6 +109,124 @@ public sealed class StructuralOverScopeValidatorTests
         AssertDoesNotFire(paths: 0, maxTurns: 75);
     }
 
+    // ---- #378: the lint must measure the SURFACE and the EFFECTIVE budget, not their spellings ----
+    //
+    // Both dodges below were measured against the shipped lint (1.18.0) and reported ZERO GR2042 while
+    // declaring the same or a strictly LARGER blast radius. They are regression tests for the direction
+    // that flatters: a lint that goes quiet as the surface widens.
+
+    /// <summary>
+    /// Collapsing concrete paths to directory prefixes used to silence all three clauses at once — count 2
+    /// defeats >=4, >=6 and >=3 simultaneously — on a surface strictly WIDER than the five files it
+    /// replaced. A prefix is an open-ended surface, so it weighs more than one file, not less.
+    /// </summary>
+    [Fact]
+    public void DirectoryPrefixes_AreNotCheaperThanTheFilesTheyReplace()
+    {
+        string planDir = BuildSingleTaskPlan(["src/Guardrails.Core/Execution/", "src/Guardrails.Cli/"], maxTurns: 75);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.Contains(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
+    /// <summary>A glob is the same open-ended surface as a trailing-slash prefix.</summary>
+    [Fact]
+    public void AGlobEntry_CountsAsAWideSurface()
+    {
+        string planDir = BuildSingleTaskPlan(["src/**/*.cs", "tests/**/*.cs"], maxTurns: null);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.Contains(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
+    /// <summary>
+    /// The polarity control the weighting must not break: ONE narrow directory with no budget bump is an
+    /// ordinary task, not an over-scope fingerprint. Without this a fix could weight prefixes so heavily
+    /// that every normal task warns — trading a silent lint for one nobody reads, the same defect
+    /// wearing the other sign.
+    /// </summary>
+    [Fact]
+    public void OneDirectoryPrefix_NoBudgetBump_DoesNotFire()
+    {
+        string planDir = BuildSingleTaskPlan(["src/MyProject/"], maxTurns: null);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.DoesNotContain(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
+    /// <summary>
+    /// The counter-example the weight is DERIVED from, pinned so a future retune cannot undo it. Two
+    /// concrete files plus a <c>tests/**</c> glob is the shape the #553 handoff-coverage rule explicitly
+    /// tells an author to write ("the owning task gains the test glob it was always going to write"), and
+    /// it must stay silent. At an earlier weight of 4 it summed to 6, tripped clause (ii), and this lint
+    /// warned on the very scope another rule prescribes — caught by <c>HandoffScopeCoverageTests</c>, whose
+    /// unrelated GR2069 pin went red. A lint that fires on doctrine is a lint authors learn to ignore.
+    /// </summary>
+    [Fact]
+    public void TwoFilesPlusATestGlob_TheHandoffCoverageShape_DoesNotFire()
+    {
+        string planDir = BuildSingleTaskPlan(
+            ["src/Guardrails.Core/Prompts/PromptInvocation.cs",
+             "src/Guardrails.Core/Execution/ActionRunner.cs",
+             "tests/**"],
+            maxTurns: null);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.DoesNotContain(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
+    /// <summary>
+    /// <c>plan-breakdown</c> sanctions the turn bump in EITHER <c>task.json</c>'s <c>action.maxTurns</c> or
+    /// the prompt file's <c>maxTurns:</c> frontmatter, and <c>ActionRunner</c> resolves them identically.
+    /// The lint read only the first, so two folders differing in exactly that one line — the same run-time
+    /// budget — produced opposite outcomes. Measured pre-fix: 0 diagnostics; post-fix: 1.
+    /// </summary>
+    [Fact]
+    public void ATurnBudgetInPromptFrontmatter_CountsTheSameAsOneInTaskJson()
+    {
+        string planDir = BuildPromptTaskPlan(paths: 5, frontmatterMaxTurns: 75);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.Contains(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
+    /// <summary>
+    /// The other half of that pair: the same five-path prompt task with NO budget at either site stays
+    /// silent, so the test above is pinned to the budget rather than to the prompt action kind.
+    /// </summary>
+    [Fact]
+    public void APromptTaskWithNoBudgetAtEitherSite_DoesNotFire()
+    {
+        string planDir = BuildPromptTaskPlan(paths: 5, frontmatterMaxTurns: null);
+        try
+        {
+            IReadOnlyList<Diagnostic> diags =
+                new PlanValidator(FakeExecutableProbe.All).Validate(new PlanLoader().Load(planDir).Plan!);
+            Assert.DoesNotContain(diags, d => d.Code == DiagnosticCodes.StructuralOverScope);
+        }
+        finally { Cleanup(planDir); }
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------
 
     private static void AssertFires(int paths, int? maxTurns)
@@ -140,6 +258,59 @@ public sealed class StructuralOverScopeValidatorTests
     /// an optional <c>action.maxTurns</c>. No <c>dependsOn</c> (fan-in is exercised by the committed fixture),
     /// so the plan is otherwise valid and the only signals under test are writeScope cardinality + maxTurns.
     /// </summary>
+    /// <summary>
+    /// As <see cref="BuildSingleTaskPlan(int, int?)"/>, but with the writeScope entries given VERBATIM so a
+    /// test can express directory prefixes and globs rather than only concrete file paths (#378).
+    /// </summary>
+    private static string BuildSingleTaskPlan(IReadOnlyList<string> scopeEntries, int? maxTurns)
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-378-os-" + Guid.NewGuid().ToString("N"));
+        string taskDir = Path.Combine(planDir, "tasks", "01-do-thing");
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"), "{\n  \"version\": 1\n}\n");
+
+        string scope = string.Join(", ", scopeEntries.Select(e => $"\"{e}\""));
+        string actionLine = maxTurns is int t ? $"  \"action\": {{ \"maxTurns\": {t} }},\n" : "";
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            "{\n" + actionLine +
+            $"  \"description\": \"Do the one thing\",\n  \"dependsOn\": [],\n  \"writeScope\": [{scope}]\n}}\n");
+
+        File.WriteAllText(Path.Combine(taskDir, "action.sh"), "#!/usr/bin/env bash\necho ran\nexit 0\n");
+        File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"),
+            "# catches: the action produced no evidence it ran\nexit 0\n");
+
+        return planDir;
+    }
+
+    /// <summary>
+    /// A single-task plan whose action is a PROMPT, with the turn budget declared ONLY in the prompt file's
+    /// frontmatter — the second sanctioned spelling, and the one the lint used to be blind to (#378).
+    /// </summary>
+    private static string BuildPromptTaskPlan(int paths, int? frontmatterMaxTurns)
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-378-fm-" + Guid.NewGuid().ToString("N"));
+        string taskDir = Path.Combine(planDir, "tasks", "01-do-thing");
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        // A prompt action needs a resolvable runner (GR2008), or the plan fails to load for an unrelated reason.
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            "{\n  \"version\": 1,\n  \"promptRunners\": { \"default\": \"c\", \"c\": " +
+            "{ \"command\": \"claude\", \"kind\": \"claude\" } }\n}\n");
+
+        string scope = string.Join(", ", Enumerable.Range(0, paths).Select(i => $"\"src/File{i}.cs\""));
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $"{{\n  \"description\": \"Do the one thing\",\n  \"dependsOn\": [],\n  \"writeScope\": [{scope}]\n}}\n");
+
+        string frontmatter = frontmatterMaxTurns is int t ? $"---\nmaxTurns: {t}\n---\n\n" : "";
+        File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"),
+            frontmatter + "## Task\n\nWire the collaborators into the composition root.\n");
+        File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"),
+            "# catches: the action produced no evidence it ran\nexit 0\n");
+
+        return planDir;
+    }
+
     private static string BuildSingleTaskPlan(int paths, int? maxTurns)
     {
         string planDir = Path.Combine(Path.GetTempPath(), "gr-378-os-" + Guid.NewGuid().ToString("N"));
