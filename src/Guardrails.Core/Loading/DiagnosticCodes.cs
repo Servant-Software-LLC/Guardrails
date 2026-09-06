@@ -1124,7 +1124,69 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CheckSetPredatesSourceTree = "GR2072";
 
-    // CURRENT next-free code: GR2073. GR2072 (CheckSetPredatesSourceTree) is the last taken code
+    /// <summary>
+    /// GR2073 (WARNING) — a task's <c>writeScope</c> mixes a <c>.claude/</c> deliverable with a normal
+    /// one, so ONE ATOMIC ATTEMPT must deliver through TWO DIFFERENT WRITE MECHANISMS (issue #540).
+    ///
+    /// <para><b>The measured failure.</b> <c>27-operator-visibility</c> task
+    /// <c>08-record-visibility-surfaces-in-ssot</c>: <b>12 attempts, ~$4.66, never green</b>, on the last
+    /// task of an otherwise-green 8-task plan whose other seven passed in 8 attempts total (7 of them
+    /// first-pass). Two paths, <c>dependsOn</c> fan-in of 1, no <c>maxTurns</c> bump — GR2042 is silent
+    /// and correctly so. The task was not too big by any measure the tooling reads. It was two
+    /// mechanisms:</para>
+    /// <list type="bullet">
+    ///   <item><c>docs/plans/02-schemas-and-contracts.md</c> — a direct <c>Edit</c>, which works;</item>
+    ///   <item><c>.claude/skills/…/SKILL.md</c> — <c>needsHarnessWrite</c>, because the tool-permission
+    ///     layer refuses a direct write (SSOT §9.3, #191/#313).</item>
+    /// </list>
+    ///
+    /// <para><b>Why it costs the whole task and not half of it.</b> An attempt is atomic and a failed
+    /// attempt is rolled back — correct, deliberate design, and not the defect. The consequence when a
+    /// task spans two mechanisms is that partial progress is IMPOSSIBLE. Attempt 7 wrote the SSOT
+    /// correctly (+35 lines, verified in its salvage ref) and never wrote the skill, so the whole attempt
+    /// rolled back INCLUDING the good half; by attempt 10 the SSOT guardrail — the half already solved —
+    /// was failing again. The task oscillated between the two halves for twelve attempts, relearning the
+    /// same ground each time. Getting 90% right scores zero.</para>
+    ///
+    /// <para><b>Why no existing check sees it.</b> <c>plan-breakdown</c> Step 2's over-size triggers read
+    /// distinct deliverables, blast radius, milestone mapping and retry cost; GR2042 reads
+    /// <c>writeScope</c> cardinality, <c>action.maxTurns</c> and <c>dependsOn</c> fan-in. <b>None of them
+    /// reads the WRITE MECHANISM a path requires.</b> Two paths is a small task by every metric the
+    /// tooling has, and in prose this one is arguably a single deliverable ("record the new surfaces in
+    /// the SSOT and the skill") — which is exactly why it was authored as one task and why a full
+    /// <c>/guardrails-review</c> pass did not flag it either.</para>
+    ///
+    /// <para>Yet it is precisely the boundary Step 2's own rule 2 describes — <i>split where verification
+    /// changes character</i> — in its sharpest form: not merely different checks, but different DELIVERY
+    /// PATHS, one of which cannot be exercised at all by the tool the other uses.</para>
+    ///
+    /// <para><b>Measured across this repository's own history, not asserted.</b> The predicate selects
+    /// SEVEN committed tasks (412 <c>task.json</c> files scanned), and every one is the same archetype —
+    /// "record the new surfaces in the SSOT and the skill". Their outcomes:</para>
+    /// <code>
+    /// 24-plan-source-provenance     1 attempt   succeeded
+    /// 32-executed-definition-hash   1 attempt   succeeded
+    /// 30-telemetry-phase-1          2 attempts  succeeded
+    /// 31-unattended-run-hardening   3 attempts  succeeded  (one max-turns)
+    /// 26-guardrail-quality-gate     4 attempts  succeeded
+    /// model-evidence-and-graduation 3 attempts  NEEDS-HUMAN
+    /// 27-operator-visibility       12 attempts  NEVER GREEN  (~$4.66, the #540 case)
+    /// </code>
+    ///
+    /// <para><b>That distribution is exactly why this is a WARNING and not an ERROR.</b> Two of the seven
+    /// went first-pass, so the shape is not fatal and a split would have bought them nothing — the issue's
+    /// claim that it has "no false-positive story" is stronger than the evidence supports, and this code
+    /// should not repeat it. But the other five average well above the ~1.1 attempts their sibling tasks
+    /// took, one settled <c>needs-human</c>, and one never went green at all. A shape that is usually
+    /// survivable and occasionally catastrophic is precisely what a warning is for.</para>
+    ///
+    /// <para>The remedy is a split, which is an authoring decision; and a human who has read this and
+    /// wants the task anyway (a one-line change to each half, say) should not be blocked from running
+    /// their own plan. The cost of ignoring it is attempts, not correctness.</para>
+    /// </summary>
+    public const string MixedWriteMechanisms = "GR2073";
+
+    // CURRENT next-free code: GR2074. GR2072 (CheckSetPredatesSourceTree) is the last taken code
     // above, and is the first code on this ladder that is NOT about the plan — it reports the TOOL
     // (issue #564). That is deliberate and not a precedent to widen: it lives here because the codes
     // are the greppable, test-assertable surface a reviewer already reads, and a fact this important
@@ -1149,7 +1211,7 @@ public static class DiagnosticCodes
     //     defect at any commit in this repository — see §3.4. Do not allocate without a positive control.
     // GR2051–GR2053 were ALLOCATED by Stage 3 of the model-tiering epic (NonRoutableBlockIsDefault /
     // CostlyBlockRoutingInert / PinAndTierCoexist) and are shipped constants above, not gaps: those
-    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2073 and update
+    // three were the rest of §13.2's block. When allocating for anything ELSE, take GR2074 and update
     // this line rather than colliding with any of the three above (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave

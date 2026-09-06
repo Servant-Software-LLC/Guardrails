@@ -97,6 +97,7 @@ public sealed class PlanValidator
         ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
+        ValidateMixedWriteMechanisms(plan, diagnostics);
         ValidateHandoffScopeCoverage(plan, diagnostics);
         PromptToolGrantCoverage.Validate(plan, diagnostics);
         ProducerCoverage.Validate(plan, _gitTrackedFileProbe, diagnostics);
@@ -2046,6 +2047,69 @@ public sealed class PlanValidator
                 "(SSOT §3.4, #378). 'It's just wiring' is a rationalization that dodges the split; this is " +
                 "a WARN for /guardrails-review to resolve, not a hard failure."));
         }
+    }
+
+    /// <summary>
+    /// GR2073 (WARNING, issue #540): a task whose <c>writeScope</c> mixes a <c>.claude/</c> deliverable
+    /// with a normal one is a TWO-MECHANISM task, and one atomic attempt has to deliver through both.
+    ///
+    /// <para>
+    /// The predicate is one line and decidable from <c>task.json</c> alone — no execution, no prose. It
+    /// selected exactly the failing task on the plan that produced #540 and nothing else. There is no
+    /// legitimate reason for one task to own both a <c>.claude/</c> artifact and a normal one, because
+    /// the HARNESS ITSELF forces different delivery for them: a <c>.claude/</c> path needs
+    /// <c>needsHarnessWrite</c> (SSOT §9.3), and a normal path is written directly.
+    /// </para>
+    ///
+    /// <para>
+    /// Deliberately NOT folded into <see cref="ValidateStructuralOverScope"/>. That check is about the
+    /// SIZE and SHAPE of a task and reads cardinality, turn budget and fan-in; this one is about what a
+    /// path REQUIRES, and a two-path task is small by every measure the other check has. Sharing a code
+    /// would mean an operator resolving one could silence the other, and they have different remedies —
+    /// #378's is a split by collaborator, this one's is a split by mechanism.
+    /// </para>
+    /// </summary>
+    private static void ValidateMixedWriteMechanisms(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.WriteScope is not { Count: > 1 } scope)
+            {
+                continue;
+            }
+
+            List<string> harnessWritten = [.. scope.Where(IsClaudeScopeEntry)];
+            List<string> directlyWritten = [.. scope.Where(e => !IsClaudeScopeEntry(e))];
+
+            if (harnessWritten.Count == 0 || directlyWritten.Count == 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Warning(DiagnosticCodes.MixedWriteMechanisms, task.Directory,
+                $"Task '{task.Id}' mixes TWO WRITE MECHANISMS in one atomic attempt: "
+                + $"{string.Join(", ", harnessWritten)} must go through 'needsHarnessWrite' (the "
+                + "tool-permission layer refuses a direct write under .claude/, SSOT §9.3), while "
+                + $"{string.Join(", ", directlyWritten)} is written directly. A failed attempt is rolled "
+                + "back whole, so such a task can never BANK the half it got right — measured at 12 "
+                + "attempts and ~$4.66, never green, on a task that wrote one half correctly at attempt 7 "
+                + "and was failing that same half again by attempt 10. Split it, one mechanism per task "
+                + "(#540). This is a WARN: the remedy is an authoring decision, and a human who wants the "
+                + "task anyway is not blocked."));
+        }
+    }
+
+    /// <summary>
+    /// Does this <c>writeScope</c> entry target the <c>.claude/</c> tree — the paths the tool-permission
+    /// layer refuses a direct write to (#540)? Matches a leading <c>.claude/</c> or any <c>/.claude/</c>
+    /// segment, so a repo-relative and a nested entry both hit. Deliberately narrow: a false positive
+    /// here would demand a split that buys nothing.
+    /// </summary>
+    private static bool IsClaudeScopeEntry(string entry)
+    {
+        string normalized = entry.Trim().Replace('\\', '/');
+        return normalized.StartsWith(".claude/", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/.claude/", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
