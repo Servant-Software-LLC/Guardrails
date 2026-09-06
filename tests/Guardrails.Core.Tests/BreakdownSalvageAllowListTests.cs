@@ -9,15 +9,18 @@ namespace Guardrails.Core.Tests;
 /// <para><b>What this pins, and what it does NOT.</b> It pins the POLICY — which codes are excused —
 /// because that is the part most at risk of quiet widening later: the temptation when a future
 /// truncation trips some other completeness lint will be to add it here, and one careless addition turns
-/// the post-breakdown gate into a rubber stamp. It does NOT prove the end-to-end salvage, and no test in
-/// this repo currently does.</para>
+/// the post-breakdown gate into a rubber stamp. It does NOT prove the end-to-end salvage.</para>
 ///
-/// <para><b>The honest gap.</b> GR2028 fires only in WORKTREE mode (<c>maxParallelism &gt; 1</c>), and
-/// every waved fixture in this suite is built serial precisely so validation does not require a
-/// git-backed workspace. So the bug was found by a REAL run (2026-08-22, `model-tiering-stage-3` wave 2)
-/// and its behavioural reproduction still needs a git-backed waved fixture that does not exist yet.
-/// <see cref="SchedulerBreakdownDurabilityTests"/> covers the other half behaviourally — a prefix with a
-/// malformed task is still reverted wholesale.</para>
+/// <para><b>The gap this file used to name is closed (#502).</b> GR2028 fires only in WORKTREE mode
+/// (<c>maxParallelism &gt; 1</c>), and every waved fixture in this suite was built serial precisely so
+/// validation would not require a git-backed workspace — so the bug was found by a REAL run (2026-08-22,
+/// `model-tiering-stage-3` wave 2) and could not be reproduced here at all.
+/// <see cref="WorktreeModeWavedValidationTests"/> now owns that half: a git-backed waved fixture at
+/// <c>maxParallelism: 2</c>, a truncated prefix that trips GR2028, and the assertion that the authored
+/// folders SURVIVE. Measured: removing GR2028 from the allow-list below fails it with "01-compile was
+/// reverted" while all fifteen <see cref="SchedulerBreakdownDurabilityTests"/> stay green — which is
+/// exactly how #501 shipped. <see cref="SchedulerBreakdownDurabilityTests"/> still covers the third half:
+/// a prefix with a malformed task is reverted wholesale.</para>
 /// </summary>
 public sealed class BreakdownSalvageAllowListTests
 {
