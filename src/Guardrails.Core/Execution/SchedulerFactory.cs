@@ -220,7 +220,7 @@ public static class SchedulerFactory
             blockerRetry = new BlockerRetry(
                 autonomy.BlockerRetry,
                 TimeSpan.FromSeconds(plan.Config.TransientPauseBudgetSeconds),
-                delay => Task.Delay(delay));
+                (delay, ct) => Task.Delay(delay, ct));
         }
 
         return new Scheduler(

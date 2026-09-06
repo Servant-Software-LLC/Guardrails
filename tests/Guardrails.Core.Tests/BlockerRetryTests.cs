@@ -34,8 +34,85 @@ public sealed class BlockerRetryTests
         var retry = new BlockerRetry(
             new BlockerRetryConfig { MaxAttempts = maxAttempts, TotalWaitSeconds = totalWaitSeconds },
             transientPauseBudget,
-            d => { waited.Add(d); return Task.CompletedTask; });
+            (d, ct) => { ct.ThrowIfCancellationRequested(); waited.Add(d); return Task.CompletedTask; });
         return (retry, waited);
+    }
+
+    /// <summary>
+    /// Issue #616 — the run's token REACHES the wait.
+    ///
+    /// <para>
+    /// The seam used to be <c>Func&lt;TimeSpan, Task&gt;</c> with no token at all, so a blocker-retry pause
+    /// in flight when Ctrl-C landed ran to completion — bounded only by the autonomy dial's
+    /// <c>totalWaitSeconds</c>, which is minutes. #603 established that the whole cancelled unwind must fit
+    /// a 15 s ceiling; this was not a budget that was raised, it was one that was never counted, and it
+    /// exceeded the ceiling by two orders of magnitude.
+    /// </para>
+    ///
+    /// <para>
+    /// Asserted on the token the seam is HANDED, not on how long anything took. That is the defect
+    /// exactly: the token existed, reached the boundary, and was dropped — at the exponential-backoff call
+    /// site by an adapter written <c>(d, _) =&gt; _delay(d)</c>, which discarded a token it had been given
+    /// and made the omission look deliberate. A test that merely cancelled and watched the loop exit would
+    /// pass without the fix, because <c>RunAsync</c> already re-checks the token at the top of each
+    /// iteration — it would never enter the wait at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRunsToken_IsHandedToEveryWait_NotDropped()
+    {
+        var seen = new List<CancellationToken>();
+        var retry = new BlockerRetry(
+            new BlockerRetryConfig { MaxAttempts = 4, TotalWaitSeconds = 600 },
+            TimeSpan.FromSeconds(600),
+            (_, ct) => { seen.Add(ct); return Task.CompletedTask; });
+
+        using var cts = new CancellationTokenSource();
+
+        // Never clears, so it exhausts maxAttempts — exercising BOTH wait paths: the first-pause reset-hint
+        // override and the exponential TransientBackoff behind it.
+        BlockerRetryResult result = await retry.RunAsync(
+            hasCleared: _ => false,
+            resetHint: TimeSpan.FromSeconds(5),
+            cancellationToken: cts.Token);
+
+        Assert.Equal(BlockerRetryOutcome.Escalate, result.Outcome);
+        Assert.NotEmpty(seen);
+        Assert.All(seen, token => Assert.Equal(cts.Token, token));
+    }
+
+    /// <summary>
+    /// The second half, and the one the issue says to decide rather than inherit: a cancelled wait
+    /// ABANDONS the retry. It does not fall through into another attempt, which would be worse than the
+    /// wait it replaced.
+    ///
+    /// <para>
+    /// The fake blocks until cancelled — a wait that is genuinely in flight when the operator's Ctrl-C
+    /// lands, which is the situation the issue describes. <c>hasCleared</c> having run exactly once proves
+    /// the loop ended there rather than starting another attempt.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ACancelledWait_AbandonsTheRetry_RatherThanRetryingImmediately()
+    {
+        using var cts = new CancellationTokenSource();
+        int probes = 0;
+
+        var retry = new BlockerRetry(
+            new BlockerRetryConfig { MaxAttempts = 5, TotalWaitSeconds = 600 },
+            TimeSpan.FromSeconds(600),
+            async (_, ct) =>
+            {
+                cts.Cancel();                                   // the Ctrl-C, mid-wait
+                await Task.Delay(Timeout.Infinite, ct);         // only ends by cancellation
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => retry.RunAsync(
+            hasCleared: _ => { probes++; return false; },
+            resetHint: TimeSpan.FromSeconds(5),
+            cancellationToken: cts.Token));
+
+        Assert.Equal(1, probes);
     }
 
     [Fact]
