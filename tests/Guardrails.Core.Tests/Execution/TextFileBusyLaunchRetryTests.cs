@@ -77,6 +77,11 @@ public sealed class TextFileBusyLaunchRetryTests : IDisposable
         // for a reason that had nothing to do with the behaviour under test. Waiting on the counter makes
         // it a handshake — the same "assert the decision, never the duration" rule (#518) that the
         // assertions below already follow, applied to the fixture that produces them.
+        //
+        // The handshake only works because the retry loop AWAITS its backoff. With a blocking sleep,
+        // everything before this async method's first await ran on THIS thread, so RunAsync did not
+        // return a Task until the retries were exhausted and the loop below never got to run — the
+        // second way this test failed on CI, and a real thread-pool cost in production besides.
         var launch = new ProcessRunner().RunAsync(
             new ResolvedCommand { Executable = script, Arguments = [] },
             _root,

@@ -105,7 +105,7 @@ public sealed class ProcessRunner
         process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone, lineSink: null);
 
         var stopwatch = Stopwatch.StartNew();
-        StartWithTextFileBusyRetry(process);
+        await StartWithTextFileBusyRetryAsync(process, cancellationToken).ConfigureAwait(false);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -214,7 +214,7 @@ public sealed class ProcessRunner
     /// slow one, which is the more expensive bug.
     /// </para>
     /// </summary>
-    private static void StartWithTextFileBusyRetry(Process process)
+    private static async Task StartWithTextFileBusyRetryAsync(Process process, CancellationToken cancellationToken)
     {
         for (int attempt = 1; ; attempt++)
         {
@@ -226,7 +226,14 @@ public sealed class ProcessRunner
             catch (Win32Exception ex) when (IsTextFileBusy(ex) && attempt < TextFileBusyAttempts)
             {
                 Interlocked.Increment(ref TextFileBusyRetries);
-                Thread.Sleep(TextFileBusyBackoff);
+
+                // AWAIT, not Thread.Sleep. Two reasons, and the second is the one that bit: a blocking
+                // sleep here parks a thread-pool thread for up to the whole budget, and — because
+                // everything before an async method's first await runs synchronously on the CALLER's
+                // thread — it also meant `RunAsync` did not return a Task until the retries were
+                // exhausted. Nothing concurrent could observe a retry in progress, which is precisely
+                // what this loop's own test has to do to release the file it is holding open.
+                await Task.Delay(TextFileBusyBackoff, cancellationToken).ConfigureAwait(false);
             }
         }
     }
