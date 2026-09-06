@@ -43,8 +43,20 @@ public static class StatusCommand
             return ExitCodes.Success;
         }
 
-        // Read-only: do not normalize statuses (that is a resume concern), just report the
-        // journal as it stands on disk.
+        // Read-only: do not normalize statuses (that is a resume concern), just report the journal as it
+        // stands on disk.
+        //
+        // #639 — that is correct and it was not enough. A halted run leaves `blocked` / `failed` /
+        // `needs-human` / `running` entries on disk, and a resume turns every one of them back into
+        // `pending` (RunJournal.ResumeStatus) before scheduling anything. So this table was literally true
+        // about the FILE and misleading about the PLAN: it showed `blocked` for tasks the very next
+        // `guardrails run` would execute, and a reader asking the only question this command exists to
+        // answer — what happens next — got the previous run's outcome presented as a prediction. The
+        // report from the field was exactly that shape: "every task that had not yet started displayed
+        // blocked, and they then ran normally when their turn came".
+        //
+        // The fix is not to normalize here (that would discard which tasks a failure had blocked, which
+        // is the one thing this command can tell you that a resumed run cannot). It is to say BOTH facts.
         JournalDocument document = JournalReader.Read(journalPath);
 
         output.WriteLine($"Run {document.RunId}  ({document.PlanHash})");
@@ -57,6 +69,24 @@ public static class StatusCommand
         {
             document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry);
             PrintRow(task.Id, entry, output);
+        }
+
+        // #639: what a resume would do with the rows above. Omitted entirely when nothing is affected —
+        // a clean or still-pending journal prints byte-for-byte what it printed before.
+        IReadOnlyList<string> resumable = ResumableTasks(probe.Plan, document);
+        if (resumable.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine(
+                "A resume will RE-RUN these — the status above is the last run's outcome, not a prediction:");
+            foreach (string line in resumable)
+            {
+                output.WriteLine($"  {line}");
+            }
+
+            output.WriteLine(
+                "Only 'succeeded' survives a resume; blocked / failed / needs-human / running all become "
+                + "pending.");
         }
 
         // #515: the provider-pause ledger, omitted entirely when nothing paused (nearly every run).
@@ -170,6 +200,33 @@ public static class StatusCommand
         JournalTaskStatus.Failed => "failed",
         _ => status.ToString()
     };
+
+    /// <summary>
+    /// The tasks a resume would put back to <c>pending</c>, in plan order, each with the status the
+    /// journal currently holds (#639).
+    ///
+    /// <para>
+    /// Deliberately derived from <see cref="RunJournal.WouldResumeRun"/> rather than from a second list of
+    /// statuses maintained here. Two copies of "which statuses survive a resume" is exactly how this
+    /// command would come to disagree with the resume it is describing — and a status report that
+    /// disagrees with the scheduler is worse than one that says nothing, because it is believed.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> ResumableTasks(
+        Core.Model.PlanDefinition plan, JournalDocument document)
+    {
+        var lines = new List<string>();
+        foreach (Core.Model.TaskNode task in plan.Tasks)
+        {
+            if (document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
+                && RunJournal.WouldResumeRun(entry.Status))
+            {
+                lines.Add($"{task.Id} ({StatusText(entry.Status)})");
+            }
+        }
+
+        return lines;
+    }
 
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..(max - 1)] + "…";

@@ -815,6 +815,23 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         _ => TaskStatus.Pending
     };
 
+    /// <summary>
+    /// Would a resume RE-RUN a task sitting at <paramref name="status"/>? True for everything a resume
+    /// normalizes back to <see cref="TaskStatus.Pending"/> having already run something — <c>blocked</c>,
+    /// <c>failed</c>, <c>needs-human</c>, and a <c>running</c> left by a crash.
+    ///
+    /// <para>
+    /// Exposed so <c>guardrails status</c> can say what a resume will do WITHOUT keeping its own copy of
+    /// the rule (#639). It is derived from <see cref="ResumeStatus"/> itself rather than restating it,
+    /// because two lists of "which statuses survive a resume" is exactly how a status report comes to
+    /// disagree with the resume it describes — and a report that disagrees with the scheduler is worse
+    /// than one that says nothing, because it is believed. <c>Pending</c> is excluded: it also stays
+    /// pending, but it has not run, so calling it a RE-run would be its own small lie.
+    /// </para>
+    /// </summary>
+    public static bool WouldResumeRun(TaskStatus status) =>
+        status != TaskStatus.Pending && ResumeStatus(status) == TaskStatus.Pending;
+
     private static IReadOnlyDictionary<string, TaskJournalEntry> SeedPendingTasks(
         PlanDefinition plan,
         IReadOnlyDictionary<string, TaskJournalEntry>? existing)

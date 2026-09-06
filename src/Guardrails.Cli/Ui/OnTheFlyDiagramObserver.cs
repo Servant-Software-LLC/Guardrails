@@ -467,6 +467,17 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
 
                     break;
 
+                // #639 settled this branch: on the RESUME path it was written for, it is UNREACHABLE.
+                // RunCommand calls RunJournal.LoadOrCreate (which normalizes every non-succeeded status
+                // to Pending and PERSISTS the result) before TryReadJournalForSeed reads the file, so a
+                // resumed journal holds no Blocked entry by the time this runs. It is kept, not deleted:
+                // the mapping is correct if ever reached, and the thing worth writing down is the
+                // ORDERING that makes it moot — a future reorder that seeds before normalizing would
+                // need this branch, and would have no note saying so. What a reader must NOT conclude is
+                // that the diagram handles blocked-on-resume: it does not have to, because the status was
+                // already normalized away. (This is why nothing here explains the field report of tasks
+                // showing `blocked` after a resume — that surface is `guardrails status`, which reads the
+                // journal WITHOUT normalizing.)
                 case Core.Journal.TaskStatus.Blocked:
                     map[containerId] = Blocked;
                     break;
