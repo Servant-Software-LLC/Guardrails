@@ -8,6 +8,14 @@
 > siblings (`585-…`, `595-…`) already use it. `docs/notes/` does not exist; creating it
 > for one file would have been the drift, not the tidiness.
 
+> **PARTLY SUPERSEDED — 2026-09-06.** Everything below about **released 4.16.0** still
+> holds and was re-reproduced. But the blocker is **fixed upstream, on master, unreleased**.
+> A source build of `stryker-net@55464f4` run with `--test-runner mtp` **killed a mutant
+> that 4.16.0 called Survived.** Read
+> [Follow-up: source build of master](#follow-up-source-build-of-master-2026-09-06) before
+> acting on the recommendation in this document — the verdict changed from
+> *blocked-on-tooling* to *works, but the cost model does not*.
+
 ---
 
 ## Headline
@@ -303,3 +311,344 @@ worktree; all Stryker output was directed outside the repo with `-O`.
 - `stryker-config.core-execution.json` — Core `Scheduler.cs` / `TaskExecutor.cs` scope with
   the explicit `test-case-filter` exclusions. Never run; same blocker.
 - Neither is wired into `ci.yml`, by design.
+
+---
+
+## Follow-up: source build of master (2026-09-06)
+
+**Date:** 2026-09-06 · **Tool:** `dotnet-stryker` built from source at
+`stryker-net@55464f49092e379faf6762003117259d570cd409` (master, 2026-09-05 13:07 UTC),
+packed as `4.17.0-master-55464f4`, installed to a **local tool path**
+(`--tool-path`, never `-g`) so the machine's global tools are untouched.
+Same box: Windows 11, 8 logical cores, .NET SDK 10.0.204.
+
+The released 4.16.0 (2026-07-03) predates the fix. [PR #3752][pr3752] —
+*"feat(MTP): Support `perTest` and `perTestInIsolation` coverage analysis"* — merged
+**2026-08-14** as `0705367`, six weeks after that release, and there is no preview or
+nightly on NuGet. `git merge-base --is-ancestor` confirms `0705367` (and the follow-up
+`eb94878`, *"MTP coverage per mutated assembly"*, [PR #3769][pr3769]) are both ancestors of
+the SHA built. Source build was the only path.
+
+**It built cleanly**: `dotnet build src/Stryker.CLI/... -c Release` → **0 errors**, 327
+warnings (all pre-existing nullability/`CS8632` noise in Stryker's own code). The
+maintainers' 2026-08-14 note about *"some breaking changes and a blocking defect"* holding
+up a release did not manifest as a build failure here.
+
+> Version banner caveat: the packed tool still prints `Version: 4.16.0`, because only
+> `PackageVersion` was overridden at pack time. **The banner does not distinguish this
+> build from the released 4.16.0.** Identify it by the tool path, not the banner.
+
+[pr3752]: https://github.com/stryker-mutator/stryker-net/pull/3752
+[pr3769]: https://github.com/stryker-mutator/stryker-net/pull/3769
+
+### THE CANARY — passed
+
+**A mutant this repository's tests are known to kill came back `Killed`. The instrument
+works.**
+
+```
+[01:09:32 INF] Time Elapsed 00:28:57
+[01:09:32 INF] The final mutation score is 100.00 %
+
+Killed:   1     Survived: 0     Timeout:  0     Errors:  0
+```
+
+The mutant: **`src/Guardrails.Cli/Ui/LiveTableRows.cs:140`, Statement mutation → `;`** —
+i.e. delete `rows.Add(new TaskLiveRow(task.Id));`, so the live table emits no task rows at
+all. Run with `--test-runner mtp` over a character-span-restricted scope isolating that one
+statement.
+
+**The control is what makes this conclusive.** The *same tool build*, the *same repo*, the
+*same file*, differing only in `test-runner`:
+
+| runner | mutants tested | Killed | Survived | verdict on `LiveTableRows.cs:140` |
+|---|---|---|---|---|
+| `vstest` (the default) | 12 | **0** | **12** | **Survived** — fabricated |
+| `mtp` (carries PR #3752) | 1 | **1** | 0 | **Killed** — real |
+
+Under `vstest`, master reproduces the 4.16.0 defect exactly, including the
+`[ERR] It looks like the test coverage capture failed` line, within 3 seconds. Under `mtp`
+the same statement-deletion mutant is killed. **The fix is real and it reaches us.**
+
+Ground truth was re-established by hand on this worktree before Stryker was trusted with
+the question. The original canary (`waves.Count == 0` → `!=`, planted by hand, CRLF
+preserved) fails **12 of 47** tests in **415 ms** across `CollapseCompletedWavesTests`,
+`JitBreakdownVisibilityTests` and `MidRunWaveSpliceTests` — reverted immediately after
+measuring. (The doc above records 15-of-170 for the same mutant under the wider 15-class
+filter; both are the same fact measured against different oracle subsets.)
+
+> **Method note, stated because it deviates from the brief.** The brief said to plant the
+> mutant by hand *and then run Stryker over it*. Those two steps cannot both be done to the
+> same line: with the mutant planted, Stryker's own baseline run starts red and the mutant
+> it would generate there is the *inverse* (`!=` → `==`), which restores correct behaviour.
+> The gate's intent — *can this tool kill a mutant we know is killable?* — was executed as
+> two separate measurements: hand-plant to establish ground truth (above), revert, then
+> Stryker on a clean tree, checking the status of a known-killable mutant in that file.
+
+### Three findings that change how this tool must be driven
+
+**1. The canary mutant named in the recommendation above is no longer usable — it is now
+classified `CompileError`.**
+
+The `waves.Count == 0` → `!=` mutant at `LiveTableRows.cs:110` is reported by this build as
+`CompileError: Mutant caused compile errors`. **That classification is wrong** — the same
+edit, applied by hand to the same line, compiles with zero errors and fails 12 tests.
+
+Two mutants sit on that one expression, and the report marks *both* `CompileError`:
+
+| line | mutator | replacement | reported |
+|---|---|---|---|
+| 110 | Equality mutation | `waves.Count != 0` | `CompileError` — **but it compiles** |
+| 110 | Linq method mutation (`Count()` → `Sum()`) | `waves.Sum` | `CompileError` — correctly |
+
+The second one is a mutator misfire: `waves.Count` is the `IReadOnlyList<T>.Count`
+**property, not a LINQ `Count()` call**, so the substitution yields `waves.Sum == 0` —
+a method group compared to an int, which genuinely cannot compile. The inference (from the
+two facts above, not from Stryker's logs, which name no safe-mode rollback for this file) is
+that the rollback removes the enclosing mutated expression and takes the valid equality
+mutant down with it.
+
+This matters beyond one line. The previous run's recommendation was *"the
+`waves.Count == 0` → `!=` mutant is a ready-made canary."* Had this run used it as the gate
+and asked only *"is line 110 still Survived?"*, the answer would have been "no, it's a
+compile error" — which is neither a pass nor a fail, and would have read as another broken
+instrument. **`LiveTableRows.cs:140` (statement deletion) is the better canary**: no LINQ
+sibling, no rollback exposure, and semantically unmissable.
+
+**2. `test-case-filter` is silently ignored by the MTP runner — the cost lever is gone.**
+
+Confirmed both in the source (`TestCaseFilter` is referenced only under
+`Stryker.TestRunner.VsTest/`; nothing in `Stryker.TestRunner.MicrosoftTestPlatform/` reads
+it) and in every MTP run here: discovery reports **1,258 tests**, never the filtered subset.
+No warning is emitted. The MTP runner filters tests *only* by coverage-derived test UIDs.
+
+The committed `stryker-config.json` is built around that filter — it is what cut the oracle
+from 1,258 tests to 170 and made the run finishable. **Under the runner that actually
+works, that config's stated cost model does not apply.** The config's scope comments remain
+correct; its cost note does not.
+
+**3. `mutate` line-spans are CHARACTER offsets, not line numbers.**
+
+`"**/Ui/LiveTableRows.cs{138..142}"` matched **zero** mutants and Stryker reported
+`0 total mutants will be tested`. `FilePattern.Parse` builds `TextSpan.FromBounds(start, end)`
+over the file's character offsets. The working form for lines 138–142 of that file is
+`{8416..8581}`.
+
+Stryker did say *"unable to calculate a mutation score"* rather than inventing one, which is
+the honest failure — but it is one character-class away from the exact trap the config
+header warns about: **a scope that matches nothing reports a flawless clean sheet.**
+
+### The cost model, measured — and why it does not work yet
+
+The fix restores correctness. It does not make the run affordable.
+
+| phase | measured |
+|---|---|
+| Stryker build from source (Release) | 28 s |
+| Analysis + solution build | ~15 s |
+| **Initial 1,258-test run + generating 7,914 mutants (MTP)** | **8 m 49 s – 14 m 25 s** |
+| **Per mutant, `coverage-analysis: off`, uncontended** | **13 m 20 s** (measured on a 1-mutant run) |
+| **Per mutant, same, with concurrency 2** | **~26 min each** — 12 mutants took 2 h 37 m 44 s of mutation phase |
+| `coverage-analysis: perTest` capture | **abandoned at 33 min**, incomplete |
+
+Two mechanisms break the economics, and they compound:
+
+- **No oracle filter** (finding 2), so every mutant that is not skipped runs against all
+  1,258 tests, dozens of which spawn real harness runs invoking `dotnet build` and
+  `dotnet test`.
+- **`perTest` coverage capture degenerates.** It walks the suite one test at a time, and on
+  this repo it began emitting
+  `Timed out waiting for coverage relay ack for test <hash>; marking as Dubious`
+  at a steady ~10–12 per minute — 232 tests marked `Dubious` in 33 minutes, with the rate
+  showing essentially *every* test timing out by the end. It was killed at that point, so
+  no completion figure exists.
+
+  `Dubious` is not free: `CoverageAnalyser` adds every dubious test to *every* mutant's
+  covering set. A capture that mostly times out therefore collapses `perTest` back into
+  "run the whole suite per mutant" — after paying for the capture. The relay is a
+  memory-mapped-file handshake (`MutantControl.EnsureEpochMmf`), and its documented fallback
+  on failure is exactly this: report `Dubious` rather than hang.
+
+Scaling the measured throughput — 12 mutants in 2 h 37 m of mutation phase at concurrency 2
+— the committed live-surface scope (369 mutants across three files) projects to roughly
+**80 hours**, i.e. three-and-a-half days of continuous running. That is why the run below is
+scoped to one file.
+
+### The run that was made
+
+Scope deliberately narrowed to `**/Ui/LiveTableRows.cs` — **the same 12 mutants the
+`vstest` path reported as 12 fabricated survivors**, so the two runs are directly
+comparable.
+
+| | 4.16.0-equivalent (`vstest`) | master `55464f4` (`mtp`) |
+|---|---|---|
+| Mutants generated (whole Cli project) | 7,914 | 7,914 |
+| CompileError | 1,484 | 1,484 |
+| Ignored (block already covered) | 6 | 6 |
+| Ignored (out of `mutate` scope) | 6,412 | 6,412 |
+| **Tested** | **12** | **12** |
+| Killed | **0** | **12** |
+| Survived | **12** | **0** |
+| Timeout | 0 | **0** |
+| Errors | 0 | 0 |
+| **Score** | **0.00 %** | **100.00 %** |
+| Wall clock | 1 min 12 s | **2 h 52 m 39 s** |
+
+The skip counts are identical down to the last mutant, so this is the same twelve mutants
+judged twice by the same binary. Every one of them:
+
+| # | line | mutator | replacement |
+|---|---|---|---|
+| 1 | 55 | String mutation | `$""` |
+| 2 | 111 | Block removal | `{}` |
+| 3 | 122 | Logical mutation | `!showAllTasks \|\| completedWaves.Contains(wave.Dir)` |
+| 4 | 122 | Negate expression | `!(!showAllTasks && completedWaves.Contains(wave.Dir))` |
+| 5 | 122 | LogicalNot to un-LogicalNot | `showAllTasks` |
+| 6 | 124 | Statement mutation | `;` |
+| 7 | 133 | Logical mutation | `… == 0 && breakdownWaves?…` |
+| 8 | 133 | Negate expression | `!(… == 0 \|\| breakdownWaves?…)` |
+| 9 | 133 | Equality mutation | `breakdownWaves?.Contains(wave.Dir) != true` |
+| 10 | 133 | Boolean mutation | `false` |
+| 11 | 135 | Statement mutation | `;` |
+| 12 | 140 | Statement mutation | `;` |
+
+### Triage: there are no survivors
+
+**Survived: 0.** There is no survivor list to triage into genuine-gap / equivalent-mutant /
+timeout-misreported, because none was produced. `Timeout: 0` and `Errors: 0` as well, so the
+score is not inflated by timeouts being scored as kills — the failure mode that would have
+made a 100 % as hollow as the earlier 0 %.
+
+**So the adversarial check was pointed the other way.** After a run that fabricated twelve
+survivors, the symmetric risk in a 100 % run is fabricated *kills*. Three of the twelve were
+re-applied to the source by hand (bytes patched so CRLF survives), built normally, and run
+against the 47-test three-class subset:
+
+| # | mutant | hand-applied result |
+|---|---|---|
+| 3 | line 122, `&&` → `\|\|` | **Failed: 14, Passed: 33, Skipped: 0, Total: 47** (968 ms) |
+| 11 | line 135, `rows.Add(new WavePhaseLiveRow(wave.Dir));` → `;` | **Failed: 5, Passed: 42, Skipped: 0, Total: 47** (1 s) |
+| 1 | line 55, `KeyFor` → `$""` | **Failed: 1, Passed: 46, Skipped: 0, Total: 47** (1 s) |
+
+All three kills are real. Each was reverted immediately after measurement.
+
+> **A fourth attempt failed for an instructive reason.** Mutant 10 (line 133 → `false`)
+> **cannot be hand-verified in this repo**: `if (false)` makes line 135 unreachable, and
+> `TreatWarningsAsErrors` turns `CS0162: Unreachable code detected` into a build error.
+> Stryker compiles mutants with its own Roslyn compilation, which does not honour the
+> MSBuild warnings-as-errors setting — so **Stryker can test mutants that this repo's build
+> policy forbids.** That is not a defect (the IL is what the tests would have run against),
+> but it does mean hand-verification is not available for every mutant Stryker reports.
+
+### What this run does and does not certify
+
+**Certifies:**
+
+- **The instrument works.** Master's MTP runner activates mutants against this repo's
+  xunit.v3 test projects. Twelve for twelve, with three independently confirmed by hand.
+- **`LiveTableRows.Plan` is genuinely well pinned.** Every operator, boolean, statement and
+  block mutation the tool can express in that file is caught by the existing tests. That is
+  a real, if narrow, quality result — the first one this exercise has produced.
+
+**Does not certify:**
+
+- **Anything outside `LiveTableRows.cs`.** `LiveRunObserver.cs` and `LiveNarrative.cs` — the
+  other two files in the committed live-surface scope, and the ones the #635 defect actually
+  lived in — were **not** run. That leaves 357 of the 369 in-scope mutants unmeasured.
+- **That #372/#635 cannot come back.** Unchanged from the analysis above: Stryker's mutators
+  cannot express a method-call substitution, and the `[CallerFilePath]` source-reading guard
+  in `LiveNarrativeCompositeTests` is invisible to a tool that mutates IL.
+- **A 100 % score here does not generalise.** Twelve mutants in one 147-line pure function is
+  the easiest possible target: no I/O, no concurrency, no child processes.
+
+### Recommendation — revised
+
+**Do not schedule it. Do not put it on the PR path. Keep it as an on-demand, source-built
+instrument, and do not spend more on it until upstream ships a release.**
+
+What changed: the verdict is no longer *blocked-on-tooling*. The tool now measures something
+true. What has **not** changed is the conclusion about scheduling — but the reason is now
+cost rather than correctness:
+
+- **2 h 52 m for twelve mutants in one file.** The committed live-surface scope is 369
+  mutants; at this measured rate that is **~80 hours**, and the whole Cli project is not
+  reachable at all.
+- **The cost lever is gone under the runner that works** (finding 2), and the alternative
+  lever (`perTest` coverage) degenerates into the `Dubious` storm. Until one of those is
+  fixed, every mutant costs a full 1,258-test suite run.
+- **Waiting is nearly free.** The fix is merged; only a release is missing. A source build is
+  a few minutes of clone-and-pack, so re-testing when the next version ships costs almost
+  nothing.
+
+Concrete order of operations for whoever picks this up next:
+
+1. **Wait for the release.** Re-test `perTest` when it lands — if the coverage relay stops
+   timing out, per-mutant cost collapses from a full suite to a handful of tests, and this
+   becomes an affordable on-demand tool.
+2. **If it is wanted before then**, run it source-built, one file at a time, on demand, and
+   budget hours. `**/Ui/LiveNarrative.cs` is the highest-value next file.
+3. **Keep the canary gate, but change the canary.** The gate is vindicated — it is the only
+   reason this run is trustworthy in either direction. Use **`LiveTableRows.cs:140`
+   statement-deletion**, not the `waves.Count == 0` mutant the earlier recommendation named
+   (finding 1). Assert on that mutant's *status*, never on the score.
+4. **File two upstream issues** if they are not already known: the LINQ `Count() → Sum()`
+   mutator firing on a `Count` *property* and taking valid sibling mutants down with it
+   (finding 1), and `test-case-filter` being silently ignored by the MTP runner (finding 2).
+
+### Reproducing this
+
+```bash
+git clone https://github.com/stryker-mutator/stryker-net.git <src>     # 55464f4
+dotnet pack <src>/src/Stryker.CLI/Stryker.CLI/Stryker.CLI.csproj -c Release \
+  -o <pkg> -p:PackageVersion=4.17.0-master-55464f4
+dotnet tool install dotnet-stryker --version 4.17.0-master-55464f4 \
+  --add-source <pkg> --tool-path <tool>        # --tool-path, NOT -g
+
+# from the repo root; -O MUST point outside the repo
+<tool>/dotnet-stryker -f <config> -O <out> --skip-version-check
+```
+
+The config must set `"test-runner": "mtp"`. **Everything in this document that reports a
+fabricated result was produced with the default, `vstest`.**
+
+> Still true, and it bit again here: **an aborted run leaves the MUTATED assembly in
+> `tests/**/bin`.** Killing the `perTest` attempt left a 777,216-byte `Guardrails.Cli.dll`
+> in place with the 577,024-byte original beside it as `.stryker-unchanged`. It was restored
+> by hand and hash-checked against `src/Guardrails.Cli/bin/`. Always check after an abort.
+
+### Verification gate for this follow-up
+
+Clean `dotnet test Guardrails.sln -c Debug` (builds first, so nothing ran against a leftover
+mutated assembly), after all mutation work and with the tree restored:
+
+| suite | passed | failed | skipped | total | duration |
+|---|---|---|---|---|---|
+| `Guardrails.Core.Tests` | 2,577 | **0** | 0 | 2,577 | 7 m 53 s |
+| `Guardrails.Integration.Tests` | 1,254 | **0** | **4** | 1,258 | 17 m 24 s |
+| **total** | **3,831** | **0** | **4** | **3,835** | — |
+
+The 4 skips are named rather than summarised, because a skip is evidence that did not get
+collected — and they are the same four as the run above, i.e. the opt-in real-Claude tests
+(`GUARDRAILS_REAL_CLAUDE=1`) and their model-tiering siblings:
+
+- `RealClaudeSmokeTests.TrivialPromptTask_RunsGreen_AgainstRealClaude`
+- `RealClaudeClaudeNestedPlanTests.PromptActionTask_ClaudeNestedPlan_WorktreeMode_RunsGreen_AgainstRealClaude`
+- `ModelTiering.NoRoutingGoldenTests.FreshBreakdown_ReproducesTheGoldenByteForByte`
+- `ModelTiering.NoRoutingNegativeAssertionTests.FreshBreakdown_CarriesNoTierArtefacts`
+
+`WebhookEventSinkTests.AFaultedPumpIsReportedNotSummarizedAsZero` (secondary finding 4
+above) passed again here — further support for load-sensitivity rather than a defect.
+
+**Tree state:** no source file was modified. Four mutants were hand-applied during this
+session (three verifications plus the ground-truth canary) and each was reverted with
+`git checkout --` immediately after its measurement. The only tracked change on this branch
+from this session is this document. No `*.stryker-unchanged`, `StrykerOutput/` or
+`.stryker-tmp/` remains anywhere in the worktree; all Stryker output went outside the repo
+via `-O`, and the Stryker source clone, package and tool path all live outside it too.
+
+**Configs are unchanged.** `stryker-config.json` and `stryker-config.core-execution.json`
+were deliberately not edited: their do-not-trust headers are still accurate for the
+*released* tool, which is what anyone running `dotnet stryker` from NuGet will get. The
+working configuration differs from them in ways this document states (`"test-runner": "mtp"`,
+and `test-case-filter` having no effect), and the runs above were driven from throwaway
+configs outside the repo rather than by mutating the committed ones.
