@@ -293,7 +293,18 @@ public sealed class TaskExecutor : ITaskExecutor
             // A guardrail-failed outcome indicts the MODEL's work, not the infrastructure around it;
             // count it so the NEXT attempt's route climbs the escalation ladder (issue #228) — a
             // same-rung retry just re-attempts the identical model against the same guardrails.
-            if (attempt.Outcome is AttemptOutcome.GuardrailFailed)
+            //
+            // #538 split three non-guardrail failures out of GuardrailFailed so the JOURNAL stops
+            // misnaming them. They are listed here EXPLICITLY so that split changes nothing about
+            // escalation: all three were counted before and are counted now. That is deliberate rather
+            // than incidental — a write outside the declared scope, a harness-write request the model
+            // shaped wrongly, and an action that staged nothing all indict the model's work exactly as
+            // the comment above describes. Changing which outcomes climb the ladder is a separate
+            // decision from fixing what the record says, and #538 is only the second one.
+            if (attempt.Outcome is AttemptOutcome.GuardrailFailed
+                or AttemptOutcome.HarnessWriteRejected
+                or AttemptOutcome.WriteScopeViolation
+                or AttemptOutcome.StagingFailed)
             {
                 guardrailFailedRetries++;
             }
@@ -1118,7 +1129,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     fileWritesRolledBack, salvageRef);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                    AttemptOutcome.GuardrailFailed,
+                    // #538: the ATTEMPT outcome is the staging failure itself. TaskOutcome stays
+                    // GuardrailFailed — the task-level settlement and the retry semantics are unchanged
+                    // by this issue, which is about what the durable record SAYS, not about what happens.
+                    AttemptOutcome.StagingFailed,
                     new TaskResult
                     {
                         TaskId = task.Id,
@@ -1247,7 +1261,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 };
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                    AttemptOutcome.GuardrailFailed,
+                    // #538: a refused harness write is not a guardrail failure — none ran. TaskOutcome
+                    // and the retry semantics are unchanged; only the record stops misnaming the cause.
+                    AttemptOutcome.HarnessWriteRejected,
                     new TaskResult
                     {
                         TaskId = task.Id,
@@ -1307,7 +1323,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     task, attemptNumber, scopeCheck.OffendingPaths, fileWritesRolledBack, salvageRef);
                 AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                    AttemptOutcome.GuardrailFailed,
+                    // #538: the write-scope check runs BEFORE the task's guardrails, so none had run when
+                    // this failed. TaskOutcome and the retry semantics are unchanged.
+                    AttemptOutcome.WriteScopeViolation,
                     new TaskResult
                     {
                         TaskId = task.Id,

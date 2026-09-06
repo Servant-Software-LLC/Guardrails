@@ -97,5 +97,36 @@ public enum AttemptOutcome
     /// <para>Declared LAST deliberately: inserting a member anywhere above would renumber every outcome
     /// after it.</para>
     /// </summary>
-    NoRoute
+    NoRoute,
+
+    /// <summary>
+    /// A <c>needsHarnessWrite</c> request was refused — rejected as out of scope, denied by policy, or
+    /// not applied (a bad or ambiguous anchor, the wrong mode for the target, an unusable payload).
+    ///
+    /// <para>
+    /// <b>Why this is not <see cref="GuardrailFailed"/> (#538).</b> No guardrail ran and none failed, so
+    /// the attempt used to be journaled as a guardrail failure naming NO guardrail — a combination that
+    /// is not merely uninformative but internally inconsistent, and that points a reader (or a
+    /// self-healing agent, #529) at the guardrail set, which was never the problem. Measured on
+    /// <c>27-operator-visibility</c> task <c>08-record-visibility-surfaces-in-ssot</c>, run
+    /// <c>2026-08-29T16-37-39Z-fc5d</c>: six attempts, <c>needs-human</c>, $2.58, with
+    /// <c>run.json</c> reading <c>guardrail-failed  failedGuardrails=0</c> five times. Every real cause
+    /// was the same — an anchored <c>edits[N].old</c> that was NOT FOUND — and the durable record held
+    /// none of it; reconstructing it meant reading <c>feedback.md</c> prose out of the log directory.
+    /// </para>
+    /// </summary>
+    HarnessWriteRejected,
+
+    /// <summary>
+    /// The post-action write-scope check found writes outside the task's declared <c>writeScope</c>.
+    /// Like <see cref="HarnessWriteRejected"/>, no guardrail ran (the check precedes them), so recording
+    /// it as a guardrail failure named nothing and misdirected the reader (#538).
+    /// </summary>
+    WriteScopeViolation,
+
+    /// <summary>
+    /// The post-action staging move failed (an empty source, or an IO error) before the write-scope check
+    /// and before any guardrail ran (#538).
+    /// </summary>
+    StagingFailed
 }

@@ -2374,6 +2374,12 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
           "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed | no-route
+                                    //   | harness-write-rejected | write-scope-violation | staging-failed   (#538)
+                                    // The last three are NOT guardrail failures: no guardrail ran at any of
+                                    // them, and they used to be journaled as `guardrail-failed` with an EMPTY
+                                    // `failedGuardrails` — a combination that is internally inconsistent and
+                                    // points a reader at the guardrail set, which was never the cause.
+                                    // INVARIANT: `guardrail-failed` always names at least one guardrail.
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "usage": {                // OPTIONAL tokens-only volume (#201): the accounting surface a COSTLESS

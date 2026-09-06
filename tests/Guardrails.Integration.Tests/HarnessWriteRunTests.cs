@@ -363,6 +363,17 @@ public sealed class HarnessWriteRunTests
         JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
         Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
 
+        // #538: the durable record names the actual cause. This attempt used to journal
+        // `guardrail-failed` with an EMPTY failedGuardrails — no guardrail ran, so there was nothing to
+        // name — which is not merely uninformative but internally inconsistent, and points a reader (or a
+        // self-healing agent, #529) at the guardrail set, which was never the problem. Measured cost of
+        // the mislabel on a real run: six attempts, needs-human, $2.58, with run.json saying "a guardrail
+        // failed" five times and naming none, while the real cause (an anchored edits[N].old that was NOT
+        // FOUND) survived only as prose in feedback.md.
+        AttemptRecord rejected = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.HarnessWriteRejected, rejected.Outcome);
+        Assert.Empty(rejected.FailedGuardrails);
+
         // The retry feedback names the offending path (actionable, same tone as a normal write-scope
         // violation).
         JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));

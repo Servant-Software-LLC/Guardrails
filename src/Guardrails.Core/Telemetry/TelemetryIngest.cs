@@ -218,9 +218,39 @@ public static class TelemetryIngest
     /// The attempt row's <see cref="TelemetryRow.Outcome"/>: the bare SSOT §7 outcome token, EXCEPT a
     /// <see cref="AttemptOutcome.GuardrailFailed"/> attempt, which is refined through
     /// <see cref="TelemetryFailureClassifier"/> — see the class doc for the token shapes.
+    ///
+    /// <para>
+    /// <b>The TOKENS are unchanged by #538, deliberately.</b> That issue gave the three non-guardrail
+    /// failures their own <see cref="AttemptOutcome"/> values, so a journal written today says what
+    /// happened without anyone having to read <c>feedback.md</c> prose. The telemetry token is a
+    /// different contract with a different audience: it is the key an evidence corpus groups on across
+    /// releases, and silently renaming it would make every comparison spanning this change wrong in a way
+    /// nothing would report. So a journaled <see cref="AttemptOutcome.WriteScopeViolation"/> still emits
+    /// <c>guardrail-failed:write-scope-violation</c> — the SAME string the prose classifier produced for
+    /// the same event before.
+    /// </para>
+    ///
+    /// <para>
+    /// What changes is where the answer comes from: a journal carrying the distinct outcome is read
+    /// DIRECTLY, and the prose classifier is now the fallback for journals written before #538 — where
+    /// the outcome really is an undifferentiated <c>guardrail-failed</c> and <c>feedback.md</c> is the
+    /// only evidence there is.
+    /// </para>
     /// </summary>
     private static string AttemptOutcomeToken(AttemptRecord attempt)
     {
+        // #538: journaled directly, no prose recovery needed. Kept on the historical token strings so the
+        // corpus stays comparable across the change.
+        switch (attempt.Outcome)
+        {
+            case AttemptOutcome.WriteScopeViolation:
+                return "guardrail-failed:write-scope-violation";
+            case AttemptOutcome.HarnessWriteRejected:
+                return "guardrail-failed:harness-write-out-of-scope";
+            case AttemptOutcome.StagingFailed:
+                return "guardrail-failed:staging-move-failure";
+        }
+
         if (attempt.Outcome != AttemptOutcome.GuardrailFailed)
         {
             return JournalJson.OutcomeToken(attempt.Outcome);
