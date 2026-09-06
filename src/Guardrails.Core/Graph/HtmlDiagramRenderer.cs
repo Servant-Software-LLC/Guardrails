@@ -255,7 +255,7 @@ public static class HtmlDiagramRenderer
   /* In-place live-poll offline fallback (issue #523): hidden by the `hidden` attribute unless a
      poll of this page's own url fails — most commonly because it was opened directly over file://
      rather than served by the log-site server, where fetch() of its own url is blocked. */
-  #gr-live-offline { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
+  #gr-live-offline, #gr-live-paused { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
                       border: 1px solid #b8860b; color: #ffd166; border-radius: 6px;
                       padding: 6px 10px; font-size: 12px; max-width: 320px; }
   #legend { position: fixed; top: 8px; right: 8px; z-index: 10; background: #121a24;
@@ -334,6 +334,9 @@ public static class HtmlDiagramRenderer
   live. The diagram SERVED by the log-site server is live. To get one for a run in progress, run
   <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
   under the URL it prints; task/guardrail status then updates automatically as the run progresses.</div>
+<div id="gr-live-paused" hidden>Live status updates paused &mdash; the last
+  <span id="gr-live-fails">0</span> poll attempts failed. Still retrying; this clears itself when one
+  succeeds.</div>
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
 <script type="application/json" id="task-folder-targets">__TASK_FOLDER_TARGETS__</script>
@@ -802,13 +805,26 @@ document.getElementById('fs').onclick   = () => document.documentElement.request
     // GR_LIVE_POLL_MS, and every function that mentions it, leaves no trace once the run has settled.
     private const string LivePollScriptTemplate = """
 const GR_LIVE_POLL_MS = __LIVE_POLL_MS__;
+// Consecutive failures before the page says anything (#628). ~3 polls of genuine silence, long enough
+// to outlast a throttled background tab, a sleeping machine, or a page rewritten mid-run.
+const GR_LIVE_MAX_FAILS = 3;
 let livePollTimer = null;
+let liveFails = 0;
 function stopLivePoll() {
   if (livePollTimer !== null) { clearInterval(livePollTimer); livePollTimer = null; }
 }
 function showLiveOfflineNotice() {
   const notice = document.getElementById('gr-live-offline');
   if (notice) notice.hidden = false;
+}
+// Reversible, unlike the offline notice above: nothing ever un-hid that one, so a recovered server left
+// a false claim on screen for as long as the page stayed open (#628).
+function setLivePausedNotice(shown) {
+  const notice = document.getElementById('gr-live-paused');
+  if (!notice) { return; }
+  const count = document.getElementById('gr-live-fails');
+  if (count) { count.textContent = String(liveFails); }
+  notice.hidden = !shown;
 }
 // Fetch this page's OWN url (served by the log-site server — a plain file:// view cannot fetch
 // itself, hence the catch below), pull the fresh #node-status JSON out of the response, and
@@ -821,10 +837,15 @@ async function pollLiveStatus(svgEl) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     text = await res.text();
   } catch (e) {
-    showLiveOfflineNotice();
-    stopLivePoll();
+    // Say only what is known: N attempts failed (#628). One dropped poll is not evidence the server is
+    // gone — a throttled background tab produces one, and declaring the page dead on it (and cancelling
+    // the interval) left a healthy run looking stranded until a human reloaded.
+    liveFails++;
+    setLivePausedNotice(liveFails >= GR_LIVE_MAX_FAILS);
     return;
   }
+  liveFails = 0;
+  setLivePausedNotice(false);
   const doc = new DOMParser().parseFromString(text, 'text/html');
   const statusEl = doc.getElementById('node-status');
   if (statusEl) {
@@ -839,7 +860,23 @@ async function pollLiveStatus(svgEl) {
   }
 }
 function startLivePoll(svgEl) {
-  livePollTimer = setInterval(() => pollLiveStatus(svgEl), GR_LIVE_POLL_MS);
+  // file:// is PERMANENT and synchronously decidable — show the notice at once rather than spending
+  // failed fetches discovering it, and never start a timer that cannot succeed (#628).
+  if (window.location.protocol === 'file:') { showLiveOfflineNotice(); return; }
+  if (livePollTimer === null) {
+    livePollTimer = setInterval(() => pollLiveStatus(svgEl), GR_LIVE_POLL_MS);
+  }
+  // A background tab is where this went wrong most often: browsers throttle and abort fetch there. Stop
+  // while hidden and poll IMMEDIATELY on return, so the page is current the moment it is looked at.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { stopLivePoll(); return; }
+    liveFails = 0;
+    setLivePausedNotice(false);
+    pollLiveStatus(svgEl);
+    if (livePollTimer === null) {
+      livePollTimer = setInterval(() => pollLiveStatus(svgEl), GR_LIVE_POLL_MS);
+    }
+  });
 }
 """;
 }

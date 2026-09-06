@@ -74,14 +74,23 @@ public static class LogSiteRenderer
     private const int LivePollMs = 5000;
 
     /// <summary>
+    /// Consecutive failed polls before the page says anything (issue #628). #543's fix declared the run
+    /// gone on the FIRST failure and cancelled the interval permanently, so a page left in a background
+    /// tab came back claiming it was a snapshot while a manual refresh rendered the current page —
+    /// proving both stated causes false. Three is ~15s of genuine silence, long enough to outlast a
+    /// throttled tab, a sleeping machine or a page rewritten mid-run.
+    /// </summary>
+    private const int LivePollFailureThreshold = 3;
+
+    /// <summary>
     /// The live-poll offline notice's CSS (issue #543). Appended to the page's one <c>&lt;style&gt;</c>
     /// element ONLY on a during-run page, so the FINAL settled page keeps its exact pre-#543 bytes.
     /// </summary>
     private const string LivePollStyle = """
 
-  #gr-live-offline { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
-                     border: 1px solid #b8860b; border-radius: 6px; padding: .5rem .7rem;
-                     color: #f0d9a8; font-size: .78rem; max-width: 32rem; }
+  #gr-live-offline, #gr-live-paused { position: fixed; bottom: 8px; right: 8px; z-index: 10;
+                     background: #3a2410; border: 1px solid #b8860b; border-radius: 6px;
+                     padding: .5rem .7rem; color: #f0d9a8; font-size: .78rem; max-width: 32rem; }
 """;
 
     /// <summary>
@@ -118,19 +127,39 @@ public static class LogSiteRenderer
     /// </para>
     /// </summary>
     private static string LivePollScript() => $$"""
-<div id="gr-live-offline" hidden>Not live &mdash; this page cannot poll for updates (it was opened as a
-file, or the run's log server is gone). It is a snapshot. To watch a run in progress, run
+<div id="gr-live-offline" hidden>Not live &mdash; this page was opened as a file, so it cannot poll for
+updates. It is a snapshot. To watch a run in progress, run
 <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints &mdash; it
 serves these logs live, and works against a run already in flight.</div>
+<div id="gr-live-paused" hidden>Live updates paused &mdash; the last <span id="gr-live-fails">0</span>
+poll attempts failed. Still retrying; this clears itself when one succeeds.</div>
 <script>
 const GR_LOG_POLL_MS = {{LivePollMs}};
+// A single dropped poll is not evidence the server is gone (#628). A backgrounded tab, a sleeping
+// machine, a momentarily busy server and a page being rewritten mid-run all produce one, and #543's
+// fix declared the page dead on the first of them — permanently, since it also cancelled the interval.
+// Three consecutive failures is ~15s of genuine silence.
+const GR_LOG_MAX_FAILS = {{LivePollFailureThreshold}};
 let grLogPollTimer = null;
+let grLogFails = 0;
 function grStopLogPoll() {
   if (grLogPollTimer !== null) { clearInterval(grLogPollTimer); grLogPollTimer = null; }
+}
+function grStartLogPoll() {
+  if (grLogPollTimer === null) { grLogPollTimer = setInterval(grPollLog, GR_LOG_POLL_MS); }
 }
 function grShowLogOffline() {
   const notice = document.getElementById('gr-live-offline');
   if (notice) notice.hidden = false;
+}
+// Reversible, unlike the offline notice: nothing ever un-hid that one, so a recovered server left a
+// false claim on screen for as long as the page stayed open.
+function grSetLogPaused(shown) {
+  const notice = document.getElementById('gr-live-paused');
+  if (!notice) { return; }
+  const count = document.getElementById('gr-live-fails');
+  if (count) { count.textContent = String(grLogFails); }
+  notice.hidden = !shown;
 }
 // Fetch this page's OWN url and swap in the fetched <body>. No navigation happens, so scroll position
 // (and any click already in flight) survives — the whole point of not using <meta refresh>.
@@ -141,17 +170,32 @@ async function grPollLog() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     text = await res.text();
   } catch (e) {
-    grShowLogOffline();
-    grStopLogPoll();
+    // Say only what is known: N attempts failed. NOT "the server is gone", which this has not checked.
+    grLogFails++;
+    grSetLogPaused(grLogFails >= GR_LOG_MAX_FAILS);
     return;
   }
+  grLogFails = 0;
+  grSetLogPaused(false);
   const doc = new DOMParser().parseFromString(text, 'text/html');
   if (doc.body) { document.body.innerHTML = doc.body.innerHTML; }
   // The terminal signal: the settled page is rendered WITHOUT this poll block, so a fetched document
   // that no longer mentions GR_LOG_POLL_MS is the run having finished and rewritten the page.
   if (!text.includes('GR_LOG_POLL_MS')) { grStopLogPoll(); }
 }
-grLogPollTimer = setInterval(grPollLog, GR_LOG_POLL_MS);
+// A background tab is where this went wrong most often: browsers throttle and abort fetch there, so the
+// page accumulated failures while nobody was looking at it. Stop polling when hidden and poll IMMEDIATELY
+// on return, which both removes the trigger and makes the page current the moment it is looked at.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { grStopLogPoll(); return; }
+  grLogFails = 0;
+  grSetLogPaused(false);
+  grPollLog();
+  grStartLogPoll();
+});
+// file:// is PERMANENT and synchronously decidable — no guessing, and no reason to spend three failed
+// fetches discovering it. Every other case starts polling.
+if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStartLogPoll(); }
 </script>
 """;
 

@@ -96,6 +96,87 @@ public sealed class DiagramRefreshTests
     }
 
     /// <summary>
+    /// Issue #628, the diagram half. The status poll gave up permanently on ONE failed fetch — revealing
+    /// the offline notice and cancelling the interval — so a page left in a background tab came back
+    /// stale, badged as not-live, while the server was fine and a refresh proved it.
+    ///
+    /// <para>
+    /// The catch now COUNTS and keeps trying. That is the only way a page recovers on its own when the
+    /// blip passes, and a dropped poll has several innocent and transient sources: a browser throttling
+    /// or aborting <c>fetch</c> in a background tab, the machine sleeping and waking, the server
+    /// momentarily busy, a non-2xx while the page is being rewritten mid-run.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AFailedStatusPoll_CountsButDoesNotStopTheTimer()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        // Scope the search to the STATUS POLL. The page carries other catch blocks (the pan-zoom code has
+        // one), and an unscoped IndexOf finds the first of them — which is how a mis-aimed anchor reports
+        // a finding about a function it was never looking at.
+        int pollStart = html.IndexOf("async function pollLiveStatus", StringComparison.Ordinal);
+        Assert.True(pollStart >= 0, "expected the status poll function on a during-run page");
+
+        int catchStart = html.IndexOf("} catch (e) {", pollStart, StringComparison.Ordinal);
+        Assert.True(catchStart >= 0, "expected the status poll's fetch to be guarded by a catch");
+        int catchEnd = html.IndexOf("return;", catchStart, StringComparison.Ordinal);
+        Assert.True(catchEnd > catchStart, "expected the catch block to bail out with a return");
+
+        string catchBody = html[catchStart..catchEnd];
+        Assert.Contains("liveFails++;", catchBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("stopLivePoll();", catchBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("showLiveOfflineNotice();", catchBody, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A threshold of one is a counter that changes nothing, and it would satisfy every other assertion
+    /// here — so assert the VALUE.
+    /// </summary>
+    [Fact]
+    public void TheStatusPollFailureThreshold_IsMoreThanOne()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Match match = Regex.Match(html, @"const GR_LIVE_MAX_FAILS = (\d+);");
+        Assert.True(match.Success, "expected a named consecutive-failure threshold");
+
+        int threshold = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+        Assert.True(threshold > 1, $"a threshold of {threshold} declares the run dead on the first blip");
+    }
+
+    /// <summary>
+    /// <c>file://</c> is permanent and synchronously decidable, so it is settled before any fetch — which
+    /// is what lets the http path stop guessing. Conflating the two produced a message asserting a cause
+    /// the code had never established.
+    /// </summary>
+    [Fact]
+    public void AFileUrl_ShowsTheOfflineNoticeUpFront_AndNeverStartsTheTimer()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains(
+            "if (window.location.protocol === 'file:') { showLiveOfflineNotice(); return; }",
+            html, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The transient notice is reversible and the page pauses while hidden — the background tab being the
+    /// most common trigger, this removes the cause rather than tolerating it, and polls on return so the
+    /// diagram is current the moment somebody looks at it.
+    /// </summary>
+    [Fact]
+    public void ThePausedNotice_IsReversible_AndThePagePausesWhileHidden()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains("id=\"gr-live-paused\"", html, StringComparison.Ordinal);
+        Assert.Contains("setLivePausedNotice(false);", html, StringComparison.Ordinal);
+        Assert.Contains("notice.hidden = !shown;", html, StringComparison.Ordinal);
+        Assert.Contains("visibilitychange", html, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Issue #552 — the notice must name the command that produces a live copy, not merely assert one
     /// exists somewhere. "The diagram served by the log-site server IS live; open that copy" told the
     /// reader what they were missing and nothing about how to get it, which for a headless or

@@ -123,6 +123,9 @@ public sealed class LogSiteRefreshTests
     [InlineData("grStopLogPoll")]
     [InlineData("grShowLogOffline")]
     [InlineData("gr-live-offline")]
+    [InlineData("gr-live-paused")]
+    [InlineData("GR_LOG_MAX_FAILS")]
+    [InlineData("visibilitychange")]
     [InlineData("setInterval")]
     public void SettledPage_CarriesNoTraceOfThePollSubsystem(string fragment)
     {
@@ -131,24 +134,113 @@ public sealed class LogSiteRefreshTests
     }
 
     /// <summary>
-    /// The stopping condition the whole issue turns on. A killed run never reaches the final settle, so the
-    /// page's own poll is the only thing that can quiet it: one failed fetch must both stop the timer and
-    /// say so. Asserting both calls sit INSIDE the catch is what distinguishes a poll that gives up from one
-    /// that retries forever against a server that is never coming back.
+    /// <b>This assertion used to say the opposite, and it was the defect (#628).</b> It required ONE failed
+    /// fetch to reveal the notice and cancel the interval permanently. #543 was right that a stranded page
+    /// polling forever is a defect and right to add a terminal condition; the branch it added was simply
+    /// unconditional on the first error, so the cure fired on healthy runs.
+    ///
+    /// <para>
+    /// Measured: a log-site page left open in a background tab showed <i>"Not live — this page cannot poll
+    /// for updates (it was opened as a file, or the run's log server is gone). It is a snapshot."</i> while
+    /// a manual refresh immediately rendered the CURRENT page — which proves the log server was alive and
+    /// neither stated cause was true. A dropped poll has several innocent sources, all of them transient: a
+    /// browser throttling or aborting <c>fetch</c> in a background tab, the machine sleeping and waking, the
+    /// server momentarily busy, a non-2xx while the page is being rewritten mid-run.
+    /// </para>
+    ///
+    /// <para>
+    /// So the catch must NOT stop the timer. It counts, and the page keeps trying — which is the only way a
+    /// page recovers on its own when the blip passes.
+    /// </para>
     /// </summary>
     [Fact]
-    public void AFailedPoll_StopsTheTimerAndRevealsTheOfflineNotice()
+    public void AFailedPoll_CountsButDoesNotStopTheTimer()
     {
         string html = Index(live: true);
 
-        int catchStart = html.IndexOf("} catch (e) {", StringComparison.Ordinal);
+        // Scope to the POLL function. An unscoped IndexOf would find whichever catch block comes first on
+        // the page, which is a finding about code the test was never aiming at.
+        int pollStart = html.IndexOf("async function grPollLog", StringComparison.Ordinal);
+        Assert.True(pollStart >= 0, "expected the poll function on a during-run page");
+
+        int catchStart = html.IndexOf("} catch (e) {", pollStart, StringComparison.Ordinal);
         Assert.True(catchStart >= 0, "expected the poll's fetch to be guarded by a catch");
         int catchEnd = html.IndexOf("return;", catchStart, StringComparison.Ordinal);
         Assert.True(catchEnd > catchStart, "expected the catch block to bail out with a return");
 
         string catchBody = html[catchStart..catchEnd];
-        Assert.Contains("grShowLogOffline();", catchBody, StringComparison.Ordinal);
-        Assert.Contains("grStopLogPoll();", catchBody, StringComparison.Ordinal);
+        Assert.Contains("grLogFails++;", catchBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("grStopLogPoll();", catchBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("grShowLogOffline();", catchBody, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The threshold has to be greater than one, or the count is decoration and the first blip still
+    /// declares the run dead. Asserted on the VALUE rather than on its presence, because a threshold of 1
+    /// would satisfy every other assertion in this file.
+    /// </summary>
+    [Fact]
+    public void TheFailureThreshold_IsMoreThanOne()
+    {
+        string html = Index(live: true);
+
+        int at = html.IndexOf("const GR_LOG_MAX_FAILS = ", StringComparison.Ordinal);
+        Assert.True(at >= 0, "expected a named consecutive-failure threshold");
+        int end = html.IndexOf(';', at);
+        string value = html[(at + "const GR_LOG_MAX_FAILS = ".Length)..end];
+
+        Assert.True(int.TryParse(value, out int threshold), $"threshold '{value}' is not a number");
+        Assert.True(threshold > 1, $"a threshold of {threshold} declares the run dead on the first blip");
+    }
+
+    /// <summary>
+    /// <c>file://</c> is the case #543 was really aimed at, and it is PERMANENT and synchronously decidable
+    /// — <c>window.location.protocol</c> is knowable before any poll is attempted. Deciding it up front is
+    /// what lets the http case stop guessing: the two were conflated into one message that asserted a cause
+    /// the code had never established.
+    /// </summary>
+    [Fact]
+    public void AFileUrl_IsDecidedUpFront_AndNeverStartsTheTimer()
+    {
+        string html = Index(live: true);
+
+        Assert.Contains(
+            "if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStartLogPoll(); }",
+            html, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The notice must be REVERSIBLE. Nothing ever un-hid the old one, so even a recovered server left a
+    /// false claim on screen for as long as the page stayed open — a page that had gone quiet for one
+    /// throttled fetch and then resumed updating still told the operator it was a snapshot.
+    /// </summary>
+    [Fact]
+    public void ThePausedNotice_ClearsItselfWhenAPollSucceeds()
+    {
+        string html = Index(live: true);
+
+        Assert.Contains("grSetLogPaused(false);", html, StringComparison.Ordinal);
+        Assert.Contains("notice.hidden = !shown;", html, StringComparison.Ordinal);
+
+        // And it says only what is known — N attempts failed — never that the server is gone.
+        Assert.Contains("Live updates paused", html, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The background tab is the most common trigger, so the page stops polling while hidden and polls
+    /// IMMEDIATELY on return — removing the cause outright rather than merely tolerating it, and making the
+    /// page current the moment somebody looks at it.
+    /// </summary>
+    [Fact]
+    public void ThePagePausesWhileHidden_AndPollsOnReturn()
+    {
+        string html = Index(live: true);
+
+        Assert.Contains("visibilitychange", html, StringComparison.Ordinal);
+        int at = html.IndexOf("visibilitychange", StringComparison.Ordinal);
+        string handler = html[at..Math.Min(html.Length, at + 400)];
+        Assert.Contains("grStopLogPoll();", handler, StringComparison.Ordinal);
+        Assert.Contains("grPollLog();", handler, StringComparison.Ordinal);
     }
 
     /// <summary>
