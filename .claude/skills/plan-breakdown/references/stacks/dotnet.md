@@ -8,7 +8,7 @@ JVM/Go/Python project these patterns are wrong or irrelevant — use that stack'
 instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6, including §4.1 stub-based
-TDD `build-passes` + `tests-fail-on-stubs`, §4.3 task-level filter scoping + the zero-match guard, and §4.4 the per-test red census over the TRX), in this order, so
+TDD `build-passes` + `tests-fail-on-stubs`, §4.3 task-level filter scoping + the zero-match guard, §4.4 the per-test red census over the TRX, and §6a which RUNNER `dotnet test` drives — MTP silently ignores `--filter`), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
 §11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, §21 baseline-green (preflight) root, then WPF).
@@ -251,7 +251,10 @@ not the token" rule.
   { "description": "Union invariant on the shared launcher: conflict-marker-free; each landed contribution is real", "scope": "integration" }
   ```
 - Always pass `--nologo` (and `-v q` on builds) so the one actionable failure line isn't
-  buried in banner noise. **`-v q` is for `dotnet build` ONLY — never `dotnet test` (§4.3).** On a test
+  buried in banner noise. **That is a rule about the `dotnet build` / `dotnet test` VERBS, not a property
+  of the test app** — `--nologo` is consumed by MSBuild and never reaches the runner, so it is safe under
+  VSTest *and* under Microsoft.Testing.Platform (measured, §6a), while a test binary invoked **directly**
+  rejects it outright. **`-v q` is for `dotnet build` ONLY — never `dotnet test` (§4.3).** On a test
   command it suppresses the whole `Error Message:` / `Expected:` / `Actual:` / `Stack Trace:` block,
   leaving only `[FAIL] <name>`, which defeats §4.2's #179 re-emit by the flag alone. Declare no
   interpreter for `dotnet` — it's a build tool the
@@ -609,7 +612,9 @@ Two measured traps decide *which* count you key on and *how*:
 is the measurement that matters: under `-v q` the runner prints the `[FAIL] <name>` line and **nothing
 else**, so §4.2's re-emit has only test NAMES to re-emit and the retry feedback shows WHAT failed but not
 WHY — exactly the blind-retry failure #179 exists to prevent. §4's "always pass `--nologo` (and `-v q`)"
-is a **build** rule; do not carry `-v q` across to `dotnet test`. (`--nologo` is fine on both.) The
+is a **build** rule; do not carry `-v q` across to `dotnet test`. (`--nologo` is fine on both **`dotnet`
+verbs** — measured under VSTest *and* MTP, because MSBuild consumes it before the runner sees it. It is
+NOT fine on a test binary invoked directly, which rejects it: §6a.) The
 INVERSE red checks have no failure detail to preserve — a non-zero exit is their success — but keep them
 `-v q`-free too, so the two halves of a pair stay copy-pasteable and no one propagates the flag onto a
 forward check by cloning a sibling file.
@@ -983,6 +988,73 @@ framework-selection rule):
   this file.** A "xUnit is the .NET greenfield default" rule here would merely relocate the
   silent guess from the model's weights into the stack file; the choice must stay visible
   and reviewable per breakdown (this is the #40 → #42 resolution).
+
+### 6a. Which RUNNER — VSTest or Microsoft.Testing.Platform — because `--filter` is not portable (#439)
+
+The framework (§6) is not the runner. `dotnet test` drives **VSTest** by default, and
+**Microsoft.Testing.Platform (MTP)** when any one of these flips it — check them all; a single hit decides:
+
+```powershell
+# which RUNNER does `dotnet test` drive here? (breakdown analysis, not a guardrail)
+Get-ChildItem -Recurse -Include *.csproj,*.props,global.json |
+  Select-String -Pattern 'TestingPlatformDotnetTestSupport|UseMicrosoftTestingPlatformRunner|EnableMSTestRunner|"runner"'
+# any hit => MTP. Then the NEGATIVE signal — a TEST project with no VSTest adapter is on
+# its framework's own NATIVE MTP host, which no grep FOR MTP will ever surface. Both
+# clauses are required: without the first, every src project (no adapter, no tests) is a hit.
+Get-ChildItem -Recurse -Filter *.csproj | Where-Object {
+    $p = Get-Content $_ -Raw
+    $p -match '<PackageReference[^>]*Include="(xunit|NUnit|MSTest\.TestFramework)' -and   # IS a test project
+    $p -notmatch 'xunit\.runner\.visualstudio|MSTest\.TestAdapter|NUnit3TestAdapter'      # has NO VSTest adapter
+}
+```
+
+**Under MTP, `--filter` is silently ignored.** Measured (SDK 10.0.204, `net10.0`, `xunit.v3` 3.2.2 +
+`xunit.runner.visualstudio` 3.1.5 + `Microsoft.NET.Test.Sdk` 18.6.0), with a filter matching **nothing**:
+
+```
+$ dotnet test -p:TestingPlatformDotnetTestSupport=true --filter "FullyQualifiedName~NoSuchTestNameXYZ"
+warning MTP0001: VSTest-specific properties are set but will be ignored when using
+Microsoft.Testing.Platform. The following properties are set: VSTestTestCaseFilter;
+Passed! - Failed: 0, Passed: 1, Skipped: 0, Total: 1
+EXIT: 0
+```
+
+Both runners exit **0** on that command, for opposite reasons:
+
+| runner | filter matching nothing | tests run | signal |
+|---|---|---|---|
+| VSTest | honoured | **0** | `No test matches the given testcase filter …` |
+| MTP | **ignored** | **all of them** | `MTP0001` warning, in BUILD output |
+
+**Why this is worse than an ordinary portability wart: it defeats §4.3's guard from the far side.** That
+guard fires on the executed count being **zero**; MTP fails in the opposite direction, running the whole
+suite, so the guard passes on a large count. Where you land is §4.3's own tautology row —
+`Category=PlanWide` → `Total: 4`, exit 1, *"GREEN — tautology"* — reached not by an over-broad filter
+someone authored but by the runner **widening a correctly-authored filter to everything at run time**.
+§4.3's defense against that row is an authoring-time check that the substring discriminates (*"Pick a
+DISCRIMINATING substring"*), and no authoring-time check can see a widening that happens after the
+command is emitted.
+
+**So when the runner is MTP: a filtered `tests-pass` guardrail's SCOPING cannot be trusted**, and its
+`# catches:` line — which names the tests *this pair* owns — is false as written. The tell is `MTP0001`,
+but note where it comes from: the **build**, so a `--no-build` guardrail (as §4.2/§4.3 emit) never prints
+it. Look for it in a full `dotnet test` run at authoring time, not in the guardrail you are about to
+trust. Do not "fix" this by widening the `# catches:` claim to the whole suite: that is §4.3's deadlock
+(a task asserting a sibling's test corpus) with extra steps.
+
+**No replacement filter is offered here, because none was measured.** MTP takes filter arguments of its
+own; the portable form was not probed, so any translation you find is **UNVERIFIED** — measure it against
+a filter matching **nothing** (the failing case, never the passing one) before writing it into a plan.
+
+**This repo is VSTest today**, so the hazard is prospective for us and live for consumers:
+`tests/Guardrails.{Core,Integration}.Tests.csproj` carry `Microsoft.NET.Test.Sdk` +
+`xunit.runner.visualstudio`, and `global.json` has no runner key. Dropping that VSTest bridge, or an SDK
+default changing, flips every committed `--filter` guardrail at once — silently, with no red.
+
+**Not measured:** `UseMicrosoftTestingPlatformRunner=true` — MTP's own CLI on the direct test-binary
+entry point — was not probed; no template in this file invokes a test binary directly. (What WAS measured
+there: `<TestApp>.exe --nologo` → `error: unknown option: --nologo`, exit 3, from xunit.v3's **native**
+CLI, not from MTP's parser.)
 
 ## 7. Entry-point wiring — the executable's `Program.cs` must reference the launcher (#64)
 
