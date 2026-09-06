@@ -177,6 +177,7 @@ public sealed class BreakdownInventory
         var moved = new List<string>();
         var restored = new List<string>();
         var kept = new List<string>();
+        var failed = new List<string>();
 
         foreach (string subtree in HashedSubtrees)
         {
@@ -197,15 +198,28 @@ public sealed class BreakdownInventory
                     continue;
                 }
 
+                // #471 residual: a failed move used to `continue` into silence — the file stayed in the
+                // wave folder, appeared in no list, and the halt still claimed byte-identity. Record it.
                 if (!TryMoveFile(file, Path.Combine(rejectedRoot, key.Replace('/', Path.DirectorySeparatorChar))))
                 {
+                    failed.Add(key);
                     continue;
                 }
 
                 moved.Add(key);
-                if (before is not null && RestoreFromSnapshot(key))
+                if (before is not null)
                 {
-                    restored.Add(key);
+                    // The same silence, other direction: the pre-existing file has now been moved AWAY, so
+                    // a failed restore leaves the folder MISSING it — the loudest possible way not to be
+                    // byte-identical, and previously the quietest.
+                    if (RestoreFromSnapshot(key))
+                    {
+                        restored.Add(key);
+                    }
+                    else
+                    {
+                        failed.Add(key);
+                    }
                 }
             }
         }
@@ -214,9 +228,19 @@ public sealed class BreakdownInventory
         foreach (string key in _files.Keys.OrderBy(k => k, StringComparer.Ordinal))
         {
             string path = Path.Combine(_waveDirectory, key.Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(path) && RestoreFromSnapshot(key))
+            if (File.Exists(path))
+            {
+                continue;
+            }
+
+            if (RestoreFromSnapshot(key))
             {
                 restored.Add(key);
+            }
+            else if (!moved.Contains(key) && !failed.Contains(key))
+            {
+                // A pre-existing file the attempt DELETED, which the snapshot could not put back.
+                failed.Add(key);
             }
         }
 
@@ -228,7 +252,8 @@ public sealed class BreakdownInventory
         {
             MovedPaths = moved,
             RestoredPaths = restored,
-            KeptPaths = kept
+            KeptPaths = kept,
+            FailedPaths = failed
         };
     }
 
@@ -426,4 +451,29 @@ public sealed record RevertSummary
 
     /// <summary>Wave-relative paths that pre-dated the attempt and were left byte-identical — a human's hand-authored gate lives here.</summary>
     public IReadOnlyList<string> KeptPaths { get; init; } = [];
+
+    /// <summary>
+    /// Paths the revert FAILED to move or restore (#471 residual). Every one of these used to be silently
+    /// swallowed: a file that could not be moved was skipped with a bare <c>continue</c>, a snapshot that
+    /// could not be restored was ignored, and neither appeared in any list — so a wave folder still holding
+    /// the attempt's output closed its halt with a byte-identity claim.
+    /// </summary>
+    public IReadOnlyList<string> FailedPaths { get; init; } = [];
+
+    /// <summary>
+    /// Whether this came from the per-file INVENTORY (precise) or from the degraded whole-<c>tasks/</c>
+    /// fallback (coarse). The coarse path moves <c>tasks/</c> only and leaves any <c>guardrails/</c> or
+    /// <c>preflights/</c> the attempt wrote in the wave folder — verbatim the defect #471 was opened about
+    /// — so a halt that does not distinguish the two reports that defect as a clean revert.
+    /// </summary>
+    public bool Precise { get; init; } = true;
+
+    /// <summary>
+    /// True only when the wave folder really is byte-identical to its pre-breakdown state: a precise
+    /// revert with nothing left unreverted. <c>PlanDefinitionHash</c> covers guardrail and preflight
+    /// bodies (#260), so when this is false the hash MOVED and the plan's <c>/guardrails-review</c>
+    /// attestation staled — a consequence the halt has to name, or GR2025 arrives on the next validate
+    /// looking like a warning about work nobody changed.
+    /// </summary>
+    public bool RestoredToPreBreakdownState => Precise && FailedPaths.Count == 0;
 }

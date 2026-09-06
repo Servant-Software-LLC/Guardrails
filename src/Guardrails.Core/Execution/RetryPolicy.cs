@@ -174,7 +174,7 @@ public static class RetryPolicy
         text.AppendLine("  distinct sub-features, or needs an expensive one-time setup better done by an upstream task),");
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-budgeted for turns; suggest a split or a");
         text.AppendLine("  higher maxTurns>\"} to GUARDRAILS_STATE_OUT rather than burning more attempts.");
-        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
         AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
@@ -240,7 +240,7 @@ public static class RetryPolicy
         text.AppendLine("- If this task bundles several distinct sub-features and cannot finish in the time given,");
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-sized for the timeout; suggest a split>\"}");
         text.AppendLine("  to GUARDRAILS_STATE_OUT rather than burning more attempts.");
-        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
         AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
@@ -391,7 +391,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The file written to GUARDRAILS_STATE_OUT must be a single JSON object, e.g.");
         text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
-        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.FragmentRejected);
         return text.ToString();
     }
 
@@ -426,7 +426,7 @@ public static class RetryPolicy
         text.AppendLine("shared key) is rejected and NOTHING is merged. Remove the stray top-level key(s)");
         text.AppendLine("above and nest everything you publish under your own id, e.g.");
         text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
-        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.FragmentRejected);
         return text.ToString();
     }
 
@@ -473,8 +473,25 @@ public static class RetryPolicy
         text.AppendLine("The folder-name-as-single-top-level-key rule governs the STATE you publish. The control");
         text.AppendLine("keys `needsHarnessWrite` and `needsHuman` are exempt from it — they are instructions to");
         text.AppendLine("the harness, not state — and a fragment may carry both at once.");
-        AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.FragmentRejected);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Why an attempt's file writes were rolled back. The CONSEQUENCE is identical either way — the tree
+    /// was reset, re-author everything — but the CAUSE is not, and the disclosure used to assert one of
+    /// them unconditionally (#598).
+    /// </summary>
+    private enum RollbackCause
+    {
+        /// <summary>The attempt emitted a state fragment and the harness rejected it (#162, #164, #586).</summary>
+        FragmentRejected,
+
+        /// <summary>
+        /// No fragment was rejected — the attempt never settled. A <c>MaxTurns</c> or <c>Timeout</c> stop
+        /// usually means no fragment was written at all, so there was nothing to reject (#167).
+        /// </summary>
+        AttemptDidNotSettle
     }
 
     /// <summary>
@@ -484,8 +501,33 @@ public static class RetryPolicy
     /// by the state-rejection path (issue #162) and the timeout / max-turns paths (issue #167) so every
     /// "your prior writes are gone" message stays consistent. No-op when no rollback occurred (serial
     /// mode, where file writes persist across attempts, or the final attempt, which is never reset).
+    ///
+    /// <para>
+    /// <b>The reason clause is a PARAMETER, because it used to be a lie on two of the five paths (#598).</b>
+    /// The text opened <i>"Because the state fragment was rejected,"</i> on every path, including
+    /// <see cref="ForMaxTurnsExceeded"/> and <see cref="ForTimeout"/> — where the attempt typically wrote
+    /// no fragment at all. Measured on plan 35, task <c>10-author-tests-run-finished-exit-paths</c>
+    /// attempt 1: the attempt directory held <c>state-in.json</c> and NO <c>state-out.json</c>, the outcome
+    /// was <c>MaxTurns</c>, and the feedback file diagnosed the turn cap correctly two sections earlier and
+    /// then contradicted itself here.
+    /// </para>
+    ///
+    /// <para>
+    /// That is expensive in a way the wording does not look. The retry prompt is the ONLY thing the next
+    /// attempt reads about what went wrong, so a false causal claim aims it at a real, well-known failure
+    /// mode with a specific remedy — the state-fragment key (#164) — none of which applies. The cost is
+    /// turns, charged to an attempt that has just proved it did not have enough. It is also the defect
+    /// class #585 exists to remove, one layer in: a signal that cannot distinguish its causes, inside the
+    /// message whose job is to resolve them.
+    /// </para>
+    ///
+    /// <para>
+    /// The parameter is REQUIRED rather than defaulted, so a future path has to state which case it is
+    /// instead of inheriting whichever one happened to be written first.
+    /// </para>
     /// </summary>
-    private static void AppendRollbackDisclosure(StringBuilder text, bool fileWritesRolledBack)
+    private static void AppendRollbackDisclosure(
+        StringBuilder text, bool fileWritesRolledBack, RollbackCause cause)
     {
         if (!fileWritesRolledBack)
         {
@@ -495,7 +537,9 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("## File writes were also rolled back");
         text.AppendLine();
-        text.AppendLine("Because the state fragment was rejected, all file writes from this attempt were");
+        text.AppendLine(cause == RollbackCause.FragmentRejected
+            ? "Because the state fragment was rejected, all file writes from this attempt were"
+            : "Because this attempt did not settle, all file writes from this attempt were");
         text.AppendLine("reverted. On your next attempt, re-author ALL files from scratch — do not assume");
         text.AppendLine("any file you wrote in a previous attempt is still present on disk.");
     }
