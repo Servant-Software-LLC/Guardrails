@@ -48,9 +48,20 @@ if ($firstUse -lt 0) {
 # require the remainder to be identical. Skipped (with a stated reason, not silently) when git cannot
 # produce the HEAD copy - in a segment worktree that is a real condition, not a defect.
 $accumulator = '$problems = New-Object System.Collections.Generic.List[string]'
+# git show needs a REPO-RELATIVE path: an absolute one is not a valid "HEAD:<path>" spec. The subject
+# IS absolute whenever the pre-DAG samples-verify gate runs this guardrail against its own sample pair,
+# so passing it through unmodified made BOTH halves exit 1 and halted the first real run before task 1.
 $headCopy = $null
-try { $headCopy = & git show "HEAD:$subject" 2>$null | Out-String } catch { $headCopy = $null }
-if ($LASTEXITCODE -ne 0) { $headCopy = $null }
+$repoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
+if ($LASTEXITCODE -eq 0 -and $repoRoot) {
+    $full = Resolve-Path -LiteralPath $subject -ErrorAction SilentlyContinue
+    $rel  = if ($full) { $full.Path } else { $subject }
+    $rel  = $rel.Replace('\', '/')      # single backslash: '\\' would match a DOUBLE one
+    $root = $repoRoot.Replace('\', '/').TrimEnd('/') + '/'
+    if ($rel.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $rel.Substring($root.Length) }
+    $headCopy = & git show "HEAD:$rel" 2>$null | Out-String
+    if ($LASTEXITCODE -ne 0) { $headCopy = $null }
+}
 
 if ([string]::IsNullOrWhiteSpace($headCopy)) {
     # D11: do NOT fail open. This is the strongest clause in the file; silently dropping it on any box

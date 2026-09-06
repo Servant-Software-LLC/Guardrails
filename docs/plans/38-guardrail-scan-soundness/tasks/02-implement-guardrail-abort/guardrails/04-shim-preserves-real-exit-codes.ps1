@@ -44,6 +44,19 @@ try {
         }
     }
 
+    # The abort exit code is a DATUM with a downstream consumer: task 08's guardrail requires the literal
+    # `exit 97` in the SSOT. Nothing gated its CARRIER, so task 02 could ship `exit 90` and make task 08's
+    # clause honestly unsatisfiable - a #474 severed hop. It is pinned HERE, not in guardrail 03, because
+    # 03 carries a sample pair and must stay a pure function of its subject; this guardrail has no pair,
+    # and it has just PROVEN behaviourally that the shim emits 97, so the two facts sit together.
+    $runner = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
+    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+        $problems.Add("[$runner] does not exist - the abort verdict has no home.")
+    }
+    elseif ((Get-Content -Raw -LiteralPath $runner) -notmatch '(?<![0-9#])97(?![0-9])') {
+        $problems.Add("[$runner] never mentions the abort exit code 97. The shim emits it and the SSOT (task 08) is required to document `exit 97`; if this task chose a different number, all three must change together, not two of them.")
+    }
+
     if ($problems.Count -gt 0) {
         Write-Output "=== The shim does not preserve guardrail exit codes ($($problems.Count) of $($cases.Count) case(s)) ==="
         $problems | ForEach-Object { Write-Output $_ }

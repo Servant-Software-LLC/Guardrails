@@ -371,6 +371,36 @@ asks for, sibling to *grep-scope contamination* and *structural-vs-keyword*, plu
 **This is the one of the four with no mechanical gate, and it should stay that way until someone can show
 a `mustMatch`/`mustNotMatch` pair that earns it.**
 
+### 6.0 A guardrail carrying a sample pair must be a PURE FUNCTION of its subject
+
+Learned the expensive way: the first real run of this plan **halted at the pre-DAG samples-verify gate**,
+before task 1, with both of this plan's sample pairs failing their VALID half. Four review rounds, every
+guardrail smoke-tested two-sided by hand, and the harness still caught something none of us did — because
+it ran them the way a *run* does, not the way an author does.
+
+Two independent causes, one rule:
+
+| guardrail | why the valid half failed |
+|---|---|
+| `tasks/02/…/03-both-pwsh-templates-route-through-the-shim.ps1` | a clause read `GuardrailRunner.cs` — a **fixed other file**, not the subject. No sample can satisfy it, so the valid half could never pass |
+| `tasks/03/…/01-accumulator-created-before-use.ps1` | it passed the subject's **absolute** path to `git show HEAD:<path>`, which is not a valid spec. Under the gate the subject is always absolute, so both halves failed |
+
+> **The rule: every clause in a guardrail that ships a `samples/` pair must read `$subject` and nothing
+> else.** A clause that reads another file, or that depends on repo state the sample cannot carry, is
+> unsatisfiable by construction under the gate — and it fails on the VALID half, which is the false-RED
+> direction that dead-ends every attempt.
+
+Both offending clauses were *correct* checks; they were in the wrong file. The abort-code pin moved to
+`tasks/02/…/04-shim-preserves-real-exit-codes.ps1`, which carries no pair and had just proven the same
+fact behaviourally. That is the general remedy: **keep the cross-file check, move it to a guardrail with
+no sample pair.**
+
+This is the actionable core of **#559** (*"following plan-breakdown exactly produces pairs that all fail
+at the pre-DAG gate"*), narrowed from *"the contract is undocumented"* to a rule an author can apply — and
+it belongs in the skill beside the sample-pair instruction, where nothing currently warns about it.
+
+---
+
 ### 6.1 The base rate is higher than the issue's four instances — measured on this plan's own authoring
 
 `#428` ships with a catalogue entry and a review probe and **no gate**, and the case for that rests on how

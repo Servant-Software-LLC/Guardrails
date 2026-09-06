@@ -4,6 +4,12 @@
 #          machine resolves, so they CANNOT observe the fallback template; this is a structural fact
 #          about the build/wiring graph with no runtime proxy, which is why it survives the source-shape
 #          demotion gate (#468). Sample pair: samples/03-*.valid.cs / .invalid.cs.
+# PURE FUNCTION OF ITS SUBJECT, deliberately: every clause below reads $subject and nothing else. A
+#          guardrail carrying a committed sample pair is RUN AGAINST THAT SAMPLE by the pre-DAG
+#          samples-verify gate, so a clause reading any OTHER file can never be satisfied by a sample
+#          and false-REDs the valid half. That is not hypothetical - the abort-code pin that used to
+#          live here read GuardrailRunner.cs and halted the first real run before task 1. It now lives
+#          in guardrail 04, which has no sample pair and proves the same fact behaviourally.
 # Measured baseline (#478): `ShimScript` occurs 0 times in InterpreterMap.cs on the starting tree
 #          (verified 2026-09-06 on master a3f3e977).
 $ErrorActionPreference = 'Stop'
@@ -45,20 +51,6 @@ foreach ($member in @('PwshTemplate', 'PowershellTemplate')) {
     }
     if ($m.Value -notmatch 'ShimScript') {
         $problems.Add("[$member] does not reference ShimScript - this template still invokes the guardrail script directly, so an aborted guardrail run through it exits 0 and the harness records a PASS (#608). Both pwsh templates must route through the shim, not just the primary one.")
-    }
-}
-
-# The abort exit code is a DATUM with a downstream consumer: task 08's guardrail requires the literal
-# `exit 97` in the SSOT. Nothing gated its CARRIER, so task 02 could ship `exit 90` and make task 08's
-# clause honestly unsatisfiable - a #474 severed hop. Pin it here, at the file that produces it.
-$runner = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
-if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-    $problems.Add("[$runner] does not exist - the abort verdict has no home.")
-}
-else {
-    $rc = Get-Content -Raw -LiteralPath $runner
-    if ($rc -notmatch '(?<![0-9#])97(?![0-9])') {
-        $problems.Add("[$runner] never mentions the abort exit code 97. The shim emits it and the SSOT (task 08) is required to document `exit 97`; if this task chose a different number, all three must change together, not two of them.")
     }
 }
 
