@@ -989,6 +989,22 @@ public static class RetryPolicy
     /// alternatives. Any other repeated path (<paramref name="repeatedPaths"/>) is named as an
     /// un-retryable wall (a settings grant still works for non-<c>.claude/</c> paths).
     /// </summary>
+    /// <summary>
+    /// Does this wall key name a COMMAND rather than a path (#534)? The scanner uses a refused Bash
+    /// command line as its attribution key, and a command is recognisable by carrying an argument
+    /// separator that a single path does not: whitespace, a pipe, or a redirect.
+    ///
+    /// <para>
+    /// Deliberately a shape test on the key, not a re-classification of the wall. The tracker's decision is
+    /// unchanged — this only decides how to DESCRIBE what was refused, so a wrong guess costs a word in a
+    /// message and never a verdict.
+    /// </para>
+    /// </summary>
+    private static bool LooksLikeCommand(string wallKey) =>
+        wallKey.Contains(' ', StringComparison.Ordinal)
+        || wallKey.Contains('|', StringComparison.Ordinal)
+        || wallKey.Contains('>', StringComparison.Ordinal);
+
     public static string ForPermissionWall(
         TaskNode task,
         IReadOnlyList<string> structuralPaths,
@@ -999,10 +1015,28 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine($"Task: {task.Description}");
         text.AppendLine();
-        text.AppendLine("The runtime REFUSED to write one or more paths because they are not on the granted");
+        // #534: a refused Bash COMMAND is tracked as a wall too (deliberately — leaving Bash out is what
+        // let a real run refuse 86 git calls and report zero walls), but the message described every wall
+        // as a refused WRITE to a PATH. For `python3 -m json.tool <file>` that is wrong three ways: it is
+        // not a write, it is not a path, and "confirm permissionMode and allowedTools cover this path" is
+        // unactionable for a command line. Say which kind of thing was actually refused.
+        bool anyCommand = structuralPaths.Concat(repeatedPaths).Any(LooksLikeCommand);
+        text.AppendLine(anyCommand
+            ? "The runtime REFUSED one or more tool calls because they are not on the granted permission"
+            : "The runtime REFUSED to write one or more paths because they are not on the granted");
         text.AppendLine("permission allow-list. Retrying cannot clear a permission wall — switching tools or");
-        text.AppendLine("re-issuing the same write hits the same refusal — so the harness escalated to you");
+        text.AppendLine(anyCommand
+            ? "re-issuing the same call hits the same refusal — so the harness escalated to you"
+            : "re-issuing the same write hits the same refusal — so the harness escalated to you");
         text.AppendLine("immediately instead of burning the remaining attempts on it.");
+        if (anyCommand)
+        {
+            text.AppendLine();
+            text.AppendLine("At least one wall below is a refused COMMAND, not a path. Grant it through the task's");
+            text.AppendLine("`allowedTools` (e.g. `Bash(python3 *)`), not through a per-path permission — and consider");
+            text.AppendLine("whether the task needs it at all: a refused AUXILIARY command is one route among several");
+            text.AppendLine("to the same end, and an agent that finds another route has cleared the wall.");
+        }
         text.AppendLine();
 
         if (structuralPaths.Count > 0)

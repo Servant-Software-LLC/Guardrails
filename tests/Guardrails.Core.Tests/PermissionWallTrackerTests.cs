@@ -107,6 +107,72 @@ public sealed class PermissionWallTrackerTests
         Assert.True(tracker.ShouldHalt().Halt);
     }
 
+    /// <summary>
+    /// Issue #534 — an attempt that refused NOTHING is not standing at a wall, whatever its predecessors
+    /// hit.
+    ///
+    /// <para>
+    /// Measured on run <c>2026-08-29T16-37-39Z-fc5d</c>, task
+    /// <c>08-record-visibility-surfaces-in-ssot</c>:
+    /// </para>
+    /// <code>
+    /// attempt 1  15 Bash calls,  0 refused   guardrail-failed (anchor mismatch)
+    /// attempt 2  12 Bash calls,  5 refused   guardrail-failed (anchor mismatch)
+    /// attempt 3   0 Bash calls,  0 refused   PERMISSION-DENIED
+    /// </code>
+    /// <para>
+    /// Attempt 3 used <c>Read</c> ×6, <c>Grep</c> ×2, <c>Write</c> ×1 — it had stopped reaching for the
+    /// refused command, re-read both targets, and emitted a well-formed root-level
+    /// <c>needsHarnessWrite</c> with corrected anchors (its own transcript: <i>"anchor texts are now copied
+    /// exactly from the files, matching character-for-character"</i>). The wall fired on attempt 2's
+    /// HISTORY, settled the task <c>needs-human</c> with "no further retries", and that fragment was never
+    /// applied. The mechanism designed to stop an agent burning attempts on an unclearable wall threw away
+    /// the attempt that had cleared it. Cost: $1.27, and a plan stalled at task 8 of 8.
+    /// </para>
+    ///
+    /// <para>
+    /// The premise in the tracker's own doc is what fails: <i>"a path retrying cannot clear"</i>. Retrying
+    /// DID clear it — by not making the call. A refused auxiliary command is one route among several to the
+    /// same end, and the agent found another.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AnAttemptThatRefusedNothing_DoesNotInheritThePriorAttemptsWall()
+    {
+        var tracker = new PermissionWallTracker();
+        tracker.Observe(["python3 -m json.tool out.json"]);   // attempt 1 — refused
+        tracker.Observe(["python3 -m json.tool out.json"]);   // attempt 2 — refused again: a repeat
+
+        // Left there, this is a halt — and correctly so, while the agent is still hitting it.
+        Assert.True(tracker.ShouldHalt().Halt);
+
+        tracker.Observe([]);                                  // attempt 3 — refused NOTHING
+
+        Assert.False(tracker.ShouldHalt().Halt,
+            "an attempt that made no refused calls has cleared the wall; killing it on the previous "
+            + "attempt's history discards the recovery AND its deliverable");
+    }
+
+    /// <summary>
+    /// The control, and the reason this is a guard rather than a repeal: a <c>.claude/</c> wall still halts
+    /// on the attempt that HITS it, and a repeated path still halts on the attempt that RE-hits it. In both
+    /// cases the current attempt is, by construction, not clean — so the #534 guard cannot weaken either
+    /// rule, and a fix that did would reopen #86 and #104.
+    /// </summary>
+    [Fact]
+    public void AnAttemptThatDidRefuse_StillHalts_OnBothRules()
+    {
+        var structural = new PermissionWallTracker();
+        structural.Observe([".claude/skills/x/SKILL.md"]);
+        Assert.True(structural.ShouldHalt().Halt);
+
+        var repeated = new PermissionWallTracker();
+        repeated.Observe(["src/a/One.cs"]);
+        Assert.False(repeated.ShouldHalt().Halt);
+        repeated.Observe(["src/a/One.cs"]);
+        Assert.True(repeated.ShouldHalt().Halt);
+    }
+
     [Fact]
     public void AllPaths_ListsStructuralFirst_ThenRepeated_Deduplicated()
     {
