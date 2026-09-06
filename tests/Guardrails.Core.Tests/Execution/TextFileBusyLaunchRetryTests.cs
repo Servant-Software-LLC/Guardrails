@@ -68,18 +68,21 @@ public sealed class TextFileBusyLaunchRetryTests : IDisposable
 
         int before = ProcessRunner.TextFileBusyRetries;
 
-        // Hold it open for WRITE — the exact condition an inherited descriptor creates — then release it
-        // while the retry loop is still going.
+        // Hold it open for WRITE — the exact condition an inherited descriptor creates.
         var holder = new FileStream(script, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
-        using var released = new ManualResetEventSlim();
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(40, TestContext.Current.CancellationToken).ConfigureAwait(false);
-            holder.Dispose();
-            released.Set();
-        }, TestContext.Current.CancellationToken);
 
-        ProcessResult result = await new ProcessRunner().RunAsync(
+        // Release it when the retry loop has DEMONSTRABLY entered, not after a fixed delay. The first
+        // version of this test released on a 40 ms timer against a ~100 ms retry budget, and lost the race
+        // on CI: the launch exhausted its attempts while the handle was still open, and the test failed
+        // for a reason that had nothing to do with the behaviour under test. Waiting on the counter makes
+        // it a handshake — the same "assert the decision, never the duration" rule (#518) that the
+        // assertions below already follow, applied to the fixture that produces them.
+        //
+        // The handshake only works because the retry loop AWAITS its backoff. With a blocking sleep,
+        // everything before this async method's first await ran on THIS thread, so RunAsync did not
+        // return a Task until the retries were exhausted and the loop below never got to run — the
+        // second way this test failed on CI, and a real thread-pool cost in production besides.
+        var launch = new ProcessRunner().RunAsync(
             new ResolvedCommand { Executable = script, Arguments = [] },
             _root,
             new Dictionary<string, string>(StringComparer.Ordinal),
@@ -88,7 +91,13 @@ public sealed class TextFileBusyLaunchRetryTests : IDisposable
             stdoutLineSink: null,
             TestContext.Current.CancellationToken);
 
-        released.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        while (Volatile.Read(ref ProcessRunner.TextFileBusyRetries) == before && !launch.IsCompleted)
+        {
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        holder.Dispose();
+        ProcessResult result = await launch;
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("launched", result.StandardOutput, StringComparison.Ordinal);

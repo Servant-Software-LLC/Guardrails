@@ -105,7 +105,7 @@ public sealed class ProcessRunner
         process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone, lineSink: null);
 
         var stopwatch = Stopwatch.StartNew();
-        StartWithTextFileBusyRetry(process);
+        await StartWithTextFileBusyRetryAsync(process, cancellationToken).ConfigureAwait(false);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -170,10 +170,16 @@ public sealed class ProcessRunner
     /// How many times a launch is retried when Linux answers <c>ETXTBSY</c> ("Text file busy") — the
     /// kernel refusing to <c>exec</c> a file some process still holds open for WRITING (#650).
     /// </summary>
-    private const int TextFileBusyAttempts = 5;
+    /// <remarks>
+    /// Ten, not five. The first shipped value gave a ~100 ms total budget, which is thin for a window whose
+    /// length is "however long until some other process closes a descriptor" — and it duly ran out on CI
+    /// while the descriptor was still open. A permanent ETXTBSY now costs ~500 ms before failing loudly,
+    /// which is nothing against a task, and a transient one has room to clear.
+    /// </remarks>
+    private const int TextFileBusyAttempts = 10;
 
     /// <summary>The wait between those attempts. The window is another process closing a descriptor, not work.</summary>
-    private static readonly TimeSpan TextFileBusyBackoff = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan TextFileBusyBackoff = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
     /// The count of <c>ETXTBSY</c> retries this process has performed, exposed so a test can assert the
@@ -208,7 +214,7 @@ public sealed class ProcessRunner
     /// slow one, which is the more expensive bug.
     /// </para>
     /// </summary>
-    private static void StartWithTextFileBusyRetry(Process process)
+    private static async Task StartWithTextFileBusyRetryAsync(Process process, CancellationToken cancellationToken)
     {
         for (int attempt = 1; ; attempt++)
         {
@@ -220,7 +226,14 @@ public sealed class ProcessRunner
             catch (Win32Exception ex) when (IsTextFileBusy(ex) && attempt < TextFileBusyAttempts)
             {
                 Interlocked.Increment(ref TextFileBusyRetries);
-                Thread.Sleep(TextFileBusyBackoff);
+
+                // AWAIT, not Thread.Sleep. Two reasons, and the second is the one that bit: a blocking
+                // sleep here parks a thread-pool thread for up to the whole budget, and — because
+                // everything before an async method's first await runs synchronously on the CALLER's
+                // thread — it also meant `RunAsync` did not return a Task until the retries were
+                // exhausted. Nothing concurrent could observe a retry in progress, which is precisely
+                // what this loop's own test has to do to release the file it is holding open.
+                await Task.Delay(TextFileBusyBackoff, cancellationToken).ConfigureAwait(false);
             }
         }
     }
