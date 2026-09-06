@@ -139,9 +139,23 @@ public static class PlanPreflightPhase
 
         string currentHash = journal.Document.PlanHash;
 
+        // Issue #574 — the skip keys on the PREFLIGHT FOLDER, not on PlanHash. PlanHash covers
+        // guardrails.json plus every task.json, and covers none of what this phase checks, which produced
+        // two opposite defects from one cause: the hash HELD while an edited preflight went unchecked
+        // (#623's second claim), and the hash MOVED on any unrelated task.json edit, re-running a baseline
+        // against POST-WORK bytes and halting a healthy resume with a message blaming pre-existing
+        // breakage (#574). Scoping it to the folder the skip guards makes the skip mean what it says:
+        // "these checks are unchanged since they last passed".
+        //
+        // A marker written before #574 carries no PreflightsHash. Unknown is treated as DO NOT SKIP —
+        // re-running the checks costs a little time; skipping on an unverifiable marker is exactly the
+        // "recorded but never executed" failure this phase exists to prevent.
+        string currentPreflightsHash = PlanPreflightsHash.Compute(plan);
+
         if (journal.Document.PlanPreflights is { } marker
             && marker.Status == PlanPhaseStatus.Passed
-            && string.Equals(marker.PlanHash, currentHash, StringComparison.Ordinal))
+            && marker.PreflightsHash is { } recordedPreflightsHash
+            && string.Equals(recordedPreflightsHash, currentPreflightsHash, StringComparison.Ordinal))
         {
             return true;
         }
@@ -188,6 +202,7 @@ public static class PlanPreflightPhase
         {
             Status = result.Passed ? PlanPhaseStatus.Passed : PlanPhaseStatus.PlanPreflightFailed,
             PlanHash = currentHash,
+            PreflightsHash = currentPreflightsHash,
             EvaluatedAt = DateTimeOffset.UtcNow,
             Checks = checks,
             LogDir = relativeLogDir

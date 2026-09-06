@@ -2506,10 +2506,19 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
   },
 
   // OPTIONAL top-level sections — two-scope preflights (F9 split). Additive: a plan WITHOUT the
-  // feature OMITS both (an older reader ignores them; absent, never null noise). Each is planHash-keyed.
+  // feature OMITS both (an older reader ignores them; absent, never null noise). planGuardrails is
+  // planHash-keyed; planPreflights is keyed on its OWN folder's hash (#574, see preflightsHash below).
   "planPreflights": {                   // the PRE-DAG preflight phase result (OUTSIDE tasks{})
     "status": "plan-preflight-failed",  // passed | plan-preflight-failed
-    "planHash": "sha256:…",
+    "planHash": "sha256:…",         // CONTEXT only — no longer what the resume skip keys on (#574)
+    // The hash of <plan>/preflights/ this evaluation ran against — the SUBJECT of the resume skip
+    // (#574). OPTIONAL: absent on a marker written before #574, and a MISSING value means "unknown",
+    // which the phase treats as DO NOT SKIP. Scoped to that folder deliberately: planHash covers
+    // guardrails.json + every task.json and covers NONE of what this phase checks, which produced two
+    // opposite defects from one cause — the hash HELD while an edited preflight went unchecked (#623),
+    // and the hash MOVED on an unrelated task.json edit, re-running a "the area was green before we
+    // started" baseline against POST-WORK bytes and halting a healthy resume (#574).
+    "preflightsHash": "sha256:…",
     "evaluatedAt": "2026-06-10T16-22-30Z",
     "checks": [ { "name": "git-top-level", "passed": false, "reason": "workspace is not a git top-level" } ],
     // OPTIONAL plan-relative path to this phase's CAPTURED per-check output (§8, #432): one

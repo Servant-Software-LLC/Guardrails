@@ -343,6 +343,18 @@ public sealed record PlanPreflightsSection
     /// <summary>The plan hash the preflight phase evaluated against (SSOT §7; mirrors <see cref="JournalDocument.PlanHash"/>).</summary>
     public required string PlanHash { get; init; }
 
+    /// <summary>
+    /// The hash of the <c>&lt;plan&gt;/preflights/</c> folder this evaluation ran against (SSOT §7, issue
+    /// #574) — the SUBJECT of the resume skip, where <see cref="PlanHash"/> above is only context.
+    /// <para>
+    /// OPTIONAL, and absent on a marker written before #574. A missing value means "unknown", which the
+    /// phase treats as DO NOT SKIP: re-running Full Flight Checks costs a little time, while skipping on
+    /// an unverifiable marker is the "recorded but never executed" failure the phase exists to prevent.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PreflightsHash { get; init; }
+
     /// <summary>UTC time the preflight phase was evaluated (ISO-8601).</summary>
     public required DateTimeOffset EvaluatedAt { get; init; }
 
