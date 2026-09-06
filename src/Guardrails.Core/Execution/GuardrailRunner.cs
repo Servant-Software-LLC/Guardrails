@@ -381,11 +381,33 @@ internal sealed class GuardrailRunner
         }
     }
 
+    /// <summary>
+    /// The guardrail-shim.ps1 wrapper (design 38 S3.2, issue #608) exits this code when the guardrail's
+    /// own process unwound via an uncaught engine error instead of reaching an explicit verdict --
+    /// exit 0 in that case would have been a false PASS.
+    /// </summary>
+    private const int ShimAbortExitCode = 97;
+
     private static GuardrailResult ToGuardrailResult(GuardrailDefinition guardrail, ProcessResult result)
     {
         if (result.Succeeded)
         {
             return new GuardrailResult { Name = guardrail.Name, Passed = true };
+        }
+
+        if (!result.TimedOut && result.ExitCode == ShimAbortExitCode)
+        {
+            // Do not read stdout for the reason here: for an aborted guardrail that is whatever it
+            // printed before dying, which is technically correct and useless. stderr in full so both
+            // the shim's GUARDRAILS-ABORT line and the interpreter's error record reach the
+            // retry-feedback tail (#179).
+            return new GuardrailResult
+            {
+                Name = guardrail.Name,
+                Passed = false,
+                Reason = "the guardrail aborted before reaching a verdict -- exit 0 would have been a false PASS",
+                Output = result.StandardError
+            };
         }
 
         string reason = result.TimedOut
