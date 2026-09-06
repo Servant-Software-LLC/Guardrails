@@ -1140,9 +1140,27 @@ public sealed class WebhookEventSinkTests
         await sink.DisposeAsync();
         stopwatch.Stop();
 
-        // DisposeAsync still completes within its bounds, even with the pump stuck inside SendAsync
-        // well past teardown's budget.
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"DisposeAsync did not honor its bounds: {stopwatch.Elapsed}");
+        // WHICH BUDGET teardown selected, not how long the machine took to run it (#518) - the same move
+        // the cancelled-teardown test above already makes, and for the same reason. The wall-clock form
+        // (elapsed < 3s) FAILED here at 5.89s during a full-solution run on a developer laptop, then
+        // passed 22/22 in isolation on the same tree; it had already been observed at 2.374s on a
+        // contended windows CI runner in the sibling case. Elapsed cannot separate "teardown waited for
+        // the stuck pump" from "this box is busy", so it cannot own the contract.
+        //
+        // The pump is NOT cancelled here, so the uncancelled grace is the one that must have been chosen.
+        // A teardown that waited on the stuck SendAsync instead of bounding it would record a different
+        // budget - or none - whatever the clock said.
+        Assert.Equal(WebhookEventSink.PumpShutdownGrace * scale, sink.LastPumpGraceUsed);
+
+        // A deliberately LOOSE sanity bound, kept for catastrophic regressions only. Note what dominates
+        // it: the handler parks for 5s and ignores its token, so ELAPSED here is mostly that delay plus
+        // scheduling, not the 100ms of teardown budget under test. That is precisely why a 3s bound was
+        // measuring the machine rather than the code, and why this one is nowhere near the budget it
+        // sits above.
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(30),
+            $"DisposeAsync took {stopwatch.Elapsed}, far beyond any plausible scheduling overhead on a "
+            + $"{WebhookEventSink.PumpShutdownGrace * scale} grace - teardown is not bounding the stuck pump at all");
 
         // Positive control: notices were produced at all.
         Assert.NotEmpty(notices);
@@ -1402,15 +1420,27 @@ public sealed class WebhookEventSinkTests
 
         byte[] body = new byte[64 * 1024]; // far larger than the cap
         Array.Fill(body, (byte)'x');
-        var countingStream = new CountingStream(new MemoryStream(body));
+
+        // ONE COUNTER PER RESPONSE (#518). A single shared stream counts CUMULATIVELY, so the moment the
+        // row is attempted twice - which a busy box causes by timing out the first attempt - the total is
+        // 2 x 8192 and the assertion fails on a cap that was enforced correctly BOTH times. Measured
+        // exactly that: "read 16384 bytes, expected <= 8192" during a full-solution run, passing 22/22 in
+        // isolation on the same tree. The contract is "each response body read is capped", and asserting
+        // it per response is immune to how many attempts the machine's load happens to produce.
+        var reads = new System.Collections.Concurrent.ConcurrentBag<CountingStream>();
 
         var notices = new List<string>();
         var handler = new RecordingHandler
         {
-            OnRequest = (_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            OnRequest = (_, _, _) =>
             {
-                Content = new StreamContent(countingStream)
-            })
+                var perResponse = new CountingStream(new MemoryStream(body));
+                reads.Add(perResponse);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(perResponse)
+                });
+            }
         };
 
         using var cts = new CancellationTokenSource();
@@ -1421,15 +1451,20 @@ public sealed class WebhookEventSinkTests
 
         // The cap is enforced, not merely declared: HttpClient.MaxResponseContentBufferSize would
         // instead THROW when the body exceeds the limit, turning a delivered row into a failure.
-        Assert.True(
-            countingStream.BytesRead <= WebhookEventSink.ResponseBodyReadCapBytes,
-            $"read {countingStream.BytesRead} bytes, expected <= {WebhookEventSink.ResponseBodyReadCapBytes}");
+        Assert.NotEmpty(reads);
+        foreach (CountingStream read in reads)
+        {
+            Assert.True(
+                read.BytesRead <= WebhookEventSink.ResponseBodyReadCapBytes,
+                $"one response body read {read.BytesRead} bytes, expected <= "
+                + $"{WebhookEventSink.ResponseBodyReadCapBytes} (across {reads.Count} attempt(s))");
+        }
 
         // Positive control: the body is read (and discarded) at all — reading it is what releases the
         // connection. A response never read at all would satisfy "<= 8192" while proving nothing, and
         // HttpClient's default HttpCompletionOption.ResponseContentRead would instead buffer the WHOLE
         // 64 KB body before this code could cap anything.
-        Assert.True(countingStream.BytesRead > 0);
+        Assert.True(reads.Sum(r => r.BytesRead) > 0);
 
         // Capping the read must not turn a delivered (any 2xx) row into a failure.
         string summary = Assert.Single(notices, n => n.Contains("delivered", StringComparison.Ordinal));
