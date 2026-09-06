@@ -79,6 +79,25 @@ and only then does `guardrails run` execute it.
    `$testFramework = none` — that is the trigger for the framework-selection rule in
    Step 5, **not** a licence to pick one silently.
 
+   **And record WHICH RUNNER drives the tests — set `$testRunner` (#439).** The framework is not the
+   runner, and on .NET the difference decides whether a `--filter` guardrail means anything at all.
+   `dotnet test` drives **VSTest** by default and **Microsoft.Testing.Platform (MTP)** when any of several
+   properties flips it — and **under MTP `--filter` is silently ignored and the WHOLE SUITE runs**
+   (measured; `stacks/dotnet.md` §6a carries the probe, the evidence and the two-clause detection,
+   including the negative signal a grep FOR MTP can never surface). Set `$testRunner` to `vstest`, `mtp`
+   or `unknown`, and run the §6a probe rather than assuming — a repo's runner is not visible from its
+   framework.
+
+   This is not a portability wart, and it is worth the extra step for one reason: **it defeats §4.3's
+   zero-match guard from the far side.** That guard fires on the executed count being ZERO; MTP fails in
+   the opposite direction, so a correctly-authored filter widens to the whole suite at RUN time and the
+   guard passes on a large count. No authoring-time check can see a widening that happens after the
+   command is emitted. When `$testRunner = mtp`, a filtered `tests-pass` / `tests-fail-on-stubs` guardrail
+   cannot be trusted to be scoped, and its `# catches:` line — which names the tests THIS pair owns — is
+   false as written; §6a says what to do instead, and says plainly that no replacement filter is offered
+   because none was measured. On a non-dotnet stack with no runner distinction, set `$testRunner =
+   unknown` and move on.
+
    **Also decide brownfield vs greenfield FOR THE TOUCHED AREA — it gates the Step 5
    positive-baseline `<plan>/preflights/` check (#181).** Beyond "is there a test framework at all", record whether
    the projects/modules the plan will MODIFY already have existing tests covering them:
@@ -2058,6 +2077,19 @@ Per `references/schemas.md`, exactly:
      `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), or the body takes its no-subject early exit and
      returns the same code twice for a reason that has nothing to do with the halves. Catalogue → "A test
      that SYNTHESISES a two-sided pair PROVES it discriminates".
+   - **And the rule turns on YOUR OWN commands, not only on the guardrails (#580).** Everything above is
+     about executing the artifact. This step also runs ad-hoc verifications of its own — a grep that
+     confirms a claim, a parse that confirms a file is well-formed, a mutation that confirms an assertion
+     bites — and those are reported to a human as prose, with no gate between. **An ad-hoc verification
+     is not reportable until its NEGATIVE case has been observed to bite:** run it against an input you
+     know is bad and confirm it says so. Measured, from one authoring session: SIX verifications came back
+     green while doing nothing — a parse checker that printed `ok` on a broken file, a control-character
+     scan whose class omitted the `\r` it was hunting, a mutation whose `sed` anchors matched zero bytes,
+     a clause that read correctly and could not fire. Every one was caught by forcing the negative case;
+     none by re-reading. The full battery, including the stale-artifact and clobbered-exit-code shapes, is
+     `guardrails-domain-knowledge` → "The same rule, turned on the AGENT'S OWN instrument". **This costs
+     one extra command per verification and is the cheapest thing in this step**, because the alternative
+     is a report that reads exactly the same whether the check worked or not.
    - **Not runnable → syntax-pass + explicit deferral.** If it needs a live service / the built binary /
      the full merged HEAD, run the syntax pass only, reason explicitly about correctness, and **STATE in
      the report (step 4) that the guardrail could not be author-time-executed and why** — an honest
@@ -4040,6 +4072,8 @@ tell a measured fact from an assumed one without re-doing the work.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported) **AND every WARNING it printed was read and dispositioned — fixed, or documented in the report with a one-line reason it is correct here.** Warnings do not move the exit code, so exit 0 alone is blind to GR2059 (an inert wave-root `scope:"integration"` — a protection that does nothing), GR2042 (structural over-scope), GR2026, GR2020, GR2049, GR2033 and GR2058. Treat each as a fired trigger, never as noise; a warning neither fixed nor documented is a self-review failure.
 - [ ] (#530) Where an `author-tests` task's prompt asks for tests that synthesise their OWN two-sided fixture (a guardrail body plus a valid and an invalid half), the prompt REQUIRES the test to assert the two halves produce DIFFERENT exit codes before asserting anything about its subject, and names the binding the subject arrives on (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair). Distinctness, not polarity. The red census structurally cannot cover this — red is its success condition, so a test that can never pass reads as one red for the right reason, and the cost lands as a `needs-human` halt on the implementation task.
+- [ ] (#439) `$testRunner` was DETECTED, not assumed — the `stacks/dotnet.md` §6a probe was run (both clauses: the property/`global.json` grep AND the negative signal, a test project with no VSTest adapter, which no grep FOR MTP surfaces). When the runner is MTP, no guardrail this breakdown emits relies on `dotnet test --filter` for its SCOPE, and no `# catches:` line claims to own tests a silently-widened filter would not have selected. The reason this is a checklist row and not a footnote: MTP defeats §4.3's zero-match guard from the FAR side — it runs the whole suite rather than none, so the guard passes on a large count and the mis-scoping is invisible at authoring time.
+- [ ] (#580) Every AD-HOC verification this breakdown ran and reported — its own greps, parses, counts and mutations, not only the guardrail scripts — had its NEGATIVE case observed to bite: run against a known-bad input, it said so. A mutation additionally asserted the OBSERVABLE moved (a `sed`/`Edit` whose anchor matched nothing edits zero bytes and then "passes"), and nothing was reported off a STALE artifact (`--no-build` runs yesterday's binary) or off an exit code an intervening command had already clobbered. A verification whose failing case was never constructed is a claim about a command, not a measurement — and reads identically in the report either way.
 - [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.

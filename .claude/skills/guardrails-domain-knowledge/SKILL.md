@@ -290,6 +290,39 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   check the script's OWN correctness -- the motivating bug had no tool-output assumption, so #248's
   probe did not cover it. Homed here; enforced by `plan-breakdown` (Step 7.0d self-validate) and probed
   by `guardrails-review`.
+  <br>**The same rule, turned on the AGENT'S OWN instrument (#580).** #302 governs the guardrail
+  SCRIPT. Nothing governed the ad-hoc verification command an agent runs *while authoring or reviewing*
+  -- the grep it uses to confirm a claim, the parse it runs to confirm a file is well-formed, the
+  mutation it applies to confirm an assertion bites. Those commands are not artifacts in the plan folder,
+  so no gate reads them; they reach a human only as a sentence in a report saying the check passed.
+  **The rule:**
+  > An ad-hoc verification is not reportable until its NEGATIVE case has been observed to bite. Run it
+  > against an input you know is bad and confirm it says so. A verification whose failing case was never
+  > constructed is a claim about a command, not a measurement.
+  **Measured, from one authoring session: six verifications came back green while doing nothing** -- a
+  parse checker that printed `ok` on a broken file (it never parsed), a control-character scan whose
+  class silently omitted `\r` (the character being hunted), a mutation whose `sed` anchors matched
+  nothing (it edited zero bytes, then "passed"), and a guardrail clause that read correctly and could not
+  fire. **Every one was caught by forcing the negative case to bite; none by re-reading.** The battery is
+  worth carrying because each shape fails differently:
+  | shape | what it looks like | what the negative case reveals |
+  |---|---|---|
+  | prints OK regardless | `parse f && echo ok` where `parse` cannot fail | feed it a KNOWN-broken input; it still says ok |
+  | the class excludes the hunted case | a control-character scan omitting `\r` | a subject containing exactly `\r` scans clean |
+  | the anchor matched nothing | a `sed`/`Edit` mutation that edited zero bytes | assert the FILE CHANGED before trusting the verdict |
+  | the clause cannot fire | a guard whose condition is unreachable | run it against its own zero case |
+  | a STALE artifact answered | `--no-build` ran yesterday's binary | rebuild BEFORE measuring; the run you read predates the change you are testing |
+  | the exit code was clobbered | `printf "$(basename $f)"` resets `$?` before you read it | capture `code=$?` on the very next line |
+  | the detector matched ITSELF | a leak scan whose pattern matches its own command line | exclude the probe, or it reports its own existence |
+  | the mutation was a no-op | `exit 1` appended AFTER an `exit 0`; one of two cooperating clauses changed | assert the OBSERVABLE moved, not that an edit was made |
+  The last four were measured in this repository's own remediation work, and they share the shape of
+  every entry above it: **an edit -- or a check -- that silently does nothing is byte-identical to one
+  that worked.** Which is why the rule is about OBSERVING the negative case, never about reading the
+  command carefully.
+  **What this is NOT.** It is not a `validate` diagnostic and cannot become one: the subject is a command
+  in a transcript, not an artifact in the plan folder, so there is nothing mechanical to read and a gate
+  that looked rigorous here would certify nothing. Homed here; enforced by `plan-breakdown` (Step 7) and
+  `guardrails-review` (section 2b).
   <br>**Committed sample pairs are VERIFIED at run time (plan 26).** Beyond the author's smoke-test, the
   harness executes `SampleVerifier` in two entry points:
   - **CLI verb `guardrails samples verify [folder]`** — a read-only command that walks every `tasks/<id>/samples/`

@@ -1509,6 +1509,26 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
     clean, **counts toward GR2003** (a fixture satisfying "this task has a guardrail"), and is
     **executed** at run time; in the catches-enforced folders it is a GR2027 load error instead. The
     samples belong in a `tasks/<id>/samples/` **sibling**, which the loader does not enumerate.
+- **A filtered `dotnet test` guardrail in a repo whose RUNNER is MTP (#439)**: any guardrail whose scope
+  comes from `dotnet test --filter`, on a repo where `dotnet test` drives **Microsoft.Testing.Platform**
+  rather than VSTest. **Under MTP the filter is silently ignored and the WHOLE SUITE runs** — measured on
+  SDK 10.0.204 with a filter matching nothing: VSTest ran 0 tests and said so, MTP ran all of them and
+  exited 0 with an `MTP0001` warning buried in BUILD output (`stacks/dotnet.md` §6a).
+  **Run the §6a detection; do not read it off the framework.** Both of its clauses are required: the
+  property / `global.json` grep, AND the negative signal — a test project carrying a framework reference
+  but NO VSTest adapter, which is on its framework's native MTP host and which no grep FOR MTP will ever
+  surface. One clause alone gets this wrong in both directions.
+  **Why this outruns the guards already in place.** §4.3's zero-match guard fires on the executed count
+  being ZERO; MTP fails in the opposite direction, so a correctly-authored filter widens to everything at
+  RUN time and the guard passes on a large count. Probe A/A₂ cannot see it either — the widening happens
+  after the command is emitted, and `MTP0001` comes from the BUILD, so a `--no-build` guardrail (which
+  §4.2/§4.3 emit) never prints it. Executing the guardrail here proves nothing, which is exactly why it
+  needs a probe of its own rather than a line in §2b.
+  The finding is that the guardrail's `# catches:` claim — the tests THIS pair owns — is false as
+  written. **Do not accept "widen the claim to the whole suite" as the repair**: that is §4.3's deadlock
+  (a task asserting a sibling's test corpus) with extra steps. **BLOCKER on an MTP repo** (the guardrail
+  certifies a scope it does not have); on a VSTest repo, not a finding at all — and say WHICH you
+  measured, because "no MTP signal found" and "did not look" read identically in a report.
 - **A TEST that synthesises a two-sided pair, with no distinctness assertion (#530)**: an
   `author-tests` task whose tests build their own fixture — a guardrail body plus a valid and an invalid
   sample — and then assert on the subject *without first proving the two halves produce different exit
@@ -1556,6 +1576,27 @@ reconciles the pairs execution reports as healthy** — it lives here because it
 two provably cannot see, not because it runs anything. **A comes in two resolutions**: A gives one bit per
 SCRIPT, and **A₂** refines it to one bit per CLAUSE, which is the only resolution at which a pre-satisfied
 clause is visible at all (#478).
+
+**And before that: YOUR OWN probe is an instrument, and an instrument is calibrated (#580).** Probes A,
+A₂ and C are commands this pass runs and then reports on. Nothing downstream reads them — they reach a
+human only as a sentence saying the probe was clean — so the rule this section applies to the plan's
+guardrails applies first to its own commands: **an ad-hoc verification is not reportable until its
+NEGATIVE case has been observed to bite.** Run it against an input you know is bad and confirm it says so.
+Measured, from one authoring session: SIX verifications came back green while doing nothing — a parse
+checker that printed `ok` on a broken file (it never parsed), a control-character scan whose class omitted
+the `\r` it was hunting, a mutation whose `sed` anchors matched zero bytes and then "passed", and a
+guardrail clause that read correctly and could not fire. **Every one was caught by forcing the negative
+case to bite; none by re-reading**, which is the whole argument for this section.
+
+This is broader than the #500 paragraph below and does not replace it. #500 is about a probe reporting
+**no matches** — one reading of one shape. #580 covers the positive-result probe that was vacuous: a
+count that came back large from a search that never read the file, a mutation that edited nothing, a
+tool whose success line prints whatever the input. The full battery — including the stale-artifact
+(`--no-build` ran yesterday's binary), clobbered-exit-code (`$(...)` resets `$?` before you read it) and
+matched-ITSELF (a leak scan whose pattern matches its own command line) shapes — is
+`guardrails-domain-knowledge` → "The same rule, turned on the AGENT'S OWN instrument". Where a probe's
+negative case genuinely cannot be constructed, say so in the report and mark the finding UNVERIFIED
+rather than clean: a deferral a reader can see beats a measurement that never happened.
 
 **Before any of them: a zero-match probe has TWO readings, and only one of them passes (#500).** The
 mechanical checks in this phase report health as **no matches** — A₂'s census (a required-present clause
@@ -2281,6 +2322,8 @@ finding remains unaddressed.
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run — a whole-repo build/suite invocation or a git-conflict-marker union invariant). **Every wave-root gate must be LOCAL — no `scope` key on any of them.** A wave-root `scope:"integration"` guardrail is **INERT**, and `validate` says so (**GR2059**, #459): the per-union re-verify set is built from the task `<task>/guardrails/` folders plus the **PLAN-root** `<plan>/guardrails/` folder only (SSOT §4.3), so a wave-root entry is never in it — it runs exactly once, on the merged HEAD at its own wave's exit (SSOT §14.3). **The severity rationale here is the OPPOSITE of the intermediate-wave #125 case**: an inert tag cannot red-halt a correct intermediate union, because it never fires at a union at all. The defect is the mirror image — **the per-union invariant the author believed they had authored is UNPROTECTED**, and the plan merely LOOKS union-guarded. Severity: **WEAK** when the file is a genuine wave-exit postcondition carrying a dead tag (fix = delete the `scope` key; behaviour-identical, the check already runs at wave exit); **BLOCKER** when the `catches:` line, the breakdown report, or the plan's topology relies on per-union protection — the real union invariant is then MISSING and must be authored at `<plan>/guardrails/`, keeping `scope:"integration"` there and made union-safe/conditional (#125/#165). Do **not** resolve it by relocating a wave-exit gate to the plan root (that changes WHEN it runs), and do not pre-empt the open #459 contract question. Only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
 <!-- BEGIN ADDED CHECKS #468/#470 -->
 - [ ] (#468) Every guardrail asserting a property of IMPLEMENTATION SOURCE was run through the demotion question — behaviour → a test (or an AGREEMENT property test for "X must USE Y"), source-shape only for a structural fact with no runtime proxy. A behavioural claim carried by a regex is a finding NAMING the test that should replace it (BLOCKER when a correct implementation can be written that it rejects, WEAK when it merely certifies vocabulary), and a surviving source-shape check with no report line saying WHY no test could carry it is itself a finding. Legitimate structural facts — build-descriptor registration, cross-module reference chains, entry-point wiring, the #120 grep fallback, #176 negative assertions — are NOT flagged. When ≥2 Probe B operators go green against one source-shape guardrail, the finding is the ARCHETYPE, not the clause: recommend the demotion rather than a fourth round of clause repair (three rounds did not converge).
+- [ ] (#580) Every probe this pass RAN had its negative case observed to bite before its result was reported — including the positive-result probes, not only the #500 zero-match ones. A count was proven to come from a search that actually read the subject; a mutation was proven to have changed the OBSERVABLE, not merely to have been attempted; nothing was read off a stale build or an exit code an intervening command had clobbered. Where a negative case could not be constructed, the finding is marked UNVERIFIED in the report rather than clean.
+- [ ] (#439) The repo's test RUNNER was MEASURED with the `stacks/dotnet.md` §6a probe (both clauses — the property/`global.json` grep AND the no-VSTest-adapter negative signal), and the result is stated in the report rather than left implicit, because "no MTP signal found" and "did not look" read identically. If MTP: no guardrail takes its SCOPE from `dotnet test --filter`, since MTP ignores the filter and runs the whole suite — defeating §4.3's zero-match guard from the far side (a large count, not zero) and invisible to Probe A/A₂, which is why executing the guardrail does not settle it.
 - [ ] (#530) No `author-tests` task ships a test that SYNTHESISES a two-sided pair (a guardrail body plus a valid and an invalid half) without first asserting the two halves produce DIFFERENT exit codes. The operator was graded, not the intent — PowerShell `-match` is case-INSENSITIVE where `-cmatch` is not, and bash `grep -q` is case-sensitive, so one fixture written both ways can discriminate on one OS and not the other. Distinctness, not polarity: a fixture that inverts its pair on purpose is legitimate. The subject is bound the way the RUN binds it (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), so no body takes its no-subject early exit and returns the same code twice. Nothing downstream covers this: the red census's success condition IS red, so a test that can never pass reads as a test red for the right reason, and the bill arrives as a `needs-human` halt on the next task.
 - [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest, read with the #375 census predicate rather than by name discovery); the #455 zero-match guard is not that and is not flagged.
 - [ ] (#468) Probe B **operator 2** was applied in its **DOCUMENTATION-target** form to every guardrail whose subject is a `.md`/doc file — append an HTML comment carrying the required token and re-run. Measured: a two-token doc guardrail (a large SSOT document + a `SKILL.md`) went from exit **1** to exit **0** on one appended `<!-- TODO: … -->` line; an HTML comment renders as NOTHING, so "the contract was documented" is discharged by a TODO no reader can see. Fix: strip HTML comments before matching (`[regex]::Replace($raw, '(?s)<!--.*?-->', '')`). The **counter-rule held**: a FENCED code block is NOT flagged the same way — a fence renders, and measured on the real SSOT **2 of its 36 `PlanDefinition` occurrences sit inside one of its 26 fenced blocks**, so banning fences rejects a correct document written in its own voice (the same BLOCKER wearing the other polarity).
