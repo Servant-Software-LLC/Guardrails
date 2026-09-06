@@ -107,6 +107,15 @@
     //   passes are full-suite regardless.
     //
     // Syntax is `dotnet test --filter` syntax.
+    //
+    // !! WRONG FOR THE RUNNER THAT WORKS (measured 2026-09-06). This filter is
+    // SILENTLY IGNORED by the `mtp` test-runner -- `TestCaseFilter` is referenced only
+    // under Stryker.TestRunner.VsTest/. Every mtp run discovered all 1,258 tests, never
+    // the 170 this filter names, and said nothing about it. Since `vstest` is the runner
+    // that CANNOT produce a valid score against xunit.v3 (see the header), the cost model
+    // above holds only for the runner that lies. Whoever re-runs this when a fixed
+    // Stryker releases must narrow the oracle some other way -- a smaller test project,
+    // or upstream support for filtering under mtp -- and must NOT assume 170.
     "test-case-filter": "FullyQualifiedName~LiveNarrativeTests|FullyQualifiedName~LiveNarrativeCompositeTests|FullyQualifiedName~JitBreakdownVisibilityTests|FullyQualifiedName~NeedsHumanKindRenderingTests|FullyQualifiedName~ModelInRowTests|FullyQualifiedName~MidRunWaveSpliceTests|FullyQualifiedName~MidRunWaveSpliceLogSiteTests|FullyQualifiedName~CollapseCompletedWavesTests|FullyQualifiedName~RunCommandObserverWiringTests|FullyQualifiedName~PostMortemLogsLinkTests|FullyQualifiedName~AttachReplayTests|FullyQualifiedName~RateLimitedRenderingTests|FullyQualifiedName~ObserverRecordRoundTripTests|FullyQualifiedName~AttemptModelRenderingTests|FullyQualifiedName~ObserverForwardingSweepTests",
 
     // Only the tests that actually cover a mutant are run for it — WHEN IT WORKS.
