@@ -204,7 +204,12 @@ public sealed class RunEventStream : IRunObserver
             RunId = _runId,
             TaskId = result.TaskId,
             Outcome = TaskOutcomeToken(result.Outcome),
-            Detail = result.Summary
+            Detail = result.Summary,
+
+            // #606: the needs-human question, on the row whose `outcome` already means a human is needed —
+            // so no consumer has to pattern-match a summary string to find it. Present only on that
+            // outcome; every other settle leaves it absent rather than empty.
+            Question = result.NeedsHumanQuestion
         });
     }
 
@@ -421,6 +426,21 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary>Human-readable context — a failing guardrail's reason, or a settled task's summary.</summary>
         public string? Detail { get; init; }
+
+        /// <summary>
+        /// <c>task-settled</c> with a <c>needs-human</c> outcome: the question the agent asked (#606).
+        ///
+        /// <para>
+        /// <b>Delivered by default, unlike <see cref="Detail"/>.</b> That is the whole point of it being a
+        /// separate field rather than a widening. <see cref="Detail"/> is uncapped and #179 deliberately
+        /// routes assertion text and stack traces into it, so it is withheld from webhook deliveries; a
+        /// question is written by the HARNESS for a human and carries no tool output, which is a different
+        /// risk profile. Without this, a supervisor learned that a task needed a human and not what was
+        /// asked, and had to go read <c>events.jsonl</c> off the filesystem — the read #585 exists to
+        /// remove.
+        /// </para>
+        /// </summary>
+        public string? Question { get; init; }
 
         /// <summary><c>run-finished</c>: the process exit code, when the run reached one.</summary>
         public int? ExitCode { get; init; }

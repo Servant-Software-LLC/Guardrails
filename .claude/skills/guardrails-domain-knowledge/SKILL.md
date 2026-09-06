@@ -53,7 +53,16 @@ entire resumed run. **A failed delivery never affects the run** -- not its exit 
 verdict, or its journal; `events.jsonl` stays the durable record and a consumer that must be
 complete re-reads it. `detail` is withheld by default -- the field is always present, carrying
 a fixed marker, so a receiver never reads "withheld" as "nothing to report" -- and sent
-verbatim only with `--on-event-detail`. Headers, retry policy, the shutdown guarantee for the
+verbatim only with `--on-event-detail`. **The needs-human QUESTION is the exception, and it is a
+separate field rather than a widening (#606):** `question` rides on a `task-settled` row whose
+outcome is `needs-human`, is DELIVERED BY DEFAULT, and is absent on every other settle. Before it,
+the question's only carrier was the `needs human: ...` prefix spliced into `detail` -- so a
+supervising agent learned that a task needed a human and NOT what was asked, and had to read
+`events.jsonl` off the filesystem, which is the read layer 3 exists to remove. Widening `detail`
+would have shipped the stack traces and absolute paths the default exists to withhold; a question is
+written by the HARNESS for a human and carries no tool output, which is why it gets its own
+disclosure. `detail` keeps the prefix unchanged, so the prose parse that drives the autonomous
+escalation dispatch is undisturbed. Headers, retry policy, the shutdown guarantee for the
 terminal row, and the security posture are the SSOT, not duplicated here:
 `docs/plans/02-schemas-and-contracts.md` section 8.3 (`--on-event` webhook delivery).
 
