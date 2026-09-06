@@ -170,10 +170,16 @@ public sealed class ProcessRunner
     /// How many times a launch is retried when Linux answers <c>ETXTBSY</c> ("Text file busy") — the
     /// kernel refusing to <c>exec</c> a file some process still holds open for WRITING (#650).
     /// </summary>
-    private const int TextFileBusyAttempts = 5;
+    /// <remarks>
+    /// Ten, not five. The first shipped value gave a ~100 ms total budget, which is thin for a window whose
+    /// length is "however long until some other process closes a descriptor" — and it duly ran out on CI
+    /// while the descriptor was still open. A permanent ETXTBSY now costs ~500 ms before failing loudly,
+    /// which is nothing against a task, and a transient one has room to clear.
+    /// </remarks>
+    private const int TextFileBusyAttempts = 10;
 
     /// <summary>The wait between those attempts. The window is another process closing a descriptor, not work.</summary>
-    private static readonly TimeSpan TextFileBusyBackoff = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan TextFileBusyBackoff = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
     /// The count of <c>ETXTBSY</c> retries this process has performed, exposed so a test can assert the
