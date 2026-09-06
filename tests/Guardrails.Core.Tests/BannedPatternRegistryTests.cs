@@ -180,9 +180,30 @@ public sealed class BannedPatternRegistryTests : IDisposable
         // The hard catastrophe detector is unchanged and load-immune already: RegexMatchTimeoutException
         // against the production 2s MatchTimeout, asserted by the catch above. This adds the early
         // warning that the absolute bound was reaching for, without inheriting its fragility.
+        //
+        // ...and the FIRST version of it inherited a different fragility, which macOS CI found within
+        // hours. It timed the ratio through `matcher` — the PRODUCTION instance, whose MatchTimeout is 2s
+        // — on a probe with TWICE the candidates. That is twice the work against a fixed budget, so a slow
+        // or contended runner turned a linear-but-slow measurement into a RegexMatchTimeoutException and
+        // the test reported catastrophic backtracking that had not happened. Measured on macos-latest:
+        // 3 s elapsed, timeout thrown, on an unchanged pattern.
+        //
+        // The two assertions want DIFFERENT timeouts, and conflating them was the error:
+        //
+        //   catastrophe   the ORIGINAL probe against the PRODUCTION 2s matcher — the timeout IS the
+        //                 assertion, because that is exactly how `validate` fails in production
+        //                 (PlanValidator does not catch it, so the tool crashes).
+        //   linearity     both sizes against a matcher with a GENEROUS timeout — the question is the
+        //                 SHAPE of the curve, and a wall-clock ceiling on a bigger input measures the
+        //                 runner, which is the whole thing the ratio exists to stop measuring.
+        //
+        // Same pattern, same options, only the timeout differs — so this still times the shipped
+        // expression, not a hand-rolled approximation of it.
+        var unhurried = new Regex(matcher.ToString(), matcher.Options, RatioTimeout);
+
         string doubled = BacktrackingProbeScript(candidates: 300);
-        TimeSpan singleCost = TimeMatch(matcher, adversarial);
-        TimeSpan doubleCost = TimeMatch(matcher, doubled);
+        TimeSpan singleCost = TimeMatch(unhurried, adversarial);
+        TimeSpan doubleCost = TimeMatch(unhurried, doubled);
 
         // A floor, because a RATIO of two sub-millisecond readings is noise, not evidence. Below it the
         // cost is so far inside the timeout that only the exception above is meaningful.
@@ -206,6 +227,14 @@ public sealed class BannedPatternRegistryTests : IDisposable
     /// that the <see cref="RegexMatchTimeoutException"/> path is the only meaningful signal (#518).
     /// </summary>
     private static readonly TimeSpan RatioNoiseFloor = TimeSpan.FromMilliseconds(20);
+
+    /// <summary>
+    /// The timeout the LINEARITY measurement runs under — generous on purpose, and deliberately not the
+    /// production 2s. The ratio asks about the shape of the cost curve; a wall-clock ceiling on the
+    /// doubled input measures the RUNNER, which is precisely what the ratio exists to stop measuring.
+    /// The production timeout still gates the original probe above, where it is the assertion (#518).
+    /// </summary>
+    private static readonly TimeSpan RatioTimeout = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// The ceiling on cost growth when the candidate count DOUBLES. Linear is ~2x — the measured property
