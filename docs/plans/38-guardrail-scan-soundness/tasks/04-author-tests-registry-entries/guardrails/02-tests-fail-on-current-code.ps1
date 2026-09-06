@@ -38,8 +38,10 @@ try {
         exit 1
     }
 
-    # The behaviours that MUST be red: none of the four registry entries exists yet, so every
-    # firing control finds no diagnostic and the curated-set assertion sees 3 where it expects 7.
+    # The behaviours that MUST be red: none of the three registry entries exists yet, so every
+    # firing control finds no diagnostic and the curated-set assertion sees 3 where it expects 6.
+    # There is deliberately NO #449 entry - it is not expressible without rejecting the doctrine's own
+    # canonical union guardrail (design 38 SS5).
     $mustFail = @(
         'Entry608a_ContinuePreference_FiresGr2037',
         'Entry608a_StopPreference_IsClean_NoGr2037',
@@ -47,9 +49,6 @@ try {
         'Entry608b_GuardrailEndingOnExit_IsClean_NoGr2037',
         'Entry561_CommentStripBeforeLiteralNeutralize_FiresGr2037',
         'Entry561_LiteralNeutralizeFirst_IsClean_NoGr2037',
-        'Entry449_WholeFileReadToBannedLiteral_NoStrip_FiresGr2037',
-        'Entry449_Respelled_WholeFileRead_StillFires',
-        'Entry449_StripPresent_IsClean_NoGr2037',
         'Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated'
     )
     # No declared exemption on this task: every pinned behaviour is genuinely absent today.
@@ -71,7 +70,7 @@ try {
             $problems.Add("[$name] NOT BOUND - no test with this method name executed. The prompt pins this name; author it, or this behaviour has no red.")
         }
         elseif ($hit.outcome -ne 'Failed') {
-            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Failed'. It passes against a tree where the four GR2037 entries do not exist yet, so it is not coupled to the code path it claims to test.")
+            $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Failed'. It passes against a tree where the three GR2037 entries do not exist yet, so it is not coupled to the code path it claims to test.")
         }
     }
 
@@ -82,7 +81,7 @@ try {
         exit 1
     }
 
-    Write-Output "Red census: all 10 registry behaviours bound to a pinned test and observed Failed. $($results.Count) test(s) ran."
+    Write-Output "Red census: all 7 registry behaviours bound to a pinned test and observed Failed. $($results.Count) test(s) ran."
     exit 0
 }
 finally {

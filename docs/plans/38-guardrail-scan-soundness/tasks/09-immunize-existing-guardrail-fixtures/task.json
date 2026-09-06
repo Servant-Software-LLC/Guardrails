@@ -1,0 +1,10 @@
+{
+  "description": "Immunize the three existing test files whose guardrail fixtures the new #608a entry would red - a mechanical one-line change per file, landing before the entries exist",
+  "dependsOn": [],
+  "stableId": "j4c8n6",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/GuardrailRequiresForbiddenTokenTests.cs",
+    "tests/Guardrails.Core.Tests/JitPrefixVetoTests.cs",
+    "tests/Guardrails.Core.Tests/ProducerCoverageTests.cs"
+  ]
+}

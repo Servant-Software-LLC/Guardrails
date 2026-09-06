@@ -228,6 +228,12 @@ matters.
 
 ### 3.6 Interpreter scope, stated honestly
 
+**One more residual, found by the independent review:** `InterpreterMap.Resolve` short-circuits to the
+operator's `_overrides` before it reaches `BuiltInTemplates`, so a plan that pins `.ps1` through
+`guardrails.json`'s `"interpreters"` block **bypasses the shim entirely and silently**. That is an
+escape hatch the operator chose, but nothing says so at the time — worth a line in the CLI's own docs,
+and named here rather than discovered later.
+
 Measured: **bash has the same fail-open** (a failing command mid-script, then `exit 0`, exits 0);
 **python does not** (an uncaught exception exits 1). The corpus is **100% pwsh** — 0 `.sh`, 0 `.py` — so
 the shim ships for `.ps1` only. The bash equivalent is `set -euo pipefail` and belongs in doctrine plus a
@@ -314,8 +320,27 @@ anyway, and three `/guardrails-review` passes plus a fourth wave-scoped pass all
 docs/plans/salvage-advice-provisioning` reports **"OK: plan is valid"** across 77 diagnostic codes while
 the offending guardrail sits committed and unmodified since `d9c006d3`.
 
-That is the whole argument. More prose is the one remedy already proven not to work. **This issue's fix is
-a lint, and only a lint.**
+That is the whole argument. More prose is the one remedy already proven not to work.
+
+**But the lint is not expressible, and an independent review measured why. #449 gets no entry in this
+plan.** The shape a `#449` entry must fire on — *a whole-file read reaching a banned-literal match with
+no strip in between* — is **also the shape of the doctrine's own canonical union guardrail**:
+
+```powershell
+# examples/parallel-hello/parallel-hello/guardrails/01-whole-repo-greeting.ps1
+$content = Get-Content -Raw -Path $file.FullName
+if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') { ... }
+```
+
+That form is **correct without a strip** — a conflict marker inside a comment is still a conflict marker,
+and you want to find it. `BannedPatternRegistryTests.AnchoredConflictMarker_IsClean_NoGr2037` asserts
+exactly that, and would go red. So an entry keyed on the shape rejects the right answer, and an entry
+narrow enough to spare it (excluding line-anchored patterns, say) is heuristic in both directions.
+
+**This is the same verdict §6 reaches for #428, on the same reasoning, and consistency is the point:**
+a gate that certifies less than it appears to is the defect this plan exists to close, so it does not get
+shipped here merely because the issue asks for one. #449 keeps its doctrine, loses its lint, and gains a
+measured reason — which it did not have before.
 
 The entry must key on the **shape** — a whole-file read reaching a banned-literal match with no strip in
 between — not on a token. An entry keyed on `Get-Content -Raw` is dodged by `Select-String -Path`,
@@ -351,7 +376,8 @@ a `mustMatch`/`mustNotMatch` pair that earns it.**
 ## 7. The registry entries
 
 `banned-guardrail-patterns.json` is built for exactly this — *"grow it by adding a JSON object with two
-fixtures, not harness C#"* — and it carries three entries today (`#73`, `#187a`, `#462`). Four are added.
+fixtures, not harness C#"* — and it carries three entries today (`#73`, `#187a`, `#462`). **Three** are
+added; #449's was designed and dropped (§5).
 Each needs `badPattern`, `reason`, `goodPatternHint`, and both fixture arrays, because
 `BannedPatternRegistryTests.EverySeedEntry_BadPatternMatchesAllMustMatch_AndNoMustNotMatch` will not let a
 malformed entry ship.
@@ -361,7 +387,6 @@ malformed entry ship.
 | `#608a` | a `.ps1` guardrail setting `ErrorActionPreference` to `Continue`/`SilentlyContinue` | 358 corpus instances; doctrine and `examples/` both say `'Stop'` |
 | `#608b` | a guardrail that does not end on an explicit `exit` | keeps §3.4's divergence unreachable — the shim's assumption, enforced |
 | `#561` | a block-comment strip that precedes a literal-neutralization | shape, not the two known spellings |
-| `#449` | a whole-file read reaching a banned-literal match with no strip between | shape, not `Get-Content -Raw` |
 
 Two constraints on authoring them, both load-bearing:
 
@@ -388,9 +413,24 @@ shipped runs. Rewriting them would be a 900-file diff that changes no outcome, a
 rather than hoping the next author reads a warning.
 
 Consequence, stated so nobody rediscovers it as a bug: **after this ships, `guardrails validate` on an
-older plan folder will report GR2037 errors.** That is true and useful. No test validates the committed
-corpus against the registry (`BannedPatternRegistryTests` uses synthetic fixtures), so nothing goes red on
-merge.
+older plan folder will report GR2037 errors.** That is true and useful.
+
+**Correction — the "nothing goes red on merge" claim below was wrong, and an independent review caught
+it.** The original text reasoned that `BannedPatternRegistryTests` uses synthetic fixtures and therefore
+nothing breaks. It missed that *those synthetic fixtures are themselves guardrail bodies the validator
+scans*. Measured on master today:
+
+| entry | test files whose fixtures it reds |
+|---|---|
+| `#608a` | `GuardrailRequiresForbiddenTokenTests.cs`, `JitPrefixVetoTests.cs`, `ProducerCoverageTests.cs` |
+| `#608b` | **none** — a first scan said two integration-test files; re-checked, those bodies are stub *agent runners* (they read stdin and emit `{"type":"result"}`), which the validator never scans |
+| `#561` | **none** |
+
+**Three** files, one line each. The `#608b` row was wrong in the first measurement and is recorded here corrected rather than quietly fixed — an over-broad scan that counts non-guardrails is the same error as an over-broad lint, one level up. The three that remain are real: a task guardrail (`HistoricalTask06Guardrail`), a plan-root terminal gate (`GateBody`), and a plan gate (`PlanGate`). **They belong to no task**, which is the #587 tripwire shape — they would
+surface at the terminal gate where nothing can fix them. So the re-baseline is a named deliverable of
+`04-author-tests-registry-entries`, which owns the test surface and runs in tier 0, *before* the entries
+land. Immunizing a fixture (adding `'Stop'`, or a terminal `exit`) does not change what it tests, so each
+file stays green both before and after.
 
 ---
 
@@ -482,7 +522,18 @@ is the `/guardrails-review` probe, which is the same enforcement #449 proves can
 **#428 is therefore the weakest item in this plan, and that is a known, stated limit rather than an
 oversight** — the alternative is a heuristic lint, which is worse.
 
-**The whole plan certifying itself.** Wave 2's guardrails are written using the doctrine wave 2 is
-changing. The wave-1 shim is what keeps that honest: it cannot make a wrong guardrail right, but it
-guarantees a guardrail that aborts is not read as a pass. Per #467, the adversarial pass on this plan must
-be run by an agent that did not author it.
+**The whole plan certifying itself — and the reassurance that turned out to be false.** The doctrine
+tasks' guardrails are written using the doctrine those tasks are changing. This section previously said
+the shim keeps that honest. **It does not, for this plan's own run:** the harness executing the run is the
+*installed* CLI, so the shim task 02 builds never protects tasks 03–08. What actually keeps this plan
+honest is narrower and worth stating accurately — every guardrail in the folder sets
+`$ErrorActionPreference = 'Stop'` and creates its accumulator before first use, and an independent pass
+could not construct a `'Stop'` fail-open at all (engine error, `[xml]` cast failure and null-method all
+exit 1 under `pwsh -File`, inside `try{}finally{}` and at top level). That is a real second line of
+defence, and it is the argument for `#608a` rather than a footnote to it.
+
+**Three of this plan's own guardrails certified vocabulary rather than work, and an independent pass
+measured it.** Tasks 06, 07 and 08 could each be satisfied by appending the required literals — in one
+case a single line — leaving 18 backwards doctrine statements in place. That is this plan's own defect
+class, authored into this plan, and it is the strongest argument in the document for #467: the pass that
+found it was run by an agent that did not write it. Per #467, that is not optional here.

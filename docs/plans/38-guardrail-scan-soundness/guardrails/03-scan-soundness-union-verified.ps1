@@ -39,14 +39,16 @@ foreach ($rel in $subjects) {
 
 # 2. CONTRIBUTION-PRESENT (additive tightening, #343). Each is CONDITIONAL: it fires only once the
 #    contributing task's marker has landed, so it cannot fail before that task has run.
-$shimMarker = 'GUARDRAILS-ABORT'
+# The abort verdict. NOT keyed on a bare `97` plus `Passed = false`: measured, `Passed = false` already
+# occurs once in this file on the starting tree and any stray 97 would discharge the pair, so that clause
+# certified nothing. Key on the marker the shim actually emits, which exists nowhere today.
 $runner = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
-if ((Test-Path -LiteralPath $runner -PathType Leaf)) {
+if (Test-Path -LiteralPath $runner -PathType Leaf) {
     $c = Get-Content -Raw -LiteralPath $runner
-    if ($c -match '97') {
-        # the abort exit code landed here; require the VERDICT branch, not merely the number
-        if ($c -notmatch 'Passed\s*=\s*false') {
-            $problems.Add("[$runner] mentions the abort exit code but declares no Passed = false verdict - the abort branch survived the merge only as a number.")
+    if ($c -match 'GUARDRAILS-ABORT' -or $c -match '97') {
+        # the abort branch landed here; require it to be a VERDICT, not a surviving mention
+        if ($c -notmatch '(?s)97[\s\S]{0,600}Passed\s*=\s*false' -and $c -notmatch '(?s)Passed\s*=\s*false[\s\S]{0,600}97') {
+            $problems.Add("[$runner] carries the abort code or marker but no Passed = false within 600 chars of it - the merge kept the number and dropped the verdict branch, so an aborted guardrail is still recorded as a PASS.")
         }
     }
 }
@@ -54,7 +56,7 @@ if ((Test-Path -LiteralPath $runner -PathType Leaf)) {
 $registry = '.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json'
 if (Test-Path -LiteralPath $registry -PathType Leaf) {
     $raw = Get-Content -Raw -LiteralPath $registry
-    foreach ($id in @('#608a', '#608b', '#561', '#449')) {
+    foreach ($id in @('#608a', '#608b', '#561')) {   # no #449 - not expressible (design 38 SS5)
         if ($raw -match [regex]::Escape("`"$id`"")) {
             # the entry landed; require it to be a real entry, not a bare id in a comment
             $idx = $raw.IndexOf("`"$id`"")

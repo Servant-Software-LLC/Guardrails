@@ -40,11 +40,25 @@ foreach ($member in @('PwshTemplate', 'PowershellTemplate')) {
     # The member's body runs from its name to the terminating semicolon of its expression body.
     $m = [regex]::Match($scan, [regex]::Escape($member) + '\s*=>[\s\S]*?;')
     if (-not $m.Success) {
-        $problems.Add("[$member] no expression-bodied member found in $subject. It was renamed or restructured; this guardrail binds to the name, so reconcile the two.")
+        $problems.Add("[$member] no expression-bodied member found in $subject. Either it was renamed or restructured (this guardrail binds to the name - reconcile the two), OR the scan copy blanked it: if BOTH members report this and the file plainly declares them, suspect the preprocessing above, not the file (#561).")
         continue
     }
     if ($m.Value -notmatch 'ShimScript') {
         $problems.Add("[$member] does not reference ShimScript - this template still invokes the guardrail script directly, so an aborted guardrail run through it exits 0 and the harness records a PASS (#608). Both pwsh templates must route through the shim, not just the primary one.")
+    }
+}
+
+# The abort exit code is a DATUM with a downstream consumer: task 08's guardrail requires the literal
+# `exit 97` in the SSOT. Nothing gated its CARRIER, so task 02 could ship `exit 90` and make task 08's
+# clause honestly unsatisfiable - a #474 severed hop. Pin it here, at the file that produces it.
+$runner = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
+if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+    $problems.Add("[$runner] does not exist - the abort verdict has no home.")
+}
+else {
+    $rc = Get-Content -Raw -LiteralPath $runner
+    if ($rc -notmatch '(?<![0-9#])97(?![0-9])') {
+        $problems.Add("[$runner] never mentions the abort exit code 97. The shim emits it and the SSOT (task 08) is required to document `exit 97`; if this task chose a different number, all three must change together, not two of them.")
     }
 }
 

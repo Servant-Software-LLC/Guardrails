@@ -65,7 +65,7 @@ rejected as ambiguous.
 
 ## Task
 
-Add four entries to `.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json` so the
+Add three entries to `.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json` so the
 firing controls authored in `tests/Guardrails.Core.Tests/BannedPatternRegistryTests.cs` pass **without
 editing that test file** — it is outside your `writeScope`, and an edit to it fails this task.
 
@@ -77,7 +77,6 @@ not harness C#"* — and that is exactly the shape required here. No C# changes 
 | `#608a` | a `.ps1` guardrail setting `ErrorActionPreference` to `Continue` or `SilentlyContinue` | 7, 0.1 |
 | `#608b` | a guardrail that does not end on an explicit `exit` | 7, 3.4 |
 | `#561` | a block-comment strip that runs BEFORE a string-literal neutralization | 4, 4.2 |
-| `#449` | a whole-file read reaching a banned-literal match with no comment strip in between | 5 |
 
 Each entry needs `id`, a rationale comment in the file house style, `badPattern`, `reason`,
 `goodPatternHint`, `mustMatch` and `mustNotMatch`. The meta-test

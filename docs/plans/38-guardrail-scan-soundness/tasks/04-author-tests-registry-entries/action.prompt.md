@@ -35,12 +35,14 @@ catches, and read the existing tests in this file first — follow their shape r
 **Scope boundary (harness-enforced):** Write only to
 `tests/Guardrails.Core.Tests/BannedPatternRegistryTests.cs`. After this task completes, the harness runs
 a `git diff` check and rejects any edit outside it — including
-`.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json`, which a **later** task owns.
-An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused
+`.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json`, which a **later** task owns,
+and the three test files whose fixtures need immunizing, which
+`09-immunize-existing-guardrail-fixtures` owns. An out-of-scope edit fails the task immediately and
+consumes a retry. If you hit a compile error caused
 by a missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}`
 to the state-out path and stop.
 
-**Pin exactly these nine method names** — the census guardrail binds to them:
+**Pin exactly these six method names** — the census guardrail binds to them:
 
 | method | fixture | expects |
 |---|---|---|
@@ -50,20 +52,21 @@ to the state-out path and stop.
 | `Entry608b_GuardrailEndingOnExit_IsClean_NoGr2037` | the same, ending on `exit 0` | no GR2037 |
 | `Entry561_CommentStripBeforeLiteralNeutralize_FiresGr2037` | a scan copy that blanks block comments **before** neutralizing string literals | GR2037 citing `#561` |
 | `Entry561_LiteralNeutralizeFirst_IsClean_NoGr2037` | the same replaces in the correct order | no GR2037 |
-| `Entry449_WholeFileReadToBannedLiteral_NoStrip_FiresGr2037` | `Get-Content -Raw` feeding a banned-literal `-match` with no comment strip between | GR2037 citing `#449` |
-| `Entry449_Respelled_WholeFileRead_StillFires` | **the same shape respelled** — `[IO.File]::ReadAllText` or `Select-String -Path` instead of `Get-Content -Raw` | GR2037 citing `#449` |
-| `Entry449_StripPresent_IsClean_NoGr2037` | the same read with a comment strip in between | no GR2037 |
 
-`Entry449_Respelled_WholeFileRead_StillFires` is the load-bearing one and must not be dropped for being
-awkward. Design 38 §11 names "a lint keyed on `Get-Content -Raw`, dodged by `Select-String`" as the way
-this plan fails while looking finished; that test is the only thing standing between the entry and that
-outcome.
+**There is deliberately no `#449` entry and no `Entry449_*` test.** An earlier draft of this plan had
+three, and an independent review measured why they cannot exist: the shape a `#449` entry must fire on is
+*also* the shape of the doctrine's own canonical union guardrail
+(`examples/parallel-hello/.../01-whole-repo-greeting.ps1` — a `Get-Content -Raw` feeding
+`-match '(?m)^<<<<<<<'` with no strip, which is **correct** without one, because a conflict marker inside
+a comment is still a conflict marker). `AnchoredConflictMarker_IsClean_NoGr2037`, already in this file,
+asserts exactly that. Do not add a `#449` entry or its tests; if you think you see how, read design 38 §5
+first — the reasoning is recorded there.
 
-Also **update `Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated`** so the curated set is the seven
-entries — `#73`, `#187a`, `#462`, `#608a`, `#608b`, `#561`, `#449`. That test is the registry's
+Also **update `Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated`** so the curated set is the six
+entries — `#73`, `#187a`, `#462`, `#608a`, `#608b`, `#561`. That test is the registry's
 deliberate gate on silent growth; raising it here, in the same change as the controls, is the point.
 
-All ten tests MUST fail on the current tree — the four entries do not exist yet, so every firing control
+All seven tests MUST fail on the current tree — the four entries do not exist yet, so every firing control
 finds no diagnostic and the curated-set assertion sees three entries where it now expects seven. A test
 that passes today is not coupled to the entry it claims to pin.
 

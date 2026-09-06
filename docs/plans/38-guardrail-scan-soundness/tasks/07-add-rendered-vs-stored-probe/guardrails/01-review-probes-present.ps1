@@ -1,16 +1,28 @@
-# catches: a review skill that gained the #428 probe without gaining the ordering correction it depends
-#          on - a reviewer told to look for rendered-vs-stored while the same file still tells them that
-#          stripping comments is the whole of the preparation. #428 has NO mechanical gate by design
-#          (design 38 SS6), so this probe is its only enforcement; landing it half-written leaves the
-#          issue with nothing behind it at all.
-# DOCUMENTATION target: exempt from the two-sided sample pair (#468) - no meaningful invalid sample of a
-#          prose document exists. The compensating controls are the <!-- --> strip below (a required
-#          clause over a .md false-PASSES on a commented-out line) and the PRECEDENT check: every literal
-#          demanded here is pinned verbatim in this task's own action prompt, so the two cannot drift
-#          (GR2026).
-# Measured baseline (#478): all three required literals count 0 in this file on the starting tree
-#          (verified 2026-09-06 on master a3f3e977).
+# catches: a review probe that certifies VOCABULARY. An independent review measured the first version of
+#          this guardrail: appending the three required literals as loose prose at EOF made it exit 0 -
+#          and so did putting all three on ONE line, with no probe at all. #428 has NO mechanical gate by
+#          design (design 38 SS6), so this probe is its ONLY enforcement, and a check that cannot tell a
+#          probe from a sentence leaves the issue with nothing behind it.
+#          So the literals must land INSIDE the adversarial-pass section, in the file's own probe-bullet
+#          form. That is not proof of a GOOD probe - it raises the cost from one appended line to a
+#          structured insertion, which is the honest ceiling for a documentation target. Said plainly
+#          here so the next reviewer does not re-derive it and think it was an oversight.
+# DOCUMENTATION target: exempt from the two-sided sample pair (#468). Compensating controls: the
+#          <!-- --> strip (measured to fire correctly - the reviewer could not defeat it), the PRECEDENT
+#          check (every literal is pinned verbatim in this task's prompt, so prompt and guardrail cannot
+#          drift - GR2026), and the section/shape binding below.
+# Measured baseline (#478): all three literals count 0 in this file on the starting tree, and the
+#          section markers `### 2. Adversarial pass per task` and `### 2b.` both exist (verified
+#          2026-09-06 on master a3f3e977) - so the anchors are real, not hoped for.
 $ErrorActionPreference = 'Stop'
+
+# Collapse whitespace before matching a PHRASE (#428, applied to this guardrail itself). A required
+# phrase is prose, and prose WRAPS - a markdown document naturally carries a required phrase across a
+# line break, and a single-line literal can never match that. Matching the rendered form rather than the
+# stored form is precisely the defect this plan exists to document - and the first
+# version of this guardrail committed it, false-REDding the honest probe. Normalizing is remedy 2 of the
+# three-line rule the task is asked to write down.
+function ConvertTo-Flat([string]$text) { return [regex]::Replace($text, '\s+', ' ') }
 
 $problems = New-Object System.Collections.Generic.List[string]
 $subject  = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { '.claude/skills/guardrails-review/SKILL.md' }
@@ -30,9 +42,20 @@ if ($prose -match '<!--') {
     exit 1
 }
 
+# The adversarial-pass section is where a PROBE lives. Loose prose at EOF is not a probe.
+$start = [regex]::Match($prose, '(?m)^### 2\. Adversarial pass per task')
+$end   = [regex]::Match($prose, '(?m)^### 2b\.')
+if (-not $start.Success -or -not $end.Success -or $end.Index -le $start.Index) {
+    Write-Output "PRECONDITION: could not locate the '### 2. Adversarial pass per task' ... '### 2b.' section in $subject. This guardrail binds to those headings; if the file was restructured, reconcile the two rather than deleting the binding."
+    exit 1
+}
+$section     = $prose.Substring($start.Index, $end.Index - $start.Index)
+$flatProse   = ConvertTo-Flat $prose
+$flatSection = ConvertTo-Flat $section
+
 $required = @(
     @{ Text = 'the rendered form is not the stored form'
-       Why  = "the #428 probe is absent. A guardrail that matches a phrase as it READS rather than as it is STORED silently passes when the target is split across source-line literals - a false-PASS, which is the expensive direction. #428 has no mechanical gate by design, so this probe is its ONLY enforcement." },
+       Why  = "the #428 probe is absent from the adversarial-pass section. A guardrail that matches a phrase as it READS rather than as it is STORED silently passes when the target is split across source-line literals - a false-PASS, the expensive direction. #428 has no mechanical gate by design, so this probe is its ONLY enforcement." },
     @{ Text = 'ONE source line'
        Why  = "the #428 probe names a trap and offers no remedy. Its first and cheapest fix is 'prefer a distinctive fragment that sits on ONE source line'; without it a reviewer can recognise the defect and not know what to ask for." },
     @{ Text = 'Neutralize string literals BEFORE stripping comments'
@@ -40,8 +63,22 @@ $required = @(
 )
 
 foreach ($r in $required) {
-    if ($prose -notmatch [regex]::Escape($r.Text)) {
-        $problems.Add("[$subject] does not carry '$($r.Text)' - $($r.Why)")
+    if ($flatProse -notmatch [regex]::Escape((ConvertTo-Flat $r.Text))) {
+        $problems.Add("[$subject] does not carry '$($r.Text)' anywhere - $($r.Why)")
+    }
+    elseif ($flatSection -notmatch [regex]::Escape((ConvertTo-Flat $r.Text))) {
+        $problems.Add("[$subject] carries '$($r.Text)' but NOT inside '### 2. Adversarial pass per task'. That section is where a probe a reviewer actually runs lives; the same words elsewhere in the file are prose nobody executes.")
+    }
+}
+
+# ... and in the file's own probe-bullet shape, so it reads as a probe rather than a stray sentence.
+$anchor = [regex]::Match($flatSection, [regex]::Escape('the rendered form is not the stored form'))
+if ($anchor.Success) {
+    $before = $flatSection.Substring([Math]::Max(0, $anchor.Index - 800), [Math]::Min(800, $anchor.Index))
+    # Both bullet shapes exist in this file - `- **Name** (#NNN):` and `- **Name (#NNN)**:` - so the
+    # code may sit inside or after the bold. Match either, over the FLATTENED section.
+    if ($before -notmatch '- \*\*.{0,120}#428') {
+        $problems.Add("[$subject] states the #428 rule but not as a PROBE. Every sibling in this section opens with the file's own bullet form - `- **<name>** (#NNN): ...` - and none was found within 800 chars before the rule. A reviewer works the bullet list; a paragraph between bullets is skipped.")
     }
 }
 
@@ -50,5 +87,5 @@ if ($problems.Count -gt 0) {
     $problems | ForEach-Object { Write-Output $_ }
     exit 1
 }
-Write-Output "guardrails-review carries the #428 rendered-vs-stored probe, its one-source-line remedy, and the #561 preprocessing-order correction."
+Write-Output "guardrails-review carries the #428 rendered-vs-stored probe in the adversarial-pass section, in the file's own probe-bullet form, with its one-source-line remedy and the #561 preprocessing-order correction."
 exit 0

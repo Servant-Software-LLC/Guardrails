@@ -4,11 +4,19 @@
 # DOCUMENTATION target: exempt from the two-sided sample pair (#468). Compensating controls: the
 #          <!-- --> strip below (a required clause over a .md false-PASSES on a commented-out line -
 #          measured elsewhere in this repo as a two-token contract check flipping exit 1 to exit 0 on one
-#          appended TODO), and the PRECEDENT check - `97` is the literal the shipped code uses, so the
-#          document and the implementation are pinned to the same token.
+#          appended TODO), the whitespace normalization (a required PHRASE wraps in prose - #428 applied
+#          to this guardrail itself), and the SECTION anchoring below.
 # Measured baseline (#478): both literals count 0 in the SSOT on the starting tree (verified 2026-09-06
 #          on master a3f3e977).
 $ErrorActionPreference = 'Stop'
+
+# Collapse whitespace before matching a PHRASE (#428, applied to this guardrail itself). A required
+# phrase is prose, and prose WRAPS - a markdown document naturally carries a required phrase across a
+# line break, and a single-line literal can never match that. Matching the rendered form rather than the
+# stored form is precisely the defect this plan exists to document - and the first
+# version of this guardrail committed it, false-REDding the honest probe. Normalizing is remedy 2 of the
+# three-line rule the task is asked to write down.
+function ConvertTo-Flat([string]$text) { return [regex]::Replace($text, '\s+', ' ') }
 
 $problems = New-Object System.Collections.Generic.List[string]
 $subject  = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { 'docs/plans/02-schemas-and-contracts.md' }
@@ -24,16 +32,30 @@ if ($prose -match '<!--') {
     Write-Output "PRECONDITION: $subject contains an unterminated '<!--'. Stripping to EOF would delete the rest of the document, so no clause below can be trusted."
     exit 1
 }
+$flatProse = ConvertTo-Flat $prose
 
-if ($prose -notmatch [regex]::Escape('exit 97')) {
-    $problems.Add("[$subject] never records 'exit 97'. The shim reserves that code for 'the guardrail aborted before reaching its own verdict', and the harness records it as a FAILURE - a reserved exit code that lives only in the source is a contract nobody can read (#608). (A bare '97' occurs twice in this document already, so the literal 'exit 97' is what discriminates.)")
+# The contract belongs in the section that already describes guardrail execution, not appended anywhere
+# in a 2000-line document. Measured: an appended TODO line satisfied the un-anchored form (exit 0).
+$secStart = [regex]::Match($prose, '(?m)^## 4\. Guardrails\s*$')
+$secEnd   = [regex]::Match($prose, '(?m)^## 5\.')
+if (-not $secStart.Success -or -not $secEnd.Success -or $secEnd.Index -le $secStart.Index) {
+    Write-Output "PRECONDITION: could not locate the '## 4. Guardrails' ... '## 5.' section in $subject. This guardrail binds to those headings; if the document was restructured, reconcile the two rather than deleting the binding."
+    exit 1
 }
-# Measured (#478): the bare word 'shim' already occurs once in this document (an unrelated back-compat
-# mention), so a clause keyed on it is satisfied before the task runs. 'harness-owned shim' counts 0.
-if ($prose -notmatch [regex]::Escape('harness-owned shim')) {
+$section     = $prose.Substring($secStart.Index, $secEnd.Index - $secStart.Index)
+$flatSection = ConvertTo-Flat $section
+
+if ($flatProse -notmatch [regex]::Escape('exit 97')) {
+    $problems.Add("[$subject] never records 'exit 97'. The shim reserves that code for 'the guardrail aborted before reaching its own verdict', and the harness records it as a FAILURE - a reserved exit code that lives only in the source is a contract nobody can read (#608). ('exit 97' counts 0 today; the document's only 97-shaped strings are issue references such as #97/#197/#597.)")
+}
+elseif ($flatSection -notmatch [regex]::Escape('exit 97')) {
+    $problems.Add("[$subject] mentions 'exit 97' but NOT inside the '## 4. Guardrails' section, which is where this document already describes guardrail execution and its verdict. A contract fact appended elsewhere is one nobody reading about guardrails will find.")
+}
+
+if ($flatProse -notmatch [regex]::Escape('harness-owned shim')) {
     $problems.Add("[$subject] does not record that a .ps1 guardrail is invoked through a harness-owned shim rather than directly. Task 02 changed how EVERY script guardrail in the product is invoked; the SSOT is where that is stated, in those words.")
 }
-if ($prose -notmatch [regex]::Escape('38-guardrail-scan-soundness')) {
+if ($flatProse -notmatch [regex]::Escape('38-guardrail-scan-soundness')) {
     $problems.Add("[$subject] does not cite docs/plans/38-guardrail-scan-soundness.md. The contract states WHAT; the design of record holds WHY, including the measured divergence - a contract entry with no pointer to its rationale gets re-litigated.")
 }
 
