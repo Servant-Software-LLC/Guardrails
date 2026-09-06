@@ -1836,6 +1836,30 @@ filter is selecting a NAME, not a behaviour** — the guardrail is the finding (
 composition-root / production path), and the fix is the archetype's **assertion requirement** (an effect
 only the production implementation emits), never a narrower filter, which only renames the same hole.
 
+**Find the proofs by their DECLARATION, never by recognising them (#382 residual).** Before operator 20
+runs at all, the audit has to know which guardrails ARE real-seam proofs. It used to have only accidental
+tells — a filename that appeared as an example in two ledger rows, and `(passing-but-blind)` inside a
+`# catches:` template — so a correct proof spelled any other reasonable way was invisible, and **a review
+that found nothing reported the same clean as a review that had nothing to find.** Every real-seam proof
+now carries both halves of a mandated marker: `real-seam` in the guardrail basename, and a
+`# real-seam: <Component> -> <Dependency>  bucket=<E|C|U>` line in its header (catalogue → "drive-the-real-seam").
+
+**Audit it as REFERENTIAL INTEGRITY, both directions — this is the half that runs on a greenfield review.**
+The ledger and the folder are two independent statements of the same fact, so cross them:
+
+- a ledger row whose `proof` column names a file that **carries no `# real-seam:` line** (or is absent) —
+  the analysis was reported but not emitted;
+- a guardrail declaring a seam **no ledger row carries** — a proof placed without the analysis that
+  justifies it, and the row that should have driven T\* is missing;
+- a declaration whose component/dependency **disagree with its row's** — recompute T\* from the
+  declaration and say which one you believe.
+
+None of that needs the test to exist, which is why it is the greenfield-runnable half of this audit and
+why the marker is `GR2061`'s precondition: a lint cannot relate a folder to a ledger while the folder
+declares neither which guardrails are proofs nor what they prove. **A missing marker is a finding, never a
+silent pass** — WEAK on its own (the proof may be correct and merely undeclared), BLOCKER when it leaves a
+composition-root or production-path seam with no locatable proof at all.
+
 **Inapplicable, and reported that way.** Probe B mutates the target tree at review time, so operator 20
 needs the test to already exist. It applies to a plan being **re-reviewed against an existing
 implementation** — a resumed or regenerated plan, an amendment to a landed wave. **On a greenfield first
@@ -2323,6 +2347,7 @@ finding remains unaddressed.
 <!-- BEGIN ADDED CHECKS #468/#470 -->
 - [ ] (#468) Every guardrail asserting a property of IMPLEMENTATION SOURCE was run through the demotion question — behaviour → a test (or an AGREEMENT property test for "X must USE Y"), source-shape only for a structural fact with no runtime proxy. A behavioural claim carried by a regex is a finding NAMING the test that should replace it (BLOCKER when a correct implementation can be written that it rejects, WEAK when it merely certifies vocabulary), and a surviving source-shape check with no report line saying WHY no test could carry it is itself a finding. Legitimate structural facts — build-descriptor registration, cross-module reference chains, entry-point wiring, the #120 grep fallback, #176 negative assertions — are NOT flagged. When ≥2 Probe B operators go green against one source-shape guardrail, the finding is the ARCHETYPE, not the clause: recommend the demotion rather than a fourth round of clause repair (three rounds did not converge).
 - [ ] (#580) Every probe this pass RAN had its negative case observed to bite before its result was reported — including the positive-result probes, not only the #500 zero-match ones. A count was proven to come from a search that actually read the subject; a mutation was proven to have changed the OBSERVABLE, not merely to have been attempted; nothing was read off a stale build or an exit code an intervening command had clobbered. Where a negative case could not be constructed, the finding is marked UNVERIFIED in the report rather than clean.
+- [ ] (#382 residual) The real-seam proofs were located by their DECLARED marker — `real-seam` in the basename plus a `# real-seam: <Component> -> <Dependency>  bucket=<E|C|U>` header line — not by recognising an accidental tell, and the ledger and the folder were crossed in BOTH directions (a row whose named proof carries no declaration; a declaration naming a seam no row carries; a declaration disagreeing with its row). That cross runs on a greenfield review, where operator 20 cannot. A missing marker is reported as a finding — WEAK alone, BLOCKER when it leaves a composition-root or production-path seam with no locatable proof — never absorbed into a clean "Probe B applied".
 - [ ] (#439) The repo's test RUNNER was MEASURED with the `stacks/dotnet.md` §6a probe (both clauses — the property/`global.json` grep AND the no-VSTest-adapter negative signal), and the result is stated in the report rather than left implicit, because "no MTP signal found" and "did not look" read identically. If MTP: no guardrail takes its SCOPE from `dotnet test --filter`, since MTP ignores the filter and runs the whole suite — defeating §4.3's zero-match guard from the far side (a large count, not zero) and invisible to Probe A/A₂, which is why executing the guardrail does not settle it.
 - [ ] (#530) No `author-tests` task ships a test that SYNTHESISES a two-sided pair (a guardrail body plus a valid and an invalid half) without first asserting the two halves produce DIFFERENT exit codes. The operator was graded, not the intent — PowerShell `-match` is case-INSENSITIVE where `-cmatch` is not, and bash `grep -q` is case-sensitive, so one fixture written both ways can discriminate on one OS and not the other. Distinctness, not polarity: a fixture that inverts its pair on purpose is legitimate. The subject is bound the way the RUN binds it (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), so no body takes its no-subject early exit and returns the same code twice. Nothing downstream covers this: the red census's success condition IS red, so a test that can never pass reads as a test red for the right reason, and the bill arrives as a `needs-human` halt on the next task.
 - [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest, read with the #375 census predicate rather than by name discovery); the #455 zero-match guard is not that and is not flagged.
