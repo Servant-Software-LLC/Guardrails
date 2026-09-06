@@ -13,6 +13,16 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
 
+  <!--
+    #530 - the synthesised-pair distinctness proof is shared, not duplicated. Both suites synthesise
+    guardrail bodies for their fixtures, and a second copy of the assertion is a second place for the
+    assertion to rot. Linked rather than lifted into a third project: one file, two assemblies.
+  -->
+  <ItemGroup>
+    <Compile Include="..\Guardrails.Core.Tests\TestSupport\SynthesisedPairProof.cs"
+             Link="TestSupport\SynthesisedPairProof.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Guardrails.Core\Guardrails.Core.csproj" />
     <ProjectReference Include="..\..\src\Guardrails.Cli\Guardrails.Cli.csproj" />

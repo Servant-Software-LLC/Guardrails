@@ -2042,6 +2042,22 @@ Per `references/schemas.md`, exactly:
      never inside it: the loader enumerates every non-`.json` file in a guardrail folder as a guardrail
      (no extension allowlist), so a sample placed there would load as a script guardrail, count toward
      GR2003, and be executed at run time. Everything else stays in the temp dir.
+   - **The same obligation follows the pair into a TEST the plan asks an agent to WRITE (#530).** This
+     step governs the guardrails this breakdown generates. When an `author-tests` task's prompt asks for
+     tests that build their OWN two-sided fixture — a guardrail body plus a valid and an invalid half —
+     that fixture is a sample pair too, and it is subject to the same execution rule: **the test asserts
+     the two halves produce DIFFERENT exit codes before it asserts anything about its subject.** Put that
+     sentence in the action prompt; an agent will not infer it. Measured cost of leaving it out: a body
+     written `-match 'DEFECT'` against a valid half reading *"a clean artifact, no defect here"* —
+     PowerShell `-match` is case-INSENSITIVE, so both halves exited 1 and the pair discriminated nothing.
+     **The task's own red census could not see it**, because red is the census's success condition and a
+     test that can NEVER pass is red exactly like a test red for the right reason; the run went green and
+     the IMPLEMENTATION task halted `needs-human` on four tests no implementation could satisfy. Ask for
+     **distinctness, not polarity** — a fixture that inverts its pair deliberately is legitimate — and
+     say which binding the subject arrives on (`GR_SUBJECT` + `argv[0]` for a task pair;
+     `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), or the body takes its no-subject early exit and
+     returns the same code twice for a reason that has nothing to do with the halves. Catalogue → "A test
+     that SYNTHESISES a two-sided pair PROVES it discriminates".
    - **Not runnable → syntax-pass + explicit deferral.** If it needs a live service / the built binary /
      the full merged HEAD, run the syntax pass only, reason explicitly about correctness, and **STATE in
      the report (step 4) that the guardrail could not be author-time-executed and why** — an honest
@@ -4023,6 +4039,7 @@ tell a measured fact from an assumed one without re-doing the work.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported) **AND every WARNING it printed was read and dispositioned — fixed, or documented in the report with a one-line reason it is correct here.** Warnings do not move the exit code, so exit 0 alone is blind to GR2059 (an inert wave-root `scope:"integration"` — a protection that does nothing), GR2042 (structural over-scope), GR2026, GR2020, GR2049, GR2033 and GR2058. Treat each as a fired trigger, never as noise; a warning neither fixed nor documented is a self-review failure.
+- [ ] (#530) Where an `author-tests` task's prompt asks for tests that synthesise their OWN two-sided fixture (a guardrail body plus a valid and an invalid half), the prompt REQUIRES the test to assert the two halves produce DIFFERENT exit codes before asserting anything about its subject, and names the binding the subject arrives on (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair). Distinctness, not polarity. The red census structurally cannot cover this — red is its success condition, so a test that can never pass reads as one red for the right reason, and the cost lands as a `needs-human` halt on the implementation task.
 - [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.

@@ -2,6 +2,7 @@ using Guardrails.Cli;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.TestSupport;
 
 namespace Guardrails.Integration.Tests;
 
@@ -103,6 +104,31 @@ public sealed class StalePreflightMarkerTests
         RunJournal.LoadOrCreate(LoadPlan(plan)).Document.PlanPreflights;
 
     /// <summary>
+    /// #530 — the SOUND arrangement of this fixture's pair actually discriminates its halves.
+    ///
+    /// <para>
+    /// The tests above turn on the difference between a sound guardrail and one broken in a named
+    /// direction. That difference is only real if the sound body reads the halves differently: a body
+    /// that returned one code for both would make "sound" and "rejects its own valid sample" the same
+    /// arrangement, and the stale-marker tests would pass on a fixture proving nothing. The broken
+    /// variant is deliberately undiscriminating in one direction and is not proved here — that is what it
+    /// is for.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheSoundFixturePair_DiscriminatesItsTwoHalves()
+    {
+        using var plan = new SamplePlan();
+        plan.WriteGuardrail(rejectsItsOwnValidSample: false);
+
+        await SynthesisedPairProof.AssertHalvesAreDiscriminatedAsync(
+            plan.GuardrailPath,
+            plan.HalfPath("valid"),
+            plan.HalfPath("invalid"),
+            TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
     /// A minimal real plan carrying ONE task with ONE committed sample pair and NO
     /// <c>&lt;plan&gt;/preflights/</c> folder — the reporter's shape, and the one where nothing
     /// downstream can correct the record.
@@ -147,6 +173,11 @@ public sealed class StalePreflightMarkerTests
         /// Writes the guardrail either sound (finds GOOD-MARKER in the valid half → exit 0) or broken in
         /// the one direction the gate exists to catch: rejecting its own valid sample.
         /// </summary>
+        /// <summary>The guardrail on disk, and its two halves — the trio the #530 proof executes.</summary>
+        public string GuardrailPath => Path.Combine(_taskDir, "guardrails", "01-check" + Ext);
+
+        public string HalfPath(string half) => Path.Combine(_taskDir, "samples", "01-check." + half + ".cs");
+
         public void WriteGuardrail(bool rejectsItsOwnValidSample)
         {
             string wanted = rejectsItsOwnValidSample ? "MARKER-THAT-IS-IN-NEITHER-HALF" : "GOOD-MARKER";

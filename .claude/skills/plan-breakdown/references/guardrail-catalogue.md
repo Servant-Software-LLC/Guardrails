@@ -1094,6 +1094,25 @@ write a test that actually invokes the subject, compiles against the real API, f
 implementation and passes against the real one. Still a bad test — but a bad test *wired to the thing*,
 and visible to a reader.
 
+**The second boundary, and it points the other way (#530).** The paragraph above is about a test that
+proves too little. This one is about a test that can never pass at all — and the census is blind to it for
+a structural reason worth stating plainly: **red is the census's success condition**, so a test that is red
+because *no implementation can make it green* is indistinguishable, to this gate, from a test that is red
+for exactly the right reason. Measured in run `2026-08-29T08-35-58Z-6b90`, plan `26-guardrail-quality-gate`:
+task 01's census passed with **12 of 12 red**, and task 02 then halted `needs-human` because four of those
+tests could never pass. The cause was in the tests' own synthesised fixture — a guardrail body written
+`-match 'DEFECT'` against a valid sample reading *"a clean artifact, no defect here"*, and PowerShell's
+`-match` is case-INSENSITIVE, so both halves of the pair exited 1 and the fixture discriminated nothing.
+
+The bill for that blindness always lands one task later, on the implementation task, which is the most
+expensive place to find it: the agent burns its whole retry budget making a test pass that no
+implementation can, and the retry feedback points at production code that is already correct. **This is
+the exact mirror of the hollow body** — GR2055 (a guardrail that cannot pass for any input, #484) lints
+that shape in a *guardrail*; nothing lints the same hazard inside a *test's own fixture*. So the census
+cannot close it, and must not be described as if it could. Two mechanical defences carry it instead, and
+both are cheap: the fixture-discrimination rule below, and stating this boundary in the census's own
+`# catches:` header so the next reader takes the gate for what it is.
+
 ### Its aiming surface, and why mis-aiming is safe
 
 The census pins **test names**, so the same #455 prerequisite is non-optional and one step sharper: **the
@@ -1141,6 +1160,43 @@ bites; nothing in this section does (§"The honest boundary").
 
 The .NET manifest shape (a bare string means `Expect='Failed'`; a hashtable declares the exemption) and
 the loop that reads it are `stacks/dotnet.md §4.4`.
+
+### A test that SYNTHESISES a two-sided pair PROVES it discriminates (#530)
+
+#302 requires a guardrail to be executed against both halves of a sample pair at author time, and
+#468 makes that pair a committed artifact. Both are about a guardrail the *plan* ships. **The same
+obligation attaches to a two-sided pair a TEST synthesises for its own fixture**, and until #530 nothing
+said so — which is how a fixture whose two halves produced the same exit code reached a green census and
+cost four unpassable tests.
+
+**The rule.** When a test writes a guardrail body plus a valid and an invalid half, it asserts — as its
+own first assertion, before anything about the subject under test — that **the two halves produce
+DIFFERENT exit codes**. Not the right codes: *different* ones. Polarity belongs to the test's own
+assertions, and a fixture that inverts its pair on purpose (to drive a verifier's rejection path) is
+sound and must stay writable. What no fixture may be is undiscriminating, because two halves that return
+the same code prove the body is reading something other than the difference between them — and every
+assertion downstream of it is then a report about the fixture rather than about the subject.
+
+**Why it must EXECUTE, not inspect.** The failure is in what the operator does, not in what the body says.
+`-match 'DEFECT'` and `-cmatch 'DEFECT'` differ by one character, read identically at a glance, and only
+one of them is case-sensitive; a reviewer scanning for correctness sees a body that looks exactly right.
+Running it against both halves is the only reading that settles it, which is the same argument #302 makes
+about the guardrails a plan ships (§"A source-shape guardrail ships with its two-sided sample pair
+COMMITTED").
+
+**Bind the subject the way the RUN binds it, or the proof is vacuous.** A task-level pair hands its subject
+as `GR_SUBJECT` plus `argv[0]`; a plan-root pair hands a *workspace tree* as `GUARDRAILS_WORKSPACE` plus
+the working directory. Bind the wrong one and every body takes its `if (-not $subject) { exit 0 }` early
+exit, returns the same code twice, and the proof reports a discrimination failure that is really a
+harness error — or, worse, a proof written to tolerate that becomes a proof that passes anything.
+
+**Cross-platform fixtures need it most.** The measured PowerShell trap has a bash sibling pointing the
+other way: `grep -q` **is** case-sensitive. So one fixture written both ways can discriminate on Linux and
+not on Windows, and a suite that is green on two of three CI legs reads as a flake rather than as the
+defect it is. Assert distinctness on whichever OS is running and the divergence surfaces as itself.
+
+*The harness applies this to its own suite: `SynthesisedPairProof` (under `tests/Guardrails.Core.Tests/`,
+linked into both test projects) with a `[Fact]` per fixture that synthesises a pair.*
 
 ### Shape rules the census inherits (all non-optional)
 
