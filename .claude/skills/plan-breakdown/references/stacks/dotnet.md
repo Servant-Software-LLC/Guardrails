@@ -1513,6 +1513,22 @@ is not the catch-and-safe-default. The shapes that do NOT qualify, all of which 
 `Assert.NotNull` on the collaborator, or `Assert.True(wasCalled)`. *"The seam was called"* is how the
 motivating bugs shipped green.
 
+**The guardrail carries the #382 marker, and it goes on the GUARDRAIL, not on the test.** The two `//
+catches:` headers above document the tests; what an audit has to find is the `specific-tests-pass`
+guardrail that runs them. Name it so it can be enumerated (`03-real-seam-tests-pass.ps1`) and declare the
+seam in its header:
+
+```powershell
+# catches: a component that passes its unit tests against a faked IPromptRunner but is broken through
+#          the real one (passing-but-blind) - CriticalityJudge green against a fake, throwing on the
+#          real ClaudePromptRunner's StreamLogPath.
+# real-seam: CriticalityJudge -> IPromptRunner  bucket=E
+```
+
+Without that line the folder declares neither which guardrails are proofs nor what they prove, so a review
+has to recognise them from accidental tells and T\* cannot be recomputed without reading types out of
+prose (catalogue → "drive-the-real-seam", the mandated-marker table).
+
 **Guardrail placement.** `scope`: **local** — omit the key. The test cannot pass before its implement
 task's action has run, so it fails the #125 union-safe test (#250). And there is **no source-grep
 fallback** for this archetype: a regex asserting the test file contains `new ClaudePromptRunner(` matches
