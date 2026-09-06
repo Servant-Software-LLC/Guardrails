@@ -401,6 +401,44 @@ it belongs in the skill beside the sample-pair instruction, where nothing curren
 
 ---
 
+### 6.0a The first run's two halts were both MY guardrails, and both are the plan's own subject
+
+Run `ee049f7a` (2026-09-06): **6 of 9 tasks green, $23.76**. Both halts were defects in guardrails I
+wrote, not in anything an agent did — and both are instances of the thesis in §6.1.
+
+**`03-fix-plan35-census-list-ordering` — a path computed instead of asked for.** The agent produced
+*exactly* the intended deliverable on both attempts (the overwatcher confirmed it from the patch: the
+one-line move, no other edit), and the guardrail hard-failed at its git precondition anyway. It derived a
+repo-relative path by lexically stripping `git rev-parse --show-toplevel` from `Resolve-Path $subject` —
+and under the harness's Windows short-junction (`C:\.a\…` → `%TEMP%\gr-wt\…`) the two sides come back
+as **different spellings of the same directory** (`Io/RealPath.cs`, #452; `WorktreeJunction`, #383). The
+strip no-opped, the path stayed absolute, `git show "HEAD:C:/…"` is not a valid object spec, and the
+deliberately non-fail-open branch exited 1 every time. **It passed at the real repo root, which is why
+the samples-verify gate went green** — the guardrail was correct exactly where it was tested and wrong
+exactly where it runs. Fix: `git -C <dir> ls-files --full-name -- <leaf>` — *ask git for the path, never
+compute it* — verified inside a real worktree, red before the move and green after.
+
+**`02-implement-guardrail-abort` — a proximity regex that rolled back correct work.** All four of its
+guardrails PASSED. Then the plan-root `scope: "integration"` union check failed on the merged bytes and
+the harness rolled the merge back. The clause required `97` within 600 characters of `Passed = false`.
+**Measured: a plainly correct implementation — `private const int AbortExitCode = 97;` near the top of
+the class, the verdict branch inside the method — places them 2,785 characters apart.** A false-RED at
+the most expensive possible moment: after every task guardrail passed, discarding good work.
+
+That is **#491's shape** (a source-shape *proximity* regex mandated for a runtime-behaviour claim) and it
+also violates §4's own demotion order, in a guardrail written by the author of that section. The
+behaviour was already proven twice, behaviourally, inside the task: `02-abort-tests-pass` drives the real
+production path, and `04-shim-preserves-real-exit-codes` drives the shim and asserts exit 97. The union's
+honest job is narrower — *did the merge DROP the contribution?* — which a presence check answers and
+cannot false-RED on layout. Replaced with one.
+
+**The rule both halts teach, and it is §6.0's one level out:** a guardrail must be tested **where it
+runs**, not only where it was written. The samples gate runs at the repo root; tasks run in a junctioned
+worktree; the union check runs on merged bytes no task guardrail ever sees. Three subjects, and a check
+that is correct against one can be confidently, silently wrong against another.
+
+---
+
 ### 6.1 The base rate is higher than the issue's four instances — measured on this plan's own authoring
 
 `#428` ships with a catalogue entry and a review probe and **no gate**, and the case for that rests on how

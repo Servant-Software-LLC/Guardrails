@@ -39,16 +39,22 @@ foreach ($rel in $subjects) {
 
 # 2. CONTRIBUTION-PRESENT (additive tightening, #343). Each is CONDITIONAL: it fires only once the
 #    contributing task's marker has landed, so it cannot fail before that task has run.
-# The abort verdict. NOT keyed on a bare `97` plus `Passed = false`: measured, `Passed = false` already
-# occurs once in this file on the starting tree and any stray 97 would discharge the pair, so that clause
-# certified nothing. Key on the marker the shim actually emits, which exists nowhere today.
+# The abort verdict, as a CONTRIBUTION-PRESENT check (#343 additive half) - NOT a proximity check.
+# A 600-char `97`-near-`Passed = false` window shipped here and ROLLED BACK CORRECT WORK at the union:
+# a plainly correct implementation declares `private const int AbortExitCode = 97;` near the top of the
+# class and returns the verdict inside the method 2,785 chars away (measured). That is #491's shape - a
+# source-shape PROXIMITY regex standing in for a runtime-behaviour claim - and the behaviour is already
+# proven twice, behaviourally, inside the task: 02-abort-tests-pass drives the real production path and
+# 04-shim-preserves-real-exit-codes drives the shim and asserts exit 97. The union's job is narrower and
+# is all this can honestly do: did the merge DROP the contribution? Presence of both tokens answers that
+# and cannot false-RED on layout.
 $runner = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
 if (Test-Path -LiteralPath $runner -PathType Leaf) {
     $c = Get-Content -Raw -LiteralPath $runner
-    if ($c -match 'GUARDRAILS-ABORT' -or $c -match '97') {
-        # the abort branch landed here; require it to be a VERDICT, not a surviving mention
-        if ($c -notmatch '(?s)97[\s\S]{0,600}Passed\s*=\s*false' -and $c -notmatch '(?s)Passed\s*=\s*false[\s\S]{0,600}97') {
-            $problems.Add("[$runner] carries the abort code or marker but no Passed = false within 600 chars of it - the merge kept the number and dropped the verdict branch, so an aborted guardrail is still recorded as a PASS.")
+    if ($c -match 'GUARDRAILS-ABORT' -or $c -match '(?<![0-9#])97(?![0-9])') {
+        # the abort contribution landed; require the file to still carry a failing verdict at all
+        if ($c -notmatch 'Passed\s*=\s*false') {
+            $problems.Add("[$runner] carries the abort code or marker but NO 'Passed = false' anywhere - the merge kept the number and dropped every failing-verdict branch, so an aborted guardrail is still recorded as a PASS.")
         }
     }
 }

@@ -48,18 +48,20 @@ if ($firstUse -lt 0) {
 # require the remainder to be identical. Skipped (with a stated reason, not silently) when git cannot
 # produce the HEAD copy - in a segment worktree that is a real condition, not a defect.
 $accumulator = '$problems = New-Object System.Collections.Generic.List[string]'
-# git show needs a REPO-RELATIVE path: an absolute one is not a valid "HEAD:<path>" spec. The subject
-# IS absolute whenever the pre-DAG samples-verify gate runs this guardrail against its own sample pair,
-# so passing it through unmodified made BOTH halves exit 1 and halted the first real run before task 1.
+# ASK GIT for the path; do not COMPUTE it. The previous form stripped `git rev-parse --show-toplevel`
+# from `Resolve-Path $subject` lexically - and under the harness's Windows short-junction (C:\.a\... ->
+# %TEMP%\gr-wt\...) the two sides come back as DIFFERENT SPELLINGS of the same directory, so the strip
+# no-opped, $rel stayed absolute, `git show "HEAD:C:/..."` was not a valid object spec, and the
+# non-fail-open branch below exited 1 on every attempt. It passed at the real repo root, which is why the
+# samples-verify gate went green - the divergence is documented in Io/RealPath.cs (#452) and
+# WorktreeJunction (#383). `git ls-files --full-name` resolves the path IN GIT'S OWN SPELLING, from the
+# file's own directory, so no path arithmetic happens on our side at all.
 $headCopy = $null
-$repoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
-if ($LASTEXITCODE -eq 0 -and $repoRoot) {
-    $full = Resolve-Path -LiteralPath $subject -ErrorAction SilentlyContinue
-    $rel  = if ($full) { $full.Path } else { $subject }
-    $rel  = $rel.Replace('\', '/')      # single backslash: '\\' would match a DOUBLE one
-    $root = $repoRoot.Replace('\', '/').TrimEnd('/') + '/'
-    if ($rel.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $rel.Substring($root.Length) }
-    $headCopy = & git show "HEAD:$rel" 2>$null | Out-String
+$dir  = Split-Path -Parent (Resolve-Path -LiteralPath $subject).Path
+$leaf = Split-Path -Leaf $subject
+$rel  = (& git -C $dir ls-files --full-name -- $leaf 2>$null | Out-String).Trim()
+if ($LASTEXITCODE -eq 0 -and $rel) {
+    $headCopy = & git -C $dir show "HEAD:$rel" 2>$null | Out-String
     if ($LASTEXITCODE -ne 0) { $headCopy = $null }
 }
 
