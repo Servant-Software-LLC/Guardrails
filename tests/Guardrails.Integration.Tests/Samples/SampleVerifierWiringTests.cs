@@ -6,6 +6,7 @@ using Guardrails.Core.Execution;
 using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.TestSupport;
 
 namespace Guardrails.Integration.Tests.Samples;
 
@@ -243,6 +244,48 @@ public sealed class SampleVerifierWiringTests
         // Zero-token halt: the run stopped before the Scheduler built a wave, so not one attempt was
         // journaled for any task. On today's unwired phase the DAG runs to completion instead.
         Assert.All(journal.Tasks.Values, entry => Assert.Empty(entry.Attempts));
+    }
+
+    /// <summary>
+    /// #530 — the fixture's OWN two-sided pair, proven to discriminate.
+    ///
+    /// <para>
+    /// Every test above rests on one assumption this file states in prose and nothing checked: that
+    /// <c>MarkerGuardrail*</c> returns a DIFFERENT exit code for the two sample halves. If it did not —
+    /// if the body read something both halves share — "sound" and "reversed" would be the same
+    /// arrangement under two names, and the four tests distinguishing them would agree with each other
+    /// forever while proving nothing about the verifier.
+    /// </para>
+    ///
+    /// <para>
+    /// That is not hypothetical, and the near miss is in this very body. The PowerShell half reads
+    /// <c>-cmatch</c>; with the ordinary <c>-match</c> it would be case-INSENSITIVE, and any clean-half
+    /// wording containing the word "defect" would match too — both halves exit 1, the pair goes quiet,
+    /// and the suite stays green. Measured in run <c>2026-08-29T08-35-58Z-6b90</c>, exactly that shape
+    /// cost a plan four tests that could never pass and a <c>needs-human</c> halt one task later. The
+    /// bash half carries the mirror hazard in the other direction: <c>grep -q</c> IS case-sensitive, so
+    /// a fixture can discriminate on Linux and not on Windows, and a Windows-only failure of a
+    /// cross-platform fixture reads as a flake rather than as the defect it is.
+    /// </para>
+    ///
+    /// <para>
+    /// So assert it, on the bytes the fixture actually writes, through the real interpreter, on
+    /// whichever OS is running. Distinctness only: the DIRECTION belongs to the tests above, and
+    /// inverting a pair on purpose is what half of them do.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheFixturesOwnPair_DiscriminatesItsTwoHalves()
+    {
+        using var fixture = new SamplePlanFixture();
+        fixture.AddTaskWithSamplePair(TaskId, PairName, reversed: false);
+
+        string taskDir = Path.Combine(fixture.PlanDir, "tasks", TaskId);
+        await SynthesisedPairProof.AssertHalvesAreDiscriminatedAsync(
+            Path.Combine(taskDir, "guardrails", PairName + ScriptExtension),
+            Path.Combine(taskDir, "samples", PairName + ".valid.txt"),
+            Path.Combine(taskDir, "samples", PairName + ".invalid.txt"),
+            TestContext.Current.CancellationToken);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════

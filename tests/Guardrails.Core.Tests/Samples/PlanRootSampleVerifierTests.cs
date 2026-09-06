@@ -2,6 +2,7 @@ using Guardrails.Core.Execution;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 using Guardrails.Core.Samples;
+using Guardrails.TestSupport;
 
 namespace Guardrails.Core.Tests.Samples;
 
@@ -34,6 +35,38 @@ public sealed class PlanRootSampleVerifierTests
     private static readonly bool Ps = OperatingSystem.IsWindows();
     private static readonly string Ext = Ps ? ".ps1" : ".sh";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// #530 — the fixture's own pair, proven to DISCRIMINATE, before any test rests on it.
+    ///
+    /// <para>
+    /// Every test in this file reads the verifier's verdict on a pair this fixture synthesised. If the
+    /// synthesised body returned the same exit code for both halves, those verdicts would be reports
+    /// about the fixture rather than about the verifier — and the file would still be green, because a
+    /// pair that cannot tell its halves apart fails no assertion anyone wrote.
+    /// </para>
+    ///
+    /// <para>
+    /// The specific hazard lives in <see cref="PlanRootPlan.WriteCheck"/>: the PowerShell half tests the
+    /// marker with <c>-match</c> (case-INSENSITIVE) and the bash half with <c>grep -q</c> (case-sensitive),
+    /// so the two OSes do not agree on what counts as a hit. Today the marker is <c>OK-MARKER</c> against
+    /// halves that share no letters with it, so both discriminate; that is a property of the current
+    /// strings, not of the code, and the next person to reword a half has no way to know it mattered.
+    /// This is where they find out.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheFixturesOwnPair_DiscriminatesItsTwoWorkspaceHalves()
+    {
+        using var plan = new PlanRootPlan();
+        plan.WriteCheck(findsTheMarker: true);
+
+        await SynthesisedPairProof.AssertWorkspaceHalvesAreDiscriminatedAsync(
+            plan.CheckPath,
+            plan.HalfWorkspace("valid"),
+            plan.HalfWorkspace("invalid"),
+            TestContext.Current.CancellationToken);
+    }
 
     /// <summary>The headline: a sound plan-root pair is COUNTED, where it used to be invisible.</summary>
     [Fact]
@@ -166,6 +199,12 @@ public sealed class PlanRootSampleVerifierTests
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "greeting.txt"), content);
         }
+
+        /// <summary>The check script on disk — what the proof and the verifier both execute (#530).</summary>
+        public string CheckPath => Path.Combine(PlanDir, "guardrails", CheckName + Ext);
+
+        /// <summary>One half's WORKSPACE ROOT: the directory a plan-root check is run in (#530).</summary>
+        public string HalfWorkspace(string half) => Path.Combine(PlanDir, "samples", CheckName, half);
 
         public void DeleteInvalidHalf() =>
             Directory.Delete(Path.Combine(PlanDir, "samples", CheckName, "invalid"), recursive: true);

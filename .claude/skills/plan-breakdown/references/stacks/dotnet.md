@@ -817,6 +817,13 @@ companion rule 2.
 #          siblings, so a suite-level non-zero exit certifies the file honest and the covers-* token
 #          floor certifies it covered (#375). One entry per enumerated behaviour, each observed Failed
 #          in the runner's OWN TRX - never merely discovered by name, which a hollow body satisfies.
+# does NOT catch: a test that can NEVER pass (#530). Red is this gate's success condition, so a test
+#          red because no implementation can make it green reads here exactly like one red for the right
+#          reason - and the bill arrives on the NEXT task, as a needs-human halt after the agent spends
+#          its retry budget on production code that was already correct. Measured: 12/12 red here, four
+#          unpassable tests one task later, from a fixture whose two sample halves both exited 1. What
+#          covers it is the fixture's own distinctness assertion, not this census (catalogue -> "A test
+#          that SYNTHESISES a two-sided pair PROVES it discriminates").
 # DECLARED EXEMPTION (state every one here, with its reason): 'DoesNotHaltOnSoundAnswer' is the
 #          discriminator - a SOUND answer must NOT halt, and the consumer returns before it touches the
 #          not-yet-implemented member, so a CORRECT test is GREEN on the stub tree. Demanding red there
@@ -947,6 +954,18 @@ exit 0
   invisible to it. Nothing will tell you the prompt and the manifest disagree; the run will, five
   attempts later, with every behaviour reported unbound. **Read the two side by side before you ship the
   task.** (The whole script does validate clean — the gap is the agreement check, not the script.)
+- **A test that can NEVER pass is invisible here, and the fixture is where it hides (#530).** The census
+  demands red; a test red for a reason no implementation can remove satisfies it perfectly. Measured in
+  run `2026-08-29T08-35-58Z-6b90`: a test's own synthesised guardrail body read
+  `if ((Get-Content $SubjectPath -Raw) -match 'DEFECT') { exit 1 } else { exit 0 }` against a `.valid`
+  sample reading *"a clean artifact, no defect here"* — and **PowerShell `-match` is case-INSENSITIVE**,
+  so the valid half matched too and both halves exited 1. Twelve of twelve went red, the census passed,
+  and the implementation task halted `needs-human` on four tests it could not make green. `-cmatch` is
+  the case-sensitive operator and the fix; the bash sibling `grep -q` is case-sensitive already, which is
+  what makes such a fixture discriminate on Linux and not on Windows. **The census cannot close this —
+  say so in its header (the `# does NOT catch:` line above) and put the assertion in the fixture:** a
+  test that synthesises a two-sided pair asserts its two halves produce DIFFERENT exit codes before it
+  asserts anything else (catalogue → "A test that SYNTHESISES a two-sided pair PROVES it discriminates").
 - **The honest boundary belongs in the report, not only here.** A test that *invokes* the subject and
   then asserts something hollow (`var r = sut.Consume(x); Assert.NotNull(r);`) is red on stubs, green
   after, and **passes this census**. It proves the test is coupled to the code path, not that the
