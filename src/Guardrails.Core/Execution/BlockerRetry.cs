@@ -73,13 +73,15 @@ public sealed record BlockerRetryResult
 ///
 /// <para>The wait is delegated to an injected <c>delay</c> seam so tests gate it deterministically (no real
 /// sleeps), exactly as <see cref="TransientBackoff"/> does; production passes a real
-/// <see cref="Task.Delay(TimeSpan)"/>.</para>
+/// <see cref="Task.Delay(TimeSpan, CancellationToken)"/> — WITH the run's token, since #616. Every wait in
+/// this class is cancellable, and a cancelled wait abandons the retry rather than falling through into
+/// another attempt.</para>
 /// </summary>
 public sealed class BlockerRetry
 {
     private readonly BlockerRetryConfig _ceilings;
     private readonly TimeSpan _transientPauseBudget;
-    private readonly Func<TimeSpan, Task> _delay;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
     /// <param name="ceilings">
     /// The autonomy-dial ceilings (<c>maxAttempts</c> / <c>totalWaitSeconds</c>) from
@@ -89,8 +91,29 @@ public sealed class BlockerRetry
     /// The shipped cumulative wall-clock pause budget (<see cref="Model.RunConfig.TransientPauseBudgetSeconds"/>),
     /// which floors the effective wait ceiling — the blocker ceiling never exceeds it (doc 12 §4.2).
     /// </param>
-    /// <param name="delay">Injected wait; production passes <see cref="Task.Delay(TimeSpan)"/>.</param>
-    public BlockerRetry(BlockerRetryConfig ceilings, TimeSpan transientPauseBudget, Func<TimeSpan, Task> delay)
+    /// <param name="delay">
+    /// Injected wait; production passes <see cref="Task.Delay(TimeSpan, CancellationToken)"/>.
+    ///
+    /// <para>
+    /// <b>The token is a parameter, not an afterthought (#616).</b> This seam used to be
+    /// <c>Func&lt;TimeSpan, Task&gt;</c> — no token at all — so a blocker-retry pause in flight when Ctrl-C
+    /// landed RAN TO COMPLETION, bounded only by the autonomy dial's <c>totalWaitSeconds</c>, which is
+    /// minutes. #603 established that the whole cancelled unwind must fit a 15 s ceiling; this was not a
+    /// budget that was raised, it was one that was never counted, and it exceeded the ceiling by two
+    /// orders of magnitude. An operator pressing Ctrl-C during that pause waits it out or reaches for a
+    /// harder kill — and the harder kill loses everything the bounded teardown exists to deliver: the
+    /// journal write, the terminal <c>run-finished</c> row, the log-server drain.
+    /// </para>
+    ///
+    /// <para>
+    /// The shape is copied from <c>TaskExecutor</c>'s transient backoff seam
+    /// (<c>Func&lt;TimeSpan, CancellationToken, Task&gt;</c>), which is in the same layer and got it right.
+    /// The omission here was invisible because the adapter at the <see cref="TransientBackoff"/> call site
+    /// — <c>(d, _) =&gt; _delay(d)</c> — discarded a token it had been handed, which reads as deliberate.
+    /// </para>
+    /// </param>
+    public BlockerRetry(
+        BlockerRetryConfig ceilings, TimeSpan transientPauseBudget, Func<TimeSpan, CancellationToken, Task> delay)
     {
         _ceilings = ceilings;
         _transientPauseBudget = transientPauseBudget;
@@ -154,11 +177,19 @@ public sealed class BlockerRetry
             {
                 TimeSpan remaining = effectiveBound - cumulativeWait;
                 waited = hint < remaining ? hint : remaining;
-                await _delay(waited).ConfigureAwait(false);
+                // Cancelling a wait ABANDONS the retry — it does not fall through into another attempt.
+                // Task.Delay throws OperationCanceledException, which propagates exactly as the
+                // ThrowIfCancellationRequested at the top of this loop already does, so the caller settles
+                // the task as it stands. A cancelled backoff that retried immediately would be worse than
+                // the wait it replaced.
+                await _delay(waited, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                backoff ??= new TransientBackoff(effectiveBound - cumulativeWait, (d, _) => _delay(d));
+                // #616: the token TransientBackoff hands us is threaded through, not discarded. This
+                // adapter was `(d, _) => _delay(d)` — the sharp line, because the token existed, reached
+                // the boundary, and was dropped one character from where it was needed.
+                backoff ??= new TransientBackoff(effectiveBound - cumulativeWait, _delay);
                 waited = await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
             }
 
