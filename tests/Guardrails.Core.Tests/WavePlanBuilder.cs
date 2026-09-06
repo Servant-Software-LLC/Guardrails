@@ -8,17 +8,90 @@ namespace Guardrails.Core.Tests;
 /// same pattern <see cref="StateManagerTests"/> and the empty-tasks loader test use). Defaults to
 /// <c>maxParallelism: 1</c> so serial-mode validation does not require a git workspace (GR2015) or a
 /// terminal integration gate (GR2028).
+///
+/// <para>
+/// <b>That default has a cost, and it is the whole of issue #502.</b> Every rule gated on WORKTREE mode
+/// is invisible to a fixture that cannot enter it, and the harness has exactly two such rules — GR2015
+/// (the workspace must be inside a git repo) and GR2028 (a parallel-topology wave's exit gate must re-run
+/// the integration set). Both open with <c>if (plan.Config.MaxParallelism &lt;= 1) return;</c>, so a
+/// serial fixture cannot emit either one. That is how #501 went undetected while fifteen
+/// <c>SchedulerBreakdownDurabilityTests</c> passed over the salvage path it broke: GR2028 vetoed a
+/// truncated prefix in production, and no fixture in this suite could produce a GR2028.
+/// </para>
+///
+/// <para>
+/// <b>Pass <paramref name="gitBacked"/> to enter that mode honestly.</b> The plan then lives at
+/// <c>&lt;temp&gt;/gr-wave-&lt;id&gt;/plan/</c> inside a real <c>git init</c>ed repository with a baseline
+/// commit, so the default workspace (<c>".."</c>, the plan folder's parent) resolves to a git root and
+/// GR2015 is satisfied rather than dodged. A hand-made <c>.git</c> directory would also satisfy
+/// <c>IsInsideGitRepo</c>, and would be a fixture faking the very condition these rules exist for —
+/// which is the mistake #502 was opened about, one level down.
+/// </para>
 /// </summary>
 internal sealed class WavePlanBuilder : IDisposable
 {
+    /// <summary>The temp root deleted on dispose — the repo root when git-backed, else the plan itself.</summary>
+    private readonly string _root;
+
     public string PlanDir { get; }
 
-    public WavePlanBuilder(int maxParallelism = 1)
+    public WavePlanBuilder(int maxParallelism = 1, bool gitBacked = false)
     {
-        PlanDir = Path.Combine(Path.GetTempPath(), "gr-wave-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(Path.GetTempPath(), "gr-wave-" + Guid.NewGuid().ToString("N"));
+        PlanDir = gitBacked ? Path.Combine(_root, "plan") : _root;
         Directory.CreateDirectory(PlanDir);
+
+        if (gitBacked)
+        {
+            InitGitRepo(_root);
+        }
+
         File.WriteAllText(Path.Combine(PlanDir, "guardrails.json"),
             $$"""{ "version": 1, "maxParallelism": {{maxParallelism}} }""");
+    }
+
+    /// <summary>
+    /// <c>git init</c> plus a baseline commit, with the same isolation the other git fixtures use: hooks
+    /// redirected to an empty directory (a developer's global <c>core.hooksPath</c> otherwise runs inside
+    /// the fixture), signing off, and an identity, so the commit succeeds on a box with no git identity
+    /// configured.
+    /// </summary>
+    private static void InitGitRepo(string root)
+    {
+        Git(root, "init");
+        string hooks = Path.Combine(root, ".git", "no-hooks");
+        Directory.CreateDirectory(hooks);
+        Git(root, "config", "core.hooksPath", hooks);
+        Git(root, "config", "core.autocrlf", "false");
+        Git(root, "config", "commit.gpgsign", "false");
+        Git(root, "config", "user.email", "test@guardrails.local");
+        Git(root, "config", "user.name", "Guardrails Test");
+
+        File.WriteAllText(Path.Combine(root, "README.md"), "# waved fixture workspace" + Environment.NewLine);
+        Git(root, "add", "README.md");
+        Git(root, "commit", "-m", "Initial commit");
+    }
+
+    private static void Git(string workingDirectory, params string[] arguments)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (string argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
+
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        string stderr = process.StandardError.ReadToEnd();
+        process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0,
+            $"git {string.Join(' ', arguments)} exited {process.ExitCode}: {stderr}");
     }
 
     /// <summary>Add a wave task at <c>&lt;waveDir&gt;/tasks/&lt;folder&gt;/</c> (task.json + action.sh + one guardrail).</summary>
@@ -166,7 +239,15 @@ internal sealed class WavePlanBuilder : IDisposable
     {
         try
         {
-            Directory.Delete(PlanDir, recursive: true);
+            // Git marks loose objects read-only on Windows, and Directory.Delete throws
+            // UnauthorizedAccessException on those - not the IOException the obvious catch names. Clear
+            // the attribute first rather than leak the tree.
+            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+
+            Directory.Delete(_root, recursive: true);
         }
         catch
         {
