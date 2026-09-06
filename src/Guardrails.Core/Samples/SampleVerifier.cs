@@ -104,7 +104,170 @@ public static class SampleVerifier
             }
         }
 
+        // Issue #624 - PLAN-ROOT gates. The loop above walks `plan.Tasks` only, so a pair belonging to a
+        // <plan>/guardrails/ or <plan>/preflights/ check was never verified by the verb OR by the pre-DAG
+        // phase, and the run reported `OK: 0 sample pair(s) verified` over a pair sitting on disk. That is
+        // the worst place to skip: a plan-root `scope: "integration"` guardrail is re-evaluated at EVERY
+        // union, so an authoring error there red-halts the whole run at a merge rather than costing one
+        // task one attempt.
+        pairsVerified += await VerifyPlanRootPairsAsync(
+                plan, scriptRunner, interpreterMap, perSampleTimeout, findings, cancellationToken)
+            .ConfigureAwait(false);
+
         return new SampleVerifyResult { Findings = findings, PairsVerified = pairsVerified };
+    }
+
+    /// <summary>
+    /// Verifies the pairs belonging to PLAN-ROOT checks (<c>&lt;plan&gt;/guardrails/</c> and
+    /// <c>&lt;plan&gt;/preflights/</c>), which live at
+    /// <c>&lt;plan&gt;/samples/&lt;check-name&gt;/{valid,invalid}/</c>.
+    ///
+    /// <para><b>The halves are DIRECTORIES, not files, and the subject contract forces that - it is not a
+    /// style choice.</b> A task guardrail inspects ONE artifact, so its half is one file handed over as
+    /// <c>GR_SUBJECT</c> and <c>argv[0]</c>. A plan-root guardrail inspects the merged WORKSPACE - the
+    /// committed example resolves <c>$ws = $env:GUARDRAILS_WORKSPACE</c>, falls back to the current
+    /// directory, then joins repo-relative paths onto it - so its half has to BE a workspace root. Each
+    /// half therefore runs with that directory as the process working directory, and
+    /// <c>GR_SUBJECT</c>/<c>argv[0]</c> are supplied as well for the same reason the task path supplies
+    /// both: a verifier honouring only one spelling silently mis-verifies every guardrail written to the
+    /// other.</para>
+    /// </summary>
+    private static async Task<int> VerifyPlanRootPairsAsync(
+        PlanDefinition plan,
+        ScriptUnitRunner scriptRunner,
+        InterpreterMap interpreterMap,
+        TimeSpan perSampleTimeout,
+        List<SampleFinding> findings,
+        CancellationToken cancellationToken)
+    {
+        string samplesRoot = Path.Combine(plan.PlanDirectory, "samples");
+        if (!Directory.Exists(samplesRoot))
+        {
+            return 0;
+        }
+
+        List<GuardrailDefinition> planChecks = [.. plan.PlanGuardrails, .. plan.PlanPreflights];
+        int verified = 0;
+
+        foreach (string pairDir in Directory.EnumerateDirectories(samplesRoot)
+                     .OrderBy(d => d, StringComparer.Ordinal))
+        {
+            string checkName = Path.GetFileName(pairDir);
+            string validDir = Path.Combine(pairDir, "valid");
+            string invalidDir = Path.Combine(pairDir, "invalid");
+            bool hasValid = Directory.Exists(validDir);
+            bool hasInvalid = Directory.Exists(invalidDir);
+
+            if (!hasValid && !hasInvalid)
+            {
+                continue; // not a pair folder at all - a README directory, say
+            }
+
+            GuardrailDefinition? guardrail = planChecks.FirstOrDefault(
+                g => string.Equals(g.Name, checkName, StringComparison.Ordinal));
+
+            if (guardrail is null)
+            {
+                findings.Add(OrphanFinding(pairDir));
+                continue;
+            }
+
+            if (guardrail.Kind == ActionKind.Prompt)
+            {
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.Unverifiable,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = pairDir,
+                    Message = $"Plan-root guardrail '{guardrail.Path}' is a prompt judge, not a script - its "
+                              + "sample pair cannot be executed deterministically and is recorded but never run."
+                });
+                continue;
+            }
+
+            if (!hasValid || !hasInvalid)
+            {
+                string presentPath = hasValid ? validDir : invalidDir;
+                string missingHalf = hasValid ? "invalid" : "valid";
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.MissingHalf,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = presentPath,
+                    Message = $"Plan-root sample pair '{checkName}' for guardrail '{guardrail.Path}' is missing "
+                              + $"its '{missingHalf}' half - only '{presentPath}' is committed; a one-sided pair "
+                              + "certifies nothing."
+                });
+                continue;
+            }
+
+            InterpreterMap.Resolution resolution = interpreterMap.Resolve(guardrail.Path, guardrail.Args);
+            if (resolution.Status != InterpreterMap.Status.Resolved)
+            {
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.Unverifiable,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = validDir,
+                    Message = $"Plan-root guardrail '{guardrail.Path}' interpreter did not resolve "
+                              + $"({resolution.Status}) - its sample pair is recorded but never run."
+                });
+                continue;
+            }
+
+            ProcessResult validResult = await RunSampleAsync(
+                    scriptRunner, guardrail, validDir, validDir, perSampleTimeout, cancellationToken)
+                .ConfigureAwait(false);
+            ProcessResult invalidResult = await RunSampleAsync(
+                    scriptRunner, guardrail, invalidDir, invalidDir, perSampleTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (validResult.TimedOut || invalidResult.TimedOut)
+            {
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.Unverifiable,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = validResult.TimedOut ? validDir : invalidDir,
+                    Message = $"Plan-root guardrail '{guardrail.Path}' timed out against its sample half - "
+                              + "the pair certifies nothing."
+                });
+                continue;
+            }
+
+            verified++;
+
+            if (validResult.ExitCode != 0)
+            {
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.ValidHalfFailed,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = validDir,
+                    ObservedExitCode = validResult.ExitCode,
+                    Message = $"Plan-root guardrail '{guardrail.Path}' rejects its own valid sample "
+                              + $"'{validDir}' (exit {validResult.ExitCode}) - a false-red on a representative "
+                              + "correct workspace. This guardrail is re-evaluated at EVERY union point, so a "
+                              + "false red here red-halts the whole run at a merge."
+                });
+            }
+
+            if (invalidResult.ExitCode == 0)
+            {
+                findings.Add(new SampleFinding
+                {
+                    Kind = SampleFindingKind.InvalidHalfPassed,
+                    GuardrailPath = guardrail.Path,
+                    SamplePath = invalidDir,
+                    ObservedExitCode = invalidResult.ExitCode,
+                    Message = $"Plan-root guardrail '{guardrail.Path}' PASSES its own invalid sample "
+                              + $"'{invalidDir}' - it can never fail, so it certifies every union including a "
+                              + "broken one."
+                });
+            }
+        }
+
+        return verified;
     }
 
     /// <summary>One base name's committed halves, discovered under one task's <c>samples/</c> folder.</summary>

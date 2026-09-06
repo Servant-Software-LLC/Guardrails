@@ -73,6 +73,19 @@ public static class SamplesCommand
             return ExitCodes.HarnessError;
         }
 
+        // Issue #624: a bare "OK: 0 ... verified" cannot tell "this plan has no pairs" from "there are
+        // pairs and I did not look at them", and it reports the reassuring one. The verb now walks task
+        // AND plan-root folders, so zero genuinely means zero - say which folders were searched, so the
+        // reader can see the difference rather than infer it.
+        if (result.PairsVerified == 0)
+        {
+            io.Out.WriteLine(
+                "OK: no sample pairs to verify - this plan commits none. Searched tasks/<id>/samples/ and "
+                + "<plan>/samples/. A guardrail with no committed pair is unproven either way, not proven "
+                + "sound.");
+            return ExitCodes.Success;
+        }
+
         io.Out.WriteLine($"OK: {result.PairsVerified} sample pair(s) verified, 0 findings.");
         return ExitCodes.Success;
     }
