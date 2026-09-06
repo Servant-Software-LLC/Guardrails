@@ -91,10 +91,21 @@ public sealed class BannedPatternRegistryTests : IDisposable
         // failure-detail block, which '-v q' suppresses — the guardrail still fails correctly but its
         // #179 re-emit is dead, so the retry learns WHAT failed and never WHY. Added by request in issue
         // #462; text-local, meta-tested by its own fixtures, and pinned below by a fires/clean pair.
+        //
+        // #608a / #608b / #561 are the design-38 three (docs/plans/38-guardrail-scan-soundness.md §7):
+        // #608a bans `ErrorActionPreference` values (`Continue`/`SilentlyContinue`) that let a terminating
+        // error unwind a guardrail past its own verdict while `pwsh -File` still exits 0 (§3.1); #608b
+        // requires a guardrail's own last statement to be an explicit `exit`, which is what keeps the
+        // harness-owned abort shim's one accepted divergence (§3.4) enforced rather than merely assumed;
+        // #561 bans a scan copy that strips comments BEFORE neutralizing string literals — the wrong
+        // preprocessing order that lets a literal's own `/*` blank real script text (§4.1). There is
+        // deliberately no `#449` entry — the shape it would need to fire on is also the shape of the
+        // doctrine's own canonical union guardrail, so the fix belongs to a gate `validate` runs, not a
+        // banned-text lint (§5).
         BannedPatternRegistry registry = BannedPatternRegistry.Load();
 
         string[] ids = registry.Patterns.Select(p => p.Id).OrderBy(id => id, StringComparer.Ordinal).ToArray();
-        Assert.Equal(new[] { "#187a", "#462", "#73" }, ids);
+        Assert.Equal(new[] { "#187a", "#462", "#561", "#608a", "#608b", "#73" }, ids);
     }
 
     [Fact]
@@ -510,6 +521,151 @@ public sealed class BannedPatternRegistryTests : IDisposable
             d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
     }
 
+    // ---- #608a: ErrorActionPreference must not let a mid-script terminating error unwind silently ----
+
+    [Fact]
+    public void Entry608a_ContinuePreference_FiresGr2037()
+    {
+        // The exact #608 fail-open shape (design 38 §3.1): 'Continue' lets a terminating error unwind the
+        // script past its own verdict while pwsh -File still exits 0 — the abort shim (§3.2) closes the
+        // harness side, but the source itself is banned so the next generation does not recreate it.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-census",
+            """
+            $ErrorActionPreference = 'Continue'
+            $content = Get-Content -Raw $file
+            if ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }
+            exit 0
+            """);
+
+        Diagnostic diagnostic = AssertSingleGr2037(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)));
+        Assert.Contains("#608a", diagnostic.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Entry608a_StopPreference_IsClean_NoGr2037()
+    {
+        AssertEntryPresent("#608a");
+
+        // The doctrinal GOOD form — same guardrail, 'Stop' in place of 'Continue'.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-census",
+            """
+            $ErrorActionPreference = 'Stop'
+            $content = Get-Content -Raw $file
+            if ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }
+            exit 0
+            """);
+
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
+    }
+
+    // ---- #608b: a guardrail must end on an explicit exit -- the abort shim's own assumption (§3.4) ----
+
+    [Fact]
+    public void Entry608b_GuardrailNotEndingOnExit_FiresGr2037()
+    {
+        // Falls off the end after a real check instead of stating its verdict explicitly — the divergent
+        // shape design 38 §3.4 measured at zero in the corpus, and this entry is what keeps it at zero.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-check",
+            """
+            $ErrorActionPreference = 'Stop'
+            $content = Get-Content -Raw $file
+            if ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }
+            Write-Output 'done'
+            """);
+
+        Diagnostic diagnostic = AssertSingleGr2037(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)));
+        Assert.Contains("#608b", diagnostic.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Entry608b_GuardrailEndingOnExit_IsClean_NoGr2037()
+    {
+        AssertEntryPresent("#608b");
+
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-check",
+            """
+            $ErrorActionPreference = 'Stop'
+            $content = Get-Content -Raw $file
+            if ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }
+            exit 0
+            """);
+
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
+    }
+
+    [Fact]
+    public void Entry608b_TryFinallyCleanupIdiom_IsClean_NoGr2037()
+    {
+        // The trap this entry must NOT fall into: a guardrail that creates a temp directory and cleans it
+        // up on BOTH the exit-1 and the exit-0 path via 'finally' has its last physical line as a bare
+        // '}', not the literal token 'exit' — but its verdict is still stated explicitly on every path
+        // that reaches it. A lint keyed on "does the last non-blank line start with exit" would false-fire
+        // on this doctrinal idiom, which is exactly why it is pinned here rather than assumed clean.
+        AssertEntryPresent("#608b");
+
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-check",
+            """
+            $ErrorActionPreference = 'Stop'
+            $tmp = Join-Path $env:TEMP ([Guid]::NewGuid())
+            New-Item -ItemType Directory -Path $tmp | Out-Null
+            try {
+                $content = Get-Content -Raw $file
+                if ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }
+                exit 0
+            } finally {
+                Remove-Item $tmp -Recurse -Force
+            }
+            """);
+
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
+    }
+
+    // ---- #561: neutralize string literals BEFORE stripping comments, never the reverse (§4.1) --------
+
+    [Fact]
+    public void Entry561_CommentStripBeforeLiteralNeutralize_FiresGr2037()
+    {
+        // The corrected-order violation, in its own words: block comments are blanked FIRST, so a literal
+        // that spells a comment delimiter (a glob pattern's '/*' is the repo's routine case) has already
+        // been mis-parsed as a real comment by the time the literal-neutralization pass ever runs.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-scan-copy",
+            """
+            $raw = Get-Content -Raw $file
+            $scan = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')
+            $scan = [regex]::Replace($scan, '(?m)//[^\r\n]*', ' ')
+            $scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')
+            if ($scan -match 'BANNED_TOKEN') { Write-Output 'found'; exit 1 }
+            exit 0
+            """);
+
+        Diagnostic diagnostic = AssertSingleGr2037(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)));
+        Assert.Contains("#561", diagnostic.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Entry561_LiteralNeutralizeFirst_IsClean_NoGr2037()
+    {
+        AssertEntryPresent("#561");
+
+        // The doctrinal GOOD form (§4.1) — the exact script above with the two passes swapped, nothing
+        // else touched, so this pair isolates the lint's discriminator to ORDER alone.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-scan-copy",
+            """
+            $raw = Get-Content -Raw $file
+            $scan = [regex]::Replace($raw, '"(\\.|[^"\\])*"', '""')
+            $scan = [regex]::Replace($scan, '/\*[\s\S]*?\*/', ' ')
+            $scan = [regex]::Replace($scan, '(?m)//[^\r\n]*', ' ')
+            if ($scan -match 'BANNED_TOKEN') { Write-Output 'found'; exit 1 }
+            exit 0
+            """);
+
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
+    }
+
     // ---- per-folder coverage: the scan reaches every four-folder script slot -------------------
 
     [Fact]
@@ -679,4 +835,12 @@ public sealed class BannedPatternRegistryTests : IDisposable
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
         return diagnostic;
     }
+
+    /// <summary>
+    /// Absence is not the same as an entry that correctly stays silent — an "IsClean" test against an
+    /// entry that does not exist yet passes for the wrong reason. Call this before asserting no
+    /// diagnostic fires, so the clean half is coupled to the entry it claims to pin.
+    /// </summary>
+    private static void AssertEntryPresent(string id) =>
+        Assert.Contains(BannedPatternRegistry.Load().Patterns, p => p.Id == id);
 }
