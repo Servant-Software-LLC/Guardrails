@@ -1609,13 +1609,56 @@ of this one.
   scheduler / factory — and asserts the behaviour the real seam exposes (the `StreamLogPath` is honoured;
   the transient path records `blocker-retried`).
 
-Its `# catches:` sentence follows this template:
+Its `# catches:` sentence follows this template, and it carries a **`# real-seam:` declaration line**
+which is REQUIRED, not decorative:
 
 ```
 # catches: a component that passes its unit tests against a faked <seam> but is broken
 #          through the real <seam> (passing-but-blind) - e.g. CriticalityJudge green against a
 #          fake IPromptRunner but throwing on the real ClaudePromptRunner's StreamLogPath.
+# real-seam: CriticalityJudge -> IPromptRunner  bucket=E
 ```
+
+**Why the declaration is mandatory — the folder used to name none of this (#382 residual).** Until this
+line existed, a real-seam proof had **no declared marker at all**. An audit had to *find* the proof before
+it could judge its placement, and the skills gave it two ACCIDENTAL tells: the filename
+`03-real-seam-tests-pass.ps1`, which appeared only as an example inside two ledger rows, and the string
+`(passing-but-blind)`, which appeared only inside a `# catches:` template. An author honouring the
+doctrine in any of a hundred reasonable spellings emitted a correct proof the audit could not see — and
+a review that finds nothing reports the same clean as a review that had nothing to find.
+
+Worse, **the folder never declared WHICH SEAM a guardrail proves**, so T\* could not be recomputed without
+recovering the component and dependency types from prose. That is what the `->` pair is for.
+
+**Both halves are now required of every real-seam proof:**
+
+| requirement | form | what it buys |
+|---|---|---|
+| a findable NAME | the guardrail basename contains `real-seam` (e.g. `03-real-seam-tests-pass.ps1`; with two proofs on one task, `03-real-seam-criticalityjudge-tests-pass.ps1`) | the audit ENUMERATES the proofs instead of recognising them |
+| a declared SEAM | a `# real-seam: <Component> -> <Dependency>  bucket=<E\|C\|U>` line in the header | T\* is recomputable, and the folder can be checked AGAINST the ledger |
+
+**The objection this has to answer, because the design of record raises it.** Doc 18 §3.1 rejects keying
+a **lint** on a guardrail's `# catches:` comment — *"that makes a comment load-bearing for a verdict,
+which is gameable in one line and inverts the comment's purpose from documentation to certification."*
+That rejection stands and is not being reversed here. Three differences:
+
+1. **This is not `# catches:`.** It is a separate declaration line whose only job IS to declare. Nothing
+   about the comment's documentary purpose is inverted, because this line was never documentation.
+2. **It feeds a REVIEW, not a gate.** Nothing goes green because this line is present. The review reads
+   it to find and place the proof, then reads the proof itself — so a line that lies about a test which
+   does not match it is caught by the very next step, not certified by this one.
+3. **Gaming it produces a DETECTABLE inconsistency, which is the whole point.** The declaration and the
+   ledger are two independent statements of the same fact, so a fabricated line contradicts a row, and a
+   missing line contradicts a row that promised one. That referential shape — declarations checked
+   against declarations, inferring nothing — is exactly the check doc 18 §3.4 reserves `GR2061` for, and
+   **this marker is its precondition**: a lint cannot relate a folder to a ledger while the folder
+   declares neither which guardrails are proofs nor what they prove.
+
+**What this deliberately is NOT.** It is not the `task.json` / guardrail-sidecar SCHEMA field. Doc 18 §10
+is explicit that a schema field plus GR2061 *"is a materially different design that should be re-reviewed,
+not amended in"* — so the marker lives in the skills, adds no contract surface, allocates no GR code, and
+changes no harness behaviour. It removes the accidental-tells problem now and leaves the contract question
+where the design of record put it.
 
 **The assertion requirement — an effect ONLY the production implementation emits.** The test must assert
 something the fake could not produce without reimplementing the real behaviour: the stream log **file**
