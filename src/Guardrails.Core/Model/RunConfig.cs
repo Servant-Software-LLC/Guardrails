@@ -63,7 +63,23 @@ public sealed record RunConfig
     /// <summary>How guardrail failures are handled within an attempt. Default <see cref="GuardrailMode.FailFast"/>.</summary>
     public GuardrailMode GuardrailMode { get; init; } = GuardrailMode.FailFast;
 
-    /// <summary>cwd for all child processes, relative to the plan dir. Default "..".</summary>
+    /// <summary>
+    /// cwd for all child processes, relative to the plan dir.
+    ///
+    /// <para>
+    /// When <c>guardrails.json</c> names none, <c>PlanLoader</c> resolves it to the enclosing git
+    /// repository ROOT (#526) — <c>".."</c> only when the plan is not inside a repository. The literal
+    /// <c>".."</c> here is the value for a <see cref="RunConfig"/> constructed WITHOUT going through the
+    /// loader, which is a test fixture, never a real plan.
+    /// </para>
+    ///
+    /// <para>
+    /// The old default was <c>".."</c> unconditionally, which is right only for a plan folder one level
+    /// below its workspace. For <c>docs/plans/&lt;name&gt;/</c> it resolved to <c>docs/plans/</c>, where
+    /// no repo-root-relative guardrail path resolves — masked because worktree mode replaces the value at
+    /// every consumption site, so only a SERIAL run ever read it.
+    /// </para>
+    /// </summary>
     public string Workspace { get; init; } = "..";
 
     /// <summary>Interpreter overrides/extensions from <c>guardrails.json</c> (SSOT §5.2). Keyed by extension (".ps1").</summary>
