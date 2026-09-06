@@ -47,6 +47,7 @@ try {
         'Entry608a_StopPreference_IsClean_NoGr2037',
         'Entry608b_GuardrailNotEndingOnExit_FiresGr2037',
         'Entry608b_GuardrailEndingOnExit_IsClean_NoGr2037',
+        'Entry608b_TryFinallyCleanupIdiom_IsClean_NoGr2037',
         'Entry561_CommentStripBeforeLiteralNeutralize_FiresGr2037',
         'Entry561_LiteralNeutralizeFirst_IsClean_NoGr2037',
         'Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated'

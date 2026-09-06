@@ -1,8 +1,10 @@
 # catches: a registry entry that is PRESENT but does not FIRE on the shape it names - or one that
 #          fires only on the spelling it was written against, which a respelling walks straight
 #          through. The --filter names this task pair's OWN test class, never a plan-wide trait
-#          alone (#455). The ten pinned tests include a deliberate RESPELLING control for #449:
-#          design 38 SS11 names a token-keyed entry as the way this plan ships looking finished.
+#          alone (#455). The EIGHT pinned tests include a deliberate NEGATIVE control - the
+#          try{...exit N}finally{...} cleanup idiom #608b must NOT reject, which three of this plan's
+#          own guardrails use. Design 38 SS11 names a token-keyed entry as the way this plan ships
+#          looking finished; there is deliberately no #449 entry at all (SS5).
 #          Re-emits the assertion/exception lines at the END so they reach the retry tail (#179).
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false   # a non-zero dotnet exit is DATA here, not an error

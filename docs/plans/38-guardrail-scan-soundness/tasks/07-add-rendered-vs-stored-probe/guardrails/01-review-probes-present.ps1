@@ -7,6 +7,10 @@
 #          form. That is not proof of a GOOD probe - it raises the cost from one appended line to a
 #          structured insertion, which is the honest ceiling for a documentation target. Said plainly
 #          here so the next reviewer does not re-derive it and think it was an oversight.
+#          The MEASURED ceiling, named rather than implied: an UNRELATED `- **...(#428)` bullet up to
+#          800 flattened chars before the sentence satisfies the shape check. For a documentation
+#          target there is no gate short of a human read, so naming the ceiling IS the exemption -
+#          not a caveat on it.
 # DOCUMENTATION target: exempt from the two-sided sample pair (#468). Compensating controls: the
 #          <!-- --> strip (measured to fire correctly - the reviewer could not defeat it), the PRECEDENT
 #          check (every literal is pinned verbatim in this task's prompt, so prompt and guardrail cannot

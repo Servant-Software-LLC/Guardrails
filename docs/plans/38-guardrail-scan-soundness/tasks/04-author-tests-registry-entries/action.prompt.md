@@ -41,7 +41,7 @@ consumes a retry. If you hit a compile error caused
 by a missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}`
 to the state-out path and stop.
 
-**Pin exactly these six method names** — the census guardrail binds to them:
+**Pin exactly these seven method names** — the census guardrail binds to them:
 
 | method | fixture | expects |
 |---|---|---|
@@ -49,6 +49,7 @@ to the state-out path and stop.
 | `Entry608a_StopPreference_IsClean_NoGr2037` | the same guardrail set to `Stop` | no GR2037 |
 | `Entry608b_GuardrailNotEndingOnExit_FiresGr2037` | a guardrail whose last statement is not an `exit` | GR2037 citing `#608b` |
 | `Entry608b_GuardrailEndingOnExit_IsClean_NoGr2037` | the same, ending on `exit 0` | no GR2037 |
+| `Entry608b_TryFinallyCleanupIdiom_IsClean_NoGr2037` | `try { ... exit 1 } finally { Remove-Item $tmp }` - a guardrail that creates a temp directory and cleans it up on **both** paths, so its last line is `}` | **no GR2037** |
 | `Entry561_CommentStripBeforeLiteralNeutralize_FiresGr2037` | a scan copy that blanks block comments **before** neutralizing string literals | GR2037 citing `#561` |
 | `Entry561_LiteralNeutralizeFirst_IsClean_NoGr2037` | the same replaces in the correct order | no GR2037 |
 
@@ -64,6 +65,12 @@ first — the reasoning is recorded there.
 Also **update `Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated`** so the curated set is the six
 entries — `#73`, `#187a`, `#462`, `#608a`, `#608b`, `#561`. That test is the registry's
 deliberate gate on silent growth; raising it here, in the same change as the controls, is the point.
+
+**The three `IsClean` tests must ALSO assert the entry is PRESENT in the registry before asserting no
+diagnostic fires.** Written in this file's existing house shape they are a bare
+`Assert.DoesNotContain(..., d => d.Code == BannedGuardrailPattern)` - and with no entry authored yet,
+nothing fires, so they PASS today and the census reds. Absence is not the same as an entry that
+correctly stays silent, and only the second is worth a test.
 
 All eight tests MUST fail on the current tree — the three entries do not exist yet, so every firing control
 finds no diagnostic and the curated-set assertion sees three entries where it now expects six. A test

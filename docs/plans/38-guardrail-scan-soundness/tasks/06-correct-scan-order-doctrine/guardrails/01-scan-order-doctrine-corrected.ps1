@@ -14,6 +14,10 @@
 #          imperative backwards statements (measured by THIS script's own regex, not by eye) -
 #          guardrail-catalogue.md 5 (~460, ~494, ~654, ~666, ~688), stacks/dotnet.md 4 (~1504, ~1509,
 #          ~1938, ~1959), SKILL.md 0.
+# The ENFORCED bar, stated so nobody over-reads the message: not "every site carries a correction"
+#          but "no site is more than 1500 FLATTENED chars from SOME correction". Measured, five
+#          well-placed insertions can cover all nine sites. That is deliberate - it leaves an author
+#          room to correct a cluster once - but it is a weaker claim than "corrected in place".
 #          SKILL.md is therefore NOT required to carry the ordering sentence: it states the rule nowhere,
 #          so demanding it there would send the agent to insert into a file with no natural home (design
 #          38 SS4.2's citation of SKILL.md:547 was stale - that line is the unrelated .md HTML-comment
@@ -66,14 +70,17 @@ foreach ($f in @($catalogue, $stack)) {
     # therefore measures FLATTENED characters - slightly looser than source characters, stated rather than
     # hidden. Reported line numbers are derived from the ORIGINAL prose so they still point somewhere real.
     $flat = ConvertTo-Flat $prose
-    $corrections = @([regex]::Matches($flat, [regex]::Escape($sentence)))
+    # IgnoreCase, the mirror of the fix applied in task 07: the clauses in the sibling guardrails use
+    # PowerShell -match (case-INSENSITIVE), and a case-SENSITIVE presence check here false-REDs the
+    # moment the sentence appears mid-sentence in lowercase - with a message that reads as an absence.
+    $corrections = @([regex]::Matches($flat, [regex]::Escape($sentence), 'IgnoreCase'))
     if ($corrections.Count -lt 1) {
         $problems.Add("[$f] does not carry the ordering rule at all. Every site that states the preprocessing order must carry '$sentence' verbatim (#561).")
         continue
     }
 
     $uncorrected = @()
-    foreach ($m in [regex]::Matches($flat, $imperative)) {
+    foreach ($m in [regex]::Matches($flat, $imperative, 'IgnoreCase')) {
         $near = $false
         foreach ($c in $corrections) {
             if ([Math]::Abs($c.Index - $m.Index) -le $window) { $near = $true; break }
