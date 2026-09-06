@@ -38,6 +38,35 @@ and testability matter more than prose elegance.
    fixture, and the skill's few-shot reference. Changes to it must keep
    `guardrails run` green (Reality Gate) and the README demo accurate.
 5. Keep SKILL.md files lean; depth goes in `references/`.
+6. **Doctrine reaches the SURFACES, not only the prose (#490).** An adversarial audit of five packed
+   skill files, after seven doctrine commits landed in one day, put it exactly:
+
+   > A reader who follows `SKILL.md` Step 4 prose top-to-bottom gets everything. A reader who does what
+   > the skill **tells them to do** — *"apply the decision tree"*, *"copy the regex from the stack file"*,
+   > *"run validate until exit 0"* — gets the **pre-#468 product.**
+
+   The bodies were in good shape: the census rules did not collide, the #120/#382 slot distinction was
+   correctly resolved in both skills, GR/archetype citation integrity was near-perfect across 47 codes.
+   **The failure was entirely at the entry points**, because that is where the AUTHOR goes and the prose
+   is where the reviewing attention goes. So on any commit that changes guardrail-authoring doctrine, ask
+   all three:
+
+   1. **Does the DECISION TREE need a leaf or a qualification?** It is the per-task selection instrument
+     Step 4 sends authors to. *A rule not reachable from the tree is not reachable by an author following
+     the skill.* The audit found the largest doctrine of that week (#382) with **no leaf at all**, beside
+     a bare prohibition whose reconciling distinction lived 1,300 lines earlier.
+   2. **Does it need a STACK-FILE realization?** The universal layer states the rule; the stack file is
+     the layer copy-pasted into generated guardrails. **If the stack file's examples contradict the new
+     rule, the rule loses** — the examples are what get pasted. The audit found `stacks/dotnet.md` a week
+     behind on four doctrines at once, shipping worked examples that `guardrails-review` is instructed to
+     flag.
+   3. **Is the new lint WARN-level — and is anything downstream reading only the exit code?** `validate`'s
+     warnings do not move it. That third gap turned the first into a live contradiction: the only lint the
+     doctrine actively contradicted (GR2059) was also the only one the gate structurally could not catch.
+
+   All three of the audit's specific defects are now fixed, and the general rule is this entry — because
+   nothing forced those commits to touch the three surfaces, and every one of their authors composed
+   correctly with the prose and reported doing so.
 
 ## What You Do NOT Do
 
@@ -51,3 +80,4 @@ and testability matter more than prose elegance.
 - [ ] The worked example round-trips: breakdown → validate exit 0 → structurally equivalent.
 - [ ] Negative examples preserved — they are cheap insurance.
 - [ ] Draft-not-done framing intact in plan-breakdown's closing report.
+- [ ] (#490) Doctrine reached the three SURFACES an author traverses, not only the prose: a decision-tree leaf or qualification where the rule is per-task; a stack-file realization where the rule ships into generated guardrails (and no stack example left contradicting it); and, for a new WARN-level lint, nothing downstream still reading exit 0 alone. State which of the three the change needed and which it did not — "not applicable" is an answer, silence is not.
