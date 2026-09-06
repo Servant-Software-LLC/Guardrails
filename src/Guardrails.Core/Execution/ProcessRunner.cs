@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 
@@ -104,7 +105,7 @@ public sealed class ProcessRunner
         process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone, lineSink: null);
 
         var stopwatch = Stopwatch.StartNew();
-        process.Start();
+        StartWithTextFileBusyRetry(process);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -164,6 +165,75 @@ public sealed class ProcessRunner
     /// <summary><see cref="EnvNameComparison"/> as a comparer, for the declared-key set.</summary>
     private static readonly StringComparer EnvNameComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    /// <summary>
+    /// How many times a launch is retried when Linux answers <c>ETXTBSY</c> ("Text file busy") — the
+    /// kernel refusing to <c>exec</c> a file some process still holds open for WRITING (#650).
+    /// </summary>
+    private const int TextFileBusyAttempts = 5;
+
+    /// <summary>The wait between those attempts. The window is another process closing a descriptor, not work.</summary>
+    private static readonly TimeSpan TextFileBusyBackoff = TimeSpan.FromMilliseconds(20);
+
+    /// <summary>
+    /// The count of <c>ETXTBSY</c> retries this process has performed, exposed so a test can assert the
+    /// DECISION rather than time a race it cannot reproduce on demand (#518).
+    /// </summary>
+    internal static int TextFileBusyRetries;
+
+    /// <summary>
+    /// Start the child, retrying ONLY on <c>ETXTBSY</c>.
+    ///
+    /// <para>
+    /// The harness writes scripts and then executes them — the guardrail shim at startup, action and
+    /// guardrail scripts inside a worktree — while other segments are spawning children in parallel. On
+    /// Linux that combination can lose a race the writer never entered: <c>fork</c> copies the whole
+    /// descriptor table, so a child spawned while ANOTHER thread still holds the script open for writing
+    /// inherits that descriptor, and the kernel refuses to <c>exec</c> the file until it is closed.
+    /// <c>O_CLOEXEC</c> closes it on the child's own exec, which does not help the exec that is failing.
+    /// </para>
+    ///
+    /// <para>
+    /// Measured in CI (ubuntu-latest, run 34053123998): a fixture wrote <c>fake-claude.sh</c>, set its exec
+    /// bit, and the harness could not launch it — <i>"An error occurred trying to start process ...
+    /// Text file busy"</i>. The same job was green on the previous run, which is the tell: the condition
+    /// is transient and clears in milliseconds. Left alone it surfaces as a task that failed to launch for
+    /// no reason a reader can act on, which is indistinguishable from a real launch failure.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Narrow on purpose.</b> Only <c>ETXTBSY</c> is retried. A missing interpreter, a bad path, a
+    /// permission denial and every other launch failure still throws on the first attempt, loudly and
+    /// immediately — a broad "retry any start failure" would turn a deterministic misconfiguration into a
+    /// slow one, which is the more expensive bug.
+    /// </para>
+    /// </summary>
+    private static void StartWithTextFileBusyRetry(Process process)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                process.Start();
+                return;
+            }
+            catch (Win32Exception ex) when (IsTextFileBusy(ex) && attempt < TextFileBusyAttempts)
+            {
+                Interlocked.Increment(ref TextFileBusyRetries);
+                Thread.Sleep(TextFileBusyBackoff);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>ETXTBSY</c> is errno 26 on Linux. The errno is checked FIRST because it is the fact; the message
+    /// match is a fallback for a runtime that surfaces the text without the number, and is deliberately
+    /// not the primary test — an error string is a localizable thing to key a retry on.
+    /// </summary>
+    private static bool IsTextFileBusy(Win32Exception ex) =>
+        OperatingSystem.IsLinux()
+        && (ex.NativeErrorCode == 26
+            || ex.Message.Contains("Text file busy", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Merge <paramref name="overlay"/> into a child's environment block <b>hermetically</b> for the
