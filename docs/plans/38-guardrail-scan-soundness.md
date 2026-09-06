@@ -371,6 +371,41 @@ asks for, sibling to *grep-scope contamination* and *structural-vs-keyword*, plu
 **This is the one of the four with no mechanical gate, and it should stay that way until someone can show
 a `mustMatch`/`mustNotMatch` pair that earns it.**
 
+### 6.1 The base rate is higher than the issue's four instances — measured on this plan's own authoring
+
+`#428` ships with a catalogue entry and a review probe and **no gate**, and the case for that rests on how
+often the defect actually occurs. *"Recorded instances: four, most recently `62c59db3`"* is a thin
+argument. The honest number is larger, and it comes from authoring this document:
+
+> Four instances in production code, **plus five more in the instruments used to author and review this
+> plan** — across three agents and four review rounds.
+
+That is a stronger argument precisely *because* those five were in throwaway checking code, where nobody
+looks and nothing gates. Two precisions, or the record overclaims:
+
+1. **Only three of the five are `#428`.** Three edit scripts matched a required phrase that wraps across
+   lines in the natural markdown form, and silently changed nothing. The other two are a different
+   mechanism — a script that threw before reaching two of its edits, and a reviewer's mutation helper with
+   a scope bug that made every mutation a no-op. Those are **#580/#500**: an unverified check is
+   indistinguishable from a verified one.
+2. **What unifies all five is sharper than either, and it is this plan's thesis one layer out:**
+
+   > **An edit — or a check — that silently does nothing is byte-identical to one that worked.**
+
+   `#428` is one mechanism for it. The zero-match `--filter` is another. A script that throws before its
+   last statement is a third. So is a guardrail that aborts and exits 0, which is `#608` and the reason
+   this plan exists.
+
+That sentence is also why the procedural fix is *"every edit asserts it landed, in the same script that
+makes it"* rather than *"be more careful"* — the same move `#302` makes for guardrails, applied to the
+tools that write them.
+
+**And the loop closed the same way every time:** all five were caught by reading the **committed tree**
+rather than the author's account of it — twice by the reviewer against the author, twice by the reviewer
+against itself. That is #467's non-authoring-reviewer rule argued from this plan's own history rather
+than from principle.
+
+
 ---
 
 ## 7. The registry entries

@@ -66,7 +66,7 @@ Also **update `Registry_IsExactlyTheCuratedSet_NotWhateverAccumulated`** so the 
 entries — `#73`, `#187a`, `#462`, `#608a`, `#608b`, `#561`. That test is the registry's
 deliberate gate on silent growth; raising it here, in the same change as the controls, is the point.
 
-**The three `IsClean` tests must ALSO assert the entry is PRESENT in the registry before asserting no
+**The four `IsClean` tests must ALSO assert the entry is PRESENT in the registry before asserting no
 diagnostic fires.** Written in this file's existing house shape they are a bare
 `Assert.DoesNotContain(..., d => d.Code == BannedGuardrailPattern)` - and with no entry authored yet,
 nothing fires, so they PASS today and the census reds. Absence is not the same as an entry that
