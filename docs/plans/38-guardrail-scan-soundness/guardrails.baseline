@@ -1,11 +1,12 @@
 {
   "Version": 1,
   "Files": {
+    ".gitignore": "77d79149f78bdb4793d16f67bfadabc6ac3f033d9b22cddd0c55e220a9565125",
     "guardrails.json": "0fe283a49fe3edf449c50cdb02c825a0b692287af34299c12a63a62b68cf7599",
     "guardrails/01-solution-builds.ps1": "c2fdf65b7dc4f54d0e1e5a0ed565734eb248671fbbd8feebea703cbc9c7fa624",
     "guardrails/02-all-tests-pass.ps1": "aa33bcf0539a203e6f77166103378bdd481f7999e08cb36f48beaa3ed629f329",
     "guardrails/03-scan-soundness-union-verified.json": "3423b23c16a6681dffb7d6523e483e3666a5d2f502424b20ad3408b9f4481ab5",
-    "guardrails/03-scan-soundness-union-verified.ps1": "928c76fc7c9bba6adbc6f0314750ab78842809b11a2556e9f90d042f164ed96e",
+    "guardrails/03-scan-soundness-union-verified.ps1": "d11b307bb69b35a3c2efc4b57c046fdf8456a84610df6dfdb2e633871f929163",
     "preflights/01-baseline-core-tests-green.ps1": "e7cc3df4121571ca7aad1c768e073748b57b6dc8de168430cd07cf2fdcb1ec9a",
     "tasks/01-author-tests-guardrail-abort/action.prompt.md": "d58292f9cb8074020d3fb847a372997eb321264f7ae3561561a1458bb46b381a",
     "tasks/01-author-tests-guardrail-abort/guardrails/01-build-passes.ps1": "7b6bf94eecb5317cd552a921346f06a5d392ca1f0a2be6083426b42cdac64c63",
@@ -20,7 +21,7 @@
     "tasks/02-implement-guardrail-abort/samples/03-both-pwsh-templates-route-through-the-shim.valid.cs": "9e8121a0fd039e87c3d7b09f5b2adb1c087d43e30901138a5cf15d499098a79d",
     "tasks/02-implement-guardrail-abort/task.json": "d9d92fa4c5ea1e585a91111b1cef74c145d3ee831fc8b508c3019fab0111bc52",
     "tasks/03-fix-plan35-census-list-ordering/action.prompt.md": "b7a1fd7186749688cb72ce7b99a4c34d6d5438842a060a17acbeef82a40e1483",
-    "tasks/03-fix-plan35-census-list-ordering/guardrails/01-accumulator-created-before-use.ps1": "8df05d16a3ff5540c365e043e476e4f9dce1a5e3e370ea9763526175d36025d9",
+    "tasks/03-fix-plan35-census-list-ordering/guardrails/01-accumulator-created-before-use.ps1": "738a615cede059474a223ff126e68990e47fef8b40f465cefcfc2c39c714cd8c",
     "tasks/03-fix-plan35-census-list-ordering/samples/01-accumulator-created-before-use.invalid.ps1": "d56ec8640fb6777518bf358de524a2315d53d759c8dc97abcdbce5d8415e7f27",
     "tasks/03-fix-plan35-census-list-ordering/samples/01-accumulator-created-before-use.valid.ps1": "f04746bf435cf14bf77342ac681f37550e9bd886df14c195d410881fcda8d4d4",
     "tasks/03-fix-plan35-census-list-ordering/task.json": "1b999a7eec6734f17a94009cbea814020945d71b27b9b5b9ef24052253e173c6",
