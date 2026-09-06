@@ -1,0 +1,6 @@
+{
+  "description": "Record the guardrail-invocation shim and the exit-97 abort verdict in the SSOT, so the contract change ships in the same change-set as the code",
+  "dependsOn": ["02-implement-guardrail-abort"],
+  "stableId": "h7u2k3",
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

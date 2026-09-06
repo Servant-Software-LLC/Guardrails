@@ -260,6 +260,33 @@ $scan = [regex]::Replace($scan, '(?m)//[^\r\n]*',   $blankKeepingNewlines)
 `$neutralize` must map `{`, `}`, **`/` and `*`** inside a literal to a filler character. The committed
 form neutralizes braces only, which is why the delimiters survive to be paired.
 
+### 4.1a Setting `'Stop'` is safe for the red checks -- but only if the doctrine pins one more preference
+
+An inverse TDD-red check depends on `dotnet test` exiting NON-zero, so the obvious objection to
+mandating `'Stop'` is that a failing native command would become a terminating error and abort the very
+check whose success condition it is.
+
+**Measured on pwsh 7.6.5: it does not.** `$PSNativeCommandUseErrorActionPreference` is **`False`**, so a
+native command's non-zero exit -- and its stderr -- pass through untouched under `'Stop'`:
+
+| script | result |
+|---|---|
+| `'Stop'` + `& cmd /c "... & exit 1"` | survives, `$LASTEXITCODE = 1`, script exits 0 |
+| `'Stop'` + native command writing to **stderr** and exiting 1 | survives, `$LASTEXITCODE = 1` |
+
+But that is a **preference, not a guarantee** -- it is a promoted experimental feature and a box that
+flips it to `$true` would turn every red check into an abort. So the generator rule is **two lines, not
+one**, and the second is load-bearing:
+
+```powershell
+$ErrorActionPreference = 'Stop'                    # an engine error must terminate, not fail open
+$PSNativeCommandUseErrorActionPreference = $false  # ... but a non-zero `dotnet test` is DATA, not an error
+```
+
+The GR2037 entry `#608a` bans `Continue`/`SilentlyContinue`; it must **not** also demand the second
+line, because a guardrail that runs no native command does not need it. Requiring it everywhere would
+make a correct script fail a lint -- the false-RED half of the same family this plan is closing.
+
 ### 4.2 Where the correction lands
 
 Not in a scan-copy SSOT — §0.4 established there isn't one. It lands in the **six-plus doctrine sites
@@ -402,28 +429,35 @@ meta-test already enforces this, which is why entries are cheap and safe to add.
 
 ## 10. Sequencing
 
-Two waves. The edge is real: #608 is the substrate under the rest, so a wave-2 fix verified by a
-wave-1-era guardrail is verified by something that can silently not run.
+**Corrected during breakdown: this is a FLAT plan, not two waves.** The draft above proposed waves, and
+the plan-breakdown skill's own rule rejects that — a wave exists for a stage whose downstream tasks
+*cannot be authored* until the upstream is materialized, and every task here was fully authorable up
+front. Fine-grained ordering is a task DAG inside one wave; a wave barrier would only destroy the
+parallelism. The dependency argued in §1 is real but it is a *trust* relationship, not a materialization
+one, and it is carried by two `dependsOn` edges rather than a barrier.
 
-**Wave 1 — the substrate can no longer certify what it did not check (#608)**
+Eight tasks, three tiers:
 
-1. The shim + `InterpreterMap` wiring + the exit-97 branch, with §9.2's two-sided test.
-2. The generator emits `$ErrorActionPreference = 'Stop'` and a terminal `exit`; registry entries `#608a`
-   and `#608b`; `BannedPatternRegistryTests` updated.
-3. The one live corpus instance.
+| tier | tasks |
+|---|---|
+| 0 | `01-author-tests-guardrail-abort`, `03-fix-plan35-census-list-ordering`, `04-author-tests-registry-entries`, `06-correct-scan-order-doctrine`, `07-add-rendered-vs-stored-probe` |
+| 1 | `02-implement-guardrail-abort` (after 01), `05-add-banned-pattern-entries` (after 04) |
+| 2 | `08-record-shim-contract` (after 02) |
 
-**Wave 2 — the scan copy represents the source (#561, #449, #428)**
+Two shape decisions worth recording, because both were forced by issues in this repository's own backlog:
 
-4. The ordering rule across the six-plus doctrine sites, with the `/*`-in-a-glob worked trap and the
-   missing sample.
-5. Registry entries `#561` and `#449`, keyed on shape.
-6. The #428 catalogue anti-pattern and the `/guardrails-review` probe.
+- **The registry work is split into an author-tests task and a JSON task (04 → 05) rather than one.** A
+  single task would carry a `writeScope` mixing `.claude/**` with a normal test path — **#540**, measured
+  at 12 attempts and never green, because an atomic attempt cannot bank the half it got right. Split, each
+  half is one mechanism.
+- **The doctrine work is split by SKILL DIRECTORY (06, 07), not by deliverable.** Splitting 06 by its
+  three deliverables would produce three tasks with overlapping `writeScope` on the same three files —
+  the #132/#175 AI-merge duplicate-definition shape — which is a worse outcome than one task whose blast
+  radius is three files in one directory. The Step 2 trigger (a) was considered and dispositioned, not
+  waved through.
 
-Wave 2's tasks are independent of one another and can run in parallel; each touches a different reference
-file, with `banned-guardrail-patterns.json` the one shared file (tasks 5 and its sibling must not both
-hold it — the #493 shape, and this plan should not reproduce an issue from its own backlog).
-
----
+No task's `writeScope` overlaps another's, so the terminal union guardrail needs no duplicate-definition
+sub-check.
 
 ## 11. Self-critique — what wrong implementation passes this?
 

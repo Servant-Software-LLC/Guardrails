@@ -1,0 +1,7 @@
+{
+  "description": "Route .ps1 guardrails through a harness-owned shim so an aborted script cannot reach the harness as exit 0, and give exit 97 an explicit verdict branch",
+  "dependsOn": ["01-author-tests-guardrail-abort"],
+  "stableId": "b8m3v5",
+  "writeScope": ["src/Guardrails.Core/Execution/", "src/Guardrails.Core/Guardrails.Core.csproj"],
+  "action": { "maxTurns": 75 }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Add the four GR2037 registry entries (#608a, #608b, #561, #449) so the authored firing controls go green",
+  "dependsOn": ["04-author-tests-registry-entries"],
+  "stableId": "e9r4t7",
+  "writeScope": [".claude/skills/plan-breakdown/references/banned-guardrail-patterns.json"],
+  "action": { "maxTurns": 75 }
+}
