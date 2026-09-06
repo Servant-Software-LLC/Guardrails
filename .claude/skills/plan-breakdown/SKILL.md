@@ -367,6 +367,31 @@ it is the single most likely `needs-human` in a run (the exact retry-cheapness a
   Y", then "wire just this one collaborator"), and the resulting guardrails could not tell a wired
   implementation from an unwired one.
 
+- **(f) Mixed WRITE MECHANISMS (#540).** A `writeScope` containing BOTH a `.claude/**` path and a
+  non-`.claude/**` path is two mechanisms in one atomic attempt, and it MUST split — one task per
+  mechanism. A `.claude/` deliverable goes through `needsHarnessWrite` (the tool-permission layer
+  refuses a direct write, SSOT §9.3); a normal path is written directly. This is rule 2's boundary in
+  its sharpest form: not merely different checks, but different **delivery paths**, one of which cannot
+  be exercised at all by the tool the other uses.
+  **State the reason when you split, because it is invisible from task size.** An attempt is atomic and
+  a failed attempt is rolled back — correct design, not a defect — so a task spanning two mechanisms
+  **can never bank the half it got right**, and a weaker model oscillates between them. Measured:
+  `27-operator-visibility` task `08-record-visibility-surfaces-in-ssot`, **12 attempts, ~$4.66, never
+  green**, on the last task of a plan whose other seven passed in 8 attempts total (7 first-pass).
+  Attempt 7 wrote the SSOT correctly (+35 lines, verified in its salvage ref) and never wrote the skill,
+  so the whole attempt rolled back including the good half; by attempt 10 the SSOT guardrail — the half
+  already SOLVED — was failing again. Getting 90% right scores zero.
+  **No other trigger sees it.** Two paths, `dependsOn` fan-in of 1, no `maxTurns` bump: (b) and (e) are
+  silent and correctly so, and in prose it reads as ONE deliverable ("record the new surfaces in the
+  SSOT and the skill") — which is why it was authored as one task and why a full `/guardrails-review`
+  pass did not flag it either. `validate` now warns (**GR2073**, MixedWriteMechanisms); treat that as a
+  fired trigger, and prefer catching it here, where the split costs nothing.
+  **It is a strong trigger, not a certainty, and the difference is worth knowing.** Measured across the
+  Guardrails repo's own history the shape appears SEVEN times, all the same archetype: two went
+  first-pass, three took 2–4 attempts against a sibling average near 1, one settled `needs-human`, and
+  one never went green in 12 attempts. So splitting is right by default — but if you have a reason not
+  to (a one-line change to each half), say so in the report rather than splitting on reflex.
+
 **Carry the plan's own feasibility signals into sizing (#111).** When the plan's
 feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
 high-churn** ("~147 test refs", "over-packed", "large blast radius", "risky to do in one pass"),
