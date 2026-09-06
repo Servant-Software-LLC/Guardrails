@@ -35,6 +35,37 @@ public sealed record TaskResult
     public required string Summary { get; init; }
 
     /// <summary>
+    /// The question the agent asked, as a FIELD (issue #606).
+    ///
+    /// <para>
+    /// It was already carried — spliced into <see cref="Summary"/> as <c>"needs human: {question}"</c> and
+    /// parsed back out by <c>Scheduler.ExtractNeedsHumanQuestion</c>. That round trip is fine inside one
+    /// process and useless at the edge: the event stream's only carrier for it is the free-text
+    /// <c>detail</c>, which #585 layer 3 WITHHOLDS from webhook deliveries by default. So a supervising
+    /// agent learns that a task needs a human and <b>not what was asked</b>, and has to read
+    /// <c>events.jsonl</c> off the filesystem to find out — precisely the read #585 exists to remove,
+    /// reintroduced on the one path where it hurts most. It also lands on #361's answer-injection path: an
+    /// unattended run that escalates a question nobody can read is an escalation with no content.
+    /// </para>
+    ///
+    /// <para>
+    /// Widening <c>detail</c> instead would have been wrong: it is uncapped, and #179 deliberately routes
+    /// assertion text and stack traces into it, so sending it by default to recover the question ships the
+    /// exposure the default exists to prevent. A question is written by the HARNESS for a human — a
+    /// different risk profile from output that originates in a tool — which is why it gets its own field
+    /// and its own disclosure.
+    /// </para>
+    ///
+    /// <para>
+    /// Rides here beside <see cref="NeedsHumanOptions"/> and <see cref="NeedsHumanKind"/>, following the
+    /// precedent they set twice: structured, never a substring. <see cref="Summary"/> keeps its
+    /// <c>"needs human: …"</c> prefix unchanged — every existing reader, including the prose parse, is
+    /// undisturbed.
+    /// </para>
+    /// </summary>
+    public string? NeedsHumanQuestion { get; init; }
+
+    /// <summary>
     /// The bounded, enumerated options a structured <c>needsHuman</c> escape carried (issue #387), in order.
     /// Empty for a free-text <c>needsHuman</c> and for any non-needs-human outcome. Read by the autonomous
     /// classify-then-act dispatch (<see cref="Scheduler.ClassifyTaskGateAsync"/>) so the raised escalation

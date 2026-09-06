@@ -560,6 +560,9 @@ internal sealed class AttemptJournaler
             // The kind is deliberately NOT spliced into this summary: Scheduler.ExtractNeedsHumanQuestion
             // parses the `needs human: ` prefix and treats the remainder as the escalation's question.
             Summary = $"needs human: {question}",
+            // #606: the same question, structured. The splice above stays for every existing reader; this
+            // is what reaches an event consumer that never sees `detail`.
+            NeedsHumanQuestion = question,
             NeedsHumanOptions = options,
             NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         }, FeedbackPath: null);

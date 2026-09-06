@@ -4077,7 +4077,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
-| `task-settled` | `TaskFinished` | `outcome`, `detail` |
+| `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — **the only kind with no `taskId`** |
 
 **One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
@@ -4088,6 +4088,18 @@ spelled to match `OutcomeToken` on the members the two enums share. `needsHumanK
 `TelemetryRow` property verbatim: `costUsd`→`CostUsd`, `turns`→`Turns`, `model`→`Model`,
 `tier`→`Tier`, `runner`→`Runner`, `startedAt`→`StartedAt`, `endedAt`→`EndedAt`, `outcome`→`Outcome`.
 `needsHumanKind` is journal-owned and has no telemetry counterpart by design.
+
+**`question` on `task-settled` is DELIVERED BY DEFAULT, unlike `detail` (#606).** Present only on a
+`needs-human` outcome, absent otherwise — so "there is no question" and "the question is blank" stay
+distinguishable. It carries the agent's question as a FIELD rather than as the `needs human: …` prefix
+spliced into `detail`, which was its only carrier and is withheld by default: a supervising agent learned
+that a task needed a human and **not what was asked**, and had to read `events.jsonl` off the filesystem
+to find out — the read layer 3 exists to remove, reintroduced on the path where it hurts most, and on
+#361's answer-injection path an escalation with no content. Widening `detail` was rejected for the reason
+the paragraph below gives; a question is written by the HARNESS for a human and carries no tool output,
+which is a different risk profile and is why it gets its own field and its own disclosure. `detail` keeps
+the `needs human: …` prefix unchanged, so every existing reader — including the prose parse that drives
+the autonomous escalation dispatch — is undisturbed.
 
 **`attempt-finished` is the journal's `AttemptRecord`, emitted live.** `IRunObserver.AttemptFinished`
 carries the whole `Journal.AttemptRecord` (§7), so the row is a projection of the record the journal
@@ -4220,7 +4232,8 @@ either mode.
 fragment of source, or model-authored prose: for a script guardrail it is the first line of the
 child process's stdout, uncapped (a compiler error naming a file, an assertion with its stack); for
 a prompt guardrail it is the judge's own text; on `task-settled` it can embed an absolute
-`feedback.md` path or an agent's `needs human:` question verbatim. `faultKind` was narrowed to a
+`feedback.md` path or an agent's `needs human:` question verbatim (the question itself now also rides in
+`question`, delivered by default — see above; `detail` remains withheld for everything ELSE it carries). `faultKind` was narrowed to a
 type name for exactly this reason (§8.1); the same bar applied to the whole row set produces this
 default. The rest of the row is closed token sets, numbers, and author-controlled names.
 
