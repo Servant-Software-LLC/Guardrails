@@ -334,9 +334,25 @@ warnings (all pre-existing nullability/`CS8632` noise in Stryker's own code). Th
 maintainers' 2026-08-14 note about *"some breaking changes and a blocking defect"* holding
 up a release did not manifest as a build failure here.
 
-> Version banner caveat: the packed tool still prints `Version: 4.16.0`, because only
-> `PackageVersion` was overridden at pack time. **The banner does not distinguish this
-> build from the released 4.16.0.** Identify it by the tool path, not the banner.
+> **Version banner — FIXED 2026-09-06.** The first packed build still printed
+> `Version: 4.16.0` (only `PackageVersion` was overridden at pack time), making it
+> indistinguishable from the released tool by its own banner. It now reads:
+>
+> ```
+> Version: 0.0.0-BOGUS-LOCAL-master-55464f4-NOT-A-RELEASE
+> ```
+>
+> Set via `VersionPrefix`/`VersionSuffix` in the CLONE's `src/Directory.Build.props`
+> (never in this repo). `0.0.0` cannot collide with any real release, the label names
+> the master SHA it was built from, and `NOT-A-RELEASE` is unmissable in a scrollback.
+>
+> **Why the label had to be valid SemVer.** `StrykerCLI.cs:218` does
+> `SemanticVersion.TryParse(version, out var currentVersion)` and, on failure, logs a
+> warning and **returns early — printing no version line at all**. So an arbitrary
+> "obviously fake" string would have SUPPRESSED the banner rather than shouting,
+> which is strictly worse than the problem it was meant to fix. Prerelease
+> identifiers may contain only alphanumerics and hyphens; this label obeys that, so
+> it parses and is printed in full.
 
 [pr3752]: https://github.com/stryker-mutator/stryker-net/pull/3752
 [pr3769]: https://github.com/stryker-mutator/stryker-net/pull/3769
