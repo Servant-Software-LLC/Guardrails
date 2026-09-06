@@ -1,0 +1,6 @@
+{
+  "description": "Create the census accumulator before its first use in plan 35's tests-fail-on-stubs guardrail - the one live instance of the #608 fail-open",
+  "dependsOn": [],
+  "stableId": "c2n9x4",
+  "writeScope": ["docs/plans/35-event-vocabulary/tasks/04-author-tests-event-vocabulary/guardrails/02-tests-fail-on-stubs.ps1"]
+}

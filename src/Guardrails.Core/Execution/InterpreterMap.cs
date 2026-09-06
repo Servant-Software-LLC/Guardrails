@@ -1,3 +1,6 @@
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
@@ -128,11 +131,58 @@ public sealed class InterpreterMap
         _ => [[ScriptToken, ArgsToken]]
     };
 
+    // Both templates route through the shim (design 38 S3.2, issue #608): its own .ps1 body invokes
+    // the real guardrail inside a try/catch, so an uncaught engine error can never reach the harness as
+    // a false exit-0 PASS. PowershellTemplate is the Windows Powershell 5.1 fallback used when pwsh is
+    // absent -- leaving it unrouted would leave the fail-open armed on exactly the boxes least likely to
+    // notice.
     private static IReadOnlyList<string> PwshTemplate =>
-        ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ScriptToken, ArgsToken];
+        ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ShimScript, ScriptToken, ArgsToken];
 
     private static IReadOnlyList<string> PowershellTemplate =>
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ScriptToken, ArgsToken];
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ShimScript, ScriptToken, ArgsToken];
+
+    /// <summary>
+    /// The logical resource name of the embedded shim script (pinned via <c>LogicalName</c> in
+    /// <c>Guardrails.Core.csproj</c>, so it is stable regardless of the source file's on-disk path).
+    /// </summary>
+    private const string ShimResourceName = "Guardrails.Core.Resources.guardrail-shim.ps1";
+
+    private static readonly Lazy<string> ShimScriptPath = new(MaterializeShimScript);
+
+    /// <summary>
+    /// The on-disk path of the harness-owned guardrail-abort shim (design 38 S3.2), materialized once
+    /// per process from the embedded resource and reused thereafter.
+    /// </summary>
+    private static string ShimScript => ShimScriptPath.Value;
+
+    private static string MaterializeShimScript()
+    {
+        Assembly assembly = typeof(InterpreterMap).Assembly;
+        using Stream? stream = assembly.GetManifestResourceStream(ShimResourceName);
+        if (stream is null)
+        {
+            throw new InvalidOperationException(
+                $"Embedded guardrail shim resource '{ShimResourceName}' was not found in " +
+                $"'{assembly.GetName().Name}'. Check the <EmbeddedResource> Link in Guardrails.Core.csproj.");
+        }
+
+        using var reader = new StreamReader(stream);
+        string content = reader.ReadToEnd();
+
+        // Content-addressed filename: concurrent processes racing the same materialization never see a
+        // torn write, and an assembly upgrade never collides with a stale file left by an older one.
+        string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..16];
+        string dir = Path.Combine(Path.GetTempPath(), "guardrails-shim");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"guardrail-shim-{hash}.ps1");
+        if (!File.Exists(path))
+        {
+            File.WriteAllText(path, content);
+        }
+
+        return path;
+    }
 
     private static ResolvedCommand Substitute(
         IReadOnlyList<string> template,

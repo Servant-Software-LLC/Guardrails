@@ -1,0 +1,11 @@
+{
+  "description": "Correct the source-scanning doctrine in the plan-breakdown skill: neutralize literals before stripping comments, add the rendered-vs-stored anti-pattern, and make the generator emit Stop plus a terminal exit",
+  "dependsOn": [],
+  "stableId": "f5s8j1",
+  "writeScope": [
+    ".claude/skills/plan-breakdown/SKILL.md",
+    ".claude/skills/plan-breakdown/references/guardrail-catalogue.md",
+    ".claude/skills/plan-breakdown/references/stacks/dotnet.md"
+  ],
+  "action": { "maxTurns": 75 }
+}

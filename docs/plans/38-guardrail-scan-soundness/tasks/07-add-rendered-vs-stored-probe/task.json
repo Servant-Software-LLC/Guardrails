@@ -1,0 +1,6 @@
+{
+  "description": "Add the rendered-vs-stored review probe to guardrails-review and correct its two comment-strip sites to state the preprocessing order",
+  "dependsOn": [],
+  "stableId": "g3h6y9",
+  "writeScope": [".claude/skills/guardrails-review/SKILL.md"]
+}

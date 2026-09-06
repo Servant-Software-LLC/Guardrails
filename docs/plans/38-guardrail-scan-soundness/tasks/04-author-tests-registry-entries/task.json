@@ -1,0 +1,7 @@
+{
+  "description": "Author failing firing controls for three new GR2037 entries and raise the curated-set assertion from three entries to six",
+  "dependsOn": [],
+  "stableId": "d6p1w8",
+  "writeScope": ["tests/Guardrails.Core.Tests/BannedPatternRegistryTests.cs"],
+  "action": { "maxTurns": 75 }
+}

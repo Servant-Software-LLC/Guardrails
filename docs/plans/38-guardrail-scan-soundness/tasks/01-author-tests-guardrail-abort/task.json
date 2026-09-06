@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests pinning that an ABORTED script guardrail is not a pass, and that exit 1 and exit 0 keep their meanings",
+  "dependsOn": [],
+  "stableId": "a4k7q2",
+  "writeScope": ["tests/Guardrails.Core.Tests/Execution/GuardrailAbortTests.cs"],
+  "action": { "maxTurns": 75 }
+}

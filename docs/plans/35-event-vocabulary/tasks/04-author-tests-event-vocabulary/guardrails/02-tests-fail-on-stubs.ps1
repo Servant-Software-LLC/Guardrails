@@ -48,6 +48,7 @@ try {
     $mustExecute = @(
         'RunIdComesFromTheConstructor_NotTheDirectoryName'
     )
+    $problems = New-Object System.Collections.Generic.List[string]
     foreach ($name in $mustExecute) {
         $hit = $results | Where-Object { $_.testName -like "*$name*" } | Select-Object -First 1
         if (-not $hit) {
@@ -57,7 +58,6 @@ try {
             $problems.Add("[$name] outcome '$($hit.outcome)', expected 'Passed'. Task 01 already landed the runId constructor parameter, so a correct tree leaves this GREEN - a failure means that wiring regressed.")
         }
     }
-    $problems = New-Object System.Collections.Generic.List[string]
 
     foreach ($name in $mustFail) {
         $hit = $results | Where-Object { $_.testName -like "*$name*" } | Select-Object -First 1

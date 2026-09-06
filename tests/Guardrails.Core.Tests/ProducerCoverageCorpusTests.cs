@@ -237,6 +237,19 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "that breaks the test has been made. Knowing it in advance turned a red terminal gate into " +
             "two commits; it did not make the row automatic, which is why #601 tracks graduating this " +
             "class of tripwire into a deterministic check"),
+        new("docs/plans/38-guardrail-scan-soundness", "c14195e8", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. The FIFTH " +
+            "consecutive plan to trip this table, and the first to identify WHY the countermeasure keeps " +
+            "failing. /plan-breakdown Step 7.0f tells the author to run the suite \"with the new plan " +
+            "folder PRESENT\" - and this test does not read the working tree. It reads " +
+            "PlanFolders(\"HEAD\"), i.e. git ls-files at HEAD. So an author who follows Step 7.0f " +
+            "literally runs it on an UNCOMMITTED folder, gets a clean 2580/0, and ships the breakage; " +
+            "that is exactly what happened here, and CI caught what the prescribed check could not. " +
+            "Present-on-disk is not the condition - COMMITTED is. Plan 36's row says its breakdown " +
+            "\"watched it go red on the commit that created the folder\", which is the same discovery " +
+            "made the expensive way. The fix is a one-word change to Step 7.0f (commit, THEN run) and it " +
+            "is the actionable half of #587 that four previous rows did not have; #601 tracks graduating " +
+            "the class into a deterministic check"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,

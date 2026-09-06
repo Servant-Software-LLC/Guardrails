@@ -345,12 +345,30 @@ public sealed class MergeCliTests
         public void EditGuardrail(string folder, string name, string content) =>
             Write(Path.Combine(Dir, "tasks", folder, "guardrails", name + Ext), content);
 
-        public string ReadGuardrail(string folder, string name) =>
-            File.ReadAllText(Path.Combine(Dir, "tasks", folder, "guardrails", name + Ext));
+        /// <summary>The AUTHORED content, with <see cref="FixtureExitSuffix"/> stripped.</summary>
+        public string ReadGuardrail(string folder, string name)
+        {
+            string text = File.ReadAllText(Path.Combine(Dir, "tasks", folder, "guardrails", name + Ext));
+            return text.EndsWith(FixtureExitSuffix, StringComparison.Ordinal)
+                ? text[..^FixtureExitSuffix.Length]
+                : text;
+        }
+
+        /// <summary>
+        /// The terminating <c>exit 0</c> is FIXTURE BOILERPLATE, added here rather than at ~25 call sites.
+        /// GR2037 entry <c>#608b</c> requires every four-folder script guardrail to end on an explicit
+        /// <c>exit</c>: after the design-38 shim, a script that falls off its end takes the last native
+        /// command's exit code instead of 0, so "ends on an exit" became a real invariant rather than a
+        /// style note. These fixtures wrote bare bodies like <c>"v1"</c>, which made the plans they build
+        /// INVALID and turned <c>Merge_InvalidRemotePlan_ExitsHarnessError</c> into a report about the
+        /// CURRENT plan. <see cref="ReadGuardrail"/> strips the suffix again so every assertion in this
+        /// file still compares the AUTHORED content, unchanged.
+        /// </summary>
+        internal const string FixtureExitSuffix = "\nexit 0\n";
 
         private static void Write(string path, string content)
         {
-            File.WriteAllText(path, content);
+            File.WriteAllText(path, content + FixtureExitSuffix);
             if (!OperatingSystem.IsWindows())
             {
                 File.SetUnixFileMode(path,

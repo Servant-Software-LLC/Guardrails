@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant over the ten files this plan produces: conflict-marker-free and non-empty, and each landed contribution is a real construct rather than a surviving mention",
+  "scope": "integration"
+}
