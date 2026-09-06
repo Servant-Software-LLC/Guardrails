@@ -1084,10 +1084,22 @@ summary) is **per-run and dies with the run** -- this is the grain above, spanni
   is exactly the provider worth evaluating.
 - **Null is not zero.** `costUsd` / `inputTokens` / `outputTokens` are independently nullable, and null
   means NEVER REPORTED. Same distinction `JournalTierSpend` draws.
-- **`guardrail-failed` is three different failures** (write-scope violation, staging-move failure,
-  harness-write out-of-scope) that `run.json` cannot tell apart -- the distinguishing `TaskResult.Summary`
-  is not persisted. `TelemetryFailureClassifier` recovers it from the attempt's `feedback.md` (reachable
-  because `logDir` IS journaled); anything it cannot recognise is recorded **`undifferentiated`, never
+- **`guardrail-failed` USED TO BE three different failures, and #538 split them.** A write-scope
+  violation, a staging-move failure and a refused `needsHarnessWrite` all journaled `guardrail-failed`
+  with an **EMPTY `failedGuardrails`** -- no guardrail ran at any of them, so there was nothing to name.
+  That combination is not merely uninformative, it is internally **inconsistent**, and it points a reader
+  (or a self-healing agent, #529) at the guardrail set, which was never the cause. Measured: six attempts,
+  `needs-human`, $2.58, `run.json` saying "a guardrail failed" five times and naming none, with the real
+  cause (an anchored `edits[N].old` NOT FOUND) surviving only as prose in `feedback.md`.
+  Each now has its own `AttemptOutcome`: **`harness-write-rejected`**, **`write-scope-violation`**,
+  **`staging-failed`** (SSOT section 7). **INVARIANT: `guardrail-failed` always names at least one
+  guardrail.** Two things deliberately did NOT change -- `TaskOutcome` and the retry/escalation semantics
+  (all three still climb the #228 ladder exactly as before, listed explicitly at the count site so the
+  split cannot silently alter behaviour), and the **telemetry TOKENS**, which stay
+  `guardrail-failed:write-scope-violation` and siblings because a token is the key an evidence corpus
+  groups on across releases and renaming it would make every comparison spanning the change wrong with
+  nothing reporting it. `TelemetryFailureClassifier`'s `feedback.md` recovery remains, now as the fallback
+  for journals written **before** #538; anything it cannot recognise is still **`undifferentiated`, never
   guessed at**.
 - **The report refuses to mislead.** `guardrails telemetry report` stratifies by (model x tier x
   fingerprint bucket) with `n` on every row; below the minimum sample it renders "insufficient evidence"
