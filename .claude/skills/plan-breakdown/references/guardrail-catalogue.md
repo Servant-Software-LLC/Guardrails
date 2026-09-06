@@ -459,6 +459,15 @@ member/accessor happens to be written first.
 
 ### Comment-blind keyword scan — strip comments before forbidden-keyword matching (universal) (#97, #98)
 
+**Neutralize string literals BEFORE stripping comments — the two steps are not interchangeable, and
+getting this backwards is exactly how #561 shipped.** Doing it the other way runs the comment-strip
+regex over text where literals are still live — a literal that spells a comment delimiter (a glob
+such as `src/*` opens a phantom `/*`) forges a block comment that survives to blank real code before
+the literal is ever touched, closed only by the next `*/` a *later* literal happens to spell. It
+fails **both closed and open**: a required-present clause over the blanked region false-REDs, and a
+forbidden-present clause over it false-PASSES. Measured on this repository: 29 of the 31 committed
+guardrails that do both operations do them in the defective order (design 38 §4).
+
 The structural-vs-keyword rule (above) is about a *required* construct a comment/`using`/local
 copy can fake. This is its **forbidden**-keyword mirror: a guardrail that scans source text for
 **banned** constructs — read-only checks (`MERGE`/`EXEC`/`INSERT`/`xp_cmdshell`), no-shell,
@@ -482,20 +491,24 @@ banned keywords across three attempts, all from one safety comment. The harness 
 (accurate feedback, retries, honest halt) — the **guardrail** was mis-scoped.
 
 **Rule (catalogue doctrine).** Any guardrail that scans a source artifact for **banned keywords**
-MUST strip the source language's comments — ideally string literals too — **before** matching. Use
-the target language's comment syntax. For SQL (the motivating case), strip `/* */` block comments
-and `-- …` line comments first; the same applies to any language — a `//`-comment or docstring that
-documents "this code uses no `eval`" must not trip an `eval` ban.
+MUST strip both the source language's comments AND its string literals from the scan copy — and
+**neutralize string literals BEFORE stripping comments**, never the other order (above). Use the
+target language's comment syntax for the second pass. For SQL (the motivating case), neutralize
+`'...'` string literals first, then strip `/* */` block comments and `-- …` line comments; the same
+applies to any language — a `//`-comment or docstring that documents "this code uses no `eval`" must
+not trip an `eval` ban, and neither must the word sitting inside a string literal.
 
 ```powershell
 # catches: a forbidden-keyword (read-only / no-shell) check that false-POSITIVES on a comment -
 #          e.g. a SAFETY-HEADER comment the action prompt asked for ("performs no MERGE/EXEC,
 #          no xp_cmdshell") - sending a CORRECT read-only script to needs-human via whack-a-mole.
-#          Strip comments BEFORE the keyword scan so only real code is matched.
+#          Neutralize string literals BEFORE stripping comments (#561): a literal spelling '/*'
+#          forges a delimiter that a comments-first strip blanks straight through.
 $raw = Get-Content $f -Raw
-$c = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
-$c = [regex]::Replace($c,   '--[^\r\n]*', ' ')        # -- line comments
-# ...now run the banned-keyword checks against $c (the comment-free code), NOT $raw.
+$c = [regex]::Replace($raw, "'(?:[^']|'')*'", "''")   # string literals FIRST
+$c = [regex]::Replace($c,   '/\*[\s\S]*?\*/', ' ')    # /* */ block comments
+$c = [regex]::Replace($c,   '--[^\r\n]*', ' ')         # -- line comments
+# ...now run the banned-keyword checks against $c (comments AND literals gone), NOT $raw.
 if ($c -match '(?i)\bxp_cmdshell\b') {
     Write-Output "$f calls xp_cmdshell in CODE (not just a comment) - external/unsafe surface"
     exit 1
@@ -505,10 +518,13 @@ exit 0
 
 For a **line-number-reporting** guardrail (e.g. no-forbidden-egress that names the offending line),
 do not collapse the file — **blank the comment spans in place, preserving newlines**, so line
-numbers in the failure message stay accurate:
+numbers in the failure message stay accurate. Neutralize string literals BEFORE stripping comments
+here too, for the same reason:
 
 ```powershell
-# strip block comments but KEEP newlines so reported line numbers stay correct
+# neutralize string literals FIRST (the same delimiter-forging risk applies), THEN strip block
+# comments but KEEP newlines so reported line numbers stay correct
+$raw = [regex]::Replace($raw, "'(?:[^']|'')*'", "''")
 $raw = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
 $lines = $raw -split '\r?\n'
 # an existing per-line '--' line-comment skip handles line-comment-only lines
@@ -516,15 +532,32 @@ $lines = $raw -split '\r?\n'
 
 ```bash
 # catches: same - a banned-keyword scan that false-positives on a comment/safety-header.
-#          Strip /* */ then -- before matching; scan the code, not the comment.
+#          Neutralize string literals BEFORE stripping comments (#561) - /* */ then -- - so a
+#          literal cannot forge a delimiter; scan the code, not a comment or a literal mention.
 set -euo pipefail
-c=$(perl -0pe 's{/\*.*?\*/}{ }gs; s{--[^\n]*}{ }g' "$f")
+c=$(perl -0pe "s{'(?:[^']|'')*'}{''}g; s{/\*.*?\*/}{ }gs; s{--[^\n]*}{ }g" "$f")
 if printf '%s' "$c" | grep -Eiq '\bxp_cmdshell\b'; then
     echo "$f calls xp_cmdshell in CODE (not just a comment) - external/unsafe surface"
     exit 1
 fi
 exit 0
 ```
+
+### The cross-literal delimiter trap — why a sample must SPAN two literals (#561)
+
+A sample built to exercise the ordering fix must put the construct under test **between two separate
+literals**: one whose text opens a phantom `/*` (a glob such as `**/*.cs`) and, **later**, a second
+literal whose text closes it (a docstring ending "`build output ends: */`"). Comments-first blanks
+everything from the first forged delimiter to the second — including the real construct sitting
+between them — so a forbidden-present clause false-PASSES over it and a required-present clause
+false-REDs, on a file where neither literal is itself a comment.
+
+**A trap where both delimiters sit inside the SAME literal does not reproduce the defect.** A string
+like `"/* not a real comment */"` is matched whole by the comment-stripper's own lazy quantifier —
+`/\*[\s\S]*?\*/` closes at the first `*/` it meets, which here is still inside the same literal — so
+only that self-contained span is blanked and the surrounding real code is untouched either way. A
+sample shaped this way passes under **both** the correct order and the defective one, which makes it
+look like it tests the fix while proving nothing about the order at all.
 
 **Action-prompt discipline — the breakdown must not grep for what it tells the action to document
 (#98).** A self-describing safety header is good practice, but it requires a **comment-safe**
@@ -2387,9 +2420,11 @@ concrete dependency**, add a guardrail that scans the extracted project's `.cs` 
 call to the concrete method** and fails if it finds one. Two anchoring requirements (both from the
 method-call-anchoring rule, #76 above — a bare-name grep here would *false-RED* on a comment, escalating
 a correct library):
-1. **Strip comments before the scan** (#97/#98 comment-blind family) — a `// we used to call
-   UploadEntitiesAsync directly` comment must not trip the ban (false positive → whack-a-mole to
-   `needs-human` on a correct library).
+1. **Neutralize string literals BEFORE stripping comments** (#97/#98 comment-blind family, #561
+   order) — a `// we used to call UploadEntitiesAsync directly` comment must not trip the ban (false
+   positive → whack-a-mole to `needs-human` on a correct library), and a literal spelling `/*` earlier
+   in the file must not forge a delimiter that blanks the very call this guardrail exists to catch (a
+   false PASS, the opposite failure and the more expensive one).
 2. **Anchor on the dotted call construct** — `\.UploadEntitiesAsync\s*\(` (optionally `ConcreteType`
    nearby), not a bare `UploadEntitiesAsync`, so a same-named method on a *different* allowed type or a
    string literal does not false-RED.
@@ -2399,15 +2434,17 @@ Scope the scan to the **new library's project folder only** (grep-scope rule), e
 ```powershell
 # catches: <LibraryProject> bypassing <IInterface> by calling <ConcreteClass>.<ConcreteMethod>
 #          directly in its internals - registered, building, and tested all stay green while the
-#          injected abstraction is bypassed. Strip comments first (so a comment naming the method
-#          is not a false RED), then anchor on the DOTTED call construct, scoped to the library only.
+#          injected abstraction is bypassed. Neutralize string literals BEFORE stripping comments
+#          (#561 - a literal forging '/*' must not blank the call this guardrail exists to catch),
+#          then anchor on the DOTTED call construct, scoped to the library only.
 $libDir = "PoC/ConformedSources/Migration.Engine"
 $hits = Get-ChildItem $libDir -Recurse -Filter *.cs |
     Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
     Where-Object {
         $raw  = Get-Content $_.FullName -Raw
-        $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
-        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+        $code = [regex]::Replace($raw, '"(\\.|[^"\\])*"', '""')  # string literals FIRST
+        $code = [regex]::Replace($code, '/\*[\s\S]*?\*/', ' ')    # /* */ block comments
+        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')         # // line comments
         $code -match '\.UploadEntitiesAsync\s*\('
     }
 if ($hits) {
@@ -2421,8 +2458,9 @@ exit 0
 **Trigger:** the plan or action prompt contains language like "must NOT call `X` directly", "must
 write **through** interface `Y`", "the current Exe bypasses the abstraction", or "the engine must
 depend only on `IInterface`." This is a **forbidden-call** check (a ban), so it inherits both the
-comment-blind caveat (#97/#98 — strip first) and the string-literal residual (a parser is out of
-scope; note it if the concrete method name plausibly appears in a string). The .NET realization is
+comment-blind caveat (#97/#98 — neutralize string literals BEFORE stripping comments, #561) and the
+residual a regex cannot close (a parser is out of scope; note it if the concrete method name
+plausibly appears in a string literal even after neutralization). The .NET realization is
 `stacks/dotnet.md §16`.
 <!-- END ADDED SECTION #74 -->
 
@@ -2582,9 +2620,11 @@ unsatisfiable regex would have dead-ended the whole chain after paying task 06's
 
 **When a task carries BOTH a required-present and a forbidden-present clause:**
 
-1. **The forbidden scan runs over STRIPPED source — comments *and* string literals.** #97/#98 is written
-   about **comments**; this is the same fix family one step wider. The banned token hid in an **attribute's
-   string literal**, which no comment-stripper touches.
+1. **Neutralize string literals BEFORE stripping comments, and only then run the forbidden scan over
+   the fully STRIPPED source.** #97/#98 is written about **comments**; this is the same fix family one
+   step wider, in the corrected order (#561): the banned token hid in an **attribute's string literal**,
+   which no comment-stripper touches — and stripping comments first would let that same literal forge a
+   phantom `/*…*/` that blanks real code before its content is ever neutralized.
 2. **Anchor the ban on a USE, not a mention (#76).** Ban the construct the prompt actually forbids — a
    dotted call, a type position, an enum member, a declaration — never the bare word.
 
@@ -2596,14 +2636,22 @@ RED; eight-of-nine names RED; missing trait RED; file absent RED) — **teeth in
 # catches: a conformance suite that USES the forbidden resolver - while leaving the word free in prose,
 #          comments, string literals and test NAMES, so the REQUIRED [Trait("Category","TierResolution")]
 #          attribute (whose own string literal carries the token) can still satisfy its clause (#470).
-$raw  = Get-Content $f -Raw                                 # never matched against
-$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', '')       # comments gone -> POSITIVE clauses read $code
+#          Neutralize string literals BEFORE stripping comments (#561): deriving $code by stripping
+#          comments straight from $raw would let a literal spelling '/*' forge a delimiter that blanks
+#          real code before any literal is ever touched, corrupting BOTH $code and $scan below it.
+$raw  = Get-Content $f -Raw                                  # never matched against
+$safe = [regex]::Replace($raw,  '"""[\s\S]*?"""', { $args[0].Value -replace '[/*]', '#' })  # raw strings
+$safe = [regex]::Replace($safe, '@"(?:[^"]|"")*"', { $args[0].Value -replace '[/*]', '#' })  # verbatim
+$safe = [regex]::Replace($safe, '"(\\.|[^"\\])*"', { $args[0].Value -replace '[/*]', '#' })  # ordinary
+# no literal can forge a delimiter anymore, so it is now safe to strip comments -> $code
+$code = [regex]::Replace($safe,  '/\*[\s\S]*?\*/', '')       # comments gone -> POSITIVE clauses read $code
 $code = [regex]::Replace($code, '(?m)//.*$', '')
-$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')     # raw strings   -> FORBIDDEN clauses read $scan
-$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')    # verbatim
-$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')    # ordinary — kills the Trait's own value
+$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')      # raw strings   -> FORBIDDEN clauses read $scan
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')     # verbatim
+$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')     # ordinary — kills the Trait's own value
 
-# REQUIRED reads $code, so the trait's string literal is still there to satisfy it.
+# REQUIRED reads $code: comments gone, and the trait's own string literal is still readable (only its
+# / and * characters, if any, were neutralized) so it can still satisfy this clause.
 # -cnotmatch (taxonomy 3): a REQUIRED identifier clause must be CASE-SENSITIVE, or `[trait("category",…)]`
 # false-GREENs a file C# would not even compile.
 if ($code -cnotmatch '\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]') {
@@ -3411,6 +3459,26 @@ should fail before an expensive test run or a paid judge ever starts.
   specific file this task produces, never the project tree.
   - Weak (gameable): `Get-ChildItem src/Desktop -Recurse -Filter *.cs | Select-String -Pattern "LocalAppData"` — a sibling `SettingsService.cs` mentioning `LocalApplicationData` in the same wave satisfies it.
   - Strong: `Select-String -Path "src/Desktop/WorkspaceRecentsList.cs" -Pattern "LocalAppData"` — scoped to the one file this task owns.
+
+<!-- BEGIN ADDED ANTI-PATTERNS #428 (auto-merge friendly; do not merge into the list above) -->
+- **Rendered-vs-stored phrase matching** (#428): a required- or forbidden-present clause written against
+  how a phrase **reads** rather than how it is **stored** — the structural-vs-keyword trap one layer up:
+  the rendered form is not the stored form. When the target text is emitted across two or more
+  source-line literals (wrapped `AppendLine` calls composing prompt or feedback prose, split by a
+  comment or an `if` boundary), a single-line regex for the whole sentence never matches **and the
+  guardrail silently PASSES** — the expensive direction, because nothing ever reds to surface it. Live
+  instance in this repository: `RetryPolicy.cs` composes its retry-feedback prose across `AppendLine`
+  calls split by a six-line comment and an `if` boundary, about 400 characters, bisected mid-phrase, so
+  neither a single-line regex nor a bounded dotall window can match it. Recorded instances: four, most
+  recently commit `62c59db3`. Fix — three rules, in order: (1) prefer a distinctive fragment that sits on
+  **ONE source line**; (2) when the whole phrase matters, normalize whitespace or use `[\s\S]`; (3)
+  verify the fragment against the REAL file, never against the rendered text a human or a log would see.
+  **Deliberately no GR2037 registry entry for this one** (design 38 §6): the expressible pattern — a
+  `-match` literal spanning a long space-separated phrase — is heuristic in both directions, and a gate
+  that certifies less than it appears to is the defect this plan exists to close. The only enforcement is
+  this entry plus the matching `/guardrails-review` probe; do not "finish the job" by adding a lint for
+  it later without first showing a `mustMatch`/`mustNotMatch` pair that earns it.
+<!-- END ADDED ANTI-PATTERNS #428 -->
 
 <!-- BEGIN ADDED ANTI-PATTERNS #74/#75/#76/#96 (auto-merge friendly; do not merge into the list above) -->
 - **Keyword-not-structural for a METHOD CALL** (#76): a "file calls `B.Method()`" guardrail that greps
