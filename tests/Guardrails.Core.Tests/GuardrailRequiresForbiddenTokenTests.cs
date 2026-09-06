@@ -338,7 +338,7 @@ public sealed class GuardrailRequiresForbiddenTokenTests : IDisposable
         #              exists to close.
         #          Structural, scoped to the ONE file this task owns; it runs BEFORE the expensive test
         #          execution in the sibling guardrails.
-        $ErrorActionPreference = 'Continue'
+        $ErrorActionPreference = 'Stop'
         $file = 'tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs'
         $failures = @()
 
