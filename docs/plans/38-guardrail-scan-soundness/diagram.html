@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=efc33e07effce9796e89814e05b3ddbf6facc0a0708d4ea1d24bee146f778488 -->
+<!-- guardrails:graph v1 source-sha256=0e8a3f64ddf05214aa2124e6a0b19caf43344735477a37514783bc00823164aa -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -143,6 +143,8 @@
   style task_08_record_shim_contract fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_09_immunize_existing_guardrail_fixtures["09-immunize-existing-guardrail-fixtures"]
     task_09_immunize_existing_guardrail_fixtures_gr_0["01-fixture-exposure-removed"]:::guardrail
+    task_09_immunize_existing_guardrail_fixtures_gr_1["02-build-passes"]:::guardrail
+    task_09_immunize_existing_guardrail_fixtures_gr_2["03-touched-tests-still-pass"]:::guardrail
   end
   style task_09_immunize_existing_guardrail_fixtures fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -183,6 +185,8 @@
   click task_07_add_rendered_vs_stored_probe_gr_0 href "tasks/07-add-rendered-vs-stored-probe/guardrails/01-review-probes-present.ps1" "01-review-probes-present" _blank
   click task_08_record_shim_contract_gr_0 href "tasks/08-record-shim-contract/guardrails/01-ssot-carries-the-contract.ps1" "01-ssot-carries-the-contract" _blank
   click task_09_immunize_existing_guardrail_fixtures_gr_0 href "tasks/09-immunize-existing-guardrail-fixtures/guardrails/01-fixture-exposure-removed.ps1" "01-fixture-exposure-removed" _blank
+  click task_09_immunize_existing_guardrail_fixtures_gr_1 href "tasks/09-immunize-existing-guardrail-fixtures/guardrails/02-build-passes.ps1" "02-build-passes" _blank
+  click task_09_immunize_existing_guardrail_fixtures_gr_2 href "tasks/09-immunize-existing-guardrail-fixtures/guardrails/03-touched-tests-still-pass.ps1" "03-touched-tests-still-pass" _blank
   click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
   click plan_guardrails_1 href "guardrails/02-all-tests-pass.ps1" "02-all-tests-pass" _blank
   click plan_guardrails_2 href "guardrails/03-scan-soundness-union-verified.ps1" "Union invariant over the ten files this plan produces: conflict-marker-free and non-empty, and each landed contribution is a real construct rather than a surviving mention" _blank</script>

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=efc33e07effce9796e89814e05b3ddbf6facc0a0708d4ea1d24bee146f778488 -->
+<!-- guardrails:graph v1 source-sha256=0e8a3f64ddf05214aa2124e6a0b19caf43344735477a37514783bc00823164aa -->
 
 ```mermaid
 flowchart TD
@@ -45,6 +45,8 @@ flowchart TD
   style task_08_record_shim_contract fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_09_immunize_existing_guardrail_fixtures["09-immunize-existing-guardrail-fixtures"]
     task_09_immunize_existing_guardrail_fixtures_gr_0["01-fixture-exposure-removed"]:::guardrail
+    task_09_immunize_existing_guardrail_fixtures_gr_1["02-build-passes"]:::guardrail
+    task_09_immunize_existing_guardrail_fixtures_gr_2["03-touched-tests-still-pass"]:::guardrail
   end
   style task_09_immunize_existing_guardrail_fixtures fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
