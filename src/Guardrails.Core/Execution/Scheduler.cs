@@ -1661,11 +1661,32 @@ public sealed class Scheduler
         };
     }
 
-    private static WaveHalt BuildUnauthoredWaveHalt(WaveNode wave, IntegrationHandle? integ, bool briefPresent)
+    private static WaveHalt BuildUnauthoredWaveHalt(
+        WaveNode wave, IntegrationHandle? integ, bool briefPresent, int waveIndex)
     {
         string? worktree = integ?.IntegrationWorktreePath;
         string at = worktree is not null ? $" at:\n  {worktree}" : "";
         string brief = $"{wave.Dir}/{WaveNode.BriefFileName}";
+
+        // #497 — the lead-in used to assert, unconditionally, that prior waves completed and are
+        // materialized. On WAVE 1 both clauses are false: nothing ran, nothing is materialized. Measured
+        // verbatim on a wave-1 checkpoint:
+        //
+        //   WAVE CHECKPOINT: Wave 'wave-01-alpha' has no authored tasks - halting for JIT breakdown.
+        //     The prior wave(s) completed and are materialized on the plan branch. Break down + review
+        //     'wave-01-alpha' against the materialized upstream artifacts
+        //
+        // It is not cosmetic. The whole premise of the JIT flow is that a wave is authored AGAINST the
+        // materialized upstream, so an agent told to do that with nothing materialized has been handed a
+        // premise it cannot satisfy and no signal that the premise is wrong. It goes looking, finds
+        // nothing, and has no way to tell "I looked in the wrong place" from "there is nothing to find".
+        // Same shape as #471's halt text: true in the common case, false in one case, identical in both.
+        bool firstWave = waveIndex <= 1;
+        string upstream = firstWave
+            ? $"This is the plan's FIRST wave — no prior wave has run, and nothing is materialized yet. "
+              + $"Break down + review '{wave.Dir}' against the starting tree{at}"
+            : $"The prior wave(s) completed and are materialized on the plan branch. Break down + review "
+              + $"'{wave.Dir}' against the materialized upstream artifacts{at}";
 
         // #360 §14.4/§14.10: a PRESENT brief.md is the opt-in signal for auto-breakdown, gated by
         // 'autoBreakdown' (default true, DECOUPLED from 'autonomyPolicy'); an ABSENT one names the convention.
@@ -1676,11 +1697,9 @@ public sealed class Scheduler
             ? $"A wave brief '{brief}' is present — auto-breakdown is on by default ('autoBreakdown'), but this "
               + "run honest-halts because auto-breakdown could not run (no 'breakdown' prompt runner, serial "
               + "mode, or the cost cap is hit), or 'autoBreakdown' is false (which gates invocation on "
-              + $"'autonomyPolicy'). The prior wave(s) completed and are materialized on the plan branch{at}\n"
-              + $"Break down + review '{wave.Dir}' against the materialized upstream artifacts, then re-run "
-              + "'guardrails run' to continue."
-            : "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
-              + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nCreate '{brief}' to enable "
+              + $"'autonomyPolicy'). {upstream}\n"
+              + "Then re-run 'guardrails run' to continue."
+            : $"{upstream}\nCreate '{brief}' to enable "
               + "auto-breakdown here (on by default, 'autoBreakdown'), or author the wave manually, then re-run "
               + "'guardrails run' to continue.";
 
@@ -1814,7 +1833,7 @@ public sealed class Scheduler
         _journal.RecordDecision(checkpoint);
         _observer.DecisionRecorded(checkpoint);
         return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
-            with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) });
+            with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent, waveIndex) });
     }
 
     /// <summary>
@@ -2427,11 +2446,18 @@ public sealed class Scheduler
             }
             catch
             {
-                // Nothing more we can safely do; the halt still names the failure for the human.
+                // Nothing more we can safely do; the halt names it rather than reporting a move (#471).
+                return new RevertSummary { Precise = false, FailedPaths = ["tasks/"] };
             }
+
+            // The move failed and the delete succeeded: the output is GONE, not quarantined. Reporting
+            // "files moved: tasks/" here would send an operator to a directory that does not hold it.
+            return new RevertSummary { Precise = false, FailedPaths = ["tasks/ (deleted, not quarantined)"] };
         }
 
-        return new RevertSummary { MovedPaths = ["tasks/"] };
+        // Coarse by construction: this path moves tasks/ only, so any guardrails/ or preflights/ the
+        // attempt wrote stay in the wave folder — which is exactly what #471 measured.
+        return new RevertSummary { MovedPaths = ["tasks/"], Precise = false };
     }
 
     /// <summary>
@@ -2637,10 +2663,36 @@ public sealed class Scheduler
     /// <summary>
     /// State plainly what the quarantine moved and what it kept (#471 §5.3). The old text — "the wave
     /// reverted to its empty stub" — was false in the direction that misleads: eight files stayed behind.
+    ///
+    /// <para>
+    /// <b>And then the replacement made the same mistake one claim over (#471 residual).</b> It closed with
+    /// <i>"The wave folder is byte-identical to its pre-breakdown state; PlanDefinitionHash is unchanged"</i>
+    /// UNCONDITIONALLY — an assertion about an outcome nothing had checked, false on two reachable paths:
+    /// </para>
+    /// <list type="number">
+    ///   <item>the <b>degraded fallback</b>, taken when the inventory capture itself failed. It moves the
+    ///     whole <c>tasks/</c> and leaves <c>guardrails/</c> and <c>preflights/</c> where they are — which
+    ///     is verbatim the defect #471 was opened about, now reported as byte-identical;</item>
+    ///   <item>a <b>silently-swallowed move or restore failure</b> on the precise path. A file that could
+    ///     not be moved was skipped, a snapshot that could not be restored was ignored, and neither
+    ///     appeared in any list — so a wave folder still holding the attempt's output, or missing a
+    ///     pre-existing file the attempt overwrote, closed with a byte-identity claim.</item>
+    /// </list>
+    /// <para>
+    /// The claim matters because of what it licenses. <c>PlanDefinitionHash</c> covers guardrail and
+    /// preflight bodies (#260), so if it MOVED, the plan's <c>/guardrails-review</c> attestation staled and
+    /// the next <c>validate</c> raises GR2025 (this plan has changed since review) over work the breakdown
+    /// never touched. An operator told the hash is unchanged has been told not to expect that warning —
+    /// and a staleness warning nobody expects is one that gets waved through.
+    /// </para>
     /// </summary>
     private static void AppendRevertSummary(StringBuilder sb, string quarantineDir, RevertSummary revert)
     {
-        sb.Append("Everything this attempt wrote was reverted; nothing that pre-dated it was touched.\n");
+        sb.Append(revert.Precise
+            ? "Everything this attempt wrote was reverted; nothing that pre-dated it was touched.\n"
+            : "The revert was COARSE — the per-file inventory was unavailable, so this moved the wave's "
+              + "whole 'tasks/' folder and left any 'guardrails/' or 'preflights/' the attempt wrote where "
+              + "they are.\n");
         sb.Append($"  moved to      : {quarantineDir}\n");
         sb.Append($"  files moved   : {DescribePaths(revert.MovedPaths)}\n");
         if (revert.RestoredPaths.Count > 0)
@@ -2649,7 +2701,20 @@ public sealed class Scheduler
         }
 
         sb.Append($"  left in place : {DescribePaths(revert.KeptPaths)} (pre-existing)\n");
-        sb.Append("The wave folder is byte-identical to its pre-breakdown state; PlanDefinitionHash is unchanged.\n");
+
+        if (revert.FailedPaths.Count > 0)
+        {
+            sb.Append($"  NOT reverted  : {DescribePaths(revert.FailedPaths)} (move or restore FAILED)\n");
+        }
+
+        // Claim byte-identity only where it was actually achieved. Everywhere else, say what is true and
+        // name the consequence the operator will otherwise meet as an unexplained warning.
+        sb.Append(revert.RestoredToPreBreakdownState
+            ? "The wave folder is byte-identical to its pre-breakdown state; PlanDefinitionHash is unchanged.\n"
+            : "The wave folder is NOT byte-identical to its pre-breakdown state, so PlanDefinitionHash has "
+              + "moved. Expect GR2025 ('this plan has changed since /guardrails-review') on the next "
+              + "validate — it is a consequence of this quarantine, not of anything you changed. Compare "
+              + "the quarantine directory against the wave folder before re-running.\n");
     }
 
     /// <summary>A short, bounded rendering of a path list for a halt detail (never an unbounded wall of paths).</summary>
