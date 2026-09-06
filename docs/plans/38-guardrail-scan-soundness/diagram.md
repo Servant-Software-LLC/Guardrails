@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=3cd8b457a7475cd803ea4a19803da8890eab41fb340dd7e93937d4aa5b71442d -->
+<!-- guardrails:graph v1 source-sha256=efc33e07effce9796e89814e05b3ddbf6facc0a0708d4ea1d24bee146f778488 -->
 
 ```mermaid
 flowchart TD
@@ -15,6 +15,7 @@ flowchart TD
     task_02_implement_guardrail_abort_gr_0["01-build-passes"]:::guardrail
     task_02_implement_guardrail_abort_gr_1["02-abort-tests-pass"]:::guardrail
     task_02_implement_guardrail_abort_gr_2["03-both-pwsh-templates-route-through-the-shim"]:::guardrail
+    task_02_implement_guardrail_abort_gr_3["04-shim-preserves-real-exit-codes"]:::guardrail
   end
   style task_02_implement_guardrail_abort fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_fix_plan35_census_list_ordering["03-fix-plan35-census-list-ordering"]
@@ -42,6 +43,10 @@ flowchart TD
     task_08_record_shim_contract_gr_0["01-ssot-carries-the-contract"]:::guardrail
   end
   style task_08_record_shim_contract fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_09_immunize_existing_guardrail_fixtures["09-immunize-existing-guardrail-fixtures"]
+    task_09_immunize_existing_guardrail_fixtures_gr_0["01-fixture-exposure-removed"]:::guardrail
+  end
+  style task_09_immunize_existing_guardrail_fixtures fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -53,9 +58,11 @@ flowchart TD
   plan_preflights --> task_04_author_tests_registry_entries
   plan_preflights --> task_06_correct_scan_order_doctrine
   plan_preflights --> task_07_add_rendered_vs_stored_probe
+  plan_preflights --> task_09_immunize_existing_guardrail_fixtures
   task_01_author_tests_guardrail_abort --> task_02_implement_guardrail_abort
   task_02_implement_guardrail_abort --> task_08_record_shim_contract
   task_04_author_tests_registry_entries --> task_05_add_banned_pattern_entries
+  task_09_immunize_existing_guardrail_fixtures --> task_05_add_banned_pattern_entries
   task_03_fix_plan35_census_list_ordering --> plan_guardrails
   task_05_add_banned_pattern_entries --> plan_guardrails
   task_06_correct_scan_order_doctrine --> plan_guardrails
