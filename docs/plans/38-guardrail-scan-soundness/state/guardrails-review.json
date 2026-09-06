@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "reviewedAt": "2026-09-06T11:38:04.6371497+00:00",
-  "planHash": "sha256:a14d7c5e2c750447b4c13e062fcb277f30959d0f633e8964a12e9917ff2de72d",
+  "reviewedAt": "2026-09-06T11:45:57.6758825+00:00",
+  "planHash": "sha256:5b761e29a551a0bd3738daa17c00ef2506e701d392b7fab8a11637bd614d1680",
   "attestation": {
     "source": "bare",
     "tool": "guardrails 1.18.0"
