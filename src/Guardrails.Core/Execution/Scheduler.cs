@@ -1859,12 +1859,21 @@ public sealed class Scheduler
         // hand-authored wave gate into rejected/ while calling it a revert.
         BreakdownInventory? inventory = BreakdownInventory.Capture(wave.Directory, breakdownLogDir);
 
+        // #557: the inventory covers ONE WAVE, and the agent's authority is the whole plan folder — it runs
+        // with acceptEdits, authoring tools, and no containment hook or writeScope on this path. So an edit
+        // it makes outside its own wave is uninventoried and unrevertable: a breakdown authoring wave 3 can
+        // rewrite wave 1's task.json, be REJECTED, and leave that edit behind, where #556 then hides it
+        // because the stored definition hash was stamped from disk at settle. This witness is what makes
+        // that loud instead of silent.
+        IReadOnlyDictionary<string, string> scopeBefore =
+            BreakdownScopeWitness.Capture(plan.PlanDirectory, wave.Directory);
+
         bool waveSettled = false;
         try
         {
             JitCheckpointOutcome outcome = await RunBreakdownSegmentsAsync(
                 plan, wave, waveIndex, waveTotal, integ, settled, policy, invocationToken, inventory,
-                rejectedRoot, cancellationToken)
+                rejectedRoot, scopeBefore, cancellationToken)
                 .ConfigureAwait(false);
             waveSettled = true;
             return outcome;
@@ -1895,7 +1904,8 @@ public sealed class Scheduler
     private async Task<JitCheckpointOutcome> RunBreakdownSegmentsAsync(
         PlanDefinition plan, WaveNode wave, int waveIndex, int waveTotal, IntegrationHandle integ,
         Dictionary<string, TaskResult> settled, AutonomyPolicy policy, string invocationToken,
-        BreakdownInventory? inventory, string rejectedRoot, CancellationToken cancellationToken)
+        BreakdownInventory? inventory, string rejectedRoot,
+        IReadOnlyDictionary<string, string> scopeBefore, CancellationToken cancellationToken)
     {
         string breakdownLogDir = Path.GetDirectoryName(rejectedRoot)!;
 
@@ -1945,6 +1955,27 @@ public sealed class Scheduler
 
             (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
                 ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir, wavePrefixIsIncomplete: missing.Count > 0);
+
+            // #557: did this invocation write OUTSIDE the wave it was asked to author? The prompt asks it
+            // not to; nothing enforced that, and the revert cannot undo it. An escape is unconditionally
+            // blocking — it is not excused by an incomplete prefix (#501's allow-list is about errors a
+            // half-authored wave cannot SATISFY, and writing into another wave is not one of those), and it
+            // is never a warning: the whole harm is that it used to be invisible.
+            IReadOnlyList<string> escapes = BreakdownScopeWitness.Escapes(
+                scopeBefore, BreakdownScopeWitness.Capture(plan.PlanDirectory, wave.Directory));
+            if (escapes.Count > 0)
+            {
+                valid = false;
+                report = string.Join("\n", [
+                    $"OUT-OF-WAVE WRITES (#557): this breakdown was asked to author '{wave.Dir}' and wrote "
+                        + $"{escapes.Count} file(s) elsewhere in the plan folder. The revert is wave-scoped, so "
+                        + "these are NOT restored by the quarantine below — undo them yourself before "
+                        + "re-running:",
+                    .. escapes.Select(e => "  " + e),
+                    "",
+                    report
+                ]);
+            }
 
             // #501: tee the gate's reasoning beside the session's other artifacts, on EVERY path. The halt
             // detail carries `report` only when the gate REJECTS, so a successful salvage — the interesting
