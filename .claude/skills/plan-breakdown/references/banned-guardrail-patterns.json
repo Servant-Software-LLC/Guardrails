@@ -124,6 +124,97 @@
         "$out = dotnet test tests/Inventory.Tests --filter $filter --nologo -v q 2>&1\n$out | Select-String -Pattern '\\[FAIL\\]' | ForEach-Object { Write-Output $_.Line }",
         "dotnet run --project src/Guardrails.Cli -v quiet -- validate $folder\n$out | Select-String -Pattern 'Error Message:|Stack Trace:'"
       ]
+    },
+    {
+      "id": "#608a",
+      // A fail-open ErrorActionPreference (design 38 §3.1, §0.1): 'Continue'/'SilentlyContinue' lets a
+      // terminating error unwind the guardrail past its own exit while pwsh -File still exits 0, so the
+      // harness reads a false PASS. Measured: 358 of 900 committed guardrails set this explicitly; the
+      // golden examples/ and the SSOT's own worked examples all use 'Stop'.
+      //
+      // Scoped to the ONE variable, not the word: keys on '$ErrorActionPreference' (with an optional
+      // global:/script: scope prefix) assigned exactly 'Continue' or 'SilentlyContinue', so an unrelated
+      // preference set to the same value -- '$ProgressPreference = "SilentlyContinue"' is the routine
+      // idiom for suppressing progress-bar noise -- does not false-fire, and neither does the bare word
+      // 'Continue' appearing in an unrelated string.
+      //
+      // Deliberately does NOT also require '$PSNativeCommandUseErrorActionPreference = $false'. A
+      // guardrail that invokes no native command does not need that second line, and requiring it
+      // everywhere would fail a correct script on this lint -- the false-RED half of the exact family
+      // this plan is closing (design 38 §4.1a).
+      "badPattern": "\\$(?:global:|script:)?ErrorActionPreference\\s*=\\s*(['\"])(?:Continue|SilentlyContinue)\\1",
+      "reason": "fail-open ErrorActionPreference: 'Continue'/'SilentlyContinue' lets a terminating error unwind the guardrail past its own exit while `pwsh -File` still exits 0, so the harness reads a false PASS -- measured at 358 of 900 committed guardrails (design 38 §3.1, §0.1).",
+      "goodPatternHint": "set $ErrorActionPreference = 'Stop' so an engine error terminates rather than unwinding silently past the guardrail's own exit; if the guardrail also runs a native command (dotnet, git, ...) whose non-zero exit is data, not an error, pair it with $PSNativeCommandUseErrorActionPreference = $false (design 38 §4.1a) -- a guardrail that runs no native command does not need that second line.",
+      "mustMatch": [
+        "$ErrorActionPreference = 'Continue'",
+        "$ErrorActionPreference=\"SilentlyContinue\"",
+        "$global:ErrorActionPreference='Continue'"
+      ],
+      "mustNotMatch": [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        "Write-Output 'Continue processing the next file'"
+      ]
+    },
+    {
+      "id": "#608b",
+      // A guardrail that does not end on an explicit exit (design 38 §3.4): the harness-owned abort shim
+      // (§3.2) diverges from '-File' ONLY when a failing native command is followed by no explicit exit
+      // -- measured at ZERO of 900 committed guardrails -- and this entry is what keeps that shape at
+      // zero rather than merely assumed. Keys on the LAST non-blank line of the (comment-stripped) body:
+      // bad when it is a real statement that is neither an 'exit' nor a lone closing brace.
+      //
+      // Two shapes are deliberately exempt, both load-bearing:
+      //  (1) a lone '}' as the last line -- the try/finally cleanup idiom, where a guardrail that must
+      //      remove a temp resource states its verdict via 'exit' on every branch INSIDE the try, and the
+      //      finally's own last line is just the closing brace. A lint keyed on "the last line IS exit"
+      //      would false-fire on this doctrinal idiom.
+      //  (2) a single physical line carrying an 'exit' anywhere on it (e.g. an 'if (...) { exit 1 }' with
+      //      an implicit fall-through when the condition is false) -- deliberately NOT the shape this
+      //      entry polices; it catches a script that reaches its LAST line and states no verdict there at
+      //      all, not every branch that could fall through earlier.
+      "badPattern": "(?m)^(?=[^\\r\\n]*\\S[^\\r\\n]*\\s*\\z)(?!\\s*\\}\\s*\\z)(?![^\\r\\n]*\\bexit\\b)[^\\r\\n]+",
+      "reason": "a guardrail that falls off the end without an explicit verdict -- the divergence the harness-owned abort shim does not close (design 38 §3.4): every reachable path must still reach an exit, or the shim's zero-instance assumption ('900 of 900 committed guardrails end on exit') silently rots.",
+      "goodPatternHint": "end every reachable path on an explicit exit -- a bare 'exit 0'/'exit N' as the guardrail's last statement, or (for a script that must clean up a temp resource) an exit on every branch INSIDE a try, with the cleanup itself in a finally whose own last line may be the closing brace (design 38 §3.4).",
+      "mustMatch": [
+        "$ErrorActionPreference = 'Stop'\n$content = Get-Content -Raw $file\nif ($content -match 'TODO') { Write-Output 'todo found'; exit 1 }\nWrite-Output 'done'",
+        "$ErrorActionPreference = 'Stop'\nif (Test-Path $file) { exit 1 }\n$result = 'ok'"
+      ],
+      "mustNotMatch": [
+        "$ErrorActionPreference = 'Stop'\nif (Test-Path $file) { exit 1 }\nexit 0",
+        "$tmp = Join-Path $env:TEMP ([Guid]::NewGuid())\nNew-Item -ItemType Directory -Path $tmp | Out-Null\ntry {\n    if (Test-Path $file) { exit 1 }\n    exit 0\n} finally {\n    Remove-Item $tmp -Recurse -Force\n}",
+        "if ($content -match '<<<<<<<') { exit 1 }"
+      ]
+    },
+    {
+      "id": "#561",
+      // Wrong preprocessing order (design 38 §4.1, §0.3): a scan copy that blanks block comments BEFORE
+      // it neutralizes string literals lets a literal that spells a comment delimiter (a glob pattern's
+      // own '/*', the repo's routine case) get mis-parsed as a real comment before the literal-neutralize
+      // pass ever runs -- 29 of 31 committed dual-pass scans get the order wrong. The correct order is
+      // literal-neutralize FIRST, then comment-strip.
+      //
+      // Keys on the SHAPE, not on the two spellings ('blankKeepingNewlines'/'neutralizeBraces') that
+      // appear NOWHERE in this doctrine (design 38 §0.4) -- a lint keyed on those names would catch only
+      // a copy-paste. The two markers are the constructs themselves: a block-comment delimiter regex
+      // (the literal '/*' opening sequence, whatever variable or helper name wraps it) and a
+      // quoted-string-matching regex (a negated-quote character class, '[^"...', whatever escaping
+      // flavour it uses). This entry fires when a '/*' delimiter marker is found with no quoted-string
+      // marker anywhere before it in the source -- true both when the string-neutralize pass runs AFTER
+      // the comment-strip (the order violation) and when it is missing outright, and false the moment a
+      // quoted-string marker precedes every '/*' marker, regardless of the names in between.
+      "badPattern": "(?<!\\[\\^\\x22[\\s\\S]*)/\\x5C\\*",
+      "reason": "wrong preprocessing order: this scan copy blanks block comments BEFORE it neutralizes string literals, so a literal that spells a comment delimiter (a glob pattern's own '/*', the repo's routine case) has already been mis-parsed as a real comment before the literal-neutralize pass ever runs, blanking real script text along with it (design 38 §4.1, §0.3 -- 29 of 31 committed dual-pass scans get the order wrong).",
+      "goodPatternHint": "neutralize string literals FIRST, then strip comments -- swap the two [regex]::Replace passes, changing nothing else (design 38 §4.1): a literal's own '/*' can then never be mistaken for a comment delimiter, because by the time the comment-strip pass runs the literal's contents are already replaced.",
+      "mustMatch": [
+        "$raw = Get-Content -Raw $file\n$scan = [regex]::Replace($raw, '/\\*[\\s\\S]*?\\*/', ' ')\n$scan = [regex]::Replace($scan, '(?m)//[^\\r\\n]*', ' ')\n$scan = [regex]::Replace($scan, '\"(\\\\.|[^\"\\\\])*\"', '\"\"')\nif ($scan -match 'BANNED_TOKEN') { Write-Output 'found'; exit 1 }\nexit 0",
+        "$scanCopy = Get-Content -Raw -Path $target\n$scanCopy = [regex]::Replace($scanCopy, '/\\*[\\s\\S]*?\\*/', '')\n$scanCopy = [regex]::Replace($scanCopy, '\"[^\"]*\"', '\"\"')\nif ($scanCopy -match 'FORBIDDEN') { exit 1 }\nexit 0"
+      ],
+      "mustNotMatch": [
+        "$raw = Get-Content -Raw $file\n$scan = [regex]::Replace($raw, '\"(\\\\.|[^\"\\\\])*\"', '\"\"')\n$scan = [regex]::Replace($scan, '/\\*[\\s\\S]*?\\*/', ' ')\n$scan = [regex]::Replace($scan, '(?m)//[^\\r\\n]*', ' ')\nif ($scan -match 'BANNED_TOKEN') { Write-Output 'found'; exit 1 }\nexit 0",
+        "$raw = Get-Content -Raw $file\n$scan = [regex]::Replace($raw, '\"(\\\\.|[^\"\\\\])*\"', '\"\"')\nif ($scan -match 'TOKEN') { exit 1 }\nexit 0",
+        "$scan = [regex]::Replace($raw, '(?m)//[^\\r\\n]*', ' ')\nif ($scan -match 'TOKEN') { exit 1 }\nexit 0"
+      ]
     }
   ]
 }

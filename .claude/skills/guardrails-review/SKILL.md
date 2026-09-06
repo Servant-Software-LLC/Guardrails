@@ -427,8 +427,30 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   Tell: a `Get-Content -Raw` keyword check on a source file with no `/* */` + `--` (or `//`) strip
   upstream of the match. Fix: strip the source language's comments before matching (blank-in-place
   for line-number-reporting checks); and don't pair a header-documenting prompt with a comment-blind
-  grep. BLOCKER — a correct implementation fails permanently. (Catalogue → comment-blind keyword
-  scan; `stacks/dotnet.md §11`.)
+  grep. **Neutralize string literals BEFORE stripping comments** (#561) — stripping comments is
+  not the whole of the preparation: a `/*` spelled inside a string literal opens a phantom block
+  comment running to the next `*/` in a later literal, blanking everything between, which fails
+  both closed (a required-present clause over the blanked region false-REDs) and open (a
+  forbidden-present clause over it false-PASSES). Measured: 29 of the 31 committed guardrails that
+  do both operations do them in the defective order. BLOCKER — a correct implementation fails
+  permanently. (Catalogue → comment-blind keyword scan; `stacks/dotnet.md §11`.)
+- **Rendered-vs-stored phrase match (#428)**: a guardrail clause matches a phrase as it reads
+  rather than as it is stored — the rendered form is not the stored form, and when the target text
+  is emitted across two or more source-line literals (wrapped `AppendLine` calls composing prompt
+  or feedback prose, a concatenated message) a single-line regex for the whole sentence can never
+  match. The guardrail then **silently passes** — the expensive direction: a false-RED halts a
+  correct run and is fixed in minutes, but a false-PASS certifies work that was never done. Tell: a
+  `-match` / `Select-String` literal carrying a long, space-separated phrase, over a source file
+  that composes text rather than storing it whole. Fix: prefer a distinctive fragment that sits on
+  ONE source line; normalize whitespace or use `[\s\S]` when the whole phrase matters; and verify
+  the fragment against the **real file**, never against the rendered text. Live instance:
+  `RetryPolicy.cs` composes its retry-feedback prose across `AppendLine` calls split by a six-line
+  comment and an `if` boundary — about 400 characters, bisected mid-phrase — so neither a
+  single-line regex nor a bounded dotall window can match it. Recorded instances: four, most
+  recently `62c59db3`. **No mechanical gate carries this** (design 38 §6 — the expressible lint is
+  heuristic in both directions); this probe is #428's only enforcement, so treat a hit as a
+  BLOCKER on the reviewed task. (Catalogue → rendered vs. stored / phrase-across-literals, sibling
+  to grep-scope contamination and structural-vs-keyword.)
 - **Hollow / incomplete derived corpus (#99)**: a task whose deliverable is **derived artifacts
   over a set of inputs** (doc mining, codegen-from-spec, crawl→one-output-per-page, dataset import)
   whose guardrails verify only **shape** — `file-exists` + a marker line — so a green run ships an
@@ -2209,7 +2231,7 @@ finding remains unaddressed.
 - [ ] (#375) Probe B **operator 21** was applied to every task whose tests are authored at RUN TIME and pinned only by a `covers-*` token floor or a name manifest: **write** the hollow sample (every enumerated behaviour NAMED, bodies `Assert.True(true)` / `Assert.NotNull` that never invoke the subject) and run the task's own guardrail against it. GREEN means the floor is a naming lower bound and the invariants are pinned by nothing — **BLOCKER** where the invariant is security- or safety-load-bearing. The fix is the **per-test red census** (every manifested behaviour observed `Failed` in the runner's own result file), **never** a rejection-shaped source regex, which false-reds a correct `Assert.Equal(RejectedStale, r.Outcome)`, teaches the agent to rewrite a typed-outcome API as a throwing one, and is satisfied by one tautological `Assert.Throws<NotImplementedException>` line. Unlike operator 20 it is never inapplicable — the mutant is manufactured. Reported separately from Probe A₂: A₂ censuses a **clause** against the baseline tree, 21 censuses a **test body** that does not exist yet.
 - [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378). On a fan-in sink, test the relocation remedy FIRST (#382): narrowing `writeScope` yields N small tasks that still hold the first exercise of every real path, so the concentration survives the split — but report the two findings separately, from their own evidence, since neither issue's mechanism may read the other's fields.
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
-- [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
+- [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98). **Neutralize string literals BEFORE stripping comments** (#561): a `/*` spelled inside a string literal opens a phantom block comment running to the next `*/` in a later literal, blanking everything between — false-RED closed, false-PASS open; measured, 29 of the 31 committed guardrails that do both operations get the order backwards.
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test, checked against EVERY union point plan-wide — including a merge by a completely unrelated parallel sibling, not just unions structurally upstream of the guardrail's own task in the DAG, #250); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.

@@ -20,6 +20,16 @@
       <Link>Resources/banned-guardrail-patterns.json</Link>
       <LogicalName>Guardrails.Core.Resources.banned-guardrail-patterns.json</LogicalName>
     </EmbeddedResource>
+
+    <!-- The guardrail-abort shim (design 38 S3.2, issue #608) wraps every .ps1 guardrail invocation
+         so an uncaught engine error can never reach the harness as a false exit-0 PASS. Embedded here
+         (same mechanism as the registry above) so InterpreterMap materializes it with zero runtime
+         path discovery. It lives inside this project's own directory tree, so it must be pulled out of
+         the SDK's implicit None glob first, otherwise it is both a None and an EmbeddedResource item. -->
+    <None Remove="Execution/guardrail-shim.ps1" />
+    <EmbeddedResource Include="Execution/guardrail-shim.ps1">
+      <LogicalName>Guardrails.Core.Resources.guardrail-shim.ps1</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

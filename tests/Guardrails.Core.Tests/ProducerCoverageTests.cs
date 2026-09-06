@@ -556,7 +556,7 @@ public sealed class ProducerCoverageTests : IDisposable
     /// <summary>A gate script around <paramref name="clause"/>, in the catalogue's accumulate-then-exit shape.</summary>
     private static string Gate(string clause) =>
         "# catches: a gate requiring content nothing in the plan can produce\n" +
-        "$ErrorActionPreference = 'Continue'\n" +
+        "$ErrorActionPreference = 'Stop'\n" +
         "$failures = @()\n" +
         clause + "\n" +
         "if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Output $_ }; exit 1 }\n" +

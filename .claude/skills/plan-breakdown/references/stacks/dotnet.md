@@ -1506,22 +1506,31 @@ factory-driving sink — that concentration is the §10 (#378) over-scope finger
 The catalogue's comment-blind keyword-scan rule (catalogue → "Comment-blind keyword scan"): a
 guardrail that scans a **source artifact** for **banned constructs** — a T-SQL survey asserted
 read-only (`MERGE`/`EXEC`/`INSERT`/`UPDATE`/`DELETE`/`xp_cmdshell`/`OPENROWSET`), a C# file asserted
-free of `Console.WriteLine`/`eval`-shaped calls — must **strip comments first**, or it
-false-POSITIVES on a comment that merely *names* the banned thing. The motivating trap (plan 0007
-task 01): the action prompt asked for a **safety-header comment** listing the banned keywords, and
-the comment-blind guardrail flagged them in the header — whack-a-mole to `needs-human` on a correct
-read-only script. Here are the two .NET-relevant comment syntaxes.
+free of `Console.WriteLine`/`eval`-shaped calls — must strip both comments and string literals from
+its scan copy before matching. **The order is not interchangeable: neutralize string literals BEFORE
+stripping comments.** Doing it the other way runs the comment-strip regex over text where a literal
+can still spell a delimiter — a glob such as `src/*` opens a phantom `/*` that a later literal's `*/`
+can close, blanking every real construct between them (#561; measured on this repository, 29 of the
+31 committed guardrails that do both operations get the order backwards). It fails both directions: a
+required-present clause over the blanked span false-REDs, a forbidden-present clause over it
+false-PASSES. The motivating trap (plan 0007 task 01): the action prompt asked for a **safety-header
+comment** listing the banned keywords, and the comment-blind guardrail flagged them in the header —
+whack-a-mole to `needs-human` on a correct read-only script. Here are the two .NET-relevant comment
+syntaxes.
 
-**SQL** — strip `/* */` block comments then `-- …` line comments before the keyword scan:
+**SQL** — neutralize `'...'` string literals first, then strip `/* */` block comments and then
+`-- …` line comments, before the keyword scan:
 
 ```powershell
 # catches: a read-only T-SQL survey check that false-POSITIVES on its OWN safety-header comment
 #          ("performs no MERGE/EXEC, no xp_cmdshell") - escalating a correct read-only script to
-#          needs-human. Strip SQL comments, THEN scan the code for banned write/external surface.
+#          needs-human. Neutralize string literals BEFORE stripping comments (#561), THEN scan the
+#          code for banned write/external surface.
 $sql = "scripts/survey.sql"
 $raw = Get-Content $sql -Raw
-$code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
-$code = [regex]::Replace($code, '--[^\r\n]*', ' ')       # -- line comments
+$code = [regex]::Replace($raw,  "'(?:[^']|'')*'", "''")  # string literals FIRST
+$code = [regex]::Replace($code, '/\*[\s\S]*?\*/', ' ')    # /* */ block comments
+$code = [regex]::Replace($code, '--[^\r\n]*', ' ')         # -- line comments
 $banned = 'xp_cmdshell|OPENROWSET|\bMERGE\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b'
 $m = [regex]::Match($code, "(?i)$banned")
 if ($m.Success) {
@@ -1542,16 +1551,18 @@ if ($code -match '(?i)\bEXEC(UTE)?\b(?!\s+sp_executesql\b)') {
 }
 ```
 
-**C#** — strip `/* */` then `// …` line comments (note `//`, not SQL's `--`) before a banned-call
-scan:
+**C#** — neutralize string literals first, then strip `/* */` and `// …` line comments (note `//`,
+not SQL's `--`) before a banned-call scan:
 
 ```powershell
 # catches: a "no Console.WriteLine" (or other banned-call) check that false-positives on a
-#          // comment naming the banned call. Strip C# comments, then scan the code.
+#          // comment naming the banned call. Neutralize string literals BEFORE stripping comments
+#          (#561), then scan the code.
 $cs = "src/Tool/Runner.cs"
 $raw = Get-Content $cs -Raw
-$code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
-$code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+$code = [regex]::Replace($raw,  '"(\\.|[^"\\])*"', '""')  # string literals FIRST
+$code = [regex]::Replace($code, '/\*[\s\S]*?\*/', ' ')     # /* */ block comments
+$code = [regex]::Replace($code, '//[^\r\n]*', ' ')          # // line comments
 if ($code -match 'Console\s*\.\s*WriteLine') {
     Write-Output "$cs calls Console.WriteLine in CODE (not just a comment) - use the injected logger"
     exit 1
@@ -1560,16 +1571,19 @@ exit 0
 ```
 
 **Line-number-reporting variant** — when the failure line must name the offending source line,
-blank the comment spans **in place** (preserve newlines) so reported line numbers stay accurate,
-rather than collapsing the file:
+neutralize string literals BEFORE stripping comments (#561), then blank the comment spans **in
+place** (preserve newlines) so reported line numbers stay accurate, rather than collapsing the file:
 
 ```powershell
-# blank block-comment spans but KEEP newlines, so a per-line scan reports correct line numbers.
+# neutralize string literals FIRST (a literal spelling '/*' would otherwise forge a delimiter that
+# blanks real code before it's touched), THEN blank block-comment spans but KEEP newlines, so a
+# per-line scan reports correct line numbers.
 # NOTE the variable discipline: $raw is never REASSIGNED and never MATCHED against — the blanked text
 # lands in $code (taxonomy 4/5; catalogue -> "The two-variable rule"). Reassigning $raw in place
 # destroys the one variable that proves no clause read unstripped source.
 $raw   = Get-Content $sql -Raw
-$code  = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
+$safe  = [regex]::Replace($raw, "'(?:[^']|'')*'", { $args[0].Value -replace '[/*]', '#' })
+$code  = [regex]::Replace($safe, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
 $lines = $code -split '\r?\n'
 for ($i = 0; $i -lt $lines.Count; $i++) {
     $line = $lines[$i] -replace '--[^\r\n]*', ' '        # SQL line comment ('//' for C#)
@@ -1597,36 +1611,50 @@ top-to-bottom did not find it — the guardrail was unsatisfiable by constructio
 identically with coherent-and-wrong feedback, and the task dead-ended at `needs-human` with a blast
 radius of **three downstream tasks**.
 
-**Derive three variables once, at the top of any guardrail carrying BOTH polarities:**
+**The three-variable derivation has an order dependency of its own, and it is easy to get backwards:
+neutralize string literals BEFORE stripping comments.** Deriving `$code` by stripping comments
+straight from `$raw` is unsafe on its own terms — a literal spelling `/*` (a glob such as `src/*`)
+forges a delimiter that survives to blank real code before any literal is ever touched, and that
+corruption then propagates into `$scan` too, since `$scan` is derived FROM `$code`. The fix maps the
+delimiter-forming characters `/` and `*` **inside each literal** to a filler first — a purely local,
+length-preserving substitution that cannot itself forge anything — and only then strips comments:
 
 ```powershell
 # catches: <the wrong implementation>. Variable discipline (catalogue -> the two-variable rule):
 #          $raw is NEVER matched against; REQUIRED clauses read $code; FORBIDDEN clauses read $scan.
+#          Neutralize string literals BEFORE stripping comments (#561): mapping delimiter-forming
+#          characters INSIDE each literal first means the comment-strip below can never be fooled by
+#          a literal that spells '/*' or '*/'.
 $f    = "src/Tool/Runner.cs"
-$raw  = Get-Content $f -Raw                                  # NEVER matched against
-$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', '')        # /* */ block comments  -> REQUIRED read $code
-$code = [regex]::Replace($code, '(?m)//.*$', '')             # // line comments
-$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')      # C# 11 raw strings     -> FORBIDDEN read $scan
-$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')     # verbatim strings
-$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')     # ordinary strings
+$raw  = Get-Content $f -Raw                                                    # NEVER matched against
+$safe = [regex]::Replace($raw,  '"""[\s\S]*?"""', { $args[0].Value -replace '[/*]', '#' })  # raw strings
+$safe = [regex]::Replace($safe, '@"(?:[^"]|"")*"', { $args[0].Value -replace '[/*]', '#' })  # verbatim
+$safe = [regex]::Replace($safe, '"(\\.|[^"\\])*"', { $args[0].Value -replace '[/*]', '#' })  # ordinary
+# no literal can forge a delimiter anymore, so the comment strip below is now safe to run
+$code = [regex]::Replace($safe,  '/\*[\s\S]*?\*/', '')        # /* */ block comments  -> REQUIRED read $code
+$code = [regex]::Replace($code, '(?m)//.*$', '')              # // line comments
+$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')       # C# 11 raw strings     -> FORBIDDEN read $scan
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')      # verbatim strings
+$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')      # ordinary strings
 ```
 
 For **SQL** the comment pair is `/* */` then `--`, and the literal form is single-quoted with `''`
-doubling:
+doubling — the same order applies, literals neutralized before the comment strip:
 
 ```powershell
-$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', ' ')
+$safe = [regex]::Replace($raw,  "'(?:[^']|'')*'", { $args[0].Value -replace '[/*]', '#' })
+$code = [regex]::Replace($safe,  '/\*[\s\S]*?\*/', ' ')
 $code = [regex]::Replace($code, '--[^\r\n]*', ' ')
-$scan = [regex]::Replace($code, "'(?:[^']|'')*'", "''")      # T-SQL string literals
+$scan = [regex]::Replace($code, "'(?:[^']|'')*'", "''")      # T-SQL string literals, now fully erased
 ```
 
 Then, without exception:
 
-- **Every required-present clause reads `$code`** — comments gone, string literals **intact**, so a
-  required attribute value / message string / `[Trait]` can still satisfy it. Stripping literals here
-  is the mirror dead-end: it makes the required clause unsatisfiable, the same BLOCKER wearing the
-  other polarity.
-- **Every forbidden-present clause reads `$scan`** — literals gone too, and anchored on a **USE**
+- **Every required-present clause reads `$code`** — comments gone, string literals still **readable**
+  (only their `/`/`*` characters, if any, were neutralized), so a required attribute value / message
+  string / `[Trait]` can still satisfy it. Stripping literals here is the mirror dead-end: it makes the
+  required clause unsatisfiable, the same BLOCKER wearing the other polarity.
+- **Every forbidden-present clause reads `$scan`** — literal CONTENT gone too, and anchored on a **USE**
   (`Foo\s*\.`, a type position, an enum member), never the bare word (#75/#76).
 - **`$raw` is matched by nothing, and never reassigned.** A clause reading `$raw` is taxonomy 4/5.
 
@@ -1635,6 +1663,31 @@ task REQUIRES (#470)"*. `GR2057` backstops only the narrowest provable slice (ON
 carrying both polarities) and — by design — must **not** fire on the triple above, so a green
 `validate` is not evidence the pair agrees. Full fidelity needs a parser, which is out of scope for a
 guardrail; the triple is the ceiling a guardrail is required to reach, not an optional extra.
+
+### 11b. Every guardrail's opening lines — `'Stop'` plus the native-command preference, together (design 38 §4.1a)
+
+Every generated `.ps1` guardrail opens with these two lines, together, as one block:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+```
+
+**`'Stop'`** makes an engine-raised error (a bad cast, a null-method call, a broken regex) terminate
+the script instead of failing open under the pwsh default of `Continue` — the #608 mechanism this
+plan exists to close. **The second line is load-bearing and not optional.** An inverse TDD-red check's
+SUCCESS condition is a non-zero `dotnet test`; without this line, on a box where
+`$PSNativeCommandUseErrorActionPreference` is `$true`, that same non-zero exit is promoted to a
+terminating error under `'Stop'` and aborts the check before it can report red. Measured on pwsh
+7.6.5 the default is `$false`, so a native command's non-zero exit (and its stderr) pass through
+untouched today — this is belt-and-braces, not a fix for an observed break, because it is a
+*preference*, not a guarantee, and a box that flips it to `$true` would turn every red check into a
+false abort. Shown apart, an author copies one line and not the other — show them together.
+
+A guardrail also **ends on an explicit `exit`**. The harness's abort-detecting shim relies on it: a
+script that falls off its end after a failing native command with no explicit `exit` afterward would
+otherwise take that native command's own exit code, rather than the guardrail's own verdict. All 900
+committed guardrails already do this — the rule documents an existing invariant, not a change.
 <!-- BEGIN ADDED SECTION #116 — Windows-safe TempGitRepo fixture (auto-merge friendly; do not merge into prose above) -->
 ## 12. Windows-safe `TempGitRepo` test fixture — author-tests that build a real git repo (#116)
 
@@ -1929,21 +1982,24 @@ library extracted to write **through** an injected `IDestinationWriter` is regis
 its abstraction (§2), builds (§4), and passes its tests — yet its internals can still call
 `ToscaCloudClient.UploadEntitiesAsync` **directly**, bypassing the writer. No other guardrail sees this.
 Scan the **library project's `.cs` only** (scope to the lib folder, exclude `bin`/`obj` per §5) for a
-**dotted** call to the concrete method, **after stripping comments** (§11 — a comment naming the method
-would otherwise false-RED a correct library, the #97/#98 trap inverted):
+**dotted** call to the concrete method, having **neutralized string literals BEFORE stripping
+comments** (§11 — a comment naming the method would otherwise false-RED a correct library, the #97/#98
+trap inverted, and a literal forging `/*` would otherwise false-PASS a real bypass by blanking it):
 
 ```powershell
 # catches: the extracted engine library bypassing IDestinationWriter by calling
 #          ToscaCloudClient.UploadEntitiesAsync directly - registered, built, and tested all green
-#          while the injected abstraction is bypassed. Strip comments first (a comment naming the
-#          method is NOT a real call), anchor on the DOTTED call (#76), scope to the library folder.
+#          while the injected abstraction is bypassed. Neutralize string literals BEFORE stripping
+#          comments (#561; a comment naming the method is NOT a real call), anchor on the DOTTED
+#          call (#76), scope to the library folder.
 $libDir = "PoC/ConformedSources/Migration.Engine"
 $hits = Get-ChildItem $libDir -Recurse -Filter *.cs |
     Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
     Where-Object {
         $raw  = Get-Content $_.FullName -Raw
-        $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
-        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+        $code = [regex]::Replace($raw, '"(\\.|[^"\\])*"', '""')  # string literals FIRST
+        $code = [regex]::Replace($code, '/\*[\s\S]*?\*/', ' ')    # /* */ block comments
+        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')         # // line comments
         $code -match '\.UploadEntitiesAsync\s*\('
     }
 if ($hits) {
@@ -1956,12 +2012,12 @@ exit 0
 
 Use the concrete `ConcreteType.Method` the plan forbids. This is the **inverse** of §1/§2: those prove
 the library is wired *in*; this proves the library does not bypass its abstraction from the *inside*.
-It is a **forbidden-call** check, so it inherits §11's comment-strip discipline (strip first) and §15's
-dot-anchoring (a same-named method on a *different*, allowed type, or the name in a string literal, must
-not false-RED). For extra strictness require the concrete type near the call
-(`ToscaCloudClient[\s\S]{0,200}?\.UploadEntitiesAsync\s*\(`) when the method name alone is too common.
-Caveat: the string-literal residual (the method name inside a string) is the same lower-bound limit as
-§15 — note it if it matters.
+It is a **forbidden-call** check, so it inherits §11's ordering discipline — neutralize string literals
+BEFORE stripping comments — and §15's dot-anchoring (a same-named method on a *different*, allowed
+type, or the name in a string literal, must not false-RED). For extra strictness require the concrete
+type near the call (`ToscaCloudClient[\s\S]{0,200}?\.UploadEntitiesAsync\s*\(`) when the method name
+alone is too common. Caveat: a method name plausibly appearing as ordinary prose inside a *surviving*
+string fragment is the same lower-bound limit as §15 — note it if it matters.
 <!-- END ADDED SECTION #74 -->
 
 <!-- BEGIN ADDED SECTION #75 — covers-key-behaviors (auto-merge friendly; do not merge into prose above) -->

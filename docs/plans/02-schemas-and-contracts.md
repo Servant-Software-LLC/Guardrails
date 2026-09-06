@@ -1125,6 +1125,18 @@ write that sentence, the guardrail is decorative and should be deleted.
 On failure, print a one-line *actionable* reason to stdout — that text becomes the
 retry feedback ("greeting.txt missing 'Hello'" beats "FAIL").
 
+**A `.ps1` guardrail runs through a harness-owned shim** (§5.2), never the interpreter directly —
+both the `pwsh` and `powershell.exe` templates route through it. The shim reserves **exit 97**: it
+means the guardrail aborted before reaching its own verdict, and the harness records that as a
+FAILURE with a reason naming the abort, stderr carried in full so the interpreter's error record
+reaches the retry-feedback tail (§8). **Exit 0 is no longer sufficient for a pass on a `.ps1`
+guardrail** — an engine-raised error is non-fatal under PowerShell's default preference, so a script
+that aborted mid-check used to exit 0 and be recorded as a PASS (#608; rationale and measurement:
+`docs/plans/38-guardrail-scan-soundness.md`). **One behavioral divergence, measured and gated:** a
+guardrail that runs a failing native command and then falls off its end with no explicit `exit` now
+takes that command's exit code, where it previously exited 0 — measured at 0 of 900 committed
+guardrails, and GR2037 entry `#608b` (§4.6) keeps it that way.
+
 ### 4.1 Metadata sidecar (deterministic guardrails, optional)
 
 `<guardrail-basename>.json` next to the script:
