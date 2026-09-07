@@ -90,6 +90,56 @@ four-folder treatment** (§2 "Four-folder gap" probe, applied at wave granularit
   its tasks + entry/exit gates, then `guardrails mark-reviewed <folder>/wave-NN-<slug>`. Do the
   waved-specific probes below (the "#254 — waved plans" block in §2) in either mode.
 
+### 1b. If you AUTHORED this folder, do not run the adversarial pass alone (#467)
+
+This pass rests on one question — *"what is the cheapest action output that passes ALL these guardrails
+while not actually doing the task?"* — and on the reviewer **not already having an answer**.
+
+If the same agent authored the breakdown, it already answered that question implicitly, and answered it in
+the affirmative. It chose the test class names, the `--filter` scopes, the regexes, the `writeScope`s, and
+believed each correct at the moment it wrote them. A self-review re-reads those choices carrying the same
+model of what they mean. **That is not laziness or lack of rigour** — it is that the reviewer and the
+author share a prior, so the failures this pass exists to catch are exactly the ones invisible from it.
+
+> **Delegate the adversarial pass to independent agents and compare results.** Hand them the folder
+> **cold** — the plan, the design of record, the charter — and deliberately **WITHHOLD your own
+> findings**, so their pass is independent rather than a confirmation of yours. Reconcile afterwards:
+> agreement is evidence, disagreement is signal, and **a finding only one pass produced is the one most
+> worth reading**.
+
+Two supporting rules, learned in practice:
+
+- **Diverse lenses, not redundant copies.** Two agents asked the same question mostly agree with each
+  other. Pair the adversarial lens (`guardrails-devils-advocate` — *"what wrong implementation passes?"*)
+  with a CONTRACT lens (`guardrails-architect` — *"does this encode the design of record and the harness
+  contracts?"*). Those find different classes of defect.
+- **The author is the worst judge of their own answer to a maintainer's ruling.** Where the breakdown
+  implements something the human explicitly asked for, the authoring agent has the strongest incentive to
+  see it as adequate — so NAME that specific artifact to the independent reviewer as a thing to attack.
+
+**The evidence, two incidents in one session.** A structural guardrail asserted a resolver delegates to its
+selection entry point with `if ($code -notmatch 'SelectCandidate\s*\(')`. That pattern is satisfied by
+the method's OWN DECLARATION, so an implementation that stopped delegating entirely still passed. It was
+authored, then read again during review, and **looked right both times** — caught only by EXECUTING it
+against a mutated sample (§2b's #302 step). Separately, a change widened a task's `writeScope` and narrowed
+its gate filter; they were treated as alternatives when they were complements, since narrowing the gate
+removed the very obligation widening the scope had enabled. The authoring agent reviewed its own change and
+missed it; an INDEPENDENT agent found it.
+
+**Two things this is not.** It is not a claim that self-review is worthless — a self-pass catches plenty,
+and it produced the first incident above via the execution step this skill already mandates. The claim is
+narrower: *self-review is systematically blind to ASSUMPTION-level defects, and that is the class this
+skill exists to catch.* And it is **not a gate**. #366 settled the doctrine for this surface — the marker
+is audit hygiene, not enforcement, and nothing in a plain-file model is unforgeable, since an agent that
+can author the plan can author a matching attestation. A "the author may not review" hard check would
+inherit all of that weakness and add a bypass incentive. This is an instruction you follow, and at most a
+recorded fact for later audit — never a refusal.
+
+**When you cannot delegate** — no agent tooling in the session, or the user has asked you to work alone —
+say so in the report, in one line, and name it as a limitation of the pass rather than proceeding
+silently. A review that was structurally unable to see one class of defect should not read like one that
+looked and found nothing.
+
 ### 2. Adversarial pass per task (the heart)
 Role-play a lazy or wrong implementer. Concrete probes (mirror of the catalogue's
 anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalogue.md`):
@@ -2462,6 +2512,7 @@ guardrails run "<absolute plan folder>"
 - [ ] (#493) Every pair of tasks with NO ordering edge between them (same wave, no `dependsOn` path either direction) was checked for `writeScope` intersection, and the pairing table is in the report — a probe satisfied by reading one task at a time misses this by construction, because each task is correct alone. Three shapes: a declared overlap (a directory scope containing another); a shared SINK under scopes that look disjoint (the SSOT, the domain-knowledge skill — the quiet case, and the likeliest); and a single-owner FILE reached through a directory scope and visible only in the PROMPTS (`DiagnosticCodes.cs` — the exact Stage 1 failure: a run abort, a corrupted SSOT on master, ~$20). Advisory in general; BLOCKER when the intersection is byte-compared or single-owner, where the union CANNOT succeed — and `AiMergeResolver` resolves `conflictedFiles[0]`, so a two-file conflict can never be AI-resolved at all (#458).
 - [ ] (#540) No task's `writeScope` mixes a `.claude/**` path with a non-`.claude/**` one. That is TWO WRITE MECHANISMS in one atomic attempt — the `.claude/` half only reachable through `needsHarnessWrite`, the other written directly — and a rolled-back attempt can never bank the half it got right (measured: 12 attempts, ~$4.66, never green, on a task that wrote one half correctly at attempt 7 and was failing that same half at attempt 10). It is invisible to every size-based trigger, because the task is small by all of them. `validate` warns GR2073; an older tool or an older plan does not.
 - [ ] (#559) Every committed sample pair was checked against the contract the pre-DAG gate enforces — ideally by RUNNING `guardrails samples verify <folder>`: each sampled guardrail honours `GR_SUBJECT`/`argv[0]`, a multi-subject guardrail lets `GR_SUBJECT` replace the WHOLE subject list, and no sample is an orphan (an extra case reads `X.invalid-<qualifier>.cs`, never `X.<qualifier>.invalid.cs`). BLOCKER: a pair that fails this halts the run before task one. It is invisible to an author who verified by staging the sample into the real target path, which proves the clauses and never exercises the contract — how plan 31 committed eight broken pairs.
+- [ ] (#467) If this session AUTHORED the folder, the adversarial pass was DELEGATED to independent agents — handed the folder cold, with this pass's own findings deliberately withheld — and the results reconciled, with a finding only one pass produced treated as the most worth reading. Diverse lenses, not redundant copies (adversarial + contract). Where the breakdown implements something the maintainer explicitly asked for, that artifact was NAMED to the independent reviewer as a thing to attack. If delegation was not possible, the report SAYS SO and names it as a limitation — a review structurally unable to see assumption-level defects must not read like one that looked and found nothing.
 - [ ] (#530) No `author-tests` task ships a test that SYNTHESISES a two-sided pair (a guardrail body plus a valid and an invalid half) without first asserting the two halves produce DIFFERENT exit codes. The operator was graded, not the intent — PowerShell `-match` is case-INSENSITIVE where `-cmatch` is not, and bash `grep -q` is case-sensitive, so one fixture written both ways can discriminate on one OS and not the other. Distinctness, not polarity: a fixture that inverts its pair on purpose is legitimate. The subject is bound the way the RUN binds it (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), so no body takes its no-subject early exit and returns the same code twice. Nothing downstream covers this: the red census's success condition IS red, so a test that can never pass reads as a test red for the right reason, and the bill arrives as a `needs-human` halt on the next task.
 - [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest, read with the #375 census predicate rather than by name discovery); the #455 zero-match guard is not that and is not flagged.
 - [ ] (#468) Probe B **operator 2** was applied in its **DOCUMENTATION-target** form to every guardrail whose subject is a `.md`/doc file — append an HTML comment carrying the required token and re-run. Measured: a two-token doc guardrail (a large SSOT document + a `SKILL.md`) went from exit **1** to exit **0** on one appended `<!-- TODO: … -->` line; an HTML comment renders as NOTHING, so "the contract was documented" is discharged by a TODO no reader can see. Fix: strip HTML comments before matching (`[regex]::Replace($raw, '(?s)<!--.*?-->', '')`). The **counter-rule held**: a FENCED code block is NOT flagged the same way — a fence renders, and measured on the real SSOT **2 of its 36 `PlanDefinition` occurrences sit inside one of its 26 fenced blocks**, so banning fences rejects a correct document written in its own voice (the same BLOCKER wearing the other polarity).
