@@ -119,10 +119,33 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         public required string Key { get; init; }
         public required WaveBreakdownContext Context { get; init; }
-        public required DateTimeOffset Since { get; init; }
+
+        /// <summary>
+        /// When the AUTHORING clock started. Settable because a provider wait is pushed out of it (#511) —
+        /// a row that counted a half-hour quota wait as authoring time would report a session that has been
+        /// running for half an hour when it has barely started.
+        /// </summary>
+        public DateTimeOffset Since { get; set; }
+
         public BreakdownProgress.Snapshot Snapshot { get; set; }
         public DateTimeOffset LastProbe { get; set; }
         public bool CeilingNoticeFired { get; set; }
+
+        /// <summary>
+        /// While set and still in the future, this phase is WAITING OUT a provider limit rather than
+        /// authoring, and the row renders blue with a live countdown to the next probe (#511). It clears
+        /// ITSELF by elapsing — once the instant passes, the probe is running and the authoring rendering is
+        /// correct again — so no second event is needed to end the wait.
+        /// </summary>
+        public DateTimeOffset? PausedUntil { get; set; }
+
+        public string? PauseReason { get; set; }
+
+        public int PauseProbe { get; set; }
+
+        public DateTimeOffset? PauseReset { get; set; }
+
+        public TimeSpan Waited { get; set; }
     }
 
     /// <param name="tasks">The tasks to render, one row each.</param>
@@ -432,6 +455,30 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                 foreach (PhaseState phase in phases)
                 {
                     TimeSpan elapsed = now - phase.Since;
+                    if (phase.PausedUntil is { } until && now < until)
+                    {
+                        // #511. Blue, exactly like PromptPaused: distinct from yellow running/retry and from
+                        // red failure, so the colour ALONE already says "waiting, not broken" — which is the
+                        // one-second judgement an operator glancing at the terminal at 2am has to make. The
+                        // countdown is what separates this from a hang: a number that visibly decreases is
+                        // the only thing a stuck run cannot fake.
+                        if (_rowByKey.TryGetValue(phase.Key, out int pausedRow))
+                        {
+                            string resets = phase.PauseReset is { } r ? $"; resets {r:HH:mm}" : "";
+                            string sofar = phase.Waited > TimeSpan.Zero
+                                ? $"; waited {BreakdownProgress.FormatClock(phase.Waited)}"
+                                : "";
+                            _table.UpdateCell(pausedRow, 1, new Markup(
+                                $"[blue]paused {BreakdownProgress.FormatClock(until - now)}[/]"));
+                            _table.UpdateCell(pausedRow, 2, new Markup(
+                                $"[blue]PROVIDER LIMIT — {Markup.Escape(phase.PauseReason ?? "rate limited")}"
+                                + $"{Markup.Escape(resets)}. Probe {phase.PauseProbe} next"
+                                + $"{Markup.Escape(sofar)}; no retry burn[/]"));
+                        }
+
+                        continue;
+                    }
+
                     if (_rowByKey.TryGetValue(phase.Key, out int row))
                     {
                         // Yellow, exactly like running/retry: the colour never claims a cause, because the
@@ -660,6 +707,45 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                 _context?.Refresh();
             }
         }
+    }
+
+    public void WaveBreakdownPaused(
+        WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
+        DateTimeOffset? resetInstant, TimeSpan waitedSoFar)
+    {
+        // The 2am test, and the reason this event exists at all (#511): an operator glancing at the terminal
+        // must be able to tell "healthy, waiting until 20:30" from "dead" in ONE SECOND. The bug being fixed
+        // was reported as "looks like it finished the wave, but is stuck" — about a run that had DIED — so
+        // replacing that death with a wait the table renders identically to a hang would fix nothing.
+        //
+        // This sets STATE rather than painting cells, because the ticker repaints every phase row every two
+        // seconds: a one-shot paint would survive for two seconds and then be overwritten by the authoring
+        // rendering, leaving a twelve-hour wait looking exactly like a twelve-hour authoring session.
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string key = WavePhaseLiveRow.KeyFor(context.WaveDir, WavePhaseLiveRow.BreakdownPhase);
+
+        lock (_gate)
+        {
+            if (_phases.TryGetValue(key, out PhaseState? phase))
+            {
+                phase.PausedUntil = now + wait;
+                phase.PauseReason = reason;
+                phase.PauseProbe = probe;
+                phase.PauseReset = resetInstant;
+                phase.Waited = waitedSoFar;
+
+                // Push the AUTHORING clock past the wait so the ceiling notice and the elapsed figure keep
+                // measuring authoring, which is what they are for. The wait has its own countdown above.
+                phase.Since += wait;
+            }
+        }
+
+        string until = resetInstant is { } r ? $"; provider resets {r:HH:mm}" : "";
+        AppendNarrative(
+            $"[blue]Wave {Markup.Escape(context.WaveDir)}: waiting out a provider limit — "
+            + $"{Markup.Escape(reason)}{Markup.Escape(until)}. Probe {probe} in "
+            + $"{BreakdownProgress.FormatClock(wait)}. The run is healthy and resumes by itself; "
+            + "it does NOT count against retries.[/]");
     }
 
     public void WaveBreakdownFinished(

@@ -17,6 +17,12 @@ internal sealed class RawRunConfig
     public decimal? MaxCostUsd { get; set; }
     public int? DefaultTimeoutSeconds { get; set; }
     public int? TransientPauseBudgetSeconds { get; set; }
+
+    /// <summary>Probe cadence for a provider quota wait, in minutes (issue #511). Null → 30.</summary>
+    public int? ProviderProbeIntervalMinutes { get; set; }
+
+    /// <summary>Total bound on a provider quota wait, in hours (issue #511). Null → 12; 0 disables the poll horizon.</summary>
+    public int? MaxProviderWaitHours { get; set; }
     public string? GuardrailMode { get; set; }
     public string? Workspace { get; set; }
     public string? WorktreeRoot { get; set; }

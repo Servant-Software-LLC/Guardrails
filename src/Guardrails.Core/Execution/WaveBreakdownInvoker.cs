@@ -215,6 +215,11 @@ public sealed class WaveBreakdownInvoker
             NumTurns = result.NumTurns,
             MaxTurns = p.MaxTurns,
             Summary = result.Summary,
+            // #511: the reset instant ExtractResetHint had ALREADY parsed out of the 429 was dropped right
+            // here, at the boundary. Everything downstream — the wait-and-poll schedule, and the operator
+            // line telling them the run is healthy and will resume at 03:00 — needs it, and none of it was
+            // possible while the value stopped at the invoker.
+            ResetHint = result.ResetHint,
             CostUsd = result.CostUsd
         };
     }
@@ -456,6 +461,18 @@ public sealed record WaveBreakdownOutcome
 
     /// <summary>Set only when the invocation FAULTED (the runner threw) — carried into a <c>BreakdownFailed</c> halt's detail.</summary>
     public string? Error { get; init; }
+
+    /// <summary>
+    /// The provider's own reset hint ("8:30pm") when the session stopped on a rate/quota limit, else null
+    /// (issue #511).
+    ///
+    /// <para>It was parsed by <see cref="Prompts.ClaudeSignalClassifier.ExtractResetHint"/> and then thrown
+    /// away at this boundary, which is precisely why the barrier could classify a 429 perfectly — <c>429</c>
+    /// is in <c>TransientStatus</c>, "session limit" is a pinned <c>TransientPhrases</c> entry — name it well,
+    /// and still do nothing but stop. The task door had carried the same value through to the operator for
+    /// releases; the barrier door never grew the field.</para>
+    /// </summary>
+    public string? ResetHint { get; init; }
 
     /// <summary>
     /// What the session cost, or null when the runner reported nothing. On the WAVE path this is already

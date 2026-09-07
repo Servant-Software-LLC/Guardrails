@@ -243,11 +243,23 @@ public sealed class PromptRunnerReliabilityTests
         // #381/doc 12 §4.2: a class-(b) transient that PAUSED and then cleared within budget must SURFACE a
         // resolved-transient signal on the succeeded result — the seam the autonomous layer reads to record a
         // `blocker-retried` forensic entry. Before this fix the executor swallowed the within-budget resolution
-        // silently (settled Succeeded with no signal), so a resolved transient recorded nothing. Two backoff
-        // pauses preceded success, so the ledger reads pauses=2, waited=2s+4s (the shipped exponential schedule).
+        // silently (settled Succeeded with no signal), so a resolved transient recorded nothing.
         Assert.NotNull(settled.ResolvedTransient);
         Assert.Equal(2, settled.ResolvedTransient!.Pauses);
-        Assert.Equal(TimeSpan.FromSeconds(6), settled.ResolvedTransient.Waited);
+
+        // The waited total is the sum of TWO DIFFERENT horizons since #511, and this fixture exercises one
+        // of each — which is why the figure is composed from the policy's own constants rather than written
+        // as a number. Pause 1 is "usage limit reached (resets 11:20am)": a limit that names its reset is a
+        // quota window, so it POLLS, and with 11:20am hours away the probe interval wins the min(). Pause 2
+        // is a bare "overloaded" with no reset — a blip — so it takes the exponential, at its SECOND step
+        // (4s, not 2s): the schedule is indexed by how many pauses this TASK has taken, not by how many it
+        // has taken on that particular horizon, so repeated trouble keeps escalating whatever its shape.
+        //
+        // Writing 6s here (2s + 4s) was correct before #511 and is now the assertion that a session limit is
+        // being retried every two seconds.
+        Assert.Equal(
+            TransientBackoff.DefaultProbeInterval + TransientBackoff.BaseDelay * 2,
+            settled.ResolvedTransient.Waited);
 
         // The retry budget was preserved: only ONE attempt was journaled (a paused re-run is not a new
         // attempt — it re-runs under the same number, which IS the no-retry-consumed contract), and it is

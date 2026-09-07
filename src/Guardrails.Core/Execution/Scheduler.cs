@@ -114,6 +114,9 @@ public sealed class Scheduler
     // worker loop.
     private readonly List<DivergedTask> _executedDefinitionDivergences = [];
 
+    private readonly Func<TimeSpan, CancellationToken, Task> _providerWaitDelay;
+    private readonly Func<DateTimeOffset> _clock;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -129,7 +132,9 @@ public sealed class Scheduler
         IReadOnlyDictionary<string, bool>? breakdownConfirmations = null,
         IEscalationSink? escalationSink = null,
         CriticalityJudge? criticalityJudge = null,
-        BlockerRetry? blockerRetry = null)
+        BlockerRetry? blockerRetry = null,
+        Func<TimeSpan, CancellationToken, Task>? providerWaitDelay = null,
+        Func<DateTimeOffset>? clock = null)
     {
         _plan = plan;
         _executor = executor;
@@ -145,6 +150,10 @@ public sealed class Scheduler
         _escalationSink = escalationSink;
         _criticalityJudge = criticalityJudge;
         _blockerRetry = blockerRetry;
+        // #511 seams: the barrier's provider wait is gated deterministically in tests (no real sleeps) and
+        // its reset-hint resolution needs a fixed clock, exactly as the task door's does.
+        _providerWaitDelay = providerWaitDelay ?? Task.Delay;
+        _clock = clock ?? (() => DateTimeOffset.Now);
 
         // Baseline the definition surface as early as the Scheduler can see the plan: the watch takes its
         // baseline in its own constructor (not at the first Poll), so an operator edit landing between plan
@@ -1899,6 +1908,23 @@ public sealed class Scheduler
     {
         string breakdownLogDir = Path.GetDirectoryName(rejectedRoot)!;
 
+        // #511: ONE provider-wait budget for the whole barrier, spanning every segment. A quota window does
+        // not restart because the authoring session happens to be on its second segment, so the 12-hour bound
+        // is cumulative here rather than per-invocation.
+        //
+        // pollOnly, because this door has no cheap short retry to make. At the task door a 2s/4s/8s
+        // exponential is right — the work is one attempt and re-running it costs seconds. Here the
+        // alternative to waiting is ENDING THE RUN and re-paying a from-scratch breakdown at the next launch
+        // (~$10 and 20-30 minutes on the measured dogfood) — and in an unattended run (#361) there is no
+        // launcher present to make that next launch at all.
+        var providerWait = new TransientBackoff(
+            TimeSpan.FromSeconds(Math.Max(1, plan.Config.TransientPauseBudgetSeconds)),
+            _providerWaitDelay,
+            probeInterval: TimeSpan.FromMinutes(plan.Config.ProviderProbeIntervalMinutes),
+            providerWaitBound: TimeSpan.FromHours(plan.Config.MaxProviderWaitHours),
+            pollOnly: true,
+            now: _clock);
+
         for (int segment = 1; segment <= MaxBreakdownSegments; segment++)
         {
             int completeBefore = CountSatisfiedDeclaredFolders(wave);
@@ -1914,9 +1940,8 @@ public sealed class Scheduler
             var phaseClock = Stopwatch.StartNew();
             _observer.WaveBreakdownStarting(phase);
 
-            WaveBreakdownOutcome outcome = await _breakdownInvoker!
-                .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal,
-                    cancellationToken, resume, prepared)
+            WaveBreakdownOutcome outcome = await InvokeBreakdownWithProviderWaitAsync(
+                    wave, plan, integ, breakdownLogDir, resume, prepared, phase, providerWait, cancellationToken)
                 .ConfigureAwait(false);
 
             // Harness writer 1 of 5 (plan 31 §5.3): a JIT wave BREAKDOWN ATTEMPT. Plan-wide, because the
@@ -2124,6 +2149,59 @@ public sealed class Scheduler
     /// The BreakdownFailed path: revert exactly what the attempt wrote (§14.11), record the decision, and halt
     /// with a detail that now NAMES the bound the session hit and states what moved and what was kept.
     /// </summary>
+    /// <summary>
+    /// Run one breakdown segment, WAITING OUT a provider quota/session limit rather than letting it end the
+    /// run (issue #511).
+    ///
+    /// <para><b>The asymmetry this closes.</b> The identical 429 arriving one minute earlier, inside a task,
+    /// was ridden out silently by the #115 backoff; arriving at the barrier it ended the run. That was never
+    /// a detection gap — <c>ClaudeSignalClassifier</c> nails it twice over (<c>429</c> is in
+    /// <c>TransientStatus</c>, "session limit" is a pinned <c>TransientPhrases</c> entry) and
+    /// <c>ExtractResetHint</c> even parsed "resets 8:30pm" out of the message. The harness knew exactly what
+    /// had happened and when it would clear, and stopped anyway, because provider-failure policy lived on the
+    /// task side and the breakdown side never grew it. #498 had unified the two BREAKDOWN doors on one core;
+    /// nobody had reason to reconcile the breakdown door with the TASK door.</para>
+    ///
+    /// <para>The #115 rationale — a human cannot fix a downed provider, and an immediate re-launch just
+    /// re-fails into it — applies here with MORE force, not less: the barrier has just spent a whole wave
+    /// getting to this point.</para>
+    ///
+    /// <para><b>The probe is the real unit of work</b>, not a synthetic ping. A probe that fails costs one
+    /// second and $0.00 (measured on the reporting run), and a probe that succeeds simply IS the run
+    /// continuing — so there is nothing to reconcile between "did the ping work" and "can we proceed".</para>
+    /// </summary>
+    private async Task<WaveBreakdownOutcome> InvokeBreakdownWithProviderWaitAsync(
+        WaveNode wave, PlanDefinition plan, IntegrationHandle integ, string breakdownLogDir,
+        BreakdownResumeContext? resume, BreakdownInvocationPlan prepared, WaveBreakdownContext phase,
+        TransientBackoff providerWait, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            WaveBreakdownOutcome outcome = await _breakdownInvoker!
+                .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal,
+                    cancellationToken, resume, prepared)
+                .ConfigureAwait(false);
+
+            // Only a PROVIDER refusal waits. A timeout, a turn cap, an output cap, a skill bug or a validate
+            // rejection are all conditions where re-running the identical prompt is either useless or exactly
+            // the wrong thing, and each already has its own remedy downstream.
+            if (outcome.FailureKind != Prompts.PromptFailureKind.Transient || !providerWait.CanPauseAgain())
+            {
+                return outcome;
+            }
+
+            TimeSpan wait = providerWait.NextDelay(outcome.ResetHint);
+            int probe = providerWait.PauseCount + 1;
+
+            _observer.WaveBreakdownPaused(
+                phase,
+                outcome.Summary is { Length: > 0 } summary ? summary : outcome.CutOffCause,
+                wait, probe, providerWait.LastResolvedReset, providerWait.Elapsed);
+
+            await providerWait.PauseAsync(cancellationToken, outcome.ResetHint).ConfigureAwait(false);
+        }
+    }
+
     private JitCheckpointOutcome FailBreakdown(
         PlanDefinition plan, WaveNode wave, Dictionary<string, TaskResult> settled, AutonomyPolicy policy,
         string invocationToken, BreakdownInventory? inventory, string rejectedRoot,
@@ -2136,7 +2214,7 @@ public sealed class Scheduler
         _journal.RecordDecision(failed);
         _observer.DecisionRecorded(failed);
         return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
-            with { WaveHalt = BuildBreakdownFailedHalt(wave, detail) });
+            with { WaveHalt = BuildBreakdownFailedHalt(wave, detail, outcome) });
     }
 
     /// <summary>
@@ -2750,15 +2828,34 @@ public sealed class Scheduler
         };
     }
 
-    private static WaveHalt BuildBreakdownFailedHalt(WaveNode wave, string detail) =>
-        new()
+    /// <summary>
+    /// The BreakdownFailed halt. The headline NAMES what actually stopped the wave, because the single
+    /// headline it used to carry — "breakdown FAILED validation" — asserted the wrong thing for the case
+    /// that motivated #511: nothing had failed validation, a provider had refused to serve. The 429 appeared
+    /// only downstream in the detail, via <c>CutOffCause</c>.
+    ///
+    /// <para>Two more instances of halt text asserting the wrong thing (#471, #497) were found in the same
+    /// backlog sweep, which is why this is treated as a family rather than a wording nit: a halt that says a
+    /// FALSE thing costs the operator more than a halt that says nothing, because they go and debug the
+    /// thing it named. Here that means reading a validate report for a wave that was never validated.</para>
+    /// </summary>
+    private static WaveHalt BuildBreakdownFailedHalt(WaveNode wave, string detail, WaveBreakdownOutcome outcome)
+    {
+        bool providerLimit = outcome.FailureKind == Prompts.PromptFailureKind.Transient;
+        string headline = providerLimit
+            ? $"Wave '{wave.Dir}' breakdown stopped on a PROVIDER LIMIT that did not clear within the wait "
+              + "bound (maxProviderWaitHours) — partial output quarantined (SSOT §14.4)."
+            : $"Wave '{wave.Dir}' breakdown FAILED validation — partial output quarantined (SSOT §14.4).";
+
+        return new()
         {
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.BreakdownFailed,
-            Headline = $"Wave '{wave.Dir}' breakdown FAILED validation — partial output quarantined (SSOT §14.4).",
+            Headline = headline,
             Detail = detail,
             WaveDirectory = wave.Directory
         };
+    }
 
     /// <summary>
     /// The two headlines a preserved-prefix halt can carry (#508). <b>"INCOMPLETE — 5 of 5" is a

@@ -296,6 +296,11 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these
     // would swallow the phase in every mode — this decorator is in both chains (the VerifierAdvisoryFound
     // lesson). Acting on it is what turns the wave page from a permanent dead end into the post-mortem.
+    public void WaveBreakdownPaused(
+        WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
+        DateTimeOffset? resetInstant, TimeSpan waitedSoFar) =>
+        _inner.WaveBreakdownPaused(context, reason, wait, probe, resetInstant, waitedSoFar);
+
     public void WaveBreakdownStarting(WaveBreakdownContext context)
     {
         _inner.WaveBreakdownStarting(context);

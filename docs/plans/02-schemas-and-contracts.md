@@ -191,6 +191,8 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
   "transientPauseBudgetSeconds": 14400,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); default 14400 (4h); 0 disables pausing
+  "providerProbeIntervalMinutes": 30, // POLL cadence when a provider limit names its own reset (#511); ceiling on the wait, min(reset, now+interval)
+  "maxProviderWaitHours": 12,         // total bound on waiting out a provider quota limit (#511); default 12 (covers a night); 0 disables the poll horizon
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "intendedWaves": 3,                 // OPTIONAL, waved plans only (§14.1), issue #477. How many waves this plan INTENDS, recorded at plan-folder creation from the reviewed source. Compared against the wave folders on disk by GR2062 (WARN, gated on planIsClosed). ABSENT = intent not recorded ⇒ GR2062 skipped entirely; no plan is forced to migrate. AUTHOR-TIME ONLY — no run-path code reads it
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
@@ -485,6 +487,42 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
   the workspace; and if git really is unavailable the run halts loudly when it creates the plan branch (the
   #150 honest-halt `Abort`), which beats a run that quietly changes its own isolation model. A serial plan
   (`maxParallelism <= 1`) never spawns the probe at all.
+- `providerProbeIntervalMinutes` (default `30`) and `maxProviderWaitHours` (default `12`) govern the
+  **second horizon** of that same policy (issue #511). A provider failure is not one condition, it is two
+  with wildly different time constants, and one schedule serves one of them badly:
+
+  | horizon | condition | schedule | bound |
+  |---|---|---|---|
+  | exponential | an overload, a brief 503 | 2s → 4s → … → 60s cap | `transientPauseBudgetSeconds` |
+  | poll | a session/quota cap that names its reset | `min(resetInstant, now + probeInterval)` | `maxProviderWaitHours` |
+
+  **The discriminator is the reset hint.** A limit that tells you when it clears is by construction the
+  long-horizon kind, so `ClaudeSignalClassifier.ExtractResetHint` routes it to the poll horizon. A door
+  with no cheap short retry — the **wave barrier**, whose alternative to waiting is ending the run — polls
+  regardless of hint; the hint is an optimization, never a dependency.
+
+  **Both doors, one mechanism.** Until #511 the task door rode a 429 out and the barrier door ended the
+  run on the identical signal, one minute apart. That was never a detection gap: `429` is in
+  `TransientStatus`, `"session limit"` is a pinned `TransientPhrases` entry, and the reset instant was
+  already parsed — `WaveBreakdownOutcome` simply had no field to carry it, so it was dropped at that
+  boundary. The divergence existed because provider-failure policy lived on the task side and the
+  breakdown side never grew it; #498 had unified the two BREAKDOWN doors, and nobody had reason to
+  reconcile the breakdown door with the TASK door.
+
+  **Why poll rather than sleep to the stated reset.** The stated time is an upper bound, not a schedule —
+  providers move these limits and frequently reset early. A probe that is wrong costs one second and
+  $0.00 (measured), and a probe that succeeds simply IS the run continuing, so the probe is the real unit
+  of work and never a synthetic ping. Resolution of the hint handles roll-over (a hint of "8:30pm"
+  received at 23:10 means tomorrow) and is deliberately permissive: because the wait is `min(reset,
+  now + interval)`, an instant resolved too late is capped and one resolved too early merely probes
+  sooner, so an unparseable hint falls back to pure interval polling rather than guessing.
+
+  **The wait is announced continuously** — naming the limit (not a generic "transient"), the reset it is
+  working from, when the next probe fires, and how long it has been waiting — on the live table, the
+  `--no-ui` output and the log site. The bug was reported as *"looks like it finished the wave, but is
+  stuck"* about a run that had DIED; a silent twelve-hour wait would be strictly worse than the crash it
+  replaces. On exhaustion the run halts and the halt **names the provider limit**, because the previous
+  single headline ("breakdown FAILED validation") asserted a thing that had not happened.
 - `transientPauseBudgetSeconds` (default `14400`, i.e. 4h — a long unattended/overnight run must ride
   out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
   cumulative wall-clock a single task may spend
@@ -2549,6 +2587,11 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
           "waitSeconds": 2,         // the backoff this pause waited, already clamped to the remaining budget.
                                     //   Seconds as a NUMBER — run.json is read by humans and by tooling that
                                     //   never links against this assembly
+          "horizon": "poll",        // WHICH schedule chose waitSeconds: "exponential" (a blip) or "poll" (a
+                                    //   quota window). Without it the number alone is ambiguous exactly where
+                                    //   it matters: 30 SECONDS is a blip ridden out, 30 MINUTES is the harness
+                                    //   deliberately waiting on a limit — two different stories (#511).
+                                    //   ABSENT in journals written before the field existed
           "resetHint": "11:20am"    // OPTIONAL machine-readable half of `reason`'s prose, when the provider
                                     //   named a reset time. ABSENT when it did not
         }
@@ -2765,7 +2808,7 @@ difference between *"the model is flaky today"* and *"my plan is wrong"*. It als
 justification unauditable: #115 pauses **without consuming retry budget** because a provider stall is not
 the task's fault, and that trade can only be checked if the pauses are counted.
 
-Three properties are load-bearing:
+Four properties are load-bearing:
 
 * **Written at the pause, BEFORE the wait.** A run killed mid-pause must still say it was pausing and why;
   recording on the far side of the delay would lose exactly the long pauses that matter most. `run.json` is
@@ -2774,6 +2817,11 @@ Three properties are load-bearing:
   the paused attempt re-runs under the **same** attempt number (that IS the no-retry-consumed contract), so
   no `AttemptRecord` exists yet to hang it off. The budget it spends is per-task too (one `TransientBackoff`
   per task). Each entry carries `attempt`, so the association is not lost.
+* **The HORIZON is recorded, not just the duration (#511).** Since a provider limit that names its own
+  reset polls rather than backing off exponentially, `waitSeconds` alone no longer says what happened: 30
+  seconds is a blip being ridden out and 30 minutes is a quota window being waited on, and a post-mortem
+  needs to tell them apart without re-deriving the policy from the reason text. This is the same rule the
+  tests follow — assert the decision, not the duration — applied to the journal.
 * **Unconditional.** The `decisions[]` `blocker-retried` entry the autonomous layer already wrote for a
   resolved transient is only reached when the autonomy dial is wired (`Scheduler.ClassifyTaskGateAsync` runs
   behind an escalation sink), so an ordinary run recorded nothing at all. This does not replace that entry —

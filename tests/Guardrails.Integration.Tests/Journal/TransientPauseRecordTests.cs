@@ -173,12 +173,22 @@ public sealed class TransientPauseRecordTests
             Assert.Contains("usage limit reached", first.GetProperty("reason").GetString()!, StringComparison.Ordinal);
             Assert.Equal("11:20am", first.GetProperty("resetHint").GetString());
 
-            // The DECISION the backoff made, not a stopwatch reading: the first delay of the bounded
-            // exponential schedule is TransientBackoff.BaseDelay, the second is twice it.
-            Assert.Equal(TransientBackoff.BaseDelay.TotalSeconds, first.GetProperty("waitSeconds").GetDouble());
-            Assert.Equal(
-                TransientBackoff.BaseDelay.TotalSeconds * 2,
-                pauses[1].GetProperty("waitSeconds").GetDouble());
+            // The DECISION the backoff made, not a stopwatch reading — and since #511 the decision has two
+            // parts, because there are two schedules. This provider named a reset ("resets 11:20am"), which
+            // is by construction a quota window rather than a blip, so the POLL horizon is the right answer
+            // and the pre-#511 exponential (2s then 4s) would now be the wrong one: retrying a usage limit
+            // every two seconds is a few hundred pointless requests into a door that is closed.
+            Assert.Equal("poll", first.GetProperty("horizon").GetString());
+            Assert.Equal("poll", pauses[1].GetProperty("horizon").GetString());
+
+            // The horizon is what is ASSERTED; the duration is only bounded, because a poll wait is
+            // min(resetInstant, now + probeInterval) and the reset here is a wall-clock time of day, so the
+            // exact figure depends on when in the day the suite runs. The bound is the load-bearing part:
+            // the wait can never exceed the probe interval, which is what makes an imperfectly-resolved
+            // hint safe.
+            double interval = TransientBackoff.DefaultProbeInterval.TotalSeconds;
+            Assert.InRange(first.GetProperty("waitSeconds").GetDouble(), 0, interval);
+            Assert.InRange(pauses[1].GetProperty("waitSeconds").GetDouble(), 0, interval);
 
             Assert.Equal(2, pauses[1].GetProperty("pause").GetInt32());
 
@@ -244,6 +254,7 @@ public sealed class TransientPauseRecordTests
                             At = DateTimeOffset.Parse("2026-09-05T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
                             Reason = "overloaded (resets 11:20am)",
                             WaitSeconds = 4,
+                            Horizon = "poll",
                             ResetHint = "11:20am"
                         }
                     ]
@@ -260,6 +271,7 @@ public sealed class TransientPauseRecordTests
         Assert.Equal(1, pause.Pause);
         Assert.Equal(3, pause.Attempt);
         Assert.Equal(4, pause.WaitSeconds);
+        Assert.Equal("poll", pause.Horizon);
         Assert.Equal("11:20am", pause.ResetHint);
     }
 

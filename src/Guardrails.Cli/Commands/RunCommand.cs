@@ -2959,7 +2959,15 @@ public static class RunCommand
             output.WriteLine();
             output.WriteLine($"RATE LIMITED: {rateLimited.TaskId} — {rateLimited.Summary}");
             output.WriteLine("  Not a task defect — a provider-side limit did not clear in time. Re-run this plan");
-            output.WriteLine("  later (the harness resumes from here), or raise transientPauseBudgetSeconds.");
+            // #511 gave the pause TWO budgets, and naming only the first would send the operator to the
+            // wrong knob for the commonest case. A limit that announced its own reset ("resets 8:30pm")
+            // spends maxProviderWaitHours on the poll horizon; only an un-hinted blip spends
+            // transientPauseBudgetSeconds on the exponential one. Both are named because the message cannot
+            // tell which horizon this task was on, and guessing is how halt text comes to assert a false
+            // thing (the #471 / #497 family).
+            output.WriteLine("  later (the harness resumes from here), or raise the budget for the horizon it");
+            output.WriteLine("  was on: maxProviderWaitHours for a limit that named a reset time,");
+            output.WriteLine("  transientPauseBudgetSeconds for a plain overload.");
         }
 
         // First task id seen per category, so a later same-category task can point back to it.
