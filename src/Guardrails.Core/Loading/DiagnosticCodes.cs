@@ -1188,7 +1188,60 @@ public static class DiagnosticCodes
     /// </summary>
     public const string MixedWriteMechanisms = "GR2073";
 
-    // CURRENT next-free code: GR2074. GR2072 (CheckSetPredatesSourceTree) is the last taken code
+    /// <summary>
+    /// GR2074 (WARNING) — a required-present clause anchors on a DOTTED MENTION where its own
+    /// <c>catches:</c> line claims to prove a CALL (issue #521 gap 1).
+    ///
+    /// <para><b>This is not a missing rule; it is a rule with no teeth.</b> The mention-vs-use doctrine is
+    /// precise and sits in two places — <c>guardrails-review</c> Probe B operator 9 ("reference the type via
+    /// <c>nameof</c> in a dead field | dies against a DOTTED CALL") and #76 in <c>stacks/dotnet.md</c>,
+    /// which spells out the trailing paren. The guardrail that was gamed had been authored by a specialist
+    /// agent <b>with that doctrine loaded</b>, and it wrote <c>Invoker\.PrepareInvocation</c> — dotted, no
+    /// <c>\s*\(</c>.</para>
+    ///
+    /// <para><b>The word carrying the whole rule is "call"; the word that gets remembered is "dotted."</b> A
+    /// clause can satisfy a reader's memory of the rule while satisfying none of its teeth. Measured: a
+    /// mutant whose only references to the required symbols were inside <c>nameof(...)</c> — zero
+    /// invocations — exited <b>0</b>, while the committed valid sample still passed, so the check was not
+    /// broadly broken, only toothless in the one direction that mattered.</para>
+    ///
+    /// <para>Deliberately CONSERVATIVE, in the GR2057 shape: it fires only when the guardrail's own
+    /// <c>catches:</c> line CLAIMS a call, an invocation or wiring, because a clause legitimately asserting a
+    /// DECLARATION or a type reference is correct as written and must not be flagged. Silent wherever intent
+    /// cannot be proven.</para>
+    ///
+    /// <para>A WARNING, not an error: "the clause is weaker than its stated intent" is a judgement about
+    /// strength, and there are dotted-without-paren clauses that are exactly right.</para>
+    /// </summary>
+    public const string ClauseProvesMentionNotCall = "GR2074";
+
+    /// <summary>
+    /// GR2075 (WARNING) — a task AUTHORS ITS OWN TEST and then grades itself with it (issue #521 gap 2).
+    ///
+    /// <para>Fires when a task's <c>writeScope</c> covers a test file, the same task carries a check over
+    /// that file, and NO ancestor authored it. Such a task has <b>no TDD-red half</b>: #155's red-then-green
+    /// is not weakened, it is <b>absent entirely</b>, because there is no upstream test-author task whose
+    /// files could be excluded — so the "tests gameable" rule is VACUOUSLY satisfied and the strongest
+    /// anti-tautology control in the system simply does not apply.</para>
+    ///
+    /// <para><b>Legitimate to DO</b> — a composition-root test often cannot be authored before the thing it
+    /// wires exists — so this is not a ban. It is that the case must be NAMED and must carry a compensating
+    /// control, because the alternative is that it passes unnoticed.</para>
+    ///
+    /// <para><b>Why it is filed with GR2074 rather than alone.</b> Neither gap alone reaches blocker. With a
+    /// real TDD-red half, a hollow test is caught by the census whatever the grep accepts. With a
+    /// call-anchored grep, the missing red half is covered by the structural check. TOGETHER the only
+    /// control over the test's honesty is a grep, and the grep accepts a mention — so the task goes green
+    /// with nothing wired. That is the #120 built-but-unwired false green arriving through a door neither
+    /// the #120 probe nor the tests-gameable probe is watching.</para>
+    ///
+    /// <para>The general lesson, worth more than either lint: <b>when a task's anti-tautology proof rests on
+    /// exactly ONE control, that control's known-weak operators become BLOCKERs rather than WEAKs.</b> The
+    /// severity rubric grades each control in isolation; nothing grades the SET.</para>
+    /// </summary>
+    public const string TaskGradesItsOwnAuthoredTest = "GR2075";
+
+    // CURRENT next-free code: GR2076. GR2072 (CheckSetPredatesSourceTree) is the last taken code
     // above, and is the first code on this ladder that is NOT about the plan — it reports the TOOL
     // (issue #564). That is deliberate and not a precedent to widen: it lives here because the codes
     // are the greppable, test-assertable surface a reviewer already reads, and a fact this important
