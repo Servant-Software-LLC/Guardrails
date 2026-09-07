@@ -728,7 +728,11 @@ public static class RunCommand
                         ? null
                         : !report.AllSucceeded
                           || await PlanGuardrailPhase
-                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution)
+                              // #625: the chain head, so the gate's start/finish reach the LOG SITE too — not
+                              // just the diagram, which already had its own spinner signal (#219). Without it
+                              // the site's last write is the final task going green, and the page sits on
+                              // all-green for the whole gate window looking exactly like a finished run.
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution, diagramObserver)
                               .ConfigureAwait(false);
 
                     if (willEvaluateTerminalGate)

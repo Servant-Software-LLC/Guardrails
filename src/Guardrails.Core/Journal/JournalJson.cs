@@ -49,6 +49,7 @@ public static class JournalJson
         PlanPhaseStatus.Passed => "passed",
         PlanPhaseStatus.PlanPreflightFailed => "plan-preflight-failed",
         PlanPhaseStatus.PlanGuardrailFailed => "plan-guardrail-failed",
+        PlanPhaseStatus.Running => "running",
         _ => throw new JsonException($"Unhandled plan phase status '{status}'.")
     };
 
@@ -338,6 +339,12 @@ public static class JournalJson
                 "passed" => PlanPhaseStatus.Passed,
                 "plan-preflight-failed" => PlanPhaseStatus.PlanPreflightFailed,
                 "plan-guardrail-failed" => PlanPhaseStatus.PlanGuardrailFailed,
+                // #625. Writing a new token without teaching Read about it makes the journal unreadable the
+                // moment anything re-reads it — which is EVERY later phase write, since each does a
+                // read-modify-write. The run then dies with a JsonException after the gate has started,
+                // having spent the whole run getting there. A persisted enum needs BOTH directions or
+                // neither.
+                "running" => PlanPhaseStatus.Running,
                 _ => throw new JsonException($"Unknown plan phase status '{value}'.")
             };
         }

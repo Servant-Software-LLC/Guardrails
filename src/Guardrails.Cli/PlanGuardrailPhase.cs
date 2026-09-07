@@ -59,7 +59,8 @@ public static class PlanGuardrailPhase
         string? runId,
         CancellationToken cancellationToken,
         string? junctionRoot = null,
-        WorktreeModeResolution? worktreeMode = null)
+        WorktreeModeResolution? worktreeMode = null,
+        IRunObserver? observer = null)
     {
         if (plan.PlanGuardrails.Count == 0)
         {
@@ -83,6 +84,32 @@ public static class PlanGuardrailPhase
             plan.PlanDirectory, runId, waveDir: null, GateArtifacts.GuardrailsFolder);
         string? relativeLogDir = GateArtifacts.RelativeDirectoryFor(
             runId, waveDir: null, GateArtifacts.GuardrailsFolder);
+
+        // #625: record that the gate is RUNNING before the first check, not only its verdict afterwards.
+        //
+        // The gate used to write its section exactly once, at the end. Measured on a whole-solution
+        // `dotnet test`: for 12 minutes run.json carried no planGuardrails key at all, index.html's mtime
+        // was pinned to the last task's completion, and the static site showed four green tasks and nothing
+        // else — a page that looks exactly like a FINISHED RUN while the gate that can still fail it is
+        // mid-flight. Nothing on disk could distinguish the two.
+        //
+        // Written BEFORE the wait, deliberately, and for the same reason the transient pause is (#515): a
+        // run killed during the gate must still say the gate was running. The journal persists atomically
+        // per call, so the marker is on disk before the first check starts.
+        var startedAt = DateTimeOffset.UtcNow;
+        PlanPhaseJournalWriter.Update(plan.PlanDirectory, document => document with
+        {
+            PlanGuardrails = new PlanGuardrailsSection
+            {
+                Status = PlanPhaseStatus.Running,
+                PlanHash = currentHash,
+                StartedAt = startedAt,
+                Checks = [.. plan.PlanGuardrails.Select(g => new PlanPreflightCheck { Name = g.Name, Passed = false })],
+                LogDir = relativeLogDir
+            }
+        });
+
+        observer?.TerminalGateStarting([.. plan.PlanGuardrails.Select(g => g.Name)], startedAt);
 
         ReVerifyResult result = await reVerifier
             .ReVerifyAsync(
@@ -124,6 +151,7 @@ public static class PlanGuardrailPhase
             FailedChecks = failedChecks,
             CollisionHint = collisionHint,
             EvaluatedAt = DateTimeOffset.UtcNow,
+            StartedAt = startedAt,
             Checks = checks,
             LogDir = relativeLogDir
         };
@@ -145,6 +173,8 @@ public static class PlanGuardrailPhase
         PlanPhaseJournalWriter.Update(plan.PlanDirectory, document => halt is null
             ? document with { PlanGuardrails = section }
             : document with { PlanGuardrails = section, Halt = halt });
+
+        observer?.TerminalGateFinished(result.Passed, [.. failedChecks.Select(f => f.Name)]);
 
         return result.Passed;
     }

@@ -255,6 +255,12 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // swallows the whole JIT-breakdown phase — in every mode, since this decorator is in both chains. This
     // observer does not ACT on them: a diagram of the DAG has nothing to badge for the phase that AUTHORS
     // the DAG (design 23 §8), so it forwards and nothing else.
+    public void TerminalGateStarting(IReadOnlyList<string> checkNames, DateTimeOffset startedAt) =>
+        _inner.TerminalGateStarting(checkNames, startedAt);
+
+    public void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames) =>
+        _inner.TerminalGateFinished(passed, failedNames);
+
     public void WaveBreakdownPaused(
         WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
         DateTimeOffset? resetInstant, TimeSpan waitedSoFar) =>

@@ -82,6 +82,14 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   - **Plan-level** `<plan>/guardrails/` -- the **"Terminal Gate"** -- also at the plan root; evaluated
     ONCE, at run end, on the merged plan-branch HEAD. Replaces the old no-op-END `integrationGate: true`
     sink-task modelling (see the Task bullet below).
+    **It is VISIBLE while it runs (#625).** It journals `planGuardrails.status = "running"` with
+    `startedAt` BEFORE the first check and replaces that with the verdict, and it raises
+    `IRunObserver.TerminalGateStarting/Finished`. Both were missing: the gate is not a task, so it
+    triggered no observer event, the log site's last write was the final task going green, and for the
+    whole gate window (measured: 12 minutes on a whole-solution `dotnet test`) `index.html` sat on four
+    green tasks with ZERO occurrences of "Terminal Gate" or any check name -- a page indistinguishable
+    from a finished run, while the gate that can still fail it was mid-flight. When adding a plan-scoped
+    phase, journal that it STARTED, not only how it ended.
   - **Task-level** `tasks/<id>/preflights/` -- a JIT dependency-delivery check, sibling of the existing
     `tasks/<id>/guardrails/`; evaluated in the task's segment worktree at `taskBase`, BEFORE its action.
   - **Task-level** `tasks/<id>/guardrails/` -- the existing per-task postcondition folder, unchanged.

@@ -428,6 +428,16 @@ public sealed record PlanGuardrailsSection
     public string? LogDir { get; init; }
 
     /// <summary>
+    /// When the phase STARTED (issue #625). Written with <see cref="PlanPhaseStatus.Running"/> before the
+    /// first check runs, and kept when the terminal status replaces it, so a reader can tell how long the
+    /// gate has been going — or, after the fact, how long it took.
+    ///
+    /// <para>Null on every journal written before #625, and on any phase that only ever recorded its
+    /// outcome. Absent, never a fabricated timestamp.</para>
+    /// </summary>
+    public DateTimeOffset? StartedAt { get; init; }
+
+    /// <summary>
     /// The #175 merge-collision advisory (SSOT §3.3, issue #205): when the terminal gate fails and ≥2
     /// tasks have OVERLAPPING <c>writeScope</c> on a shared file, this names the offending task pair(s) +
     /// the shared path(s) so a human sees <i>"this looks like a merge collision between task A and task B
