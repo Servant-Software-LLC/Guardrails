@@ -1241,7 +1241,34 @@ public static class DiagnosticCodes
     /// </summary>
     public const string TaskGradesItsOwnAuthoredTest = "GR2075";
 
-    // CURRENT next-free code: GR2076. GR2072 (CheckSetPredatesSourceTree) is the last taken code
+    /// <summary>
+    /// GR2076 (WARNING) — one task REQUIRES a literal in a file that ANOTHER task's guardrail FORBIDS in
+    /// the same file (issue #601 candidate 1).
+    ///
+    /// <para><b>GR2057 already does the within-one-file case. The cross-task case had no reader at all.</b>
+    /// Neither <c>validate</c>, <c>graph --check</c>, nor a full <c>/guardrails-review</c> has a reading
+    /// that spans two tasks: Probe C reconciles clauses inside a guardrail file, #474 traces a datum to its
+    /// carrier, and the write-scope check asks whether a scope covers a path — which, on the measured
+    /// plan, it did.</para>
+    ///
+    /// <para>Measured on plan 35 task 13: task 12's test required the terminal row to survive listener
+    /// teardown while task 13's prompt forbade the only change that allows it. <b>Three attempts and an
+    /// overwatch intervention</b> before an agent proved it and halted. The plan was unsatisfiable from the
+    /// moment it was authored, and every gate it passed on the way said so about a different scope.</para>
+    ///
+    /// <para>Conservative on the GR2057 model, and more so, because the cross-task claim is weaker: it
+    /// fires only when both guardrails read the SAME LITERAL PATH, the required side yields a literal
+    /// witness long enough to be meaningful, and the forbidding pattern actually matches that witness. Any
+    /// dynamic path, any computed subject, any witness it cannot extract — silent. A cross-task lint that
+    /// guessed would be worse than none, because the remedy costs a re-author.</para>
+    ///
+    /// <para>A WARNING rather than an error: unlike GR2057's single file, where the collision is provable
+    /// from one body, two guardrails reading one path may still be reconcilable by an author who knows
+    /// something the text does not carry.</para>
+    /// </summary>
+    public const string CrossTaskClauseCollision = "GR2076";
+
+    // CURRENT next-free code: GR2077. GR2072 (CheckSetPredatesSourceTree) is the last taken code
     // above, and is the first code on this ladder that is NOT about the plan — it reports the TOOL
     // (issue #564). That is deliberate and not a precedent to widen: it lives here because the codes
     // are the greppable, test-assertable surface a reviewer already reads, and a fact this important

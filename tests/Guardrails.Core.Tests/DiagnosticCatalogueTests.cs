@@ -205,6 +205,48 @@ public sealed partial class DiagnosticCatalogueTests
         Assert.Empty(DiagnosticCatalogue.InLadder("GR99"));
     }
 
+    [Fact]
+    public void TheNextFreeMarkerNamesACodeThatIsActuallyFree()
+    {
+        // The next-free comment is how every author picks their code, and it is a COMMENT — the one thing a
+        // merge drops silently, and the thing #558's other tests deliberately retire as the sole collision
+        // defense. Retiring it AS THE DEFENSE is not the same as letting it go stale: an author who reads
+        // "take GR2074" and takes GR2074 gets a collision that NoTwoConstantsShareACode then reports as
+        // their fault, one step too late.
+        //
+        // Found by inspection: three codes were allocated across three branches in one session and the
+        // SSOT's copy of this marker was two behind — exactly the drift #558 exists to stop, in the one
+        // place #558 had not looked.
+        string source = File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "Guardrails.Core", "Loading", "DiagnosticCodes.cs"));
+
+        List<Match> markers = [.. NextFreeMarkerRegex().Matches(source).Cast<Match>()];
+
+        // Exactly one LIVE marker. The file also QUOTES the phrase inside historical prose, which is why
+        // the regex anchors on a comment opening the line rather than on the words alone — a test matching
+        // the quotation would fail on a correct file and teach its reader to ignore it.
+        Assert.True(
+            markers.Count == 1,
+            $"expected exactly one live 'CURRENT next-free code:' marker, found {markers.Count}");
+
+        string claimed = markers[0].Groups["code"].Value;
+        IReadOnlyDictionary<string, string> declared = ConstantsFromReflection();
+
+        Assert.DoesNotContain(claimed, declared.Values);
+
+        // And it must be AHEAD of the high-water mark, not merely unused — a marker pointing into a gap
+        // below it sends the next author straight into the reserved range this file spends paragraphs
+        // explaining.
+        int highest = declared.Values
+            .Where(c => c.StartsWith("GR20", StringComparison.Ordinal))
+            .Select(c => int.Parse(c[2..], System.Globalization.CultureInfo.InvariantCulture))
+            .Max();
+
+        Assert.True(
+            int.Parse(claimed[2..], System.Globalization.CultureInfo.InvariantCulture) > highest,
+            $"the next-free marker says {claimed}, but GR{highest} is already taken");
+    }
+
     private static void Record(Dictionary<string, HashSet<string>> into, string name, string severity)
     {
         if (severity is not ("Error" or "Warning"))
@@ -231,6 +273,14 @@ public sealed partial class DiagnosticCatalogueTests
 
         return dir?.FullName ?? throw new InvalidOperationException("repo root (.git) not found above the test binary");
     }
+
+    /// <summary>
+    /// The LIVE next-free marker: a comment OPENING the line. The file also quotes the phrase inside
+    /// historical prose (recounting an older reservation), and matching that would fail on a correct
+    /// file.
+    /// </summary>
+    [GeneratedRegex(@"^\s*// CURRENT next-free code: (?<code>GR\d+)", RegexOptions.Multiline)]
+    private static partial Regex NextFreeMarkerRegex();
 
     [GeneratedRegex(@"\b(?<sev>Error|Warning)\s*\(\s*DiagnosticCodes\.(?<name>\w+)")]
     private static partial Regex CallSiteRegex();

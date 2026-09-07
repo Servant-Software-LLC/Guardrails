@@ -7745,7 +7745,7 @@ unsatisfiable-guardrail family and #459
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
 the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
-`MixedWriteMechanisms`** (§3.4), so an unrelated new code should take **`GR2074`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), so an unrelated new code should take **`GR2077`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same

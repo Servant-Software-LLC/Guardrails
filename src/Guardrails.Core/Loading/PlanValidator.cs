@@ -95,6 +95,7 @@ public sealed class PlanValidator
         ValidateUnsatisfiableGuardrailFloor(plan, diagnostics);
         ValidateGuardrailRequiresForbiddenToken(plan, diagnostics);
         ValidateClauseProvesMentionNotCall(plan, diagnostics);
+        ValidateCrossTaskClauseCollision(plan, diagnostics);
         ValidateTaskGradesItsOwnAuthoredTest(plan, diagnostics);
         ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
@@ -2827,6 +2828,130 @@ public sealed class PlanValidator
     }
 
     private static string Normalize(string path) => path.Trim().Replace('\\', '/');
+
+    /// <summary>
+    /// GR2076 (#601 candidate 1): one task REQUIRES a literal in a file another task's guardrail FORBIDS
+    /// there.
+    ///
+    /// <para>GR2057 proves this shape within ONE guardrail body. Across tasks nothing read it — not
+    /// <c>validate</c>, not <c>graph --check</c>, not a full review pass, because every one of them has a
+    /// scope narrower than the collision. Measured on plan 35 task 13: three attempts and an overwatch
+    /// intervention on a plan that was unsatisfiable the moment it was authored.</para>
+    ///
+    /// <para>Conservative past the point of usefulness, on purpose — the remedy is a re-author, so a false
+    /// positive is expensive. Silent unless BOTH guardrails name the same single literal path, the required
+    /// side yields a witness long enough to mean something, and the ban actually matches that witness.</para>
+    /// </summary>
+    private static void ValidateCrossTaskClauseCollision(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        var required = new List<(TaskNode Task, string Path, string Witness, string Guardrail)>();
+        var forbidden = new List<(TaskNode Task, string Path, string Pattern, string Guardrail)>();
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (GuardrailDefinition guardrail in task.Guardrails.Concat(task.Preflights))
+            {
+                string? guardrailBody = TryReadAllText(guardrail.Path);
+                if (guardrailBody is null)
+                {
+                    continue;
+                }
+
+                // One literal path per guardrail, and only when there is exactly one: a guardrail reading
+                // two files gives no way to say WHICH one a clause is about, and attributing a clause to
+                // the wrong subject is how a cross-task lint reports a collision that is not there.
+                string? subjectPath = SoleLiteralSubjectPath(guardrailBody);
+                if (subjectPath is null)
+                {
+                    continue;
+                }
+
+                string scanned = GuardrailClauseText.BlankCommentLines(guardrailBody);
+
+                foreach (Match clause in GuardrailClauseText.PresenceClause.Matches(scanned))
+                {
+                    if (!BranchFailsTheGuardrail(scanned, clause.Index + clause.Length - 1))
+                    {
+                        continue;
+                    }
+
+                    string pattern = clause.Groups["pat"].Value.Replace("''", "'", StringComparison.Ordinal);
+
+                    if (clause.Groups["neg"].Success)
+                    {
+                        string? witness = GuardrailClauseText.TryLiteralWitness(pattern);
+                        if (witness is not null
+                            && witness.Trim().Length >= MinimumWitnessLength
+                            && GuardrailClauseText.MatchesWitness(pattern, witness))
+                        {
+                            required.Add((task, subjectPath, witness, guardrail.Name));
+                        }
+                    }
+                    else if (!HasInputAnchor(pattern))
+                    {
+                        forbidden.Add((task, subjectPath, pattern, guardrail.Name));
+                    }
+                }
+            }
+        }
+
+        foreach ((TaskNode requiringTask, string path, string witness, string requiringGuardrail) in required)
+        {
+            foreach ((TaskNode banningTask, string bannedPath, string bannedPattern, string banningGuardrail) in forbidden)
+            {
+                // SAME path, DIFFERENT tasks — the within-one-task case belongs to GR2057, and reporting it
+                // here as well would double every finding that check already makes.
+                if (string.Equals(requiringTask.Id, banningTask.Id, StringComparison.Ordinal)
+                    || !string.Equals(path, bannedPath, StringComparison.OrdinalIgnoreCase)
+                    || !GuardrailClauseText.MatchesWitness(bannedPattern, witness))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(Warning(DiagnosticCodes.CrossTaskClauseCollision, requiringTask.Directory,
+                    $"Task '{requiringTask.Id}' guardrail '{requiringGuardrail}' REQUIRES " +
+                    $"'{ClauseExcerpt(witness)}' in {path}, and task '{banningTask.Id}' guardrail " +
+                    $"'{banningGuardrail}' FORBIDS '{ClauseExcerpt(bannedPattern)}' in the same file — the " +
+                    "required text matches the forbidden pattern, so no state of that file satisfies both " +
+                    "tasks. Whichever runs second fails on work the first was required to do, and cannot " +
+                    "fix it without breaking the first. GR2057 proves this shape inside ONE guardrail; " +
+                    "across tasks nothing read it before, because validate, graph --check and a full " +
+                    "review pass each have a scope narrower than the collision. Measured on plan 35 task " +
+                    "13: three attempts and an overwatch intervention on a plan that was unsatisfiable the " +
+                    "moment it was authored. A WARNING because two guardrails over one path may still be " +
+                    "reconcilable by an author who knows something the text does not carry — but if they " +
+                    "are not, this is the cheapest possible place to find out."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The ONE literal file path this guardrail reads, or null when it reads none or more than one.
+    ///
+    /// <para>Returning null for every ambiguous case is the conservatism this lint rests on. A guardrail
+    /// reading two files gives no way to say which one a clause is about; a computed path gives no way to
+    /// compare it with another task's at all. Attributing a clause to the wrong subject is exactly how a
+    /// cross-task lint reports a collision that is not there — and its remedy is a re-author.</para>
+    /// </summary>
+    private static string? SoleLiteralSubjectPath(string guardrailBody)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Match m in LiteralSubjectPath.Matches(GuardrailClauseText.BlankCommentLines(guardrailBody)))
+        {
+            paths.Add(m.Groups["path"].Value.Replace('\\', '/'));
+        }
+
+        return paths.Count == 1 ? paths.Single() : null;
+    }
+
+    /// <summary>
+    /// A quoted path a guardrail reads: <c>Get-Content 'src/App.cs'</c>, <c>$file = "src/App.cs"</c>. An
+    /// extension is required, so a bare word or a directory is never mistaken for a file.
+    /// </summary>
+    private static readonly Regex LiteralSubjectPath = new(
+        @"['""](?<path>[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,6})['""]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// GR2074 (#521 gap 1): a required-present clause anchors on a DOTTED MENTION while its own
