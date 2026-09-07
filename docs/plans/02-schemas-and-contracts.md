@@ -82,8 +82,10 @@ chain **reuses one** segment worktree passed along the chain; a fan-out **inheri
 **forks the rest** off the producer's committed tip; a fan-in **forks one** upstream and merges the
 others in. `runId` lives in worktree directory names and commit trailers, **not** the branch name.
 `guardrails validate` and a run pre-flight reject a non-git-top-level workspace (**`GR2015`**, a
-FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master`** by the live triad
-`CaptureHashEscapesWorkspace`). The harness creates all worktrees under a **harness-owned root
+FRESH code — the old plan-07 draft cited `GR2013`, which was then taken by the `captureHashes` triad;
+that triad was **removed** (see §3.1 below) and `GR2013`/`GR2014` are now **historical gaps**, reserved
+and never re-allocated. No constant defines either, and `CaptureHashEscapesWorkspace` no longer exists —
+this sentence used to claim otherwise, which is how #558 found it). The harness creates all worktrees under a **harness-owned root
 outside the workspace** — default `<temp>/gr-wt/<workspace-hash>/<runId>/` (issue #383 shortened this
 from the old `<temp>/guardrails-worktrees/<plan-name>-<hash>/…` to keep segment paths clear of Windows
 MAX_PATH), overridable per-machine via the `GUARDRAILS_WORKTREE_ROOT` env var (→
@@ -7711,13 +7713,24 @@ unsatisfiable-guardrail family and #459
 `IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
-the first code on this ladder that reports the TOOL rather than the plan), so an unrelated new code should
-take **`GR2073`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
+`MixedWriteMechanisms`** (§3.4), so an unrelated new code should take **`GR2074`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
 note and, per that document's standing instruction, **the file wins**: re-verify against it immediately
 before allocating.)
+
+**This document is not the catalogue, and stopped pretending to be one (issue #558).** It cites codes where
+they are relevant; it is not an inventory of them, and reading it as one is what produced the measured
+drift — 16 defined codes it never mentioned, including the whole foundational `GR2001`–`GR2008` block, and
+two (`GR2013`/`GR2014`) it named as live when they had been retired with the `captureHashes` triad. The
+queryable catalogue is now `guardrails diagnostics [<code>] [--ladder GR20]`, which parses the embedded
+`DiagnosticCodes.cs` itself, so there is no second copy to drift. **Severity is carried in each code's doc
+comment as `GRxxxx (ERROR|WARNING|RETIRED) — …`, and a test re-derives it from every `Error(...)` /
+`Warning(...)` emission site in `src/` and fails the build if a marker disagrees** — the marker cannot
+quietly become wrong. Collision safety no longer rests on the hand-maintained next-free note above either:
+a test asserts no two constants share a code, which is the part a merge could silently drop.
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a

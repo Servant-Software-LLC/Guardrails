@@ -1529,6 +1529,17 @@ total order driven by the wave folder's numeric prefix.
   + GR2061 (`docs/plans/18-integration-proof-proximity.md` §3.4, the deferred seam-ledger lint) — so an
   UNRELATED new code takes the next code `DiagnosticCodes.cs` records as free, which is why
   **`DiagnosticCodes.cs` WINS — re-verify against its next-free comment before allocating.**
+  **Since #558 you do not have to take that comment's word for it, and neither does an operator.**
+  `guardrails diagnostics [<code>] [--ladder GR20]` is the queryable catalogue -- read-only, offline,
+  no plan folder (it describes the TOOL, so it works when the operator's plan does not, which is why
+  `validate` now points at it whenever a code fires). It parses `DiagnosticCodes.cs`, EMBEDDED as a
+  resource, so there is no second copy to drift; the SSOT is a set of citations, never an inventory.
+  Three tests hold it: every constant appears exactly once, no two constants share a code (retiring
+  the next-free COMMENT as the sole collision defense -- a comment is what a merge drops silently),
+  and **every `GRxxxx (ERROR|WARNING|RETIRED) --` marker is re-derived from every `Error(...)` /
+  `Warning(...)` emission site in `src/` and must agree**. When you add a code, write that marker in
+  its doc comment; a marker that lies fails the build. GR2013/GR2014 are RESERVED historical gaps
+  (the removed `captureHashes` triad), not free -- the SSOT claimed GR2013 was live until #558.
   GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 = GuardrailScriptDoesNotParse #473; GR2057 =
   GuardrailRequiresForbiddenToken #470 ask 1; GR2058 = BannedPatternScanTimeout #487; **GR2059** =
   WaveIntegrationScopeInert #459 (see the wave-root INERT note under Guardrail scope, above);

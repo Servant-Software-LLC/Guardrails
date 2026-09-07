@@ -26,6 +26,16 @@
          (same mechanism as the registry above) so InterpreterMap materializes it with zero runtime
          path discovery. It lives inside this project's own directory tree, so it must be pulled out of
          the SDK's implicit None glob first, otherwise it is both a None and an EmbeddedResource item. -->
+    <!-- The DIAGNOSTIC CATALOGUE (issue #558). `guardrails validate` emits codes and nothing in the
+         shipped tool could tell an operator what one meant: the only authoritative catalogue was the XML
+         doc comments in this source file, which a consumer of the packaged dotnet tool does not have.
+         Embedding the SOURCE — rather than generating a parallel table — is the whole point: a second copy
+         is what produced the drift the issue documents (16 defined codes the SSOT never mentioned, plus two
+         it named that no constant defined). Same mechanism as the two resources above. -->
+    <EmbeddedResource Include="Loading/DiagnosticCodes.cs">
+      <LogicalName>Guardrails.Core.Resources.DiagnosticCodes.cs</LogicalName>
+    </EmbeddedResource>
+
     <None Remove="Execution/guardrail-shim.ps1" />
     <EmbeddedResource Include="Execution/guardrail-shim.ps1">
       <LogicalName>Guardrails.Core.Resources.guardrail-shim.ps1</LogicalName>

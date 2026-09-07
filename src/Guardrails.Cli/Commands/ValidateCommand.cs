@@ -78,6 +78,19 @@ public static class ValidateCommand
                 + "re-run: there may be more problems this pass could not see.");
         }
 
+        // #558: where an operator meets a code for the first time is right here, and until now there was
+        // nowhere to go with it — the only catalogue was the XML doc comments in a source file, which a
+        // consumer of the packaged tool does not have. Printed only when something actually fired, so a
+        // clean run stays clean, and printed BEFORE the banner and verdict because the verdict must remain
+        // the last line (callers tail it).
+        if (diagnostics.Count > 0)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                "What does a code mean? Run 'guardrails diagnostics <code>' (e.g. "
+                + $"'guardrails diagnostics {diagnostics[0].Code}') — read-only, no plan folder needed.");
+        }
+
         // The check set is printed on EVERY run, immediately above the verdict it scopes — a clean
         // result is only as good as the checks that produced it, and before #564 nothing said what
         // those were. It sits BEFORE the verdict so the verdict stays the last line, which is what
