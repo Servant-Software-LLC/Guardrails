@@ -94,6 +94,8 @@ public sealed class PlanValidator
         ValidateBannedGuardrailPatterns(plan, diagnostics);
         ValidateUnsatisfiableGuardrailFloor(plan, diagnostics);
         ValidateGuardrailRequiresForbiddenToken(plan, diagnostics);
+        ValidateClauseProvesMentionNotCall(plan, diagnostics);
+        ValidateTaskGradesItsOwnAuthoredTest(plan, diagnostics);
         ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
@@ -2707,6 +2709,238 @@ public sealed class PlanValidator
     /// pair. Comment lines are blanked first (the #97 lesson), so a header comment describing the
     /// collision cannot be what reports it.</para>
     /// </summary>
+    /// <summary>
+    /// GR2075 (#521 gap 2): a task AUTHORS ITS OWN TEST and then grades itself with it.
+    ///
+    /// <para>Such a task has <b>no TDD-red half</b>. #155's red-then-green is not weakened here, it is
+    /// absent entirely — there is no upstream test-author task whose files could be excluded, so the "tests
+    /// gameable" rule is VACUOUSLY satisfied and the strongest anti-tautology control in the system does not
+    /// apply at all. The only remaining control over the test's honesty is whatever source-shape check the
+    /// task carries, and a source-shape check is exactly what GR2074 exists because greps get wrong.</para>
+    ///
+    /// <para>A WARNING, never an error: authoring the test alongside the wiring is legitimate — a
+    /// composition-root test often cannot exist before the thing it wires does. The requirement is that the
+    /// case be NAMED and carry a compensating control, not that it be banned.</para>
+    /// </summary>
+    private static void ValidateTaskGradesItsOwnAuthoredTest(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        // Every path any ANCESTOR may write. A test file an upstream task owns is the normal TDD shape and
+        // is not this finding — the whole point is the ABSENCE of such an upstream author.
+        foreach (TaskNode task in plan.Tasks)
+        {
+            List<string> ownTests = [.. (task.WriteScope ?? []).Where(LooksLikeTestPath)];
+            if (ownTests.Count == 0 || !AssertsItsTestsPASS(task))
+            {
+                continue;
+            }
+
+            var ancestorScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (TaskNode ancestor in AncestorsOf(plan, task))
+            {
+                foreach (string path in ancestor.WriteScope ?? [])
+                {
+                    ancestorScopes.Add(Normalize(path));
+                }
+            }
+
+            List<string> unowned = [.. ownTests.Where(t => !ancestorScopes.Contains(Normalize(t)))];
+            if (unowned.Count == 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Warning(DiagnosticCodes.TaskGradesItsOwnAuthoredTest, task.Directory,
+                $"Task '{task.Id}' authors its own test(s) — {string.Join(", ", unowned)} are in its " +
+                "writeScope and no ancestor task writes them — and then grades itself with a check over " +
+                "them. There is therefore NO TDD-red half: #155's red-then-green is not weakened here, it " +
+                "is absent entirely, because the 'implementation writeScope excludes the test-author's " +
+                "files' rule has nothing to exclude and is vacuously satisfied. The only control left over " +
+                "the test's honesty is the task's own source-shape check. This is legitimate to DO (a " +
+                "composition-root test often cannot precede the thing it wires), so it is a WARNING: either " +
+                "SPLIT it into an author-tests task upstream of the implementation, or name the exception " +
+                "in the review report with its compensating control stated. Measured on the shape that " +
+                "produced this rule: five pinned method names, four with Assert.True(true) bodies and one " +
+                "real call whose production method returns early for the fixture — exit 0, through validate, " +
+                "graph --check and a full structural review, against a COMPLETELY UNWIRED implementation."));
+        }
+    }
+
+    /// <summary>
+    /// True when the task asserts its tests PASS — the half of the pair that can grade itself.
+    ///
+    /// <para><b>This distinction is the whole lint, and getting it wrong makes the lint useless.</b> An
+    /// <c>author-tests</c> task also writes its own test files and also carries guardrails over them — and
+    /// it is the CORRECT shape, the upstream half of the TDD pair. Its checks assert the tests FAIL (the red
+    /// census: <c>tests-fail-on-stubs</c>, <c>tests-fail-on-current-code</c>), which is an assertion nothing
+    /// hollow can satisfy. Keying on "writes a test and has a guardrail" fires on every well-formed plan in
+    /// existence; keying on "writes a test and asserts it PASSES" fires on the shape that has no red half at
+    /// all.</para>
+    ///
+    /// <para>A task carrying BOTH is the pair collapsed into one task, and is still the finding — the red
+    /// census it runs is over tests it wrote itself in the same attempt.</para>
+    /// </summary>
+    private static bool AssertsItsTestsPASS(TaskNode task) =>
+        task.Guardrails.Any(g =>
+            g.Name.Contains("tests-pass", StringComparison.OrdinalIgnoreCase)
+            || g.Name.Contains("test-passes", StringComparison.OrdinalIgnoreCase)
+            || g.Name.Contains("tests-green", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Every task reachable UPSTREAM of <paramref name="task"/> through <c>dependsOn</c>.</summary>
+    private static IEnumerable<TaskNode> AncestorsOf(PlanDefinition plan, TaskNode task)
+    {
+        var byId = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<string>(task.DependsOn);
+
+        while (queue.Count > 0)
+        {
+            string id = queue.Dequeue();
+            if (!seen.Add(id) || !byId.TryGetValue(id, out TaskNode? ancestor))
+            {
+                continue;
+            }
+
+            yield return ancestor;
+
+            foreach (string next in ancestor.DependsOn)
+            {
+                queue.Enqueue(next);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A conservative "this is a test file" reading of a writeScope entry. Deliberately keyed on the
+    /// conventions this repo and the plans it generates actually use; a miss is silence, which is the right
+    /// direction for a lint whose false positive would flag a legitimate task.
+    /// </summary>
+    private static bool LooksLikeTestPath(string path)
+    {
+        string normalized = Normalize(path);
+        return normalized.Contains("test", StringComparison.OrdinalIgnoreCase)
+               && (normalized.EndsWith("tests.cs", StringComparison.OrdinalIgnoreCase)
+                   || normalized.EndsWith("test.cs", StringComparison.OrdinalIgnoreCase)
+                   || normalized.EndsWith("_test.py", StringComparison.OrdinalIgnoreCase)
+                   || normalized.EndsWith(".test.ts", StringComparison.OrdinalIgnoreCase)
+                   || normalized.EndsWith(".test.js", StringComparison.OrdinalIgnoreCase)
+                   || normalized.EndsWith(".spec.ts", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string Normalize(string path) => path.Trim().Replace('\\', '/');
+
+    /// <summary>
+    /// GR2074 (#521 gap 1): a required-present clause anchors on a DOTTED MENTION while its own
+    /// <c>catches:</c> line claims to prove a CALL.
+    ///
+    /// <para>The mention-vs-use doctrine already existed, in two places, and the guardrail that was gamed
+    /// was written by an agent with it loaded. It produced <c>Invoker\.PrepareInvocation</c> — dotted, no
+    /// trailing paren. <b>The word carrying the rule is "call"; the word that gets remembered is
+    /// "dotted."</b> A mutant whose only references were inside <c>nameof(...)</c> — zero invocations —
+    /// exited 0, while the committed valid sample still passed.</para>
+    ///
+    /// <para>Conservative in the GR2057 shape: silent unless the guardrail itself CLAIMS a call, because a
+    /// clause legitimately asserting a declaration or a type reference is correct as written.</para>
+    /// </summary>
+    private static void ValidateClauseProvesMentionNotCall(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in FourFolderScriptGuardrails(plan))
+        {
+            string? body = TryReadAllText(guardrail.Path);
+            if (body is null || !ClaimsAnInvocation(body))
+            {
+                continue;
+            }
+
+            string scanned = GuardrailClauseText.BlankCommentLines(body);
+
+            foreach (Match clause in GuardrailClauseText.PresenceClause.Matches(scanned))
+            {
+                // REQUIRED-present only: `-notmatch` means the absence fails, so the clause demands the
+                // pattern. A `-match` clause is a prohibition and this rule says nothing about it.
+                if (!clause.Groups["neg"].Success
+                    || !BranchFailsTheGuardrail(scanned, clause.Index + clause.Length - 1))
+                {
+                    continue;
+                }
+
+                string pattern = clause.Groups["pat"].Value.Replace("''", "'", StringComparison.Ordinal);
+                if (!IsDottedMentionWithoutCall(pattern))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(Warning(DiagnosticCodes.ClauseProvesMentionNotCall, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' line {LineNumberAt(scanned, clause.Index)} REQUIRES " +
+                    $"'{ClauseExcerpt(pattern)}', which anchors on a dotted MENTION and never on a CALL — " +
+                    @"there is no '\(' in the pattern — while this guardrail's own catches: line says it " +
+                    "proves a call, an invocation or wiring. A mention satisfies it: a `nameof(Type.Member)` " +
+                    "in a dead field, a comment-free string literal, or an XML doc reference all match, with " +
+                    "ZERO invocations. Measured on the task that produced this rule: such a mutant exited 0 " +
+                    "while the committed valid sample still passed, so the check was not broadly broken — " +
+                    "only toothless in the one direction it existed for. Fix: append the trailing paren " +
+                    @"(`\.Member\s*\(`), which is what the #76 doctrine actually says. If the clause is " +
+                    "deliberately asserting a DECLARATION or a type reference rather than a call, reword the " +
+                    "catches: line to say so — this lint reads that line to decide whether to speak."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the guardrail's header comments claim to prove a CALL. Read from the header rather than
+    /// inferred, because intent is exactly what cannot be recovered from a regex — and a lint that guessed
+    /// would fire on every clause that correctly asserts a declaration.
+    /// </summary>
+    /// <summary>
+    /// The words a <c>catches:</c> line uses when it claims to prove an invocation. Word-anchored, so
+    /// "recall" and "wireframe" do not trip it — a lint that fired on a substring would be noise, and noise
+    /// is how a warning stops being read.
+    /// </summary>
+    private static readonly Regex InvocationClaim = new(
+        @"\b(calls?|called|calling|invokes?|invoked|invocation|wires?|wired|wiring|drives?|driven)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>A dotted member reference, escaped or not: <c>Type\.Member</c> or <c>Type.Member</c>.</summary>
+    private static readonly Regex DottedReference = new(
+        @"[A-Za-z_][A-Za-z0-9_]*\\?\.[A-Za-z_][A-Za-z0-9_]*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static bool ClaimsAnInvocation(string body)
+    {
+        foreach (string line in body.Split('\n'))
+        {
+            string trimmed = line.TrimStart();
+            if (!trimmed.StartsWith("#", StringComparison.Ordinal))
+            {
+                // Header comments only: a claim buried in the middle of a script is not the declaration.
+                if (trimmed.Length > 0)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            if (InvocationClaim.IsMatch(trimmed))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="pattern"/> contains a dotted reference and NO literal open paren anywhere
+    /// — the shape that matches a mention and cannot distinguish it from a call.
+    ///
+    /// <para>The escaped paren is the whole test. A pattern carrying one is anchored on an invocation
+    /// somewhere, and this lint has nothing to say about it; a pattern carrying none cannot tell
+    /// <c>nameof(X.Y)</c> from <c>x.Y()</c>.</para>
+    /// </summary>
+    private static bool IsDottedMentionWithoutCall(string pattern) =>
+        DottedReference.IsMatch(pattern)
+        && !pattern.Contains("\\(", StringComparison.Ordinal);
+
     private static void ValidateGuardrailRequiresForbiddenToken(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         foreach (GuardrailDefinition guardrail in FourFolderScriptGuardrails(plan))

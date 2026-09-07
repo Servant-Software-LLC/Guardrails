@@ -392,6 +392,29 @@ it is the single most likely `needs-human` in a run (the exact retry-cheapness a
   one never went green in 12 attempts. So splitting is right by default — but if you have a reason not
   to (a one-line change to each half), say so in the report rather than splitting on reflex.
 
+**A task that authors its own test and then grades itself with it is a NAMED exception (#521).** When a
+task's `writeScope` contains a test file, no ancestor authors that file, and the task carries a
+`tests-pass`-shaped guardrail over it, the task has **no TDD-red half** — #155's red-then-green is not
+weakened, it is ABSENT, because the "implementation writeScope excludes the test-author's files" rule has
+nothing to exclude and is vacuously satisfied. Prefer the SPLIT (an `author-tests` task upstream). Where the
+split is genuinely impossible — a composition-root test often cannot precede the thing it wires — emit it as
+a **named exception in the Step 7.4 report with the compensating control stated**. `validate` warns
+**GR2075**.
+
+**And when that compensating control is a source-shape grep, the grep's teeth become load-bearing.** The
+mention-vs-use rule (#76 / Probe B operator 9) says anchor on a **CALL**: `\.Member\s*\(`, with the trailing
+paren. A dotted reference alone matches `nameof(Type.Member)` in a dead field. Measured on the task that
+produced this rule: a mutant with **zero invocations** exited 0 while the committed valid sample still
+passed — the check was not broken, only toothless in the one direction it existed for, and it had been
+written by an agent with the doctrine loaded. `validate` warns **GR2074** when a required clause is dotted,
+carries no `\(`, and the guardrail's own `catches:` line claims to prove a call.
+
+**Neither alone is a blocker; together they are.** With a real red half, a hollow test is caught by the
+census whatever the grep accepts. With a call-anchored grep, the missing red half is covered by the
+structural check. Together the only control over the test's honesty is a grep that accepts a mention — and
+the task goes green with nothing wired. **The general rule: when a task's anti-tautology proof rests on
+exactly ONE control, that control's known-weak operators are BLOCKERs, not WEAKs.**
+
 **A task that changes a cross-cutting OUTPUT owns the goldens that pin it — or the report names them
 (#541).** The doctrine already carries the cross-cutting-output re-baseline rule keyed on a task's test
 FILTER. Key it on the COMPONENT as well: when a task's `writeScope` touches a renderer, serializer,
