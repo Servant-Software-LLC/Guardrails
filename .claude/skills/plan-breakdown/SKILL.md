@@ -1136,12 +1136,19 @@ optional:
   via DI) they assert only that *an* importer was called, never **which concrete type** — so an inverted
   wiring (Mode B → the wrong importer) ships fully green. A bare keyword check that all enum values AND
   all type names appear *somewhere* in the file does NOT catch it (all are present regardless of
-  pairing). Add **one proximity check per pairing** (catalogue → "Dispatch / factory wiring";
-  `stacks/dotnet.md §10d`): assert `<EnumValue>` sits within a bounded window (`[\s\S]{0,300}`,
-  multiline-dotall, both orders) of `<ConcreteType>` in the dispatch file, scoped to that one file.
-  **Decision gate:** if the dispatch tests already assert the concrete TYPE NAME
-  (`Assert.IsType<TcApiLocalImporter>` on the resolved object), the test catches the swap — OMIT the
-  proximity check and say so in the covering guardrail's `# catches:` comment. Distinct from #120
+  pairing). **Reach for the TYPE-ASSERTING TEST first (#491)** — `Assert.IsType<TcApiLocalImporter>` on
+  the object the dispatch resolves for that mode. It is rung 1 under #468: a claim about what the code
+  DOES, proved directly, and a swap fails it. This leaf said the opposite until #491 — it led with the
+  regex and treated the test as the exception that permits omitting it, which is the default #468 exists
+  to end.
+  **The proximity check is the FALLBACK** (catalogue → "Dispatch / factory wiring"; `stacks/dotnet.md
+  §10d`), for a dispatch whose resolution is buried behind DI a guardrail cannot drive: assert
+  `<EnumValue>` sits within a bounded window (`[\s\S]{0,300}`, multiline-dotall, both orders) of
+  `<ConcreteType>` in the dispatch file, scoped to that one file — and carry the #468 report obligation,
+  stating why no test could carry the claim. Know what it is worth: a proximity window is Probe B
+  operator 4 verbatim, the operator #479 added BECAUSE windows are gameable, and #470 measured one
+  matching two unrelated tokens two lines apart. Where the type-asserting test exists, do not add the
+  window on top — say so in the covering guardrail's `# catches:` comment. Distinct from #120
   composition-root wiring (which asks whether the impl is constructed/injected at all); this asks
   whether each mode got the right one. Fire only when **both** hold: ≥2 concrete impls selected by an
   enum, AND the dispatch tests use seam-injection (not type assertions).

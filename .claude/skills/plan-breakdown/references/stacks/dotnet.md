@@ -1424,9 +1424,22 @@ The .NET realization of the catalogue's "Dispatch / factory wiring" archetype. #
 The build passes with the branches **swapped** (every impl satisfies `ICommanderImporter`, so either
 compiles in either arm), and a seam-injected dispatch test (`RecordingImporter` registered via DI,
 asserting only that `ICommanderImporter.ImportAsync` was called) passes on the inverted wiring — it
-never checks the concrete type. Emit **one proximity guardrail per pairing**, scoped to the one dispatch
-file, with a **multiline-dotall** window in **both orders** (`[\s\S]{0,300}`, NOT single-line `.{0,300}`
-which stops at the first newline):
+never checks the concrete type.
+
+**Reach for the TYPE-ASSERTING TEST first (#491).** In C# that is:
+
+```csharp
+Assert.IsType<TcApiLocalImporter>(dispatch.Resolve(ImportMode.TcApiLocal));
+```
+
+It proves the pairing directly, a swap fails it, and it cannot be satisfied by two names sitting near
+each other in a file. This ordering used to be stated only at the END of this section, after the regex
+had been shown and explained — which is the #490 shape: the layer that gets copy-pasted contradicted the
+layer that gets read. What follows is the FALLBACK, for a dispatch whose resolution is buried behind DI
+a guardrail cannot drive; shipping it carries the #468 report obligation to say why no test could carry
+the claim. Emit **one proximity guardrail per pairing**, scoped to the one dispatch file, with a
+**multiline-dotall** window in **both orders** (`[\s\S]{0,300}`, NOT single-line `.{0,300}` which stops
+at the first newline):
 
 ```powershell
 # catches: ImportMode.TcApiLocal wired to the WRONG importer (e.g. swapped with CommanderRestImporter).
@@ -1441,13 +1454,14 @@ if ($content -cnotmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImp
 exit 0
 ```
 
-Repeat for each `<ImportMode value, ConcreteImporter>` couple. **Decision gate (omit when redundant):**
-if the dispatch test asserts the concrete type — `Assert.IsType<TcApiLocalImporter>(dispatch.Resolve(ImportMode.TcApiLocal))`
-— the test already catches the swap; drop the proximity guardrail and record why in the covering
-guardrail's `# catches:` comment. The C# type-asserting test is the **stronger** form when you can
-resolve the real concrete object without standing up the whole feature; the source-proximity grep is the
-fallback when the dispatch can only be inspected statically (the resolution is buried behind DI you can't
-easily drive in a guardrail). Prefer the type assertion, then the proximity grep.
+Repeat for each `<ImportMode value, ConcreteImporter>` couple.
+
+**And know what you shipped.** A proximity window is Probe B operator 4 verbatim — the operator #479 added
+BECAUSE windows are gameable — and #470's third measured instance was a dotall window matching
+`CreateDirectory(…"guardrails"))` against `"action.prompt.md"` two lines later. Two names within 300
+characters is a claim about layout, not about wiring. Where the type-asserting test exists, do not add the
+window on top: that is duplicate coverage, not extra safety — record why in the covering guardrail's
+`# catches:` comment.
 
 ### 10e. Drive-the-real-seam contract test — prove the component through the ACTUAL seam (#382)
 

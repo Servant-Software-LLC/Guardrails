@@ -1795,7 +1795,10 @@ Mode C to the other — and ship the feature **inverted**. The usual gates all s
 
 So the swap survives every check that doesn't bind a **specific enum value to a specific concrete type**.
 
-### The archetype: one proximity check per enum→concrete pairing
+### The archetype: prefer the type-asserting test; the proximity check is the fallback
+
+**Read the DECISION GATE below before writing either form** — it was inverted until #491 and the ordering
+is the whole point. What follows is the FALLBACK's exact shape, not the first thing to reach for.
 
 For each of the N pairings, add **one** guardrail asserting `<EnumValue>` appears within a **bounded
 window** (~300 characters — a single short `if` block) of `<ConcreteType>` in the dispatch file. Use a
@@ -1831,14 +1834,35 @@ Emit the pairing checks only when **both** are true; otherwise they are noise:
    an `InMemoryX` registered via DI) that proves *routing* but **not type identity** — so the swap is
    invisible to the test suite.
 
-### DECISION GATE — omit when the tests already assert the concrete type
+### DECISION GATE — the TEST is rung 1; the proximity regex is the fallback (#491)
 
-**If the dispatch tests assert the concrete TYPE NAME** (e.g. `Assert.IsType<TcApiLocalImporter>(...)`
-on the object the dispatch resolved for Mode C, not merely that *an* importer was called), the test
-**already catches the swap** and this guardrail is **redundant** — **omit it** and state why in the
-`# catches:` comment of whatever guardrail covers the dispatch (e.g. `# pairing not separately checked:
-DispatchTests assert IsType<TcApiLocalImporter> for Mode C, so a swap fails the tests`). Adding the
-proximity check on top of a type-asserting test is duplicate coverage, not extra safety.
+**This gate used to read the other way round**, and that inversion is the finding #491 raised: it treated
+a type-asserting test as *the exception that permits omitting the regex*, which is exactly the default
+#468 was written to end. Ordered correctly:
+
+**Rung 1 — assert the concrete TYPE the dispatch resolved.** `Assert.IsType<TcApiLocalImporter>(...)` on
+the object the dispatch returns for Mode C — not merely that *an* importer was called. This is a claim
+about what the code DOES, and a behavioural test proves it directly and completely. **Prefer it always.**
+A swap fails it, and unlike the window below it cannot be satisfied by two names sitting near each other.
+
+**Rung 3 — the proximity window, when rung 1 genuinely cannot be written**, and then with the #468 report
+obligation: **state in the Step 7.4 report WHY no test could carry it.** The honest cases are narrow — a
+dispatch with no resolvable seam to assert against, or a pairing expressed only in a config file no test
+loads.
+
+**#158 is NOT on the demotion gate's exempt list, and this is why.** That list is for structural facts
+with **no runtime proxy** — build-descriptor registration, cross-module reference chains, entry-point
+wiring. A pairing fact HAS a runtime proxy, and the archetype's own text has always named it: the
+type-asserting test. An archetype that names its own runtime proxy cannot claim it has none.
+
+**Know what the fallback is worth.** A proximity window is **Probe B operator 4 verbatim** — the operator
+#479 added *because* windows are gameable — and #470's third measured instance was a dotall window
+matching `CreateDirectory(…"guardrails"))` against `"action.prompt.md"` two lines later. Two names inside
+300 characters is a claim about layout, not about wiring. When you ship one, ship it knowing that.
+
+Where a type-asserting test already exists, do not add the window on top: that is duplicate coverage, not
+extra safety. Say so in the `# catches:` comment of whatever guardrail covers the dispatch (e.g.
+`# pairing not separately checked: DispatchTests assert IsType<TcApiLocalImporter> for Mode C`).
 
 Relation to #120: composition-root wiring asks whether `FooImpl` is constructed/injected *at all*; this
 asks whether — given it IS wired — each mode got the **right** impl. A plan can need both (wire the
