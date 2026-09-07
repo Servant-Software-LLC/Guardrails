@@ -37,8 +37,34 @@ public sealed class PlanLoader
     /// Plan-root subdirectories that are NOT waves and must not be mistaken for a non-conforming wave dir
     /// (GR2033). These are the harness/runtime folders that legitimately sit alongside the wave dirs.
     /// </summary>
+    /// <summary>
+    /// Folders that may sit at the plan root without being a wave directory (GR2033).
+    ///
+    /// <para>
+    /// <c>samples</c> joined the set in #509. A plan-root guardrail is exactly the check whose failure is
+    /// widest — a task guardrail that cannot fail passes one task; a wave-entry or plan-terminal gate that
+    /// cannot fail waves the whole wave, or the whole plan, through — and it had literally nowhere to put
+    /// a sample pair on a WAVED plan: <c>&lt;plan&gt;/samples/</c> was a hard GR2033 error, so an author who
+    /// did the discipline correctly had to throw the fixtures away.
+    /// </para>
+    ///
+    /// <para>
+    /// That was also an inconsistency inside the harness. <c>SampleVerifier</c> walks
+    /// <c>&lt;plan&gt;/samples/&lt;check&gt;/{valid,invalid}/</c> (#624) and the pre-DAG gate executes what it
+    /// finds — so the verifier read a folder the loader refused to load. It went unnoticed because the
+    /// #624 tests use a FLAT plan, where this check never runs.
+    /// </para>
+    ///
+    /// <para>
+    /// Like <c>tasks/&lt;id&gt;/samples/</c>, this folder is NOT enumerated as guardrails and is NOT part of
+    /// any definition hash (SSOT §1.1): it is evidence ABOUT a check, not part of the plan's behaviour.
+    /// </para>
+    /// </summary>
     private static readonly IReadOnlySet<string> KnownPlanRootFolders =
-        new HashSet<string>(StringComparer.Ordinal) { "state", "logs", "guardrails", "preflights", "captured", "tasks" };
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "state", "logs", "guardrails", "preflights", "captured", "tasks", "samples"
+        };
 
     /// <summary>Load the plan rooted at <paramref name="planDirectory"/>.</summary>
     public PlanLoadResult Load(string planDirectory)
