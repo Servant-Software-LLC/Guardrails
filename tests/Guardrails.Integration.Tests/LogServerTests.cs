@@ -9,8 +9,9 @@ namespace Guardrails.Integration.Tests;
 /// <summary>
 /// Exercises the loopback <see cref="LogServer"/> end-to-end over a temp plan folder with
 /// hand-written attempt logs. The canonical "all tasks" page is the static index FILE (issue #143),
-/// so the live <c>/</c> route is a pointer note at that file's path (NOT a task table) and the
-/// per-task page is an active-task deadend (no "all tasks" link). The per-task <c>/files</c> and
+/// so the live <c>/</c> route still names that file's path — but since #573 it ALSO renders the task
+/// table with live links to the per-task tails this server serves, because a page advertised as the live
+/// view must not be a dead end. The per-task <c>/files</c> and
 /// <c>/file</c> endpoints surface the latest attempt's log files, unknown tasks 404, and the file
 /// endpoint refuses to escape the attempt directory. The server binds to localhost only.
 /// </summary>
@@ -19,26 +20,72 @@ public sealed class LogServerTests
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     [Fact]
-    public async Task Root_IsPointerNote_ToStaticIndexFile_NotATaskTable()
+    public async Task Root_ListsEveryTaskWithALiveLink_soTheAdvertisedUrlIsNotADeadEnd()
     {
-        // Issue #143: the http server no longer serves its own all-tasks landing. GET / is a small note
-        // pointing at the canonical static index FILE by path (a browser blocks http→file, so it is
-        // shown as text), and it does NOT render the dynamic task table / per-task /tasks/{id} links.
+        // #573 REVERSES the shape #143 left behind, and the reason is worth stating because the two look
+        // like they disagree. #143's ruling — the canonical, durable all-tasks page is the static index
+        // FILE, which works without this server — still holds, and is still asserted below. What #143 also
+        // did, as a side effect, was leave `GET /` as a page whose only content was a file path it could not
+        // link to, plus an explanation of why not.
+        //
+        // That page was advertised by `guardrails run` as the live view, so operators opened it. Reported
+        // mid-run: "This page seems useless to me. I thought that it was going to have a TMUX style version
+        // of the console." Every sentence on it was true and it was still a dead end: the one action it
+        // recommended was the one it could not offer, and it rendered NONE of the run state the server
+        // already holds.
+        //
+        // It holds the task list and can see every attempt directory, so it renders them.
         using var temp = new TempPlan();
         IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First task"), Task("02-beta", "Second task")];
         await using LogServer server = Start(temp.Dir, tasks);
 
         string html = await GetStringAsync(server.BaseUrl);
 
-        // It names the static index file's path under this run's logs/<runId>/ tree.
-        string indexPath = Path.GetFullPath(Path.Combine(temp.Dir, "logs", TempPlan.RunId, "index.html"));
-        Assert.Contains(indexPath, html);
-        Assert.Contains("static index", html);
+        // Every task, each linked to the per-task tail THIS server actually serves — which is what makes
+        // the link honest, as opposed to pointing at something it cannot reach.
+        Assert.Contains("/tasks/01-alpha", html, StringComparison.Ordinal);
+        Assert.Contains("/tasks/02-beta", html, StringComparison.Ordinal);
+        Assert.Contains("01-alpha", html, StringComparison.Ordinal);
+        Assert.Contains("02-beta", html, StringComparison.Ordinal);
 
-        // The retired landing's task table / per-task links are gone.
-        Assert.DoesNotContain("/tasks/01-alpha", html);
-        Assert.DoesNotContain("<th>Description</th>", html);
-        Assert.DoesNotContain("<th>Status</th>", html);
+        // #143's contract, intact: the static index is still named, by absolute path, as the fuller durable
+        // page. It is now an ALTERNATIVE rather than the only way out.
+        string indexPath = Path.GetFullPath(Path.Combine(temp.Dir, "logs", TempPlan.RunId, "index.html"));
+        Assert.Contains(indexPath, html, StringComparison.Ordinal);
+        Assert.Contains("static index", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Root_RefreshesItself_becauseAPageOpenedToWatchARunMustNotGoStale()
+    {
+        // The page exists to be left open while a run moves underneath it. Without this it shows the state
+        // at the moment it was opened, forever — which is the same class of defect as the dead end it
+        // replaces: a live surface that is not live.
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First task")]);
+
+        string html = await GetStringAsync(server.BaseUrl);
+
+        Assert.Contains("location.reload()", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Root_MarksATaskWithNoAttemptDirectoryAsNotStarted()
+    {
+        // The state column is derived from the filesystem, not from a journal read — this page must never
+        // be a second reader that can disagree with the one the operator is watching. A task the harness
+        // has not reached has no attempt directory, and saying "not started" is the honest reading of that.
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [Task("09-never-ran", "Not reached")]);
+
+        string html = await GetStringAsync(server.BaseUrl);
+
+        // Asserted on the ROW, not merely on the page. The first version of this checked
+        // Assert.Contains("not started", html) and a mutation that reported every unstarted task as
+        // "running" SURVIVED it — the phrase also occurred in the page's own explanatory sentence, so the
+        // test was reading the prose beside the table rather than the table. The prose was reworded and the
+        // assertion moved onto the cell.
+        Assert.Contains("<td><span class=\"muted\">not started</span></td>", html, StringComparison.Ordinal);
     }
 
     [Fact]

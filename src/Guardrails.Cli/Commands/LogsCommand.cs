@@ -130,7 +130,7 @@ public static class LogsCommand
 
             bool linkable = !Console.IsOutputRedirected && Spectre.Console.AnsiConsole.Profile.Capabilities.Links;
             output.WriteLine($"All tasks (static log site): {RunCommand.Hyperlink(staticIndexPath, linkable)}");
-            output.WriteLine($"Live tailing server (active tasks): {server.BaseUrl} — press Ctrl-C to stop.");
+            output.WriteLine($"Live run view (all tasks, auto-refreshing): {server.BaseUrl} — press Ctrl-C to stop.");
 
             if (!noOpen)
             {

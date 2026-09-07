@@ -588,7 +588,10 @@ public static class RunCommand
                 // static index links a RUNNING task to (issue #143). De-emphasised accordingly.
                 // This goes to io.Out, so under `> run.log 2>&1` it lands in the redirected stream —
                 // which is exactly where an unattended operator goes looking for it (#552).
-                io.Out.WriteLine($"Live tailing server (active tasks): {logServer.BaseUrl}\n");
+                // #573: the label said "active tasks", which under-sold a page that was, at the time,
+                // a dead end — and now under-sells one listing every task with live links. "Live run
+                // view" is what an operator is scanning this line for.
+                io.Out.WriteLine($"Live run view (all tasks, auto-refreshing): {logServer.BaseUrl}\n");
             }
             else
             {
