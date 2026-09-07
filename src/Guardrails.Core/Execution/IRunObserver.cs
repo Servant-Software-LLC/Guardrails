@@ -283,6 +283,34 @@ public interface IRunObserver
         string? failureKind,
         Model.WaveNode? authoredWave) { }
 
+    /// <summary>
+    /// The JIT breakdown is WAITING OUT a provider quota/session limit rather than ending the run (#511).
+    ///
+    /// <para><b>This event is half the feature.</b> The bug it closes was reported as <i>"looks like it
+    /// finished the wave, but is stuck and won't start the next wave"</i> — the operator read a dead run as a
+    /// hang, and diagnosing it meant reading <c>claude-stream.jsonl</c> by hand. Replacing that death with a
+    /// SILENT twelve-hour wait would be strictly worse than the crash. So an observer must be able to render,
+    /// continuously, the difference between "healthy, waiting until 03:00" and "dead" — which is the whole
+    /// distinction the harness's UX doctrine is built on.</para>
+    ///
+    /// <param name="context">The breakdown phase that is waiting.</param>
+    /// <param name="reason">The provider's own words, named as a LIMIT — never a generic "transient".</param>
+    /// <param name="wait">How long until <paramref name="probe"/> fires: <c>min(reset, now + interval)</c>.</param>
+    /// <param name="probe">1-based ordinal of the probe this wait precedes.</param>
+    /// <param name="resetInstant">The reset the harness is working from, or null when it has no usable hint.</param>
+    /// <param name="waitedSoFar">Cumulative time already spent waiting at this barrier.</param>
+    ///
+    /// <para>Default no-op; a transparent DECORATOR must forward it EXPLICITLY or the wait goes silent in
+    /// every mode — the <see cref="VerifierAdvisoryFound"/> lesson, and the one that matters most here.</para>
+    /// </summary>
+    void WaveBreakdownPaused(
+        WaveBreakdownContext context,
+        string reason,
+        TimeSpan wait,
+        int probe,
+        DateTimeOffset? resetInstant,
+        TimeSpan waitedSoFar) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

@@ -471,6 +471,17 @@ terminal row, and the security posture are the SSOT, not duplicated here:
     re-runs the same attempt, surfacing a distinct `PromptPaused` observer event. A rate limit is
     NEVER `needs-human` until the pause budget is spent (then a distinct `rate-limited` outcome,
     "re-run later"). A cleared pause is never journaled (observe-only).
+    **Two horizons since #511, one mechanism, BOTH doors.** The short exponential above is for a blip.
+    A limit that names its own RESET ("resets 8:30pm") is a quota window measured in hours, and polls
+    instead: `min(resetInstant, now + providerProbeIntervalMinutes)`, bounded by `maxProviderWaitHours`
+    (default 12, enough to cover a night; `0` disables the poll horizon). The reset hint is the
+    DISCRIMINATOR, never a dependency -- no hint simply means pure interval polling. The **wave
+    barrier** polls regardless of hint, because its alternative to waiting is ENDING THE RUN and
+    re-paying a whole breakdown. Polling rather than sleeping to the stated reset because providers
+    move these limits and often reset EARLY, and the probe is the real unit of work: wrong costs one
+    second and $0.00, right simply IS the run continuing. The wait is announced continuously (limit,
+    reset, next probe, elapsed) -- a silent 12-hour wait is worse than the crash it replaces, and the
+    exhaustion halt NAMES the provider limit rather than claiming a validation failure.
   - **OutputCap** (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, default raised to 64000 via `maxOutputTokens`):
     distinct `output-cap` outcome + actionable "write incrementally / split" retry feedback.
   - **Timeout**: distinct `timeout` outcome + **mode-aware** retry feedback (issue #167) -- in

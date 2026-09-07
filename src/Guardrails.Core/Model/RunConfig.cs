@@ -53,12 +53,44 @@ public sealed record RunConfig
     /// consume the retry budget: the harness backs off (bounded exponential) and re-runs the same
     /// attempt. This is the named bound on "a rate limit must never mark needs-human" — only if the
     /// limit fails to clear within this whole-task budget does the task settle <c>needs-human</c>
-    /// with a distinct rate-limit reason ("re-run later"). Default 1800s (30 min). A non-positive
-    /// value disables pausing (a transient signal is then treated as a normal action failure).
-    /// Default 14400s (4h) — a long unattended/overnight run must ride out a provider outage or a
-    /// multi-hour usage-limit window without settling <c>needs-human</c> (issue #189).
+    /// with a distinct rate-limit reason ("re-run later"). Default 14400s (4h) — a long unattended/overnight
+    /// run must ride out a provider outage or a multi-hour usage-limit window without settling
+    /// <c>needs-human</c> (issue #189). A non-positive value disables pausing entirely (a transient signal is
+    /// then treated as a normal action failure).
+    ///
+    /// <para>Since #511 this bounds the EXPONENTIAL horizon specifically — the blip, the brief 503. A limit
+    /// that names its own reset ("resets 8:30pm") is the long-horizon kind and is bounded by
+    /// <see cref="MaxProviderWaitHours"/> instead, at the probe cadence
+    /// <see cref="ProviderProbeIntervalMinutes"/> sets.</para>
     /// </summary>
     public int TransientPauseBudgetSeconds { get; init; } = 14400;
+
+    /// <summary>
+    /// How often to probe a provider that is refusing on a quota/session limit, in minutes (issue #511).
+    /// The wait is <c>min(resetInstant, now + probeInterval)</c>, so this is a CEILING on the wait, not a
+    /// fixed cadence: a reset arriving sooner wins.
+    ///
+    /// <para>Polling rather than sleeping to the stated reset because that time is an upper bound, not a
+    /// schedule — providers move these limits and frequently reset early, and a probe that is wrong costs
+    /// one second and $0.00 (measured on the run that reported #511). Default 30 minutes.</para>
+    ///
+    /// <para>Note that <see cref="TransientPauseBudgetSeconds"/> bounds the EXPONENTIAL horizon — the blip,
+    /// the brief 503. This key and <see cref="MaxProviderWaitHours"/> govern the other horizon: a limit that
+    /// names its own reset, which is a quota window measured in hours.</para>
+    /// </summary>
+    public int ProviderProbeIntervalMinutes { get; init; } = 30;
+
+    /// <summary>
+    /// The total bound on waiting out a provider quota limit, in hours (issue #511). Default 12 — long
+    /// enough to cover a night, because the harness exists to carry unattended overnight runs and losing one
+    /// to a limit that cleared by itself at 02:00 is the most expensive way it can fail.
+    ///
+    /// <para>The bound exists so a permanently revoked key cannot hang a run forever; on exhaustion the run
+    /// halts with the honest reason. Set it to <c>0</c> to switch the poll horizon off entirely — the policy
+    /// then reduces exactly to the pre-#511 bounded exponential, which is what an interactive session that
+    /// would rather fail fast than wait out a quota wants.</para>
+    /// </summary>
+    public int MaxProviderWaitHours { get; init; } = 12;
 
     /// <summary>How guardrail failures are handled within an attempt. Default <see cref="GuardrailMode.FailFast"/>.</summary>
     public GuardrailMode GuardrailMode { get; init; } = GuardrailMode.FailFast;

@@ -158,8 +158,14 @@ public sealed class TaskExecutor : ITaskExecutor
 
         // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
         // consuming the retry budget, bounded by the cumulative wall-clock pause budget.
+        // #511 gives that budget a SECOND horizon: a limit that names its reset ("resets 8:30pm") is a
+        // quota window measured in hours, not a blip, so it polls toward the reset instead of hammering a
+        // 60s ceiling for the whole budget. Same class, same door, one extra pair of config keys.
         var backoff = new TransientBackoff(
-            TimeSpan.FromSeconds(_plan.Config.TransientPauseBudgetSeconds), _transientDelay);
+            TimeSpan.FromSeconds(_plan.Config.TransientPauseBudgetSeconds),
+            _transientDelay,
+            probeInterval: TimeSpan.FromMinutes(_plan.Config.ProviderProbeIntervalMinutes),
+            providerWaitBound: TimeSpan.FromHours(_plan.Config.MaxProviderWaitHours));
         int timeoutRetries = 0;
         // One auto-escalation counter for turn-budget exhaustion (issue #129 / #94), mirroring the
         // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
@@ -244,7 +250,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 }
 
                 string reason = attempt.TransientReason ?? "transient infrastructure error";
-                TimeSpan delay = backoff.NextDelay();
+                TimeSpan delay = backoff.NextDelay(attempt.TransientResetHint);
                 int pauseOrdinal = backoff.PauseCount + 1;
 
                 // #515: journal the pause WHERE IT HAPPENS, not only where the budget runs out. Before this,
@@ -267,11 +273,14 @@ public sealed class TaskExecutor : ITaskExecutor
                     At = DateTimeOffset.UtcNow,
                     Reason = reason,
                     WaitSeconds = delay.TotalSeconds,
+                    // #511: NextDelay above has just chosen a horizon; record which, so a reader of
+                    // run.json can tell a blip being ridden out from a quota window being waited on.
+                    Horizon = backoff.LastHorizon == TransientHorizon.Poll ? "poll" : "exponential",
                     ResetHint = attempt.TransientResetHint
                 });
 
                 _observer.PromptPaused(task, reason, delay, pauseOrdinal);
-                await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
+                await backoff.PauseAsync(cancellationToken, attempt.TransientResetHint).ConfigureAwait(false);
             }
 
             last = attempt.Result;

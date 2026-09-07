@@ -177,6 +177,27 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    // #511. The reported symptom was "looks like it finished the wave, but is stuck" — for a run that had
+    // DIED. Replacing that death with a silent twelve-hour wait would trade one indistinguishable-from-hung
+    // state for a longer one, so every wait prints, naming the LIMIT (not a generic "transient"), the reset
+    // it is working from, when the next probe fires, and how long it has been waiting.
+    public void WaveBreakdownPaused(
+        WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
+        DateTimeOffset? resetInstant, TimeSpan waitedSoFar)
+    {
+        lock (_gate)
+        {
+            string reset = resetInstant is { } r ? $"; provider says it resets {r:HH:mm}" : "";
+            string sofar = waitedSoFar > TimeSpan.Zero
+                ? $"; waited {BreakdownProgress.FormatClock(waitedSoFar)} so far"
+                : "";
+            _output.WriteLine(
+                $"[paused] {context.WaveDir}: PROVIDER LIMIT — {reason}{reset}. Probe {probe} in "
+                + $"{BreakdownProgress.FormatClock(wait)}{sofar}. The run is HEALTHY and will resume by "
+                + "itself; it does NOT count against retries.");
+        }
+    }
+
     public void WaveBreakdownStarting(WaveBreakdownContext context)
     {
         lock (_gate)

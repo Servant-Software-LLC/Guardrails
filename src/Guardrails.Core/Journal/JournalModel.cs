@@ -561,6 +561,19 @@ public sealed record TransientPauseRecord
     public required double WaitSeconds { get; init; }
 
     /// <summary>
+    /// WHICH schedule chose <see cref="WaitSeconds"/> — <c>"exponential"</c> or <c>"poll"</c> (issue #511).
+    ///
+    /// <para>Without it the number alone is ambiguous in exactly the way that matters to a post-mortem: a
+    /// 30-second wait is a blip being ridden out, and a 30-MINUTE wait is the harness deliberately waiting
+    /// on a quota window — two different stories, and only the horizon separates them. Recording the
+    /// DECISION rather than leaving the duration to be interpreted is the same rule the tests follow
+    /// (#518), applied to the journal.</para>
+    ///
+    /// <para>Null on records written before #511 and on the never-paused path.</para>
+    /// </summary>
+    public string? Horizon { get; init; }
+
+    /// <summary>
     /// The reset hint the runner parsed out of the provider's message ("3pm", "in 2 hours"), when it gave
     /// one. Absent (never <c>null</c> noise) when it did not. It is ALSO folded into
     /// <see cref="Reason"/>'s prose — this field is the machine-readable half, so a reader does not have to

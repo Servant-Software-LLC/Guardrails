@@ -180,6 +180,11 @@ public sealed class PlanLoader
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
             TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 14400,
+            // #511: the two keys governing the POLL horizon. A negative value would produce a negative
+            // TimeSpan and a nonsensical wait, so both floor at 0 — and 0 for the wait bound is the
+            // documented off switch, not an error.
+            ProviderProbeIntervalMinutes = Math.Max(0, raw.ProviderProbeIntervalMinutes ?? 30),
+            MaxProviderWaitHours = Math.Max(0, raw.MaxProviderWaitHours ?? 12),
             GuardrailMode = mode,
             // #526: an ABSENT workspace resolves to the enclosing git repository ROOT, not to the plan
             // folder's parent. An EXPLICIT value always wins, including an explicit "..".

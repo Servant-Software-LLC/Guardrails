@@ -271,6 +271,11 @@ public sealed class RunEventStream : IRunObserver
         _inner.WaveGateFinished(wave, isEntryGate, checks);
 
     /// <inheritdoc/>
+    public void WaveBreakdownPaused(
+        WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
+        DateTimeOffset? resetInstant, TimeSpan waitedSoFar) =>
+        _inner.WaveBreakdownPaused(context, reason, wait, probe, resetInstant, waitedSoFar);
+
     public void WaveBreakdownStarting(WaveBreakdownContext context) => _inner.WaveBreakdownStarting(context);
 
     /// <inheritdoc/>

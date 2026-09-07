@@ -98,7 +98,13 @@ public sealed class SchedulerBreakdownDurabilityTests
         PlanDefinition plan, RunJournal journal, IWorktreeProvider provider, WaveBreakdownInvoker invoker) =>
         new(plan, new GreenExecutor(), journal,
             worktreeProvider: provider, observer: IRunObserver.Null, maxParallelism: 4,
-            reVerifier: null, breakdownInvoker: invoker, breakdownConfirmations: null);
+            reVerifier: null, breakdownInvoker: invoker, breakdownConfirmations: null,
+            // #511: a barrier transient now WAITS AND POLLS rather than ending the run, and the production
+            // cadence is half an hour. Injecting the delay keeps these tests sleep-free while leaving them on
+            // the real code path — the transient case below still makes every probe the policy calls for,
+            // just instantly. Omitting this does not fail the suite, it HANGS it (24 probes x 30 minutes),
+            // which is the more expensive way to find out.
+            providerWaitDelay: (_, _) => Task.CompletedTask);
 
     // --- plan fixtures -----------------------------------------------------------------------------
 
@@ -719,6 +725,11 @@ public sealed class SchedulerBreakdownDurabilityTests
         using WavePlanBuilder _ = b;
 
         // Authors nothing at all and dies on a transient — the 429-at-turn-1 shape.
+        //
+        // Since #511 that shape is WAITED OUT first: the barrier polls the provider until either a probe
+        // succeeds or maxProviderWaitHours is spent. This runner never recovers, so the wait is exhausted and
+        // the run arrives at exactly the gate decision this test is about — the #512 contract is unchanged,
+        // it is now simply reached after the harness has stopped hoping.
         var runner = new StubBreakdownRunner((_, _) => { }, PromptFailureKind.Transient);
 
         await NewScheduler(plan, RunJournal.LoadOrCreate(plan), new RecordingWorktreeProvider(), new WaveBreakdownInvoker(runner))

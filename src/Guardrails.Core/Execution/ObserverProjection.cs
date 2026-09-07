@@ -348,6 +348,21 @@ public sealed class ObserverProjection : IRunObserver
         _inner.WaveGateFinished(wave, isEntryGate, checks);
     }
 
+    public void WaveBreakdownPaused(
+        WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
+        DateTimeOffset? resetInstant, TimeSpan waitedSoFar)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "WaveBreakdownPaused",
+            ["waveDir"] = context.WaveDir,
+            ["probe"] = probe,
+            ["waitSeconds"] = wait.TotalSeconds,
+            ["hasReset"] = resetInstant is not null
+        });
+        _inner.WaveBreakdownPaused(context, reason, wait, probe, resetInstant, waitedSoFar);
+    }
+
     public void WaveBreakdownStarting(WaveBreakdownContext context)
     {
         Append(new JsonObject
