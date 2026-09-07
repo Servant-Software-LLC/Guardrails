@@ -95,13 +95,22 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 - **Diagram** -- two companion files written by `guardrails graph` at the plan-folder root,
   both generated, non-authored, and excluded from `guardrails.baseline`:
   - `diagram.md`: Mermaid `flowchart TD` (GitHub render artifact). First line is a
-    `<!-- guardrails:graph v1 source-sha256=<hash> -->` provenance comment. NOT part of the
-    plan contract; safe to delete and regenerate.
+    `<!-- guardrails:graph v1 source-sha256=<hash> body-sha256=<hash> -->` provenance comment. NOT
+    part of the plan contract; safe to delete and regenerate.
   - `diagram.html`: interactive local-navigation companion (pan/zoom/fullscreen + Mermaid
     `click href` directives pointing to task/guardrail source). Suppressed by `--no-html`.
     Node clicks require a local HTTP server -- browsers block file://->file:// by default.
   Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
-  (stale/missing), 1 (load/validate error). See SSOT section 10.
+  (stale/missing/body-edited), 1 (load/validate error). See SSOT section 10.
+  **The TWO hashes answer two different questions (#636), and only one of them existed before.**
+  `source-sha256` is computed from the PLAN, so it says whether the plan has moved and reads none
+  of the bytes below it -- a diagram whose whole mermaid body had been replaced passed with exit 0
+  (measured on this repo's own committed example, at plan and wave scope alike). `body-sha256`
+  covers the FENCE CONTENT, so hand-edit and corruption are caught too; the caption and legend stay
+  outside it, which is what keeps a legend rewording from invalidating every committed diagram.
+  Read is TOLERANT: a pre-#636 stamp with no `body-sha256` exits 0 and SAYS the body was not
+  verified. Do not read exit 0 as "this diagram is trustworthy" without checking which of the two
+  it actually verified.
   - **Live status overlay (issue #219, a THIRD companion):** during a run the harness writes
     `logs/<runId>/diagram.html` -- the SAME DAG with per-node status badges (a spinner while
     in-flight, a settled check / X / "?" once finished). It is gitignored runtime state,

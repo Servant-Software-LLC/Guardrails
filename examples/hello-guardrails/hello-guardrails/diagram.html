@@ -4,7 +4,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-
 <title>Guardrails — task/guardrail DAG</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
@@ -17,6 +16,12 @@
   #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
   #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
           max-width: 90vw; }
+  /* In-place live-poll offline fallback (issue #523): hidden by the `hidden` attribute unless a
+     poll of this page's own url fails — most commonly because it was opened directly over file://
+     rather than served by the log-site server, where fetch() of its own url is blocked. */
+  #gr-live-offline, #gr-live-paused { position: fixed; bottom: 8px; right: 8px; z-index: 10; background: #3a2410;
+                      border: 1px solid #b8860b; color: #ffd166; border-radius: 6px;
+                      padding: 6px 10px; font-size: 12px; max-width: 320px; }
   #legend { position: fixed; top: 8px; right: 8px; z-index: 10; background: #121a24;
             border: 1px solid #243343; border-radius: 6px; padding: 8px 12px;
             font-size: 12px; line-height: 1.5; max-width: 340px; }
@@ -89,6 +94,13 @@
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
   On GitHub, diagram.md renders instead.</div>
+<div id="gr-live-offline" hidden>Live status updates are unavailable on this copy &mdash; it is not
+  live. The diagram SERVED by the log-site server is live. To get one for a run in progress, run
+  <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
+  under the URL it prints; task/guardrail status then updates automatically as the run progresses.</div>
+<div id="gr-live-paused" hidden>Live status updates paused &mdash; the last
+  <span id="gr-live-fails">0</span> poll attempts failed. Still retrying; this clears itself when one
+  succeeds.</div>
 
 <script type="text/plain" id="graph-source">flowchart TD
   subgraph plan_preflights["Full Flight Checks"]
@@ -134,8 +146,9 @@ const graph = document.getElementById('graph-source').textContent;
 const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
 // Live status overlay (issue #219): a node id -> status-token map, embedded exactly like the
 // task-folder targets above. Empty {} on the static plan-root diagram.html (the badge loop then
-// appends nothing). GR_DURING_RUN toggles the spinner animation only.
-const nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
+// appends nothing). `let`, not `const`: the in-place live poll (issue #523, below) reassigns it
+// with each fresh fetch. GR_DURING_RUN toggles the spinner animation and the live poll.
+let nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
 const GR_DURING_RUN = false;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
@@ -355,8 +368,9 @@ function addEdgeDirectionMarkers(svgEl) {
 // transform for FREE — no pan/zoom callback, no per-frame recompute, no drift (the exact class of
 // bug screen-space divs hit). Runs AFTER mermaid.render + the other post-render fixes, mirroring
 // addTaskContainerOverlays/addEdgeDirectionMarkers. All assets are inline SVG — no external image
-// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh each
-// meta-refresh cycle from the current status JSON, so no incremental patching is needed.
+// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh from the
+// current status JSON on each live poll tick (issue #523, below) via clearStatusBadges + a re-run
+// of this function — cheap and simple, and no incremental per-node diffing is needed.
 const GR_STATUS_COLORS = { passed: '#3fb950', failed: '#f85149', 'needs-human': '#d29922',
                           running: '#58a6ff', blocked: '#6e7681', pending: '#6e7681' };
 // Resolve the SVG element carrying node id `id`. A task/plan container is a `g.cluster` whose own
@@ -444,6 +458,12 @@ function addStatusBadges(svgEl) {
     el.appendChild(buildStatusBadge(nodeStatus[id], box.x + box.width, box.y));
   }
 }
+// Idempotent repaint support: strip every badge addStatusBadges appended, so a re-run (each live
+// poll tick) replaces them fresh instead of accumulating duplicates when the status map repeats.
+function clearStatusBadges(svgEl) {
+  for (const b of svgEl.querySelectorAll('.gr-status-badge')) b.remove();
+}
+
 
 // Client-side find box (issue #220). Substring-match the typed text against every searchable
 // node's id AND its visible label — task containers (task_<base>, plan_preflights, plan_guardrails)
@@ -552,6 +572,9 @@ try {
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
   setupSearch(el, pz); // wire the find box to the rendered SVG + pan-zoom instance (issue #220)
+  if (GR_DURING_RUN) {
+    startLivePoll(el); // begin the in-place status poll (issue #523) — no-op on the final page
+  }
 } catch (e) {
   // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
   // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.

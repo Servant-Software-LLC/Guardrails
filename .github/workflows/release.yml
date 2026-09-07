@@ -88,6 +88,29 @@ jobs:
       - name: Test (whole solution, concurrent)
         run: dotnet test Guardrails.sln --configuration Release --no-build
 
+      # The rule stated four lines above, applied (#636). This gate existed in ci.yml and never here, so a
+      # tag could publish examples whose committed diagrams did not match their plans — and the examples are
+      # exactly what a consumer copies. Identical to the ci.yml step, discovery and empty-case failure
+      # included; if one changes, change both.
+      - name: Every example's diagrams are fresh (graph --check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for plan in examples/*/*/guardrails.json; do
+            dir="$(dirname "$plan")"
+            echo "::group::graph --check $dir"
+            dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph "$dir" --check
+            echo "::endgroup::"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No example plans discovered under examples/*/*/ — the freshness gate checked NOTHING."
+            echo "Either the examples moved or the glob is wrong; both make this gate a false green."
+            exit 1
+          fi
+          echo "Checked $found example plan(s)."
+
   # Pre-publish packaged-tool smoke (#171): pack the tool with the TAG version (the same
   # derivation the publish job uses), install it to an isolated --tool-path, run
   # `skills install` + `--version`, and FAIL on a missing skills/ payload, an unstamped

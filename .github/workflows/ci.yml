@@ -54,12 +54,38 @@ jobs:
       - name: Test (Integration)
         run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
 
-      # Guard the committed golden example's diagram.md against drift: `graph --check` recomputes
-      # the plan's semantic source hash and compares it to the one stamped in the committed file.
-      # Exit 0 = fresh, 2 = stale/missing (regenerate with `guardrails graph <folder>`). If the
-      # plan changes without regenerating the diagram, this fails CI. (#3)
-      - name: Example diagram is fresh (graph --check)
-        run: dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph examples/hello-guardrails/hello-guardrails --check
+      # Guard EVERY committed example's diagrams against drift: `graph --check` recomputes the plan's
+      # semantic source hash and compares it to the one stamped in the committed file, and since #636 also
+      # verifies the stamped hash of the diagram BODY. Exit 0 = fresh, 2 = stale/missing/hand-edited
+      # (regenerate with `guardrails graph <folder>`). (#3, #447, #636)
+      #
+      # DISCOVERED, not enumerated, so a new example is covered the day it lands. Until #636 this step named
+      # `hello-guardrails` alone — one FLAT plan — while its name, "Example diagram is fresh", read as
+      # covering the examples plural. #447 had shipped the ability to check every diagram a WAVED plan owns
+      # and nothing exercised it, so on master: waved-hello's plan diagram was stale (since 2026-08-20) and
+      # both of its wave diagrams were absent, and parallel-hello had no diagram at all. A capability never
+      # invoked is indistinguishable from one never built.
+      #
+      # The empty case fails loudly rather than passing vacuously — a discovery loop that finds nothing and
+      # exits 0 is the same false green in a new place.
+      - name: Every example's diagrams are fresh (graph --check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for plan in examples/*/*/guardrails.json; do
+            dir="$(dirname "$plan")"
+            echo "::group::graph --check $dir"
+            dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph "$dir" --check
+            echo "::endgroup::"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No example plans discovered under examples/*/*/ — the freshness gate checked NOTHING."
+            echo "Either the examples moved or the glob is wrong; both make this gate a false green."
+            exit 1
+          fi
+          echo "Checked $found example plan(s)."
 
   # Issue #566 — run the suite the way a CONTRIBUTOR runs it. `dotnet test Guardrails.sln` executes the
   # Core and Integration assemblies CONCURRENTLY; the per-project steps above run them one after the
