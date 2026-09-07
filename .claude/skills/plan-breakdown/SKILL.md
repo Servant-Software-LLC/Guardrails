@@ -2142,6 +2142,27 @@ Per `references/schemas.md`, exactly:
      `guardrails-domain-knowledge` → "The same rule, turned on the AGENT'S OWN instrument". **This costs
      one extra command per verification and is the cheapest thing in this step**, because the alternative
      is a report that reads exactly the same whether the check worked or not.
+   - **A COMMITTED PAIR is verified by `guardrails samples verify`, not by staging a file (#559).**
+     Staging the sample into the guardrail's real target path proves the CLAUSES and is a fine debugging
+     aid — and it never exercises the contract the harness enforces, so it passes while the gate fails.
+     That is not a hypothetical: on plan 31 an author followed this step exactly and committed EIGHT pairs
+     that were all broken the same way. The run reported *"Sample-pair verification FAILED — 11 finding(s)
+     over 8 executed pair(s). Halting before scheduling any task."*
+     **The contract.** `SampleVerifier` hands the guardrail the sample path as **`argv[0]`** AND as
+     **`GR_SUBJECT`**. A sampled guardrail must let that override the target it would otherwise scan, and
+     for a MULTI-subject guardrail `GR_SUBJECT` replaces the **whole list**, not one entry:
+     ```powershell
+     $f = if ($env:GR_SUBJECT) { $env:GR_SUBJECT } else { "src/Guardrails.Core/Execution/TaskExecutor.cs" }
+     ```
+     A guardrail that hardcodes its target scans the untouched repo for BOTH halves, so both exit the same
+     way and the finding reads `ValidHalfFailed`.
+     **The naming rule, which is the second trap.** The verifier pairs by basename and keys on the SECOND
+     extension being exactly `.valid` or `.invalid`, so an extra case carries its qualifier AFTER the
+     token: `X.invalid-comment-mutation.cs` is skipped as an author-time extra;
+     `X.comment-mutation.invalid.cs` parses as a lone `.invalid` half and is reported `OrphanSample`. Both
+     spellings look equally reasonable and only one works — plan 31 hit this three times.
+     **So run the authority**: `guardrails samples verify <plan-folder>` before you finish. One command,
+     zero findings, and it is the same `SampleVerifier` the pre-DAG gate runs. Contract: SSOT §1.1.
    - **Not runnable → syntax-pass + explicit deferral.** If it needs a live service / the built binary /
      the full merged HEAD, run the syntax pass only, reason explicitly about correctness, and **STATE in
      the report (step 4) that the guardrail could not be author-time-executed and why** — an honest
@@ -4127,6 +4148,7 @@ tell a measured fact from an assumed one without re-doing the work.
 - [ ] (#382) Every real-seam proof this breakdown emitted is FINDABLE and DECLARES ITS SEAM: the guardrail basename contains `real-seam`, and its header carries a `# real-seam: <Component> -> <Dependency>  bucket=<E|C|U>` line naming the same seam as its ledger row. Both halves, because they buy different things — the name lets an audit ENUMERATE the proofs instead of recognising them by an accidental tell, and the seam lets T* be recomputed without recovering types from prose. Every ledger row whose `proof` column names a file has that file on disk with a matching declaration, and no guardrail declares a seam no row carries. This is the review's primary evidence and `GR2061`'s precondition; it is NOT a schema field (doc 18 §10 reserves that for re-review).
 - [ ] (#439) `$testRunner` was DETECTED, not assumed — the `stacks/dotnet.md` §6a probe was run (both clauses: the property/`global.json` grep AND the negative signal, a test project with no VSTest adapter, which no grep FOR MTP surfaces). When the runner is MTP, no guardrail this breakdown emits relies on `dotnet test --filter` for its SCOPE, and no `# catches:` line claims to own tests a silently-widened filter would not have selected. The reason this is a checklist row and not a footnote: MTP defeats §4.3's zero-match guard from the FAR side — it runs the whole suite rather than none, so the guard passes on a large count and the mis-scoping is invisible at authoring time.
 - [ ] (#580) Every AD-HOC verification this breakdown ran and reported — its own greps, parses, counts and mutations, not only the guardrail scripts — had its NEGATIVE case observed to bite: run against a known-bad input, it said so. A mutation additionally asserted the OBSERVABLE moved (a `sed`/`Edit` whose anchor matched nothing edits zero bytes and then "passes"), and nothing was reported off a STALE artifact (`--no-build` runs yesterday's binary) or off an exit code an intervening command had already clobbered. A verification whose failing case was never constructed is a claim about a command, not a measurement — and reads identically in the report either way.
+- [ ] (#559) Every COMMITTED sample pair was verified by RUNNING `guardrails samples verify <plan-folder>` to zero findings — not by staging a sample into the guardrail's real target path, which proves the clauses and never exercises the contract the pre-DAG gate enforces. Each sampled guardrail honours `GR_SUBJECT` (and `argv[0]`), and for a multi-subject guardrail `GR_SUBJECT` replaces the WHOLE subject list rather than one entry. Extra cases carry the qualifier AFTER the token (`X.invalid-comment-mutation.cs`, never `X.comment-mutation.invalid.cs`, which parses as a lone half and reports `OrphanSample`). Measured cost of the old prescription: eight committed pairs, all broken the same way, 11 findings, the run halted before task one.
 - [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
