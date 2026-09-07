@@ -1,3 +1,6 @@
+---
+charter-format-version: 1
+---
 # 39 — Incremental delivery: a batched plan stops holding finished work hostage
 
 Design of record for **issue #525**. Status: **DRAFT — for Charter review.** Not implemented.
@@ -114,14 +117,6 @@ Three things fall out of it, all improvements:
 - **A plan that marks no wave `delivers` behaves exactly as today**: one merge at run end. The never-weaker
   guarantee survives without a second flag.
 
-> **OPEN — the reviewer did not answer this one.** The `delivers` flag's GRAIN is proposed, not settled:
-> per-wave with default `false`, versus default `true` for any wave carrying an exit gate, versus inferring
-> it from whether a later wave depends on this one's `writeScope`. This design assumes **per-wave, default
-> false** throughout, because it is the only option that preserves the never-weaker guarantee — but that is
-> an assumption stated, not a decision made, and an implementer should treat it as such. (Inference was
-> rejected on the reasoning in this section: it would silently mark a shared-prerequisite wave as a delivery
-> point whenever nothing yet depended on it, which is precisely the case that produced §1b.)
-
 **The failure mode to watch** is a plan where every wave is marked `delivers: true` out of habit, which
 re-creates draft 2's assumption by hand. `plan-breakdown`'s Step 7 report should name which waves are
 delivery points **and why**, so an author who marked a prerequisite wave as one has to notice.
@@ -152,13 +147,9 @@ Wave 3 then records a proceeded-best-guess. At run end the interlock fires and s
 work that is *already on the user's branch*. The interlock cannot un-merge, so its guarantee is not
 weakened, it is **defeated for every wave that delivered before the decision existed.**
 
-**Requirement: the interlock becomes WAVE-SCOPED — DECIDED (review round 2).** The maintainer's answer:
-*"a wave delivers only if no suppressing decision was recorded during that wave."* `decisions[]` entries
-carry a wave attribution already, and the run-end call keeps the run-scoped reading for the final wave and
-every flat plan.
-
-This is a **precondition, not a follow-up**: no wave may deliver early until the interlock is re-scoped, or
-the feature becomes the way #361 is escaped.
+**Requirement: the interlock becomes WAVE-SCOPED.** A wave delivers only when no suppressing decision was
+recorded **during that wave** — `decisions[]` entries carry a wave attribution already, and the run-end
+call keeps the run-scoped reading for the final wave and every flat plan.
 
 This is not a nicety. #361's entire point is that a machine-shaped result does not auto-deliver, and a
 feature that delivers earlier must not become the way that rule is escaped. **A design that reuses an
@@ -190,13 +181,8 @@ Both are coarse ordering; the second buys delivery instead of authorability. The
 from *"do not wave a flat plan"* to *"do not wave a flat plan **for parallelism** — wave it when you want
 the stages delivered separately."*
 
-**DECIDED (review round 2): YES.** The maintainer's answer — *"waves mean coarse ordering, and delivery is
-as good a reason as authorability."* So `plan-breakdown`'s wave/flat fork gains delivery granularity as a
-first-class reason to wave, and the doctrine sentence is reworded from *"do not wave a flat plan"* to *"do
-not wave a flat plan **for parallelism** — wave it when you want the stages delivered separately."*
-
-The cost stands and is accepted: waving independent chains serialises them. What is bought is that a
-failure in one stage no longer strands the finished work of the others.
+**This is the reviewer's call, not mine** — it changes what `plan-breakdown` tells every future author, and
+the wall-clock cost is paid by whoever runs the plan. See the question at the end.
 
 ---
 
@@ -305,3 +291,19 @@ over it, and an order", check the wave model before inventing a second one.**
 
 Refs #525, #340 (mergeOnSuccess default-on), #175 (the merge hazard waves already order around), #625 (the
 journal-the-start rule §5 adopts), SSOT §14 (waves), §14.6 (the wave exit gate), §5.3 / §3.3.
+
+---
+
+## Decisions for this review
+
+:::question
+{"id": "d39-wave-doctrine", "title": "Should DELIVERY GRANULARITY become a second legitimate reason to wave a plan?", "mode": "single", "options": ["Yes — waves mean coarse ordering, and delivery is as good a reason as authorability", "No — the parallelism loss is too high; keep waves for undesignable stages only", "Yes, but only when the plan is a backlog batch of independent issues"], "recommended": "Yes — waves mean coarse ordering, and delivery is as good a reason as authorability", "rationale": "The remaining cost of this design and the only decision that changes doctrine. plan-breakdown says today 'Do NOT wave a flat plan — a wave barrier destroys cross-wave parallelism'. Plan 25's three chains are independent and could run concurrently; waving them serialises them. A wave still holds a parallel task DAG, so what is lost is parallelism ACROSS issues, not within one. I lean yes because that sentence conflates two different reasons not to wave and only the parallelism one applies here — but it changes what plan-breakdown tells every future author, and the wall-clock is paid by whoever runs the plan.", "target": "human", "answer": ["Yes \u2014 waves mean coarse ordering, and delivery is as good a reason as authorability"]}
+:::
+
+:::question
+{"id": "d39-delivers-grain", "title": "Is a per-WAVE 'delivers' flag (default false) the right grain, after the shared-prerequisite case?", "mode": "single", "options": ["Per-wave 'delivers', default false — a delivering wave ships everything since the last delivery point", "Per-wave, but default TRUE for any wave carrying an exit gate", "Infer it — a wave whose writeScope no later wave depends on is a delivery point"], "recommended": "Per-wave 'delivers', default false — a delivering wave ships everything since the last delivery point", "rationale": "Your DTO case killed my plan-level bool: a shared-prerequisite wave must be ordered but must NOT ship on its own, so all-or-nothing was the wrong grain. Default false keeps the never-weaker guarantee — a plan that marks nothing behaves exactly as today. I rejected inference for the same reason declared groups beat inferred ones in draft 1: it would silently mark a prerequisite wave as a delivery point whenever nothing happened to depend on it yet, which is precisely the case you raised. Option 2 is the one worth arguing for if you think the flag will just be forgotten.", "target": "human"}
+:::
+
+:::question
+{"id": "d39-interlock-scope", "title": "Confirm the #361 machine-decision interlock must become WAVE-scoped before any wave delivers early?", "mode": "single", "options": ["Yes — a wave delivers only if no suppressing decision was recorded during that wave", "No — keep it run-scoped and simply forbid early delivery once any suppressing decision exists", "No — early delivery should ignore the interlock; it is about the run's final verdict"], "recommended": "Yes — a wave delivers only if no suppressing decision was recorded during that wave", "rationale": "Found by reading Finalize rather than trusting its name. The #361/#340 interlock reads decisions[] for the WHOLE run, once, at the end — because delivery is run-scoped today. With per-wave delivery, wave 1 merges, wave 3 then records a proceeded-best-guess, and the interlock fires at run end against work already on your branch. It cannot un-merge, so its guarantee is not weakened but DEFEATED for every wave that shipped before the decision existed. Option 2 is the conservative alternative and I would accept it; option 3 is listed only so it is on the record as rejected — it would make this feature the way #361 gets escaped.", "target": "human", "answer": ["Yes \u2014 a wave delivers only if no suppressing decision was recorded during that wave"]}
+:::
