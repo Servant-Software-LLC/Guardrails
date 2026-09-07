@@ -2369,10 +2369,43 @@ the instant any hash-covered file changes** — a **staleness** guarantee (it ca
 `state.json`, `merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed while a BLOCKER
 finding remains unaddressed.
 
+### Hand over the run command, ready to paste (#431)
+
+**Once the stamp is recorded and no BLOCKER is open, running the plan is the immediate next step — so end
+the report with the command, not with a description of it.** This flow used to stop at `mark-reviewed` and
+emit no run command at all, leaving the human to go and find the plan folder path themselves. Note that the
+skill already applies exactly this ergonomic care to the DIAGRAM, whose `file://` URI gets a Markdown link
+so the reviewer can click it (#249/#256); the command the reviewer needs next is the higher-value of the
+two and had none of it.
+
+A fenced block, **absolute path, quoted**:
+
+```
+guardrails run "<absolute plan folder>" --no-merge-on-success
+```
+
+and, below it, the delivering form for when that is what is wanted:
+
+```
+guardrails run "<absolute plan folder>"
+```
+
+- **The safer form leads, and say why.** `mergeOnSuccess` has defaulted ON since preview.40 (#340): a green
+  run DELIVERS to the user's branch. A first run of a freshly-reviewed plan is almost always inspect-first,
+  so the delivering form is offered explicitly rather than arrived at by omission.
+- **Absolute and quoted**, because a relative path depends on a cwd that is usually not the repo root, and
+  quoting is what carries a Windows path with spaces through the paste.
+- **When the plan targets THIS repo, name the launcher**: the installed global tool, never the repo's
+  Release binary — a Release-build run self-locks `Core.dll` and fails the `01-build` guardrail for reasons
+  that have nothing to do with the plan.
+- **A waved plan runs from the PLAN root**, not from the wave you just stamped, even when the JIT flow had
+  you review a single wave — the wave folder is not independently loadable (GR1010).
+
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
 - [ ] `guardrails graph --check` ran; exit 2 (stale/missing) → regenerated and noted; exit 1 (error) → surfaced, not silently regenerated.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
+- [ ] (#431) The report ENDS with the run command as a fenced, copy-pasteable block using the resolved ABSOLUTE quoted path — `--no-merge-on-success` first with the reason stated (mergeOnSuccess defaults ON since preview.40, so a green run delivers), the delivering form offered explicitly below it, the global-tool launcher named when the plan targets this repo, and the PLAN root as the target for a waved plan. A `<folder>` template is not a hand-over: the reader has to go and find the path, and for a `.charter.md` input it is not even the filename they started from.
 - [ ] Terminal/e2e tasks claiming an output quantity assert a STRICTLY POSITIVE value (no hollow `Assert.Equal(0,…)` / `NotNull` / bare `exit 0`); every structural property check is accessor-order-insensitive (no `\{\s*get` / `\{\s*set` anchor).
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Every **statically named** model (`action.model`; each surviving judge's runner-configured `model` / `guardrailOverrides.model`; each `promptRunners.<name>.model`) was checked against the ONE block that will carry it (`action.runner` > frontmatter `runner` > `promptRunners.default` > the sole declared block — `action.model` never selects a runner), and that block's `kind` has a concrete runner in this harness version — a model no configured runner can serve is a FINDING naming the task and the model, not a mid-run registry halt: BLOCKER when nothing resolves or the `kind` is unimplemented (such a config LOADS AND VALIDATES CLEAN, so `validate` never catches it), WEAK for a provider-family mismatch (a model id has no enumerable valid set to check against). The probe REPORTS, never rewrites. Every judge whose model is resolved just-in-time is reported as UNCHECKED with the reason, deferred to #223, never silently passed over (#224).
