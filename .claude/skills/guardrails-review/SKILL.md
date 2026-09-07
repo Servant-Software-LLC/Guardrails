@@ -1209,6 +1209,48 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   literal the change *might* touch). (Catalogue → orphaned-golden / broad-filter trap; relates to
   #176 transitive-compilation and the write-scope test-protection gate. plan-breakdown Step 4 adds
   the matching cross-cutting-output re-baseline authoring rule.)
+
+  **The filter is the WRONG search space, and narrowing filters makes it worse (#541).** Everything above
+  asks *"which orphans does this filter sweep in?"* — so it only ever looks inside the tests some task
+  filter selects. #455 pushes those filters narrow, which is right; the consequence is that **the
+  narrower the filters, the more of the suite falls outside every one of them**, and the class of test
+  most likely to break — a cross-cutting OUTPUT golden — is precisely the class no task-level filter
+  selects.
+
+  **Measured.** `27-operator-visibility` halted at its Integration baseline preflight after tasks 01–07
+  had merged green, on one test:
+
+  ```
+  LogSiteHaltBannerTests.NoHalt_PlanIndex_IsByteForBytePreBannerOutput
+    Expected: …<th>Description</th></tr></thead>…
+    Actual:   …<th>Description</th><th>Model</th></tr></thead…
+  ```
+
+  Task 07 shipped a Model column on the exported log site. That test pins the page byte-for-byte and says
+  so in its own comment — *"ANY change to the page skeleton, the insertion points, or the emitted rows
+  fails here"*. It fired correctly; the golden was legitimately stale. **Nobody owned the re-baseline** —
+  that file appears in no task's `writeScope` in the plan. The review pass ran this probe and cleared it
+  HONESTLY, examining the classes the task filters actually select and finding no exact golden in them.
+  `LogSiteHaltBannerTests` is selected by no filter in the plan, so the probe never looked at it. **Its
+  narrow filters were correct by #455, and that correctness is what hid the orphan.**
+
+  **So ask the other question too**, keyed on the COMPONENT rather than on the filter:
+
+  > This task changes a cross-cutting OUTPUT. Which tests **anywhere in the suite** pin that output
+  > byte-for-byte, and does any task own re-baselining them?
+
+  Mechanically approachable from `writeScope` alone. For a task touching a renderer, serializer,
+  formatter or schema, grep the WHOLE test tree for exact-match assertions against that component's
+  output — an `Assert.Equal` on a multi-line string literal, an approved/golden file, a name carrying
+  `ByteForByte` / `Golden` / `Snapshot` / `Verbatim` / `Approved` — and check each hit against the UNION of
+  every task's `writeScope`. **A hit no task owns is the finding, whether or not any filter selects it.**
+  In the measured plan the tell was in the test's own name and its own comment, both saying it was a
+  tripwire on the exact page task 07 was rewriting.
+
+  Same severities as above: **BLOCKER** when the change certainly shifts the pinned output and no task
+  owns the golden; **WEAK** when plausible. And say which search you ran — "no orphan swept in by a
+  filter" and "no golden over this component anywhere" are different clearances, and reporting the first
+  as though it were the second is how this one was missed.
 <!-- END ADDED PROBE #193 -->
 <!-- BEGIN ADDED PROBE #248 — pattern-matching guardrail not verified against real output -->
 - **Pattern-matching guardrail not verified against real output (#248)**: any guardrail that
@@ -2342,6 +2384,7 @@ finding remains unaddressed.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
 - [ ] (#474) Every guardrail clause requiring a **datum** in a file the task owns went through the **Unreachable-outcome** probe: the carrier expression was resolved **in the target file**, its declaring type located, and that declaring file confirmed to be in this task's `writeScope` — or in an ancestor's, where that ancestor's prompt actually requires adding the member. *"The target file is in the `writeScope`"* is **not** the check; the measured instance passed it and still dead-ended at `needsHuman`. A carrier owned by a non-ancestor, a later task, or nobody is a **BLOCKER** that names the severed link **and** the false green the clause invites (a token that satisfies the pattern and carries nothing). Fixes are reachability moves (widen scope / relocate the hop / split it out), never a size verdict.
 - [ ] (#474) The §4 missing-insertion check was pointed at **all six** folder instances — `tasks/*/preflights/`, `tasks/*/guardrails/`, **`<plan>/preflights/`, `<plan>/guardrails/`**, and each **`<plan>/<wave>/`** pair — with the producer set widening to the wave's (earlier waves included) and the plan's whole task set. A gate requirement that no task's `writeScope` covers and the repo does not already satisfy is a **BLOCKER** (fix: give a task the file **and the work**, or relocate the clause, or drop the requirement — never delete the clause first). Exempt: paths under the plan folder (harness-written) and untracked build output. On a plan with a declared-but-empty wave stub the coverage verdict is **WITHHELD** and recorded as an inherited obligation on that wave, never reported as passed.
+- [ ] (#541) For every task whose `writeScope` touches a cross-cutting OUTPUT component (a renderer, serializer, formatter, schema), the WHOLE test tree was searched for goldens pinning that component's output — exact-match assertions, approved/golden files, `ByteForByte`/`Golden`/`Snapshot`/`Verbatim`/`Approved` names — and every hit checked against the UNION of all `writeScope`s. A hit no task owns is the finding, whether or not any filter selects it. This is the complement of the #193 row below, not a restatement: that one searches INSIDE task filters, and #455 correctly pushes filters narrow, so the narrower they get the more of the suite falls outside every one of them. Measured: a byte-for-byte log-site golden that no filter in the plan selected halted the Integration baseline preflight AFTER tasks 01–07 had merged green — the review pass ran the #193 probe and cleared it honestly, because the orphan was nowhere its search space reached. The report says WHICH search was run.
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The form must be a BLOCK capture (header → summary), not a line allowlist: an allowlist drops the `String:`/`Found:` payload and the stack frames, measured (#608) — an allowlist-shaped re-emit is WEAK on its own. No such guardrail carries a QUIET flag on its TEST command (`-v q`/`-v quiet` on `dotnet test`): measured, it suppresses the entire `Error Message:`/`Expected:`/`Actual:`/`Stack Trace:` block, so even a correct re-emit tails out test names only — WEAK, and quiet belongs on `dotnet build`. The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.

@@ -392,6 +392,21 @@ it is the single most likely `needs-human` in a run (the exact retry-cheapness a
   one never went green in 12 attempts. So splitting is right by default — but if you have a reason not
   to (a one-line change to each half), say so in the report rather than splitting on reflex.
 
+**A task that changes a cross-cutting OUTPUT owns the goldens that pin it — or the report names them
+(#541).** The doctrine already carries the cross-cutting-output re-baseline rule keyed on a task's test
+FILTER. Key it on the COMPONENT as well: when a task's `writeScope` touches a renderer, serializer,
+formatter or schema, search the whole test tree for exact-match assertions over that component's output
+(a multi-line string literal, an approved/golden file, a `ByteForByte`/`Golden`/`Snapshot`/`Verbatim`
+name) and either put those files in the task's `writeScope`, give them a dedicated re-baseline ancestor,
+or **name them in the Step 7 report as deliberately left for later**.
+
+Measured cost of not doing it: `27-operator-visibility` halted at its Integration baseline preflight
+after tasks 01–07 had merged green, on a byte-for-byte log-site golden that **no task's `writeScope`
+contained and no task filter selected**. The test fired correctly and the golden was legitimately stale;
+what was missing was an owner. Note the interaction, because it is counter-intuitive: #455 pushes task
+filters NARROW, which is right, and the narrower they are the more goldens fall outside every one of
+them. The filter-keyed rule covers less as the filters improve.
+
 **Carry the plan's own feasibility signals into sizing (#111).** When the plan's
 feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
 high-churn** ("~147 test refs", "over-packed", "large blast radius", "risky to do in one pass"),
