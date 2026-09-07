@@ -8,35 +8,35 @@ namespace Guardrails.Core.Loading;
 public static class DiagnosticCodes
 {
     // --- Loading (structural / parse) -------------------------------------------------
-    /// <summary>The plan folder or a required file does not exist.</summary>
+    /// <summary>GR1001 (ERROR) — The plan folder or a required file does not exist.</summary>
     public const string MissingFile = "GR1001";
 
-    /// <summary>A JSON manifest failed to parse.</summary>
+    /// <summary>GR1002 (ERROR) — A JSON manifest failed to parse.</summary>
     public const string InvalidJson = "GR1002";
 
-    /// <summary>A required manifest field is missing or empty.</summary>
+    /// <summary>GR1003 (ERROR) — A required manifest field is missing or empty.</summary>
     public const string MissingRequiredField = "GR1003";
 
-    /// <summary>A task folder has no <c>action.*</c> file (and no explicit path).</summary>
+    /// <summary>GR1004 (ERROR) — A task folder has no <c>action.*</c> file (and no explicit path).</summary>
     public const string NoActionFile = "GR1004";
 
-    /// <summary>A task folder has more than one <c>action.*</c> file and no explicit path.</summary>
+    /// <summary>GR1005 (ERROR) — A task folder has more than one <c>action.*</c> file and no explicit path.</summary>
     public const string AmbiguousActionFile = "GR1005";
 
-    /// <summary>An explicit <c>action.path</c> points at a file that does not exist.</summary>
+    /// <summary>GR1006 (ERROR) — An explicit <c>action.path</c> points at a file that does not exist.</summary>
     public const string ActionPathNotFound = "GR1006";
 
-    /// <summary>A guardrail directory contains a bare <c>.json</c> with no sibling script (orphan sidecar).</summary>
+    /// <summary>GR1007 (ERROR) — A guardrail directory contains a bare <c>.json</c> with no sibling script (orphan sidecar).</summary>
     public const string OrphanGuardrailMetadata = "GR1007";
 
-    /// <summary>An unknown value was supplied for an enum-valued field (e.g. guardrailMode).</summary>
+    /// <summary>GR1008 (ERROR) — An unknown value was supplied for an enum-valued field (e.g. guardrailMode).</summary>
     public const string InvalidFieldValue = "GR1008";
 
-    /// <summary>The <c>tasks</c> directory exists but contains no task folders (an empty plan).</summary>
+    /// <summary>GR1009 (ERROR) — The <c>tasks</c> directory exists but contains no task folders (an empty plan).</summary>
     public const string NoTasks = "GR1009";
 
     /// <summary>
-    /// The target is a WAVE folder of a nested (waved) plan, not a loadable plan (issue #472). A wave holds
+    /// GR1010 (ERROR) — The target is a WAVE folder of a nested (waved) plan, not a loadable plan (issue #472). A wave holds
     /// <c>preflights/</c> + <c>guardrails/</c> + <c>tasks/</c> but no <c>guardrails.json</c> BY DESIGN
     /// (SSOT §14.1 — ONE shared run config), so loading it as a plan can only ever produce
     /// <see cref="MissingFile"/>. Still an ERROR — a wave is not independently loadable, and silently
@@ -48,45 +48,45 @@ public static class DiagnosticCodes
     public const string WaveFolderIsNotALoadablePlan = "GR1010";
 
     // --- Validation (semantic) --------------------------------------------------------
-    /// <summary>A <c>dependsOn</c> entry references a task id that does not exist.</summary>
+    /// <summary>GR2001 (ERROR) — A <c>dependsOn</c> entry references a task id that does not exist.</summary>
     public const string UnknownDependency = "GR2001";
 
-    /// <summary>Two tasks share the same id (should be impossible by folder, guarded anyway).</summary>
+    /// <summary>GR2002 (ERROR) — Two tasks share the same id (should be impossible by folder, guarded anyway).</summary>
     public const string DuplicateTaskId = "GR2002";
 
-    /// <summary>A task has zero guardrails.</summary>
+    /// <summary>GR2003 (ERROR) — A task has zero guardrails.</summary>
     public const string NoGuardrails = "GR2003";
 
-    /// <summary>A task references a prompt runner name not declared in <c>promptRunners</c>.</summary>
+    /// <summary>GR2004 (ERROR) — A task references a prompt runner name not declared in <c>promptRunners</c>.</summary>
     public const string UnknownPromptRunner = "GR2004";
 
-    /// <summary>An extension used by the plan has no resolvable interpreter on PATH.</summary>
+    /// <summary>GR2005 (ERROR) — An extension used by the plan has no resolvable interpreter on PATH.</summary>
     public const string UnresolvableInterpreter = "GR2005";
 
-    /// <summary>An extension is only valid on a different operating system (e.g. .cmd off Windows).</summary>
+    /// <summary>GR2006 (ERROR) — An extension is only valid on a different operating system (e.g. .cmd off Windows).</summary>
     public const string InterpreterWrongPlatform = "GR2006";
 
-    /// <summary>The <c>dependsOn</c> graph contains a cycle.</summary>
+    /// <summary>GR2007 (ERROR) — The <c>dependsOn</c> graph contains a cycle.</summary>
     public const string DependencyCycle = "GR2007";
 
-    /// <summary>The plan has prompt actions or prompt guardrails but no <c>promptRunners</c> config to run them.</summary>
+    /// <summary>GR2008 (ERROR) — The plan has prompt actions or prompt guardrails but no <c>promptRunners</c> config to run them.</summary>
     public const string NoPromptRunners = "GR2008";
 
     /// <summary>
-    /// A declared prompt runner's <c>command</c> is not resolvable on PATH. WARNING, not
+    /// GR2009 (WARNING) — A declared prompt runner's <c>command</c> is not resolvable on PATH. WARNING, not
     /// error — the plan may run on another machine where the runner is installed.
     /// </summary>
     public const string PromptRunnerNotOnPath = "GR2009";
 
     /// <summary>
-    /// Two tasks declare the same <c>stableId</c> (SSOT §3/§11). The regeneration merge keys
+    /// GR2010 (ERROR) — Two tasks declare the same <c>stableId</c> (SSOT §3/§11). The regeneration merge keys
     /// task identity on <c>stableId</c>, so a duplicate would make two tasks indistinguishable —
     /// almost always a copy-paste slip. Only declared (non-null) ids are checked.
     /// </summary>
     public const string DuplicateStableId = "GR2010";
 
     /// <summary>
-    /// A declared <c>stableId</c> is not in the allowed format <c>^[a-z0-9][a-z0-9._-]*$</c>
+    /// GR2011 (ERROR) — A declared <c>stableId</c> is not in the allowed format <c>^[a-z0-9][a-z0-9._-]*$</c>
     /// (SSOT §3/§11). The regeneration merge derives a synthetic identity (<c>folder:&lt;name&gt;</c>)
     /// for tasks without a stableId; reserving the format keeps a real stableId from ever colliding
     /// with that synthetic key, and keeps ids stable across path/JSON handling.
@@ -94,7 +94,7 @@ public static class DiagnosticCodes
     public const string InvalidStableId = "GR2011";
 
     /// <summary>
-    /// A present <c>maxCostUsd</c> (SSOT §2) is zero or negative. A non-positive cap would halt the
+    /// GR2012 (ERROR) — A present <c>maxCostUsd</c> (SSOT §2) is zero or negative. A non-positive cap would halt the
     /// run before any work runs — a configuration mistake — so it is an ERROR. (Plan 04 reserved
     /// "GR2010", but GR2010/GR2011 were taken by the stableId checks, which landed after that slice
     /// was planned; this uses the next free validation code.)
@@ -102,7 +102,7 @@ public static class DiagnosticCodes
     public const string CostCapNonPositive = "GR2012";
 
     /// <summary>
-    /// The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). Emitted ONLY in
+    /// GR2015 (ERROR) — The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). Emitted ONLY in
     /// worktree mode (<c>maxParallelism &gt; 1</c>, the PO decision): parallel tasks need per-segment
     /// worktree isolation (plan branch, segment worktrees), which requires the workspace to reside
     /// within a git repository. An ERROR — the harness cannot create worktrees without git. A SERIAL
@@ -112,7 +112,7 @@ public static class DiagnosticCodes
     public const string WorkspaceNotGitRoot = "GR2015";
 
     /// <summary>
-    /// The configured <c>worktreeRoot</c> path is long enough that harness-managed paths may
+    /// GR2016 (WARNING) — The configured <c>worktreeRoot</c> path is long enough that harness-managed paths may
     /// exceed the Windows MAX_PATH limit of 260 characters (plan 08 M2, SSOT §2). A WARNING —
     /// the plan may work but is at risk; enable long-path support with
     /// <c>git config --system core.longpaths true</c>.
@@ -131,14 +131,14 @@ public static class DiagnosticCodes
     // re-allocated to a new rule. Do NOT wire either back up — the migration that retired them is
     // complete and every consumer moved to GR2028/GR2029.
 
-    /// <summary>RETIRED (see the block above): the old GR2017 "missing integrationGate sink" rule — superseded by GR2029.</summary>
+    /// <summary>GR2017 (RETIRED) — the old "missing integrationGate sink" rule, superseded by GR2029. See the block above; do NOT re-wire.</summary>
     public const string MissingIntegrationGate = "GR2017";
 
-    /// <summary>RETIRED (see the block above): the old GR2018 "empty integration gate" content rule — re-homed onto the folder as GR2028.</summary>
+    /// <summary>GR2018 (RETIRED) — the old "empty integration gate" content rule, re-homed onto the folder as GR2028. See the block above; do NOT re-wire.</summary>
     public const string IntegrationGateEmpty = "GR2018";
 
     /// <summary>
-    /// A <c>writeScope</c> entry is an absolute path or contains <c>..</c> segments that could
+    /// GR2019 (ERROR) — A <c>writeScope</c> entry is an absolute path or contains <c>..</c> segments that could
     /// reference files outside the workspace root (plan 08 §2/§3.4, SSOT §3.4). Such an entry can
     /// never match a git-diff path (which is always relative to the repo root) and is almost always
     /// a configuration mistake — an ERROR.
@@ -146,14 +146,14 @@ public static class DiagnosticCodes
     public const string WriteScopeEscapesWorkspace = "GR2019";
 
     /// <summary>
-    /// A <c>writeScope</c> entry is vacuous or over-broad (e.g. <c>**</c> or <c>*</c>) and provides
+    /// GR2020 (WARNING) — A <c>writeScope</c> entry is vacuous or over-broad (e.g. <c>**</c> or <c>*</c>) and provides
     /// no meaningful constraint (plan 08 §2/§3.4, SSOT §3.4). A scope that matches everything defeats
     /// the purpose of write-scope isolation — a WARNING (may still be intentional during migration).
     /// </summary>
     public const string WriteScopeVacuous = "GR2020";
 
     /// <summary>
-    /// A guardrail <c>scope</c> value is not one of the recognised values <c>integration</c> or
+    /// GR2021 (ERROR) — A guardrail <c>scope</c> value is not one of the recognised values <c>integration</c> or
     /// <c>local</c> (plan 08 M2, SSOT §4.3). An unrecognised scope silently degrades to <c>local</c>
     /// at runtime, dropping the guardrail from the integration union re-verify set — a deterministic
     /// gate quietly stops re-running without any warning. Validation must FAIL so the typo is caught
@@ -162,7 +162,7 @@ public static class DiagnosticCodes
     public const string InvalidGuardrailScopeValue = "GR2021";
 
     /// <summary>
-    /// A guardrail or script-action body reads another task's state namespace in the canonical
+    /// GR2022 (ERROR) — A guardrail or script-action body reads another task's state namespace in the canonical
     /// state-access form (<c>$state.'&lt;task-id&gt;'</c> / <c>state["&lt;task-id&gt;"]</c>) but the
     /// referenced producer is not a transitive <c>dependsOn</c> ancestor of the referencing task and
     /// is not satisfied by a <c>seed.json</c> top-level key (SSOT §6.2, issue #121). The scheduler
@@ -173,7 +173,7 @@ public static class DiagnosticCodes
     public const string CrossTaskStateReferenceWithoutDependency = "GR2022";
 
     /// <summary>
-    /// A prompt runner's <c>maxOutputTokens</c> (SSOT §2/§9, issue #114) — or its
+    /// GR2023 (ERROR) — A prompt runner's <c>maxOutputTokens</c> (SSOT §2/§9, issue #114) — or its
     /// <c>guardrailOverrides.maxOutputTokens</c> — is zero or negative. The value caps the runner's
     /// per-response output budget and is translated into the CLI's output-token env var; a
     /// non-positive cap would make every prompt response fail, so it is an ERROR.
@@ -181,7 +181,7 @@ public static class DiagnosticCodes
     public const string MaxOutputTokensNonPositive = "GR2023";
 
     /// <summary>
-    /// A <c>stagingOutputs</c> entry is malformed (SSOT §3.5, issue #130): the array is present but
+    /// GR2024 (ERROR) — A <c>stagingOutputs</c> entry is malformed (SSOT §3.5, issue #130): the array is present but
     /// empty; an entry has a missing/empty <c>from</c> or <c>to</c>; a <c>to</c> does not normalize to
     /// a path under <c>.claude/</c>; a <c>to</c> escapes the workspace (absolute or <c>..</c> climbing
     /// out, the same family as <see cref="WriteScopeEscapesWorkspace"/>); or a <c>from</c> escapes the
@@ -193,7 +193,7 @@ public static class DiagnosticCodes
     public const string StagingOutputsInvalid = "GR2024";
 
     /// <summary>
-    /// The plan folder has not been through <c>/guardrails-review</c> (no <c>state/guardrails-review.json</c>
+    /// GR2025 (WARNING) — The plan folder has not been through <c>/guardrails-review</c> (no <c>state/guardrails-review.json</c>
     /// marker), or it has changed since the last review (the marker's <c>planHash</c> no longer matches the
     /// plan, SSOT §13, issue #79). A WARNING, never an error: the review is a token-costing Claude skill and
     /// a quick/intentional run is legitimate, so this is an honest nudge — run <c>/guardrails-review</c>, or
@@ -213,7 +213,7 @@ public static class DiagnosticCodes
     public const string ReviewMarkerMissingOrStale = "GR2025";
 
     /// <summary>
-    /// A task's <c>covers-key-behaviors</c>-style guardrail requires a coverage token that the SAME
+    /// GR2026 (WARNING) — A task's <c>covers-key-behaviors</c>-style guardrail requires a coverage token that the SAME
     /// task's action prompt never mentions (SSOT §3/§4, issue #157 §1). When an action prompt is
     /// edited (a scenario removed, scope narrowed) but its coverage guardrail is not updated to match,
     /// the guardrail keeps requiring the now-removed token — a correct implementation following the
@@ -227,14 +227,16 @@ public static class DiagnosticCodes
 
     // --- Four-folder preflights/guardrails model (preflights-impl deliverable 2) -------
     // Next-free allocation confirmed at authoring time: GR2026 (StaleCoverageToken) is the last
-    // taken; GR2013/GR2014 are historical gaps but GR2015–GR2026 are contiguous above them, so
+    // taken; GR2013/GR2014 are historical gaps — they belonged to the `captureHashes`/`restoreOnRetry`
+    // triad, removed with SSOT §3.1, and like GR2017/GR2018 they stay RESERVED rather than recycled, since
+    // an archived run's journal can still carry them — but GR2015–GR2026 are contiguous above them, so
     // GR2027 is the next free code. The three codes below are a CONTIGUOUS block (GR2027–GR2029)
     // for the two-scope preflights/guardrails feature (design-of-record 09-preflight-first-class,
     // SSOT §1/§3.3/§4). Deliverable 2 (the loader/validator) READS these constants from this file —
     // it is the source-of-truth allocation, so do not renumber.
 
     /// <summary>
-    /// A guardrail file in one of the four folders (<c>&lt;plan&gt;/preflights/</c>,
+    /// GR2027 (ERROR) — A guardrail file in one of the four folders (<c>&lt;plan&gt;/preflights/</c>,
     /// <c>&lt;plan&gt;/guardrails/</c>, <c>tasks/&lt;id&gt;/preflights/</c>, or
     /// <c>tasks/&lt;id&gt;/guardrails/</c>) does not open with the required <c>catches:</c> comment
     /// (script) or frontmatter field (prompt) — SSOT §4. A guardrail whose author cannot state what
@@ -245,7 +247,7 @@ public static class DiagnosticCodes
     public const string GuardrailMissingCatches = "GR2027";
 
     /// <summary>
-    /// A multi-leaf or fan-in plan's terminal <c>&lt;plan&gt;/guardrails/</c> folder does not carry
+    /// GR2028 (ERROR) — A multi-leaf or fan-in plan's terminal <c>&lt;plan&gt;/guardrails/</c> folder does not carry
     /// at least one deterministic check that actually RE-RUNS the integration set (the whole-repo
     /// build / full suite / a union invariant) — SSOT §3.3. This is the RE-HOMED GR2018 rule: the
     /// terminal-sink obligation moved off the retired <c>integrationGate</c> task and onto the folder,
@@ -258,7 +260,7 @@ public static class DiagnosticCodes
     public const string PlanGuardrailsMissingIntegrationReRun = "GR2028";
 
     /// <summary>
-    /// A task still declares the retired <c>integrationGate: true</c> task kind (SSOT §3.3). Under the
+    /// GR2029 (ERROR) — A task still declares the retired <c>integrationGate: true</c> task kind (SSOT §3.3). Under the
     /// four-folder model the terminal checks live in <c>&lt;plan&gt;/guardrails/</c>; the
     /// <c>integrationGate</c> task kind and its GR2017 presence rule are RETIRED with no coexistence
     /// window. A plan that still carries the key gets a HARD validation ERROR (honest-over-silent,
@@ -271,7 +273,7 @@ public static class DiagnosticCodes
     // was next-free at that point. (Current next-free is at the END of this file — issue #320.)
 
     /// <summary>
-    /// A <c>model</c> value (SSOT §2/§3, issue #200) is present but empty, whitespace-only, or contains
+    /// GR2030 (ERROR) — A <c>model</c> value (SSOT §2/§3, issue #200) is present but empty, whitespace-only, or contains
     /// leading/trailing whitespace or a control character — at any of the three sites it can be
     /// declared: <c>promptRunners.&lt;name&gt;.model</c>, <c>promptRunners.&lt;name&gt;.guardrailOverrides.model</c>,
     /// or a task's <c>task.json action.model</c>. There is no enumerable list of valid Claude model
@@ -287,7 +289,7 @@ public static class DiagnosticCodes
     // next-free at that point.
 
     /// <summary>
-    /// An <c>autonomyPolicy</c> value (SSOT §2.1/§7.2, #254/#269/#274) is present but not one of the three
+    /// GR2031 (ERROR) — An <c>autonomyPolicy</c> value (SSOT §2.1/§7.2, #254/#269/#274) is present but not one of the three
     /// recognised values <c>prompt</c> (default), <c>halt</c>, or <c>auto</c>. The field is the unified
     /// autonomy knob governing every prompt/halt/auto decision boundary; an unrecognised value can never map
     /// to a policy and is always a configuration mistake (a typo, a stale value — including the pre-fold
@@ -304,7 +306,7 @@ public static class DiagnosticCodes
     // (design-of-record 10-multi-wave-plans, SSOT §14.1). Do not renumber.
 
     /// <summary>
-    /// A plan folder has a MIXED layout: both a root <c>tasks/</c> directory AND one or more
+    /// GR2032 (ERROR) — A plan folder has a MIXED layout: both a root <c>tasks/</c> directory AND one or more
     /// <c>wave-*/</c> wave subdirectories (SSOT §14.1). A plan is either FLAT (a root <c>tasks/</c>) or
     /// WAVED (no root <c>tasks/</c>, ≥1 <c>wave-NN-slug/</c> subdir) — never both. A mixed layout is
     /// ambiguous (would the root tasks run before, after, or interleaved with the waves?) and is always an
@@ -313,7 +315,7 @@ public static class DiagnosticCodes
     public const string MixedWaveLayout = "GR2032";
 
     /// <summary>
-    /// A waved plan's wave numbering is malformed (SSOT §14.1, Open Decision F): two wave dirs share the
+    /// GR2033 (ERROR or WARNING) — A waved plan's wave numbering is malformed (SSOT §14.1, Open Decision F): two wave dirs share the
     /// same numeric prefix <c>NN</c> (a duplicate — the strict total order is then ambiguous), OR a
     /// subdirectory sitting alongside the wave dirs does not conform to the wave-dir pattern
     /// <c>^wave-([0-9]+)-[a-z0-9-]+$</c> and is not a recognised plan-root folder (a typo'd wave dir, e.g.
@@ -324,7 +326,7 @@ public static class DiagnosticCodes
     public const string WaveNumbering = "GR2033";
 
     /// <summary>
-    /// A task in a waved plan declares a <c>dependsOn</c> edge that names a task in ANOTHER wave (SSOT
+    /// GR2034 (ERROR) — A task in a waved plan declares a <c>dependsOn</c> edge that names a task in ANOTHER wave (SSOT
     /// §14.1/§14.2). Cross-wave ordering is the job of the wave barrier (a wave never starts until the
     /// prior wave fully drained), NOT a task edge, so each wave's DAG must be self-contained ("no DAG of
     /// waves"). A <c>dependsOn</c> references siblings within the SAME wave by plain folder name; a
@@ -338,7 +340,7 @@ public static class DiagnosticCodes
     // next-free at that point.
 
     /// <summary>
-    /// Two checks in the SAME folder share a <c>Name</c> (SSOT §4.5, issue #332). A guardrail's
+    /// GR2035 (ERROR) — Two checks in the SAME folder share a <c>Name</c> (SSOT §4.5, issue #332). A guardrail's
     /// <see cref="Model.GuardrailDefinition.Name"/> is its filename with the final extension dropped
     /// (<c>PlanLoader.GuardrailName</c>), so a portable pair like <c>01-build.ps1</c> + <c>01-build.sh</c>
     /// in ONE folder both collapse to Name <c>"01-build"</c>. Every surface that keys a check by
@@ -357,7 +359,7 @@ public static class DiagnosticCodes
     // next-free at that point.
 
     /// <summary>
-    /// A guardrail's optional <c>expectedDurationSeconds</c> metadata (SSOT §4.1.1, issue #331) is present
+    /// GR2036 (ERROR) — A guardrail's optional <c>expectedDurationSeconds</c> metadata (SSOT §4.1.1, issue #331) is present
     /// but not a positive integer (zero or negative). The field is a read-only progress hint — the
     /// running-guardrail heartbeat surfaces it as "expected ~Xm" — so a non-positive value can never be a
     /// real duration and would render nonsensically ("expected ~0m"); it is always an authoring mistake. An
@@ -372,7 +374,7 @@ public static class DiagnosticCodes
     // GR2037 was next-free at that point.
 
     /// <summary>
-    /// A generated guardrail SCRIPT contains a KNOWN-BAD regex construction listed in the data-driven
+    /// GR2037 (ERROR) — A generated guardrail SCRIPT contains a KNOWN-BAD regex construction listed in the data-driven
     /// banned-pattern registry (SSOT §4.6, issue #346). <c>guardrails validate</c> scans every
     /// four-folder script guardrail's comment-stripped body (task <c>guardrails/</c>+<c>preflights/</c>,
     /// wave <c>guardrails/</c>+<c>preflights/</c>, plan <c>guardrails/</c>+<c>preflights/</c>) against
@@ -395,7 +397,7 @@ public static class DiagnosticCodes
     // was next-free at that point.
 
     /// <summary>
-    /// A WORKTREE-mode run's segment path would exceed the Windows MAX_PATH limit of 260 characters
+    /// GR2038 (ERROR) — A WORKTREE-mode run's segment path would exceed the Windows MAX_PATH limit of 260 characters
     /// (issue #383, SSOT §2). Unlike <see cref="MaxPathRisk"/> (GR2016 — a validate-time WARNING against a
     /// deep <em>configured</em> <c>worktreeRoot</c>), this is the RUN-START authoritative check: it is
     /// computed against the machine's ACTUAL worktree root (the <c>GUARDRAILS_WORKTREE_ROOT</c>-aware
@@ -420,7 +422,7 @@ public static class DiagnosticCodes
     // GR2039/GR2040 numbering stands unchanged.)
 
     /// <summary>
-    /// A value in the OPTIONAL <c>autonomy</c> criticality-dial block (issue #361, doc 12 §3.4/§3.5;
+    /// GR2039 (ERROR) — A value in the OPTIONAL <c>autonomy</c> criticality-dial block (issue #361, doc 12 §3.4/§3.5;
     /// decided §10 M) is not one of its recognised tokens: an <c>escalationThreshold</c> that is not
     /// <c>low</c>/<c>moderate</c>/<c>high</c>/<c>critical</c>, a <c>gateThresholds.needs-human</c> or
     /// <c>gateThresholds.wave-checkpoint</c> that is not a criticality level, or a
@@ -434,7 +436,7 @@ public static class DiagnosticCodes
     public const string InvalidAutonomyDialValue = "GR2039";
 
     /// <summary>
-    /// The <c>autonomy</c> block declares the FORBIDDEN compound configuration (issue #361, doc 12
+    /// GR2040 (ERROR) — The <c>autonomy</c> block declares the FORBIDDEN compound configuration (issue #361, doc 12
     /// §5.2/§3.4; decided §10 M/A): <c>gateThresholds.review-gate == "proceed-unreviewed"</c> AND the
     /// reachable end-state best-guesses a hard call — <c>escalationThreshold == "critical"</c> OR any
     /// in-wave <c>gateThresholds</c> criticality value (<c>needs-human</c> / <c>wave-checkpoint</c>)
@@ -452,7 +454,7 @@ public static class DiagnosticCodes
     // --- writeScope required on every task (issue #389, SSOT §3.4) ------------------------------------
 
     /// <summary>
-    /// A task's <c>task.json</c> omits <c>writeScope</c> entirely — the field is absent/null (issue #389,
+    /// GR2041 (ERROR) — A task's <c>task.json</c> omits <c>writeScope</c> entirely — the field is absent/null (issue #389,
     /// SSOT §3.4). <c>writeScope</c> is REQUIRED on EVERY task; omitting it is the "lazy planning" this
     /// forbids, because an absent scope would skip the write-scope check and let the task write anywhere
     /// in the repo unbounded. The three states are: <c>"writeScope": ["src/Foo/"]</c> — writes those
@@ -470,7 +472,7 @@ public static class DiagnosticCodes
     // --- structural over-scope lint (issue #378, SSOT §3.4) ------------------------------------------
 
     /// <summary>
-    /// A task's emitted <c>task.json</c> carries the co-occurring STRUCTURAL over-scope fingerprint of a
+    /// GR2042 (WARNING) — A task's emitted <c>task.json</c> carries the co-occurring STRUCTURAL over-scope fingerprint of a
     /// fan-in / composition-root-wiring SINK (issue #378, SSOT §3.4). A WARNING, not an error: the signals
     /// are mechanically checkable from the task graph, but "over-scoped" is a judgement the author may have
     /// a defensible reason for, so this surfaces it for <c>/guardrails-review</c> to acknowledge or resolve
@@ -496,7 +498,7 @@ public static class DiagnosticCodes
     // --- difficulty tier (`action.tier` / `tiering.defaultTier`, issue #225, SSOT §2/§3) ---------------
 
     /// <summary>
-    /// A declared difficulty tier is not one of the recognised tokens <c>easy</c>, <c>medium</c> or
+    /// GR2043 (ERROR) — A declared difficulty tier is not one of the recognised tokens <c>easy</c>, <c>medium</c> or
     /// <c>hard</c> (SSOT §3, issue #225) — at either site a tier can be declared: a task's
     /// <c>task.json action.tier</c>, or the plan-wide <c>tiering.defaultTier</c> in <c>guardrails.json</c>.
     /// The tier is a CLOSED token set (unlike a model identifier, GR2030, which has no enumerable valid
@@ -519,7 +521,7 @@ public static class DiagnosticCodes
     // and no gap remains; this block still starts at GR2044.)
 
     /// <summary>
-    /// A <c>promptRunners.&lt;name&gt;.kind</c> value is present but is not one of the recognised runner
+    /// GR2044 (ERROR) — A <c>promptRunners.&lt;name&gt;.kind</c> value is present but is not one of the recognised runner
     /// kinds <c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c> (SSOT §9, issue #224). The
     /// discriminator selects which runner IMPLEMENTATION serves the block; a value that names no
     /// implementation can only ever be a typo or a kind from a newer Guardrails, and the message NAMES the
@@ -532,7 +534,7 @@ public static class DiagnosticCodes
     public const string InvalidPromptRunnerKind = "GR2044";
 
     /// <summary>
-    /// One of the three per-model AXES on a <c>promptRunners.&lt;name&gt;</c> block is malformed (SSOT §9,
+    /// GR2045 (ERROR) — One of the three per-model AXES on a <c>promptRunners.&lt;name&gt;</c> block is malformed (SSOT §9,
     /// issue #224 / charter Decision 7): a <c>costly</c> that is not a boolean, a <c>strength</c> that is
     /// not an integer or is below 1 (higher = stronger, so there is no meaningful zeroth or negative
     /// capability), or a <c>specialization</c> outside
@@ -548,7 +550,7 @@ public static class DiagnosticCodes
     public const string InvalidRunnerAxis = "GR2045";
 
     /// <summary>
-    /// A <c>promptRunners.&lt;name&gt;.routing</c> block still carries the RETIRED <c>rank</c> key (SSOT §9,
+    /// GR2046 (WARNING) — A <c>promptRunners.&lt;name&gt;.routing</c> block still carries the RETIRED <c>rank</c> key (SSOT §9,
     /// issue #224, settled OD-F). Ordering is ascending <c>strength</c> — the weakest model that can serve
     /// the tier goes first — and <c>rank</c> is not modelled anywhere, so the key is IGNORED. A WARNING, not
     /// an error: a config mid-migration must keep loading. Not silence either: accepting <c>rank</c> quietly
@@ -576,7 +578,7 @@ public static class DiagnosticCodes
     // GR2054 (RoutingNumericNonPositive), the one v2 (#227 probes) code, is still RESERVED and free.
 
     /// <summary>
-    /// A <c>promptRunners.&lt;name&gt;.routing</c> block is malformed (SSOT §9, issue #224 / DoR §4.2):
+    /// GR2047 (ERROR) — A <c>promptRunners.&lt;name&gt;.routing</c> block is malformed (SSOT §9, issue #224 / DoR §4.2):
     /// <c>tiers</c> is missing, is not an array, is EMPTY, holds a non-string element, or holds a value
     /// that is not one of <c>easy</c>/<c>medium</c>/<c>hard</c>. <c>tiers</c> is the MACHINE-CONSUMED half
     /// of <c>routing</c> — it is what makes the block a candidate for a rung (DoR §6.2's candidacy
@@ -591,7 +593,7 @@ public static class DiagnosticCodes
     public const string MalformedRoutingGuidance = "GR2047";
 
     /// <summary>
-    /// A tier that the plan actually USES has no CANDIDATE block at or above it, in a plan where tiering
+    /// GR2048 (ERROR) — A tier that the plan actually USES has no CANDIDATE block at or above it, in a plan where tiering
     /// is CONFIGURED (SSOT §9.6, DoR §6.2/§14.1 — settled OD-G). "Used" spans all three declaration
     /// sites: a task's <c>action.tier</c>, a judge guardrail's frontmatter <c>tier</c>, and the plan-wide
     /// <c>tiering.defaultTier</c>. "Candidate" is the ONE predicate the whole feature shares —
@@ -617,7 +619,7 @@ public static class DiagnosticCodes
     public const string UnservableTier = "GR2048";
 
     /// <summary>
-    /// The plan carries difficulty tier tags but NO <c>promptRunners</c> block declares <c>routing</c>
+    /// GR2049 (WARNING) — The plan carries difficulty tier tags but NO <c>promptRunners</c> block declares <c>routing</c>
     /// (SSOT §2/§9.6, DoR §4.2 — the configured-vs-active rule). Tiering is CONFIGURED iff at least one
     /// block declares <c>routing</c>; without one there is nothing for a tier to resolve against, so every
     /// tag is inert and the plan runs by LEGACY resolution (the runner's own model / the CLI default) —
@@ -632,7 +634,7 @@ public static class DiagnosticCodes
     public const string TieringInert = "GR2049";
 
     /// <summary>
-    /// A present <c>effort</c> value (SSOT §2/§3/§9, issue #201) fails the shape check: it is empty,
+    /// GR2050 (ERROR) — A present <c>effort</c> value (SSOT §2/§3/§9, issue #201) fails the shape check: it is empty,
     /// whitespace-only, or carries leading/trailing/embedded whitespace or a control character. Checked
     /// at both sites <c>effort</c> can be declared — <c>promptRunners.&lt;name&gt;.effort</c> and a task's
     /// <c>task.json action.effort</c>.
@@ -665,7 +667,7 @@ public static class DiagnosticCodes
     // wrote — the class of defect this repo refuses to leave silent.
 
     /// <summary>
-    /// A NON-ROUTABLE block is named the registry <c>default</c> in a plan where tiering is CONFIGURED
+    /// GR2051 (WARNING) — A NON-ROUTABLE block is named the registry <c>default</c> in a plan where tiering is CONFIGURED
     /// (SSOT §9.6, DoR §4.2 — review comment 7's back door). Non-routable spans BOTH reservation forms
     /// §4.2 declares, because they are not equivalent but have the same effect here: <c>costly: true</c>
     /// (the DECLARED form — "the harness may never choose this; only a human may assign it") and a block
@@ -686,7 +688,7 @@ public static class DiagnosticCodes
     public const string NonRoutableBlockIsDefault = "GR2051";
 
     /// <summary>
-    /// A <c>costly: true</c> block ALSO declares <c>routing</c> (SSOT §9.6, DoR §4.2/§6.2). The two keys
+    /// GR2052 (WARNING) — A <c>costly: true</c> block ALSO declares <c>routing</c> (SSOT §9.6, DoR §4.2/§6.2). The two keys
     /// state opposite things about the same block — <c>routing.tiers</c> says "consider me for these
     /// rungs", <c>costly</c> says "never choose me" — and <c>costly</c> wins: §6.2's ONE candidacy
     /// predicate excludes costly blocks at EVERY rung, their own included, and so does every consumer
@@ -706,7 +708,7 @@ public static class DiagnosticCodes
     public const string CostlyBlockRoutingInert = "GR2052";
 
     /// <summary>
-    /// One action carries BOTH a full pin — <c>action.runner</c> or <c>action.model</c> — and
+    /// GR2053 (WARNING) — One action carries BOTH a full pin — <c>action.runner</c> or <c>action.model</c> — and
     /// <c>action.tier</c> (SSOT §2, DoR §6.1, devil's-advocate finding F3). §6.1's precedence chain puts
     /// the pin FIRST and has it bypass tier resolution ENTIRELY, so the tier is dead weight the pin
     /// overrides: it selects no block, it decides nothing, and it is usually an authoring mistake — a
@@ -723,7 +725,7 @@ public static class DiagnosticCodes
     public const string PinAndTierCoexist = "GR2053";
 
     /// <summary>
-    /// <b>GR2055 — a guardrail that CANNOT PASS for any input (issue #484).</b> A script guardrail
+    /// GR2055 (ERROR) — <b>a guardrail that CANNOT PASS for any input (issue #484).</b> A script guardrail
     /// builds a test <c>--filter</c> from a literal collection of N names and then guards on a
     /// zero-match floor demanding M, with <c>M &gt; N</c>. The filter can never select more than N
     /// tests, so the floor is unreachable and the guardrail exits non-zero on every possible attempt —
@@ -743,7 +745,7 @@ public static class DiagnosticCodes
     public const string UnsatisfiableGuardrailFloor = "GR2055";
 
     /// <summary>
-    /// <b>GR2056 — a guardrail SCRIPT that does not PARSE (issue #473).</b> It fails unconditionally:
+    /// GR2056 (ERROR) — <b>a guardrail SCRIPT that does not PARSE (issue #473).</b> It fails unconditionally:
     /// every attempt runs the action and then trips over a syntax error the agent cannot fix, because
     /// the guardrail script is not in its write scope. The task burns its whole retry budget and
     /// settles <c>needs-human</c>. Measured cost of one instance: two attempts plus a halt, for a
@@ -755,7 +757,7 @@ public static class DiagnosticCodes
     public const string GuardrailScriptDoesNotParse = "GR2056";
 
     /// <summary>
-    /// <b>GR2057 — a guardrail that REQUIRES a token it also FORBIDS (issue #470 ask 1).</b> One script
+    /// GR2057 (ERROR) — <b>a guardrail that REQUIRES a token it also FORBIDS (issue #470 ask 1).</b> One script
     /// guardrail carries a required-present clause and a forbidden-present clause over the SAME subject
     /// text, and the literal the first demands trips the pattern the second bans. No file satisfies both:
     /// removing the text fails the required clause, keeping it fails the forbidden one. Every attempt
@@ -780,7 +782,7 @@ public static class DiagnosticCodes
     public const string GuardrailRequiresForbiddenToken = "GR2057";
 
     /// <summary>
-    /// <b>GR2058 — the GR2037 banned-pattern scan could not reach a verdict for one (guardrail, entry) pair
+    /// GR2058 (WARNING) — <b>the GR2037 banned-pattern scan could not reach a verdict for one (guardrail, entry) pair
     /// (issue #487).</b> A registry entry's matcher hit its bounded match timeout against one guardrail's
     /// body. The pair is SKIPPED and the rest of the scan continues.
     /// <para>WARNING, never an error, and never a crash. <c>validate</c> is read-only, fast, and run in CI;
@@ -798,7 +800,7 @@ public static class DiagnosticCodes
     public const string BannedPatternScanTimedOut = "GR2058";
 
     /// <summary>
-    /// <b>GR2059 — a WAVE-ROOT guardrail declares <c>scope:"integration"</c>, where the tag is INERT
+    /// GR2059 (WARNING) — <b>a WAVE-ROOT guardrail declares <c>scope:"integration"</c>, where the tag is INERT
     /// (issue #459).</b> On a waved plan the per-union re-verify set is built from the task
     /// <c>&lt;task&gt;/guardrails/</c> folders plus the plan-root <c>&lt;plan&gt;/guardrails/</c> folder
     /// (SSOT §4.3, #451). A wave-root <c>&lt;plan&gt;/&lt;wave&gt;/guardrails/</c> file is the wave's EXIT
@@ -826,7 +828,7 @@ public static class DiagnosticCodes
     public const string WaveIntegrationScopeInert = "GR2059";
 
     /// <summary>
-    /// <b>GR2060 — a script guardrail REQUIRES an exact literal in a TRACKED workspace file that does not
+    /// GR2060 (ERROR) — <b>a script guardrail REQUIRES an exact literal in a TRACKED workspace file that does not
     /// contain it, and NO task in the plan declares that file in its <c>writeScope</c> (issue #474, doc 19
     /// §3.1, plan 33 §5, SSOT §4.8).</b> Nothing the plan can do makes the gate pass, so the run spends its
     /// whole DAG and fails at the gate; the measured price of learning that the expensive way was $115.32.
@@ -855,7 +857,7 @@ public static class DiagnosticCodes
     public const string UnproducibleGateRequirement = "GR2060";
 
     /// <summary>
-    /// <b>GR2062 — a waved plan INTENDS more waves than it DECLARES, and no wave is left to author
+    /// GR2062 (WARNING) — <b>a waved plan INTENDS more waves than it DECLARES, and no wave is left to author
     /// (issue #477, doc 19 §3.2, SSOT §2/§14.1).</b> The plan's <c>intendedWaves</c> disagrees with the
     /// number of <c>wave-*</c> folders on disk while <c>planIsClosed</c> holds — every declared wave has
     /// tasks — so the #365 one-ahead invariant is not merely PENDING, it is GONE.
@@ -889,7 +891,7 @@ public static class DiagnosticCodes
     public const string IntendedWaveNotDeclared = "GR2062";
 
     /// <summary>
-    /// <b>GR2063 — a wave's breakdown DECLARED more tasks than it AUTHORED (issue #402, SSOT §14.11).</b>
+    /// GR2063 (WARNING) — <b>a wave's breakdown DECLARED more tasks than it AUTHORED (issue #402, SSOT §14.11).</b>
     /// The wave carries a <c>state/breakdown-intent.json</c> manifest and a declared <c>folder</c> has no
     /// complete task folder under that wave's <c>tasks/</c>. The message names the missing folders.
     /// <para><b>Silent when</b> the manifest is absent, unparseable, satisfied, or present-but-declaring
@@ -911,7 +913,7 @@ public static class DiagnosticCodes
     public const string WaveBreakdownIncomplete = "GR2063";
 
     /// <summary>
-    /// <b>GR2064 — a wave's breakdown-intent manifest EXISTS and PARSES but declares nothing usable
+    /// GR2064 (WARNING) — <b>a wave's breakdown-intent manifest EXISTS and PARSES but declares nothing usable
     /// (issue #402 follow-up, SSOT §14.11, doc 20 §4.6).</b> Every <c>tasks[].folder</c> was rejected —
     /// blank, carrying a path separator, or an ordinal duplicate — or there were no <c>tasks</c> entries at
     /// all, or the file's content is the JSON literal <c>null</c>. The message names the manifest path and

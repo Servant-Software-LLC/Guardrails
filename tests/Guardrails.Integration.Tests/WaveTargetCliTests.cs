@@ -139,17 +139,23 @@ public sealed class WaveTargetCliTests
             attestation.GetProperty("evidence").GetProperty("reportPath").GetString());
     }
 
-    private static int CountOccurrences(string text, string token)
-    {
-        int count = 0;
-        for (int i = text.IndexOf(token, StringComparison.Ordinal); i >= 0;
-             i = text.IndexOf(token, i + token.Length, StringComparison.Ordinal))
-        {
-            count++;
-        }
-
-        return count;
-    }
+    /// <summary>
+    /// How many DIAGNOSTIC LINES carry <paramref name="token"/> — not how many times the string appears
+    /// anywhere in the output.
+    ///
+    /// <para>It counted raw substrings until #558 added a line pointing at
+    /// <c>guardrails diagnostics &lt;code&gt;</c>, which names a real code from the run so it is
+    /// copy-pasteable. That is one more occurrence of the token and zero more diagnostics, and a
+    /// whole-output count reads it as a second GR2025 — the test asserting something narrower than its
+    /// name claimed. A diagnostic line begins with its severity, so anchoring there counts diagnostics,
+    /// which is what these assertions were always about.</para>
+    /// </summary>
+    private static int CountOccurrences(string text, string token) =>
+        text.Split('\n')
+            .Count(line =>
+                (line.StartsWith("ERROR ", StringComparison.Ordinal)
+                 || line.StartsWith("WARNING ", StringComparison.Ordinal))
+                && line.Contains(token, StringComparison.Ordinal));
 
     private static string ExtractHash(string output)
     {
