@@ -1,4 +1,6 @@
 using System.CommandLine;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Loading;
@@ -435,6 +437,37 @@ public static partial class GraphCommand
             return false;
         }
 
+        // #636: the source hash proves the PLAN has not moved. It proves nothing about the bytes in the
+        // fence, because it is computed from the plan and never reads them — so until now a diagram whose
+        // body had been replaced outright passed. Verified on this repo's own committed example: an entire
+        // mermaid body swapped for `flowchart TD / A[THIS DIAGRAM IS A COMPLETE FABRICATION]`, header left
+        // alone, exit 0 at plan and wave scope alike.
+        //
+        // This bites on hand-edit and corruption, which is exactly the gap: plan drift was already covered.
+        // It matters because `/guardrails-review` treats this exit code as "the diagram is trustworthy".
+        string document = File.ReadAllText(diagramPath);
+        string? declaredBody = ReadEmbeddedBodyHash(document);
+
+        if (declaredBody is null)
+        {
+            // A pre-#636 stamp. NOT a failure — the file may be untouched and correct, and failing it would
+            // red a consumer's CI on a tool upgrade over a diagram nobody edited. But it is not silence
+            // either: the whole defect being fixed is a check claiming more than it verified, and inheriting
+            // that quietly would just move the overclaim one level up.
+            output.WriteLine(
+                $"{Describe(diagramPath, primaryDir)}: source stamp matches, body NOT verified "
+                + $"(pre-#636 diagram, no body-sha256) — {regenHint} for full verification");
+            return true;
+        }
+
+        if (!string.Equals(ReadActualBodyHash(document), declaredBody, StringComparison.Ordinal))
+        {
+            output.WriteLine(
+                $"{Describe(diagramPath, primaryDir)} body does NOT match its own stamp — the diagram was "
+                + $"edited by hand or corrupted after generation; {regenHint}");
+            return false;
+        }
+
         return true;
     }
 
@@ -475,7 +508,22 @@ public static partial class GraphCommand
     /// </summary>
     private static string ComposeDocument(string diagram, string sourceHash)
     {
-        string provenance = $"<!-- guardrails:graph v1 source-sha256={sourceHash} -->";
+        // #636: the stamp carries a SECOND hash, over the rendered body this document actually contains.
+        //
+        // `source-sha256` answers "has the PLAN moved since this was generated?" — and only that. It is
+        // computed from the plan, so it says nothing whatever about the bytes sitting in the fence below it.
+        // Measured on this repo's own committed example: an entire mermaid body replaced with
+        // `flowchart TD / A[THIS DIAGRAM IS A COMPLETE FABRICATION]`, header untouched, returned exit 0 at
+        // plan and wave scope alike. `/guardrails-review` reads that exit code as "the diagram is
+        // trustworthy", which is a good deal stronger than one hash of the plan can prove.
+        //
+        // The body hash covers the FENCE CONTENT only, deliberately — not the caption or the legend, which
+        // are prose the tool is free to reword. Keeping them out preserves the property the remarks above
+        // depend on: a legend wording change never invalidates a committed diagram, and two regens of an
+        // unchanged plan stay byte-identical.
+        string bodyHash = ComputeBodyHash(diagram);
+        string provenance =
+            $"<!-- guardrails:graph v1 source-sha256={sourceHash} body-sha256={bodyHash} -->";
 
         return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n\n" + DiagramCaption + "\n\n"
             + MermaidRenderer.LegendMarkdown;
@@ -498,5 +546,48 @@ public static partial class GraphCommand
 
     [GeneratedRegex(@"\A\s*<!--\s*guardrails:graph\s+v1\s+source-sha256=(?<hash>[0-9a-f]+)\b")]
     private static partial Regex ProvenanceHashRegex();
+
+    /// <summary>
+    /// The OPTIONAL <c>body-sha256</c> token (#636). Optional because every diagram committed before this
+    /// existed has a stamp without one, and failing those would red a consumer's CI on a tool upgrade for a
+    /// file that has not changed. Absent is REPORTED, never silently treated as verified.
+    /// </summary>
+    [GeneratedRegex(@"\A\s*<!--\s*guardrails:graph\s+v1\s+source-sha256=[0-9a-f]+\s+body-sha256=(?<hash>[0-9a-f]+)\b")]
+    private static partial Regex ProvenanceBodyHashRegex();
+
+    /// <summary>The fenced <c>mermaid</c> body — the bytes <c>body-sha256</c> is computed over.</summary>
+    [GeneratedRegex(@"```mermaid\r?\n(?<body>.*?)\r?\n```", RegexOptions.Singleline)]
+    private static partial Regex MermaidBodyRegex();
+
+    /// <summary>
+    /// Lowercase-hex SHA-256 over the newline-normalized diagram body, so a file checked out with CRLF
+    /// hashes the same as the LF it was written as — a line-ending difference is a checkout artifact
+    /// governed by <c>.gitattributes</c>, not a hand edit, and reporting it as one would make the check
+    /// useless on Windows.
+    /// </summary>
+    private static string ComputeBodyHash(string body)
+    {
+        byte[] hash = SHA256.HashData(
+            Encoding.UTF8.GetBytes(
+                // Collapsed here rather than through Core's HashText, which is internal to that assembly.
+                body.Replace("\r\n", "\n", StringComparison.Ordinal)
+                    .Replace("\r", "\n", StringComparison.Ordinal)
+                    .Trim('\n', '\r')));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>The body hash a document's own fenced block yields, or null when it carries no fence.</summary>
+    private static string? ReadActualBodyHash(string document)
+    {
+        Match match = MermaidBodyRegex().Match(document);
+        return match.Success ? ComputeBodyHash(match.Groups["body"].Value) : null;
+    }
+
+    /// <summary>The declared <c>body-sha256</c>, or null on a pre-#636 stamp.</summary>
+    private static string? ReadEmbeddedBodyHash(string document)
+    {
+        Match match = ProvenanceBodyHashRegex().Match(document);
+        return match.Success ? match.Groups["hash"].Value : null;
+    }
 
 }

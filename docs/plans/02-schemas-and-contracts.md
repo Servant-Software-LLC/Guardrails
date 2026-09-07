@@ -6541,12 +6541,29 @@ now (see above), never in the Mermaid source.
 **Provenance comment.** The first line of `diagram.md` is, verbatim:
 
 ```
-<!-- guardrails:graph v1 source-sha256=<hash> -->
+<!-- guardrails:graph v1 source-sha256=<hash> body-sha256=<hash> -->
 ```
 
-followed by a blank line and a fenced ```` ```mermaid ```` block. The comment carries only
-the `source-sha256` identity — no timestamp — so re-running `graph` on an unchanged plan
-produces a **byte-identical** file (a deterministic projection, no git churn).
+followed by a blank line and a fenced ```` ```mermaid ```` block. The comment carries only these two
+identities — no timestamp — so re-running `graph` on an unchanged plan produces a **byte-identical** file
+(a deterministic projection, no git churn).
+
+**`body-sha256` (issue #636).** SHA-256 (lowercase hex) over the newline-normalized contents of the fenced
+mermaid block. It exists because `source-sha256` is computed FROM THE PLAN and therefore answers exactly one
+question — *has the plan moved since this was generated?* — while never reading the bytes below it. Measured
+on this repo's own committed example: an entire mermaid body replaced with `flowchart TD / A[THIS DIAGRAM IS
+A COMPLETE FABRICATION]`, the header left intact, returned **exit 0** at plan and wave scope alike. That
+matters because `/guardrails-review` treats the exit code as *"the diagram is trustworthy"*, which is
+stronger than one hash of the plan can prove.
+
+It covers the **fence content only** — deliberately not the caption or the legend, which are prose the tool
+is free to reword. Keeping them out preserves the exclusion contract below: a legend wording change never
+invalidates a committed diagram.
+
+The token is **OPTIONAL on read**. Every diagram committed before #636 has a stamp without one, and failing
+those would red a consumer's CI on a tool upgrade over a file nobody edited. Absent is *reported* — `source
+stamp matches, body NOT verified` at exit `0` — never silently treated as verified, since passing it quietly
+would relocate the very overclaim being fixed.
 
 **Caption.** Immediately after the closing mermaid fence, the written `diagram.md` carries a
 single italic caption line, verbatim:
@@ -6608,7 +6625,10 @@ styling, or by the legend's wording.
   source by folder: `graph <plan>/<wave> --stdout`.
 - `--check` — write nothing. Recompute `source-sha256` (including the plan-level folder
   checks — see above), read the value embedded in an existing `diagram.md`, and exit `0` when
-  present and equal (fresh). When `diagram.md` is **stale or missing**, print one actionable
+  present and equal (fresh). Since #636 it ALSO verifies `body-sha256` against the document's own fenced
+  block: a body that does not match its stamp was hand-edited or corrupted after generation, and exits `2`
+  with its own actionable line. A stamp carrying no `body-sha256` exits `0` and says the body was not
+  verified. When `diagram.md` is **stale or missing**, print one actionable
   line and exit `2` — the "regenerate" signal. When `diagram.html` is **present but carries a
   different hash**, print one actionable line and exit `2` (a **missing** `diagram.html` is
   NOT stale — the caller may have used `--no-html`). A **load/validate error** front-doors

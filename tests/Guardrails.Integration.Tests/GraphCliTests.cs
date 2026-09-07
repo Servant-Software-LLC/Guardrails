@@ -340,6 +340,71 @@ public sealed class GraphCliTests
         Assert.Equal(ExitCodes.Success, exit);
     }
 
+    [Fact]
+    public async Task Graph_CheckAfterREPLACINGTheMermaidBody_ExitsStale_NotAFalseGreen()
+    {
+        // #636. `source-sha256` is computed FROM THE PLAN, so it answers "has the plan moved?" and nothing
+        // else — it never reads the bytes in the fence. A diagram whose entire body had been replaced
+        // therefore passed `--check` with exit 0, at plan and wave scope alike, and `/guardrails-review`
+        // reads that exit code as "the diagram is trustworthy".
+        //
+        // Note what this is NOT: it is not plan-drift detection, which already worked. It bites on hand-edit
+        // and corruption, which is precisely the half a hash of the plan cannot cover.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string diagramPath = DiagramPath(plan.PlanDir);
+        string content = await File.ReadAllTextAsync(diagramPath, TestContext.Current.CancellationToken);
+
+        // Replace the fenced body outright, leaving the provenance header untouched — the plan has NOT
+        // moved, so the source hash still matches and only the body hash can catch this.
+        int open = content.IndexOf("```mermaid", StringComparison.Ordinal);
+        int close = content.IndexOf("```", open + "```mermaid".Length, StringComparison.Ordinal);
+        Assert.True(open >= 0 && close > open, "the generated document must carry a fenced mermaid block");
+
+        string fabricated = content[..open]
+            + "```mermaid\nflowchart TD\n    A[THIS DIAGRAM IS A COMPLETE FABRICATION]\n"
+            + content[close..];
+        Assert.NotEqual(content, fabricated);
+        await File.WriteAllTextAsync(diagramPath, fabricated, TestContext.Current.CancellationToken);
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(StaleExitCode, exit);
+        Assert.Contains("body does NOT match its own stamp", output, StringComparison.Ordinal);
+        Assert.Contains("guardrails graph", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Graph_CheckOnAPreBodyHashStamp_StaysGreen_ButSaysTheBodyWasNotVerified()
+    {
+        // Backward tolerance, and the reason it is not silent. Every diagram committed before #636 carries a
+        // stamp with no `body-sha256`; failing those would red a consumer's CI on a tool upgrade over a file
+        // nobody touched. But passing them QUIETLY would just relocate the overclaim being fixed — the check
+        // would still be saying "fresh" while verifying less than the reader thinks.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string diagramPath = DiagramPath(plan.PlanDir);
+        string content = await File.ReadAllTextAsync(diagramPath, TestContext.Current.CancellationToken);
+
+        // Strip the body hash back out, reproducing a pre-#636 stamp exactly.
+        int bodyToken = content.IndexOf(" body-sha256=", StringComparison.Ordinal);
+        Assert.True(bodyToken > 0, "a freshly generated diagram must carry a body-sha256 token");
+        int endOfComment = content.IndexOf(" -->", bodyToken, StringComparison.Ordinal);
+        Assert.True(endOfComment > bodyToken, "the provenance comment must terminate");
+
+        string legacy = content[..bodyToken] + content[endOfComment..];
+        await File.WriteAllTextAsync(diagramPath, legacy, TestContext.Current.CancellationToken);
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("body NOT verified", output, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Add a second guardrail to an existing <see cref="ScriptPlanBuilder"/> task by writing a
     /// sibling guardrail file directly into <paramref name="taskDir"/>, mirroring the

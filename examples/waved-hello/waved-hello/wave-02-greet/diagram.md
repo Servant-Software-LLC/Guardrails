@@ -1,32 +1,26 @@
-<!-- guardrails:graph v1 source-sha256=fbe54bc3976bf97fdf904de27bf0090fab43aadaa9e66c88364977268a8c9a5c body-sha256=7cdea5be22b3115db6528d60b9b6bf2269d4539efc2a00f5adef92c38a3f8d1b -->
+<!-- guardrails:graph v1 source-sha256=80b235d217bd9810dc49fea71cc175e8d72ffdb75fd84673bbd1488d879dab73 body-sha256=9b173df8ef565ad6c92df995b5ab3c4e17e237af0b66d987f970ee20ab1bd3de -->
 
 ```mermaid
 flowchart TD
   subgraph plan_preflights["Full Flight Checks"]
+    plan_preflights_0["01-scaffold-materialized"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  subgraph task_01_write_greeting_script["01-write-greeting-script"]
-    task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
-    task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
+  subgraph task_wave_02_greet_01_generate_greeting["wave-02-greet/01-generate-greeting"]
+    task_wave_02_greet_01_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
   end
-  style task_01_write_greeting_script fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_02_generate_greeting["02-generate-greeting"]
-    task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
-    task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
+  style task_wave_02_greet_01_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_02_greet_02_write_report["wave-02-greet/02-write-report"]
+    task_wave_02_greet_02_write_report_gr_0["01-report-quotes-greeting"]:::guardrail
   end
-  style task_02_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_03_quality_check["03-quality-check"]
-    task_03_quality_check_gr_0["01-report-exists"]:::guardrail
-    task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
-  end
-  style task_03_quality_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  style task_wave_02_greet_02_write_report fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
+    plan_guardrails_0["01-greeting-complete"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  plan_preflights --> task_01_write_greeting_script
-  task_01_write_greeting_script --> task_02_generate_greeting
-  task_02_generate_greeting --> task_03_quality_check
-  task_03_quality_check --> plan_guardrails
+  plan_preflights --> task_wave_02_greet_01_generate_greeting
+  task_wave_02_greet_01_generate_greeting --> task_wave_02_greet_02_write_report
+  task_wave_02_greet_02_write_report --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```
