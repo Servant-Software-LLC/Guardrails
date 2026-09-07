@@ -1,0 +1,271 @@
+---
+charter-format-version: 1
+---
+# 40 — Supplying a missing resource to an in-flight run
+
+Design of record for **issue #373**. Status: **DRAFT — for Charter review.** Not implemented.
+
+---
+
+## What's being asked
+
+A run executes each task in an isolated git worktree **branched from the run's own base** — its
+integration-branch lineage, independent of the human's `master`. There is **no supported channel to inject
+or correct a resource into an in-flight run**: a file the human adds to `master` mid-run does not propagate
+into task worktrees, so the task cannot see it.
+
+## The measured case (Charter wave-4)
+
+Task `02-vendor-mermaid-runtime` needed a vendored `mermaid.min.js`. It **was** pre-vendored and committed
+to `master@88f8514`, and the task prompt was reframed to "confirm-present + embed" per #370. At run time
+the task still halted `needs-human`: its worktree branched from `690de91` — the wave-3 completion marker on
+the **integration branch** — and `88f8514` is **not an ancestor of that lineage**, because each completed
+wave was merged to `master` while the run continued on its own branch.
+
+The agent behaved correctly throughout: it refused to stub or fetch, and produced a precise `needs-human`
+offering three fixes (copy the file into the worktree; add the source dir to the session's allowed working
+dirs; commit the file to the branch base).
+
+**Note the asymmetry that made this confusing**, because it is the thing to fix rather than to explain:
+
+> **Plan-folder edits — task prompts, guardrails — ARE read live from the canonical checkout, but CODE
+> artifacts must be on the run's base.**
+
+So the reframed prompt reached the run and the file did not. Two channels, one live and one not, with
+nothing telling the operator which is which.
+
+---
+
+## Invariants in play
+
+**2 — Harness is the single writer of merged state.** This is the invariant the whole design turns on. A
+"drop the file into the worktree" affordance would put a second writer into a tree the harness owns, at
+arbitrary times. The design instead has the operator hand the harness a file and the **harness** place it —
+in one commit, on the run's base, at a boundary the harness chooses.
+
+**5 — Honest halts; needs-human is a feature.** The measured halt was *correct* and its message was *good*.
+This design does not remove the halt; it makes the halt **resolvable without abandoning the run**. A
+needs-human that can only be answered by killing a 20-task run is a feature with a missing half.
+
+**6 — Plain files, light setup.** No daemon, no IPC, no watch loop. The operator runs a command; the
+harness reads a directory at a boundary it already stops at.
+
+**Never-weaker.** A run nobody supplies anything to behaves byte-identically to today.
+
+---
+
+## 1. The shape: a staging directory the harness drains at a boundary
+
+**Decision: `guardrails supply <plan> <path>...` copies files into `logs/<runId>/supplied/`, and the
+harness commits them onto the run base at the next task boundary.**
+
+```bash
+guardrails supply docs/plans/34-charter/ vendor/mermaid.min.js
+# staged: vendor/mermaid.min.js -> logs/2026-…-a1b2/supplied/vendor/mermaid.min.js
+# the run will pick it up at its next task boundary
+```
+
+Why a staging directory and a boundary rather than a direct write:
+
+- **The harness stays the single writer.** `supply` writes only under `logs/<runId>/supplied/`, which no
+  task worktree is branched from and no guardrail reads. The harness performs the actual commit.
+- **A boundary is a moment when no task is mid-attempt on that base.** Committing to the run base while a
+  task's worktree is branched from it is exactly the drift class the worktree model exists to remove.
+- **It survives the operator getting the timing wrong.** Files staged at any moment are drained at the next
+  boundary; there is no window in which `supply` silently does nothing.
+
+**There are TWO drain boundaries, and the second one is the important one.** My first draft had only the
+first, and it would have refused the measured case:
+
+| when the operator supplies | drained at |
+|---|---|
+| the run is still executing | the next **task boundary** |
+| the run has HALTED and exited | **run start**, on the next `guardrails run`, before scheduling |
+
+The measured incident is the second row. Task `02-vendor-mermaid-runtime` settled `needs-human` and **the
+run exited** — so at the moment the operator has the file in hand there is no live run to have a task
+boundary. A `supply` that required one would refuse precisely when it is needed, which is the shape of a
+feature that demos well and helps nobody.
+
+So `supply` is valid against any **resumable** run — one whose journal has unfinished tasks — and the drain
+on the resume path happens before the first task is scheduled, which is the cleanest boundary of the two:
+nothing is branched from the base yet.
+
+**Path semantics.** The second argument is the path the file must have **in the workspace**, taken from the
+staged layout: `logs/<runId>/supplied/vendor/mermaid.min.js` lands at `vendor/mermaid.min.js`. There is no
+separate destination argument, because a source/destination pair is one more thing to get wrong and the
+staged tree already says it unambiguously.
+
+---
+
+## 2. What the harness does at the boundary
+
+1. If `logs/<runId>/supplied/` is empty, do nothing. (The whole feature is inert for every run that does
+   not use it — the never-weaker requirement.)
+2. Copy the tree onto the integration worktree, commit with a trailer naming the run and the operator
+   action, and record it in the journal (§4).
+3. **Announce it.** `SuppliedResourcesCommitted` on `IRunObserver`, forwarded through every decorator, and
+   a line in the live table and `--no-ui` output. A run whose base changed underneath it must say so; a
+   silent base change is indistinguishable from a harness bug when a later task behaves unexpectedly.
+
+**Tasks already settled are not re-run.** Supplying a file does not invalidate completed work, and a design
+that re-ran the DAG on every supply would make the feature unusable on a long plan. §3 covers the task that
+actually wanted the file.
+
+---
+
+## 3. Resolving the HALTED task — the half that makes this worth building
+
+Staging a file helps nothing if the task that needed it is already settled `needs-human` and the run has
+exited. Two cases:
+
+**(a) The run is still going.** Later tasks branch from the new base and see the file. Nothing else needed.
+
+**(b) The task halted, which is the measured case.** The operator supplies the file and re-arms:
+
+```bash
+guardrails supply <plan> vendor/mermaid.min.js
+guardrails reset <plan> 02-vendor-mermaid-runtime
+guardrails run <plan>          # resume-aware; re-runs only the reset task and its descendants
+```
+
+Three existing verbs, in an order that is not obvious and is therefore **printed by the needs-human halt
+itself**. The halt already names the three fixes; it should name the one that works and is
+copy-pasteable — which is the #431 rule applied to a halt rather than a report.
+
+**A note on what this design deliberately does NOT do.** #373 suggests the overwatcher could auto-resolve
+this, since the case is "fully mechanical — the correct artifact provably exists in the canonical
+checkout." It is mechanical to *apply*, but deciding that the file in the operator's checkout is the file
+the task should have is a judgement, and getting it wrong commits an arbitrary file to the run's base. The
+overwatcher may **propose** the three-command sequence in its verdict; it does not run it. That keeps this
+change on the judgement-free side of the autonomy dial, where a v1 belongs.
+
+---
+
+## 4. Provenance: a supplied file is not the plan's work
+
+The run's own output must not be confusable with what an operator handed it. `run.json` grows:
+
+```jsonc
+"supplied": [
+  { "at": "2026-…", "commit": "…", "paths": ["vendor/mermaid.min.js"], "bytes": 214_­512 }
+]
+```
+
+and the commit carries a trailer:
+
+```
+Supplied-By-Operator: guardrails supply
+Guardrails-Run: 2026-09-05T07-47-36Z-2ada
+```
+
+This matters more than it first appears. The terminal gate runs on the merged HEAD; if it fails, the first
+question is what is in that tree that the plan did not author. Without a record, a supplied file is
+indistinguishable from a task's output, and the #453 fault triage would be reasoning over a tree whose
+provenance it cannot recover.
+
+---
+
+## 5. Fix the asymmetry, or at least name it
+
+The confusion that produced #373 is that **plan-folder edits are live and code artifacts are not**. This
+design adds a channel for the second; it does not unify them, because unifying them would mean either
+freezing plan edits (losing the #568 live-plan-edit capability) or making every code file live (which is
+the second-writer hazard invariant 2 forbids).
+
+So the asymmetry stays, and the obligation is to **stop it being a surprise**:
+
+- The `needs-human` halt for a missing file names it explicitly: *"plan-folder edits reach a running plan;
+  code artifacts do not — use `guardrails supply`."*
+- `guardrails-domain-knowledge` states it as a contract, not a footnote.
+- The README's plan-folder section (added in #600) gains one sentence.
+
+An operator who knows the rule loses nothing to it. The measured cost was entirely in not knowing.
+
+---
+
+## 6. Seams and contracts touched
+
+**Schema (`02-schemas-and-contracts.md`)**
+
+- §1: `logs/<runId>/supplied/` as a harness-owned staging tree — written by `guardrails supply`, drained
+  and deleted by the harness, never read by a guardrail.
+- §7 `run.json`: the `supplied[]` section above.
+- §8: the observer event.
+
+**New diagnostics** — none. Nothing here is a plan defect; `supply` validates its own arguments and fails
+its own invocation.
+
+**New verb**
+
+`guardrails supply <plan> <path>...` — copies into the staging tree, refuses a path outside the workspace
+(the `writeScope`-style traversal guard, GR2019's rule applied to a CLI argument), and prints where the file
+landed **and at which boundary it will be picked up**.
+
+It refuses only when there is **no resumable run at all** — no journal, or a journal whose every task has
+settled. It explicitly does **not** require a run to be executing: the case it exists for is a run that has
+already halted and exited (§1), and requiring a live run would refuse it.
+
+**Harness**
+
+- Drain-and-commit at the task boundary in `Scheduler`.
+- `IRunObserver.SuppliedResourcesCommitted`, forwarded through every decorator.
+- The needs-human halt for a missing-file refusal gains the three-command sequence.
+
+---
+
+## 7. Devil's-advocate self-critique
+
+**"A staging directory is a worse `git commit`."** For an operator who already knows the run's lineage, yes
+— `git commit` onto the integration branch does the same thing. The feature is for the operator who does
+*not*, which is everyone the first time; the measured incident is an operator who committed to the right
+file to the wrong lineage and could not tell. `supply` cannot target the wrong lineage.
+
+**"The boundary drain means a supplied file may sit unused for the length of a task."** True, and on a
+long-running task that is a real wait. The alternative is committing to a base a live worktree is branched
+from, which is the exact hazard the worktree model removes. A wait is the correct trade, and the `supply`
+output tells the operator to expect it.
+
+**"You are adding a channel for a problem #370 already prevents at breakdown time."** #370 is prevention
+and this is recovery; the issue says so, and the measured case is one where prevention *ran and was not
+enough* — the file was pre-vendored and the run still could not see it. A prevention with no recovery
+channel fails closed onto a killed run.
+
+**"Your first draft refused the case you wrote this for."** It did. `supply` was specified to refuse when
+no run was in progress, and the measured incident is a run that had already halted and exited — so the
+feature would have been unavailable at the only moment anyone reaches for it. Caught re-reading, not
+writing. It is recorded here rather than silently corrected because it is the same class as the thing being
+designed: a mechanism that looks complete from the inside and is missing the path its own motivating story
+takes.
+
+**"Provenance in run.json is over-engineering for a v1."** It is the cheapest part of the change and the
+one that cannot be retrofitted, because the information exists only at the moment of the commit. §4's
+argument — that the terminal gate and the #453 triage reason over a tree whose contents they otherwise
+cannot attribute — is the one I would defend hardest here.
+
+**The part I am least sure of** is §3(b) requiring three commands. A single `guardrails supply --resume`
+that stages, resets the halted task and resumes would be one step; I have kept them separate because
+`reset` chooses which descendants to re-arm and folding that decision into `supply` hides it. A reviewer
+who thinks the ergonomics matter more than the explicitness should say so.
+
+---
+
+Refs #373, #370 (breakdown-side resource acquisition — prevention to this recovery), #269 (overwatcher; §3
+declines the auto-resolve), #568 (live plan-edit, the capability §5 declines to trade away), #431 (the
+copy-pasteable hand-over rule §3 applies to a halt), #453 (the triage §4 keeps honest), SSOT §1/§3.2/§7.
+
+---
+
+## Decisions for this review
+
+:::question
+{"id": "d40-resume-ergonomics", "title": "Should resolving a halted task be three commands, or one 'supply --resume'?", "mode": "single", "options": ["Three commands: supply, then reset, then run", "One command: supply --resume stages, resets the halted task, and resumes", "Three by default, with --resume as an opt-in shorthand"], "recommended": "Three commands: supply, then reset, then run", "rationale": "This is the part of the design I am least sure of, and the issue is explicitness versus ergonomics. `reset` chooses WHICH descendants to re-arm, and folding that into `supply` hides a real decision behind a convenience flag. But three commands in a fixed order is a sequence nobody will remember, which is why the design has the needs-human halt print it verbatim. If you think the ergonomics matter more than the explicitness here, the third option is the honest middle and I have no strong argument against it.", "target": "human"}
+:::
+
+:::question
+{"id": "d40-overwatcher-autoresolve", "title": "Should the overwatcher be allowed to auto-resolve a missing-resource halt in v1?", "mode": "single", "options": ["No — it may PROPOSE the command sequence, never run it", "Yes — the case is mechanical, so let it supply and resume", "Yes, but only at dial:critical"], "recommended": "No — it may PROPOSE the command sequence, never run it", "rationale": "#373 argues this is an ideal auto-correct target because the fix is 'fully mechanical'. Applying it is mechanical; DECIDING that the file in your checkout is the file the task should have is a judgement, and getting it wrong commits an arbitrary file onto the run's base — which then flows into the terminal gate and into anything reading that tree. I would rather v1 sat on the judgement-free side of the dial and earned the auto-resolve later, but you have overruled a similar caution before and this is your call on the autonomy arc.", "target": "human"}
+:::
+
+:::question
+{"id": "d40-asymmetry", "title": "Plan-folder edits reach a running plan and code artifacts do not. Name the asymmetry, or try to unify it?", "mode": "single", "options": ["Name it — in the halt text, the domain-knowledge skill and the README", "Unify by making code artifacts live too", "Unify by freezing plan edits during a run"], "recommended": "Name it — in the halt text, the domain-knowledge skill and the README", "rationale": "This asymmetry is what produced the confusion in #373: the reframed prompt reached the run and the file did not. Unifying it costs something real in either direction — making code live admits a second writer into a tree the harness owns (against invariant 2), and freezing plan edits gives up #568's live plan-edit capability, which you asked for. The measured cost here was entirely in NOT KNOWING the rule, so naming it in the three places a reader meets it may be the whole fix. Flagging it because 'document it' is the answer that is easiest to reach for and hardest to be sure of.", "target": "human"}
+:::

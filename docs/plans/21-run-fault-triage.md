@@ -77,7 +77,15 @@ never proposes**.
 | A dedicated `fault-triage` prompt-runner profile | **deferred** — reuses `ai-triage` (§3.3) |
 
 **No `guardrails validate` change, and no GR code.** Nothing here is decidable before a run: the evidence
-is an exception that has already been thrown. **GR2064 stays free.**
+is an exception that has already been thrown, so this design allocates nothing on either ladder.
+
+> **Correction (2026-09-07).** This paragraph used to end *"GR2064 stays free"* — naming the code this
+> design was declining to take. `GR2064` was taken by `BreakdownIntentDeclaresNothing` (#402) while this
+> document sat unimplemented, and the sentence went on asserting otherwise. The substantive claim — that
+> this design needs **no** code — is unaffected and stands; only the number was wrong, and it was wrong in
+> the direction that would have sent an implementer to allocate a taken code. **The next free code is
+> whatever `DiagnosticCodes.cs` currently says**, and since #558 a test enforces that its marker is honest;
+> never trust a number written down in a design document, including this one.
 
 ---
 
