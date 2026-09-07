@@ -963,6 +963,24 @@ optional:
   that one greps `Program.cs` + smoke-tests a route for a *server serving over a port*; this one
   asserts a *factory/container constructs and injects an internal collaborator*. A plan can need
   both — wire the entry point to the launcher AND wire a collaborator into the factory.)
+- **Two WRITE MECHANISMS in one task (#540)** — does this task's `writeScope` contain BOTH a
+  `.claude/**` path and a normal one? Then one atomic attempt has to deliver through two different
+  mechanisms: the `.claude/` half only via `needsHarnessWrite` (the tool-permission layer refuses a direct
+  write, SSOT §9.3), the other written directly. A failed attempt is rolled back WHOLE, so such a task can
+  never bank the half it got right — measured at 12 attempts and ~$4.66, never green, on a task that wrote
+  one half correctly at attempt 7 and was failing that same half by attempt 10. **Split it, one mechanism
+  per task** (Step 2 trigger (f)); `validate` also warns **GR2073**. Reachable from here because the task
+  is SMALL by every size-based trigger — two paths, no fan-in, no turn bump — so nothing else routes you
+  to it.
+- **A test that SYNTHESISES its own two-sided pair (#530)** — does this `author-tests` task's prompt ask
+  for tests that build a guardrail body plus a valid and an invalid half? Then require the test to assert
+  **the two halves produce DIFFERENT exit codes** before it asserts anything about its subject —
+  distinctness, not polarity, since a fixture that inverts its pair deliberately is legitimate. **The red
+  census cannot cover this**: red is its success condition, so a test that can never pass reads exactly
+  like one red for the right reason, and the bill arrives as a `needs-human` halt on the NEXT task
+  (measured: 12/12 red, four unpassable tests one task later). Name the binding in the prompt too
+  (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair), or the
+  body takes its no-subject early exit and returns the same code twice.
 - **Faked-seam ⇒ paired real-seam proof (#382 — passing but blind)** — does an `author-tests-*` task
   **fake an in-process seam the real run drives** (an `IPromptRunner`, the executor, the scheduler, a
   factory) via DI? A unit test that injects a fake of the very seam the production path exercises can go
