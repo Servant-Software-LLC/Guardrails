@@ -131,6 +131,12 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
 | `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
+| `guardrails attach [folder]` | Attach a **second terminal** to a run's live progress table, replaying its recorded events. Read-only — it never touches the run — and it works both while the run is in flight and after it has finished. This is how you watch an unattended run without being the terminal that launched it |
+| `guardrails samples verify [folder]` | Execute every committed `tasks/<id>/samples/` pair against its guardrail and report the findings. Worth knowing about *before* a run: the same check runs as a **pre-DAG gate**, so a broken pair halts the run before task one |
+| `guardrails mark-reviewed [folder] [--evidence <report>] [--source <kind>]` | Record that `/guardrails-review` ran, clearing the GR2025 "not reviewed" nudge. The marker is keyed on the plan's definition hash, so editing any guardrail body re-stales it. `--evidence` points at the written report and records a stronger attestation class than a bare stamp |
+| `guardrails plan-hash [folder]` | Print the plan's `PlanDefinitionHash` (or one wave's) — read-only. This is the hash the review flow embeds in its report |
+| `guardrails providers init [folder] [--write]` · `check <block>` | Inspect and annotate the prompt-runner registry in a plan's `guardrails.json`. `init` previews a diff and writes nothing until `--write` |
+| `guardrails diagnostics [<code>] [--ladder GR20]` | Explain the `GR` codes `validate` emits — severity plus the full rationale. Read-only, offline, **no plan folder needed**, so it still works when the plan does not |
 
 The `folder` argument is optional everywhere: omit it to use the current directory, so you
 can `cd` into a plan folder and run `guardrails validate` (etc.) with no path. To reset one
@@ -160,6 +166,29 @@ To make a plan never auto-deliver, set it in the plan instead of remembering the
 
 The AI-merge is still withheld at the boundary: the harness merges its own task branches, and hands
 you anything it cannot resolve rather than guessing.
+
+### Running unattended
+
+A long plan is usually not watched. `--autonomous` is how that is run:
+
+```bash
+guardrails run <plan>/ --autonomous --dial standard --max-cost-usd 60
+```
+
+- `--autonomous` lets the run answer its own checkpoints instead of stopping to ask. Without it a
+  wave barrier or a needs-human halt waits for a human who may not be there.
+- `--dial` sets the **lowest criticality that still escalates to a human** — `low`, `moderate`, `high`,
+  or `critical`. Raising it means fewer things stop the run, and `critical` is fully autonomous.
+- `--max-cost-usd` is the ceiling. **`--autonomous` applies a $20 cap when you do not pass one**,
+  which is deliberate — an unattended run with no ceiling is an unbounded bill — but it is easy to
+  meet by surprise on a real plan, and the run halts when it does. Pass the number you actually mean.
+
+Watch it from anywhere with `guardrails attach <plan>/`, which tails the run's recorded
+`logs/<runId>/observer.jsonl` into a live table in a second terminal without touching the run.
+
+**A green run is not automatically a delivered run.** If you launched with `--no-merge-on-success`,
+the work is complete and sitting on the plan branch; the summary says so at the end. Check with
+`git branch --no-merged` before assuming it shipped.
 
 ### Local telemetry
 
@@ -198,6 +227,28 @@ them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
   ready-to-paste fixes.
 - **uber-report**, **guardrails-domain-knowledge**, **guardrails-dev-knowledge** —
   status reporting and the knowledge base for agents working on this repo.
+
+## What a plan folder holds
+
+Two things an author meets on day one and will not find anywhere else in this file:
+
+**`writeScope` is required on every task.** It lists the paths that task is allowed to write, and the
+harness enforces it — an edit outside the declared scope is stripped, not merged. A task without one
+fails validation (`GR2041`). It is the mechanism behind most of the isolation guarantees here: it is
+what lets an implementation task be forbidden from editing the tests that judge it.
+
+**Checks live in four folders, and which one you pick decides when the check runs:**
+
+| Folder | Runs |
+|---|---|
+| `<plan>/preflights/` | Once, BEFORE any task is scheduled — a baseline. Use it to assert the area is green before work starts |
+| `<plan>/guardrails/` | Once, at the END, on the merged result — the terminal gate |
+| `tasks/<id>/preflights/` | Before that task's action |
+| `tasks/<id>/guardrails/` | After that task's action — the usual place |
+
+A run also writes two event streams under `logs/<runId>/` — `events.jsonl` and `observer.jsonl`; their
+schemas are `docs/plans/02-schemas-and-contracts.md` §8.1 and §8.2. `guardrails attach` tails the
+second.
 
 ## Where things live
 
