@@ -2143,6 +2143,23 @@ Per `references/schemas.md`, exactly:
      never inside it: the loader enumerates every non-`.json` file in a guardrail folder as a guardrail
      (no extension allowlist), so a sample placed there would load as a script guardrail, count toward
      GR2003, and be executed at run time. Everything else stays in the temp dir.
+   - **A pinned-behaviour LIST is a set, and the set must be satisfiable (#610).** When a test-author
+     prompt pins a behaviour that follows from an UNCONDITIONAL GUARANTEE — *"X always happens to the
+     last/first/only N"* — the prompt must STATE THE INTERACTION for every sibling behaviour that
+     guarantee overrides. Otherwise each item reads correct and the SET is impossible.
+     **Measured on plan 36.** Sixteen behaviours pinned for one test class. One was the design's own
+     guarantee that `DisposeAsync` always spends an attempt on the LAST-enqueued row, ignoring the
+     circuit. Three others asserted a row gets ZERO attempts — and the author wrote each of those as the
+     last `Emit` in its test, so the terminal rescue delivered it and the count was deterministically 1.
+     All four are correct readings of the design; **no implementation satisfies all four.**
+     The one sentence that would have prevented it: *"a row you assert gets ZERO attempts must not be the
+     last row you emit; the terminal phase always rescues `_lastEnqueued`."*
+     **Authoring time is the only cheap place.** Downstream cannot recover: the implement task cannot edit
+     the test file (the write-scope gate working as designed) and correctly refuses the alternative that
+     would reintroduce the very defect the design removes. It escalated after ~5 attempts, two of which
+     also hit `maxTurns`, on a task whose implementation was CORRECT. `validate` cannot see it either —
+     nothing here is statically decidable, which is why there is no GR code and why the rule lives in the
+     prompt.
    - **The same obligation follows the pair into a TEST the plan asks an agent to WRITE (#530).** This
      step governs the guardrails this breakdown generates. When an `author-tests` task's prompt asks for
      tests that build their OWN two-sided fixture — a guardrail body plus a valid and an invalid half —
@@ -4207,6 +4224,7 @@ tell a measured fact from an assumed one without re-doing the work.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported) **AND every WARNING it printed was read and dispositioned — fixed, or documented in the report with a one-line reason it is correct here.** Warnings do not move the exit code, so exit 0 alone is blind to GR2059 (an inert wave-root `scope:"integration"` — a protection that does nothing), GR2042 (structural over-scope), GR2026, GR2020, GR2049, GR2033 and GR2058. Treat each as a fired trigger, never as noise; a warning neither fixed nor documented is a self-review failure.
+- [ ] (#610) Where a test-author prompt pins a behaviour derived from an UNCONDITIONAL GUARANTEE — "X ALWAYS happens to the last/first/only N" — the prompt STATES THE INTERACTION for every sibling behaviour that guarantee overrides. Concretely, the sentence plan 36 needed and did not have: *"a row you assert gets ZERO attempts must not be the last row you emit; the terminal phase always rescues `_lastEnqueued`."* Sixteen behaviours were pinned; four were individually correct readings of the design; no implementation could satisfy all four, because the three zero-attempt assertions each used the last emitted row. Cost ~5 attempts (two hitting `maxTurns`) and a `needs-human` on a task whose implementation was CORRECT. Nothing downstream can recover it — the implement task cannot edit the test file (write-scope gate, working as designed) and correctly refuses to weaken the guarantee — so the one place this is cheap is here, at authoring time, in one sentence.
 - [ ] (#530) Where an `author-tests` task's prompt asks for tests that synthesise their OWN two-sided fixture (a guardrail body plus a valid and an invalid half), the prompt REQUIRES the test to assert the two halves produce DIFFERENT exit codes before asserting anything about its subject, and names the binding the subject arrives on (`GR_SUBJECT` + `argv[0]` for a task pair; `GUARDRAILS_WORKSPACE` + cwd for a plan-root pair). Distinctness, not polarity. The red census structurally cannot cover this — red is its success condition, so a test that can never pass reads as one red for the right reason, and the cost lands as a `needs-human` halt on the implementation task.
 - [ ] (#382) Every real-seam proof this breakdown emitted is FINDABLE and DECLARES ITS SEAM: the guardrail basename contains `real-seam`, and its header carries a `# real-seam: <Component> -> <Dependency>  bucket=<E|C|U>` line naming the same seam as its ledger row. Both halves, because they buy different things — the name lets an audit ENUMERATE the proofs instead of recognising them by an accidental tell, and the seam lets T* be recomputed without recovering types from prose. Every ledger row whose `proof` column names a file has that file on disk with a matching declaration, and no guardrail declares a seam no row carries. This is the review's primary evidence and `GR2061`'s precondition; it is NOT a schema field (doc 18 §10 reserves that for re-review).
 - [ ] (#439) `$testRunner` was DETECTED, not assumed — the `stacks/dotnet.md` §6a probe was run (both clauses: the property/`global.json` grep AND the negative signal, a test project with no VSTest adapter, which no grep FOR MTP surfaces). When the runner is MTP, no guardrail this breakdown emits relies on `dotnet test --filter` for its SCOPE, and no `# catches:` line claims to own tests a silently-widened filter would not have selected. The reason this is a checklist row and not a footnote: MTP defeats §4.3's zero-match guard from the FAR side — it runs the whole suite rather than none, so the guard passes on a large count and the mis-scoping is invisible at authoring time.
