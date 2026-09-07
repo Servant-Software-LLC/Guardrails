@@ -114,13 +114,18 @@ Three things fall out of it, all improvements:
 - **A plan that marks no wave `delivers` behaves exactly as today**: one merge at run end. The never-weaker
   guarantee survives without a second flag.
 
-> **OPEN — the reviewer did not answer this one.** The `delivers` flag's GRAIN is proposed, not settled:
-> per-wave with default `false`, versus default `true` for any wave carrying an exit gate, versus inferring
-> it from whether a later wave depends on this one's `writeScope`. This design assumes **per-wave, default
-> false** throughout, because it is the only option that preserves the never-weaker guarantee — but that is
-> an assumption stated, not a decision made, and an implementer should treat it as such. (Inference was
-> rejected on the reasoning in this section: it would silently mark a shared-prerequisite wave as a delivery
-> point whenever nothing yet depended on it, which is precisely the case that produced §1b.)
+**DECIDED (review round 2): per-wave `delivers`, default `false`** — a delivering wave ships everything
+accumulated since the last delivery point. The two rejected alternatives, and why:
+
+- **default `true` for any wave carrying an exit gate** — it would turn every existing waved plan into a
+  per-wave deliverer on upgrade, changing what those plans do with the user's branch without anyone asking.
+  The never-weaker rule forbids it.
+- **inference** (a wave no later wave depends on is a delivery point) — it would silently mark a
+  shared-prerequisite wave as a delivery point whenever nothing yet depended on it, which is *precisely* the
+  case that produced §1b. Same reasoning that made declared groups beat inferred ones in draft 1.
+
+The accepted cost is that the feature does nothing until an author sets the flag. If that turns out to mean
+nobody uses it, the answer is a better `plan-breakdown` proposal — not a silent default.
 
 **The failure mode to watch** is a plan where every wave is marked `delivers: true` out of habit, which
 re-creates draft 2's assumption by hand. `plan-breakdown`'s Step 7 report should name which waves are
