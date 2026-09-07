@@ -1113,18 +1113,59 @@ public sealed class LogServer : IAsyncDisposable
     // --- HTML -------------------------------------------------------------------------------
 
     /// <summary>
-    /// The <c>GET /</c> pointer note (issue #143): the canonical "all tasks" page is the static index
-    /// FILE (<c>&lt;logsRoot&gt;/index.html</c>), which is durable and works without this server. A browser
-    /// cannot follow an <c>http→file://</c> link, so the static index's absolute path is shown as text for
-    /// the user to open. This live server only tails ACTIVE tasks — it deliberately no longer serves an
-    /// all-tasks landing of its own.
+    /// The <c>GET /</c> landing page (issues #143, #573).
+    ///
+    /// <para><b>It used to be a signpost that could not point.</b> The page said the all-tasks view was the
+    /// static index FILE, printed that file's absolute path as text, and explained that it could not link to
+    /// it because a browser blocks <c>http://</c> → <c>file://</c>. Every sentence was true and the page was
+    /// still a dead end: the one action it recommended was the one action it could not offer, and it
+    /// rendered NONE of the run state this server already holds. The maintainer, having opened exactly this
+    /// URL mid-run: <i>"This page seems useless to me."</i></para>
+    ///
+    /// <para><b>The architecture was never the problem — the page was.</b> The static index remains the
+    /// canonical, durable, works-without-a-server front door, and this server remains a per-task tail
+    /// backend. But it holds <see cref="_tasks"/> and can see every attempt directory under
+    /// <see cref="_logsRoot"/>, so it can render the task table itself, with live links to the per-task
+    /// tails it actually serves. That subsumes the copy-paste instruction instead of apologising for it.</para>
+    ///
+    /// <para>The static index is still offered — as the fuller, durable page, not as the only way out.</para>
     /// </summary>
     private string PointerNoteHtml()
     {
         string indexPath = Path.GetFullPath(Path.Combine(_logsRoot, "index.html"));
         return PointerNoteTemplate
             .Replace("__STYLE__", LogSiteRenderer.SharedStyle)
+            .Replace("__ROWS__", TaskRowsHtml())
             .Replace("__INDEX_PATH__", WebUtility.HtmlEncode(indexPath));
+    }
+
+    /// <summary>
+    /// One row per task: its id linked to the live tail this server serves, plus what the attempt
+    /// directories on disk actually show. Deliberately derived from the filesystem rather than from a
+    /// journal read — the journal is written by the running harness and this page must never be a second
+    /// reader that can disagree with the one the operator is watching.
+    /// </summary>
+    private string TaskRowsHtml()
+    {
+        var rows = new StringBuilder();
+
+        foreach (TaskNode task in _tasks)
+        {
+            string id = WebUtility.HtmlEncode(task.Id);
+            string href = "/tasks/" + Uri.EscapeDataString(task.Id);
+
+            string? attemptDir = ResolveAttemptDir(task.Id, null, out int? attempt);
+            string state = attemptDir is null
+                ? "<span class=\"muted\">not started</span>"
+                : $"attempt {attempt}";
+
+            rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td><td>")
+                .Append(state).AppendLine("</td></tr>");
+        }
+
+        return rows.Length == 0
+            ? "<tr><td colspan=\"2\" class=\"muted\">This run declares no tasks yet.</td></tr>"
+            : rows.ToString();
     }
 
     private static string TaskPageHtml(string taskId) =>
@@ -1266,11 +1307,26 @@ __STYLE__
 </head>
 <body>
 <h1>Guardrails run — task logs</h1>
-<p>This run's <strong>all-tasks page</strong> is the static index file — open it in your browser:</p>
+<p>Every task in this run. Click one to follow its live log; the page refreshes on its own.</p>
+<table>
+<thead><tr><th>Task</th><th>State</th></tr></thead>
+<tbody>
+__ROWS__
+</tbody>
+</table>
+<p class="muted">"State" is what the attempt directories on disk show right now; a task the harness
+has not reached yet has none. For the full picture (guardrail results, sources, diagrams) open the
+durable static index, which works with or without this server:</p>
 <pre>__INDEX_PATH__</pre>
-<p>This live server only <strong>tails active tasks</strong>. Reach a running task by clicking it on
-the static index above; this page cannot link to the file directly (a browser blocks
-<code>http://</code> &rarr; <code>file://</code>).</p>
+<p class="muted">That one is a file path rather than a link because a browser blocks
+<code>http://</code> &rarr; <code>file://</code>.</p>
+<script>
+// A run changes underneath this page, and an operator who opened it to watch should not have to
+// remember to reload. Whole-page refresh rather than a fetch-and-patch: the table is a handful of
+// rows, the page holds no state worth preserving, and the simplest thing that stays correct is
+// worth more here than the smallest payload.
+setTimeout(function () { location.reload(); }, 5000);
+</script>
 </body>
 </html>
 """;

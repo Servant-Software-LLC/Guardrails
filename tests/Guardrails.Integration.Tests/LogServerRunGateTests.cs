@@ -54,7 +54,8 @@ public sealed class LogServerRunGateTests
         Assert.Equal(ExitCodes.Success, exit);
 
         // The server started, and said so.
-        Assert.Contains("Live tailing server (active tasks):", output);
+        // #573: renamed from "Live tailing server (active tasks)" — the page now lists ALL tasks.
+        Assert.Contains("Live run view (all tasks, auto-refreshing):", output);
 
         // It advertised a real loopback URL — and it went to io.Out, which in production is
         // Console.Out. That is the whole point of printing it there: under `> run.log 2>&1` the URL
@@ -81,7 +82,7 @@ public sealed class LogServerRunGateTests
         Assert.Equal(ExitCodes.Success, exit);
 
         // Nothing bound, nothing advertised.
-        Assert.DoesNotContain("Live tailing server", output);
+        Assert.DoesNotContain("Live run view", output);
         Assert.False(
             LoopbackUrl.IsMatch(output),
             $"--no-log-server must not advertise a server URL; got:\n{output}");
@@ -148,7 +149,7 @@ public sealed class LogServerRunGateTests
 
             // One warning explaining what happened...
             Assert.Contains("Log server not started", output);
-            Assert.DoesNotContain("Live tailing server", output);
+            Assert.DoesNotContain("Live run view", output);
 
             // ...and the same remedy, because "no server" is one operator problem however it arose.
             Assert.Contains("Live log viewer not started", output);

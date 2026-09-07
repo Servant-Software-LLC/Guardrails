@@ -67,7 +67,9 @@ public sealed class LogsCliTests
         Assert.Contains("All tasks (static log site):", output);
         Assert.Contains(Path.Combine("index.html"), output);
         // And the live tailing server is still offered (the static index links running tasks to it).
-        Assert.Contains("Live tailing server", output);
+        // #573: the label is now "Live run view", because the page it names lists every task with live
+        // links instead of being a dead end pointing at a file it cannot open.
+        Assert.Contains("Live run view", output);
         // The (re)generated static site exists on disk under logs/<runId>/.
         string logsDir = Path.Combine(plan.PlanDir, "logs");
         string[] indexes = Directory.GetFiles(logsDir, "index.html", SearchOption.AllDirectories);
