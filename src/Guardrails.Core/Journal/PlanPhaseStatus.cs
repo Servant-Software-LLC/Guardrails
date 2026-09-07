@@ -25,5 +25,20 @@ public enum PlanPhaseStatus
     /// The terminal <c>&lt;plan&gt;/guardrails/</c> gate failed on the merged plan-branch HEAD → the run
     /// halts (exit 2). Journaled as <c>planGuardrails.status</c>.
     /// </summary>
-    PlanGuardrailFailed
+    PlanGuardrailFailed,
+
+    /// <summary>
+    /// The phase is IN FLIGHT — recorded when it starts, replaced by a terminal status when it ends
+    /// (issue #625).
+    ///
+    /// <para>Before this, the terminal gate wrote its section exactly ONCE, at the end. So for the whole
+    /// time the gate ran — measured at 12 minutes on a whole-solution <c>dotnet test</c> — <c>run.json</c>
+    /// carried no <c>planGuardrails</c> key at all, and the static log site showed four green tasks and
+    /// nothing else: <b>a page that looks exactly like a finished run</b>. Nothing on disk could answer
+    /// "is the gate running, or did this finish?" while it mattered.</para>
+    ///
+    /// <para>APPENDED, never inserted: this enum is persisted, and reordering it would re-interpret every
+    /// journal already written.</para>
+    /// </summary>
+    Running
 }

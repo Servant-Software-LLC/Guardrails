@@ -311,6 +311,33 @@ public interface IRunObserver
         DateTimeOffset? resetInstant,
         TimeSpan waitedSoFar) { }
 
+    /// <summary>
+    /// The TERMINAL GATE has started on the merged HEAD (issue #625).
+    ///
+    /// <para>It exists because the log site regenerates on observer events, and the terminal gate raised
+    /// none — it is not a task. So the last write landed as the final task went green and nothing scheduled
+    /// another: <c>index.html</c>'s mtime pinned to that instant and the page showing four green tasks and
+    /// nothing else, for the whole 12 minutes a whole-solution <c>dotnet test</c> took. <b>A page that looks
+    /// exactly like a finished run, while the gate that can still fail it is mid-flight.</b></para>
+    ///
+    /// <para>Default no-op; a transparent DECORATOR must forward it explicitly or the phase goes silent in
+    /// every mode again.</para>
+    /// </summary>
+    /// <param name="checkNames">
+    /// The checks the gate will run, in order. NAMES rather than a count, because the surfaces that render
+    /// this must not read the journal to find out what is running — the harness owns that file, and a second
+    /// reader is how a page comes to disagree with the run it is describing.
+    /// </param>
+    /// <param name="startedAt">When it began — the same instant journaled as <c>planGuardrails.startedAt</c>.</param>
+    void TerminalGateStarting(IReadOnlyList<string> checkNames, DateTimeOffset startedAt) { }
+
+    /// <summary>
+    /// The terminal gate finished (issue #625). <paramref name="failedNames"/> is empty on a pass, and
+    /// names every failing check otherwise — "which one failed" is the whole question at this boundary,
+    /// where there is no retry, no attempt directory and no feedback file.
+    /// </summary>
+    void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

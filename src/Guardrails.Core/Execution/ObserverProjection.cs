@@ -348,6 +348,28 @@ public sealed class ObserverProjection : IRunObserver
         _inner.WaveGateFinished(wave, isEntryGate, checks);
     }
 
+    public void TerminalGateStarting(IReadOnlyList<string> checkNames, DateTimeOffset startedAt)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "TerminalGateStarting",
+            ["checkCount"] = checkNames.Count,
+            ["startedAt"] = startedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+        });
+        _inner.TerminalGateStarting(checkNames, startedAt);
+    }
+
+    public void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "TerminalGateFinished",
+            ["passed"] = passed,
+            ["failedCount"] = failedNames.Count
+        });
+        _inner.TerminalGateFinished(passed, failedNames);
+    }
+
     public void WaveBreakdownPaused(
         WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
         DateTimeOffset? resetInstant, TimeSpan waitedSoFar)

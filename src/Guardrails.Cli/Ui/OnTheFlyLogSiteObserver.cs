@@ -1,3 +1,4 @@
+using Guardrails.Core.Journal;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
@@ -50,6 +51,17 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // Per-task status word, seeded "pending". Mutated and projected under one lock — events arrive
     // from concurrent M4 workers, and the index render reads the whole map, so the two must not race.
     private readonly object _gate = new();
+
+    /// <summary>
+    /// The terminal-gate phase as the EVENTS reported it — null until the gate starts (issue #625).
+    ///
+    /// <para>Built from the events rather than read back from <c>run.json</c>, deliberately. The harness
+    /// owns that file; a renderer that re-read it would be a second reader that can disagree with the run it
+    /// is describing, and the whole defect being fixed here is a surface saying something the run does not.
+    /// <c>PlanHash</c> is left empty for the same reason — it is the journal's to state, not this
+    /// surface's.</para>
+    /// </summary>
+    private PlanGuardrailsSection? _terminalGate;
     private readonly Dictionary<string, string> _statusByTask;
 
     // Per-task needs-human CLAIM (issue #485), populated only when a task settles with one. Kept beside
@@ -296,6 +308,57 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these
     // would swallow the phase in every mode — this decorator is in both chains (the VerifierAdvisoryFound
     // lesson). Acting on it is what turns the wave page from a permanent dead end into the post-mortem.
+    /// <summary>
+    /// #625: re-render the index when the TERMINAL GATE starts, and again when it settles.
+    ///
+    /// <para>This observer regenerates the site on events, and the gate is not a task, so it raised none.
+    /// The final write therefore landed as the last task went green and nothing scheduled another — the page
+    /// froze showing all-green for the whole gate window (measured: 12 minutes on a whole-solution
+    /// <c>dotnet test</c>), which is indistinguishable from a finished run. Two events and two re-renders
+    /// close it.</para>
+    /// </summary>
+    public void TerminalGateStarting(IReadOnlyList<string> checkNames, DateTimeOffset startedAt)
+    {
+        _inner.TerminalGateStarting(checkNames, startedAt);
+
+        lock (_gate)
+        {
+            _terminalGate = new PlanGuardrailsSection
+            {
+                Status = PlanPhaseStatus.Running,
+                PlanHash = string.Empty,   // not this surface's business; the journal carries the real one
+                StartedAt = startedAt,
+                Checks = [.. checkNames.Select(n => new PlanPreflightCheck { Name = n, Passed = false })]
+            };
+        }
+
+        RenderIndex();
+    }
+
+    public void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames)
+    {
+        _inner.TerminalGateFinished(passed, failedNames);
+
+        lock (_gate)
+        {
+            var failed = new HashSet<string>(failedNames, StringComparer.Ordinal);
+            IReadOnlyList<PlanPreflightCheck> checks = _terminalGate is null
+                ? [.. failedNames.Select(n => new PlanPreflightCheck { Name = n, Passed = false })]
+                : [.. _terminalGate.Checks.Select(c => c with { Passed = !failed.Contains(c.Name) })];
+
+            _terminalGate = new PlanGuardrailsSection
+            {
+                Status = passed ? PlanPhaseStatus.Passed : PlanPhaseStatus.PlanGuardrailFailed,
+                PlanHash = string.Empty,
+                StartedAt = _terminalGate?.StartedAt,
+                Checks = checks,
+                FailedChecks = [.. failedNames.Select(n => new FailedGuardrail { Name = n, Reason = "failed" })]
+            };
+        }
+
+        RenderIndex();
+    }
+
     public void WaveBreakdownPaused(
         WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
         DateTimeOffset? resetInstant, TimeSpan waitedSoFar) =>
@@ -478,6 +541,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
             string StatusOf(string id) => statuses.TryGetValue(id, out string? s) ? s : "unknown";
             string? ClaimOf(string id) => claims.TryGetValue(id, out string? c) ? c : null;
             LogSiteRenderer.IndexLink LinkOf(string id) => ResolveLink(id, statuses);
+            PlanGuardrailsSection? gate = _terminalGate;   // #625: null until the gate starts
 
             TryRender(() => LogSiteRenderer.WriteIndex(
                 _logsRoot,
@@ -487,7 +551,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 linkResolver: LinkOf,
                 includeRefresh: true,
                 waves: _waves,
-                claimResolver: ClaimOf));
+                claimResolver: ClaimOf,
+                terminalGate: gate));
 
             // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
             // waved run's per-wave drill-down refreshes as the wave progresses. A wave whose breakdown

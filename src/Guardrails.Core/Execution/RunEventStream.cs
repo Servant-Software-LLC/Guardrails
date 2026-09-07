@@ -271,6 +271,12 @@ public sealed class RunEventStream : IRunObserver
         _inner.WaveGateFinished(wave, isEntryGate, checks);
 
     /// <inheritdoc/>
+    public void TerminalGateStarting(IReadOnlyList<string> checkNames, DateTimeOffset startedAt) =>
+        _inner.TerminalGateStarting(checkNames, startedAt);
+
+    public void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames) =>
+        _inner.TerminalGateFinished(passed, failedNames);
+
     public void WaveBreakdownPaused(
         WaveBreakdownContext context, string reason, TimeSpan wait, int probe,
         DateTimeOffset? resetInstant, TimeSpan waitedSoFar) =>

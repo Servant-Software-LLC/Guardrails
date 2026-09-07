@@ -412,11 +412,12 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         IReadOnlyList<WaveNode>? waves = null,
         RunHalt? halt = null,
         Func<string, string?>? claimResolver = null,
-        Func<string, string?>? modelResolver = null)
+        Func<string, string?>? modelResolver = null,
+        PlanGuardrailsSection? terminalGate = null)
     {
         string index = IndexHtml(
             logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
-            includeRefresh, halt, claimResolver, modelResolver);
+            includeRefresh, halt, claimResolver, modelResolver, terminalGate);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -479,7 +480,8 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         bool includeRefresh,
         RunHalt? halt,
         Func<string, string?>? claimResolver,
-        Func<string, string?>? modelResolver = null)
+        Func<string, string?>? modelResolver = null,
+        PlanGuardrailsSection? terminalGate = null)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
@@ -521,7 +523,13 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         // The gate-halt banner (issue #436) and its CSS — both empty strings when the run did not halt at
         // a gate, so the no-halt page is byte-identical to the pre-#436 one.
         string banner = HaltBanner(logsRoot, halt, runId, pageWaveDir: null);
-        string haltStyle = banner.Length == 0 ? string.Empty : HaltStyle;
+
+        // #625: the terminal-gate band. EMPTY STRING when the phase has not been journaled — the same
+        // discipline the halt banner above follows, and load-bearing here: a byte-for-byte golden pins this
+        // page's no-halt output, so anything rendered unconditionally would change every existing run's
+        // index for a phase that did not happen.
+        string gateBand = TerminalGateBand(terminalGate);
+        string haltStyle = banner.Length == 0 && gateBand.Length == 0 ? string.Empty : HaltStyle;
 
         // Additive only (design 29 §4.8): appended after Description, so the existing Task/Status/
         // Description head and every existing consumer of it is untouched when modelResolver is null.
@@ -546,9 +554,67 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
 <tbody>
 {rows}
 </tbody>
-</table>{livePoll}
+</table>{gateBand}{livePoll}
 </body>
 </html>
+""";
+    }
+
+    /// <summary>
+    /// The terminal-gate band at the foot of the index (issue #625), or an EMPTY STRING when the phase has
+    /// not been journaled.
+    ///
+    /// <para><b>What it fixes.</b> The gate is not a task, so it raised no observer event and the site
+    /// stopped regenerating the moment the last task went green. Measured: <c>index.html</c>'s mtime pinned
+    /// to the final task's completion while a whole-solution <c>dotnet test</c> ran for twelve more minutes,
+    /// and the page containing zero occurrences of "Terminal Gate", "Full Flight", or any check name —
+    /// four green tasks and nothing else. <b>A page that looks exactly like a finished run, while the gate
+    /// that can still fail it is mid-flight.</b></para>
+    ///
+    /// <para>Empty when absent, never a placeholder row: a byte-for-byte golden pins the no-halt page, and
+    /// more importantly a band that always renders would have to say something about a phase that has not
+    /// started — which is how a page comes to state a thing that is not true.</para>
+    /// </summary>
+    private static string TerminalGateBand(PlanGuardrailsSection? gate)
+    {
+        if (gate is null)
+        {
+            return string.Empty;
+        }
+
+        bool running = gate.Status == PlanPhaseStatus.Running;
+        int total = gate.Checks.Count;
+        int failed = gate.FailedChecks.Count;
+
+        string headline = gate.Status switch
+        {
+            PlanPhaseStatus.Running =>
+                $"Terminal gate RUNNING on the merged HEAD — {total} check(s). The run is NOT finished.",
+            PlanPhaseStatus.Passed => $"Terminal gate PASSED — {total} check(s) green on the merged HEAD.",
+            _ => $"Terminal gate FAILED — {failed} of {total} check(s) failed on the merged HEAD."
+        };
+
+        var checks = new StringBuilder();
+        foreach (PlanPreflightCheck check in gate.Checks)
+        {
+            // While RUNNING every check reads "pending": nothing yet distinguishes one that has finished
+            // from one that has not, and inventing a distinction is exactly the failure being fixed.
+            string state = running
+                ? "pending"
+                : check.Passed ? "passed" : "FAILED";
+            checks.Append("<li>").Append(Enc(check.Name)).Append(" — ").Append(state).Append("</li>");
+        }
+
+        string since = gate.StartedAt is { } started
+            ? $"<p>Started {Enc(started.ToString("u", System.Globalization.CultureInfo.InvariantCulture))}.</p>"
+            : string.Empty;
+
+        return $"""
+
+<div class="halt">
+<h2>{Enc(headline)}</h2>{since}
+<ul>{checks}</ul>
+</div>
 """;
     }
 

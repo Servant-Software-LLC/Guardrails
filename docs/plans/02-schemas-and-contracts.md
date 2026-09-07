@@ -2622,9 +2622,20 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     // written before #432. Written for passing AND failing checks.
     "logDir": "logs/2026-06-10T16-22-31Z-a1b2/preflights"
   },
+  // The section is written TWICE (#625): once as `status: "running"` before the first check, and again
+  // with the verdict. Before that it was written once, at the end, so for the whole gate window — measured
+  // at 12 minutes on a whole-solution `dotnet test` — nothing on disk carried the key at all and the static
+  // log site sat on four green tasks: a page indistinguishable from a finished run, while the gate that can
+  // still fail it was mid-flight. The gate also raises IRunObserver.TerminalGateStarting/Finished, which is
+  // what makes the site regenerate: it is not a task, so before #625 it triggered no event and the site's
+  // last write was the final task going green.
   "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
-    "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
+    "status": "plan-guardrail-failed",  // running | passed | plan-guardrail-failed
     "planHash": "sha256:…",
+    // OPTIONAL (#625). Written with status "running" BEFORE the first check, and kept when the terminal
+    // status replaces it, so `run.json` answers "is the gate running?" while it matters — not only "did it
+    // pass?" once it is over. Absent on every journal written before #625.
+    "startedAt": "2026-09-05T08-50-15Z",
     // reason = the TAIL of the failed check's stdout (the #179-style re-emitted failure detail), NOT the
     // FIRST line (§7 plan-gate reason contract, #272 Part 1) — so npm-ci/dotnet-restore preamble noise
     // never masquerades as the reason.
