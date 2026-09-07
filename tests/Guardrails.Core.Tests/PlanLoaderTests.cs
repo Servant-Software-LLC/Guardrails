@@ -39,7 +39,90 @@ public sealed class PlanLoaderTests
         Assert.Equal(2, config.DefaultRetries);
         Assert.Equal(1800, config.DefaultTimeoutSeconds);
         Assert.Equal(GuardrailMode.FailFast, config.GuardrailMode);
-        Assert.Equal("..", config.Workspace);
+
+        // #526: an ABSENT workspace resolves to the enclosing git repository ROOT. This fixture lives
+        // inside this repository, so the resolved value climbs to it — NOT to the fixture's parent, which
+        // is what the old unconditional ".." produced and what this assertion used to pin.
+        string? repoRoot = RepoRootAbove(TestPaths.Fixture("valid-minimal"));
+        Assert.NotNull(repoRoot);
+        Assert.Equal(
+            Path.GetFullPath(repoRoot),
+            Path.GetFullPath(Path.Combine(TestPaths.Fixture("valid-minimal"), config.Workspace)));
+    }
+
+    /// <summary>
+    /// The other half of #526, and the one that keeps the change confined: an EXPLICIT workspace wins,
+    /// including an explicit <c>".."</c>. Without this, "resolve the default better" could quietly become
+    /// "override what the author chose", which is a much larger and much worse change.
+    /// </summary>
+    [Fact]
+    public void AnExplicitWorkspace_IsHonouredVerbatim()
+    {
+        string planDir = WriteMinimalPlan(workspaceLine: "  \"workspace\": \"..\",");
+        try
+        {
+            Assert.Equal("..", new PlanLoader().Load(planDir).Plan!.Config.Workspace);
+        }
+        finally { DeleteTree(planDir); }
+    }
+
+    /// <summary>
+    /// And the fallback: a plan OUTSIDE any git repository keeps the historical <c>".."</c>. The walk has
+    /// to terminate somewhere, and terminating on a guess would be worse than the default it replaced.
+    /// </summary>
+    [Fact]
+    public void APlanOutsideAnyRepository_KeepsTheHistoricalDefault()
+    {
+        Assert.SkipUnless(RepoRootAbove(Path.GetTempPath()) is null,
+            "the temp root is itself inside a git repository on this machine, so the no-repo case cannot "
+            + "be constructed here");
+
+        string planDir = WriteMinimalPlan(workspaceLine: null);
+        try
+        {
+            Assert.Equal("..", new PlanLoader().Load(planDir).Plan!.Config.Workspace);
+        }
+        finally { DeleteTree(planDir); }
+    }
+
+    /// <summary>A loadable one-task plan in a temp directory, with an optional explicit workspace line.</summary>
+    private static string WriteMinimalPlan(string? workspaceLine)
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr526-" + Guid.NewGuid().ToString("N"));
+        string taskDir = Path.Combine(planDir, "tasks", "01-only");
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        string config = workspaceLine is null
+            ? "{ \"version\": 1 }"
+            : "{" + Environment.NewLine + workspaceLine + Environment.NewLine + "  \"version\": 1 }";
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"), config);
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            "{ \"description\": \"only\", \"dependsOn\": [], \"writeScope\": [] }");
+        File.WriteAllText(Path.Combine(taskDir, "action.sh"), "#!/bin/sh" + Environment.NewLine + "exit 0");
+        File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"),
+            "# catches: nothing ran" + Environment.NewLine + "exit 0");
+
+        return planDir;
+    }
+
+    /// <summary>The nearest enclosing git repository root, or null when there is none.</summary>
+    private static string? RepoRootAbove(string start)
+    {
+        DirectoryInfo? dir = new DirectoryInfo(Path.GetFullPath(start));
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, ".git"))) { return dir.FullName; }
+            dir = dir.Parent;
+        }
+
+        return null;
+    }
+
+    private static void DeleteTree(string path)
+    {
+        try { Directory.Delete(path, recursive: true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     [Fact]

@@ -158,7 +158,16 @@ Two invariants govern the folder, and a future change must honour both:
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "intendedWaves": 3,                 // OPTIONAL, waved plans only (§14.1), issue #477. How many waves this plan INTENDS, recorded at plan-folder creation from the reviewed source. Compared against the wave folders on disk by GR2062 (WARN, gated on planIsClosed). ABSENT = intent not recorded ⇒ GR2062 skipped entirely; no plan is forced to migrate. AUTHOR-TIME ONLY — no run-path code reads it
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
-  "workspace": "..",                  // cwd for all child processes, relative to the plan dir
+  "workspace": "..",                  // cwd for all child processes, relative to the plan dir.
+                                      // ABSENT => the enclosing git repository ROOT (#526), NOT the
+                                      // plan folder's parent. ".." is right only for a plan one level
+                                      // below its workspace; for docs/plans/<name>/ it resolves to
+                                      // docs/plans/, where no repo-root-relative guardrail path
+                                      // resolves. Worktree mode replaces this value at every
+                                      // consumption site, so only a SERIAL run ever read the wrong
+                                      // one — which is why it ran green for so long. An EXPLICIT
+                                      // value always wins, including an explicit "..", and a plan
+                                      // outside any repository keeps "..".
   "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/gr-wt/<hash>/<runId>/ (#383). A MACHINE concern is better set via the GUARDRAILS_WORKTREE_ROOT env var (§2) than this per-plan key
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review

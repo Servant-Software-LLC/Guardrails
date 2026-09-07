@@ -181,7 +181,9 @@ public sealed class PlanLoader
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
             TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 14400,
             GuardrailMode = mode,
-            Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
+            // #526: an ABSENT workspace resolves to the enclosing git repository ROOT, not to the plan
+            // folder's parent. An EXPLICIT value always wins, including an explicit "..".
+            Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? DefaultWorkspace(planDir) : raw.Workspace,
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
             RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
             // #340: mergeOnSuccess defaults ON — a wholly-green run delivers by default ("green means
@@ -1287,6 +1289,64 @@ public sealed class PlanLoader
     /// <c>tasks/&lt;id&gt;/guardrails/</c> folder is loaded WITHOUT catches enforcement to preserve its
     /// behavior; the three new folders enforce it.)
     /// </summary>
+    /// <summary>
+    /// The workspace a plan gets when <c>guardrails.json</c> names none (#526): the enclosing git
+    /// repository ROOT, expressed relative to the plan folder — falling back to the historical
+    /// <c>".."</c> when the plan is not inside a repository at all.
+    ///
+    /// <para>
+    /// <b>Why the old default was wrong for the standard layout.</b> <c>".."</c> is right only for a plan
+    /// folder sitting one level below its workspace. For <c>docs/plans/&lt;name&gt;/</c> — where every plan
+    /// in this repository lives — it resolves to <c>docs/plans/</c>, and the house style writes every
+    /// guardrail path from the repo root (<c>tests/Guardrails.Core.Tests</c>, <c>Guardrails.sln</c>). Under
+    /// that workspace none of them resolve.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Why nobody noticed.</b> Worktree mode — the default — replaces the value at every consumption
+    /// site: <c>worktreeRoot ?? _plan.Workspace</c> in the action and guardrail runners,
+    /// <c>integ?.IntegrationWorktreePath ?? plan.Workspace</c> in the scheduler. Only a SERIAL run reads
+    /// it, and only the plan-level phases, so the wrong value ran green for as long as nobody ran a
+    /// default-workspace plan serially. The repository's own plans split evenly on it: six say
+    /// <c>"../../.."</c> explicitly and four rely on the default, and both "work".
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The change is confined to the ABSENT case, deliberately.</b> An explicit <c>workspace</c> — even
+    /// an explicit <c>".."</c> — is honoured exactly as before, and a plan outside any git repository keeps
+    /// the old answer. So this cannot move a workspace anyone chose; it only stops choosing badly on
+    /// their behalf. For every plan in <c>docs/plans/</c> the new answer is the one its guardrails already
+    /// assume.
+    /// </para>
+    /// </summary>
+    private static string DefaultWorkspace(string planDir)
+    {
+        try
+        {
+            DirectoryInfo? dir = new DirectoryInfo(Path.GetFullPath(planDir));
+            while (dir is not null)
+            {
+                if (Directory.Exists(Path.Combine(dir.FullName, ".git"))
+                    || File.Exists(Path.Combine(dir.FullName, ".git")))   // a worktree's .git FILE
+                {
+                    // Relative, because RunConfig.Workspace is documented "relative to the plan dir" and
+                    // an absolute value here would leak a machine path into anything that renders it.
+                    string relative = Path.GetRelativePath(planDir, dir.FullName);
+                    return relative.Length == 0 ? "." : relative;
+                }
+
+                dir = dir.Parent;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Cannot probe the ancestry — fall through to the historical default rather than guess. A
+            // wrong workspace is worse than the old one, which at least everyone already reasons about.
+        }
+
+        return "..";
+    }
+
     private IReadOnlyList<GuardrailDefinition> LoadGuardrailsFromFolder(
         string guardrailsDir, List<Diagnostic> diagnostics, bool enforceCatches)
     {
