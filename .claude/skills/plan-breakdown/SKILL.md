@@ -2394,6 +2394,39 @@ Per `references/schemas.md`, exactly:
    > `guardrails run <folder>`.
 
    Never present the output as execution-ready.
+6. **Then hand over the actual commands, ready to paste (#431).** The two lines above are a
+   TEMPLATE — `<folder>` is not a path, and the reader has to go and find one. For a `.charter.md`
+   input it is not even the filename they started from (`foo.charter.md` → `foo/`). Note the
+   asymmetry this closes: Step 7.4 already mandates a Markdown link for the DIAGRAM, with two issues
+   behind it (#249 correct URI construction, #256 host-clickable form) purely so the reviewer can
+   *click* it. The same care was never applied to the command the reviewer actually needs next,
+   which is the higher-value of the two.
+
+   End the report with a fenced block, using the **resolved ABSOLUTE path, quoted**:
+
+   ```
+   /guardrails-review "<absolute plan folder>"
+   ```
+
+   and, below it, the run command as the step *beyond* the review — never presented as the
+   immediate next action, because the draft-not-done framing above is the point:
+
+   ```
+   guardrails run "<absolute plan folder>" --no-merge-on-success
+   ```
+
+   Three things the block must get right, each a real foot-gun:
+
+   - **`--no-merge-on-success` leads, and the report says WHY.** `mergeOnSuccess` has defaulted ON
+     since preview.40 (#340): a green run DELIVERS to the user's branch. A first run of a
+     freshly-authored plan is almost always inspect-first, so the safer form is the one presented,
+     and the delivering form (`guardrails run "<path>"`, no flag) is offered EXPLICITLY on the next
+     line rather than arrived at by omission.
+   - **Absolute and quoted.** A relative path depends on the terminal's cwd, which is usually not the
+     repo root, and quoting is what makes a Windows path with spaces survive the paste.
+   - **Name the launcher when the plan targets THIS repo.** Launch from the installed global tool,
+     not the repo's Release binary: a Release-build run self-locks `Core.dll` and fails the
+     `01-build` guardrail for reasons that have nothing to do with the plan.
 
 ## Step 8 — Regeneration merge (only when the folder already exists, Step 0 → merge)
 
