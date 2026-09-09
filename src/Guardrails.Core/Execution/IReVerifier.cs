@@ -48,6 +48,18 @@ public sealed record ReVerifyOptions
     /// (the pre-#432 behaviour, still used by the attempt-decoupled union re-verify).
     /// </summary>
     public string? ArtifactDirectory { get; init; }
+
+    /// <summary>
+    /// The union of every task's <c>writeScope</c> plus every <c>stagingOutputs.to</c>
+    /// (<see cref="WriteScope.CompleteProducibleScope"/>) — issue #587 check B. Supplied by the PLAN-LEVEL
+    /// gate call sites, which hold the <see cref="PlanDefinition"/>; when present, a FAILING check's
+    /// <c>reason</c> is enriched with an ownership note naming any failing test file NO task declares.
+    ///
+    /// <para>Null ⇒ no note, and null is the right value whenever ANY task declares no <c>writeScope</c>:
+    /// the union is then incomplete and cannot support the claim. Enrichment only — the value never
+    /// changes a verdict.</para>
+    /// </summary>
+    public IReadOnlyList<string>? ProducibleScope { get; init; }
 }
 
 /// <summary>The aggregate pass/fail result returned by <see cref="IReVerifier"/>.</summary>

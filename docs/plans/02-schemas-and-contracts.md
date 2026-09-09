@@ -2658,7 +2658,8 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     "startedAt": "2026-09-05T08-50-15Z",
     // reason = the TAIL of the failed check's stdout (the #179-style re-emitted failure detail), NOT the
     // FIRST line (§7 plan-gate reason contract, #272 Part 1) — so npm-ci/dotnet-restore preamble noise
-    // never masquerades as the reason.
+    // never masquerades as the reason. It may additionally carry ONE appended `OWNERSHIP: …` paragraph
+    // (#587 check B, §7) when the failing test's file is in NO task's writeScope.
     "failedChecks": [ { "name": "whole-repo-build", "reason": "…\nCS0111 duplicate member 'Launcher.Run'" } ],
     // OPTIONAL (#432), all three additive — a pre-#432 marker omits them and existing readers of
     // `failedChecks` are unaffected:
@@ -3181,6 +3182,43 @@ carried separately into `feedback.md`'s tail (§8) — a plan gate does not retr
 the `reason` is the ONLY operator (and #269 overwatcher) signal and must carry the detail itself. The `run`
 command's terminal-halt block prints a multi-line reason with the continuation lines indented under
 `FAILED: <name> — …`.
+
+**Ownership attribution APPENDED to a failing plan-gate `reason` (issue #587 check B).** After the failure
+detail, and separated from it by a blank line, a failing plan-level check's `reason` may carry ONE additional
+paragraph beginning `OWNERSHIP:` — naming the failing test's file when **no task in the plan declares it in a
+`writeScope`**. The measured defect: plan 33's task 06 changed the tripwire
+`tests/Guardrails.Core.Tests/BreakdownSalvageAllowListTests.cs` while declaring only
+`src/Guardrails.Core/Execution/Scheduler.cs`; the plan-level baseline preflight went red, the run halted, and
+`guardrails reset` cascaded to six tasks — with nothing in the output saying the file was unfixable by any
+task in the DAG. The note is **failure-time, never predictive**: the forward form (predict at `validate` time
+which test a plan will break) was measured and rejected — type-level reachability produced 85 false positives
+on one file and member-level ranked the true positive 1-of-14 on plan 33's own defect commit — so this check
+speaks only about a test that has ALREADY failed, and its false-positive surface is zero by construction. It
+is **enrichment only**: a passing gate stays passing, a failing gate stays failing, and only the `reason`
+string changes. The wording keeps the causal half CONDITIONAL (*"If this plan's change is what turned it
+red…"*) because a pre-existing red is equally possible (#181/#182, "never build on red"), and it offers the
+two real remedies — give some task the file AND the work of updating it, or drop a change that does not
+belong in this plan — never deleting or weakening the assertion.
+
+The note is produced by `UnownedFailingTestAttribution` and is **silent** unless every one of these holds,
+each being a place conservatism is spent (`ProducerCoverage`/GR2060's discipline): (1) the call site supplied
+the plan's **producible scope** via `ReVerifyOptions.ProducibleScope` — the union of every task's `writeScope`
+plus every `stagingOutputs.to`, computed by the shared `WriteScope.CompleteProducibleScope`, which returns
+`null` whenever ANY task declares no `writeScope` (GR2060 condition 9: an incomplete union cannot support "no
+task owns it"); (2) that union is non-empty; (3) at least one .NET stack frame (`at <member> in <path>:line
+<n>`) parsed out of the check's stdout (then stderr); (4) the frame's path relativized to a workspace path,
+either by containment under the gate's worktree root or by the longest trailing path suffix CONFIRMED to name
+a real file under it — a frame from a foreign attempt worktree is the measured shape, and a path that
+resolves neither way is DROPPED in silence rather than guessed at; (5) the resulting path is claimed by NO
+entry of the union under the same `WriteScope.IsInScope` the harness enforces at write time. Only the
+**outermost** source-carrying frame of each stack is considered — a .NET stack lists frames innermost-first,
+so the last one is the file that DECLARES the failing test, and the production files beneath it are not files
+any plan is obliged to own. Named files are de-duplicated and capped at **5**, with a `(+N more)` count, so a
+suite-wide red cannot turn an operator-facing reason into a wall of text. The scope is supplied by the four
+plan-level gate call sites (`PlanPreflightPhase`, `PlanGuardrailPhase`, and the Scheduler's wave entry/exit
+gates) and is always the WHOLE plan's union — a later wave's task owning the file is still an owner, and a
+wider union means fewer notes. The attempt-decoupled per-task union re-verify (§4.3) deliberately does not
+supply it: that path retries and composes `feedback.md`, so its reason is not the operator's only signal.
 
 **Pre-DAG sample verification (the guardian of guardrail quality).** The first statement of the `planPreflights` phase runs `SampleVerifier` against every task's `samples/` folder, checking that `.valid.<ext>` halves exit 0, `.invalid.<ext>` halves exit non-zero, and every pair carries a matching guardrail. A failed pair halts the run immediately (exit 2, `planPreflights.status = plan-preflight-failed`) BEFORE the Scheduler builds any wave and BEFORE any task spends a token — placing the step before both short-circuits so a reversed polarity cannot hide from any plan that carries pairs. On the empty path (a plan with no pairs), discovery costs one directory probe per task and zero process launches. The step reuses the same `SampleVerifier` the `samples verify` verb invokes (§12.4), guaranteeing that both entry points report findings identically.
 
@@ -7745,7 +7783,7 @@ unsatisfiable-guardrail family and #459
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
 the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
-`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), so an unrelated new code should take **`GR2077`**. Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), so an unrelated new code should take **`GR2078`** — `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
