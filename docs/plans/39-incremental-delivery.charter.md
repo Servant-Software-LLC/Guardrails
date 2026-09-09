@@ -156,6 +156,77 @@ feature that delivers earlier must not become the way that rule is escaped. **A 
 existing safety interlock inherits the obligation to re-derive its scope**, and this one changes from
 "the run" to "the wave".
 
+## 1c. Does a delivering wave let later waves pick up the user's branch? (review round 3)
+
+The reviewer asked it directly:
+
+> If waves can be deliverables, then when a wave sets the delivery flag, then the following waves will take
+> the latest of master. Right? Or is it continuing on the branch that it delivered.
+
+**It continues on the branch it delivered from.** Checked, not assumed:
+
+- `Scheduler.RunWavedAsync` (`:774`) drains every wave *"on the CONTINUOUS plan branch"*, and there is no
+  rewind or re-base between waves — the run's state is explicitly *"shared, CONTINUOUS run state across
+  every wave"* (`:201`).
+- `GitWorktreeProvider.MergePlanBranchIntoUserBranch` (`:400`) is **one-directional**: plan branch → user
+  branch. Nothing merges the other way, at any boundary.
+
+So delivery publishes; it does not synchronize. That is invisible today because delivery happens once, at
+run end, when there is no "later" left to be stale. Per-wave delivery is what gives the asymmetry somewhere
+to accumulate — and this section exists because that was not obvious until someone asked.
+
+### What actually degrades, and what does not
+
+**The quiet case stays cheap, and this is the reassuring half.** After wave 2 delivers by fast-forward, the
+user's branch and the plan branch are at the same commit. Wave 3 adds commits on top; if nothing else
+touched the user's branch, wave 3's delivery fast-forwards too. *n* deliveries on a quiet branch are *n*
+fast-forwards, and the never-weaker guarantee is untouched. For the solo operator this whole section is a
+no-op.
+
+**The divergent case degrades, and it compounds.** The moment the user's branch advances independently, the
+delivery falls off the FF path into a real merge commit (`:451` → `:486`) — *on the user's branch only*. The
+plan branch never learns about it. So:
+
+1. Wave 2's delivery makes a merge commit on the user's branch.
+2. Wave 3's delivery can no longer fast-forward — the user's branch now carries a commit the plan branch has
+   never seen — so it is another merge commit.
+3. Every later delivery merges a plan branch that is **one more wave further out of date**, against a base
+   it has never incorporated. The conflict surface grows monotonically with each delivery, and AI-merge is
+   withheld here by SSOT §5.3, so a conflict **halts the run** with the work stranded on the plan branch.
+
+That is the honest answer to the question: not "the following waves take the latest of master", but "the
+following waves take an increasingly stale base, and the price is paid at each delivery instead of once."
+
+**And `BranchMoved` changes character entirely.** #588 pinned the delivery target at run start and made a
+moved HEAD a *refusal* rather than a redirect — correct, and the incident that produced it was real. But
+today that refusal fires **once, at run end**, with every task already complete and safely on the plan
+branch: a soft landing. With per-wave delivery it fires at wave 2's exit, with three waves still to run, and
+every one of those waves' deliveries will hit the identical refusal. Continuing is doing expensive work
+whose delivery is already known to be impossible.
+
+### The decision
+
+Delivery is the one moment in a waved run when the two branches are *supposed* to agree — that is what
+delivering means. Letting them diverge again immediately afterwards is the surprising state, not the safe
+one. The narrow fix is to refresh the plan branch **only when the delivery was not a fast-forward**: an FF
+result is itself proof the user's branch did not move, so the reverse merge is provably a no-op and can be
+skipped with no probe of its own. It costs nothing in the quiet case and fires exactly when divergence is
+real. See the `d39-post-delivery-refresh` question.
+
+**The hazard, and it is the same one design 40 just found.** A reverse merge admits into the run's tree
+content **no task authored**. The next wave's exit gate then runs over that content, and if a teammate's
+commit is broken, the gate fails and the failure lands on the wave — which did nothing wrong. This is
+character-for-character §5a of design 40, where `supply` puts an unauthored file onto the base and the
+downstream gates cannot attribute it.
+
+Two designs, arrived at from opposite directions, need the same record: **what is in this tree that no task
+authored?** Design 40 §4 specifies it for supplied files. If both are built, it should be built **once**,
+with the refresh as a second provenance kind — and a wave-gate failure over a refreshed tree must be able to
+say *"this tree includes a refresh from `<branch>` at `<sha>`"* rather than blaming the wave. Neither design
+can retrofit it: in both cases the information exists only at the instant of the commit.
+
+---
+
 ## 2. The cost, and it is a DOCTRINE change
 
 `plan-breakdown` says today:
@@ -306,4 +377,12 @@ journal-the-start rule §5 adopts), SSOT §14 (waves), §14.6 (the wave exit gat
 
 :::question
 {"id": "d39-interlock-scope", "title": "Confirm the #361 machine-decision interlock must become WAVE-scoped before any wave delivers early?", "mode": "single", "options": ["Yes — a wave delivers only if no suppressing decision was recorded during that wave", "No — keep it run-scoped and simply forbid early delivery once any suppressing decision exists", "No — early delivery should ignore the interlock; it is about the run's final verdict"], "recommended": "Yes — a wave delivers only if no suppressing decision was recorded during that wave", "rationale": "Found by reading Finalize rather than trusting its name. The #361/#340 interlock reads decisions[] for the WHOLE run, once, at the end — because delivery is run-scoped today. With per-wave delivery, wave 1 merges, wave 3 then records a proceeded-best-guess, and the interlock fires at run end against work already on your branch. It cannot un-merge, so its guarantee is not weakened but DEFEATED for every wave that shipped before the decision existed. Option 2 is the conservative alternative and I would accept it; option 3 is listed only so it is on the record as rejected — it would make this feature the way #361 gets escaped.", "target": "human", "answer": ["Yes \u2014 a wave delivers only if no suppressing decision was recorded during that wave"]}
+:::
+
+:::question
+{"id": "d39-post-delivery-refresh", "title": "After a wave delivers, should the plan branch pick up the user's branch?", "mode": "single", "options": ["Refresh only when the delivery was NOT a fast-forward", "Never refresh — the plan branch stays continuous, as today", "Refresh after every delivery", "Halt on divergence and hand it to the operator"], "recommended": "Refresh only when the delivery was NOT a fast-forward", "rationale": "This is your question from round 2, and the factual answer is that today it continues on the branch it delivered from — nothing merges back, ever (Scheduler:774 drains every wave on the CONTINUOUS plan branch; MergePlanBranchIntoUserBranch is one-directional). That is harmless while delivery happens once at run end. Per-wave delivery gives it somewhere to accumulate: once your branch advances independently, delivery 2 becomes a merge commit, delivery 3 can no longer fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge withheld by SSOT 5.3, so a conflict halts the run. Option 1 is the surgical form: a fast-forward RESULT is itself proof your branch did not move, so the refresh is provably a no-op in the quiet case and can be skipped with no extra probe. It costs the solo operator nothing and fires exactly when divergence is real. Option 2 is defensible if you only ever run on a branch nobody else touches. Option 4 is the safest and the most annoying. The cost of any refresh is that it admits content no task authored into the tree the next wave's exit gate runs over — see 1c, which is the same hazard design 40's section 5a just found from the other direction.", "target": "human"}
+:::
+
+:::question
+{"id": "d39-branchmoved-midrun", "title": "A wave delivery hits BranchMoved (#588). Halt, or keep running the later waves?", "mode": "single", "options": ["Halt at that wave — every later delivery would hit the same refusal", "Carry on and retry the delivery at each later wave", "Carry on, but stop attempting delivery and hold everything to run end"], "recommended": "Halt at that wave — every later delivery would hit the same refusal", "rationale": "#588 pins the delivery target at run start and refuses when HEAD has moved, which is right — it refuses rather than redirecting, and leaves your checkout untouched. But today that refusal fires ONCE, at run end, with all work complete and safe on the plan branch: a soft landing. Per-wave delivery moves it to wave 2's exit with three waves still to run, and the condition is not transient — you checked out a different branch, so every later delivery hits the identical refusal. Continuing means paying for waves whose delivery is already known to be impossible. Option 3 is the interesting alternative and is a real position: it degrades cleanly back to today's behaviour (one delivery at run end) rather than throwing the run away, and if you would rather never lose a run to this, pick it.", "target": "human"}
 :::

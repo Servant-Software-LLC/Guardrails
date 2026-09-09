@@ -170,6 +170,77 @@ feature that delivers earlier must not become the way that rule is escaped. **A 
 existing safety interlock inherits the obligation to re-derive its scope**, and this one changes from
 "the run" to "the wave".
 
+## 1c. Does a delivering wave let later waves pick up the user's branch? (review round 3)
+
+The reviewer asked it directly:
+
+> If waves can be deliverables, then when a wave sets the delivery flag, then the following waves will take
+> the latest of master. Right? Or is it continuing on the branch that it delivered.
+
+**It continues on the branch it delivered from.** Checked, not assumed:
+
+- `Scheduler.RunWavedAsync` (`:774`) drains every wave *"on the CONTINUOUS plan branch"*, and there is no
+  rewind or re-base between waves — the run's state is explicitly *"shared, CONTINUOUS run state across
+  every wave"* (`:201`).
+- `GitWorktreeProvider.MergePlanBranchIntoUserBranch` (`:400`) is **one-directional**: plan branch → user
+  branch. Nothing merges the other way, at any boundary.
+
+So delivery publishes; it does not synchronize. That is invisible today because delivery happens once, at
+run end, when there is no "later" left to be stale. Per-wave delivery is what gives the asymmetry somewhere
+to accumulate — and this section exists because that was not obvious until someone asked.
+
+### What actually degrades, and what does not
+
+**The quiet case stays cheap, and this is the reassuring half.** After wave 2 delivers by fast-forward, the
+user's branch and the plan branch are at the same commit. Wave 3 adds commits on top; if nothing else
+touched the user's branch, wave 3's delivery fast-forwards too. *n* deliveries on a quiet branch are *n*
+fast-forwards, and the never-weaker guarantee is untouched. For the solo operator this whole section is a
+no-op.
+
+**The divergent case degrades, and it compounds.** The moment the user's branch advances independently, the
+delivery falls off the FF path into a real merge commit (`:451` → `:486`) — *on the user's branch only*. The
+plan branch never learns about it. So:
+
+1. Wave 2's delivery makes a merge commit on the user's branch.
+2. Wave 3's delivery can no longer fast-forward — the user's branch now carries a commit the plan branch has
+   never seen — so it is another merge commit.
+3. Every later delivery merges a plan branch that is **one more wave further out of date**, against a base
+   it has never incorporated. The conflict surface grows monotonically with each delivery, and AI-merge is
+   withheld here by SSOT §5.3, so a conflict **halts the run** with the work stranded on the plan branch.
+
+That is the honest answer to the question: not "the following waves take the latest of master", but "the
+following waves take an increasingly stale base, and the price is paid at each delivery instead of once."
+
+**And `BranchMoved` changes character entirely.** #588 pinned the delivery target at run start and made a
+moved HEAD a *refusal* rather than a redirect — correct, and the incident that produced it was real. But
+today that refusal fires **once, at run end**, with every task already complete and safely on the plan
+branch: a soft landing. With per-wave delivery it fires at wave 2's exit, with three waves still to run, and
+every one of those waves' deliveries will hit the identical refusal. Continuing is doing expensive work
+whose delivery is already known to be impossible.
+
+### The decision
+
+Delivery is the one moment in a waved run when the two branches are *supposed* to agree — that is what
+delivering means. Letting them diverge again immediately afterwards is the surprising state, not the safe
+one. The narrow fix is to refresh the plan branch **only when the delivery was not a fast-forward**: an FF
+result is itself proof the user's branch did not move, so the reverse merge is provably a no-op and can be
+skipped with no probe of its own. It costs nothing in the quiet case and fires exactly when divergence is
+real. See the `d39-post-delivery-refresh` question.
+
+**The hazard, and it is the same one design 40 just found.** A reverse merge admits into the run's tree
+content **no task authored**. The next wave's exit gate then runs over that content, and if a teammate's
+commit is broken, the gate fails and the failure lands on the wave — which did nothing wrong. This is
+character-for-character §5a of design 40, where `supply` puts an unauthored file onto the base and the
+downstream gates cannot attribute it.
+
+Two designs, arrived at from opposite directions, need the same record: **what is in this tree that no task
+authored?** Design 40 §4 specifies it for supplied files. If both are built, it should be built **once**,
+with the refresh as a second provenance kind — and a wave-gate failure over a refreshed tree must be able to
+say *"this tree includes a refresh from `<branch>` at `<sha>`"* rather than blaming the wave. Neither design
+can retrofit it: in both cases the information exists only at the instant of the commit.
+
+---
+
 ## 2. The cost, and it is a DOCTRINE change
 
 `plan-breakdown` says today:
