@@ -4,6 +4,7 @@ using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 using Guardrails.Core.Telemetry;
@@ -824,7 +825,9 @@ public static class RunCommand
                     // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
                     // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                     // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
-                    RenderUndeliveredWorkWarning(report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out);
+                    RenderUndeliveredWorkWarning(
+                        report, planGuardrailsPassed is true, probe.Plan.PlanDirectory, io.Out,
+                        PlanFolderDrift(probe.Plan));
 
                     // Issue #597 complement: the SAME interlock, overridden. --merge-on-success is the
                     // documented operator override of #361's delivery suppression, and using it delivers
@@ -2106,8 +2109,32 @@ public static class RunCommand
         };
     }
 
+    /// <summary>
+    /// Ask git how many plan-folder commits the operator's branch carries that the plan branch does not
+    /// (issue #576), or null when it cannot be asked. Kept OUT of
+    /// <see cref="RenderUndeliveredWorkWarning"/> so that method stays a pure function of its arguments —
+    /// which is the property that lets it be unit-tested against a StringWriter with no repository at all.
+    /// </summary>
+    private static int? PlanFolderDrift(PlanDefinition plan)
+    {
+        try
+        {
+            string planName = Path.GetFileName(
+                plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            return new GitRevListDriftProbe(plan.Workspace)
+                .CommitsNotOnPlanBranch("guardrails/" + planName, plan.PlanDirectory);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // The banner is the last thing a finished run prints. Nothing about an advisory note is worth
+            // turning a completed run into a harness error at that point.
+            return null;
+        }
+    }
+
     public static void RenderUndeliveredWorkWarning(
-        RunReport report, bool terminalGatePassed, string planDirectory, TextWriter output)
+        RunReport report, bool terminalGatePassed, string planDirectory, TextWriter output,
+        int? planFolderCommitsNotOnPlanBranch = null)
     {
         if (!report.WhollyGreenButUndelivered || !terminalGatePassed)
         {
@@ -2152,6 +2179,32 @@ public static class RunCommand
             output.WriteLine(
                 $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
             output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+        }
+
+        // Issue #576. The instruction above — "merge '<planBranch>' into your branch yourself" — is the
+        // one that produces the stale state, because the plan branch is cut ONCE and never rebased: a
+        // plan-folder fix the operator made between resumes took effect (the harness reads the folder
+        // from the main checkout) but never landed on that branch. Following the banner literally then
+        // delivers the CODE beside a plan folder that could not have produced it.
+        //
+        // Measured on plan 32: three resumes, three real plan-folder fixes, and after the merge master
+        // carried a 16-task plan (task 17 absent) whose task-01 guardrail held the filter that HALTED the
+        // run. Nothing prompted the operator to merge their own branch too; it was caught by hand.
+        //
+        // NOT-KNOWN (null) prints nothing. The probe cannot answer when git is absent or the plan branch
+        // does not exist, and an absent line is the honest rendering — the alternative is reassuring an
+        // operator, at the moment they are about to merge, about a question that was never asked.
+        if (planFolderCommitsNotOnPlanBranch is > 0 and var drifted)
+        {
+            output.WriteLine();
+            output.WriteLine(
+                $"NOTE: your branch has {drifted} commit(s) touching the plan folder that '{planBranch}'");
+            output.WriteLine(
+                "does NOT carry — the plan branch is cut once and never rebased, so plan-folder fixes made");
+            output.WriteLine(
+                "between resumes live only on your branch. Merging the plan branch ALONE would deliver the");
+            output.WriteLine(
+                "code beside a plan folder that never ran it. Merge your own branch as well (#576).");
         }
 
         output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
