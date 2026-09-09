@@ -188,7 +188,10 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
     [
         new("docs/plans/04-dogfood-cost-cap", "8012572", 0, 0,
             "committed with M7 packaging, alongside the work — not a clean pre-run tree"),
-        new("docs/plans/08-parallel-execution", "e648768", 0, 0),
+        new("docs/plans/08-parallel-execution", "e648768", 0, 0,
+            "committed with the feature it produced — 'Dogfood/plan 08 (#117)' carries 46 src/tests files " +
+            "in the same commit, so this is not a clean pre-run tree and this 0 is not evidence the check " +
+            "is silent on a pre-run corpus"),
         new("docs/plans/09-preflight-first-class/example/example-plan", "382ed99", 0, 0,
             "an illustrative example plan, one level deeper than either layout; its gate bodies are simulated"),
         new("docs/plans/228-escalation-ladder", "adc4cd2", 0, 0,
@@ -262,7 +265,10 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "waved; at this commit wave 2 holds zero tasks, so condition 10 suppresses — see Pinned for the commits that carry the evidence"),
         new("docs/plans/model-tiering-stage-3", "34ec050", 0, 0,
             "waved, wave 2 stubbed for JIT at the pre-run commit"),
-        new("docs/plans/preflights-impl", "382ed99", 0, 0),
+        new("docs/plans/preflights-impl", "382ed99", 0, 0,
+            "committed with the feature it produced — 382ed99 is a squash landing the plan folder AND its " +
+            "implementation together (40 src/tests files), so this is not a clean pre-run tree. The " +
+            "example-plan row above shares this commit and the same limitation"),
         new("docs/plans/salvage-advice-provisioning", "d9c006d", 0, 0,
             "waved, and committed with the feature it produced — not a clean pre-run tree"),
         new("examples/hello-guardrails/hello-guardrails", "5ecc02c", 0, 0),
