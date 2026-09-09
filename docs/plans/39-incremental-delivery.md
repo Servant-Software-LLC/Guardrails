@@ -241,6 +241,54 @@ can retrofit it: in both cases the information exists only at the instant of the
 
 ---
 
+### The compensating control already exists: the wave ENTRY preflight (round 3)
+
+The reviewer's follow-up is a better answer than the paragraph above, and it changes the recommendation:
+
+> But each wave also has its own pre-flight checks. Right? Therefore, post-delivery waves should provide the
+> types of checks (like "all tests are passing") that are typically in the pre-flight checks of a full
+> harness run.
+
+**They do, and it is the right seam.** `Scheduler.RunWaveEntryGateAsync` (`:1391`) runs a wave's entry
+preflight against the plan-branch HEAD — *"the materialized prior wave"* — per SSOT §14.3. Nothing new has
+to be invented.
+
+**It fixes the ATTRIBUTION problem, not merely the detection one**, which is why it beats the refresh
+argument on its own terms. Unauthored content in the tree — from a refresh, or just from a stale base —
+that is broken will fail the wave's EXIT gate, and the failure lands on a wave that did nothing wrong.
+Asserting the baseline at wave ENTRY makes the identical defect fail before any task runs, where it reads
+correctly as *"the tree was already red on arrival"*. That is #181/#182's positive-baseline archetype —
+never build on red — applied at the wave barrier instead of only at plan start.
+
+So the refresh question changes shape. It stops being *"is admitting unauthored content safe?"* and becomes
+*"a refresh is safe **because** the next wave re-verifies its own baseline before spending anything."* The
+recommendation on `d39-post-delivery-refresh` stands, and this is what makes it defensible.
+
+**Two things have to change for it to actually work, and both are cheap.**
+
+**(1) The entry gate is SKIP-ONCE, and that is wrong for a positive baseline.** Verbatim from `:1385`: *"a
+passed entry marker for this wave is not re-evaluated on resume (a negative-baseline entry check runs
+exactly once)"*. Correct for what it was built for — a TDD-red baseline asserting the thing does not exist
+yet is a fact about a *moment*, and re-running it after the work is done would fail.
+
+A positive baseline is the opposite animal. *"All tests pass"* is a fact about the tree **as it is now**,
+and after a delivery or a refresh the tree has changed — so skip-once would pass a wave over a tree it never
+checked, silently. The asymmetry is already in the model and points the other way: the wave **exit** gate is
+*"always re-evaluated on the current HEAD"* (SSOT §14.6); entry is not. This proposal lands on the side that
+skips.
+
+So the entry gate has to distinguish the two baseline kinds — **a positive baseline re-evaluates; a negative
+one keeps skip-once.** That is the whole change, and it is the only place in this design where the harness
+must grow a new distinction rather than reuse one.
+
+**(2) A wave with no authored preflights returns `Pass` immediately** (`:1394`). The capability is worth
+nothing unless the check is emitted, so this is a `plan-breakdown` rule as much as a harness one: **a wave
+that follows a delivery point gets a positive-baseline entry preflight over the touched areas**, on the same
+`$baselineArea` machinery Step 5 already has for plan-level preflights. Step 7's report should name which
+waves got one and why, exactly as §1b asks it to name which waves deliver.
+
+---
+
 ## 2. The cost, and it is a DOCTRINE change
 
 `plan-breakdown` says today:

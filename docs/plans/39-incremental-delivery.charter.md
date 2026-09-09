@@ -227,6 +227,54 @@ can retrofit it: in both cases the information exists only at the instant of the
 
 ---
 
+### The compensating control already exists: the wave ENTRY preflight (round 3)
+
+The reviewer's follow-up is a better answer than the paragraph above, and it changes the recommendation:
+
+> But each wave also has its own pre-flight checks. Right? Therefore, post-delivery waves should provide the
+> types of checks (like "all tests are passing") that are typically in the pre-flight checks of a full
+> harness run.
+
+**They do, and it is the right seam.** `Scheduler.RunWaveEntryGateAsync` (`:1391`) runs a wave's entry
+preflight against the plan-branch HEAD — *"the materialized prior wave"* — per SSOT §14.3. Nothing new has
+to be invented.
+
+**It fixes the ATTRIBUTION problem, not merely the detection one**, which is why it beats the refresh
+argument on its own terms. Unauthored content in the tree — from a refresh, or just from a stale base —
+that is broken will fail the wave's EXIT gate, and the failure lands on a wave that did nothing wrong.
+Asserting the baseline at wave ENTRY makes the identical defect fail before any task runs, where it reads
+correctly as *"the tree was already red on arrival"*. That is #181/#182's positive-baseline archetype —
+never build on red — applied at the wave barrier instead of only at plan start.
+
+So the refresh question changes shape. It stops being *"is admitting unauthored content safe?"* and becomes
+*"a refresh is safe **because** the next wave re-verifies its own baseline before spending anything."* The
+recommendation on `d39-post-delivery-refresh` stands, and this is what makes it defensible.
+
+**Two things have to change for it to actually work, and both are cheap.**
+
+**(1) The entry gate is SKIP-ONCE, and that is wrong for a positive baseline.** Verbatim from `:1385`: *"a
+passed entry marker for this wave is not re-evaluated on resume (a negative-baseline entry check runs
+exactly once)"*. Correct for what it was built for — a TDD-red baseline asserting the thing does not exist
+yet is a fact about a *moment*, and re-running it after the work is done would fail.
+
+A positive baseline is the opposite animal. *"All tests pass"* is a fact about the tree **as it is now**,
+and after a delivery or a refresh the tree has changed — so skip-once would pass a wave over a tree it never
+checked, silently. The asymmetry is already in the model and points the other way: the wave **exit** gate is
+*"always re-evaluated on the current HEAD"* (SSOT §14.6); entry is not. This proposal lands on the side that
+skips.
+
+So the entry gate has to distinguish the two baseline kinds — **a positive baseline re-evaluates; a negative
+one keeps skip-once.** That is the whole change, and it is the only place in this design where the harness
+must grow a new distinction rather than reuse one.
+
+**(2) A wave with no authored preflights returns `Pass` immediately** (`:1394`). The capability is worth
+nothing unless the check is emitted, so this is a `plan-breakdown` rule as much as a harness one: **a wave
+that follows a delivery point gets a positive-baseline entry preflight over the touched areas**, on the same
+`$baselineArea` machinery Step 5 already has for plan-level preflights. Step 7's report should name which
+waves got one and why, exactly as §1b asks it to name which waves deliver.
+
+---
+
 ## 2. The cost, and it is a DOCTRINE change
 
 `plan-breakdown` says today:
@@ -380,9 +428,13 @@ journal-the-start rule §5 adopts), SSOT §14 (waves), §14.6 (the wave exit gat
 :::
 
 :::question
-{"id": "d39-post-delivery-refresh", "title": "After a wave delivers, should the plan branch pick up the user's branch?", "mode": "single", "options": ["Refresh only when the delivery was NOT a fast-forward", "Never refresh — the plan branch stays continuous, as today", "Refresh after every delivery", "Halt on divergence and hand it to the operator"], "recommended": "Refresh only when the delivery was NOT a fast-forward", "rationale": "This is your question from round 2, and the factual answer is that today it continues on the branch it delivered from — nothing merges back, ever (Scheduler:774 drains every wave on the CONTINUOUS plan branch; MergePlanBranchIntoUserBranch is one-directional). That is harmless while delivery happens once at run end. Per-wave delivery gives it somewhere to accumulate: once your branch advances independently, delivery 2 becomes a merge commit, delivery 3 can no longer fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge withheld by SSOT 5.3, so a conflict halts the run. Option 1 is the surgical form: a fast-forward RESULT is itself proof your branch did not move, so the refresh is provably a no-op in the quiet case and can be skipped with no extra probe. It costs the solo operator nothing and fires exactly when divergence is real. Option 2 is defensible if you only ever run on a branch nobody else touches. Option 4 is the safest and the most annoying. The cost of any refresh is that it admits content no task authored into the tree the next wave's exit gate runs over — see 1c, which is the same hazard design 40's section 5a just found from the other direction.", "target": "human"}
+{"id": "d39-post-delivery-refresh", "title": "After a wave delivers, should the plan branch pick up the user's branch?", "mode": "single", "options": ["Refresh only when the delivery was NOT a fast-forward", "Never refresh — the plan branch stays continuous, as today", "Refresh after every delivery", "Halt on divergence and hand it to the operator"], "recommended": "Refresh only when the delivery was NOT a fast-forward", "rationale": "This is your question from round 2, and the factual answer is that today it continues on the branch it delivered from — nothing merges back, ever (Scheduler:774 drains every wave on the CONTINUOUS plan branch; MergePlanBranchIntoUserBranch is one-directional). That is harmless while delivery happens once at run end. Per-wave delivery gives it somewhere to accumulate: once your branch advances independently, delivery 2 becomes a merge commit, delivery 3 can no longer fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge withheld by SSOT 5.3, so a conflict halts the run. Option 1 is the surgical form: a fast-forward RESULT is itself proof your branch did not move, so the refresh is provably a no-op in the quiet case and can be skipped with no extra probe. It costs the solo operator nothing and fires exactly when divergence is real. Option 2 is defensible if you only ever run on a branch nobody else touches. Option 4 is the safest and the most annoying. The cost of any refresh is that it admits content no task authored into the tree the next wave runs over — the same hazard design 40's section 5a found from the other direction. Your follow-up answers it: the wave ENTRY preflight is the compensating control, and it fixes attribution rather than just detection, because a broken refresh then fails BEFORE any task runs instead of reddening the wave's exit gate and blaming work that was fine. That is what makes option 1 defensible rather than merely convenient — see the entry-preflight subsection of 1c, and the d39-positive-baseline-at-wave-entry question it raises.", "target": "human"}
 :::
 
 :::question
 {"id": "d39-branchmoved-midrun", "title": "A wave delivery hits BranchMoved (#588). Halt, or keep running the later waves?", "mode": "single", "options": ["Halt at that wave — every later delivery would hit the same refusal", "Carry on and retry the delivery at each later wave", "Carry on, but stop attempting delivery and hold everything to run end"], "recommended": "Halt at that wave — every later delivery would hit the same refusal", "rationale": "#588 pins the delivery target at run start and refuses when HEAD has moved, which is right — it refuses rather than redirecting, and leaves your checkout untouched. But today that refusal fires ONCE, at run end, with all work complete and safe on the plan branch: a soft landing. Per-wave delivery moves it to wave 2's exit with three waves still to run, and the condition is not transient — you checked out a different branch, so every later delivery hits the identical refusal. Continuing means paying for waves whose delivery is already known to be impossible. Option 3 is the interesting alternative and is a real position: it degrades cleanly back to today's behaviour (one delivery at run end) rather than throwing the run away, and if you would rather never lose a run to this, pick it.", "target": "human"}
+:::
+
+:::question
+{"id": "d39-positive-baseline-at-wave-entry", "title": "Should a wave that follows a delivery point automatically get a positive-baseline entry preflight?", "mode": "single", "options": ["Yes — plan-breakdown emits one for every post-delivery wave", "Only when the plan author asks for it", "No — the wave exit gate already covers it"], "recommended": "Yes — plan-breakdown emits one for every post-delivery wave", "rationale": "Your point that waves have their own preflights is right and it is the seam this needs — RunWaveEntryGateAsync runs against the plan-branch HEAD per SSOT 14.3. Two things stop it working by itself. First, a wave with no authored preflights returns Pass immediately (Scheduler:1394), so the capability is worth nothing unless the check is actually emitted — which makes it a plan-breakdown rule, on the $baselineArea machinery Step 5 already has. Second, the entry gate is SKIP-ONCE by design ('a negative-baseline entry check runs exactly once'), which is correct for a TDD-red baseline and wrong for a positive one: 'all tests pass' is a fact about the tree as it is NOW, so after a delivery or refresh it must re-evaluate. Note the exit gate already re-evaluates on current HEAD (SSOT 14.6) and entry does not — this lands on the side that skips, so the gate has to learn the two baseline kinds either way. Option 3 is the status quo and is the one I would argue against: it detects the same breakage but attributes it to the wrong wave, which is the failure mode 1c is about.", "target": "human"}
 :::
