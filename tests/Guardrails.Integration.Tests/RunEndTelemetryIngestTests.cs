@@ -1,3 +1,4 @@
+using System.CommandLine;
 using System.Text.Json;
 using Guardrails.Cli;
 using Guardrails.Core.Journal;
@@ -70,27 +71,32 @@ public sealed class RunEndTelemetryIngestTests
     }
 
     /// <summary>
-    /// Runs <paramref name="args"/> with <see cref="CorpusRootEnvVar"/> pointed at
-    /// <paramref name="corpusRoot"/> and <see cref="TelemetryCorpusStore.OptOutEnvVar"/> set to
-    /// <paramref name="optOut"/> (null leaves it unset — collection ON), restoring both afterwards so one
-    /// test's env mutation can never leak into another's.
+    /// Runs <paramref name="args"/> against <paramref name="corpusRoot"/>, with collection decided by
+    /// <paramref name="optOut"/> (null = unset = collection ON), by passing BOTH answers explicitly
+    /// (issue #594).
+    ///
+    /// <para><b>This used to mutate the process, and that was the defect.</b>
+    /// <c>Environment.SetEnvironmentVariable</c> is process-wide; the <c>try/finally</c> restored the
+    /// values but could not close the window, because xUnit runs classes in parallel and the state being
+    /// shared was the process's, not the lock's. Every other class that spawned a run during that window
+    /// wrote its rows into THIS class's directory. Measured: this file's
+    /// <c>Run_CollectionDisabled_SuppressesIngestThatOtherwiseHappens</c> expected 8 rows and found 10, the
+    /// two extras contributed by plan 34's <c>AttachReplayTests</c> — a class touching no telemetry code
+    /// whatsoever, which merely happened to be running.</para>
+    ///
+    /// <para>Passing the anchor makes the isolation a property of the CALL rather than of who else is
+    /// running, so it also holds for tests that do not exist yet — which a serialized collection could
+    /// never do.</para>
     /// </summary>
     private static async Task<(int ExitCode, string Output)> RunAgainstCorpusAsync(
         string corpusRoot, string? optOut, params string[] args)
     {
-        string? previousRoot = Environment.GetEnvironmentVariable(CorpusRootEnvVar);
-        string? previousOptOut = Environment.GetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar);
-        try
-        {
-            Environment.SetEnvironmentVariable(CorpusRootEnvVar, corpusRoot);
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, optOut);
-            return await InvokeAsync(args);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(CorpusRootEnvVar, previousRoot);
-            Environment.SetEnvironmentVariable(TelemetryCorpusStore.OptOutEnvVar, previousOptOut);
-        }
+        var io = new StringConsoleIo();
+        RootCommand root = CommandFactory.BuildRootCommand(
+            io,
+            new TelemetryOverrides(corpusRoot, TelemetryCollectionSwitch.IsEnabled(optOut)));
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     private static string RunId(string planDir) => JournalReader.Read(RunJournal.PathFor(planDir)).RunId;
@@ -138,6 +144,44 @@ public sealed class RunEndTelemetryIngestTests
             ? $"Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{{\"needsHuman\": \"{question}\"}}'\r\nexit 0\r\n"
             : $"#!/usr/bin/env bash\nprintf '%s' '{{\"needsHuman\": \"{question}\"}}' > \"$GUARDRAILS_STATE_OUT\"\nexit 0\n";
         File.WriteAllText(plan.ActionPath(taskId), body);
+    }
+
+    /// <summary>
+    /// The #594 repair itself: an EXPLICIT corpus root beats a real, non-null AMBIENT one.
+    ///
+    /// <para>This is the assertion that makes the whole change worth anything, and it needs no environment
+    /// mutation to make — <c>TelemetryCorpusIsolation</c>'s module initializer has already pointed
+    /// <c>GUARDRAILS_TELEMETRY_CORPUS_ROOT</c> at a per-process scratch directory, so the ambient answer is
+    /// always present and always different from this test's. If the run still consulted the environment,
+    /// this run's rows would land there instead.</para>
+    ///
+    /// <para>Both halves are asserted, and the second is the one that matters: rows appear under the
+    /// explicit root AND this run's id appears nowhere under the ambient one. Checking only the first would
+    /// pass just as happily if the run wrote to BOTH, which is the shape of the leak being fixed.</para>
+    /// </summary>
+    [Fact]
+    [Trait("Category", "ModelEvidence")]
+    public async Task AnExplicitCorpusRoot_BeatsTheAmbientEnvironment_AndTheAmbientOneStaysClean()
+    {
+        string? ambient = Environment.GetEnvironmentVariable(CorpusRootEnvVar);
+        Assert.False(
+            string.IsNullOrWhiteSpace(ambient),
+            "this test needs a non-null ambient root to beat; TelemetryCorpusIsolation should have set one");
+
+        using var plan = new ScriptPlanBuilder().AddTask("01-a");
+        using var corpus = new TempDir();
+
+        (int exit, _) = await RunAgainstCorpusAsync(
+            corpus.Path, null, "run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.Success, exit);
+
+        string runId = RunId(plan.PlanDir);
+        Assert.Contains(ReadRows(corpus.Path), r => r.RunId == runId);
+
+        // The leak, stated as a negative: nothing from this run may reach the ambient corpus. Scoped to
+        // this run's OWN id, because the ambient root legitimately holds other classes' rows.
+        Assert.DoesNotContain(ReadRows(ambient!), r => r.RunId == runId);
     }
 
     [Fact]
