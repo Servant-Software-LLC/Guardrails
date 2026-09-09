@@ -274,11 +274,16 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     this shape. Measure the exposure before reaching for one: #594 found **4** classes mutating a
     telemetry variable against **20+** spawning a real run, so serializing that set would have
     been permanent and would still not protect a test nobody has written yet.
-  - **When the seam lands, RETIRE the collection.** `TelemetryEnvironmentCollection` existed
-    because *"there is no seam into that path short of threading a switch through the whole `run`
-    command"* — #594 threaded exactly that switch, leaving no mutator in the assembly, so the
-    collection was deleted and its two classes run in parallel again. A guard nobody re-examines
-    outlives its reason and quietly costs coverage.
+  - **When the seam lands, RETIRE the collection — but retire it on its OWN change.**
+    `TelemetryEnvironmentCollection` records its reason as *"there is no seam into that path short
+    of threading a switch through the whole `run` command"*; #594 threaded exactly that switch, so
+    no mutator remains in the assembly and the guard is now dead weight (the retirement is tracked in
+    #699). Retiring
+    it was ATTEMPTED inside this convention's own change and backed out, which is the part worth
+    learning from: removing a serializer raises the assembly's parallelism, and that promptly
+    surfaced two unrelated wall-clock failures on two platforms (#697, #698) in a repo that had had
+    none in its previous 40 CI runs. **A retirement is a concurrency change, not a cleanup** — land
+    it alone, where a red build can only mean one thing.
   - **`GitEnvironmentCollection` is the counter-example worth keeping**: its own doc records that
     the mechanism it guarded is GONE, and states the condition for deleting it (a full three-OS
     run without it, repeated enough to mean something). That is how a fallback should be written

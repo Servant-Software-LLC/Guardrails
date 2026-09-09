@@ -26,6 +26,7 @@ namespace Guardrails.Integration.Tests.Commands;
 /// I/O at all — it only asserts the resolved PATH STRING.</para>
 /// </summary>
 [Trait("Category", "ModelEvidence")]
+[Collection(TelemetryEnvironmentCollection.Name)]
 public sealed class TelemetryCommandTests
 {
     /// <summary>A distinctive, test-only model tag — never a real model name — so a substring match in
