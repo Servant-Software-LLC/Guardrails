@@ -111,7 +111,7 @@ public sealed class PlanLoaderTests
         DirectoryInfo? dir = new DirectoryInfo(Path.GetFullPath(start));
         while (dir is not null)
         {
-            if (Directory.Exists(Path.Combine(dir.FullName, ".git"))) { return dir.FullName; }
+            if (IsRepoRoot(dir)) { return dir.FullName; }
             dir = dir.Parent;
         }
 
@@ -244,4 +244,19 @@ public sealed class PlanLoaderTests
 
     private static string DiagnosticDump(PlanLoadResult result) =>
         string.Join(Environment.NewLine, result.Diagnostics.Select(d => d.ToString()));
+
+    /// <summary>
+    /// A repository root, whether a normal checkout or a WORKTREE. In a worktree <c>.git</c> is a FILE
+    /// (a gitdir pointer), not a directory — so a <c>Directory.Exists</c> probe walks straight past the
+    /// root and off the top of the tree. Every production site already gets this right
+    /// (<c>PlanLoader</c>, <c>PlanValidator</c>, <c>GitGuardianConfig</c>, <c>TelemetryCommand</c>);
+    /// three of the four copies in the TEST tree did not (issue #688), which is how the suite came to be unrunnable
+    /// in exactly the environment the harness runs its own tasks in.
+    /// </summary>
+    private static bool IsRepoRoot(DirectoryInfo dir)
+    {
+        string git = Path.Combine(dir.FullName, ".git");
+        return Directory.Exists(git) || File.Exists(git);
+    }
+
 }
