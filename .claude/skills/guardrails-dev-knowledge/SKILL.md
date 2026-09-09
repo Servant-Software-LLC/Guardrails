@@ -256,6 +256,39 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   tests use `FakeClaudePlanBuilder` (tokenless); real-claude tests gated behind
   `GUARDRAILS_REAL_CLAUDE=1`; xunit.v3 wants `TestContext.Current.CancellationToken`
   (xUnit1051 is an error).
+- **PROCESS-WIDE state in tests — prefer a SEAM, and a serialized collection only as the
+  fallback (#520, #594)**. xUnit runs classes in parallel, so a test that mutates process-wide
+  state can break a class that did nothing wrong — and the failure surfaces at the VICTIM, on
+  whichever platform's scheduler exposed it, which is why every instance so far was found by a red
+  build rather than by review. The known resources: **environment variables**, the console
+  **output code page**, Spectre's **`DefaultExclusivityMode`**, the **current directory**, and
+  thread-default **culture**.
+  - **First ask whether the production code can take the value as a PARAMETER.** A `try/finally`
+    around `Environment.SetEnvironmentVariable` restores the value but cannot close the window;
+    the state being shared is the process's, not the lock's. Two seams exist as precedent:
+    `GitLsFilesProbe`'s `workingDirectory` (#593) and `CommandFactory.BuildRootCommand`'s
+    `TelemetryOverrides` (#594). Both are nullable, both default to the previous ambient
+    behaviour, and both let a test scope itself by PASSING A VALUE.
+  - **A serialized collection is the fallback, and it has a real cost.** It buys wall clock on
+    every CI run forever, and it removes the concurrency coverage that catches the NEXT defect of
+    this shape. Measure the exposure before reaching for one: #594 found **4** classes mutating a
+    telemetry variable against **20+** spawning a real run, so serializing that set would have
+    been permanent and would still not protect a test nobody has written yet.
+  - **When the seam lands, RETIRE the collection.** `TelemetryEnvironmentCollection` existed
+    because *"there is no seam into that path short of threading a switch through the whole `run`
+    command"* — #594 threaded exactly that switch, leaving no mutator in the assembly, so the
+    collection was deleted and its two classes run in parallel again. A guard nobody re-examines
+    outlives its reason and quietly costs coverage.
+  - **`GitEnvironmentCollection` is the counter-example worth keeping**: its own doc records that
+    the mechanism it guarded is GONE, and states the condition for deleting it (a full three-OS
+    run without it, repeated enough to mean something). That is how a fallback should be written
+    down — with its own exit criterion.
+  - **A grep for these APIs is not a check.** #520's audit matched a doc comment in
+    `MarkReviewedEvidencePathFormsTests` *describing* why it never calls
+    `Directory.SetCurrentDirectory` — a false positive on the best-documented file in the suite.
+    Any automated version must tell a USE from a MENTION (the #500 doctrine, from the opposite
+    direction), which is why #520 recommends the convention now and a meta-test only if a third
+    unguarded instance appears.
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.
