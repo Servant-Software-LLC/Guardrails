@@ -2226,6 +2226,25 @@ case (b) sends a reader to `guardrails.json`, then to the default in source, the
 three dead ends before the real cause, and unreachable at all without source access. The same split applies
 to the durable `delivery.reason` (§8), which recorded the identical wrong cause.
 
+**The banner also reports PLAN-FOLDER DRIFT (issue #576).** The instruction the banner gives — *"merge
+`guardrails/<plan>` into your branch yourself"* — is itself what produces a stale repository, because the
+plan branch is cut **once**, at the first run's start, and is **never rebased across resumes**. A
+plan-folder fix an operator makes *between* resumes takes effect immediately (the harness reads the folder
+from the main checkout) but never lands on the plan branch, so merging that branch alone delivers the
+**code** beside a plan folder at run-start state — a repository whose recorded plan could not have produced
+the code next to it. Measured on plan 32: three resumes, three real plan-folder fixes, and after the merge
+master carried a 16-task plan (task 17 absent entirely) whose task-01 guardrail still held the filter that
+had **halted** the run; it was caught by hand, because nothing prompted it. So when the probe can establish
+that the operator's HEAD carries commits touching the plan folder that the plan branch does not
+(`git rev-list --count <planBranch>..HEAD -- <planFolder>`), the banner names the count and says to merge
+their own branch too. **NOT-KNOWN is not zero**, and the distinction is load-bearing: no git, no such branch
+(a run that never used worktree mode has none), or a failed invocation all render as **silence**, never as
+"0 commits" or "in sync" — this is read by an operator at the moment they are about to merge, and a
+confident wrong reassurance there is worse than an absent line. The count is advisory: it moves no exit
+code and holds nothing back. (This is candidate fix (1) of #576. Fix (2) — carrying the plan-folder edits
+onto the plan branch at each resume, which would make the delivered branch honest on its own — remains
+open and is not foreclosed by this.)
+
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
 — after the action succeeds, before the write-scope check and guardrails. *Containment:* the write

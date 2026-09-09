@@ -25,10 +25,12 @@ public sealed class UndeliveredWorkWarningTests
             WhollyGreenButUndelivered = whollyGreenButUndelivered
         };
 
-    private static string Render(RunReport report, bool terminalGatePassed, string planDirectory)
+    private static string Render(
+        RunReport report, bool terminalGatePassed, string planDirectory, int? planFolderDrift = null)
     {
         using var writer = new StringWriter();
-        RunCommand.RenderUndeliveredWorkWarning(report, terminalGatePassed, planDirectory, writer);
+        RunCommand.RenderUndeliveredWorkWarning(
+            report, terminalGatePassed, planDirectory, writer, planFolderDrift);
         return writer.ToString();
     }
 
@@ -248,4 +250,66 @@ public sealed class UndeliveredWorkWarningTests
 
         Assert.Equal(string.Empty, rendered);
     }
+
+    /// <summary>
+    /// Issue #576: the banner's own instruction — "merge '&lt;planBranch&gt;' into your branch yourself" —
+    /// is what produces the stale state, because the plan branch is cut ONCE and never rebased. A
+    /// plan-folder fix made between resumes took effect (the harness reads the folder from the main
+    /// checkout) and never landed on that branch, so following the banner literally delivers the CODE
+    /// beside a plan folder that could not have produced it.
+    ///
+    /// <para>Measured on plan 32: three resumes, three real plan-folder fixes, and after the merge master
+    /// carried a 16-task plan — task 17 absent — whose task-01 guardrail still held the filter that had
+    /// HALTED the run.</para>
+    /// </summary>
+    [Fact]
+    public void PlanFolderCommitsMissingFromThePlanBranch_AreNamedInTheBanner()
+    {
+        string rendered = Render(
+            Report(whollyGreenButUndelivered: true), terminalGatePassed: true,
+            planDirectory: Path.Combine("repo", "plans", "32-executed-definition-hash"),
+            planFolderDrift: 3);
+
+        Assert.Contains("3 commit(s) touching the plan folder", rendered, StringComparison.Ordinal);
+        Assert.Contains("'guardrails/32-executed-definition-hash'", rendered, StringComparison.Ordinal);
+        // The REMEDY, not just the fact — a note that only states a discrepancy sends the operator to
+        // work out what to do about it, which is the same cost the banner exists to remove.
+        Assert.Contains("Merge your own branch as well", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoPlanFolderDrift_AddsNothing()
+    {
+        // Zero is a real answer and it must be quiet: the loud banner is about undelivered WORK, and
+        // appending "your folder is in sync" to it is noise on the path that is already correct.
+        string rendered = Render(
+            Report(whollyGreenButUndelivered: true), terminalGatePassed: true,
+            planDirectory: Path.Combine("repo", "plan"), planFolderDrift: 0);
+
+        Assert.Contains(Marker, rendered);
+        Assert.DoesNotContain("plan folder", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// NOT-KNOWN is not zero, and this is the assertion that keeps it that way.
+    ///
+    /// <para>The probe answers null whenever it could not ask — no git, no plan branch (a run that never
+    /// used worktree mode has none), a failed invocation. Rendering that as silence is correct; rendering
+    /// it as "0 commits" or "in sync" would reassure an operator, at the exact moment they are about to
+    /// merge, about a question git refused to answer. That is the shape of defect this repository keeps
+    /// finding, so it gets a test rather than a comment.</para>
+    /// </summary>
+    [Fact]
+    public void NotKnownDrift_IsSilent_AndNeverRendersAsInSync()
+    {
+        string rendered = Render(
+            Report(whollyGreenButUndelivered: true), terminalGatePassed: true,
+            planDirectory: Path.Combine("repo", "plan"), planFolderDrift: null);
+
+        Assert.Contains(Marker, rendered);
+        Assert.DoesNotContain("plan folder", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("in sync", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("0 commit", rendered, StringComparison.Ordinal);
+    }
+
 }
