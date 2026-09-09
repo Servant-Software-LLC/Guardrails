@@ -1,8 +1,18 @@
 name: CI
 
 on:
+  # master only, NOT branches: ["**"] (issue #690). With a "**" push trigger AND a
+  # pull_request trigger, every PR branch built the whole 3-OS matrix TWICE off the same
+  # SHA — measured on PR #689: run 34382276171 (event=push) and 34382359822
+  # (event=pull_request), identical job sets, so `gh pr checks` listed 14 entries for 7
+  # checks. Double the runner time for zero extra information, on a repo where queue depth
+  # is a standing complaint.
+  #
+  # pull_request already covers every branch that matters and master keeps its post-merge
+  # run. What is given up is CI on a branch pushed with NO PR open — the case where nobody
+  # was reading the result anyway.
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
 
 jobs:
