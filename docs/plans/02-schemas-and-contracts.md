@@ -2245,6 +2245,22 @@ code and holds nothing back. (This is candidate fix (1) of #576. Fix (2) — car
 onto the plan branch at each resume, which would make the delivered branch honest on its own — remains
 open and is not foreclosed by this.)
 
+**The telemetry anchor is an EXPLICIT input, not the ambient environment (issue #594).**
+`CommandFactory.BuildRootCommand` takes an optional `TelemetryOverrides` — where the corpus lives and
+whether collection happens — which `run` threads to its run-end ingest. Both fields are nullable and **null
+means resolve as before**: `GUARDRAILS_TELEMETRY_CORPUS_ROOT` then `~/.guardrails/telemetry/` for the
+first, `GUARDRAILS_TELEMETRY` for the second. The environment variables remain the operator's documented
+channel and behaviour is byte-identical for any caller that passes nothing; this adds a way to **ask**,
+without changing the answer for those who do not — the same shape #593 gave `GitLsFilesProbe`'s
+`workingDirectory`. The reason it had to exist: `run` resolved both from process-wide variables with no
+per-invocation channel, so a test needing its own corpus could only get one by mutating the whole process,
+and a `try/finally` cannot close that window when xUnit runs classes in parallel. Measured — plan 34's
+terminal gate saw `RunEndTelemetryIngestTests` expect 8 rows and find 10, the extras written by
+`AttachReplayTests`, a class that touches no telemetry code at all. A `DisableParallelization` collection
+was measured and rejected: **4** classes set a process-wide telemetry variable and **20+** spawn a real
+run, so serializing that set costs a large slice of the integration suite on every CI run forever and still
+would not protect a test nobody has written yet.
+
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
 — after the action succeeds, before the write-scope check and guardrails. *Containment:* the write

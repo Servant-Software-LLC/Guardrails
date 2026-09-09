@@ -12,7 +12,7 @@ namespace Guardrails.Cli;
 /// </summary>
 public static class CommandFactory
 {
-    public static RootCommand BuildRootCommand(IConsoleIo io)
+    public static RootCommand BuildRootCommand(IConsoleIo io, TelemetryOverrides? telemetry = null)
     {
         ArgumentNullException.ThrowIfNull(io);
 
@@ -21,7 +21,7 @@ public static class CommandFactory
         rootCommand.Add(ValidateCommand.Create(io));
         rootCommand.Add(MarkReviewedCommand.Create(io));
         rootCommand.Add(PlanHashCommand.Create(io));
-        rootCommand.Add(RunCommand.Create(io));
+        rootCommand.Add(RunCommand.Create(io, telemetry ?? TelemetryOverrides.None));
         rootCommand.Add(PlanCommand.Create(io));
         rootCommand.Add(GraphCommand.Create(io));
         rootCommand.Add(StatusCommand.Create(io));

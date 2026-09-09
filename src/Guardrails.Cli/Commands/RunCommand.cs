@@ -23,7 +23,14 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class RunCommand
 {
-    public static Command Create(IConsoleIo io)
+    public static Command Create(IConsoleIo io) => Create(io, TelemetryOverrides.None);
+
+    /// <summary>
+    /// As <see cref="Create(IConsoleIo)"/>, with an EXPLICIT telemetry anchor (issue #594) instead of
+    /// the ambient process environment. See <see cref="TelemetryOverrides"/> for why this exists;
+    /// <see cref="TelemetryOverrides.None"/> keeps the shipped behaviour exactly.
+    /// </summary>
+    public static Command Create(IConsoleIo io, TelemetryOverrides telemetry)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -219,14 +226,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, onEventValues, onEventDetail, io, telemetry, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, string[]? onEventValues, bool onEventDetail, IConsoleIo io, TelemetryOverrides telemetry, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -769,7 +776,7 @@ public static class RunCommand
                     // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
                     diagramObserver.WriteFinalStatic();
 
-                    int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
+                    int exitCode = Finish(report, probe.Plan, runId, io, telemetry); // also writes the durable final log site
                     finalSitesSettled = true; // both final pages are now settled on the normal path
 
                     // #387 v1: in an attended TTY, offer a one-click pick for any OPEN, options-carrying needsHuman
@@ -1145,7 +1152,7 @@ public static class RunCommand
     }
 
     /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>
-    private static int Finish(RunReport report, Core.Model.PlanDefinition plan, string runId, IConsoleIo io)
+    private static int Finish(RunReport report, Core.Model.PlanDefinition plan, string runId, IConsoleIo io, TelemetryOverrides telemetry)
     {
         string planDirectory = plan.PlanDirectory;
         string logsRoot = Path.Combine(planDirectory, "logs", runId);
@@ -1173,7 +1180,7 @@ public static class RunCommand
         // exit path, so a green run, a needs-human run, an aborted run and a halted one all ingest alike —
         // the failed attempts are precisely the evidence a model comparison is made of. Best-effort in the
         // strongest sense: it cannot change the exit code, and it cannot suppress the summary below.
-        IngestRunTelemetry(plan, io);
+        IngestRunTelemetry(plan, io, telemetry);
 
         PrintSummary(report, planDirectory, runId, io);
 
@@ -2581,22 +2588,27 @@ public static class RunCommand
     /// resolves through too, handed to the store as constructor state. Neither rule is restated in this
     /// file.</para>
     /// </summary>
-    private static void IngestRunTelemetry(Core.Model.PlanDefinition plan, IConsoleIo io)
+    private static void IngestRunTelemetry(Core.Model.PlanDefinition plan, IConsoleIo io, TelemetryOverrides telemetry)
     {
         // Declared outside the try so the failure line can still name the root when the fault came from the
         // store rather than from resolution.
         string? corpusRoot = null;
         try
         {
+            // #594: an EXPLICIT anchor wins; null falls through to the environment, so an operator who
+            // passes nothing sees byte-identical behaviour. The point is that a caller now HAS a way to
+            // say which corpus, instead of mutating the whole process to be heard.
             corpusRoot = TelemetryCommand.ResolveCorpusRoot(
-                Environment.GetEnvironmentVariable(TelemetryCorpusRootEnvVar));
+                telemetry.CorpusRoot ?? Environment.GetEnvironmentVariable(TelemetryCorpusRootEnvVar));
 
             // The opt-out is resolved HERE, at the composition root, and handed to the store — it is no
             // longer re-read inside the write path. See TelemetryCollectionSwitch for the concurrency
             // defect that moved it.
             TelemetryIngest.IngestPlanFolder(
                 plan.PlanDirectory,
-                new TelemetryCorpusStore(corpusRoot, TelemetryCollectionSwitch.IsEnabledFromEnvironment()),
+                new TelemetryCorpusStore(
+                    corpusRoot,
+                    telemetry.CollectionEnabled ?? TelemetryCollectionSwitch.IsEnabledFromEnvironment()),
                 TelemetryRepoDimension(plan));
         }
         catch (Exception ex)
