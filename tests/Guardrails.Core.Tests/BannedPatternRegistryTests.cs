@@ -202,24 +202,65 @@ public sealed class BannedPatternRegistryTests : IDisposable
         var unhurried = new Regex(matcher.ToString(), matcher.Options, RatioTimeout);
 
         string doubled = BacktrackingProbeScript(candidates: 300);
-        TimeSpan singleCost = TimeMatch(unhurried, adversarial);
-        TimeSpan doubleCost = TimeMatch(unhurried, doubled);
 
-        // A floor, because a RATIO of two sub-millisecond readings is noise, not evidence. Below it the
-        // cost is so far inside the timeout that only the exception above is meaningful.
-        if (doubleCost > RatioNoiseFloor)
+        // THE MEASUREMENT IS RETRIED, NOT THE ASSERTION (#697). The earlier revision of this block took
+        // ONE reading per size and argued that a ratio is load-immune because "a loaded runner inflates
+        // both readings and cancels out". That argument is wrong, and macOS CI falsified it a third time
+        // (10.9x, 198 ms -> 2160 ms, on an unchanged pattern): a ratio cancels a STEADY multiplier, not a
+        // TRANSIENT. A GC pause or a scheduler preemption lands in ONE of the two readings, and the longer
+        // reading is exposed to it for proportionally longer — so a transient inflates the numerator
+        // specifically, which is the direction that fails the test.
+        //
+        // A genuine ambiguous quantifier is superlinear EVERY time; a transient is not. So the discriminator
+        // is reproducibility, and the cheapest honest form of it is to re-measure only when about to fail
+        // and keep the BEST (smallest) ratio seen. Transients only ever inflate a reading, never deflate
+        // one, so the minimum is the estimate closest to the uncontended cost. Costs nothing on the happy
+        // path — the loop exits on the first passing reading.
+        double ratio = double.NaN;
+        TimeSpan singleCost = TimeSpan.Zero;
+        TimeSpan doubleCost = TimeSpan.Zero;
+
+        for (int attempt = 0; attempt < RatioAttempts; attempt++)
         {
-            double ratio = doubleCost.TotalMilliseconds / Math.Max(singleCost.TotalMilliseconds, 0.001);
-            Assert.True(
-                ratio < LinearRatioCeiling,
-                $"#462's badPattern cost {ratio:F1}x when the candidate count doubled " +
-                $"({singleCost.TotalMilliseconds:F0} ms -> {doubleCost.TotalMilliseconds:F0} ms). Linear is " +
-                $"~2x and the ceiling is {LinearRatioCeiling}x; a superlinear curve means someone has given " +
-                "the pattern an ambiguous quantifier — two alternatives that can both match the same " +
-                "position, or an unbounded window where {0,4000} was. This is a RATIO measured in this same " +
-                "run, so a loaded runner inflates both readings and cancels out.");
+            TimeSpan single = TimeMatch(unhurried, adversarial);
+            TimeSpan doubled_ = TimeMatch(unhurried, doubled);
+
+            // A floor, because a RATIO of two sub-millisecond readings is noise, not evidence. Below it the
+            // cost is so far inside the timeout that only the exception above is meaningful.
+            if (doubled_ <= RatioNoiseFloor)
+            {
+                return;
+            }
+
+            double thisRatio = doubled_.TotalMilliseconds / Math.Max(single.TotalMilliseconds, 0.001);
+            if (double.IsNaN(ratio) || thisRatio < ratio)
+            {
+                (ratio, singleCost, doubleCost) = (thisRatio, single, doubled_);
+            }
+
+            if (ratio < LinearRatioCeiling)
+            {
+                return; // linear on this reading — a superlinear pattern would not have managed one
+            }
         }
+
+        Assert.Fail(
+            $"#462's badPattern cost {ratio:F1}x when the candidate count doubled " +
+            $"({singleCost.TotalMilliseconds:F0} ms -> {doubleCost.TotalMilliseconds:F0} ms), and stayed " +
+            $"above the ceiling across {RatioAttempts} independent measurements. Linear is ~2x and the " +
+            $"ceiling is {LinearRatioCeiling}x; a superlinear curve means someone has given the pattern an " +
+            "ambiguous quantifier — two alternatives that can both match the same position, or an unbounded " +
+            "window where {0,4000} was. This is the BEST of several readings, so a one-off GC pause or a " +
+            "preempted scheduler slice cannot be what you are looking at.");
     }
+
+    /// <summary>
+    /// How many times the linearity measurement is repeated BEFORE failing. Only paid when a reading is
+    /// already over the ceiling, so a healthy run measures exactly once. Three is enough that a transient
+    /// would have to land in the doubled reading three times running — while a genuinely ambiguous
+    /// quantifier exceeds the ceiling on every attempt by construction.
+    /// </summary>
+    private const int RatioAttempts = 3;
 
     /// <summary>
     /// Below this, the ratio check is skipped: dividing two sub-millisecond readings measures scheduler
