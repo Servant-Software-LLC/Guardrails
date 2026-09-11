@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + stubs for the run.json supplied[] provenance record",
+  "dependsOn": [
+    "02-implement-staging-tree"
+  ],
+  "stableId": "v9t1hq",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/SuppliedProvenanceTests.cs",
+    "src/Guardrails.Core/Journal/SuppliedRecord.cs"
+  ]
+}

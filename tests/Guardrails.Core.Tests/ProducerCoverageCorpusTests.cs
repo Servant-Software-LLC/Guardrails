@@ -253,6 +253,16 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "made the expensive way. The fix is a one-word change to Step 7.0f (commit, THEN run) and it " +
             "is the actionable half of #587 that four previous rows did not have; #601 tracks graduating " +
             "the class into a deterministic check"),
+        new("docs/plans/40-in-flight-resource-supply", "27cb509a", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. The SIXTH " +
+            "consecutive plan to trip this table, and the FIRST caught by the breakdown itself rather " +
+            "than by a run or a review: plan 38's row added 'commit, THEN run' to Step 7.0f, this " +
+            "breakdown followed it literally, and the check went red on the committed folder exactly " +
+            "as intended. The catch-22 the earlier rows describe is unchanged — the row needs the " +
+            "breakdown commit's own sha, which cannot exist until the commit that breaks the test has " +
+            "been made — so this is still two commits, but the second one is now prompted by a red " +
+            "test instead of discovered later. #601 tracks graduating the class into a deterministic " +
+            "check, which is what would remove the two-commit dance entirely"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,

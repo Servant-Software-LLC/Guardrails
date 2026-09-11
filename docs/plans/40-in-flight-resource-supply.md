@@ -130,12 +130,32 @@ Three existing verbs, in an order that is not obvious and is therefore **printed
 itself**. The halt already names the three fixes; it should name the one that works and is
 copy-pasteable — which is the #431 rule applied to a halt rather than a report.
 
-**A note on what this design deliberately does NOT do.** #373 suggests the overwatcher could auto-resolve
-this, since the case is "fully mechanical — the correct artifact provably exists in the canonical
-checkout." It is mechanical to *apply*, but deciding that the file in the operator's checkout is the file
-the task should have is a judgement, and getting it wrong commits an arbitrary file to the run's base. The
-overwatcher may **propose** the three-command sequence in its verdict; it does not run it. That keeps this
-change on the judgement-free side of the autonomy dial, where a v1 belongs.
+**DECIDED (review): `--resume` ships as an opt-in shorthand.** The three verbs stay the default, because
+`reset` chooses WHICH descendants to re-arm and folding that into `supply` hides a real decision. But a
+fixed three-command order is a sequence nobody remembers, so `guardrails supply --resume <plan> <path>`
+stages, resets the halted task and resumes in one step. The halt text prints the explicit three-command
+form; the shorthand is for the operator who already knows what it does. Both paths must produce the
+identical journal and provenance record — a shorthand that took a different code path would be a second
+mechanism for one decision, which is the defect §4 exists to prevent.
+
+**DECIDED (review): the overwatcher MAY auto-resolve this, but ONLY at `dial:critical`.** The design's
+first draft declined it outright. The reviewer's call is that at the highest dial the operator has already
+accepted machine judgement, and this case is mechanical enough to qualify.
+
+The caution that produced the original decline is NOT withdrawn, and is recorded here because whoever
+builds this has to carry it: applying the fix is mechanical, but *deciding that the file in the operator's
+checkout is the file the task should have* is a judgement, and getting it wrong commits an arbitrary file
+to the run's base — which then flows into the terminal gate and into anything reading that tree. So at
+every dial BELOW critical the overwatcher **proposes** the sequence and does not run it, and at
+`dial:critical` an auto-resolve MUST write the §4 provenance record naming the overwatcher as the supplier
+— that record is what makes the decision auditable after the fact rather than indistinguishable from a
+task's own work.
+
+**This is adjacent to, but does not breach, the standing `dial:critical` ruling.** The maintainer has
+previously FORBIDDEN `dial:critical` combined with `proceed-unreviewed` ("Guardrails without guardrails is
+self-defeating"). An auto-resolve here is not `proceed-unreviewed`: it supplies a file and re-arms a task
+whose gates then run in full, and nothing is certified that was not verified. The distinction is worth
+stating explicitly so a later reader does not treat this as the precedent that erodes that ruling.
 
 ---
 
@@ -181,6 +201,65 @@ An operator who knows the rule loses nothing to it. The measured cost was entire
 
 ---
 
+## 5a. Who may call `supply` — and how an agent finds out it can
+
+`supply` is a CLI command, so **anything that can run a shell can call it** — including a task agent
+mid-run. That is not a side effect; it is the JIT case raised in review: an agent authoring a script it
+then needs on the base can inject it without ending the run and re-paying a breakdown. Genuinely useful,
+and the reason the verb is worth more than an operator convenience.
+
+It is also a **write-scope bypass**, and that has to be settled before it is built rather than after.
+`writeScope` is what stops a task editing files it does not own; a task that can call `guardrails supply`
+can put any file onto the run's base without its `writeScope` being consulted. Every downstream check —
+the wave exit gate, the terminal gate, the #453 triage — then runs over a tree containing content no task
+was authorised to produce. This is the same shape as the escape hatches the harness already refuses: it is
+why the tool-permission layer will not let an agent write under `.claude/` directly, and why
+`needsHarnessWrite` exists as a supervised alternative.
+
+**The caller is detectable, and #442 is why.** `ProcessRunner` merges the harness-owned `GUARDRAILS_*`
+namespace **hermetically** into every child (SSOT §5.1): after the merge the child's view of that namespace
+is exactly what the harness declared — no inheritance leakage. So a `supply` invoked from inside a task
+action sees `GUARDRAILS_STATE_OUT` and `GUARDRAILS_WORKSPACE` set, and one invoked from an operator's own
+shell does not. Before #442 that test would have been unreliable in precisely the case that matters (a
+harness launched from inside another run); it is reliable now, and the hermetic sweep is what makes it so.
+
+**DECIDED (review): scoped.** A task agent may call `supply`, and may supply only paths inside its own
+`writeScope`. That keeps the JIT case the reviewer valued — an agent authoring a script it then needs on
+the base almost certainly owns that path already — while closing the bypass for everything else.
+
+**But env detection is a guard against accident, not against an adversary** — say so plainly rather than
+letting the mechanism imply more than it delivers, because the scoping rule above rests on it. An agent that can run `guardrails supply` can also run
+it with those variables cleared, and the same is true of any scoping rule that has to learn *which* task is
+calling from the same channel. So the honest division of labour is:
+
+- **The env check** stops the accidental and the naive case, which is the overwhelming majority of it.
+- **The provenance record (§4) is the actual defence**, and this is the argument that promotes it from
+  nice-to-have to load-bearing: whatever the policy, the tree ends up carrying files no task authored, and
+  *"what is in this tree that no task authored?"* has to be answerable after the fact. §4 is what answers
+  it. A reviewer inclined to cut provenance for v1 should read this section first.
+
+### The documentation obligation
+
+If `supply` is agent-callable at all, **an agent has to know it exists**, and the place an agent looks is
+not this document. This is the #490 rule applied before the fact: doctrine has to reach the **entry
+points**, not only the prose, because the entry point is where the reader actually goes. Three surfaces,
+all of them v1 acceptance conditions rather than follow-ups:
+
+- **`guardrails-domain-knowledge`** — the skill packed into the shipped tool, which is what a task agent
+  has in context while it is deciding what to do about a file it cannot produce. If the capability is
+  described nowhere else, this is the one that matters.
+- **The README's command-line section** — and this one is already enforced. `ReadmeCommandCoverageTests`
+  (#600) enumerates what the composition root registers and requires `guardrails <verb>` to appear as an
+  invocation, so `supply` is covered the day the verb is wired. Its rationale is verbatim the point here:
+  *an undocumented command is, for practical purposes, an unshipped one.*
+- **The retry-feedback and `needs-human` halt text** — the moment an agent meets the missing file is the
+  moment it needs to know there is a channel other than giving up.
+
+The skill surface is the gap: nothing tests it. That is worth knowing when this is built, because the
+enforced surface will pass and the unenforced one is the one an agent actually reads.
+
+---
+
 ## 6. Seams and contracts touched
 
 **Schema (`02-schemas-and-contracts.md`)**
@@ -202,6 +281,15 @@ landed **and at which boundary it will be picked up**.
 It refuses only when there is **no resumable run at all** — no journal, or a journal whose every task has
 settled. It explicitly does **not** require a run to be executing: the case it exists for is a run that has
 already halted and exited (§1), and requiring a live run would refuse it.
+
+**DECIDED (review): a task agent may supply only paths inside its OWN `writeScope`.** An invocation from
+inside a task environment is scoped to that task's declared paths and refused outside them; an operator
+invocation is unrestricted. The caller is distinguishable because #442 made the `GUARDRAILS_*` namespace
+hermetic across the process boundary — see §5a for what that detection does and does not prove.
+
+**Documentation is an acceptance condition, not a follow-up** (§5a): `guardrails-domain-knowledge`, the
+README's command-line section, and the `needs-human` halt text. The README surface is already enforced by
+`ReadmeCommandCoverageTests` (#600); the skill surface is not, and that is the one an agent reads.
 
 **Harness**
 
@@ -240,13 +328,17 @@ one that cannot be retrofitted, because the information exists only at the momen
 argument — that the terminal gate and the #453 triage reason over a tree whose contents they otherwise
 cannot attribute — is the one I would defend hardest here.
 
-**The part I am least sure of** is §3(b) requiring three commands. A single `guardrails supply --resume`
-that stages, resets the halted task and resumes would be one step; I have kept them separate because
-`reset` chooses which descendants to re-arm and folding that decision into `supply` hides it. A reviewer
-who thinks the ergonomics matter more than the explicitness should say so.
+**The part I was least sure of** was §3(b) requiring three commands, and the review settled it: `--resume`
+ships as an opt-in shorthand while the three verbs remain the default and the halt text keeps printing the
+explicit form. The explicitness argument was right about `reset`'s descendant choice being a real decision;
+it was wrong to conclude that therefore nobody may have a shorthand. The requirement that falls out is
+that both paths write the identical journal and provenance — see §3.
 
 ---
 
 Refs #373, #370 (breakdown-side resource acquisition — prevention to this recovery), #269 (overwatcher; §3
 declines the auto-resolve), #568 (live plan-edit, the capability §5 declines to trade away), #431 (the
-copy-pasteable hand-over rule §3 applies to a halt), #453 (the triage §4 keeps honest), SSOT §1/§3.2/§7.
+copy-pasteable hand-over rule §3 applies to a halt), #453 (the triage §4 keeps honest), #442 (the hermetic
+`GUARDRAILS_*` namespace §5a's caller detection rests on), #490 (doctrine reaches the entry points, not
+only the prose), #600 (the README coverage test that already enforces one of §5a's three surfaces), SSOT
+§1/§3.2/§5.1/§7.

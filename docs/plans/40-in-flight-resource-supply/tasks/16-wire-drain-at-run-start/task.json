@@ -1,0 +1,13 @@
+{
+  "description": "Wire the drain into the resume path before the first task is scheduled (the halted-run row \u2014 the measured incident)",
+  "dependsOn": [
+    "14-author-tests-boundary-wiring"
+  ],
+  "stableId": "g9m4ta",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + stub for the guardrails supply CLI verb (args, resumable-run refusal, output naming the boundary)",
+  "dependsOn": [
+    "02-implement-staging-tree"
+  ],
+  "stableId": "h6d2vn",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SupplyCommandTests.cs",
+    "src/Guardrails.Cli/Commands/SupplyCommand.cs"
+  ]
+}

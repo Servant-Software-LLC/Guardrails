@@ -1,0 +1,10 @@
+{
+  "description": "Implement the supply caller scope so the authored tests pass",
+  "dependsOn": [
+    "12-author-tests-caller-scope"
+  ],
+  "stableId": "n2s6lz",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ]
+}

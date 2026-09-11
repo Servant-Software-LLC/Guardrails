@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + stub for the supply caller scope \u2014 an agent may supply only inside its own writeScope",
+  "dependsOn": [
+    "02-implement-staging-tree"
+  ],
+  "stableId": "c8w5qx",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/SupplyCallerScopeTests.cs",
+    "src/Guardrails.Core/Execution/SupplyCallerScope.cs"
+  ]
+}

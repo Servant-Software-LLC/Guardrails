@@ -156,6 +156,156 @@ feature that delivers earlier must not become the way that rule is escaped. **A 
 existing safety interlock inherits the obligation to re-derive its scope**, and this one changes from
 "the run" to "the wave".
 
+## 1c. Does a delivering wave let later waves pick up the user's branch? (review round 3)
+
+The reviewer asked it directly:
+
+> If waves can be deliverables, then when a wave sets the delivery flag, then the following waves will take
+> the latest of master. Right? Or is it continuing on the branch that it delivered.
+
+**It continues on the branch it delivered from.** Checked, not assumed:
+
+- `Scheduler.RunWavedAsync` (`:774`) drains every wave *"on the CONTINUOUS plan branch"*, and there is no
+  rewind or re-base between waves — the run's state is explicitly *"shared, CONTINUOUS run state across
+  every wave"* (`:201`).
+- `GitWorktreeProvider.MergePlanBranchIntoUserBranch` (`:400`) is **one-directional**: plan branch → user
+  branch. Nothing merges the other way, at any boundary.
+
+So delivery publishes; it does not synchronize. That is invisible today because delivery happens once, at
+run end, when there is no "later" left to be stale. Per-wave delivery is what gives the asymmetry somewhere
+to accumulate — and this section exists because that was not obvious until someone asked.
+
+### What actually degrades, and what does not
+
+**The quiet case stays cheap, and this is the reassuring half.** After wave 2 delivers by fast-forward, the
+user's branch and the plan branch are at the same commit. Wave 3 adds commits on top; if nothing else
+touched the user's branch, wave 3's delivery fast-forwards too. *n* deliveries on a quiet branch are *n*
+fast-forwards, and the never-weaker guarantee is untouched. For the solo operator this whole section is a
+no-op.
+
+**The divergent case degrades, and it compounds.** The moment the user's branch advances independently, the
+delivery falls off the FF path into a real merge commit (`:451` → `:486`) — *on the user's branch only*. The
+plan branch never learns about it. So:
+
+1. Wave 2's delivery makes a merge commit on the user's branch.
+2. Wave 3's delivery can no longer fast-forward — the user's branch now carries a commit the plan branch has
+   never seen — so it is another merge commit.
+3. Every later delivery merges a plan branch that is **one more wave further out of date**, against a base
+   it has never incorporated. The conflict surface grows monotonically with each delivery, and AI-merge is
+   withheld here by SSOT §5.3, so a conflict **halts the run** with the work stranded on the plan branch.
+
+That is the honest answer to the question: not "the following waves take the latest of master", but "the
+following waves take an increasingly stale base, and the price is paid at each delivery instead of once."
+
+**And `BranchMoved` changes character entirely.** #588 pinned the delivery target at run start and made a
+moved HEAD a *refusal* rather than a redirect — correct, and the incident that produced it was real. But
+today that refusal fires **once, at run end**, with every task already complete and safely on the plan
+branch: a soft landing. With per-wave delivery it fires at wave 2's exit, with three waves still to run, and
+every one of those waves' deliveries will hit the identical refusal. Continuing is doing expensive work
+whose delivery is already known to be impossible.
+
+### The decision
+
+Delivery is the one moment in a waved run when the two branches are *supposed* to agree — that is what
+delivering means. Letting them diverge again immediately afterwards is the surprising state, not the safe
+one. The narrow fix is to refresh the plan branch **only when the delivery was not a fast-forward**: an FF
+result is itself proof the user's branch did not move, so the reverse merge is provably a no-op and can be
+skipped with no probe of its own. It costs nothing in the quiet case and fires exactly when divergence is
+real. See the `d39-post-delivery-refresh` question.
+
+**The hazard, and it is the same one design 40 just found.** A reverse merge admits into the run's tree
+content **no task authored**. The next wave's exit gate then runs over that content, and if a teammate's
+commit is broken, the gate fails and the failure lands on the wave — which did nothing wrong. This is
+character-for-character §5a of design 40, where `supply` puts an unauthored file onto the base and the
+downstream gates cannot attribute it.
+
+Two designs, arrived at from opposite directions, need the same record: **what is in this tree that no task
+authored?** Design 40 §4 specifies it for supplied files. If both are built, it should be built **once**,
+with the refresh as a second provenance kind — and a wave-gate failure over a refreshed tree must be able to
+say *"this tree includes a refresh from `<branch>` at `<sha>`"* rather than blaming the wave. Neither design
+can retrofit it: in both cases the information exists only at the instant of the commit.
+
+---
+
+### The compensating control already exists: the wave ENTRY preflight (round 3)
+
+The reviewer's follow-up is a better answer than the paragraph above, and it changes the recommendation:
+
+> But each wave also has its own pre-flight checks. Right? Therefore, post-delivery waves should provide the
+> types of checks (like "all tests are passing") that are typically in the pre-flight checks of a full
+> harness run.
+
+**They do, and it is the right seam.** `Scheduler.RunWaveEntryGateAsync` (`:1391`) runs a wave's entry
+preflight against the plan-branch HEAD — *"the materialized prior wave"* — per SSOT §14.3. Nothing new has
+to be invented.
+
+**It fixes the ATTRIBUTION problem, not merely the detection one**, which is why it beats the refresh
+argument on its own terms. Unauthored content in the tree — from a refresh, or just from a stale base —
+that is broken will fail the wave's EXIT gate, and the failure lands on a wave that did nothing wrong.
+Asserting the baseline at wave ENTRY makes the identical defect fail before any task runs, where it reads
+correctly as *"the tree was already red on arrival"*. That is #181/#182's positive-baseline archetype —
+never build on red — applied at the wave barrier instead of only at plan start.
+
+So the refresh question changes shape. It stops being *"is admitting unauthored content safe?"* and becomes
+*"a refresh is safe **because** the next wave re-verifies its own baseline before spending anything."* The
+recommendation on `d39-post-delivery-refresh` stands, and this is what makes it defensible.
+
+**Two things have to change for it to actually work, and both are cheap.**
+
+**(1) The entry gate is SKIP-ONCE, and that is wrong for a positive baseline.** Verbatim from `:1385`: *"a
+passed entry marker for this wave is not re-evaluated on resume (a negative-baseline entry check runs
+exactly once)"*. Correct for what it was built for — a TDD-red baseline asserting the thing does not exist
+yet is a fact about a *moment*, and re-running it after the work is done would fail.
+
+A positive baseline is the opposite animal. *"All tests pass"* is a fact about the tree **as it is now**,
+and after a delivery or a refresh the tree has changed — so skip-once would pass a wave over a tree it never
+checked, silently. The asymmetry is already in the model and points the other way: the wave **exit** gate is
+*"always re-evaluated on the current HEAD"* (SSOT §14.6); entry is not. This proposal lands on the side that
+skips.
+
+So the entry gate has to distinguish the two baseline kinds — **a positive baseline re-evaluates; a negative
+one keeps skip-once.** That is the whole change, and it is the only place in this design where the harness
+must grow a new distinction rather than reuse one.
+
+**(2) A wave with no authored preflights returns `Pass` immediately** (`:1394`). The capability is worth
+nothing unless the check is emitted, so this is a `plan-breakdown` rule as much as a harness one: **a wave
+that follows a delivery point gets a positive-baseline entry preflight over the touched areas**, on the same
+`$baselineArea` machinery Step 5 already has for plan-level preflights. Step 7's report should name which
+waves got one and why, exactly as §1b asks it to name which waves deliver.
+
+**DECIDED (review): `plan-breakdown` emits one for every post-delivery wave.** So the authoring rule is
+settled.
+
+**DECIDED (review): a new WARNING code — GR2078 — names the gap without blocking the plan.** A
+post-delivery wave with no entry preflight is reported by `validate` and does not fail it.
+
+Why a warning and not an error, recorded because the softer option is the one that looks like a
+compromise and is not: an ERROR would fail plans that are **correct-but-unguarded**, and a wave whose
+author deliberately skipped the baseline for a good reason would have no way to say so. #181's own
+worth-it gate exists precisely because a *false* baseline is worse than none — a check that runs zero
+tests, or asserts "0 failed" over an empty set, certifies nothing while looking like a gate. An ERROR
+here would push authors toward exactly that. The warning is also not toothless in this repo's practice:
+`plan-breakdown` Step 7.1 treats every `validate` WARNING as a **fired trigger** that must be fixed or
+documented with a reason, so an unguarded post-delivery wave cannot pass review silently.
+
+**The reasoning that got here is worth keeping, because the premise it started from was wrong.** As
+written
+above this is an instruction with no gate behind it, which is this repo's most-repeated defect shape. The
+reviewer's instinct was that it should carry the same requirement as a plan-level preflight; checking that
+premise turned out to matter, because **plan-level preflights are not deterministically required either**.
+Nothing in `DiagnosticCodes.cs` requires a preflight to EXIST: `GR2027` is a malformed `catches:` line and
+`GR2028` is the terminal gate's integration re-run. The #181 baseline is an authoring rule with a worth-it
+gate and a stated skip reason.
+
+So "be consistent with the plan level" resolves to "stay an authoring rule", and the interesting question is
+whether a wave deserves a **higher** bar than the plan. The argument that it does is about blast radius, not
+importance: a missing plan-level baseline costs slow attribution on a run someone is usually watching, while
+a missing post-delivery wave baseline lets a wave build on a tree a refresh just changed and surfaces at
+that wave's EXIT gate — **blaming a wave that did nothing wrong**, which is precisely the attribution defect
+this section exists to prevent, reappearing because the control against it was optional.
+
+---
+
 ## 2. The cost, and it is a DOCTRINE change
 
 `plan-breakdown` says today:
@@ -166,6 +316,22 @@ existing safety interlock inherits the obligation to re-derive its scope**, and 
 
 Plan 25's three chains are **independent**. They can run in parallel today. Putting them in three waves
 **serialises them**, and that is a real loss.
+
+**DECIDED (review): the loss is accepted, and the wave barrier STAYS.** The reviewer's words:
+
+> I'm willing to live with the wave limitation of only running serially, as syncing to master and merging
+> them in, leans us toward serial working for our worktree/branches anyhow.
+
+That is the load-bearing half — the parallelism being given up is smaller in practice than it looks on
+paper, because the sync-and-merge model already pushes this repo's worktree/branch work toward serial.
+
+**This design does NOT propose cross-wave parallelism**, and a later reader should not mistake the
+paragraph above for an argument that it should. Asked directly in review, the objections were: more race
+surface, a task table that stops reading as a DAG, and a live-status diagram that cannot show what is
+actually running. All three hold. The fourth, which is the one that settles it: cross-wave parallelism
+would destroy the single property the barrier buys — **a wave's exit gate runs on a QUIESCENT tree**, and
+there is no such moment if a later wave is already in flight. The gate is the whole feature; the barrier is
+what makes it mean anything.
 
 **What is and is not lost.** A wave still contains an ordinary task DAG, so #510's four tasks keep their
 internal parallelism. What goes is parallelism *across issues*.
@@ -306,4 +472,20 @@ journal-the-start rule §5 adopts), SSOT §14 (waves), §14.6 (the wave exit gat
 
 :::question
 {"id": "d39-interlock-scope", "title": "Confirm the #361 machine-decision interlock must become WAVE-scoped before any wave delivers early?", "mode": "single", "options": ["Yes — a wave delivers only if no suppressing decision was recorded during that wave", "No — keep it run-scoped and simply forbid early delivery once any suppressing decision exists", "No — early delivery should ignore the interlock; it is about the run's final verdict"], "recommended": "Yes — a wave delivers only if no suppressing decision was recorded during that wave", "rationale": "Found by reading Finalize rather than trusting its name. The #361/#340 interlock reads decisions[] for the WHOLE run, once, at the end — because delivery is run-scoped today. With per-wave delivery, wave 1 merges, wave 3 then records a proceeded-best-guess, and the interlock fires at run end against work already on your branch. It cannot un-merge, so its guarantee is not weakened but DEFEATED for every wave that shipped before the decision existed. Option 2 is the conservative alternative and I would accept it; option 3 is listed only so it is on the record as rejected — it would make this feature the way #361 gets escaped.", "target": "human", "answer": ["Yes \u2014 a wave delivers only if no suppressing decision was recorded during that wave"]}
+:::
+
+:::question
+{"id": "d39-post-delivery-refresh", "title": "After a wave delivers, should the plan branch pick up the user's branch?", "mode": "single", "options": ["Refresh only when the delivery was NOT a fast-forward", "Never refresh — the plan branch stays continuous, as today", "Refresh after every delivery", "Halt on divergence and hand it to the operator"], "recommended": "Refresh only when the delivery was NOT a fast-forward", "rationale": "This is your question from round 2, and the factual answer is that today it continues on the branch it delivered from — nothing merges back, ever (Scheduler:774 drains every wave on the CONTINUOUS plan branch; MergePlanBranchIntoUserBranch is one-directional). That is harmless while delivery happens once at run end. Per-wave delivery gives it somewhere to accumulate: once your branch advances independently, delivery 2 becomes a merge commit, delivery 3 can no longer fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge withheld by SSOT 5.3, so a conflict halts the run. Option 1 is the surgical form: a fast-forward RESULT is itself proof your branch did not move, so the refresh is provably a no-op in the quiet case and can be skipped with no extra probe. It costs the solo operator nothing and fires exactly when divergence is real. Option 2 is defensible if you only ever run on a branch nobody else touches. Option 4 is the safest and the most annoying. The cost of any refresh is that it admits content no task authored into the tree the next wave runs over — the same hazard design 40's section 5a found from the other direction. Your follow-up answers it: the wave ENTRY preflight is the compensating control, and it fixes attribution rather than just detection, because a broken refresh then fails BEFORE any task runs instead of reddening the wave's exit gate and blaming work that was fine. That is what makes option 1 defensible rather than merely convenient — see the entry-preflight subsection of 1c, and the d39-positive-baseline-at-wave-entry question it raises.", "target": "human", "answer": ["Refresh only when the delivery was NOT a fast-forward"]}
+:::
+
+:::question
+{"id": "d39-branchmoved-midrun", "title": "A wave delivery hits BranchMoved (#588). Halt, or keep running the later waves?", "mode": "single", "options": ["Halt at that wave — every later delivery would hit the same refusal", "Carry on and retry the delivery at each later wave", "Carry on, but stop attempting delivery and hold everything to run end"], "recommended": "Halt at that wave — every later delivery would hit the same refusal", "rationale": "#588 pins the delivery target at run start and refuses when HEAD has moved, which is right — it refuses rather than redirecting, and leaves your checkout untouched. But today that refusal fires ONCE, at run end, with all work complete and safe on the plan branch: a soft landing. Per-wave delivery moves it to wave 2's exit with three waves still to run, and the condition is not transient — you checked out a different branch, so every later delivery hits the identical refusal. Continuing means paying for waves whose delivery is already known to be impossible. Option 3 is the interesting alternative and is a real position: it degrades cleanly back to today's behaviour (one delivery at run end) rather than throwing the run away, and if you would rather never lose a run to this, pick it.", "target": "human", "answer": ["Halt at that wave \u2014 every later delivery would hit the same refusal"]}
+:::
+
+:::question
+{"id": "d39-positive-baseline-at-wave-entry", "title": "Should a wave that follows a delivery point automatically get a positive-baseline entry preflight?", "mode": "single", "options": ["Yes — plan-breakdown emits one for every post-delivery wave", "Only when the plan author asks for it", "No — the wave exit gate already covers it"], "recommended": "Yes — plan-breakdown emits one for every post-delivery wave", "rationale": "Your point that waves have their own preflights is right and it is the seam this needs — RunWaveEntryGateAsync runs against the plan-branch HEAD per SSOT 14.3. Two things stop it working by itself. First, a wave with no authored preflights returns Pass immediately (Scheduler:1394), so the capability is worth nothing unless the check is actually emitted — which makes it a plan-breakdown rule, on the $baselineArea machinery Step 5 already has. Second, the entry gate is SKIP-ONCE by design ('a negative-baseline entry check runs exactly once'), which is correct for a TDD-red baseline and wrong for a positive one: 'all tests pass' is a fact about the tree as it is NOW, so after a delivery or refresh it must re-evaluate. Note the exit gate already re-evaluates on current HEAD (SSOT 14.6) and entry does not — this lands on the side that skips, so the gate has to learn the two baseline kinds either way. Option 3 is the status quo and is the one I would argue against: it detects the same breakage but attributes it to the wrong wave, which is the failure mode 1c is about.", "target": "human", "answer": ["Yes \u2014 plan-breakdown emits one for every post-delivery wave"]}
+:::
+
+:::question
+{"id": "d39-wave-entry-preflight-gate", "title": "Should a post-delivery wave's entry preflight be DETERMINISTICALLY required, or stay an authoring rule?", "mode": "single", "options": ["A new WARNING code — name the gap, do not block the plan", "A new ERROR code — a post-delivery wave without an entry preflight fails validate", "Stay an authoring rule, consistent with plan-level preflights"], "recommended": "A new WARNING code — name the gap, do not block the plan", "rationale": "Your comment says a post-delivery wave should follow the same requirement as a plan-level preflight. Checking that premise changed the question: plan-level preflights are NOT deterministically required — nothing in DiagnosticCodes.cs requires a preflight to exist (GR2027 is a malformed catches: line, GR2028 is the terminal gate's integration re-run), and the #181 baseline is an authoring rule with a worth-it gate. So strict consistency means option 3, which leaves the rule enforced by nobody. I think a wave earns a higher bar than the plan, on blast radius rather than importance: a missing plan-level baseline costs slow attribution on a run you are watching, whereas a missing post-delivery wave baseline lets a wave build on a tree the refresh just changed and fails at that wave's EXIT gate, blaming a wave that did nothing wrong. I recommend WARNING over ERROR because an ERROR fails plans that are correct-but-unguarded — a wave whose author deliberately skipped the baseline for a good reason would have no way to say so, and the #181 worth-it gate exists precisely because a false baseline is worse than none. Next free code is GR2078; GR2077 is reserved by #587 check B.", "target": "human", "answer": ["A new WARNING code \u2014 name the gap, do not block the plan"]}
 :::

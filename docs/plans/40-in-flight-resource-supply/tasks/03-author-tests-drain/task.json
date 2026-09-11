@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests + stubs for SuppliedDrain (copy the staged tree onto the base, commit with the trailer)",
+  "dependsOn": [
+    "02-implement-staging-tree"
+  ],
+  "stableId": "m4x8pw",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/SuppliedDrainTests.cs",
+    "src/Guardrails.Core/Execution/SuppliedDrain.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

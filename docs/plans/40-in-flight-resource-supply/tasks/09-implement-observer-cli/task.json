@@ -1,0 +1,11 @@
+{
+  "description": "Forward the event through the CLI decorators and render it in the live table and --no-ui output",
+  "dependsOn": [
+    "07-author-tests-observer-event",
+    "08-implement-observer-core"
+  ],
+  "stableId": "a3u8vk",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ]
+}

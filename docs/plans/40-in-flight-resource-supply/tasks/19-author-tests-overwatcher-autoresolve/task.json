@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests for the overwatcher auto-resolve \u2014 PROPOSE below dial:critical, RESOLVE only at critical",
+  "dependsOn": [
+    "13-implement-caller-scope",
+    "06-implement-provenance"
+  ],
+  "stableId": "t4p7nk",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/OverwatchSupplyAutoResolveTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

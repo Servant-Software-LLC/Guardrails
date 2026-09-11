@@ -1,0 +1,10 @@
+{
+  "description": "Forward SuppliedResourcesCommitted through the CORE IRunObserver decorators",
+  "dependsOn": [
+    "07-author-tests-observer-event"
+  ],
+  "stableId": "p1r7gs",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ]
+}
