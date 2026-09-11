@@ -25,7 +25,21 @@ public static class SuppliedStagingTree
     /// </summary>
     public static StagedPathResult StagedPathFor(string workspace, string runId, string workspaceRelativePath)
     {
-        throw new NotImplementedException();
+        if (WorkspaceContainment.Escapes(workspace, workspaceRelativePath))
+        {
+            return new StagedPathResult
+            {
+                Refused = true,
+                RefusalReason = $"'{workspaceRelativePath}' resolves outside the workspace"
+            };
+        }
+
+        string normalized = workspaceRelativePath.Replace('\\', '/').TrimStart('/');
+        return new StagedPathResult
+        {
+            Refused = false,
+            StagedPath = $"logs/{runId}/{SuppliedFolder}/{normalized}"
+        };
     }
 
     /// <summary>
@@ -36,7 +50,20 @@ public static class SuppliedStagingTree
     /// </summary>
     public static IReadOnlyList<SuppliedFile> DrainableFiles(string planDirectory, string runId)
     {
-        throw new NotImplementedException();
+        string suppliedRoot = Path.Combine(planDirectory, "logs", runId, SuppliedFolder);
+        if (!Directory.Exists(suppliedRoot))
+        {
+            return [];
+        }
+
+        var files = new List<SuppliedFile>();
+        foreach (string file in Directory.GetFiles(suppliedRoot, "*", SearchOption.AllDirectories))
+        {
+            string destination = Path.GetRelativePath(suppliedRoot, file).Replace('\\', '/');
+            files.Add(new SuppliedFile { AbsoluteStagedPath = file, DestinationPath = destination });
+        }
+
+        return files;
     }
 }
 
