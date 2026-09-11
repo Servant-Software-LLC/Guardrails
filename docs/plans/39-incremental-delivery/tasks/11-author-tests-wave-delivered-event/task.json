@@ -1,0 +1,12 @@
+{
+  "description": "Author failing tests + the IRunObserver.WaveDelivered member for the delivery announcement",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag"
+  ],
+  "stableId": "c7y4hj",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs",
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
+  ]
+}

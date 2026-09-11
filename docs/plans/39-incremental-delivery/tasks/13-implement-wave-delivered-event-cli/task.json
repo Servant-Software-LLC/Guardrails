@@ -1,0 +1,11 @@
+{
+  "description": "Forward WaveDelivered through the CLI decorators",
+  "dependsOn": [
+    "11-author-tests-wave-delivered-event",
+    "12-implement-wave-delivered-event-core"
+  ],
+  "stableId": "v4s7om",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ]
+}

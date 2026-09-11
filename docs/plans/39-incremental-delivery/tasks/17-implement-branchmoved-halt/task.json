@@ -1,0 +1,13 @@
+{
+  "description": "Halt the run at the wave whose delivery hits BranchMoved",
+  "dependsOn": [
+    "16-author-tests-branchmoved-halt"
+  ],
+  "stableId": "g3m9cw",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Implement the per-wave delivers flag in the loader so the authored tests pass",
+  "dependsOn": [
+    "01-author-tests-wave-delivers-flag"
+  ],
+  "stableId": "w5n3qd",
+  "writeScope": [
+    "src/Guardrails.Core/Model/WaveNode.cs",
+    "src/Guardrails.Core/Loading/WaveFolder.cs"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Forward WaveDelivered through the CORE IRunObserver decorators",
+  "dependsOn": [
+    "11-author-tests-wave-delivered-event"
+  ],
+  "stableId": "r9w2ek",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ]
+}

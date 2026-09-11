@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests for the post-delivery refresh \u2014 ONLY when the delivery was not a fast-forward",
+  "dependsOn": [
+    "08-implement-deliver-at-wave-barrier"
+  ],
+  "stableId": "b6q3zl",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Implement the GR2078 and GR2079 validate checks so the authored tests pass",
+  "dependsOn": [
+    "03-author-tests-delivery-diagnostics"
+  ],
+  "stableId": "z7f2bp",
+  "writeScope": [
+    "src/Guardrails.Core/Loading/"
+  ]
+}

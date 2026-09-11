@@ -1,0 +1,13 @@
+{
+  "description": "Make DeliverAndCleanup callable at a wave barrier so the authored tests pass",
+  "dependsOn": [
+    "07-author-tests-deliver-at-wave-barrier"
+  ],
+  "stableId": "j3d9so",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

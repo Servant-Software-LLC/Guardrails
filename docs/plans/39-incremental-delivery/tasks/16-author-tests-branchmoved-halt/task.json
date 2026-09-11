@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests for halting at the wave whose delivery hits BranchMoved",
+  "dependsOn": [
+    "08-implement-deliver-at-wave-barrier"
+  ],
+  "stableId": "d8k2pv",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/WaveDelivery/BranchMovedHaltTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

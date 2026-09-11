@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for run.json waves.<dir>.delivered, including the status:running write before the merge",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag"
+  ],
+  "stableId": "p2g6lu",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs",
+    "src/Guardrails.Core/Journal/WaveDeliveredRecord.cs"
+  ]
+}
