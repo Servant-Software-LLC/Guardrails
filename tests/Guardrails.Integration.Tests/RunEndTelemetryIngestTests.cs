@@ -50,7 +50,6 @@ namespace Guardrails.Integration.Tests;
 /// <c>~/.guardrails/telemetry/</c>.</para>
 /// </summary>
 [Trait("Category", "ModelEvidence")]
-[Collection(TelemetryEnvironmentCollection.Name)]
 public sealed class RunEndTelemetryIngestTests
 {
     /// <summary>
