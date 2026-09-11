@@ -275,15 +275,17 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     telemetry variable against **20+** spawning a real run, so serializing that set would have
     been permanent and would still not protect a test nobody has written yet.
   - **When the seam lands, RETIRE the collection — but retire it on its OWN change.**
-    `TelemetryEnvironmentCollection` records its reason as *"there is no seam into that path short
-    of threading a switch through the whole `run` command"*; #594 threaded exactly that switch, so
-    no mutator remains in the assembly and the guard is now dead weight (the retirement is tracked in
-    #699). Retiring
-    it was ATTEMPTED inside this convention's own change and backed out, which is the part worth
-    learning from: removing a serializer raises the assembly's parallelism, and that promptly
-    surfaced two unrelated wall-clock failures on two platforms (#697, #698) in a repo that had had
-    none in its previous 40 CI runs. **A retirement is a concurrency change, not a cleanup** — land
-    it alone, where a red build can only mean one thing.
+    `TelemetryEnvironmentCollection` recorded its reason as *"there is no seam into that path short
+    of threading a switch through the whole `run` command"*; #594 threaded exactly that switch, so no
+    mutator remained and the guard was retired in #699. Retiring it was first ATTEMPTED inside the
+    #520 convention's own change and backed out, which is the part worth learning from: removing a
+    serializer raises the assembly's parallelism, and that promptly surfaced two wall-clock failures
+    on two platforms in a repo that had had none in its previous 40 CI runs. **Both were real.**
+    #697 was a ratio asserting an unsound load-immunity argument; **#698 was a PRODUCT BUG** — the
+    log server's final `/events` flush only ran when shutdown was observed in the parked branch, so a
+    subscriber could silently lose the run's last row. **A retirement is a concurrency change, not a
+    cleanup** — land it alone, where a red build can only mean one thing, and expect it to find
+    things.
   - **`GitEnvironmentCollection` is the counter-example worth keeping**: its own doc records that
     the mechanism it guarded is GONE, and states the condition for deleting it (a full three-OS
     run without it, repeated enough to mean something). That is how a fallback should be written
