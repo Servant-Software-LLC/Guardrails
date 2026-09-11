@@ -69,6 +69,23 @@ public sealed record JournalDocument
     public IReadOnlyDictionary<string, WaveJournalEntry>? Waves { get; init; }
 
     /// <summary>
+    /// OPTIONAL provenance record of every file an operator (or another authorized supplier) injected
+    /// into this run's checkout via <c>guardrails supply</c> (design 40 §4, SSOT §7 top-level
+    /// <c>supplied[]</c>) — so the run's own output is never confusable with what was handed to it.
+    /// Additive and backward-compatible on the same terms as <see cref="PlanPreflights"/>: absent (never
+    /// <c>null</c> noise) on a run that never supplied anything, which is the overwhelming majority.
+    /// <para>
+    /// This property is the STUB half of task <c>05-author-tests-provenance</c> — an honest, working
+    /// container. Its element type, <see cref="Journal.SuppliedRecord"/>, is the half that is NOT yet
+    /// implemented; see that type's remarks. A document that never sets this property round-trips
+    /// through <see cref="JournalJson"/> unchanged whether or not <see cref="Journal.SuppliedRecord"/>
+    /// has been filled in, which is exactly the never-weaker guarantee this section must not regress.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<SuppliedRecord>? Supplied { get; init; }
+
+    /// <summary>
     /// OPTIONAL cumulative OVERHEAD prompt spend (SSOT §7/§9.2, issues #269/#314) that is NOT a task
     /// attempt — the three harness-internal prompt-spend sources that fire BETWEEN (or outside) a task's
     /// attempts, so charging them as synthetic <see cref="AttemptRecord"/>s would corrupt attempt
