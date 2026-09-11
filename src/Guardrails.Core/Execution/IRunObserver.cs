@@ -338,6 +338,28 @@ public interface IRunObserver
     /// </summary>
     void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames) { }
 
+    /// <summary>
+    /// The harness committed one or more operator-supplied files onto the run's own base (design 40 §2 step
+    /// 3, plan-of-record <c>docs/plans/40-in-flight-resource-supply.md</c>). <paramref name="paths"/> are
+    /// the workspace-relative destinations the files now occupy (design 40 §1 — the staged layout IS the
+    /// destination layout), and <paramref name="commit"/> is the SHA the drain committed them in, carrying
+    /// the <c>Supplied-By-Operator</c> trailer (§4). Raised once per drain, at the resume-path boundary,
+    /// BEFORE the first task is scheduled — never mid-task.
+    ///
+    /// <para><b>Why this matters more than it looks.</b> A run whose base changed underneath it must SAY
+    /// so — a silent base change is indistinguishable from a harness bug when a later task behaves
+    /// unexpectedly. <paramref name="commit"/> is what ties an operator's read of the log back to the §4
+    /// provenance record (<c>run.json</c>'s <c>supplied[]</c> entry and the commit trailer), so a triage
+    /// never has to guess whether a file in the tree was authored by a task or handed in by an operator.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must still
+    /// forward it EXPLICITLY: an unforwarded call resolves to this empty body and the disclosure is
+    /// swallowed silently, in every mode (the <see cref="VerifierAdvisoryFound"/> / <see cref="WaveGateFinished"/>
+    /// lesson). <see cref="NullObserver"/> is the one legitimate exception — its whole contract is to
+    /// swallow every event, so it correctly leaves this undeclared too.</para>
+    /// </summary>
+    void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 
