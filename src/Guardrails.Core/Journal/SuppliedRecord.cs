@@ -11,41 +11,25 @@ namespace Guardrails.Core.Journal;
 /// the calling task's own folder name, which no closed set of enum members can name in advance.
 /// </para>
 /// <para>
-/// <b>STUB (task 05-author-tests-provenance): no behaviour.</b> Every member currently throws
-/// <see cref="NotImplementedException"/> unconditionally, so any test that constructs or reads a
-/// <see cref="SuppliedRecord"/> is expected to FAIL against this tree. Filled in by
-/// <c>06-implement-provenance</c>.
+/// Plain auto-implemented properties — <see cref="JournalJson"/> is reflection-based (no source-gen
+/// context to register against) and every field here is a primitive or a list of strings, so the default
+/// <c>System.Text.Json</c> reflection reader/writer round-trips it in both directions without a custom
+/// converter. Appended to <see cref="JournalDocument.Supplied"/> by <see cref="RunJournal.RecordSupplied"/>.
 /// </para>
 /// </summary>
 public sealed record SuppliedRecord
 {
     /// <summary>UTC time the supply happened (ISO-8601).</summary>
-    public required DateTimeOffset At
-    {
-        get => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-        init => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-    }
+    public required DateTimeOffset At { get; init; }
 
     /// <summary>The commit sha the supply landed as.</summary>
-    public required string Commit
-    {
-        get => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-        init => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-    }
+    public required string Commit { get; init; }
 
     /// <summary>The workspace-relative paths supplied, in the order given.</summary>
-    public required IReadOnlyList<string> Paths
-    {
-        get => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-        init => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-    }
+    public required IReadOnlyList<string> Paths { get; init; }
 
     /// <summary>Total bytes written across <see cref="Paths"/>.</summary>
-    public required long Bytes
-    {
-        get => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-        init => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-    }
+    public required long Bytes { get; init; }
 
     /// <summary>
     /// WHO supplied — <c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c> (design 40 §4,
@@ -53,9 +37,5 @@ public sealed record SuppliedRecord
     /// from this value rather than a hard-coded constant, and §3's overwatcher auto-resolve at
     /// <c>dial:critical</c> is unimplementable without it.
     /// </summary>
-    public required string By
-    {
-        get => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-        init => throw new NotImplementedException("SuppliedRecord is a stub (design 40 §4); implemented by 06-implement-provenance.");
-    }
+    public required string By { get; init; }
 }

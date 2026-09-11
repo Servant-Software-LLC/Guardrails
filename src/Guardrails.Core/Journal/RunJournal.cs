@@ -456,6 +456,26 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Append a provenance record to the durable, top-level <c>supplied[]</c> journal section (design 40
+    /// §4) — the caller-facing write path for every <c>guardrails supply</c> invocation, whether it comes
+    /// from the CLI at run start/task boundaries or an in-run overwatcher auto-resolve. Additive — the
+    /// section stays absent until the first supply, matching <see cref="RecordDecision"/> and every other
+    /// optional top-level list section (never <c>null</c> noise, and a second supply appends rather than
+    /// replacing the first).
+    /// </summary>
+    public void RecordSupplied(SuppliedRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        lock (_gate)
+        {
+            var supplied = new List<SuppliedRecord>(_document.Supplied ?? []) { record };
+            _document = _document with { Supplied = supplied };
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Allocate the next durably-MONOTONIC, never-reused escalation <c>seq</c> for this run (doc 12 §7.1,
     /// Finding 5) — the run-level counter <see cref="Execution.FileEscalationSink"/> stamps onto each
     /// <c>logs/&lt;runId&gt;/escalations/&lt;seq&gt;-&lt;gate&gt;.json</c> record and the returned
