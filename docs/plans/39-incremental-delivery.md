@@ -287,6 +287,24 @@ that follows a delivery point gets a positive-baseline entry preflight over the 
 `$baselineArea` machinery Step 5 already has for plan-level preflights. Step 7's report should name which
 waves got one and why, exactly as §1b asks it to name which waves deliver.
 
+**DECIDED (review): `plan-breakdown` emits one for every post-delivery wave.** So the authoring rule is
+settled.
+
+**What is NOT settled is whether anything CERTIFIES it — see `d39-wave-entry-preflight-gate`.** As written
+above this is an instruction with no gate behind it, which is this repo's most-repeated defect shape. The
+reviewer's instinct was that it should carry the same requirement as a plan-level preflight; checking that
+premise turned out to matter, because **plan-level preflights are not deterministically required either**.
+Nothing in `DiagnosticCodes.cs` requires a preflight to EXIST: `GR2027` is a malformed `catches:` line and
+`GR2028` is the terminal gate's integration re-run. The #181 baseline is an authoring rule with a worth-it
+gate and a stated skip reason.
+
+So "be consistent with the plan level" resolves to "stay an authoring rule", and the interesting question is
+whether a wave deserves a **higher** bar than the plan. The argument that it does is about blast radius, not
+importance: a missing plan-level baseline costs slow attribution on a run someone is usually watching, while
+a missing post-delivery wave baseline lets a wave build on a tree a refresh just changed and surfaces at
+that wave's EXIT gate — **blaming a wave that did nothing wrong**, which is precisely the attribution defect
+this section exists to prevent, reappearing because the control against it was optional.
+
 ---
 
 ## 2. The cost, and it is a DOCTRINE change
@@ -299,6 +317,22 @@ waves got one and why, exactly as §1b asks it to name which waves deliver.
 
 Plan 25's three chains are **independent**. They can run in parallel today. Putting them in three waves
 **serialises them**, and that is a real loss.
+
+**DECIDED (review): the loss is accepted, and the wave barrier STAYS.** The reviewer's words:
+
+> I'm willing to live with the wave limitation of only running serially, as syncing to master and merging
+> them in, leans us toward serial working for our worktree/branches anyhow.
+
+That is the load-bearing half — the parallelism being given up is smaller in practice than it looks on
+paper, because the sync-and-merge model already pushes this repo's worktree/branch work toward serial.
+
+**This design does NOT propose cross-wave parallelism**, and a later reader should not mistake the
+paragraph above for an argument that it should. Asked directly in review, the objections were: more race
+surface, a task table that stops reading as a DAG, and a live-status diagram that cannot show what is
+actually running. All three hold. The fourth, which is the one that settles it: cross-wave parallelism
+would destroy the single property the barrier buys — **a wave's exit gate runs on a QUIESCENT tree**, and
+there is no such moment if a later wave is already in flight. The gate is the whole feature; the barrier is
+what makes it mean anything.
 
 **What is and is not lost.** A wave still contains an ordinary task DAG, so #510's four tasks keep their
 internal parallelism. What goes is parallelism *across issues*.
