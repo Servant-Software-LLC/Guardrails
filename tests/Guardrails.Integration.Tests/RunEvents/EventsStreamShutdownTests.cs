@@ -83,6 +83,74 @@ public sealed class EventsStreamShutdownTests
         Assert.Equal("runFinished", doc.RootElement.GetProperty("kind").GetString());
     }
 
+    /// <summary>
+    /// The same guarantee, WITHOUT steering the tail loop into its parked branch (issue #698).
+    ///
+    /// <para><b>READ THIS BEFORE TRUSTING IT: this is a soak, NOT the regression pin for #698.</b>
+    /// Measured — with the pre-#698 server restored (final flush reachable only from the parked
+    /// <c>WaitOne</c> branch), this test still PASSES. On an idle machine the loop reliably ends up
+    /// parked, so every one of the rounds below takes the friendly door and the broken door is never
+    /// opened. It is kept because it asserts a real if weaker property and is the harness for anyone who
+    /// finds a way to force the other exit — but it must not be read as evidence that the unparked path
+    /// works, because it cannot currently tell.</para>
+    ///
+    /// <para>The test above waits <see cref="PastOnePollCycle"/> so shutdown is observed while the loop
+    /// sits in <c>WaitOne</c>. That is the FRIENDLY door, and until #698 it was the only one that
+    /// flushed: shutdown noticed anywhere else — a <c>WaitOne</c> that timed out in the same instant it
+    /// was signalled, or an iteration that had just emitted — left through the <c>while</c> condition and
+    /// took the row with it.</para>
+    ///
+    /// <para>So this one deliberately does NOT settle: it appends and disposes immediately, leaving the
+    /// loop's position to the scheduler — which is also what a loaded CI runner does. The guarantee being
+    /// asserted is not "a row appended while we happen to be parked" but "the last row reaches the
+    /// subscriber", and a subscriber silently missing the final row is indistinguishable from a stream
+    /// that ended because there was nothing more to say.</para>
+    /// </summary>
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public async Task UnsettledShutdownSoak_TheFinalRowStillArrives()
+    {
+        for (int attempt = 0; attempt < UnsettledAttempts; attempt++)
+        {
+            using var temp = new TempPlan();
+            // WriteEventsFile, not Append: the file does not exist yet, and a row already on disk is
+            // what flushes the chunked response headers so GetAsync(ResponseHeadersRead) returns.
+            temp.WriteEventsFile(
+                """{"kind":"attemptFinished","runId":"test-run","taskId":"01-alpha","attempt":1,"outcome":"succeeded"}""" + "\n");
+            LogServer server = Start(temp.Dir, [MakeTask("01-alpha", "First")]);
+
+            using HttpResponseMessage response = await Http.GetAsync(
+                $"{server.BaseUrl}events", HttpCompletionOption.ResponseHeadersRead,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            using var reader = new StreamReader(
+                await response.Content.ReadAsStreamAsync(TestContext.Current.CancellationToken));
+
+            string first = await ReadLineWithTimeoutAsync(reader);
+            Assert.Contains("\"attempt\":1", first);
+
+            // NO settle delay — that is the whole point. Where the loop is when shutdown lands is
+            // whatever the scheduler decides, which is also what a loaded CI runner decides.
+            temp.AppendEventsFile(
+                $$"""{"kind":"runFinished","runId":"test-run-{{attempt}}","exitCode":0}""" + "\n");
+            await server.DisposeAsync();
+
+            string line = await ReadLineWithTimeoutAsync(reader);
+            using JsonDocument doc = JsonDocument.Parse(line);
+            Assert.Equal("runFinished", doc.RootElement.GetProperty("kind").GetString());
+        }
+    }
+
+    /// <summary>
+    /// How many unsettled append-then-dispose rounds
+    /// <see cref="UnsettledShutdownSoak_TheFinalRowStillArrives"/> performs. Twelve was chosen hoping the
+    /// pre-#698 server would lose one; measured, it does not — see that test's remarks. The count is
+    /// therefore arbitrary and the soak is cheap, so it stays at a round number rather than pretending
+    /// to be tuned to a failure rate nobody has observed.
+    /// </summary>
+    private const int UnsettledAttempts = 12;
+
     [Trait("Category", "RunEvents")]
     [Fact]
     public async Task AMissingEventsFileStillCompletesWithAnEmptyBody()

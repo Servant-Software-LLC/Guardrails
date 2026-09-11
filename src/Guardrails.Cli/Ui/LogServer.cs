@@ -868,36 +868,49 @@ public sealed class LogServer : IAsyncDisposable
                 {
                     if (_shutdown.Token.WaitHandle.WaitOne(EventsPollInterval))
                     {
-                        // Shutdown was signalled while parked in this wait. DisposeAsync now waits for
-                        // this request to notice _shutdown and return before it lets the listener be torn
-                        // down (see the comment there), so a row appended in this last poll interval —
-                        // e.g. the run-finished row, written the instant before the caller disposes this
-                        // server — has a real window to be attempted here rather than silently dropped.
-                        try
-                        {
-                            int finalRead = fs.Read(buffer, 0, buffer.Length);
-                            if (finalRead > 0)
-                            {
-                                EmitLines(finalRead);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            // The row is already durable in events.jsonl, so a failure here only costs
-                            // this one live subscriber the row — reported distinctly rather than through
-                            // the catch-all below, so a genuine failure is never indistinguishable from a
-                            // clean, successful delivery.
-                            Console.Error.WriteLine(
-                                $"[log-server] final /events flush on shutdown failed: {ex.GetType().Name}: {ex.Message}");
-                        }
-
-                        return;
+                        break;
                     }
 
                     continue;
                 }
 
                 EmitLines(read);
+            }
+
+            // THE FINAL FLUSH RUNS ON EVERY SHUTDOWN EXIT, not only the parked one (issue #698).
+            //
+            // It used to live inside the WaitOne branch above, which made it reachable ONLY when
+            // shutdown happened to be signalled while this loop was parked in the poll wait. Shutdown
+            // observed anywhere else — a WaitOne that timed out in the same instant it was signalled and
+            // fell to `continue`, or a loop iteration that had just emitted — left through the `while`
+            // condition instead, and the row went with it. DisposeAsync waits for this request to notice
+            // _shutdown precisely so the row has a window; the window existed and one of the two doors
+            // out of the loop did not use it.
+            //
+            // Measured on solution-wide-test (windows-latest): the run-finished row appended the instant
+            // before DisposeAsync never reached the subscriber, the stream simply ended, and
+            // EventsStreamShutdownTests.ASubscriberReceivesARowAppendedJustBeforeShutdown read null. The
+            // test steers the loop into the parked branch with a deliberate settle delay, which is why
+            // this only surfaced under contention — the delay stopped being enough.
+            //
+            // The cost of the row being dropped is exactly the shape this whole file guards against: the
+            // LAST row is the one a CI wrapper exists to receive, and losing it looks identical to a
+            // stream that ended because there was nothing more to say.
+            try
+            {
+                int finalRead = fs.Read(buffer, 0, buffer.Length);
+                if (finalRead > 0)
+                {
+                    EmitLines(finalRead);
+                }
+            }
+            catch (Exception ex)
+            {
+                // The row is already durable in events.jsonl, so a failure here only costs this one live
+                // subscriber the row — reported distinctly rather than through the catch-all below, so a
+                // genuine failure is never indistinguishable from a clean, successful delivery.
+                Console.Error.WriteLine(
+                    $"[log-server] final /events flush on shutdown failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
         catch (Exception)
