@@ -276,7 +276,20 @@ waves got one and why, exactly as §1b asks it to name which waves deliver.
 **DECIDED (review): `plan-breakdown` emits one for every post-delivery wave.** So the authoring rule is
 settled.
 
-**What is NOT settled is whether anything CERTIFIES it — see `d39-wave-entry-preflight-gate`.** As written
+**DECIDED (review): a new WARNING code — GR2078 — names the gap without blocking the plan.** A
+post-delivery wave with no entry preflight is reported by `validate` and does not fail it.
+
+Why a warning and not an error, recorded because the softer option is the one that looks like a
+compromise and is not: an ERROR would fail plans that are **correct-but-unguarded**, and a wave whose
+author deliberately skipped the baseline for a good reason would have no way to say so. #181's own
+worth-it gate exists precisely because a *false* baseline is worse than none — a check that runs zero
+tests, or asserts "0 failed" over an empty set, certifies nothing while looking like a gate. An ERROR
+here would push authors toward exactly that. The warning is also not toothless in this repo's practice:
+`plan-breakdown` Step 7.1 treats every `validate` WARNING as a **fired trigger** that must be fixed or
+documented with a reason, so an unguarded post-delivery wave cannot pass review silently.
+
+**The reasoning that got here is worth keeping, because the premise it started from was wrong.** As
+written
 above this is an instruction with no gate behind it, which is this repo's most-repeated defect shape. The
 reviewer's instinct was that it should carry the same requirement as a plan-level preflight; checking that
 premise turned out to matter, because **plan-level preflights are not deterministically required either**.
@@ -474,5 +487,5 @@ journal-the-start rule §5 adopts), SSOT §14 (waves), §14.6 (the wave exit gat
 :::
 
 :::question
-{"id": "d39-wave-entry-preflight-gate", "title": "Should a post-delivery wave's entry preflight be DETERMINISTICALLY required, or stay an authoring rule?", "mode": "single", "options": ["A new WARNING code — name the gap, do not block the plan", "A new ERROR code — a post-delivery wave without an entry preflight fails validate", "Stay an authoring rule, consistent with plan-level preflights"], "recommended": "A new WARNING code — name the gap, do not block the plan", "rationale": "Your comment says a post-delivery wave should follow the same requirement as a plan-level preflight. Checking that premise changed the question: plan-level preflights are NOT deterministically required — nothing in DiagnosticCodes.cs requires a preflight to exist (GR2027 is a malformed catches: line, GR2028 is the terminal gate's integration re-run), and the #181 baseline is an authoring rule with a worth-it gate. So strict consistency means option 3, which leaves the rule enforced by nobody. I think a wave earns a higher bar than the plan, on blast radius rather than importance: a missing plan-level baseline costs slow attribution on a run you are watching, whereas a missing post-delivery wave baseline lets a wave build on a tree the refresh just changed and fails at that wave's EXIT gate, blaming a wave that did nothing wrong. I recommend WARNING over ERROR because an ERROR fails plans that are correct-but-unguarded — a wave whose author deliberately skipped the baseline for a good reason would have no way to say so, and the #181 worth-it gate exists precisely because a false baseline is worse than none. Next free code is GR2078; GR2077 is reserved by #587 check B.", "target": "human"}
+{"id": "d39-wave-entry-preflight-gate", "title": "Should a post-delivery wave's entry preflight be DETERMINISTICALLY required, or stay an authoring rule?", "mode": "single", "options": ["A new WARNING code — name the gap, do not block the plan", "A new ERROR code — a post-delivery wave without an entry preflight fails validate", "Stay an authoring rule, consistent with plan-level preflights"], "recommended": "A new WARNING code — name the gap, do not block the plan", "rationale": "Your comment says a post-delivery wave should follow the same requirement as a plan-level preflight. Checking that premise changed the question: plan-level preflights are NOT deterministically required — nothing in DiagnosticCodes.cs requires a preflight to exist (GR2027 is a malformed catches: line, GR2028 is the terminal gate's integration re-run), and the #181 baseline is an authoring rule with a worth-it gate. So strict consistency means option 3, which leaves the rule enforced by nobody. I think a wave earns a higher bar than the plan, on blast radius rather than importance: a missing plan-level baseline costs slow attribution on a run you are watching, whereas a missing post-delivery wave baseline lets a wave build on a tree the refresh just changed and fails at that wave's EXIT gate, blaming a wave that did nothing wrong. I recommend WARNING over ERROR because an ERROR fails plans that are correct-but-unguarded — a wave whose author deliberately skipped the baseline for a good reason would have no way to say so, and the #181 worth-it gate exists precisely because a false baseline is worse than none. Next free code is GR2078; GR2077 is reserved by #587 check B.", "target": "human", "answer": ["A new WARNING code \u2014 name the gap, do not block the plan"]}
 :::
