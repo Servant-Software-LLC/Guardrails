@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Guardrails.Core.Execution;
 
 /// <summary>
@@ -25,7 +27,80 @@ public static class SuppliedDrain
     /// </summary>
     public static SuppliedDrainResult Drain(string workspace, string planDirectory, string runId, string by)
     {
-        throw new NotImplementedException();
+        IReadOnlyList<SuppliedFile> staged = SuppliedStagingTree.DrainableFiles(planDirectory, runId);
+        if (staged.Count == 0)
+        {
+            return new SuppliedDrainResult { CommittedPaths = [], TotalBytes = 0L, CommitSha = null };
+        }
+
+        long totalBytes = 0;
+        var committedPaths = new List<string>();
+        foreach (SuppliedFile file in staged)
+        {
+            string destination = Path.Combine(
+                workspace, file.DestinationPath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file.AbsoluteStagedPath, destination, overwrite: true);
+            totalBytes += new FileInfo(file.AbsoluteStagedPath).Length;
+            committedPaths.Add(file.DestinationPath);
+        }
+
+        var addArgs = new List<string> { "add", "--" };
+        addArgs.AddRange(committedPaths);
+        GitIn(workspace, addArgs.ToArray());
+
+        // --no-verify: this is a harness-owned plumbing commit onto the run's base, not the user's
+        // own work, so a machine-global git hook (e.g. a pre-commit scanner) must not gate it —
+        // mirroring GitWorktreeProvider's other internal boundary commits (issue #149).
+        string commitMessage = $"Supplied-By: {by}\nGuardrails-Run: {runId}";
+        GitIn(workspace, "commit", "--no-verify", "-m", commitMessage);
+        string commitSha = GitIn(workspace, "rev-parse", "HEAD").Trim();
+
+        string suppliedRoot = Path.Combine(planDirectory, "logs", runId, SuppliedStagingTree.SuppliedFolder);
+        Directory.Delete(suppliedRoot, recursive: true);
+
+        return new SuppliedDrainResult
+        {
+            CommittedPaths = committedPaths,
+            TotalBytes = totalBytes,
+            CommitSha = commitSha
+        };
+    }
+
+    /// <summary>
+    /// Run <c>git</c> with <paramref name="workingDir"/> as its cwd and return stdout. Throws
+    /// <see cref="InvalidOperationException"/> on a non-zero exit, mirroring the harness's other git
+    /// runners (e.g. <see cref="GitWorktreeProvider"/>) so a failed drain surfaces as a loud fault
+    /// rather than a silently-inert boundary.
+    /// </summary>
+    private static string GitIn(string workingDir, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            // Issue #457: git speaks UTF-8; an unpinned stream decodes with the host console code page.
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        foreach (string arg in args)
+        {
+            psi.ArgumentList.Add(arg);
+        }
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git {string.Join(" ", args)} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
+        }
+
+        return stdout;
     }
 }
 
