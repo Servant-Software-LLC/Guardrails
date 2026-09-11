@@ -28,8 +28,8 @@ if ($doc -notmatch [regex]::Escape('guardrails supply')) {
     $failures += "MISSING 'guardrails supply' in $subject — the verb is not shown as an invocation — an undocumented command is, for practical purposes, an unshipped one"
 }
 
-if ($doc -notmatch [regex]::Escape('boundary')) {
-    $failures += "MISSING 'boundary' in $subject — the README does not explain WHICH boundary picks the file up, which is the one thing an operator cannot guess"
+if ($doc -notmatch [regex]::Escape('next task boundary')) {
+    $failures += "MISSING 'next task boundary' in $subject — the README does not explain WHICH boundary picks the file up, which is the one thing an operator cannot guess"
 }
 
 if ($failures.Count -gt 0) {

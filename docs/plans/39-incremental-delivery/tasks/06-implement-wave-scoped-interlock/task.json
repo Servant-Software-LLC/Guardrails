@@ -1,0 +1,13 @@
+{
+  "description": "Scope the #361/#340 delivery interlock to the wave so the authored tests pass",
+  "dependsOn": [
+    "05-author-tests-wave-scoped-interlock"
+  ],
+  "stableId": "m8r5xt",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

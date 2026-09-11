@@ -1,0 +1,14 @@
+{
+  "description": "Teach plan-breakdown the second reason to wave, the post-delivery entry preflight, and the Step 7 delivery report",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag",
+    "04-implement-delivery-diagnostics"
+  ],
+  "stableId": "t9c1qe",
+  "writeScope": [
+    ".claude/skills/plan-breakdown/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

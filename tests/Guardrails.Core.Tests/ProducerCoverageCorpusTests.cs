@@ -253,7 +253,7 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "made the expensive way. The fix is a one-word change to Step 7.0f (commit, THEN run) and it " +
             "is the actionable half of #587 that four previous rows did not have; #601 tracks graduating " +
             "the class into a deterministic check"),
-        new("docs/plans/40-in-flight-resource-supply", "27cb509a", 0, 0,
+        new("docs/plans/40-in-flight-resource-supply", "7c2deaa1", 0, 0,
             "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. The SIXTH " +
             "consecutive plan to trip this table, and the FIRST caught by the breakdown itself rather " +
             "than by a run or a review: plan 38's row added 'commit, THEN run' to Step 7.0f, this " +
@@ -263,6 +263,16 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "been made — so this is still two commits, but the second one is now prompted by a red " +
             "test instead of discovered later. #601 tracks graduating the class into a deterministic " +
             "check, which is what would remove the two-commit dance entirely"),
+        new("docs/plans/39-incremental-delivery", "9df1cd6d", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. SEVENTH " +
+            "consecutive plan to trip this table. Its sibling row above (plan 40) also tripped " +
+            "ThePreRunCommitsAreTheBreakdownCommits, which is a NEWER lesson than the catch-22 the " +
+            "other rows record: plan 40's PR was SQUASH-merged, so the sha pinned pre-merge was " +
+            "rewritten and the row pointed at a commit that no longer existed. Every sha pinned here " +
+            "before it (c14195e8, aecfd3e7, b33dd1a0) still resolves to its original breakdown commit, " +
+            "which is how those plans avoided it. THE RULE THAT FALLS OUT: a PR carrying a plan folder " +
+            "registered in this table must NOT be squash-merged, or its pinned sha is destroyed by the " +
+            "merge that lands it"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,

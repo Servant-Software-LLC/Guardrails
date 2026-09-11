@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests for the #361/#340 interlock scoped PER WAVE",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag"
+  ],
+  "stableId": "k4c8we",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveScopedInterlockTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

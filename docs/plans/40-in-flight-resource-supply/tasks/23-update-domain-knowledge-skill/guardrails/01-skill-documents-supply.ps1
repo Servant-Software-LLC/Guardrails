@@ -30,8 +30,8 @@ if ($doc -notmatch [regex]::Escape('guardrails supply')) {
     $failures += "MISSING 'guardrails supply' in $subject — the verb is absent from the skill — the surface an AGENT reads, and the one nothing else tests"
 }
 
-if ($doc -notmatch [regex]::Escape('writeScope')) {
-    $failures += "MISSING 'writeScope' in $subject — the caller-scoping rule is not stated, so an agent cannot know what it may supply"
+if ($doc -notmatch [regex]::Escape('own writeScope')) {
+    $failures += "MISSING 'own writeScope' in $subject — the caller-scoping rule is not stated, so an agent cannot know what it may supply"
 }
 
 if ($failures.Count -gt 0) {

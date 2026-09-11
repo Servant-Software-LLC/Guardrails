@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "maxParallelism": 3,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "promptRunners": {
+    "default": "sonnet",
+    "sonnet": {
+      "command": "claude",
+      "kind": "claude",
+      "model": "claude-sonnet-5",
+      "maxTurns": 50,
+      "allowedTools": [
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ]
+    }
+  }
+}

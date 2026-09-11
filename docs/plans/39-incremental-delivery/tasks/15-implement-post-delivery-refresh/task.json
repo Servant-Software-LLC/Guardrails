@@ -1,0 +1,13 @@
+{
+  "description": "Implement the non-fast-forward post-delivery refresh so the authored tests pass",
+  "dependsOn": [
+    "14-author-tests-post-delivery-refresh"
+  ],
+  "stableId": "n1x5tg",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

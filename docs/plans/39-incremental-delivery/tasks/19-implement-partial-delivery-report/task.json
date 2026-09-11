@@ -1,0 +1,13 @@
+{
+  "description": "Implement the partial-delivery report so the authored tests pass",
+  "dependsOn": [
+    "18-author-tests-partial-delivery-report"
+  ],
+  "stableId": "a5j8ny",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + reserve GR2078/GR2079 for the two delivery warnings",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag"
+  ],
+  "stableId": "h9t4mc",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveryDiagnosticsTests.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs"
+  ]
+}

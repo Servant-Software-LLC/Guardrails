@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + stub for the per-wave delivers flag (default FALSE)",
+  "dependsOn": [],
+  "stableId": "e2k7ra",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs",
+    "src/Guardrails.Core/Model/WaveNode.cs"
+  ]
+}

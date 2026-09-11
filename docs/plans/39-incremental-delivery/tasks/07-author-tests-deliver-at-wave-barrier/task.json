@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests for DeliverAndCleanup fired at a wave barrier, gated on that wave Exit being green",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag",
+    "06-implement-wave-scoped-interlock"
+  ],
+  "stableId": "q6v1ny",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/WaveDelivery/WaveBarrierDeliveryTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

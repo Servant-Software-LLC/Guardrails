@@ -1,0 +1,12 @@
+{
+  "description": "Record the wave-delivery contracts in the SSOT: the delivers flag, waves.<dir>.delivered, and the observer event",
+  "dependsOn": [
+    "02-implement-wave-delivers-flag",
+    "10-implement-wave-delivered-journal",
+    "13-implement-wave-delivered-event-cli"
+  ],
+  "stableId": "u2p6dk",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Implement the delivered journal record (both converter directions) so the authored tests pass",
+  "dependsOn": [
+    "09-author-tests-wave-delivered-journal"
+  ],
+  "stableId": "f5b8ai",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/"
+  ]
+}

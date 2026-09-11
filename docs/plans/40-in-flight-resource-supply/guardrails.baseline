@@ -81,10 +81,10 @@
     "tasks/21-update-ssot-supply-contracts/guardrails/01-ssot-records-the-contracts.ps1": "31ff558717f869f5af67b5fc0dc243199a7eb10d6eb376a6e3214eb2a27188d6",
     "tasks/21-update-ssot-supply-contracts/task.json": "62c62433e4f11ac59aa49fc68d5d650e431c72d4ea61dddf4773bf1a6fffdf26",
     "tasks/22-update-readme-supply/action.prompt.md": "dd7a18ff023acec381a3b69124f0d3ef5ad6950f8e547402ee806ef73b3386c3",
-    "tasks/22-update-readme-supply/guardrails/01-readme-documents-supply.ps1": "62dbbf27d107f63375140f01fb858b84fc12a58a1e64f44c4b0d53170134ffb1",
+    "tasks/22-update-readme-supply/guardrails/01-readme-documents-supply.ps1": "525300e838af68ac2d8281c0f313f1cd1f326e1c20ace3653263e8ffed2d70f6",
     "tasks/22-update-readme-supply/task.json": "0cc8cfbd46b1bf9b55b880050a360ac862fbcfbdd1ab042fe6a7aa5987f5fc35",
     "tasks/23-update-domain-knowledge-skill/action.prompt.md": "d7c280d0026031012dce7ded0a91d8ee2e9d1d0c4178182b2ddabeadd696b3ad",
-    "tasks/23-update-domain-knowledge-skill/guardrails/01-skill-documents-supply.ps1": "291fe75be2ef45425e356010c87d2b7c0edefe9f0f17bd11d1beb4bd0c200379",
+    "tasks/23-update-domain-knowledge-skill/guardrails/01-skill-documents-supply.ps1": "6ac9c5d600fcde12be5b19f30ce1d88a471dd822080031d22eb94e4efaf26c82",
     "tasks/23-update-domain-knowledge-skill/task.json": "f7a678032b28328b44d3c2350a154ce3501be8ef5356632aadcc5fbb9541a5ab"
   }
 }
