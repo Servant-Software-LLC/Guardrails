@@ -363,4 +363,16 @@ public sealed class ConsoleRunObserver : IRunObserver
                 $"[model] {task.Id} attempt {attempt}: {LiveRunObserver.AttemptModelSummary(model, requestedModel)}");
         }
     }
+
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    {
+        lock (_gate)
+        {
+            // Design 40 §2 step 3: a run whose base changed underneath it must say so — under --no-ui the
+            // tailed log IS the record, and a silent base change is indistinguishable from a harness bug
+            // when a later task behaves unexpectedly.
+            _output.WriteLine(
+                $"[supplied] {paths.Count} resource(s) committed {commit}: {string.Join(", ", paths)}");
+        }
+    }
 }
