@@ -1,0 +1,10 @@
+{
+  "description": "Implement the supply verb and REGISTER it in CommandFactory so the authored tests pass",
+  "dependsOn": [
+    "10-author-tests-supply-command"
+  ],
+  "stableId": "y4k9bm",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ]
+}

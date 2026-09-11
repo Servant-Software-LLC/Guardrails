@@ -1,0 +1,13 @@
+{
+  "description": "Wire the drain into the Scheduler task boundary (the live-run row of the design-40 table)",
+  "dependsOn": [
+    "14-author-tests-boundary-wiring"
+  ],
+  "stableId": "f7q2wj",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

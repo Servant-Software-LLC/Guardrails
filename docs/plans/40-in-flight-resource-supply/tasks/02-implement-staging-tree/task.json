@@ -1,0 +1,10 @@
+{
+  "description": "Implement SuppliedStagingTree so the authored tests pass (fill logic over the stubs)",
+  "dependsOn": [
+    "01-author-tests-staging-tree"
+  ],
+  "stableId": "q7m2zd",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ]
+}

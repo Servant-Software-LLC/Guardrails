@@ -1,0 +1,12 @@
+{
+  "description": "Record the supply contracts in the SSOT: the staging tree (\u00a71), run.json supplied[] (\u00a77), and the observer event (\u00a78)",
+  "dependsOn": [
+    "16-wire-drain-at-run-start",
+    "06-implement-provenance",
+    "09-implement-observer-cli"
+  ],
+  "stableId": "u7e3ao",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

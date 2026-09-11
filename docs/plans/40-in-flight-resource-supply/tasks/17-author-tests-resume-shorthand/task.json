@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests for guardrails supply --resume (the DECIDED opt-in shorthand)",
+  "dependsOn": [
+    "11-implement-supply-command",
+    "16-wire-drain-at-run-start"
+  ],
+  "stableId": "d5h8up",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SupplyResumeShorthandTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Implement supply --resume so the authored tests pass, sharing the three-command code path",
+  "dependsOn": [
+    "17-author-tests-resume-shorthand"
+  ],
+  "stableId": "j6b1xe",
+  "writeScope": [
+    "src/Guardrails.Cli/"
+  ]
+}

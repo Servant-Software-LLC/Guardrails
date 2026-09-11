@@ -1,0 +1,13 @@
+{
+  "description": "Implement SuppliedDrain so the authored tests pass",
+  "dependsOn": [
+    "03-author-tests-drain"
+  ],
+  "stableId": "b2n6ke",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Document the supply verb in the README command-line section",
+  "dependsOn": [
+    "11-implement-supply-command"
+  ],
+  "stableId": "i8l5qv",
+  "writeScope": [
+    "README.md"
+  ]
+}

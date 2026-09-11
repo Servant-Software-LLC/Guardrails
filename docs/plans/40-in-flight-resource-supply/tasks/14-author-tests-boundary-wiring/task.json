@@ -1,0 +1,15 @@
+{
+  "description": "Author failing tests for BOTH drain boundaries driven through the REAL Scheduler and RunCommand",
+  "dependsOn": [
+    "04-implement-drain",
+    "06-implement-provenance",
+    "09-implement-observer-cli"
+  ],
+  "stableId": "r3v8dc",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedBoundaryWiringTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

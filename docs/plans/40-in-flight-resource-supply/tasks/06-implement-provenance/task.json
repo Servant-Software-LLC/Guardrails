@@ -1,0 +1,10 @@
+{
+  "description": "Implement the supplied[] journal section so the authored tests pass (BOTH converter directions)",
+  "dependsOn": [
+    "05-author-tests-provenance"
+  ],
+  "stableId": "z5c3ry",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/"
+  ]
+}

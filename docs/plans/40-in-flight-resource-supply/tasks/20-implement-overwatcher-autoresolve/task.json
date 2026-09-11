@@ -1,0 +1,13 @@
+{
+  "description": "Implement the overwatcher auto-resolve, gated at dial:critical and writing the supplier provenance",
+  "dependsOn": [
+    "19-author-tests-overwatcher-autoresolve"
+  ],
+  "stableId": "x2z9cf",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

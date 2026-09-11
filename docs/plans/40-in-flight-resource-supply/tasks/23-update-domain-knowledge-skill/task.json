@@ -1,0 +1,14 @@
+{
+  "description": "Document the supply verb and its agent-callable scoping in guardrails-domain-knowledge (the surface an AGENT reads)",
+  "dependsOn": [
+    "11-implement-supply-command",
+    "13-implement-caller-scope"
+  ],
+  "stableId": "o4y6wd",
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

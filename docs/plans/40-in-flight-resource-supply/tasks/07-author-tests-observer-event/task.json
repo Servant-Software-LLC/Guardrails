@@ -1,0 +1,12 @@
+{
+  "description": "Author failing tests + the IRunObserver.SuppliedResourcesCommitted member (no-op default) for the supplied-resources announcement",
+  "dependsOn": [
+    "02-implement-staging-tree"
+  ],
+  "stableId": "w8j4ft",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs",
+    "tests/Guardrails.Core.Tests/Supply/SuppliedObserverCliForwardingTests.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
+  ]
+}
