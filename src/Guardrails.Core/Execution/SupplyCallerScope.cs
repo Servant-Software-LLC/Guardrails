@@ -39,7 +39,24 @@ public static class SupplyCallerScope
         IReadOnlyList<string> writeScope,
         string workspaceRelativePath)
     {
-        throw new NotImplementedException();
+        bool isTaskInvocation = environment.Keys.Any(key => key.StartsWith("GUARDRAILS_", StringComparison.Ordinal));
+        if (!isTaskInvocation)
+        {
+            return new CallerScopeResult { Refused = false };
+        }
+
+        if (WriteScope.IsInScope(workspaceRelativePath, writeScope))
+        {
+            return new CallerScopeResult { Refused = false };
+        }
+
+        return new CallerScopeResult
+        {
+            Refused = true,
+            RefusalReason =
+                $"'{workspaceRelativePath}' is outside this task's writeScope " +
+                $"({string.Join(", ", writeScope)}); a task may supply only paths it could also write."
+        };
     }
 }
 
