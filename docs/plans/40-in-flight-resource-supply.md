@@ -130,12 +130,32 @@ Three existing verbs, in an order that is not obvious and is therefore **printed
 itself**. The halt already names the three fixes; it should name the one that works and is
 copy-pasteable — which is the #431 rule applied to a halt rather than a report.
 
-**A note on what this design deliberately does NOT do.** #373 suggests the overwatcher could auto-resolve
-this, since the case is "fully mechanical — the correct artifact provably exists in the canonical
-checkout." It is mechanical to *apply*, but deciding that the file in the operator's checkout is the file
-the task should have is a judgement, and getting it wrong commits an arbitrary file to the run's base. The
-overwatcher may **propose** the three-command sequence in its verdict; it does not run it. That keeps this
-change on the judgement-free side of the autonomy dial, where a v1 belongs.
+**DECIDED (review): `--resume` ships as an opt-in shorthand.** The three verbs stay the default, because
+`reset` chooses WHICH descendants to re-arm and folding that into `supply` hides a real decision. But a
+fixed three-command order is a sequence nobody remembers, so `guardrails supply --resume <plan> <path>`
+stages, resets the halted task and resumes in one step. The halt text prints the explicit three-command
+form; the shorthand is for the operator who already knows what it does. Both paths must produce the
+identical journal and provenance record — a shorthand that took a different code path would be a second
+mechanism for one decision, which is the defect §4 exists to prevent.
+
+**DECIDED (review): the overwatcher MAY auto-resolve this, but ONLY at `dial:critical`.** The design's
+first draft declined it outright. The reviewer's call is that at the highest dial the operator has already
+accepted machine judgement, and this case is mechanical enough to qualify.
+
+The caution that produced the original decline is NOT withdrawn, and is recorded here because whoever
+builds this has to carry it: applying the fix is mechanical, but *deciding that the file in the operator's
+checkout is the file the task should have* is a judgement, and getting it wrong commits an arbitrary file
+to the run's base — which then flows into the terminal gate and into anything reading that tree. So at
+every dial BELOW critical the overwatcher **proposes** the sequence and does not run it, and at
+`dial:critical` an auto-resolve MUST write the §4 provenance record naming the overwatcher as the supplier
+— that record is what makes the decision auditable after the fact rather than indistinguishable from a
+task's own work.
+
+**This is adjacent to, but does not breach, the standing `dial:critical` ruling.** The maintainer has
+previously FORBIDDEN `dial:critical` combined with `proceed-unreviewed` ("Guardrails without guardrails is
+self-defeating"). An auto-resolve here is not `proceed-unreviewed`: it supplies a file and re-arms a task
+whose gates then run in full, and nothing is certified that was not verified. The distinction is worth
+stating explicitly so a later reader does not treat this as the precedent that erodes that ruling.
 
 ---
 
@@ -203,8 +223,12 @@ action sees `GUARDRAILS_STATE_OUT` and `GUARDRAILS_WORKSPACE` set, and one invok
 shell does not. Before #442 that test would have been unreliable in precisely the case that matters (a
 harness launched from inside another run); it is reliable now, and the hermetic sweep is what makes it so.
 
+**DECIDED (review): scoped.** A task agent may call `supply`, and may supply only paths inside its own
+`writeScope`. That keeps the JIT case the reviewer valued — an agent authoring a script it then needs on
+the base almost certainly owns that path already — while closing the bypass for everything else.
+
 **But env detection is a guard against accident, not against an adversary** — say so plainly rather than
-letting the mechanism imply more than it delivers. An agent that can run `guardrails supply` can also run
+letting the mechanism imply more than it delivers, because the scoping rule above rests on it. An agent that can run `guardrails supply` can also run
 it with those variables cleared, and the same is true of any scoping rule that has to learn *which* task is
 calling from the same channel. So the honest division of labour is:
 
@@ -258,9 +282,10 @@ It refuses only when there is **no resumable run at all** — no journal, or a j
 settled. It explicitly does **not** require a run to be executing: the case it exists for is a run that has
 already halted and exited (§1), and requiring a live run would refuse it.
 
-**Who may invoke it is open** — see §5a and the `d40-agent-callable-supply` question. The recommendation is
-that a task agent may supply only paths inside its own `writeScope`; the caller is distinguishable because
-#442 made the `GUARDRAILS_*` namespace hermetic across the process boundary.
+**DECIDED (review): a task agent may supply only paths inside its OWN `writeScope`.** An invocation from
+inside a task environment is scoped to that task's declared paths and refused outside them; an operator
+invocation is unrestricted. The caller is distinguishable because #442 made the `GUARDRAILS_*` namespace
+hermetic across the process boundary — see §5a for what that detection does and does not prove.
 
 **Documentation is an acceptance condition, not a follow-up** (§5a): `guardrails-domain-knowledge`, the
 README's command-line section, and the `needs-human` halt text. The README surface is already enforced by
@@ -303,10 +328,11 @@ one that cannot be retrofitted, because the information exists only at the momen
 argument — that the terminal gate and the #453 triage reason over a tree whose contents they otherwise
 cannot attribute — is the one I would defend hardest here.
 
-**The part I am least sure of** is §3(b) requiring three commands. A single `guardrails supply --resume`
-that stages, resets the halted task and resumes would be one step; I have kept them separate because
-`reset` chooses which descendants to re-arm and folding that decision into `supply` hides it. A reviewer
-who thinks the ergonomics matter more than the explicitness should say so.
+**The part I was least sure of** was §3(b) requiring three commands, and the review settled it: `--resume`
+ships as an opt-in shorthand while the three verbs remain the default and the halt text keeps printing the
+explicit form. The explicitness argument was right about `reset`'s descendant choice being a real decision;
+it was wrong to conclude that therefore nobody may have a shorthand. The requirement that falls out is
+that both paths write the identical journal and provenance — see §3.
 
 ---
 

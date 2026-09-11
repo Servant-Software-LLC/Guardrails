@@ -133,12 +133,32 @@ Three existing verbs, in an order that is not obvious and is therefore **printed
 itself**. The halt already names the three fixes; it should name the one that works and is
 copy-pasteable — which is the #431 rule applied to a halt rather than a report.
 
-**A note on what this design deliberately does NOT do.** #373 suggests the overwatcher could auto-resolve
-this, since the case is "fully mechanical — the correct artifact provably exists in the canonical
-checkout." It is mechanical to *apply*, but deciding that the file in the operator's checkout is the file
-the task should have is a judgement, and getting it wrong commits an arbitrary file to the run's base. The
-overwatcher may **propose** the three-command sequence in its verdict; it does not run it. That keeps this
-change on the judgement-free side of the autonomy dial, where a v1 belongs.
+**DECIDED (review): `--resume` ships as an opt-in shorthand.** The three verbs stay the default, because
+`reset` chooses WHICH descendants to re-arm and folding that into `supply` hides a real decision. But a
+fixed three-command order is a sequence nobody remembers, so `guardrails supply --resume <plan> <path>`
+stages, resets the halted task and resumes in one step. The halt text prints the explicit three-command
+form; the shorthand is for the operator who already knows what it does. Both paths must produce the
+identical journal and provenance record — a shorthand that took a different code path would be a second
+mechanism for one decision, which is the defect §4 exists to prevent.
+
+**DECIDED (review): the overwatcher MAY auto-resolve this, but ONLY at `dial:critical`.** The design's
+first draft declined it outright. The reviewer's call is that at the highest dial the operator has already
+accepted machine judgement, and this case is mechanical enough to qualify.
+
+The caution that produced the original decline is NOT withdrawn, and is recorded here because whoever
+builds this has to carry it: applying the fix is mechanical, but *deciding that the file in the operator's
+checkout is the file the task should have* is a judgement, and getting it wrong commits an arbitrary file
+to the run's base — which then flows into the terminal gate and into anything reading that tree. So at
+every dial BELOW critical the overwatcher **proposes** the sequence and does not run it, and at
+`dial:critical` an auto-resolve MUST write the §4 provenance record naming the overwatcher as the supplier
+— that record is what makes the decision auditable after the fact rather than indistinguishable from a
+task's own work.
+
+**This is adjacent to, but does not breach, the standing `dial:critical` ruling.** The maintainer has
+previously FORBIDDEN `dial:critical` combined with `proceed-unreviewed` ("Guardrails without guardrails is
+self-defeating"). An auto-resolve here is not `proceed-unreviewed`: it supplies a file and re-arms a task
+whose gates then run in full, and nothing is certified that was not verified. The distinction is worth
+stating explicitly so a later reader does not treat this as the precedent that erodes that ruling.
 
 ---
 
@@ -206,8 +226,12 @@ action sees `GUARDRAILS_STATE_OUT` and `GUARDRAILS_WORKSPACE` set, and one invok
 shell does not. Before #442 that test would have been unreliable in precisely the case that matters (a
 harness launched from inside another run); it is reliable now, and the hermetic sweep is what makes it so.
 
+**DECIDED (review): scoped.** A task agent may call `supply`, and may supply only paths inside its own
+`writeScope`. That keeps the JIT case the reviewer valued — an agent authoring a script it then needs on
+the base almost certainly owns that path already — while closing the bypass for everything else.
+
 **But env detection is a guard against accident, not against an adversary** — say so plainly rather than
-letting the mechanism imply more than it delivers. An agent that can run `guardrails supply` can also run
+letting the mechanism imply more than it delivers, because the scoping rule above rests on it. An agent that can run `guardrails supply` can also run
 it with those variables cleared, and the same is true of any scoping rule that has to learn *which* task is
 calling from the same channel. So the honest division of labour is:
 
@@ -261,9 +285,10 @@ It refuses only when there is **no resumable run at all** — no journal, or a j
 settled. It explicitly does **not** require a run to be executing: the case it exists for is a run that has
 already halted and exited (§1), and requiring a live run would refuse it.
 
-**Who may invoke it is open** — see §5a and the `d40-agent-callable-supply` question. The recommendation is
-that a task agent may supply only paths inside its own `writeScope`; the caller is distinguishable because
-#442 made the `GUARDRAILS_*` namespace hermetic across the process boundary.
+**DECIDED (review): a task agent may supply only paths inside its OWN `writeScope`.** An invocation from
+inside a task environment is scoped to that task's declared paths and refused outside them; an operator
+invocation is unrestricted. The caller is distinguishable because #442 made the `GUARDRAILS_*` namespace
+hermetic across the process boundary — see §5a for what that detection does and does not prove.
 
 **Documentation is an acceptance condition, not a follow-up** (§5a): `guardrails-domain-knowledge`, the
 README's command-line section, and the `needs-human` halt text. The README surface is already enforced by
@@ -306,10 +331,11 @@ one that cannot be retrofitted, because the information exists only at the momen
 argument — that the terminal gate and the #453 triage reason over a tree whose contents they otherwise
 cannot attribute — is the one I would defend hardest here.
 
-**The part I am least sure of** is §3(b) requiring three commands. A single `guardrails supply --resume`
-that stages, resets the halted task and resumes would be one step; I have kept them separate because
-`reset` chooses which descendants to re-arm and folding that decision into `supply` hides it. A reviewer
-who thinks the ergonomics matter more than the explicitness should say so.
+**The part I was least sure of** was §3(b) requiring three commands, and the review settled it: `--resume`
+ships as an opt-in shorthand while the three verbs remain the default and the halt text keeps printing the
+explicit form. The explicitness argument was right about `reset`'s descendant choice being a real decision;
+it was wrong to conclude that therefore nobody may have a shorthand. The requirement that falls out is
+that both paths write the identical journal and provenance — see §3.
 
 ---
 
@@ -325,17 +351,17 @@ only the prose), #600 (the README coverage test that already enforces one of §5
 ## Decisions for this review
 
 :::question
-{"id": "d40-resume-ergonomics", "title": "Should resolving a halted task be three commands, or one 'supply --resume'?", "mode": "single", "options": ["Three commands: supply, then reset, then run", "One command: supply --resume stages, resets the halted task, and resumes", "Three by default, with --resume as an opt-in shorthand"], "recommended": "Three commands: supply, then reset, then run", "rationale": "This is the part of the design I am least sure of, and the issue is explicitness versus ergonomics. `reset` chooses WHICH descendants to re-arm, and folding that into `supply` hides a real decision behind a convenience flag. But three commands in a fixed order is a sequence nobody will remember, which is why the design has the needs-human halt print it verbatim. If you think the ergonomics matter more than the explicitness here, the third option is the honest middle and I have no strong argument against it.", "target": "human"}
+{"id": "d40-resume-ergonomics", "title": "Should resolving a halted task be three commands, or one 'supply --resume'?", "mode": "single", "options": ["Three commands: supply, then reset, then run", "One command: supply --resume stages, resets the halted task, and resumes", "Three by default, with --resume as an opt-in shorthand"], "recommended": "Three commands: supply, then reset, then run", "rationale": "This is the part of the design I am least sure of, and the issue is explicitness versus ergonomics. `reset` chooses WHICH descendants to re-arm, and folding that into `supply` hides a real decision behind a convenience flag. But three commands in a fixed order is a sequence nobody will remember, which is why the design has the needs-human halt print it verbatim. If you think the ergonomics matter more than the explicitness here, the third option is the honest middle and I have no strong argument against it.", "target": "human", "answer": ["Three by default, with --resume as an opt-in shorthand"]}
 :::
 
 :::question
-{"id": "d40-overwatcher-autoresolve", "title": "Should the overwatcher be allowed to auto-resolve a missing-resource halt in v1?", "mode": "single", "options": ["No — it may PROPOSE the command sequence, never run it", "Yes — the case is mechanical, so let it supply and resume", "Yes, but only at dial:critical"], "recommended": "No — it may PROPOSE the command sequence, never run it", "rationale": "#373 argues this is an ideal auto-correct target because the fix is 'fully mechanical'. Applying it is mechanical; DECIDING that the file in your checkout is the file the task should have is a judgement, and getting it wrong commits an arbitrary file onto the run's base — which then flows into the terminal gate and into anything reading that tree. I would rather v1 sat on the judgement-free side of the dial and earned the auto-resolve later, but you have overruled a similar caution before and this is your call on the autonomy arc.", "target": "human"}
+{"id": "d40-overwatcher-autoresolve", "title": "Should the overwatcher be allowed to auto-resolve a missing-resource halt in v1?", "mode": "single", "options": ["No — it may PROPOSE the command sequence, never run it", "Yes — the case is mechanical, so let it supply and resume", "Yes, but only at dial:critical"], "recommended": "No — it may PROPOSE the command sequence, never run it", "rationale": "#373 argues this is an ideal auto-correct target because the fix is 'fully mechanical'. Applying it is mechanical; DECIDING that the file in your checkout is the file the task should have is a judgement, and getting it wrong commits an arbitrary file onto the run's base — which then flows into the terminal gate and into anything reading that tree. I would rather v1 sat on the judgement-free side of the dial and earned the auto-resolve later, but you have overruled a similar caution before and this is your call on the autonomy arc.", "target": "human", "answer": ["Yes, but only at dial:critical"]}
 :::
 
 :::question
-{"id": "d40-asymmetry", "title": "Plan-folder edits reach a running plan and code artifacts do not. Name the asymmetry, or try to unify it?", "mode": "single", "options": ["Name it — in the halt text, the domain-knowledge skill and the README", "Unify by making code artifacts live too", "Unify by freezing plan edits during a run"], "recommended": "Name it — in the halt text, the domain-knowledge skill and the README", "rationale": "This asymmetry is what produced the confusion in #373: the reframed prompt reached the run and the file did not. Unifying it costs something real in either direction — making code live admits a second writer into a tree the harness owns (against invariant 2), and freezing plan edits gives up #568's live plan-edit capability, which you asked for. The measured cost here was entirely in NOT KNOWING the rule, so naming it in the three places a reader meets it may be the whole fix. Flagging it because 'document it' is the answer that is easiest to reach for and hardest to be sure of.", "target": "human"}
+{"id": "d40-asymmetry", "title": "Plan-folder edits reach a running plan and code artifacts do not. Name the asymmetry, or try to unify it?", "mode": "single", "options": ["Name it — in the halt text, the domain-knowledge skill and the README", "Unify by making code artifacts live too", "Unify by freezing plan edits during a run"], "recommended": "Name it — in the halt text, the domain-knowledge skill and the README", "rationale": "This asymmetry is what produced the confusion in #373: the reframed prompt reached the run and the file did not. Unifying it costs something real in either direction — making code live admits a second writer into a tree the harness owns (against invariant 2), and freezing plan edits gives up #568's live plan-edit capability, which you asked for. The measured cost here was entirely in NOT KNOWING the rule, so naming it in the three places a reader meets it may be the whole fix. Flagging it because 'document it' is the answer that is easiest to reach for and hardest to be sure of.", "target": "human", "answer": ["Name it \u2014 in the halt text, the domain-knowledge skill and the README"]}
 :::
 
 :::question
-{"id": "d40-agent-callable-supply", "title": "May a TASK AGENT call `guardrails supply` mid-run, given it bypasses writeScope?", "mode": "single", "options": ["Scoped: an agent may supply only paths inside its own writeScope", "Operator-only: refuse when invoked from inside a task environment", "Unrestricted: any caller, any path"], "recommended": "Scoped: an agent may supply only paths inside its own writeScope", "rationale": "You called the JIT case out as the thing you love about this, and I agree it is the most valuable use — but `supply` being a CLI command means a task agent can put ANY file onto the run's base without its writeScope being consulted, and every downstream check then runs over a tree containing content no task was authorised to produce. Scoping costs your case nothing: an agent writing a script it needs on the base almost certainly already owns that path, so option 1 keeps the capability and closes the hole. Option 2 is the conservative read and sends the agent back to `needsHuman`, which is exactly the dead end this design exists to remove. I would argue against option 3. Whichever you pick, note that env-based caller detection (reliable since #442 made the GUARDRAILS_* namespace hermetic) stops the accidental case but not a determined one — the provenance record in section 4 is the real defence, which is why 5a promotes it from nice-to-have to load-bearing.", "target": "human"}
+{"id": "d40-agent-callable-supply", "title": "May a TASK AGENT call `guardrails supply` mid-run, given it bypasses writeScope?", "mode": "single", "options": ["Scoped: an agent may supply only paths inside its own writeScope", "Operator-only: refuse when invoked from inside a task environment", "Unrestricted: any caller, any path"], "recommended": "Scoped: an agent may supply only paths inside its own writeScope", "rationale": "You called the JIT case out as the thing you love about this, and I agree it is the most valuable use — but `supply` being a CLI command means a task agent can put ANY file onto the run's base without its writeScope being consulted, and every downstream check then runs over a tree containing content no task was authorised to produce. Scoping costs your case nothing: an agent writing a script it needs on the base almost certainly already owns that path, so option 1 keeps the capability and closes the hole. Option 2 is the conservative read and sends the agent back to `needsHuman`, which is exactly the dead end this design exists to remove. I would argue against option 3. Whichever you pick, note that env-based caller detection (reliable since #442 made the GUARDRAILS_* namespace hermetic) stops the accidental case but not a determined one — the provenance record in section 4 is the real defence, which is why 5a promotes it from nice-to-have to load-bearing.", "target": "human", "answer": ["Scoped: an agent may supply only paths inside its own writeScope"]}
 :::
