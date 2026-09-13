@@ -484,7 +484,22 @@ public static class RunCommand
         // worktree-mode fold, #596), so this never disagrees with them about which worktree is "the base".
         // No-op with no git calls when nothing is staged (SuppliedDrain's own never-weaker guarantee).
         string runStartDrainWorkspace = PlanPhaseWorkspace.Resolve(probe.Plan, cancellationToken, junctionRootForRun, worktreeResolution);
-        SuppliedDrain.Drain(runStartDrainWorkspace, probe.Plan.PlanDirectory, runId, by: "operator");
+        SuppliedDrainResult runStartDrained = SuppliedDrain.Drain(runStartDrainWorkspace, probe.Plan.PlanDirectory, runId, by: "operator");
+
+        // §4 provenance (mirrors Scheduler.DrainSuppliedAtTaskBoundary's own write): without this, a halt
+        // resolved via reset+run (rather than a live task-boundary drain) left run.json's supplied[]
+        // section null even though the base genuinely changed underneath the resumed run.
+        if (runStartDrained.CommitSha is { } runStartCommitSha)
+        {
+            journal.RecordSupplied(new SuppliedRecord
+            {
+                At = DateTimeOffset.UtcNow,
+                Commit = runStartCommitSha,
+                Paths = runStartDrained.CommittedPaths,
+                Bytes = runStartDrained.TotalBytes,
+                By = "operator"
+            });
+        }
 
         // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
         // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts
