@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -3112,7 +3113,19 @@ public static class RunCommand
             }
 
             output.WriteLine($"  Inspect {taskLogDir}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
-            output.WriteLine(NeedsHumanClosingLine(needsHuman.NeedsHumanKind));
+
+            IReadOnlyList<string> missingResourceLines = MissingResourceHaltLines(needsHuman, logsRoot);
+            if (missingResourceLines.Count > 0)
+            {
+                foreach (string line in missingResourceLines)
+                {
+                    output.WriteLine(line);
+                }
+            }
+            else
+            {
+                output.WriteLine(NeedsHumanClosingLine(needsHuman.NeedsHumanKind));
+            }
         }
     }
 
@@ -3147,6 +3160,61 @@ public static class RunCommand
             "  and if the claim holds fix the guardrail (/guardrails-review) — the work may already be complete.",
         _ => "  fix the action or guardrails, then re-run to resume."
     };
+
+    /// <summary>A workspace-relative path token: two or more '/'-joined segments, e.g. <c>vendor/mermaid.min.js</c>.</summary>
+    private static readonly Regex ResourcePathToken =
+        new(@"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", RegexOptions.Compiled);
+
+    /// <summary>
+    /// The missing-resource carve-out of a <c>blocked-work</c> halt (design 40 §3/§5): when the agent's
+    /// <see cref="TaskResult.NeedsHumanQuestion"/> names a workspace-relative resource path, replaces
+    /// <see cref="NeedsHumanClosingLine"/>'s generic "re-scope the task" guidance — which actively
+    /// misdirects here, since re-scoping cannot conjure a missing vendored artifact — with the asymmetry
+    /// that produced issue #373 (a plan-folder edit reaches a running plan; a code artifact does not) and
+    /// the copy-pasteable three-command sequence that closes it. Empty for every other halt, INCLUDING a
+    /// plain blocked-work halt whose question names no path (e.g. a genuinely over-scoped task) — that
+    /// case keeps <see cref="NeedsHumanClosingLine"/>'s existing, still-correct text untouched.
+    /// <para>
+    /// The three commands stay explicit (never folded into the <c>supply --resume</c> shorthand) per the
+    /// maintainer's own ruling (d40-resume-ergonomics): <c>reset</c> chooses WHICH descendants to re-arm,
+    /// and a halt that can't see the DAG must not make that choice on the operator's behalf.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> MissingResourceHaltLines(TaskResult needsHuman, string logsRoot)
+    {
+        if (NeedsHumanKinds.Parse(needsHuman.NeedsHumanKind) != NeedsHumanKinds.BlockedWork)
+        {
+            return [];
+        }
+
+        Match match = ResourcePathToken.Match(needsHuman.NeedsHumanQuestion ?? string.Empty);
+        if (!match.Success)
+        {
+            return [];
+        }
+
+        // logsRoot is always <planDirectory>/logs/<runId> (this method's own call site, above) —
+        // recover the plan folder the three commands below all take as their first argument.
+        string? planDirectory = Path.GetDirectoryName(Path.GetDirectoryName(logsRoot));
+        if (string.IsNullOrEmpty(planDirectory))
+        {
+            return [];
+        }
+
+        string resourcePath = match.Value;
+
+        return
+        [
+            "  This is a missing resource, not a scope problem: plan-folder edits reach a running plan; "
+                + "code artifacts do not — re-scoping the task cannot conjure it. Supply it, then reset and "
+                + "resume this task:",
+            $"    guardrails supply {planDirectory} {resourcePath}",
+            $"    guardrails reset {planDirectory} {needsHuman.TaskId}",
+            $"    guardrails run {planDirectory}",
+            "  Once staged, the opt-in shorthand runs the same three steps in one call: "
+                + $"guardrails supply --resume {planDirectory} {resourcePath}"
+        ];
+    }
 
     /// <summary>
     /// Print the run-level cost line (SSOT §7 <c>costUsd</c>) from the freshly-persisted
