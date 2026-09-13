@@ -53,19 +53,91 @@ public static class SupplyCommand
             Arity = ArgumentArity.OneOrMore
         };
 
+        var resumeOption = new Option<bool>("--resume")
+        {
+            Description = "Opt-in shorthand (design 40 §3): stage, reset the currently-halted task(s), and "
+                + "resume the run — all in one invocation. The explicit three-command path (supply, then "
+                + "'guardrails reset', then 'guardrails run') stays the default and is still what the "
+                + "needs-human halt text prints; this runs the SAME commands back to back, so it produces "
+                + "the identical journal and provenance record."
+        };
+
         var command = new Command("supply",
             "Stage file(s) for an in-flight or halted run to pick up at its next drain boundary.");
         command.Add(planArgument);
         command.Add(pathArgument);
+        command.Add(resumeOption);
 
-        command.SetAction(parseResult =>
+        command.SetAction(async (parseResult, cancellationToken) =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(planArgument), io.Out);
             string[] paths = parseResult.GetValue(pathArgument) ?? [];
-            return Run(folder, paths, io);
+            bool resume = parseResult.GetValue(resumeOption);
+            return resume
+                ? await RunResume(folder, paths, io, cancellationToken).ConfigureAwait(false)
+                : Run(folder, paths, io);
         });
 
         return command;
+    }
+
+    /// <summary>
+    /// <c>--resume</c>: stage exactly as the plain verb does, then RE-ENTER the composition root to run
+    /// the already-shipped <c>reset</c> and <c>run</c> verbs — never a bespoke reimplementation of either.
+    /// This is what makes the shorthand and the explicit three-command path produce the byte-identical
+    /// journal and provenance record the authored tests pin: they run the same commands, so they reach
+    /// the same run-start drain that now writes the §4 record (this method never writes one itself).
+    /// Resets every task currently <see cref="JournalTaskStatus.NeedsHuman"/> (∪ descendants, via
+    /// <c>reset</c>'s own safe-suffix rewind) — the set a halted run actually needs re-armed — then a
+    /// plain <c>run</c> resumes it. Propagates the first non-success exit code from staging or resetting
+    /// without running anything further.
+    /// <para>
+    /// The inner <c>run</c> passes <c>--no-merge-on-success</c>, matching the explicit three-command
+    /// path's own final <c>run</c>: <c>--resume</c>'s job is to get the DAG itself back to green, never to
+    /// also make the separate, more consequential decision to deliver that work to the user's branch as a
+    /// side effect of a one-shot convenience shorthand. Delivery stays a deliberate, later act (a plain
+    /// <c>guardrails run</c>), exactly as it would be after the explicit three-command path.
+    /// </para>
+    /// </summary>
+    private static async Task<int> RunResume(
+        string planFolder, string[] paths, IConsoleIo io, CancellationToken cancellationToken)
+    {
+        int stageExit = Run(planFolder, paths, io);
+        if (stageExit != ExitCodes.Success)
+        {
+            return stageExit;
+        }
+
+        PlanProbe.Result probe = PlanProbe.LoadAndValidate(planFolder);
+        if (probe.HasErrors || probe.Plan is null)
+        {
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
+            io.Out.WriteLine("\nCould not load the plan.");
+            return ExitCodes.HarnessError;
+        }
+
+        JournalDocument document = JournalReader.Read(RunJournal.PathFor(probe.Plan.PlanDirectory));
+        string[] haltedTaskIds = document.Tasks
+            .Where(kv => kv.Value.Status == JournalTaskStatus.NeedsHuman)
+            .Select(kv => kv.Key)
+            .ToArray();
+
+        if (haltedTaskIds.Length > 0)
+        {
+            int resetExit = await CommandFactory.BuildRootCommand(io)
+                .Parse(["reset", planFolder, .. haltedTaskIds])
+                .InvokeAsync(cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            if (resetExit != ExitCodes.Success)
+            {
+                return resetExit;
+            }
+        }
+
+        return await CommandFactory.BuildRootCommand(io)
+            .Parse(["run", planFolder, "--no-merge-on-success"])
+            .InvokeAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static int Run(string planFolder, string[] paths, IConsoleIo io)
