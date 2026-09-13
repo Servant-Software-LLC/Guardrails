@@ -476,6 +476,16 @@ public static class RunCommand
             }
         }
 
+        // Run-start supplied-resource drain (design 40 §1 row 2 — the measured incident): a run that
+        // already halted and exited has no live task boundary left, so this is where a file staged via
+        // `guardrails supply` after that exit gets picked up. Drained BEFORE scheduling — nothing is yet
+        // branched from the base, the cleanest of the two boundaries — via the SAME shared workspace
+        // resolution the pre-DAG/terminal phases use (PlanPhaseWorkspace, threaded with this run's ONE
+        // worktree-mode fold, #596), so this never disagrees with them about which worktree is "the base".
+        // No-op with no git calls when nothing is staged (SuppliedDrain's own never-weaker guarantee).
+        string runStartDrainWorkspace = PlanPhaseWorkspace.Resolve(probe.Plan, cancellationToken, junctionRootForRun, worktreeResolution);
+        SuppliedDrain.Drain(runStartDrainWorkspace, probe.Plan.PlanDirectory, runId, by: "operator");
+
         // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
         // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts
         // HERE — no task runs, zero tokens spent — journaled as planPreflights.status =
