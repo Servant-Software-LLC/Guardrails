@@ -27,93 +27,49 @@ public sealed class SupplyCommandTests
     private const string HaltedTaskId = "02-second";
 
     /// <summary>
-    /// The task-action env var namespace <c>TaskExecutor.BuildEnvironment</c> actually sets
-    /// (SSOT §5.1) — the surface a caller-scoped <c>supply</c> consults to tell an agent invocation
-    /// from an operator's own shell (design 40 §5a/§6, #442's hermetic guarantee). Deliberately NOT
-    /// every <c>GUARDRAILS_</c>-prefixed variable: this suite itself is typically driven BY the
-    /// harness as this very task's own guardrail action, so the ambient process already carries
-    /// <c>GUARDRAILS_TELEMETRY_CORPUS_ROOT</c> (<c>TelemetryCorpusIsolation</c>) and other unrelated
-    /// config. Clearing those too would reopen the real-corpus pollution #547/#594 exist to prevent.
+    /// An OPERATOR caller (design 40 §5a: "one invoked from an operator's own shell does not [see
+    /// GUARDRAILS_STATE_OUT / GUARDRAILS_WORKSPACE]"): no task-scoped variable is visible — including
+    /// the ones this suite's OWN process carries when the harness drives it as a task's guardrail action.
     /// </summary>
-    private static readonly string[] TaskScopedEnvironmentKeys =
-    [
-        "GUARDRAILS_PLAN_DIR", "GUARDRAILS_TASK_ID", "GUARDRAILS_TASK_DIR", "GUARDRAILS_ATTEMPT",
-        "GUARDRAILS_STATE_IN", "GUARDRAILS_STATE_OUT", "GUARDRAILS_LOG_DIR", "GUARDRAILS_WORKSPACE",
-        "GUARDRAILS_STAGING_DIR", "GUARDRAILS_FEEDBACK"
-    ];
-
-    private static Dictionary<string, string?> ClearTaskEnvironment()
-    {
-        var previous = TaskScopedEnvironmentKeys.ToDictionary(k => k, Environment.GetEnvironmentVariable);
-        foreach (string key in TaskScopedEnvironmentKeys)
-        {
-            Environment.SetEnvironmentVariable(key, null);
-        }
-
-        return previous;
-    }
-
-    private static void RestoreEnvironment(Dictionary<string, string?> previous)
-    {
-        foreach ((string key, string? value) in previous)
-        {
-            Environment.SetEnvironmentVariable(key, value);
-        }
-    }
+    private static readonly Func<string, string?> OperatorEnvironment = static _ => null;
 
     /// <summary>
-    /// Drive the real root with the task-scoped namespace CLEARED — an OPERATOR invocation (design
-    /// 40 §5a: "one invoked from an operator's own shell does not [see GUARDRAILS_STATE_OUT /
-    /// GUARDRAILS_WORKSPACE]"). <c>Environment.SetEnvironmentVariable</c> mutates the whole process
-    /// (there is no per-call scope); the previous values are restored in <c>finally</c>. Safe without
-    /// a dedicated non-parallel xunit collection because the keys involved are read back
-    /// in-process ONLY by the (not-yet-built) caller-scope check this suite is pinning — nothing
-    /// else in this assembly consults them via <c>Environment.GetEnvironmentVariable</c> today.
+    /// Drive the real root as an OPERATOR invocation. The caller's environment is PASSED through
+    /// <see cref="CommandFactory.BuildRootCommand"/>'s reader rather than written into this process. The
+    /// task namespace is process-wide: an earlier version of this suite cleared and set it with
+    /// <c>Environment.SetEnvironmentVariable</c>, as <see cref="SupplyResumeShorthandTests"/> did, and the
+    /// two classes raced — <c>supply</c> saw no task namespace mid-test and let an out-of-scope path
+    /// through (#520's convention: a seam first, a serialized collection only as the fallback).
     /// </summary>
     private static async Task<(int ExitCode, string Output)> InvokeAsync(params string[] args)
     {
-        Dictionary<string, string?> previous = ClearTaskEnvironment();
-        try
-        {
-            var io = new StringConsoleIo();
-            var root = CommandFactory.BuildRootCommand(io);
-            int exit = await root.Parse(args).InvokeAsync();
-            return (exit, io.OutText);
-        }
-        finally
-        {
-            RestoreEnvironment(previous);
-        }
+        var io = new StringConsoleIo();
+        var root = CommandFactory.BuildRootCommand(io, environment: OperatorEnvironment);
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     /// <summary>
     /// Drive the real root with exactly the env vars a TASK ACTION sees for <paramref name="taskId"/>
-    /// (design 40 §5a/§6, the DECIDED <c>d40-agent-callable-supply</c> caller-scoping rule). The
-    /// namespace is cleared first (see <see cref="TaskScopedEnvironmentKeys"/>) so no ambient value
-    /// from this suite's OWN outer task invocation leaks into the simulated one.
+    /// (design 40 §5a/§6, the DECIDED <c>d40-agent-callable-supply</c> caller-scoping rule), passed
+    /// through the same reader, so nothing ambient reaches the simulated caller.
     /// </summary>
     private static async Task<(int ExitCode, string Output)> InvokeAsTaskAsync(
         string planDir, string taskId, string workspace, params string[] args)
     {
-        Dictionary<string, string?> previous = ClearTaskEnvironment();
-        try
+        var taskEnvironment = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            Environment.SetEnvironmentVariable("GUARDRAILS_PLAN_DIR", planDir);
-            Environment.SetEnvironmentVariable("GUARDRAILS_TASK_ID", taskId);
-            Environment.SetEnvironmentVariable(
-                "GUARDRAILS_STATE_OUT",
-                Path.Combine(Path.GetTempPath(), "gr40-supply-state-out-" + Guid.NewGuid().ToString("N") + ".json"));
-            Environment.SetEnvironmentVariable("GUARDRAILS_WORKSPACE", workspace);
+            ["GUARDRAILS_PLAN_DIR"] = planDir,
+            ["GUARDRAILS_TASK_ID"] = taskId,
+            ["GUARDRAILS_STATE_OUT"] = Path.Combine(
+                Path.GetTempPath(), "gr40-supply-state-out-" + Guid.NewGuid().ToString("N") + ".json"),
+            ["GUARDRAILS_WORKSPACE"] = workspace,
+        };
 
-            var io = new StringConsoleIo();
-            var root = CommandFactory.BuildRootCommand(io);
-            int exit = await root.Parse(args).InvokeAsync();
-            return (exit, io.OutText);
-        }
-        finally
-        {
-            RestoreEnvironment(previous);
-        }
+        var io = new StringConsoleIo();
+        var root = CommandFactory.BuildRootCommand(io, environment: name => taskEnvironment.GetValueOrDefault(name));
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     private static string RunId(string planDir) => JournalReader.Read(RunJournal.PathFor(planDir)).RunId;

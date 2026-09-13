@@ -185,43 +185,21 @@ public sealed class SupplyResumeShorthandTests
     // ── driving the real composition root, as an OPERATOR ───────────────────────────────────────────
 
     /// <summary>
-    /// The task-action env var namespace <c>TaskExecutor.BuildEnvironment</c> actually sets (SSOT
-    /// §5.1, mirrors <c>SupplyCommandTests</c>' own copy) — cleared around every CLI call below so this
-    /// suite's OWN ambient environment (it typically runs AS a guardrails task's guardrail action, and
-    /// so genuinely carries <c>GUARDRAILS_TASK_ID</c> et al.) can never make <c>supply</c>'s
-    /// caller-scope check misclassify these operator-shaped invocations as a task invocation — which,
-    /// unhandled, refuses every supply below with an empty inherited writeScope.
+    /// Drive the real root as an OPERATOR. The caller's environment is PASSED through
+    /// <see cref="CommandFactory.BuildRootCommand"/>'s reader, which sees no task-scoped variable, rather
+    /// than cleared in this process. This suite's OWN ambient environment (it typically runs AS a guardrails
+    /// task's guardrail action, and so genuinely carries <c>GUARDRAILS_TASK_ID</c> et al.) must never make
+    /// <c>supply</c>'s caller-scope check misclassify these operator-shaped invocations as a task invocation;
+    /// clearing it with <c>Environment.SetEnvironmentVariable</c> raced <c>SupplyCommandTests</c>, which set
+    /// the same process-wide keys (#520). The reader also reaches the <c>reset</c>/<c>run</c> roots that
+    /// <c>supply --resume</c> re-enters.
     /// </summary>
-    private static readonly string[] TaskScopedEnvironmentKeys =
-    [
-        "GUARDRAILS_PLAN_DIR", "GUARDRAILS_TASK_ID", "GUARDRAILS_TASK_DIR", "GUARDRAILS_ATTEMPT",
-        "GUARDRAILS_STATE_IN", "GUARDRAILS_STATE_OUT", "GUARDRAILS_LOG_DIR", "GUARDRAILS_WORKSPACE",
-        "GUARDRAILS_STAGING_DIR", "GUARDRAILS_FEEDBACK"
-    ];
-
     private static async Task<(int ExitCode, string Output)> RunViaCliAsync(params string[] args)
     {
-        Dictionary<string, string?> previous = TaskScopedEnvironmentKeys.ToDictionary(
-            k => k, Environment.GetEnvironmentVariable);
-        foreach (string key in TaskScopedEnvironmentKeys)
-        {
-            Environment.SetEnvironmentVariable(key, null);
-        }
-
-        try
-        {
-            var io = new StringConsoleIo();
-            var root = CommandFactory.BuildRootCommand(io);
-            int exit = await root.Parse(args).InvokeAsync();
-            return (exit, io.OutText);
-        }
-        finally
-        {
-            foreach ((string key, string? value) in previous)
-            {
-                Environment.SetEnvironmentVariable(key, value);
-            }
-        }
+        var io = new StringConsoleIo();
+        var root = CommandFactory.BuildRootCommand(io, environment: static _ => null);
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     private static JournalDocument ReadJournal(string planDir) =>

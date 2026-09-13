@@ -42,8 +42,18 @@ public static class SupplyCommand
         "GUARDRAILS_STAGING_DIR", "GUARDRAILS_FEEDBACK"
     ];
 
-    public static Command Create(IConsoleIo io)
+    /// <summary>
+    /// Build the <c>supply</c> verb. <paramref name="readEnvironment"/> is where the caller-scope check
+    /// reads the INVOKING process's environment from; null — every production caller — reads the real
+    /// process. A test passes its own reader to simulate an operator or a task caller, because the task
+    /// namespace is process-wide state: two test classes that cleared and set it with
+    /// <c>Environment.SetEnvironmentVariable</c> raced each other, and this command then saw no task
+    /// namespace mid-test and let an out-of-scope path through (#520's convention: a seam first).
+    /// </summary>
+    public static Command Create(IConsoleIo io, Func<string, string?>? readEnvironment = null)
     {
+        Func<string, string?> environment = readEnvironment ?? Environment.GetEnvironmentVariable;
+
         var planArgument = FolderArgument.Create(
             "Path to the plan folder (contains guardrails.json) whose run to supply.");
 
@@ -74,8 +84,8 @@ public static class SupplyCommand
             string[] paths = parseResult.GetValue(pathArgument) ?? [];
             bool resume = parseResult.GetValue(resumeOption);
             return resume
-                ? await RunResume(folder, paths, io, cancellationToken).ConfigureAwait(false)
-                : Run(folder, paths, io);
+                ? await RunResume(folder, paths, io, environment, cancellationToken).ConfigureAwait(false)
+                : Run(folder, paths, io, environment);
         });
 
         return command;
@@ -90,7 +100,8 @@ public static class SupplyCommand
     /// Resets every task currently <see cref="JournalTaskStatus.NeedsHuman"/> (∪ descendants, via
     /// <c>reset</c>'s own safe-suffix rewind) — the set a halted run actually needs re-armed — then a
     /// plain <c>run</c> resumes it. Propagates the first non-success exit code from staging or resetting
-    /// without running anything further.
+    /// without running anything further. The re-entered roots receive the same environment reader, so
+    /// they see the caller this invocation saw.
     /// <para>
     /// The inner <c>run</c> passes <c>--no-merge-on-success</c>, matching the explicit three-command
     /// path's own final <c>run</c>: <c>--resume</c>'s job is to get the DAG itself back to green, never to
@@ -100,9 +111,10 @@ public static class SupplyCommand
     /// </para>
     /// </summary>
     private static async Task<int> RunResume(
-        string planFolder, string[] paths, IConsoleIo io, CancellationToken cancellationToken)
+        string planFolder, string[] paths, IConsoleIo io, Func<string, string?> environment,
+        CancellationToken cancellationToken)
     {
-        int stageExit = Run(planFolder, paths, io);
+        int stageExit = Run(planFolder, paths, io, environment);
         if (stageExit != ExitCodes.Success)
         {
             return stageExit;
@@ -124,7 +136,7 @@ public static class SupplyCommand
 
         if (haltedTaskIds.Length > 0)
         {
-            int resetExit = await CommandFactory.BuildRootCommand(io)
+            int resetExit = await CommandFactory.BuildRootCommand(io, environment: environment)
                 .Parse(["reset", planFolder, .. haltedTaskIds])
                 .InvokeAsync(cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
@@ -134,13 +146,13 @@ public static class SupplyCommand
             }
         }
 
-        return await CommandFactory.BuildRootCommand(io)
+        return await CommandFactory.BuildRootCommand(io, environment: environment)
             .Parse(["run", planFolder, "--no-merge-on-success"])
             .InvokeAsync(cancellationToken: cancellationToken)
             .ConfigureAwait(false);
     }
 
-    private static int Run(string planFolder, string[] paths, IConsoleIo io)
+    private static int Run(string planFolder, string[] paths, IConsoleIo io, Func<string, string?> environment)
     {
         TextWriter output = io.Out;
 
@@ -177,15 +189,15 @@ public static class SupplyCommand
             return ExitCodes.HarnessError;
         }
 
-        IReadOnlyDictionary<string, string> callerEnvironment = TaskCallerEnvironment();
-        string? callingTaskId = Environment.GetEnvironmentVariable("GUARDRAILS_TASK_ID");
+        IReadOnlyDictionary<string, string> callerEnvironment = TaskCallerEnvironment(environment);
+        string? callingTaskId = environment("GUARDRAILS_TASK_ID");
         IReadOnlyList<string> callingTaskWriteScope = callingTaskId is null
             ? []
             : plan.Tasks
                 .FirstOrDefault(task => string.Equals(task.Id, callingTaskId, StringComparison.Ordinal))
                 ?.WriteScope ?? [];
 
-        string workspace = Environment.GetEnvironmentVariable("GUARDRAILS_WORKSPACE") is { Length: > 0 } scopedWorkspace
+        string workspace = environment("GUARDRAILS_WORKSPACE") is { Length: > 0 } scopedWorkspace
             ? scopedWorkspace
             : plan.Workspace;
 
@@ -229,12 +241,12 @@ public static class SupplyCommand
         return ExitCodes.Success;
     }
 
-    private static IReadOnlyDictionary<string, string> TaskCallerEnvironment()
+    private static IReadOnlyDictionary<string, string> TaskCallerEnvironment(Func<string, string?> environment)
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (string key in TaskEnvironmentKeys)
         {
-            if (Environment.GetEnvironmentVariable(key) is { } value)
+            if (environment(key) is { } value)
             {
                 env[key] = value;
             }

@@ -265,10 +265,12 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   thread-default **culture**.
   - **First ask whether the production code can take the value as a PARAMETER.** A `try/finally`
     around `Environment.SetEnvironmentVariable` restores the value but cannot close the window;
-    the state being shared is the process's, not the lock's. Two seams exist as precedent:
-    `GitLsFilesProbe`'s `workingDirectory` (#593) and `CommandFactory.BuildRootCommand`'s
-    `TelemetryOverrides` (#594). Both are nullable, both default to the previous ambient
-    behaviour, and both let a test scope itself by PASSING A VALUE.
+    the state being shared is the process's, not the lock's. Three seams exist as precedent:
+    `GitLsFilesProbe`'s `workingDirectory` (#593), `CommandFactory.BuildRootCommand`'s
+    `TelemetryOverrides` (#594), and its `environment` reader, which `supply`'s caller-scope check
+    consults (#373 — two Supply test classes that set the task namespace process-wide raced each
+    other, found by a red local run before its PR). All are nullable, all default to the previous
+    ambient behaviour, and all let a test scope itself by PASSING A VALUE.
   - **A serialized collection is the fallback, and it has a real cost.** It buys wall clock on
     every CI run forever, and it removes the concurrency coverage that catches the NEXT defect of
     this shape. Measure the exposure before reaching for one: #594 found **4** classes mutating a

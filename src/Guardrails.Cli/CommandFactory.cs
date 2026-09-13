@@ -12,7 +12,15 @@ namespace Guardrails.Cli;
 /// </summary>
 public static class CommandFactory
 {
-    public static RootCommand BuildRootCommand(IConsoleIo io, TelemetryOverrides? telemetry = null)
+    /// <summary>
+    /// Build the root. <paramref name="environment"/> reads the invoking process's environment for a
+    /// command that classifies its CALLER from it — today only <c>supply</c>'s caller-scope check
+    /// (design 40 §5a). Null reads the real process, which is what <c>Program.cs</c> does. Like
+    /// <see cref="TelemetryOverrides"/>, it exists so a test scopes itself by passing a value instead of
+    /// mutating process-wide state that every parallel test class shares (#520).
+    /// </summary>
+    public static RootCommand BuildRootCommand(
+        IConsoleIo io, TelemetryOverrides? telemetry = null, Func<string, string?>? environment = null)
     {
         ArgumentNullException.ThrowIfNull(io);
 
@@ -28,7 +36,7 @@ public static class CommandFactory
         rootCommand.Add(LogsCommand.Create(io));
         rootCommand.Add(AttachCommand.Create(io));
         rootCommand.Add(ResetCommand.Create(io));
-        rootCommand.Add(SupplyCommand.Create(io));
+        rootCommand.Add(SupplyCommand.Create(io, environment));
         rootCommand.Add(LockCommand.Create(io));
         rootCommand.Add(MergeCommand.Create(io));
         rootCommand.Add(ProvidersCommand.Create(io));
