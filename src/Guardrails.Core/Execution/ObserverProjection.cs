@@ -413,6 +413,23 @@ public sealed class ObserverProjection : IRunObserver
         _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
     }
 
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    {
+        var pathArray = new JsonArray();
+        foreach (string path in paths)
+        {
+            pathArray.Add(JsonValue.Create(path));
+        }
+
+        Append(new JsonObject
+        {
+            ["member"] = "SuppliedResourcesCommitted",
+            ["paths"] = pathArray,
+            ["commit"] = commit
+        });
+        _inner.SuppliedResourcesCommitted(paths, commit);
+    }
+
     /// <summary>
     /// Append one compact single-line JSON object to <c>observer.jsonl</c>, opening, writing (with an
     /// explicit flush on close), and closing the handle on EVERY call rather than holding a buffered

@@ -29,7 +29,21 @@ operator will actually see it, so `SuppliedObserverCliForwardingTests` passes (d
 step 3).
 
 **Find them yourself — grep, do not trust a list.** Run
-`grep -rln "IRunObserver" --include=*.cs src/Guardrails.Cli/` and cover every implementer it
+`grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Cli/` and cover every implementer it
+(`-rln` returns FILES — 8 in Cli, of which only 4 implement the interface — so it over-selects).
+They are `ConsoleRunObserver`, `LiveRunObserver`, `OnTheFlyDiagramObserver` and
+`OnTheFlyLogSiteObserver`.
+
+**Two of those four are asserted by a pre-existing test that task 07 turned red.**
+`tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs` requires
+`OnTheFlyDiagramObserver` and `OnTheFlyLogSiteObserver` to DECLARE every `IRunObserver` member —
+an inherited default does not count. Task 08 closed the Core half; this task closes the Cli
+half, and until it does the sweep stays red and the terminal gate fails. It is in no task's
+`writeScope` and needs no edit. Do not touch the test.
+
+**Your own gate runs against `Guardrails.Integration.Tests`, not `Guardrails.Core.Tests`** —
+that is the only test project referencing `Guardrails.Cli`, so it is the only place a test of
+these four types can even compile.
 returns. At authoring time that was `LiveRunObserver`, `OnTheFlyDiagramObserver`,
 `OnTheFlyLogSiteObserver` and `ConsoleRunObserver`. **If your grep returns a different set,
 trust the grep.**

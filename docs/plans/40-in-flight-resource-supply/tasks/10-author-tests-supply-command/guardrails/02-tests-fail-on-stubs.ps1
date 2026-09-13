@@ -19,7 +19,9 @@ $pinned = @(
     'Supply_PrintsWhereItLandedAndWhichBoundaryWillPickItUp',
     'Supply_RefusesWhenThereIsNoResumableRunAtAll',
     'Supply_DoesNotRequireALiveRun',
-    'Supply_RefusesAPathOutsideTheWorkspace'
+    'Supply_RefusesAPathOutsideTheWorkspace',
+    'Supply_FromATaskEnvironment_RefusesOutsideThatTasksWriteScope',
+    'Supply_FromATaskEnvironment_AllowsInsideIt'
 )
 
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))

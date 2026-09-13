@@ -811,6 +811,21 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    {
+        lock (_gate)
+        {
+            // Design 40 §2 step 3: a run whose base changed underneath it must say so on whichever surface
+            // the operator is watching — a silent base change is indistinguishable from a harness bug when
+            // a later task behaves unexpectedly. NON-coalescing (like WaveStarting/PlanHashMismatch): each
+            // supply is a distinct, rare event worth its own line, never folded into a count.
+            string escapedPaths = string.Join(", ", paths.Select(Markup.Escape));
+            AppendNarrative(
+                $"[bold]supplied:[/] {paths.Count} resource(s) committed [grey]{Markup.Escape(commit)}[/] — "
+                + escapedPaths);
+        }
+    }
+
     public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)

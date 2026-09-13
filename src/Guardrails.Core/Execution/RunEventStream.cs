@@ -290,6 +290,21 @@ public sealed class RunEventStream : IRunObserver
         Model.WaveNode? authoredWave) =>
         _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
 
+    /// <inheritdoc/>
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    {
+        _inner.SuppliedResourcesCommitted(paths, commit);
+
+        AppendLine(new EventRow
+        {
+            Kind = "supplied-resources-committed",
+            RunId = _runId,
+            TaskId = null,
+            Paths = paths,
+            Commit = commit
+        });
+    }
+
     /// <summary>
     /// Appends <paramref name="row"/> as one complete JSON line to <c>events.jsonl</c>, flushed
     /// immediately so a consumer tailing the file sees it without waiting for the run to end. Guarded by
@@ -482,6 +497,12 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.NeedsHumanKind"/>.</summary>
         public string? NeedsHumanKind { get; init; }
+
+        /// <summary><c>supplied-resources-committed</c>: the workspace-relative destinations that landed.</summary>
+        public IReadOnlyList<string>? Paths { get; init; }
+
+        /// <summary><c>supplied-resources-committed</c>: the SHA the drain committed them in.</summary>
+        public string? Commit { get; init; }
     }
 }
 

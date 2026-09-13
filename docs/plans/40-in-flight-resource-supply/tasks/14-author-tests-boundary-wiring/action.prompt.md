@@ -50,7 +50,20 @@ next task's worktree, and the commit carries the §4 trailer.
 - `SettledTasksAreNotReRunBySupplying` — §2's closing rule. Supplying does not invalidate
   completed work; a design that re-ran the DAG on every supply would be unusable on a long plan.
 - `ARunThatSuppliesNothing_IsUnchanged` — the never-weaker requirement, asserted rather than
-  assumed: no commit, no journal section, no observer event.
+  assumed: no commit, no journal section, no observer event. (DECLARED-EXEMPT from the red
+  census — it is green against the unwired code by construction. See the header of
+  `guardrails/02-real-seam-tests-fail-on-current-code.ps1`.)
+- `TaskBoundary_WritesTheSuppliedProvenanceIntoRunJson` — read `state/run.json` AFTER the drain
+  and assert the `supplied[]` entry is there, commit sha included.
+- `Drain_AnnouncesThroughTheRealObserverPipeline` — assert on the real `--no-ui` transcript of
+  the run, never on an injected observer.
+
+**Why those last two exist (review, 2026-09-11).** Without them the parts were unit-tested in
+isolation — task 06 round-trips the record, tasks 07/08/09 forward a hand-raised event — and
+NOTHING asserted the production path actually USES either. An implementation where the drain
+commits the file and never writes `supplied[]` and never raises the event passed tasks 04, 06,
+08, 09, 15, 16, both plan-root gates and the whole suite. §5a calls provenance "the actual
+defence" and "load-bearing"; it was load-bearing on nothing.
 
 The tests MUST COMPILE and FAIL against the unwired code. Do NOT wire anything here.
 

@@ -1,0 +1,13 @@
+{
+  "description": "Author failing tests for the wave entry gate distinguishing baseline kinds — a positive baseline re-evaluates, a negative one keeps skip-once",
+  "dependsOn": [
+    "08-implement-deliver-at-wave-barrier"
+  ],
+  "stableId": "y8f3wr",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveEntryBaselineKindTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

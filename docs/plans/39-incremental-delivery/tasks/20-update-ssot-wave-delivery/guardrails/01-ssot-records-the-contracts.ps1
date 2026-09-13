@@ -19,19 +19,38 @@ if (-not (Test-Path -LiteralPath $subject)) {
 
 $raw = Get-Content -Raw -LiteralPath $subject
 
-# An HTML comment RENDERS AS NOTHING, so a token only inside one is invisible text and must not
-# satisfy a required-present clause. Fences are NOT stripped — a fence renders, so a token in a
-# usage fence is legitimate house style.
-if ($raw -match '<!--(?![\s\S]*?-->)') {
-    Write-Output "PRECONDITION: $subject has an unterminated '<!--'. Refusing to strip to EOF."
+# An HTML comment RENDERS AS NOTHING, so a token that only appears inside one is invisible text
+# and must not satisfy a required-present clause (#468 operator 2).
+#
+# But a bare lazy `(?s)<!--.*?-->` is WRONG on any document that MENTIONS `<!--` in prose: the
+# mention opens a match that runs to the next real `-->` anywhere later. MEASURED on
+# .claude/skills/plan-breakdown/SKILL.md — whose line 636 documents this very idiom — the lazy
+# form removes 169,334 bytes, 44.8% of the file, in ONE span, taking the Step 5 anchor with it.
+# The old unterminated-'<!--' precondition reported HEALTHY throughout, because a '-->' does
+# exist later: the guard was written, executed, and could not fire on the actual defect.
+#
+# Inside a fenced block or an inline code span, `<!--` is literal text a reader SEES — Markdown
+# renders it — so it cannot be an opener. Mask those regions, strip, then UNMASK, which also
+# preserves fence content in $doc and so honours the counter-rule that a token documented in a
+# usage fence legitimately satisfies a clause.
+$maskOpen = [string][char]0x01
+$maskClose = [string][char]0x02
+$masked = [regex]::Replace($raw, '(?s)```.*?```|`[^`\r\n]*`', {
+    param($m) $m.Value.Replace('<!--', $maskOpen).Replace('-->', $maskClose)
+})
+
+# Belt and braces: after masking, an opener with no closer really is unterminated.
+if ($masked -match '<!--(?![\s\S]*?-->)') {
+    Write-Output "PRECONDITION: $subject contains an unterminated '<!--' outside any code span. Refusing to strip to EOF, which would delete the rest of the document over one stray token."
     exit 1
 }
-$doc = [regex]::Replace($raw, '(?s)<!--.*?-->', '')
+
+$doc = ([regex]::Replace($masked, '(?s)<!--.*?-->', '')).Replace($maskOpen, '<!--').Replace($maskClose, '-->')
 
 $failures = @()
 
-if ($doc -notmatch [regex]::Escape('"delivers"')) {
-    $failures += "MISSING '`"delivers`"' in $subject — the per-wave delivers flag is not recorded"
+if ($doc -notmatch [regex]::Escape('delivers: true')) {
+    $failures += "MISSING 'delivers: true' in $subject — the per-wave delivers flag is not recorded"
 }
 
 if ($doc -notmatch [regex]::Escape('WaveDelivered')) {
@@ -40,6 +59,18 @@ if ($doc -notmatch [regex]::Escape('WaveDelivered')) {
 
 if ($doc -notmatch [regex]::Escape('covers: [')) {
     $failures += "MISSING 'covers: [' in $subject — the covers[] field is not recorded, so a reader cannot tell what a merge carried"
+}
+
+if ($doc -notmatch [regex]::Escape('GR2079')) {
+    $failures += "MISSING 'GR2079' in $subject — the second new diagnostic is not recorded. Design §5 said `"one, not four`" and §1c had already added the second; both codes belong in the registry section"
+}
+
+if ($doc -notmatch [regex]::Escape('refs/guardrails/trial/')) {
+    $failures += "MISSING 'refs/guardrails/trial/' in $subject — the trial-merge ref is not recorded. §1 DECIDED that a delivering wave gates against a TRIAL MERGE on a scratch ref and only promotes on green; that changes §14.3's exit-gate contract and a reader cannot infer it"
+}
+
+if ($doc -match [regex]::Escape('should take **`GR2078`**')) {
+    $failures += "STALE TEXT STILL PRESENT: 'should take **`GR2078`**' in $subject — the registry ladder still says an unrelated new code should take GR2078. This plan TAKES GR2078 and GR2079, so that sentence is now false and must read GR2080. A positive clause cannot catch this - only requiring the stale text to be GONE proves the correction happened rather than being appended beside it"
 }
 
 if ($failures.Count -gt 0) {

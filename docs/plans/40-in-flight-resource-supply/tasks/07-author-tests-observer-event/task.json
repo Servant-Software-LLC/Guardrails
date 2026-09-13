@@ -6,7 +6,7 @@
   "stableId": "w8j4ft",
   "writeScope": [
     "tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs",
-    "tests/Guardrails.Core.Tests/Supply/SuppliedObserverCliForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedObserverCliForwardingTests.cs",
     "src/Guardrails.Core/Execution/IRunObserver.cs"
   ]
 }

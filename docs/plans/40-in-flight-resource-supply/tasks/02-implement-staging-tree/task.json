@@ -5,6 +5,6 @@
   ],
   "stableId": "q7m2zd",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/SuppliedStagingTree.cs"
   ]
 }

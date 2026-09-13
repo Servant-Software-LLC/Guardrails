@@ -3,7 +3,11 @@
 #          fails, so without this the next guardrail cannot tell garbage from a real red —
 #          and the implementation task (whose writeScope EXCLUDES the test file) could not
 #          fix the compile error anyway, dead-ending the run (#155).
-#          Subject: tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs
+#          Subjects: tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs AND
+#          tests/Guardrails.Integration.Tests/Supply/SuppliedObserverCliForwardingTests.cs.
+#          The second is in Integration.Tests deliberately: Core.Tests references
+#          Guardrails.Core alone, so a test of the CLI decorators cannot compile there and no
+#          task in this plan may edit a .csproj. A whole-solution build covers both.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 

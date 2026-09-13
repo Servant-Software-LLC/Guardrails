@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests for the needs-human halt text: it names the plan-edit/code-artifact asymmetry and prints the three-command sequence",
+  "dependsOn": [
+    "11-implement-supply-command",
+    "16-wire-drain-at-run-start"
+  ],
+  "stableId": "e2a7mc",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedHaltTextTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

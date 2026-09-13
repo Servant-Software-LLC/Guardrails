@@ -28,7 +28,20 @@ Forward `SuppliedResourcesCommitted` through every **Core** `IRunObserver` decor
 `SuppliedObserverEventTests` passes.
 
 **Find them yourself — grep, do not trust a list.** Run
-`grep -rln "IRunObserver" --include=*.cs src/Guardrails.Core/` and cover every implementer it
+`grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Core/` and cover every implementer it
+(`-rln` returns FILES — 17 in Core, of which only 3 implement the interface — so it over-selects
+by a factor of five). The two TRANSPARENT decorators are `ObserverProjection` and
+`RunEventStream`; the third implementer is the nested `NullObserver`, whose contract is to
+swallow and which must NOT forward.
+
+**A pre-existing test goes RED the moment task 07 merges, and closing it is YOUR job.**
+`tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs` enumerates
+`typeof(IRunObserver).GetMethods(...)` and asserts four named decorators DECLARE every member —
+explicitly rejecting the interface's empty default ("Inheriting the interface's empty default
+declares nothing"). Task 07 adds a 25th member with a no-op default, so the sweep fails on all
+four until the declarations land: the two Core ones here, the two Cli ones in task 09. It is in
+no task's `writeScope` and needs no edit — it goes green by itself once you declare. Do not
+"fix" it by touching the test.
 returns. At authoring time that was `ObserverProjection` and `RunEventStream`. **If your grep
 returns a different set, trust the grep**, cover what it found, and say so in your summary.
 

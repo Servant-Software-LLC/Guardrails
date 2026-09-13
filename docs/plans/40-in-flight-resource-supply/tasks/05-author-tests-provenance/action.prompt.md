@@ -27,6 +27,16 @@
 Author failing tests AND minimal stubs for the `supplied[]` provenance record — design 40 §4.
 
 **Test file:** `tests/Guardrails.Core.Tests/Supply/SuppliedProvenanceTests.cs`
+**Stub files:** `src/Guardrails.Core/Journal/SuppliedRecord.cs` AND
+`src/Guardrails.Core/Journal/JournalModel.cs`.
+
+**Why the second stub file is in your scope (review, 2026-09-11).** `JournalDocument` is a
+`public sealed record` in `JournalModel.cs` and is NOT partial, so the `supplied[]` property
+cannot be introduced from `SuppliedRecord.cs`. Without that file you would be in a vice: tests
+written against today's types PASS (and the red census fails), tests written against
+`doc.Supplied` do not COMPILE (and the build gate fails). Add the property as an ADDITIVE
+nullable stub, matching the existing `PlanPreflights` / `Decisions` / `Waves` precedent in that
+same file — read them first and follow their shape rather than inventing one.
 **Test class:** `SuppliedProvenanceTests`
 **Stub file:** `src/Guardrails.Core/Journal/SuppliedRecord.cs`
 
@@ -42,7 +52,11 @@ So the round-trip test is not optional and it must cover BOTH directions.
 
 - `SuppliedRecord_RoundTripsThroughTheJournalJson` — serialize then deserialize; every field
   survives. BOTH converter directions.
-- `SuppliedRecord_CarriesAtCommitPathsAndBytes` — the four fields §4 names.
+- `SuppliedRecord_CarriesAtCommitPathsBytesAndBy` — the FIVE fields §4 names. The fifth is
+  `by` (`operator` | `overwatcher` | `task:<folder>`), added by review: a record that cannot
+  name a non-operator supplier makes §3's auto-resolve condition unimplementable and makes the
+  commit trailer a false statement. It is not decoration — recording WHO supplied is the whole
+  point of the section.
 - `Journal_WithNoSuppliedSection_RoundTripsUnchanged` — a run that never supplied anything is
   byte-identical to today. The never-weaker requirement, asserted rather than assumed.
 - `Journal_AppendsASecondSupplyWithoutLosingTheFirst` — `supplied[]` is a list; two supplies in

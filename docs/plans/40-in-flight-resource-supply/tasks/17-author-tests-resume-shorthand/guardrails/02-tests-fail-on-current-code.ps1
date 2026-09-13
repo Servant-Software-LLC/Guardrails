@@ -20,6 +20,16 @@ $pinned = @(
     'Resume_ProducesTheIdenticalProvenanceRecordAsTheThreeCommandPath'
 )
 
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — WithoutResume_TheThreeCommandPathIsUnchanged.
+#   STRUCTURAL REASON: the three-command path already works, so "the default did not move" is
+#   GREEN before --resume exists. Demanding 'Failed' would red a correct plan.
+#   BUT THIS ONE IS NOT MERELY EXEMPT — it is the ENTIRE encoding of the maintainer's override
+#   (three resources by DEFAULT; --resume an opt-in shorthand), and the authoring agent had
+#   recommended the opposite. Dropped from the red census AND unbound anywhere else, task 18
+#   could move the default and pass. So its EXISTENCE is asserted below, and task 18's forward
+#   census requires it to be observed Passed.
+$mustExist = @('WithoutResume_TheThreeCommandPathIsUnchanged')
+
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
 
@@ -57,6 +67,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is either hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemption is exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how the
+    # maintainer's default-stays-put ruling would quietly stop being encoded anywhere.
+    foreach ($name in $mustExist) {
+        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is exempt from the RED census (a correct implementation leaves it green), NOT from existing: it is the only encoding of the DECIDED rule that the three-command path stays the DEFAULT and --resume is an opt-in shorthand."
         }
     }
 

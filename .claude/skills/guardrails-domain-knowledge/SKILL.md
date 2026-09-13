@@ -1371,6 +1371,44 @@ total order driven by the wave folder's numeric prefix.
   ways. Worked authoring example: `examples/waved-hello/` (a 2-wave demo that `guardrails validate`s
   clean) + `plan-breakdown/references/example-breakdown-waved.md`.
 
+## Supplying a resource to an in-flight or halted run
+
+**`guardrails supply <plan> <path>...`** (design of record `docs/plans/40-in-flight-resource-supply.md`,
+issue #373) hands a missing file to a run that already exists. A task's segment worktree branches from
+the run's own base -- its integration-branch lineage -- not from the human's live `master`, so a file the
+operator adds to `master` mid-run never reaches a task that needs it. **The path argument is the
+WORKSPACE path the file must have**, not a source/destination pair: `guardrails supply <plan>
+vendor/mermaid.min.js` reads `vendor/mermaid.min.js` out of the current workspace and stages it into
+`logs/<runId>/supplied/` -- a harness-owned staging tree no task worktree is ever branched from -- so it
+lands at that same path once drained.
+
+- **Two drain boundaries -- name the second explicitly.** The staged tree is picked up at whichever of
+  these the run reaches first:
+  - a **task boundary**, while the run is still executing -- later tasks branch from the new base and see
+    the file, nothing else required;
+  - the **run-start boundary**, when the run has already halted and exited -- before the Scheduler builds
+    the DAG on the next `guardrails run`. An agent that knows only the task boundary cannot tell a supply
+    that will be picked up from one that will not: a halted run has no live task boundary left to reach,
+    and that is exactly the case `supply` exists for. Resolving a halt is three verbs, in order:
+    `guardrails supply <plan> <path>`, then `guardrails reset <plan> <task-id>`, then `guardrails run
+    <plan>` (resume-aware -- re-runs only the reset task and its descendants).
+- **The asymmetry, as a contract.** Plan-folder edits -- task prompts, guardrails -- are read live from
+  the canonical checkout on every attempt; code artifacts do not, because a task's worktree is branched
+  from the run's base at a point already in the past, and nothing about a running plan re-reads the
+  human's checkout for anything outside the plan folder. `supply` is the recovery channel for the code
+  side of that gap; it does not unify the two -- unifying would either cost the live-plan-edit capability
+  or admit a second writer into a tree the harness owns (invariant 2). This is the surface nothing else in
+  the repo tests: the README's `guardrails supply` row is `ReadmeCommandCoverageTests`-enforced, but an
+  agent deciding what to do about a file it cannot produce reads THIS skill first.
+- **Caller scoping: a task agent may supply only paths inside `its own writeScope`; an operator invocation
+  is unrestricted.** This is what makes the JIT case usable -- an agent authoring a script it then needs
+  on the run's base can inject it without ending the run and re-paying a breakdown, and it almost
+  certainly already owns that path via its own `writeScope`. Left unscoped, `supply` would be a
+  `writeScope` bypass, letting a task put any file onto the run's base with no scope check ever consulted.
+  The caller is told apart by whether the harness-owned `GUARDRAILS_*` namespace is present in its own
+  environment at all: present means a task invocation, checked against the calling task's own declared
+  `writeScope`; wholly absent means an operator, unrestricted.
+
 ## Load-bearing invariants
 
 1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and

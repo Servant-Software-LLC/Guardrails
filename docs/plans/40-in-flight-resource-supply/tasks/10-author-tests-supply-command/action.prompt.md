@@ -48,6 +48,18 @@ verb is not wired.
   had already HALTED and exited; a `supply` that required a live run would refuse precisely when
   it is needed. The design's first draft got this wrong, which is why it is pinned.
 - `Supply_RefusesAPathOutsideTheWorkspace` — GR2019's traversal rule at the CLI boundary.
+- `Supply_FromATaskEnvironment_RefusesOutsideThatTasksWriteScope` — the DECIDED caller-scoping
+  rule (`d40-agent-callable-supply`), asserted THROUGH THE CLI. Set `GUARDRAILS_STATE_OUT` /
+  `GUARDRAILS_WORKSPACE` the way a task action sees them, invoke the verb, assert the refusal.
+- `Supply_FromATaskEnvironment_AllowsInsideIt` — the JIT case the reviewer valued: an agent
+  writing a script it then needs on the base already owns that path.
+
+**Drive these through the CLI, not through `SupplyCallerScope` by name.** That type is built by
+tasks 12/13, which are SIBLINGS of this task rather than ancestors — referencing it here would
+not compile in this task's segment (#176). Asserting the refusal at the command boundary needs
+no new type and is the stronger claim anyway: it proves the rule is CONSULTED. Tasks 12/13 built
+the rule and, before this review, nothing called it — the maintainer's ruling shipped as dead
+code with every guardrail green.
 
 The tests MUST COMPILE and FAIL. Do NOT implement the verb.
 

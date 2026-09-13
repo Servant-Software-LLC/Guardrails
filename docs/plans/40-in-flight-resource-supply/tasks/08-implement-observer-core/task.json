@@ -1,10 +1,12 @@
 {
-  "description": "Forward SuppliedResourcesCommitted through the CORE IRunObserver decorators",
+  "description": "Forward SuppliedResourcesCommitted through the CORE IRunObserver decorators (ObserverProjection, RunEventStream)",
   "dependsOn": [
     "07-author-tests-observer-event"
   ],
   "stableId": "p1r7gs",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
   ]
 }

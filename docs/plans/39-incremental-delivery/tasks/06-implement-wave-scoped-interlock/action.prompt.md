@@ -22,6 +22,14 @@
 
 ## Task
 
+**RECORD the wave on the decision; do NOT parse it out of `Subject` (review, 2026-09-11).**
+§1a claimed `decisions[]` already carried a wave attribution. It does not — `DecisionEntry` has
+no wave member, and `Subject` is free text whose meaning varies by `Boundary`: only the
+`Boundary = "wave"` factories put a wave dir there, while the `task` (Overwatch) and `drift`
+boundaries — which are the ones that actually produce `proceeded-best-guess` — put a task id.
+Task 05 stubs the `Wave` member; populate it at each site that CREATES a decision, so the
+interlock reads a recorded fact rather than reverse-engineering one from a string.
+
 Make `WaveScopedInterlockTests` pass: the interlock becomes per-wave rather than run-scoped.
 
 **Find the current call yourself** — grep for `SuppressingDecision` and `MergeOnSuccessForcedByOperator`

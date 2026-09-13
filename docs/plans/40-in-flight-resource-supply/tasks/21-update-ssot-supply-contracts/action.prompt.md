@@ -28,7 +28,15 @@ Record the three contracts design 40 §6 names, in `docs/plans/02-schemas-and-co
 
 - **§1** — `logs/<runId>/supplied/` as a harness-owned staging tree: written by
   `guardrails supply`, drained and deleted by the harness, **never read by a guardrail**.
-- **§7 `run.json`** — the `supplied[]` section: `at`, `commit`, `paths`, `bytes`.
+- **§7 `run.json`** — the `supplied[]` section: `at`, `commit`, `paths`, `bytes`, and `by`
+  (`operator` | `overwatcher` | `task:<folder>`). The FIFTH field was added by review: without
+  it §3's auto-resolve condition — "write the provenance record naming the overwatcher as the
+  supplier" — is unimplementable, and the commit trailer is a false statement on any supply the
+  operator did not perform. Record the trailer as DERIVED (`Supplied-By: <by>`), never as the
+  constant `Supplied-By-Operator`.
+- **§5a caller scoping** — a task agent may supply only inside its **own writeScope**; an
+  operator invocation is unrestricted. This is a new env-derived authorization contract layered
+  on `WriteScope.IsInScope`, and the SSOT is where a contract lives. It was recorded nowhere.
 - **§8** — the `SuppliedResourcesCommitted` observer event.
 
 Write it in the document's own conventions — match the surrounding sections' shape rather than

@@ -51,7 +51,7 @@ Everything the first draft invented is already in the wave model:
 | a boundary where a subset of work is complete | the **wave barrier** |
 | a deterministic gate over the merged tree at that boundary | **`WaveJournalEntry.Exit`** — *"the plan-guardrail phase scoped to this wave, always re-evaluated on the current HEAD"* (SSOT §14.6) |
 | ordering, so a docs sink lands after the code it documents | **waves are strictly ordered** — put the sink in the last wave |
-| the merge machinery itself | **`Scheduler.DeliverAndCleanup`** (`:1144`), already *"shared by the flat and waved paths"* |
+| the merge machinery itself | **`Scheduler.Finalize` → `DeliverToUserBranch`** (`Scheduler.cs:1145`/`:1308`), already shared by the immediate path and the terminal-gate-deferred one. *(Corrected at review: this cell said `DeliverAndCleanup`, which does not exist — `grep -rn DeliverAndCleanup src/ tests/` exits 1. Grep for `DeliverToUserBranch`.)* |
 | per-unit journaling and reporting | `WaveJournalEntry`, `WaveStatus`, the wave gate events |
 
 **So the whole feature is: fire the existing delivery at each wave's existing exit gate, instead of once at
@@ -76,7 +76,25 @@ commits merged onto it — not merely against the plan branch as it stands.
 For waves the distinction is much narrower than it was for the first draft's parallel groups (a wave
 barrier is a quiescent point; there is no *other* wave mid-flight to contaminate the tree). But it is not
 zero: the plan branch also carries the run's own harness commits and anything a prior wave left. The
-delivery gate asserts over what lands, and the check is cheap once the merge is performed first.
+delivery gate asserts over what lands.
+
+**DECIDED (review, 2026-09-11): a TRIAL MERGE on a scratch ref.** The first draft said only *"the check is
+cheap once the merge is performed first"*, which read as *merge onto the user's branch, then gate* — and
+that is not safe. It contradicts §3's *"gated on that wave's `Exit` being green"* (the gate would run
+after the write it is supposed to authorise), it contradicts the #588 requirement that the operator's
+checkout is not modified, and the only way back from a red gate is the un-merge §1a says the interlock
+**cannot** do. The order is therefore:
+
+1. Merge the plan branch onto a throwaway ref — `refs/guardrails/trial/<waveDir>` — never onto the
+   user's branch.
+2. Run the wave's `Exit` gate against THAT tree. It is the tree the delivery would produce, so §1's
+   requirement is met exactly.
+3. Consult the interlock (§1a) **before** any write the operator can see.
+4. On green, fast-forward the user's branch to the trial ref. On red, delete the ref; the user's branch
+   never moved, and there is nothing to un-merge.
+
+The scratch ref is a harness-owned ref under `refs/guardrails/`, not a branch, so it never appears in the
+operator's `git branch` output and needs no cleanup beyond the delete.
 
 ---
 
@@ -94,10 +112,23 @@ branch with no consumer — a PR nobody can review on its merits and a state not
 **So ordering and delivery are separate properties.** A wave is always an ordering unit; only some waves are
 delivery points.
 
-```jsonc
-// in the wave's own manifest
-{ "delivers": true }     // default FALSE
+```yaml
+# wave-NN-<slug>/brief.md — YAML front matter, at the top of the file
+---
+delivers: true      # default FALSE
+---
 ```
+
+**Where the flag lives, and why it is NOT a new file (review, 2026-09-11).** The first draft said "the
+wave's own manifest". **There is no wave manifest** — SSOT §14.1 is explicit that v1 has *"ONE shared run
+config (no per-wave config in v1)"*, and the obvious guess is actively destructive:
+`WaveFolder.TryResolveWaveTarget` treats *"a directory that carries its own `guardrails.json`"* as **a plan
+in its own right, NEVER a wave**, so dropping a config into `wave-NN/` silently un-waves the plan. The flag
+therefore goes in the front matter of the **existing optional `brief.md`** (SSOT §14.10). Two things fall
+out for free, and they are the reason this beats a new `wave.json`: the loader needs no change to its wave
+DETECTION predicate, and `WaveDefinitionHash` **already folds `brief.md`** (`Compute` → `GateDefinitionOf`),
+so flipping `delivers` on a completed wave re-stales that wave's marker and trips drift exactly as SSOT
+§14.7 requires — with no hasher change at all.
 
 **A delivering wave ships everything accumulated since the last delivery point.** The non-delivering waves
 before it ride along. This needs no new mechanism: the plan branch already accumulates exactly that way, so
@@ -158,9 +189,19 @@ work that is *already on the user's branch*. The interlock cannot un-merge, so i
 weakened, it is **defeated for every wave that delivered before the decision existed.**
 
 **Requirement: the interlock becomes WAVE-SCOPED — DECIDED (review round 2).** The maintainer's answer:
-*"a wave delivers only if no suppressing decision was recorded during that wave."* `decisions[]` entries
-carry a wave attribution already, and the run-end call keeps the run-scoped reading for the final wave and
-every flat plan.
+*"a wave delivers only if no suppressing decision was recorded during that wave."* The run-end call keeps
+the run-scoped reading for the final wave and every flat plan.
+
+**CORRECTED (review, 2026-09-11): `decisions[]` entries do NOT carry a wave attribution, and this design
+must ADD one.** The first draft asserted the attribution "already" existed; it does not. `DecisionEntry`
+has eighteen public members and none is a wave. `Subject` is free text documented as *"a task id / wave dir
+/ the drifted unit(s)"*, and only the `Boundary = "wave"` factories put a wave dir there — the `task`
+(Overwatch) and `drift` boundaries, which are the ones that actually produce `proceeded-best-guess`, put a
+task id. Deriving the wave by string-splitting a §14.2 wave-qualified id would be undocumented, waved-plans-
+only, and silently wrong for exactly the boundaries that matter. So the interlock re-scoping REQUIRES a
+real `Wave` member on `DecisionEntry`, recorded at the point the decision is made rather than parsed back
+out afterwards. That is a change to the shared `decisions[]` surface (SSOT §2.1/§7) and belongs in the SSOT
+in the same change.
 
 This is a **precondition, not a follow-up**: no wave may deliver early until the interlock is re-scoped, or
 the feature becomes the way #361 is escaped.
@@ -375,9 +416,14 @@ failure in one stage no longer strands the finished work of the others.
 
 Much smaller than the first draft:
 
-- **`DeliverAndCleanup` becomes callable at a wave barrier**, gated on that wave's `Exit` being green — not
-  only at run end. The run-end call stays for the last wave and for every flat plan.
-- **Delivery is opt-in per WAVE** (`"delivers": true` in the wave's manifest, default **false**) — §1b. A
+- **The delivery path becomes callable at a wave barrier**, gated on that wave's `Exit` being green
+  against the TRIAL MERGE (§1) — not only at run end. The run-end call stays for the last wave and for
+  every flat plan. **The entry point is `Scheduler.Finalize` → `DeliverToUserBranch` →
+  `IWorktreeProvider.MergePlanBranchIntoUserBranch`** — corrected at review, 2026-09-11: there is no method
+  called `DeliverAndCleanup` anywhere in the tree (`grep -rn DeliverAndCleanup src/ tests/` exits 1). The
+  name entered at charter review and propagated; grep `Scheduler.cs` for `DeliverToUserBranch` rather than
+  trusting any name in this document.
+- **Delivery is opt-in per WAVE** (`delivers: true` in the wave's `brief.md` front matter, default **false**) — §1b. A
   plan that marks nothing behaves byte-identically to today: one merge at run end. That is the never-weaker
   requirement, and the reason this cannot silently change what an existing waved plan does with your branch.
 - **A wave with no `guardrails/` folder is never delivered early.** No gate, no delivery; it waits for the
@@ -423,11 +469,13 @@ Three requirements, each earned by a defect already shipped here:
 `delivered` (`{at, commit, covers: ["<wave>", …]}` or null — `covers` names the non-delivering waves that
 rode along, so the report can say what a merge actually carried). No new folder.
 
-**New diagnostics** — one, not four: a WARNING when a wave sets `delivers: true` and carries no
-`guardrails/` exit gate, so an author learns that wave cannot deliver rather than discovering it by its
-absence from the report.
+**New diagnostics** — TWO, not four (corrected at review: this line said "one" while §1c's DECIDED
+answer had already added the second). **GR2079**, a WARNING when a wave sets `delivers: true` and carries
+no `guardrails/` exit gate, so an author learns that wave cannot deliver rather than discovering it by its
+absence from the report; and **GR2078**, a WARNING when a wave that FOLLOWS a delivery point carries no
+entry preflight (§1c). Both are warnings and neither moves the exit code.
 
-**Harness** — `DeliverAndCleanup` callable at the barrier; `IRunObserver.WaveDelivered`, forwarded through
+**Harness** — the `Finalize` → `DeliverToUserBranch` path callable at the barrier (against the §1 trial merge); `IRunObserver.WaveDelivered`, forwarded through
 every decorator (the `ObserverForwardingSweepTests` contract); the delivery journaled with `status: running`
 before the merge, per the #625 rule.
 

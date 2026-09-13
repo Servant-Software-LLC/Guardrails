@@ -26,6 +26,18 @@
 
 Add `guardrails supply` to the README's command-line section, in the document's existing style.
 
+**AND one sentence in `## What a plan folder holds`** (the plan-folder section added in #600) —
+naming the asymmetry: plan-folder edits reach a running plan; **code artifacts do not**. Design
+§5 asks for that section specifically, and it is one of the three surfaces the review's
+`d40-asymmetry` answer named. The first draft of this task targeted only the CLI section and
+told you to cover "what an operator needs and nothing more", which actively excluded it.
+
+Two more things an operator cannot guess, both required:
+- **the run-start boundary** — the halted-run case, which is the one the feature exists for. At
+  the moment the operator has the file in hand there is no live run to have a task boundary.
+- **workspace-relative paths** — the staged layout IS the destination layout; there is no
+  separate destination argument.
+
 Cover what an operator needs and nothing more: what it does, that the path is the path the file
 must have **in the workspace**, and **which boundary picks it up** — the task boundary on a live
 run, run start on a halted one. The second is the case the feature exists for and the one an

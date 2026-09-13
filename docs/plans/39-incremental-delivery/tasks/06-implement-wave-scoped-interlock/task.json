@@ -1,11 +1,13 @@
 {
-  "description": "Scope the #361/#340 delivery interlock to the wave so the authored tests pass",
+  "description": "Scope the #361/#340 delivery interlock to the wave, recording the wave on the decision rather than parsing it back out of Subject",
   "dependsOn": [
     "05-author-tests-wave-scoped-interlock"
   ],
   "stableId": "m8r5xt",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Execution/RunOutcomePolicy.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
   ],
   "action": {
     "maxTurns": 75

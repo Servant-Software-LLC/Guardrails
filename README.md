@@ -129,6 +129,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails merge [folder] --remote <dir> [--apply]` | Merge a freshly regenerated breakdown into the current folder, preserving human guardrail edits; `--apply` materializes it (otherwise dry-run report) |
 | `guardrails logs [folder] [--port <n>] [--task <id>] [--no-open]` | Serve the web log viewer over a plan's persisted logs (any task — pass or fail); reads per-task status from the journal; opens a browser unless `--no-open`; runs until Ctrl-C. Use it for a post-mortem **or to attach to a run already in flight** from another terminal — it serves what is on disk, which the running harness is still writing |
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
+| `guardrails supply <plan> <path>...` | Stage file(s) for a resumable run — one with unfinished tasks, live or halted — to pick up at its next drain boundary: the **next task boundary** while the run is still executing, or the **run-start boundary** on the next `guardrails run` if it has already halted and exited. Each `path` is **workspace-relative** — the staged layout *is* the destination layout, so there is no separate destination argument. A task agent may supply only paths inside its own `writeScope`; an operator invocation is unrestricted |
 | `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 | `guardrails attach [folder]` | Attach a **second terminal** to a run's live progress table, replaying its recorded events. Read-only — it never touches the run — and it works both while the run is in flight and after it has finished. This is how you watch an unattended run without being the terminal that launched it |
@@ -249,6 +250,9 @@ what lets an implementation task be forbidden from editing the tests that judge 
 A run also writes two event streams under `logs/<runId>/` — `events.jsonl` and `observer.jsonl`; their
 schemas are `docs/plans/02-schemas-and-contracts.md` §8.1 and §8.2. `guardrails attach` tails the
 second.
+
+**Plan-folder edits — task prompts, guardrails — reach a running plan live; code artifacts do not** — a
+code file the harness needs on the run's base gets there only through `guardrails supply`.
 
 ## Where things live
 

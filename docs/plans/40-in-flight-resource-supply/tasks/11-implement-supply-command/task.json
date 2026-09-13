@@ -1,10 +1,12 @@
 {
-  "description": "Implement the supply verb and REGISTER it in CommandFactory so the authored tests pass",
+  "description": "Implement the supply verb, CONSULT SupplyCallerScope before staging, and REGISTER it in CommandFactory so the authored tests pass",
   "dependsOn": [
-    "10-author-tests-supply-command"
+    "10-author-tests-supply-command",
+    "13-implement-caller-scope"
   ],
   "stableId": "y4k9bm",
   "writeScope": [
-    "src/Guardrails.Cli/"
+    "src/Guardrails.Cli/Commands/SupplyCommand.cs",
+    "src/Guardrails.Cli/CommandFactory.cs"
   ]
 }

@@ -14,12 +14,15 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'GR2078_FiresWhenAPostDeliveryWaveHasNoEntryPreflight',
-    'GR2078_IsSilentWhenTheWaveHasOne',
-    'GR2078_IsSilentForAWaveThatFollowsNoDelivery',
     'GR2079_FiresWhenADeliveringWaveHasNoExitGate',
-    'GR2079_IsSilentWhenTheWaveHasAnExitGate',
-    'BothAreWarnings_AndDoNotMoveTheExitCode'
+    'GR2077_RemainsReservedAndUnallocated'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — GR2078_IsSilentWhenTheWaveHasOne, GR2078_IsSilentForAWaveThatFollowsNoDelivery, GR2079_IsSilentWhenTheWaveHasAnExitGate, BothAreWarnings_AndDoNotMoveTheExitCode.
+#   STRUCTURAL REASON: 
+#   Each is asserted to EXIST below, and the paired implement task's forward census
+#   requires each to be observed Passed.
+$mustExist = @('GR2078_IsSilentWhenTheWaveHasOne', 'GR2078_IsSilentForAWaveThatFollowsNoDelivery', 'GR2079_IsSilentWhenTheWaveHasAnExitGate', 'BothAreWarnings_AndDoNotMoveTheExitCode')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -52,6 +55,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how a
+    # never-weaker guarantee quietly stops being asserted anywhere.
+    foreach ($name in $mustExist) {
+        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
     }
 

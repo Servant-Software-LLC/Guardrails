@@ -27,6 +27,14 @@
 Fill real logic over the stubs in `src/Guardrails.Core/Journal/SuppliedRecord.cs` and wire the
 section into the journal document so `SuppliedProvenanceTests` passes. Design 40 §4.
 
+**Deliver the WRITE PATH, not only the serialization shape (review, 2026-09-11).** Tasks 15 and
+16 call the drain at their boundaries, and their `writeScope`s are `Scheduler.cs` and
+`RunCommand.cs` alone — neither can add a method to `RunJournal`. So the caller-facing entry
+point is yours: ship `RunJournal.RecordSupplied(...)` (and, if the Scheduler is the caller, the
+matching `ISchedulerJournal` member, which task 04 declares). "Wire the section into the journal
+document" reads as the serialization shape alone, and a section nothing can WRITE is a section
+the drain silently never populates.
+
 **Both converter directions, in the same change.** A write-side-only converter passes its own
 serialize test and kills the next run on the read. Check the round-trip test actually exercises
 the read path before you call this done.

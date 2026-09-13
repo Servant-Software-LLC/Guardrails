@@ -303,6 +303,13 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         WaveNode wave, bool isEntryGate, IReadOnlyList<Core.Journal.PlanPreflightCheck> checks) =>
         _inner.WaveGateFinished(wave, isEntryGate, checks);
 
+    // Design 40 §2 step 3: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so
+    // omitting this compiles cleanly and drops the supplied-resources announcement in every mode (the
+    // VerifierAdvisoryFound lesson again). This observer does not ACT on it: a base-changed announcement
+    // is not a log-site artifact, so it forwards and nothing else.
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
+        _inner.SuppliedResourcesCommitted(paths, commit);
+
     // --- the JIT breakdown phase (issue #469) -----------------------------------------------
 
     // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these
