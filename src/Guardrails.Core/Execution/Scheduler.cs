@@ -4144,6 +4144,16 @@ public sealed class Scheduler
                 try
                 {
                     result = await SettleAsync(task, result, handle, provider, integ, ct).ConfigureAwait(false);
+
+                    // Design 40 §1/§2 — the TASK BOUNDARY: no task is mid-attempt on the base between this
+                    // settle's own commit and the moment a dependent's worktree branches from it
+                    // (AssignDependentHandles, back in OnSettledAsync under _gate once this method
+                    // returns). Still under _integrationLock so this drain's commit can never race another
+                    // settling task's own commit onto the same integration worktree.
+                    if (result.Outcome == TaskOutcome.Succeeded)
+                    {
+                        DrainSuppliedAtTaskBoundary(integ, handle);
+                    }
                 }
                 finally
                 {
@@ -4174,6 +4184,91 @@ public sealed class Scheduler
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Design 40 §2: drain whatever <c>guardrails supply</c> staged for this run onto the integration
+    /// worktree at the task boundary reached in <see cref="SettleGreenIfWorktreeAsync"/> above. A no-op
+    /// when nothing is staged (§2 step 1, never-weaker — <see cref="SuppliedDrain.Drain"/> makes no git
+    /// call at all in that case). The §4 provenance record and the §2 step-3 announcement are raised
+    /// only when the drain actually committed something.
+    /// </summary>
+    private void DrainSuppliedAtTaskBoundary(IntegrationHandle integ, WorktreeHandle handle)
+    {
+        // §2/§4: the run id that scopes logs/<runId>/supplied/ (and the trailer's Guardrails-Run: line)
+        // is the JOURNAL's id, not IntegrationHandle.RunId — the latter only scopes segment branch names
+        // and is a different value in worktree mode.
+        SuppliedDrainResult drained = SuppliedDrain.Drain(
+            integ.IntegrationWorktreePath, _plan.PlanDirectory, _journal.RunId, by: "operator");
+
+        if (drained.CommitSha is not { } commitSha)
+        {
+            return;
+        }
+
+        // AssignDependentHandles (back in OnSettledAsync, once this method returns) may hand this
+        // task's OWN segment worktree straight to a single-producer dependent — either verbatim
+        // (IWorktreeProvider.ReuseSegment: "no git operations — the same physical worktree is
+        // reused") or forked from its RecordedCommitSha (ForkFromTip). Neither path re-derives from
+        // the integration branch's tip, so without this the drain above would be invisible to
+        // exactly the common linear-chain topology. Fast-forward the segment to match — its current
+        // tip IS the drain commit's parent, since Integrate just fast-forwarded integ the other way
+        // — and advance the recorded sha so a fork-the-rest sibling forks from the drained tip too.
+        if (!string.IsNullOrEmpty(handle.WorktreePath))
+        {
+            GitFastForwardOnly(handle.WorktreePath, commitSha);
+            handle.RecordedCommitSha = commitSha;
+        }
+
+        // §4: written only when the journal is the real Journal.RunJournal — a unit-test fake models
+        // neither the field nor the durable document, matching every other RunJournal-only write in this
+        // class (e.g. RecordDefinitionHashAtSettle above).
+        if (_journal is Journal.RunJournal runJournal)
+        {
+            runJournal.RecordSupplied(new Journal.SuppliedRecord
+            {
+                At = DateTimeOffset.UtcNow,
+                Commit = commitSha,
+                Paths = drained.CommittedPaths,
+                Bytes = drained.TotalBytes,
+                By = "operator"
+            });
+        }
+
+        // §2 step 3: a run whose base changed underneath it must say so.
+        _observer.SuppliedResourcesCommitted(drained.CommittedPaths, commitSha);
+    }
+
+    /// <summary>
+    /// <c>git merge --ff-only &lt;commitSha&gt;</c> in <paramref name="workingDir"/>, mirroring
+    /// <see cref="IWorktreeProvider.Integrate"/>'s own fast-forward direction (segment → integration)
+    /// one hop further — from the integration worktree back down onto the segment that fed it. Never
+    /// diverges: <paramref name="commitSha"/>'s parent is always the segment's own pre-drain tip.
+    /// </summary>
+    private static void GitFastForwardOnly(string workingDir, string commitSha)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        psi.ArgumentList.Add("merge");
+        psi.ArgumentList.Add("--ff-only");
+        psi.ArgumentList.Add(commitSha);
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git merge --ff-only {commitSha} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}{stdout}");
+        }
     }
 
     private async Task OnSettledAsync(
