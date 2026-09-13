@@ -22,13 +22,37 @@
 
 ## Task
 
-Make `PostDeliveryRefreshTests` pass. Design 39 §1c.
+Make `PostDeliveryRefreshTests` pass. Design 39 §1c, including its subsection **"How a refresh is
+recorded (post-plan-40 refinement)"**, which is the contract below.
 
-Gate the refresh on the delivery's own RESULT: `FastForwarded` means the user's branch did not move,
-so there is nothing to refresh and no probe is needed. Anything else means it did.
-
-Record the refresh as provenance — the next wave's exit gate runs over content no task authored, and
-an unattributed failure lands on the wrong wave.
+1. **Trigger by ANCESTRY, never by `FastForwarded`.** Under §1's trial merge the promotion of the user's
+   branch is ALWAYS a fast-forward to `refs/guardrails/trial/<waveDir>`, so
+   `MergeOnSuccessResult.FastForwarded` is true on every delivery and a check on it would never refresh.
+   Refresh if and only if the user's branch tip was NOT an ancestor of the plan-branch tip at delivery
+   time — exactly when the trial merge had to create a merge commit.
+2. **The refresh commit.** In the integration worktree, run `git merge --no-ff --no-verify <upstream-sha>`,
+   where `<upstream-sha>` is the user's branch tip AFTER the promotion. Merge the sha, never the branch
+   name, so the record names exactly what was merged. The plan-branch tip from BEFORE the refresh must be
+   the FIRST parent: never fast-forward the plan branch onto the delivered commit, which can push earlier
+   waves' task commits off its `--first-parent` spine. The message is `Refreshed-From: <from>` /
+   `Guardrails-Run: <runId>`, where `<from>` is the integration handle's `OriginalBranch` and `<runId>` is
+   the journal's run id — never `Supplied-By:`, because nothing was supplied.
+3. **The record, only after the commit exists.** Call `RunJournal.RecordRefreshed` with a
+   `RefreshedRecord` — `At`, `Commit`, `From`, `Upstream`, `DeliveredWave` (the delivering wave's
+   directory), and `Paths` (`git diff --name-only <commit>^1 <commit>`, forward-slash, ordinal-sorted) —
+   reaching the journal through the same `_journal is Journal.RunJournal` cast the shipped supply drain
+   uses. `RefreshedRecord`, `RecordRefreshed` and `UnauthoredContentNote` already exist (task 25): use
+   them, never re-declare them.
+4. **A refresh that fails is a fault, not a skip.** The upstream already contains everything the plan
+   branch delivered, so the merge is conflict-free by construction. If git fails anyway, throw into the
+   #150 fault path — an honest halt with NO record written — never continue on the stale base.
+5. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
+   `WaveHaltKind.ExitGateFailed`, append `UnauthoredContentNote.HeadlineSuffix(...)` to the headline AFTER
+   the failing check names, and `UnauthoredContentNote.DetailLines(...)` to the detail. `BuildGateHalt` is
+   `static` today — give it the journal state it needs rather than re-reading `run.json` from disk. When
+   the run has neither `supplied[]` nor `refreshed[]`, the headline and detail must be byte-identical to
+   today's. `RecordGateHalt` already copies the headline into `run.json`'s `halt.headline`, so do not touch
+   the `RunHalt` schema or the CLI.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 

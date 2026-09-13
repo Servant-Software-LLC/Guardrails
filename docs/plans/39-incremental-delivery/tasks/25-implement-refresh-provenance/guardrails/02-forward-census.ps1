@@ -12,12 +12,13 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'AFastForwardDelivery_DoesNotRefresh',
-    'ANonFastForwardDelivery_RefreshesThePlanBranch',
-    'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
-    'TheRefreshIsRecordedAsProvenance',
-    'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
-    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh'
+    'RefreshedRecord_RoundTripsThroughTheJournalJson',
+    'Journal_WithNoRefreshedSection_RoundTripsUnchanged',
+    'RecordRefreshed_AppendsAndPersists',
+    'Note_WithNoUnauthoredContent_AddsNothing',
+    'Note_NamesARefreshByBranchAndUpstream',
+    'Note_NamesASupplyByWhoAndCommit',
+    'Note_ListsEveryRecordOldestFirst_AcrossBothSections'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
@@ -25,8 +26,8 @@ New-Item -ItemType Directory -Path $results -Force | Out-Null
 
 try {
     # Class-scoped, never the bare plan-wide trait (#455).
-    & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo `
-        --filter "FullyQualifiedName~PostDeliveryRefreshTests" `
+    & dotnet test "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj" -c Debug --nologo `
+        --filter "FullyQualifiedName~RefreshProvenanceTests" `
         --logger "trx;LogFileName=census.trx" --results-directory $results 2>&1 | Out-String | Write-Output
 
     $trx = Get-ChildItem -Path $results -Filter '*.trx' -File | Select-Object -First 1
@@ -38,19 +39,19 @@ try {
     }
 
     [xml]$doc = Get-Content -Raw -LiteralPath $trx.FullName
-    $results_nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
+    $nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
 
-    if ($results_nodes.Count -lt 1) {
+    if ($nodes.Count -lt 1) {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
-        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~PostDeliveryRefreshTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
+        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~RefreshProvenanceTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
         exit 1
     }
 
     $failures = @()
     foreach ($name in $pinned) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }

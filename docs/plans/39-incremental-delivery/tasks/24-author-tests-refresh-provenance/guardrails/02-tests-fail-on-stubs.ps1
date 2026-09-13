@@ -13,27 +13,28 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'ANonFastForwardDelivery_RefreshesThePlanBranch',
-    'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
-    'TheRefreshIsRecordedAsProvenance',
-    'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
-    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh'
+    'RefreshedRecord_RoundTripsThroughTheJournalJson',
+    'RecordRefreshed_AppendsAndPersists',
+    'Note_WithNoUnauthoredContent_AddsNothing',
+    'Note_NamesARefreshByBranchAndUpstream',
+    'Note_NamesASupplyByWhoAndCommit',
+    'Note_ListsEveryRecordOldestFirst_AcrossBothSections'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFastForwardDelivery_DoesNotRefresh.
-#   STRUCTURAL REASON: a correct implementation leaves it GREEN. In the quiet case the user's branch did
-#   not move, so there is nothing to refresh, and the current code does not refresh either - it passes
-#   on current code by construction, and demanding it be red would force a hollow failure.
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('AFastForwardDelivery_DoesNotRefresh')
+# DECLARED RED-CENSUS EXEMPTION — Journal_WithNoRefreshedSection_RoundTripsUnchanged.
+#   STRUCTURAL REASON: JournalDocument.Refreshed is a WORKING nullable property in the stub (the shape
+#   of the shipped Supplied property beside it), and this test never constructs a RefreshedRecord or
+#   calls the note or RecordRefreshed. A CORRECT test of it is therefore green on arrival; the only way
+#   to make it red would be a broken stub, which is a worse stub, not a better test.
+#   It is asserted to EXIST below, and task 25's forward census requires it to be observed Passed.
+$mustExist = @('Journal_WithNoRefreshedSection_RoundTripsUnchanged')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
 
 try {
-    & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo `
-        --filter "FullyQualifiedName~PostDeliveryRefreshTests" `
+    & dotnet test "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj" -c Debug --nologo `
+        --filter "FullyQualifiedName~RefreshProvenanceTests" `
         --logger "trx;LogFileName=census.trx" --results-directory $results 2>&1 | Out-String | Write-Output
 
     $trx = Get-ChildItem -Path $results -Filter '*.trx' -File | Select-Object -First 1
@@ -47,7 +48,7 @@ try {
 
     if ($nodes.Count -lt 1) {
         # @($null).Count is 1, so the Where-Object filter above is what lets this guard fire at all.
-        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~PostDeliveryRefreshTests' matched NO tests. A zero-match filter exits 0 and certifies nothing."
+        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~RefreshProvenanceTests' matched NO tests. A zero-match filter exits 0 and certifies nothing."
         exit 1
     }
 
@@ -64,7 +65,8 @@ try {
 
     # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
     # is never written is not "green because correct" — it is absent, and absence is how a
-    # never-weaker guarantee quietly stops being asserted anywhere.
+    # never-weaker guarantee quietly stops being asserted anywhere. Read the SAME $nodes the pinned
+    # loop reads: a different, undefined variable here makes every exemption report NOT FOUND forever.
     foreach ($name in $mustExist) {
         $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {

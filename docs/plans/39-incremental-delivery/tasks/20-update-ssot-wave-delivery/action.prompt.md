@@ -42,7 +42,21 @@ Record design 39 §5's contracts in `docs/plans/02-schemas-and-contracts.md`:
   the trial merge and only fast-forwards the user's branch on green, which changes §14.3's
   exit-gate contract;
 - **`DecisionEntry` gains a `Wave` member** (§1a) — the wave-scoped interlock reads a recorded
-  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface.
+  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface;
+- in **§7**, beside `supplied[]`, the **`refreshed[]`** provenance section (design 39 §1c, "How a refresh
+  is recorded"): `"refreshed": [ { "at", "commit", "from", "upstream", "deliveredWave", "paths" } ]` —
+  absent (never null, never empty) when there was no refresh, and written only after its commit exists;
+- in **§5.3**, the **refresh commit's shape**: a `--no-ff` merge of the `upstream` sha (never the branch
+  name) in the integration worktree, with the plan-branch tip as FIRST parent and the trailer
+  `Refreshed-From: <from>` / `Guardrails-Run: <runId>` — never `Supplied-By:`, because nothing was
+  supplied — and its **trigger**: refresh iff the user's branch tip was NOT an ancestor of the
+  plan-branch tip at delivery. Say why the trigger is not `FastForwarded`: the trial merge makes every
+  promotion a fast-forward, so that check would never fire;
+- in **§14.3**, the **gate-halt disclosure**: a wave entry-preflight or exit-gate halt appends every
+  `supplied[]` and `refreshed[]` record, oldest first (a refresh reads `refresh from '<from>' at
+  <upstream, 10 chars>`), AFTER the failing check names, and a run with neither section renders
+  byte-identically to today; and the **single-reader rule** — `UnauthoredContentNote` is the ONLY code
+  that reads the two sections to answer "what is in this tree that no task authored?".
 
 Write it in the document's own conventions — match the surrounding sections rather than importing
 design 39's. Do NOT reword existing prose to satisfy a checking pattern; if a required token reads

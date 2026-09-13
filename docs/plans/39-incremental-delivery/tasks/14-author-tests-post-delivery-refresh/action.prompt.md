@@ -24,13 +24,15 @@
 
 **Drive the REAL `GitWorktreeProvider` over temp repos — the house fake cannot express this
 (review, 2026-09-11).** `FakeWorktreeProvider.MergePlanBranchIntoUserBranch` HARDCODES
-`MergeOnSuccessResult.FastForwarded`, so on the fake `AFastForwardDelivery_DoesNotRefresh` is
-trivially green and `ANonFastForwardDelivery_RefreshesThePlanBranch` is **inexpressible**. The
-whole point of this task is the distinction between those two results, so a test on the fake
-would certify nothing. House precedent agrees: 26 test files construct `new GitWorktreeProvider`
-against temp repos, 3 use the fake.
+`MergeOnSuccessResult.FastForwarded` and makes no commits, so on the fake
+`AFastForwardDelivery_DoesNotRefresh` is trivially green and every other behaviour below is
+**inexpressible**: the refresh is a real merge commit, and its parent order and trailer are what these
+tests pin. House precedent agrees: 26 test files construct `new GitWorktreeProvider` against temp repos,
+3 use the fake.
 
-Author failing tests for the refresh DECIDED in review — design 39 §1c.
+Author failing tests for the refresh DECIDED in review — design 39 §1c, including its subsection
+**"How a refresh is recorded (post-plan-40 refinement)"**, which fixes the record, the commit shape and
+the gate-halt disclosure pinned below.
 
 **Test file:** `tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs`
 **Test class:** `PostDeliveryRefreshTests`
@@ -39,23 +41,66 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 
 **The decision and its precise trigger.** Today the plan branch is CONTINUOUS: `RunWavedAsync` drains
 every wave on it and `MergePlanBranchIntoUserBranch` is one-directional, so delivery publishes but does
-not synchronise. DECIDED: **refresh only when the delivery was NOT a fast-forward.** A fast-forward
-RESULT is itself proof the user's branch did not move, so the refresh is provably a no-op in the quiet
-case and can be skipped with no extra probe.
+not synchronise. DECIDED: **refresh only when the user's branch moved** — its tip was NOT an ancestor
+of the plan-branch tip at delivery time.
+
+**What "fast-forward delivery" means in these test names — read this before writing any assertion.**
+Under §1's trial merge the promotion of the user's branch is ALWAYS a fast-forward to
+`refs/guardrails/trial/<waveDir>`, so `MergeOnSuccessResult.FastForwarded` is true on every delivery
+and discriminates nothing. The names keep the design's vocabulary:
+- a **fast-forward delivery** is one where the user's tip WAS an ancestor of the plan-branch tip
+  (nothing moved, so the trial merge had nothing to merge);
+- a **non-fast-forward delivery** is one where it was NOT (a teammate commit landed on the user's
+  branch mid-run, so the trial merge had to create a merge commit).
+
+A test that builds its quiet case by asserting on `FastForwarded` pins nothing.
+
+**The fixture.** Real `GitWorktreeProvider` over a temp repo. Wave-01's `brief.md` front matter carries
+`delivers: true`. For every non-fast-forward scenario, the user's branch gets a REAL commit adding
+`teammate.txt` while the run is in flight (after the plan branch is cut, before wave-01 delivers), so the
+delivery is not a fast-forward by the ancestry definition above.
 
 **Why it matters, so the tests assert the right thing.** Once the user's branch advances
 independently, delivery 2 becomes a merge commit on their branch only, delivery 3 can no longer
 fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge
-withheld by SSOT §5.3, a conflict HALTS the run.
+withheld by SSOT §5.3, a conflict HALTS the run. And the refresh admits content NO TASK AUTHORED into the
+tree the next wave's gates run over, so a broken teammate commit must be NAMED when a gate fails, never
+silently blamed on the wave.
 
 **Pin these behaviours to these EXACT method names:**
 
-- `AFastForwardDelivery_DoesNotRefresh` — the quiet case stays cheap; assert NO extra merge commit.
+- `AFastForwardDelivery_DoesNotRefresh` — the quiet case stays cheap: assert NO extra merge commit on the
+  plan branch, AND that `run.json` has no `refreshed` section at all (absent, not an empty array).
 - `ANonFastForwardDelivery_RefreshesThePlanBranch`
 - `AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits`
-- `TheRefreshIsRecordedAsProvenance` — the refresh admits content NO TASK AUTHORED into the tree the
-  next wave's exit gate runs over. Without a record, a broken teammate commit fails that gate and
-  blames a wave that did nothing wrong.
+- `TheRefreshIsRecordedAsProvenance` — assert ALL of:
+  - `run.json` carries exactly ONE `refreshed` entry and NO `supplied` section;
+  - `from` is the pinned delivery branch, and `deliveredWave` is wave-01's directory name;
+  - `upstream` equals the user's branch tip after delivery AND equals `<commit>^2`;
+  - `<commit>^1` is the plan-branch tip from BEFORE the refresh, and `commit` appears in
+    `git log --first-parent guardrails/<plan>` (the plan branch was merged into, not fast-forwarded);
+  - `paths` contains `teammate.txt`;
+  - the commit message carries `Refreshed-From: <branch>` and `Guardrails-Run: <runId>`, and does NOT
+    contain `Supplied-By:`.
+
+  It must reject: fast-forwarding the plan branch onto the delivered commit; a `supplied[]` entry with
+  `by: "refresh"`; the pre-delivery user tip or the trial ref recorded as `upstream`; a merge by branch
+  name that records the plan branch as `from`.
+- `AnEntryGateFailureOverARefreshedTree_NamesTheRefresh` — wave-02 carries an entry preflight that FAILS
+  when `teammate.txt` exists. Assert the run's `WaveHalt.Headline` STARTS WITH
+  `Wave '<wave-02 dir>' entry preflight FAILED: <check name>` (the failing check stays first) and CONTAINS
+  both the delivery branch name and the first 10 characters of `upstream`; and assert `run.json`'s
+  `halt.headline` is identical to it. It must reject: the note unit-tested but never called from
+  `BuildGateHalt` (passing but blind, #382); the disclosure replacing the check names; the disclosure placed
+  only in the detail.
+- `AnExitGateFailureOverARefreshedTree_NamesTheRefresh` — the same assertions with NO entry preflight and a
+  wave-02 EXIT gate that fails when `teammate.txt` exists; the headline starts with
+  `Wave '<wave-02 dir>' exit gate FAILED: <check name>`. It must reject: wiring only the entry-gate halt.
+
+Assert through the real journal on disk (`run.json`) and real git (`git log`, `git rev-parse`), never
+through a double. `RefreshedRecord`, `RunJournal.RecordRefreshed` and `UnauthoredContentNote` already
+exist and are covered by `RefreshProvenanceTests` (tasks 24/25); this suite proves the Scheduler actually
+refreshes, records, and names.
 
 The tests MUST COMPILE and FAIL. Do NOT implement the refresh.
 

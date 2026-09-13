@@ -1,12 +1,13 @@
 {
-  "description": "Record the wave-delivery contracts in the SSOT: the brief.md delivers flag, waves.<dir>.delivered, the observer event, GR2078/GR2079, the wave-scoped interlock and the trial-merge ref",
+  "description": "Record the wave-delivery contracts in the SSOT: the brief.md delivers flag, waves.<dir>.delivered, the observer event, GR2078/GR2079, the wave-scoped interlock, the trial-merge ref, and the refreshed[] provenance with its gate-halt disclosure",
   "dependsOn": [
     "04-implement-delivery-diagnostics",
     "06-implement-wave-scoped-interlock",
     "10-implement-wave-delivered-journal",
     "13-implement-wave-delivered-event-cli",
     "15-implement-post-delivery-refresh",
-    "17-implement-branchmoved-halt"
+    "17-implement-branchmoved-halt",
+    "25-implement-refresh-provenance"
   ],
   "stableId": "u2p6dk",
   "writeScope": [

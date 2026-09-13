@@ -1,7 +1,8 @@
 {
-  "description": "Author failing tests for the post-delivery refresh — ONLY when the delivery was not a fast-forward",
+  "description": "Author failing tests for the post-delivery refresh — ONLY when the user's branch moved — its refreshed[] record, and the gate halt that names it",
   "dependsOn": [
-    "23-implement-entry-baseline-kind"
+    "23-implement-entry-baseline-kind",
+    "25-implement-refresh-provenance"
   ],
   "stableId": "b6q3zl",
   "writeScope": [

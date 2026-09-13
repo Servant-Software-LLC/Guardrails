@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=844139ea6b44843b72e27e11c9cf2c7ca7235f690626cea08973a7b8a94bd5b5 body-sha256=414e6442fc6469a7d870cb3f33cde71f22ade2720ca2b69597536d762e72e8c7 -->
+<!-- guardrails:graph v1 source-sha256=8d2ce0bbd03976b64643df58a07f81239a5e77bcd78a8ff76bd8c129e26e0403 body-sha256=e6317c7400b17baa3fc0fb9820a78b4b63867cb544aef5dd73336e4fa608597d -->
 
 ```mermaid
 flowchart TD
@@ -119,6 +119,24 @@ flowchart TD
     task_23_implement_entry_baseline_kind_gr_0["01-tests-pass"]:::guardrail
   end
   style task_23_implement_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_24_author_tests_refresh_provenance["24-author-tests-refresh-provenance"]
+    task_24_author_tests_refresh_provenance_gr_0["01-build-passes"]:::guardrail
+    task_24_author_tests_refresh_provenance_gr_1["02-tests-fail-on-stubs"]:::guardrail
+  end
+  style task_24_author_tests_refresh_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_25_implement_refresh_provenance["25-implement-refresh-provenance"]
+    task_25_implement_refresh_provenance_gr_0["01-tests-pass"]:::guardrail
+    task_25_implement_refresh_provenance_gr_1["02-forward-census"]:::guardrail
+  end
+  style task_25_implement_refresh_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_26_update_domain_knowledge_skill["26-update-domain-knowledge-skill"]
+    task_26_update_domain_knowledge_skill_gr_0["01-skill-documents-wave-delivery"]:::guardrail
+  end
+  style task_26_update_domain_knowledge_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_27_update_readme_wave_delivery["27-update-readme-wave-delivery"]
+    task_27_update_readme_wave_delivery_gr_0["01-readme-documents-wave-delivery"]:::guardrail
+  end
+  style task_27_update_readme_wave_delivery fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -145,6 +163,7 @@ flowchart TD
   task_09_author_tests_wave_delivered_journal --> task_10_implement_wave_delivered_journal
   task_10_implement_wave_delivered_journal --> task_18_author_tests_partial_delivery_report
   task_10_implement_wave_delivered_journal --> task_20_update_ssot_wave_delivery
+  task_10_implement_wave_delivered_journal --> task_24_author_tests_refresh_provenance
   task_11_author_tests_wave_delivered_event --> task_12_implement_wave_delivered_event_core
   task_11_author_tests_wave_delivered_event --> task_13_implement_wave_delivered_event_cli
   task_12_implement_wave_delivered_event_core --> task_13_implement_wave_delivered_event_cli
@@ -155,12 +174,18 @@ flowchart TD
   task_16_author_tests_branchmoved_halt --> task_17_implement_branchmoved_halt
   task_17_implement_branchmoved_halt --> task_20_update_ssot_wave_delivery
   task_18_author_tests_partial_delivery_report --> task_19_implement_partial_delivery_report
+  task_20_update_ssot_wave_delivery --> task_26_update_domain_knowledge_skill
+  task_20_update_ssot_wave_delivery --> task_27_update_readme_wave_delivery
   task_22_author_tests_entry_baseline_kind --> task_23_implement_entry_baseline_kind
   task_23_implement_entry_baseline_kind --> task_14_author_tests_post_delivery_refresh
   task_23_implement_entry_baseline_kind --> task_16_author_tests_branchmoved_halt
+  task_24_author_tests_refresh_provenance --> task_25_implement_refresh_provenance
+  task_25_implement_refresh_provenance --> task_14_author_tests_post_delivery_refresh
+  task_25_implement_refresh_provenance --> task_20_update_ssot_wave_delivery
   task_19_implement_partial_delivery_report --> plan_guardrails
-  task_20_update_ssot_wave_delivery --> plan_guardrails
   task_21_update_plan_breakdown_skill --> plan_guardrails
+  task_26_update_domain_knowledge_skill --> plan_guardrails
+  task_27_update_readme_wave_delivery --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

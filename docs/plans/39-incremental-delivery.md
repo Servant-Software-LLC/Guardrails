@@ -280,6 +280,92 @@ with the refresh as a second provenance kind — and a wave-gate failure over a 
 say *"this tree includes a refresh from `<branch>` at `<sha>`"* rather than blaming the wave. Neither design
 can retrofit it: in both cases the information exists only at the instant of the commit.
 
+### How a refresh is recorded (post-plan-40 refinement)
+
+> **Status: NOT yet reviewed in Charter.** Written 2026-09-13, after plan 40 (#373, PR #711) shipped the
+> `supplied[]` record the paragraph above could only anticipate. It decides what "built once" means now that
+> one of the two records exists. Treat it as a proposal until the next review round confirms or revises it.
+
+**DECIDED (architect, unreviewed): a sibling `refreshed[]` section, NOT a `kind` on `supplied[]`.** What is
+built once is the provenance *contract* and its *reader*, not the record type:
+
+- **One contract.** Both sections are optional, append-only, top-level `run.json` sections, absent (never null)
+  when empty, written only after their commit exists. Both commits carry a trailer derived from the record
+  plus `Guardrails-Run: <runId>` (the journal's run id).
+- **One reader.** `UnauthoredContentNote` is the only code that answers *"what is in this tree that no task
+  authored?"*, and it reads BOTH sections. A consumer that reads one of them is the defect this rule exists to
+  prevent.
+
+**Why not a `kind` on the shipped record.** Plan 40 shipped a *supplier*-shaped record, and each field that
+makes it one is wrong for a refresh. `by` names who called `guardrails supply` (`operator` | `overwatcher` |
+`task:<folder>`); a refresh has no caller — the harness performs it and the content comes from a branch. The
+trailer `Supplied-By: <by>` is derived from `by`, so it would be a false statement on a refresh commit. `bytes`
+has no honest value for a merge, which deletes as well as adds. SSOT §7 defines the entry grain as *"one entry
+per DRAIN of the staging tree"*, and a refresh has no staging tree. A `kind` would make every field's meaning
+depend on another field — the internally inconsistent record #538 removed from `guardrail-failed` — and every
+existing `supplied[]` reader would silently count a refresh as a supply. (The shape is unreleased — no tag
+contains `5b2b0bbf` — so this rejection rests on semantics, not on compatibility.)
+
+**The record.**
+
+```jsonc
+"refreshed": [
+  {
+    "at": "2026-09-13T10:02:11+00:00",
+    "commit": "7e1d…",                    // the refresh merge commit on the plan branch
+    "from": "master",                     // the delivery target pinned at run start (IntegrationHandle.OriginalBranch)
+    "upstream": "4c9a…",                  // the sha of <from> that was merged — <commit>^2
+    "deliveredWave": "wave-02-issue-510", // the wave whose non-fast-forward delivery triggered it
+    "paths": ["src/Teammate.cs"]          // git diff --name-only <commit>^1 <commit>, forward-slash, ordinal-sorted
+  }
+]
+```
+
+The write path is `RunJournal.RecordRefreshed(RefreshedRecord)`, mirroring `RecordSupplied` (null-check, lock,
+append, persist).
+
+**The commit, and why its shape is load-bearing.** The refresh is a `git merge --no-ff --no-verify` of the
+`upstream` **sha** (never the branch name, so the record names exactly what was merged even if the branch moves
+in between) in the integration worktree, with the message `Refreshed-From: <from>` / `Guardrails-Run: <runId>`
+— the same shape as the supply drain commit.
+
+1. **Its first parent is the plan branch's pre-refresh tip.** A fast-forward of the plan branch onto the
+   delivered commit would be cheaper, but whether it keeps the spine intact depends on that commit's parent
+   order, which §1 does not fix. If its first parent is the user's tip, earlier waves' task commits leave the
+   plan branch's `--first-parent` spine, and `SafeSuffixEvaluator` answers a later rewind with "nothing to
+   rewind" while those commits are still in the tree. With `--no-ff`, the user's commits sit on merge lineage,
+   and a rewind across the refresh is refused — the honest floor.
+2. **The trailer is written.** It keeps the refresh attributable from git alone if the process dies between
+   the commit and the journal write, and it travels to the user's branch with the next delivery, where
+   `git log` is the only provenance a teammate has. It is `Refreshed-From:`, never `Supplied-By:` — nothing was
+   supplied.
+
+The upstream already contains everything the plan branch delivered, so the merge is conflict-free by
+construction. A refresh that fails anyway is an infrastructure fault — an honest halt through the #150 path,
+no record written — never a silent continue on the stale base this section set out to remove.
+
+**The trigger, corrected for §1's trial merge.** *"Refresh only when the delivery was not a fast-forward"*
+cannot be read off the delivery's last step: under §1 the promotion is ALWAYS a fast-forward to
+`refs/guardrails/trial/<waveDir>`, so a check on it would never refresh. The discriminator is ancestry at
+delivery time — refresh iff the user's branch tip was NOT an ancestor of the plan-branch tip, which is exactly
+when the trial merge had to create a merge commit.
+
+**The gate halt names it — in scope for v1.** A record nothing reads at the moment of failure does not stop a
+wave being blamed. The seam is `Scheduler.BuildGateHalt`, which already builds BOTH the wave entry-preflight
+and exit-gate halts. It appends `UnauthoredContentNote`'s headline suffix — every `supplied[]` and
+`refreshed[]` record, oldest first, a refresh as `refresh from '<from>' at <upstream, 10 chars>` and a supply
+as `supplied by <by> at <commit, 10 chars>` — plus one detail line per record. The failing check names stay
+first: the disclosure is added, never substituted. The headline already flows through `RecordGateHalt` into
+`run.json`'s `halt.headline` and from there into the log-site banner, so console, journal and log site carry it
+with no `RunHalt` schema change and no CLI change. A run with neither section renders byte-identically to today.
+It names every record in the run, not only those since the last passing gate: every one of them IS in the
+tree, so the sentence stays true; narrowing the window needs the gated commit recorded and is a later
+refinement.
+
+**Not in v1:** a live observer line for the refresh (`WaveDelivered` already marks the moment); the disclosure
+at the plan-level terminal gate (a CLI phase) or in task retry feedback; and `SafeSuffixEvaluator`'s refusal
+wording, which still calls any trailer-less commit "a human hand-fix?" — refresh and supply commits included.
+
 ---
 
 ### The compensating control already exists: the wave ENTRY preflight (round 3)
@@ -465,9 +551,17 @@ Three requirements, each earned by a defect already shipped here:
 
 ## 5. Seams and contracts touched
 
-**Schema** — a wave manifest gains `delivers` (bool, default false); `run.json`'s `waves.<dir>` gains
+**Schema** — a wave's `brief.md` front matter gains `delivers` (bool, default false; §1b); `run.json`'s `waves.<dir>` gains
 `delivered` (`{at, commit, covers: ["<wave>", …]}` or null — `covers` names the non-delivering waves that
 rode along, so the report can say what a merge actually carried). No new folder.
+
+**Provenance** *(post-plan-40 refinement, NOT yet reviewed in Charter — §1c "How a refresh is recorded")* —
+`run.json` gains `refreshed[]` (`at`, `commit`, `from`, `upstream`, `deliveredWave`, `paths`), a sibling of
+plan 40's `supplied[]`, which is unchanged; `RunJournal.RecordRefreshed` is its write path. The refresh commit
+is `--no-ff` with the plan-branch tip as first parent and carries `Refreshed-From: <from>` /
+`Guardrails-Run: <runId>`. `UnauthoredContentNote` is the single reader of both sections, and
+`Scheduler.BuildGateHalt` appends its disclosure to wave entry-gate and exit-gate halt headlines. No new
+diagnostic, no new observer event, no `RunHalt` schema change.
 
 **New diagnostics** — TWO, not four (corrected at review: this line said "one" while §1c's DECIDED
 answer had already added the second). **GR2079**, a WARNING when a wave sets `delivers: true` and carries

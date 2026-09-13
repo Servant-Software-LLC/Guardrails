@@ -73,6 +73,37 @@ if ($doc -match [regex]::Escape('should take **`GR2078`**')) {
     $failures += "STALE TEXT STILL PRESENT: 'should take **`GR2078`**' in $subject — the registry ladder still says an unrelated new code should take GR2078. This plan TAKES GR2078 and GR2079, so that sentence is now false and must read GR2080. A positive clause cannot catch this - only requiring the stale text to be GONE proves the correction happened rather than being appended beside it"
 }
 
+# Post-plan-40 refinement (design 39 §1c, "How a refresh is recorded"). Each token below MEASURED 0 in the
+# comment-stripped subject, with the strip above, on branch plan-breakdown/39-post-40-adjust (2026-09-13)
+# before it was added here.
+if ($doc -notmatch [regex]::Escape('"refreshed": [')) {
+    $failures += 'MISSING ''"refreshed": ['' in ' + $subject + ' — the refreshed[] provenance section is not recorded in §7, so a reader cannot find what a refresh admitted into the tree'
+}
+
+if ($doc -notmatch [regex]::Escape('Refreshed-From:')) {
+    $failures += 'MISSING ''Refreshed-From:'' in ' + $subject + ' — the refresh commit''s trailer is not recorded in §5.3'
+}
+
+if ($doc -notmatch [regex]::Escape('"deliveredWave"')) {
+    $failures += 'MISSING ''"deliveredWave"'' in ' + $subject + ' — the refreshed[] record''s deliveredWave field is not recorded, so a reader cannot tell which delivery triggered a refresh'
+}
+
+if ($doc -notmatch [regex]::Escape('"upstream"')) {
+    $failures += 'MISSING ''"upstream"'' in ' + $subject + ' — the refreshed[] record''s upstream field is not recorded, so a reader cannot tell which sha was merged'
+}
+
+if ($doc -notmatch [regex]::Escape('--no-ff')) {
+    $failures += 'MISSING ''--no-ff'' in ' + $subject + ' — the refresh commit''s shape is not recorded in §5.3; without --no-ff and the plan tip as first parent, a later rewind can miss earlier task commits'
+}
+
+if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
+    $failures += 'MISSING ''UnauthoredContentNote'' in ' + $subject + ' — the single-reader rule is not recorded, so nothing says which code may read supplied[] and refreshed[]'
+}
+
+if ($doc -notmatch [regex]::Escape('refresh from ''')) {
+    $failures += 'MISSING ''refresh from '''' in ' + $subject + ' — the gate-halt disclosure is not recorded in §14.3'
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) missing contract token(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }
