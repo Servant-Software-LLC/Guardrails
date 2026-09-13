@@ -22,6 +22,16 @@
 
 ## Task
 
+**The flag is `delivers: true` in the wave''s `brief.md` YAML FRONT MATTER — not a new file
+(review, 2026-09-11).** There is no per-wave manifest and you must not invent one: SSOT §14.1
+says v1 has *"no per-wave config in v1"*, and `WaveFolder.TryResolveWaveTarget` treats a
+directory carrying its own `guardrails.json` as **a plan in its own right, never a wave**, so a
+new config file there silently un-waves the plan. `brief.md` already exists as the optional
+per-wave file (`WaveNode.BriefFileName`) and is already folded into `WaveDefinitionHash`, so
+this surface needs no change to wave DETECTION and no change to the hasher. Parse the front
+matter in `WaveFolder.cs`; a wave with no `brief.md`, or a brief with no front matter, is
+`delivers: false`.
+
 Fill real logic over the stub so `WaveDeliversFlagTests` passes. Design 39 §1b/§3.
 
 Default **false**, and a wave with no `guardrails/` exit gate is never a delivery point whatever the

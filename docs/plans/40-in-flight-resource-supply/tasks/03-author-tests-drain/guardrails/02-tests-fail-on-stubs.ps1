@@ -17,7 +17,7 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Drain_OnAnEmptyStagingTree_DoesNothingAndMakesNoCommit',
     'Drain_CopiesEveryStagedFileToItsWorkspacePath',
-    'Drain_CommitsWithTheSuppliedByOperatorTrailer',
+    'Drain_CommitsWithTheSuppliedByTrailer',
     'Drain_DeletesTheStagingTreeAfterCommitting',
     'Drain_ReturnsTheCommittedPathsAndByteCount'
 )

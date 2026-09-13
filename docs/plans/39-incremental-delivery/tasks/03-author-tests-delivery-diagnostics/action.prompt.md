@@ -51,6 +51,24 @@ names the last taken code, and that claim goes stale the moment you add two.
   every wave, only on one that follows a delivery point.
 - `GR2079_FiresWhenADeliveringWaveHasNoExitGate`
 - `GR2079_IsSilentWhenTheWaveHasAnExitGate`
+- `GR2077_RemainsReservedAndUnallocated` — assert no `DiagnosticCodes` constant equals
+  `"GR2077"`. The reservation was prose-only: the pre-existing catalogue tests cannot catch
+  taking it, because `TheNextFreeMarkerNamesACodeThatIsActuallyFree` only checks the marker is
+  unused and above the high-water mark (taking 2077 AND 2078 still leaves the highest at 2078),
+  and `NoTwoConstantsShareACode` never sees GR2077 at all since it is reserved in a COMMENT, not
+  a constant.
+
+**Note the three DECLARED-EXEMPT rows.** `GR2078_IsSilentWhenTheWaveHasOne`,
+`GR2078_IsSilentForAWaveThatFollowsNoDelivery`, `GR2079_IsSilentWhenTheWaveHasAnExitGate` and
+`BothAreWarnings_AndDoNotMoveTheExitCode` are NOT in the red census, because a diagnostic that
+does not exist yet is silent and emits no exit code — they pass by construction on the stub tree
+and demanding `Failed` from them made this task unsatisfiable (measured). They must still EXIST;
+the census asserts that, and task 04's forward census requires each observed `Passed`.
+
+**A third guardrail now checks the NUMBERING** (`03-codes-and-marker.ps1`): both constants
+declared, GR2077 still unallocated, and exactly one live next-free marker reading GR2080. Before
+it existed the cheapest passing implementation wrote the tests against the string literals and
+never opened `DiagnosticCodes.cs`.
 - `BothAreWarnings_AndDoNotMoveTheExitCode` — a warning that silently became an error would fail
   correct-but-unguarded plans.
 

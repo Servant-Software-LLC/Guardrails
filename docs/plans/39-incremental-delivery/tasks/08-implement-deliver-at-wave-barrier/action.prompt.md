@@ -22,6 +22,12 @@
 
 ## Task
 
+**`DeliverAndCleanup` DOES NOT EXIST — corrected at review, 2026-09-11.** `grep -rn
+DeliverAndCleanup src/ tests/` exits 1; the name entered at charter review and propagated into
+the design and into this prompt. The real chain is **`Scheduler.Finalize` →
+`DeliverToUserBranch` → `IWorktreeProvider.MergePlanBranchIntoUserBranch`**. Grep `Scheduler.cs`
+for `DeliverToUserBranch` rather than trusting any name written here.
+
 Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: `DeliverAndCleanup` becomes callable at a wave
 barrier, gated on that wave's `Exit` being green — **the run-end call stays** for the last wave and for
 every flat plan.
@@ -30,7 +36,11 @@ every flat plan.
 `DeliverAndCleanup` / `Finalize` call rather than trusting a line number — this file has moved under
 several plans and a cited line is stale on arrival.
 
-Merge first, then gate: the exit gate must assert over the tree the delivery produces, not the plan
+TRIAL MERGE, then gate, then promote (DECIDED at review, 2026-09-11 — an earlier version of
+this line said "merge first, then gate", which writes to the operator's branch before anything
+authorises it). Merge onto `refs/guardrails/trial/<waveDir>`, gate against that tree, consult
+the interlock, and fast-forward the user's branch only on green; on red delete the ref. The
+exit gate must assert over the tree the delivery produces, not the plan
 branch alone.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.

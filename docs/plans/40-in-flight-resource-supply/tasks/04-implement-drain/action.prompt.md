@@ -30,7 +30,7 @@ Fill real logic over the stubs in `src/Guardrails.Core/Execution/SuppliedDrain.c
 The commit trailer is exactly (§4):
 
 ```
-Supplied-By-Operator: guardrails supply
+Supplied-By: <by>
 Guardrails-Run: <runId>
 ```
 

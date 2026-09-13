@@ -5,6 +5,6 @@
   ],
   "stableId": "n2s6lz",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/SupplyCallerScope.cs"
   ]
 }

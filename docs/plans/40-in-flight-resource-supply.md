@@ -99,8 +99,9 @@ staged tree already says it unambiguously.
 
 1. If `logs/<runId>/supplied/` is empty, do nothing. (The whole feature is inert for every run that does
    not use it — the never-weaker requirement.)
-2. Copy the tree onto the integration worktree, commit with a trailer naming the run and the operator
-   action, and record it in the journal (§4).
+2. Copy the tree onto the integration worktree, commit with a trailer naming the run and the SUPPLIER
+   (`Supplied-By: <by>`, §4 — `operator`, `overwatcher` or `task:<folder>`, never a constant), and record
+   it in the journal (§4).
 3. **Announce it.** `SuppliedResourcesCommitted` on `IRunObserver`, forwarded through every decorator, and
    a line in the live table and `--no-ui` output. A run whose base changed underneath it must say so; a
    silent base change is indistinguishable from a harness bug when a later task behaves unexpectedly.
@@ -148,8 +149,8 @@ checkout is the file the task should have* is a judgement, and getting it wrong 
 to the run's base — which then flows into the terminal gate and into anything reading that tree. So at
 every dial BELOW critical the overwatcher **proposes** the sequence and does not run it, and at
 `dial:critical` an auto-resolve MUST write the §4 provenance record naming the overwatcher as the supplier
-— that record is what makes the decision auditable after the fact rather than indistinguishable from a
-task's own work.
+(`"by": "overwatcher"`, the field §4 carries for exactly this) — that record is what makes the decision
+auditable after the fact rather than indistinguishable from a task's own work.
 
 **This is adjacent to, but does not breach, the standing `dial:critical` ruling.** The maintainer has
 previously FORBIDDEN `dial:critical` combined with `proceed-unreviewed` ("Guardrails without guardrails is
@@ -165,14 +166,15 @@ The run's own output must not be confusable with what an operator handed it. `ru
 
 ```jsonc
 "supplied": [
-  { "at": "2026-…", "commit": "…", "paths": ["vendor/mermaid.min.js"], "bytes": 214_­512 }
+  { "at": "2026-…", "commit": "…", "paths": ["vendor/mermaid.min.js"], "bytes": 214_­512,
+    "by": "operator" }
 ]
 ```
 
 and the commit carries a trailer:
 
 ```
-Supplied-By-Operator: guardrails supply
+Supplied-By: operator
 Guardrails-Run: 2026-09-05T07-47-36Z-2ada
 ```
 
@@ -180,6 +182,17 @@ This matters more than it first appears. The terminal gate runs on the merged HE
 question is what is in that tree that the plan did not author. Without a record, a supplied file is
 indistinguishable from a task's output, and the #453 fault triage would be reasoning over a tree whose
 provenance it cannot recover.
+
+**`by` is the FIFTH field, and it is not decoration (review, 2026-09-11).** Its values are
+`operator`, `overwatcher`, and `task:<folder>`. The first draft of this section named four fields —
+`at`, `commit`, `paths`, `bytes` — and hard-coded the trailer to the literal
+`Supplied-By-Operator: guardrails supply`. Both were wrong the moment §3 gained the auto-resolve and
+§5a gained the agent-callable case, because a record that cannot name a NON-operator supplier makes
+the §3 condition (*"an auto-resolve MUST write the §4 provenance record naming the overwatcher as the
+supplier"*) unimplementable, and makes the trailer a FALSE STATEMENT on any supply the operator did
+not perform. The trailer key is therefore DERIVED from this field — `Supplied-By: <by>` — rather than
+being a constant. Recording who supplied is the whole point of the section; a provenance record that
+can only describe one of its three suppliers is not provenance.
 
 ---
 

@@ -22,6 +22,14 @@
 
 ## Task
 
+**WHERE THE FLAG LIVES — read this before anything else (review, 2026-09-11).** The flag is
+`delivers: true` in the **YAML front matter of the wave's existing optional `brief.md`**
+(`WaveNode.BriefFileName`), NOT a new per-wave JSON manifest. The design's first draft said
+"the wave's own manifest"; **there is no wave manifest**, SSOT §14.1 says v1 has *"no per-wave
+config in v1"*, and the obvious guess is destructive: `WaveFolder.TryResolveWaveTarget` treats a
+directory carrying its own `guardrails.json` as **a plan in its own right, never a wave**, so
+dropping a config into `wave-NN/` silently un-waves the plan. Do not create a new file.
+
 Author failing tests AND the minimal stub for the per-wave `delivers` flag — design 39 §1b and §3.
 
 **Test file:** `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs`
@@ -39,6 +47,12 @@ deliverer on upgrade, changing what those plans do with the user's branch withou
 
 - `Delivers_DefaultsToFalse_WhenTheManifestOmitsIt` — the never-weaker requirement.
 - `Delivers_IsTrue_WhenTheManifestSetsIt`
+- `WaveDefinitionHash_ChangesWhenDeliversChanges` — flipping the flag on a wave must MOVE that
+  wave's definition hash, so a change to delivery behaviour on a COMPLETED wave trips drift
+  (SSOT §14.6/§14.7) instead of passing silently under a review marker that still reads
+  `passed`. This is FREE with the chosen surface and the test exists to prove it stayed free:
+  `WaveDefinitionHash.Compute` → `GateDefinitionOf` already folds `brief.md` when present, and
+  says so in its own comment. Assert it rather than assuming it.
 - `AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint` — §3: no gate, no delivery, regardless of the
   flag. It waits for the plan-wide gate like today.
 - `APlanMarkingNoWave_LoadsIdenticallyToBefore` — assert the never-weaker property directly rather

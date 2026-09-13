@@ -24,11 +24,25 @@
 
 Record design 39 §5's contracts in `docs/plans/02-schemas-and-contracts.md`:
 
-- a wave manifest gains **`delivers`** (bool, **default false**);
+- a wave's **`brief.md` front matter** gains **`delivers: true`** (bool, **default false**). NOT a
+  wave manifest — there is no such thing, and §14.1 says so; the design's first draft was corrected
+  at review. Record the front-matter surface in §14.1's layout notes and in §14.10 (`brief.md`),
+  and say that `WaveDefinitionHash` already folds it, so flipping the flag on a completed wave
+  trips drift;
 - `run.json`'s `waves.<dir>` gains **`delivered`** — `{at, commit, covers: ["<wave>", …]}` or null,
   where `covers` names the non-delivering waves that rode along, so the report can say what a merge
   actually carried;
-- the **`WaveDelivered`** observer event.
+- the **`WaveDelivered`** observer event;
+- **`GR2078`** (a post-delivery wave with no entry preflight) and **`GR2079`** (a `delivers: true`
+  wave with no exit gate), BOTH warnings, in the diagnostics registry section — and while you are
+  there, **correct the stale sentence** that currently reads *"an unrelated new code should take
+  `GR2078`"*: this plan takes GR2078 and GR2079, so the next free code is **GR2080**. GR2077 stays
+  reserved by name;
+- the **trial-merge ref** `refs/guardrails/trial/<waveDir>` (§1): a delivering wave gates against
+  the trial merge and only fast-forwards the user's branch on green, which changes §14.3's
+  exit-gate contract;
+- **`DecisionEntry` gains a `Wave` member** (§1a) — the wave-scoped interlock reads a recorded
+  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface.
 
 Write it in the document's own conventions — match the surrounding sections rather than importing
 design 39's. Do NOT reword existing prose to satisfy a checking pattern; if a required token reads

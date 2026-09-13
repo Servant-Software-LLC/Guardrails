@@ -25,6 +25,18 @@
 Author failing tests for the `WaveDelivered` announcement, plus the interface member they compile
 against — design 39 §5.
 
+**Test file 1:** `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs`
+**Test file 2:** `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`
+
+**The CLI class lives in Guardrails.Integration.Tests, and it MUST (review, 2026-09-11).**
+`Guardrails.Core.Tests` references `Guardrails.Core` and nothing else — measured: zero
+`using Guardrails.Cli` across its 264 files against 156 in Integration.Tests, and
+`tests/Guardrails.Core.Tests/PlanSource/PlanSourceWiringTests.cs:21` states the constraint in
+its own header. The four CLI decorators are in `src/Guardrails.Cli`, no task in this plan may
+edit a `.csproj`, and the first draft put this class in Core.Tests — where the honest test
+cannot compile and the compiling test proves nothing. The repo's own
+`ObserverForwardingSweepTests` lives in Integration.Tests for exactly this reason.
+
 **Test classes:** `WaveDeliveredEventTests` (the event shape + the CORE decorators) and
 `WaveDeliveredCliForwardingTests` (the CLI decorators). Two classes because two tasks implement them:
 splitting the forwarding by assembly keeps each retry bounded, which a single six-file wiring task does
@@ -41,8 +53,15 @@ a projection quietly dropped two new events and everything stayed green.
 **Pin these behaviours to these EXACT method names:**
 
 - `Event_CarriesTheWaveTheCommitAndWhatItCovered`
-- `EveryCoreDecorator_ForwardsTheEvent` — derive the set (reflection over `IRunObserver` implementers
-  in Core, or the real composition); do NOT hand-list in a way that silently goes stale.
+- `EveryCoreDecorator_ForwardsTheEvent` — **model this on
+  `tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs`**, which already
+  does this job and has been through the failure modes. Read it first. In particular it
+  DELIBERATELY hand-lists its decorators rather than reflecting over every `IRunObserver`
+  implementer, and it is right to: reflection over the Core assembly also finds the nested
+  `private sealed class NullObserver` (in `IRunObserver.cs`), whose contract is to SWALLOW. A
+  "derive the set by reflection" test would demand forwarding from the one type designed not to,
+  and would be permanently red for a task that cannot edit it. Copy its declared exemption and
+  its non-vacuity floor too.
 - `EveryCliDecorator_ForwardsTheEvent`
 - `ADecoratorThatDropsTheEvent_IsCaught` — the negative control. Without it, a sweep that enumerates
   zero decorators passes and proves nothing.

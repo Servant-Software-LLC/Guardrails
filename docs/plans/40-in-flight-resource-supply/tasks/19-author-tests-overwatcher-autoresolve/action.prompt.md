@@ -28,6 +28,21 @@ Author failing tests for the overwatcher behaviour the review DECIDED (design 40
 
 **Test file:** `tests/Guardrails.Core.Tests/Supply/OverwatchSupplyAutoResolveTests.cs`
 **Test class:** `OverwatchSupplyAutoResolveTests`
+**Stub files:** `src/Guardrails.Core/Execution/OverwatchFix.cs` and
+`src/Guardrails.Core/Execution/OverwatchDecision.cs`.
+
+**Why you have stub files (review, 2026-09-11).** Unlike tasks 14 and 17, whose production
+types already exist and which are missing only a CALL, this behaviour needs NEW SURFACE:
+`OverwatchFixKind` is a CLOSED enum — `GuidanceInjection`, `BudgetOverride`, `FileEdit`,
+`TaskFieldEdit`, with its own doc-comment noting unknown kinds are DROPPED, never guessed onto
+the allowlist — and `OverwatchDecisionKind` is `NoAction | Halt | Grant`. An auto-resolve is
+neither. Without these files in scope your tests could not compile and you could not fix it,
+because a `.csproj` and another task's source are both out of reach: the task would fail
+`01-build-passes` on every attempt and dead-end at needs-human. Add the enum member and the
+classification stub ONLY — no behaviour. Task 20 implements it.
+
+`Overwatch.EvaluateAsync` is `internal`, and `Guardrails.Core` carries
+`InternalsVisibleTo Include="Guardrails.Core.Tests"`, so you can drive it directly.
 
 Every test carries `[Trait("Category", "Supply")]`.
 
@@ -45,7 +60,12 @@ should have* is a judgement, and getting it wrong commits an arbitrary file onto
   decision, not a nicety.** An auto-resolve that leaves no provenance is indistinguishable from
   a task's own work, which is precisely what §4 exists to prevent and what the #453 triage would
   need.
-- `AutoResolve_DoesNotCertifyAnythingUnverified` — the task's gates still run in full afterwards.
+- `AutoResolve_DoesNotCertifyAnythingUnverified` — the task's gates still run in full
+  afterwards. **This row is censused and must be RED here** (review finding 10): it had been
+  dropped, and unlike the never-weaker rows elsewhere in this plan it is not exempt — nothing
+  auto-resolves against current code, so it fails like its siblings. Unbound, the cheapest
+  passing implementation auto-resolves at critical and short-circuits the re-armed task's
+  gates, fully green, which is exactly what the maintainer's condition forbids.
   This is what keeps the behaviour on the right side of the standing ruling that forbids
   `dial:critical` with `proceed-unreviewed`: nothing is certified that was not verified.
 

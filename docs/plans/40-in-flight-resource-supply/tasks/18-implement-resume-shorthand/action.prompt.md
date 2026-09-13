@@ -30,11 +30,23 @@ Implement `--resume` on the supply verb so `SupplyResumeShorthandTests` passes.
 provenance record produced by both routes byte for byte, which is the point: a shorthand with
 its own path is a second mechanism for one decision.
 
+**The reference route does not record provenance yet, and you must close that gap.** The
+three-command route (`supply`, `reset`, `run`) drains the staged file at RUN START in
+`RunCommand.cs` (task 16's wiring). That call discards its `SuppliedDrainResult` and never calls
+`RecordSupplied`; today only `Scheduler.DrainSuppliedAtTaskBoundary` writes the design 40 §4 record.
+`Resume_ProducesTheIdenticalProvenanceRecordAsTheThreeCommandPath` asserts the reference route DID
+record provenance, so no change confined to `SupplyCommand.cs` can pass it. Make the run-start drain
+write the §4 record the same way the task-boundary drain does, then have `--resume` reach it through
+that same path rather than writing a record of its own.
+
+Do NOT add test files (a scratch or debug test included) — they are outside this task's scope.
+
 Do NOT edit the authored tests; emit `{"needsHuman": "<why>"}` if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside
-them. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile
+**Scope boundary (harness-enforced):** Write only to
+`src/Guardrails.Cli/Commands/SupplyCommand.cs` and `src/Guardrails.Cli/Commands/RunCommand.cs`.
+After this task completes, the harness runs a `git diff` membership check and rejects any edit
+outside these paths. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile
 error caused by a missing symbol in another file, do NOT edit that file — write
 `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 

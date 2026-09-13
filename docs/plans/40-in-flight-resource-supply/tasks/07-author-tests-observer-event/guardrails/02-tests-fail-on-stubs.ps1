@@ -16,9 +16,14 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'Event_CarriesThePathsAndTheCommit',
-    'EveryDecorator_ForwardsTheEvent',
-    'ADecoratorThatDropsTheEvent_IsCaught'
+    'EveryDecorator_ForwardsTheEvent'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — ADecoratorThatDropsTheEvent_IsCaught.
+#   STRUCTURAL REASON: it is a SELF-CONTAINED negative control. It builds its own deliberately
+#   non-forwarding decorator and asserts the sweep catches it, which holds on the stub tree
+#   (nothing forwards) and equally after task 08 lands. A correct implementation leaves it
+#   GREEN on arrival, so demanding 'Failed' made it unsatisfiable.
 
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

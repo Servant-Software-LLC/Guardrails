@@ -17,8 +17,17 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'BelowCritical_ProposesTheCommandSequence_AndDoesNotRunIt',
     'AtCritical_AutoResolves',
-    'AtCritical_WritesTheProvenanceRecordNamingTheOverwatcherAsSupplier'
+    'AtCritical_WritesTheProvenanceRecordNamingTheOverwatcherAsSupplier',
+    'AutoResolve_DoesNotCertifyAnythingUnverified'
 )
+
+# The fourth row was RESTORED by review (finding 10). It had been dropped, and unlike the
+# never-weaker rows elsewhere in this plan it is NOT a legitimate exemption: against current
+# code nothing auto-resolves, so "an auto-resolve certifies nothing unverified" is RED here
+# like its siblings. It is also the clause that keeps this behaviour on the right side of the
+# standing ruling forbidding dial:critical with proceed-unreviewed. Unbound, the cheapest
+# passing implementation auto-resolves at critical and short-circuits the re-armed task's
+# gates — fully green, and precisely what the maintainer's condition forbids.
 
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

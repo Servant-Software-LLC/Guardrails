@@ -43,8 +43,11 @@ read-only), and normalize `core.autocrlf=false` so content hashes are determinis
 - `Drain_OnAnEmptyStagingTree_DoesNothingAndMakesNoCommit` — §2 step 1, the never-weaker
   requirement: the feature is completely inert for a run that does not use it.
 - `Drain_CopiesEveryStagedFileToItsWorkspacePath` — the staged tree lands at the paths §1 says.
-- `Drain_CommitsWithTheSuppliedByOperatorTrailer` — the commit message carries
-  `Supplied-By-Operator: guardrails supply` and `Guardrails-Run: <runId>` (§4).
+- `Drain_CommitsWithTheSuppliedByTrailer` — the commit message carries
+  `Supplied-By: <by>` and `Guardrails-Run: <runId>` (§4). The trailer key is DERIVED from the
+  record's `by` field — `operator`, `overwatcher` or `task:<folder>` — and is NOT the constant
+  `Supplied-By-Operator`. Pinning the constant would make the trailer a FALSE STATEMENT on the
+  §3 overwatcher auto-resolve and on every agent-callable supply in §5a.
 - `Drain_DeletesTheStagingTreeAfterCommitting` — the tree is harness-owned and drained, so a
   second drain must not re-commit the same files.
 - `Drain_ReturnsTheCommittedPathsAndByteCount` — the caller needs these for the §4 provenance

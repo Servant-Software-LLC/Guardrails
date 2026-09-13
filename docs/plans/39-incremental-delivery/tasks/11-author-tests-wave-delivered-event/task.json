@@ -6,7 +6,7 @@
   "stableId": "c7y4hj",
   "writeScope": [
     "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs",
-    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs",
+    "tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs",
     "src/Guardrails.Core/Execution/IRunObserver.cs"
   ]
 }

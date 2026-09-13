@@ -33,7 +33,12 @@ skill, not the design document.
 
 Cover:
 - the verb, and that the staged path is the workspace path the file must have;
-- **the two boundaries** — task boundary on a live run, run start on a halted one;
+- **the two boundaries** — task boundary on a live run, the **run-start boundary** on a
+  halted one. Name the second explicitly: an agent that knows only the task boundary cannot
+  tell a supply that will be picked up from one that will not;
+- **the asymmetry, as a contract** — plan-folder edits reach a running plan and **code
+  artifacts do not**. This is surface 2 of the three the review's `d40-asymmetry` answer named,
+  and the one nothing else in the repo tests;
 - **the caller scoping**: a task agent may supply only paths inside its OWN `writeScope`; an
   operator invocation is unrestricted. This is what makes the JIT case usable — an agent
   authoring a script it then needs on the base almost certainly owns that path already.

@@ -6,9 +6,15 @@
 #          hollow body satisfies exactly as well as a real one (#375).
 #
 #          BOUNDARY, stated because a green census must not be over-read: this proves each test is
-#          COUPLED TO THE CODE PATH (it fails when the implementation is absent), NOT that its
-#          assertion is correct. An invoking-then-hollow test is red on stubs, green after, and
-#          PASSES this. Closing that needs mutation testing.
+#          COUPLED TO THE CODE PATH (it fails when the wiring is absent), NOT that its assertion
+#          is correct. An invoking-then-hollow test is red before, green after, and PASSES this.
+#          Closing that needs mutation testing.
+#
+# real-seam: Scheduler + RunCommand -> SuppliedDrain  bucket=C
+#          (#382) These tests drive the PRODUCTION Scheduler through its real factory and
+#          `guardrails run` through CommandFactory.BuildRootCommand, and assert an effect only
+#          the production path emits. Declared so the proof is locatable rather than recognised
+#          by accident.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
@@ -17,8 +23,23 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'TaskBoundary_DrainsFilesStagedWhileTheRunIsExecuting',
     'RunStart_DrainsFilesStagedAfterTheRunHalted',
-    'SettledTasksAreNotReRunBySupplying'
+    'SettledTasksAreNotReRunBySupplying',
+    'TaskBoundary_WritesTheSuppliedProvenanceIntoRunJson',
+    'Drain_AnnouncesThroughTheRealObserverPipeline'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — ARunThatSuppliesNothing_IsUnchanged.
+#   STRUCTURAL REASON: against the UNWIRED code nothing drains, so a run that supplies nothing
+#   is trivially unchanged and the test passes. It is the never-weaker requirement and a
+#   CORRECT implementation leaves it green; demanding 'Failed' would red a correct plan. The
+#   row was previously dropped SILENTLY, which made the genuinely-wrong drop at task 19 read
+#   as the same deliberate choice.
+#
+# The last two rows are NEW (review finding 9). Without them the parts were unit-tested in
+# isolation and the PRODUCTION path was never asserted to USE them: a drain that commits the
+# file but never writes supplied[] and never raises the event passed tasks 04, 06, 08, 09, 15,
+# 16, both plan-root gates and the whole suite. Section 5a calls provenance "the actual
+# defence"; it was load-bearing on nothing.
 
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -56,7 +77,7 @@ try {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }
         elseif ($node.outcome -ne 'Failed') {
-            $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is either hollow or already implemented."
+            $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. There are no stubs here — the production types already exist and what is missing is the CALL, so a behaviour that passes against the UNWIRED code is either hollow or already wired."
         }
     }
 

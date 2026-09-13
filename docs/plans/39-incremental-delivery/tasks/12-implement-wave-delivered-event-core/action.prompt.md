@@ -22,11 +22,24 @@
 
 ## Task
 
+**A PRE-EXISTING test goes RED the moment task 11 merges, and closing its Core half is your
+job.** `tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs` enumerates
+`typeof(IRunObserver).GetMethods(...)` and asserts four named decorators DECLARE every member —
+explicitly rejecting the interface''s empty default (*"Inheriting the interface''s empty default
+declares nothing"*). Task 11 adds `WaveDelivered` with a no-op default, so the sweep fails on all
+four until the declarations land: `RunEventStream` and `ObserverProjection` here, the two Cli
+ones in task 13. It is in no task''s `writeScope`, needs no edit, and goes green by itself once
+you declare. **Do not "fix" it by touching the test.**
+
+Note also that `grep -rln` returns FILES, not implementers: 17 files in Core mention
+`IRunObserver` and only three DECLARE it — the two transparent decorators above plus the nested
+`NullObserver`, whose contract is to swallow and which must NOT forward.
+
 Forward `WaveDelivered` through every **Core** `IRunObserver` decorator so `WaveDeliveredEventTests`
 passes.
 
 **Find them yourself — grep, do not trust a list.** Run
-`grep -rln "IRunObserver" --include=*.cs src/Guardrails.Core/`. At authoring time that was
+`grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Core/`. At authoring time that was
 `ObserverProjection` and `RunEventStream`. **If your grep returns a different set, trust the grep.**
 
 The no-op default on the interface is what let task 11 compile — it is NOT the deliverable. A decorator

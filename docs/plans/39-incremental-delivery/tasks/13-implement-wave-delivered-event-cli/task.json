@@ -6,6 +6,9 @@
   ],
   "stableId": "v4s7om",
   "writeScope": [
-    "src/Guardrails.Cli/"
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"
   ]
 }
