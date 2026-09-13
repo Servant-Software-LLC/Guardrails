@@ -31,7 +31,10 @@ public enum OverwatchAuthorityClass
     Default
 }
 
-/// <summary>The kind of fix the overwatcher's diagnose prompt proposed (doc 11 §3.1/§3.2).</summary>
+/// <summary>
+/// The kind of fix the overwatcher's diagnose prompt proposed (doc 11 §3.1/§3.2). CLOSED — an unknown
+/// kind is dropped by <see cref="OverwatchProposal.TryParse"/>, never guessed onto the allowlist.
+/// </summary>
 public enum OverwatchFixKind
 {
     /// <summary>Ephemeral guidance appended to the NEXT attempt's composed prompt (allowlist; the safest v1 lever).</summary>
@@ -44,7 +47,16 @@ public enum OverwatchFixKind
     FileEdit,
 
     /// <summary>An edit to a <c>task.json</c> field (classified by field — a verdict-driving field is denylist; anything else is default).</summary>
-    TaskFieldEdit
+    TaskFieldEdit,
+
+    /// <summary>
+    /// Supply an already-staged resource (design 40 §3) rather than edit an authored file — the judge
+    /// names the workspace-relative path (<see cref="OverwatchFixOp.TargetPath"/>) it believes the
+    /// operator has already staged via <c>guardrails supply</c>. Never routed onto the guidance/budget
+    /// allowlist by <see cref="OverwatchFixClassifier"/>; gated at <c>dial:critical</c> by
+    /// <see cref="OverwatchSupplyAutoResolve"/> instead.
+    /// </summary>
+    ResourceSupply
 }
 
 /// <summary>
@@ -67,7 +79,11 @@ public sealed record OverwatchFixOp
     /// <summary>For <see cref="OverwatchFixKind.BudgetOverride"/>: the requested value (bounded by the hard caps at application).</summary>
     public int? BudgetValue { get; init; }
 
-    /// <summary>For <see cref="OverwatchFixKind.FileEdit"/>: the target path (workspace/plan-relative or absolute) the judge would edit.</summary>
+    /// <summary>
+    /// For <see cref="OverwatchFixKind.FileEdit"/>: the target path (workspace/plan-relative or absolute)
+    /// the judge would edit. For <see cref="OverwatchFixKind.ResourceSupply"/>: the workspace-relative
+    /// path of the resource the judge believes is already staged.
+    /// </summary>
     public string? TargetPath { get; init; }
 
     /// <summary>For <see cref="OverwatchFixKind.TaskFieldEdit"/>: the <c>task.json</c> field the judge would edit.</summary>
