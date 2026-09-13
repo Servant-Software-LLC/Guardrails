@@ -85,11 +85,6 @@ public enum OverwatchDecisionKind
 /// <c>dial:critical</c>, is deciding that <c>resourceSupply</c>'s staged file really is the file the task
 /// needed — the caller is trusted to have made that match; this method only gates WHETHER to act on it.
 /// </para>
-/// <para>
-/// STUB (task 19 — design 40 §3, review 2026-09-11): throws <see cref="NotImplementedException"/>
-/// unconditionally. Task 20 wires the real decision, the drain, and the provenance write — naming
-/// <c>"overwatcher"</c> as the <see cref="SuppliedRecord.By"/> supplier, never <c>"operator"</c>.
-/// </para>
 /// </summary>
 public static class OverwatchSupplyAutoResolve
 {
@@ -111,6 +106,64 @@ public static class OverwatchSupplyAutoResolve
         TaskNode task,
         PlanDefinition plan,
         RunJournal journal,
-        OverwatchFixOp resourceSupply) =>
-        throw new NotImplementedException();
+        OverwatchFixOp resourceSupply)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentNullException.ThrowIfNull(resourceSupply);
+
+        bool atCritical =
+            policy == AutonomyPolicy.Auto
+            && autonomyBlockPresent
+            && escalationThreshold == EscalationThreshold.Critical;
+
+        if (atCritical)
+        {
+            SuppliedDrainResult drained = SuppliedDrain.Drain(
+                plan.Workspace, plan.PlanDirectory, journal.RunId, by: "overwatcher");
+
+            if (drained.CommitSha is { } commitSha)
+            {
+                journal.RecordSupplied(new SuppliedRecord
+                {
+                    At = DateTimeOffset.UtcNow,
+                    Commit = commitSha,
+                    Paths = drained.CommittedPaths,
+                    Bytes = drained.TotalBytes,
+                    By = "overwatcher"
+                });
+
+                return new OverwatchDecision
+                {
+                    Kind = OverwatchDecisionKind.AutoResolve,
+                    AutoResolvedPaths = drained.CommittedPaths
+                };
+            }
+        }
+
+        // Below dial:critical (or, at critical, nothing was actually staged to drain — never-weaker):
+        // propose the copy-pasteable three-command sequence rather than acting on it.
+        return new OverwatchDecision
+        {
+            Kind = OverwatchDecisionKind.Halt,
+            RichHaltSummary = ProposedSequenceFor(task, plan, resourceSupply)
+        };
+    }
+
+    /// <summary>
+    /// The copy-pasteable three-command sequence design 40 §3(b) decided: the operator runs the SAME
+    /// <c>supply</c> / <c>reset</c> / <c>run</c> steps the auto-resolve above performs mechanically.
+    /// </summary>
+    private static string ProposedSequenceFor(TaskNode task, PlanDefinition plan, OverwatchFixOp resourceSupply)
+    {
+        string folder = Path.GetFileName(
+            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        return
+            "Below dial:critical the overwatcher only proposes this fix — apply it yourself:\n" +
+            $"  guardrails supply {folder} {resourceSupply.TargetPath}\n" +
+            $"  guardrails reset {folder} {task.Id}\n" +
+            $"  guardrails run {folder}";
+    }
 }
