@@ -11,5 +11,8 @@
   "stableId": "u2p6dk",
   "writeScope": [
     "docs/plans/02-schemas-and-contracts.md"
-  ]
+  ],
+  "action": {
+    "maxTurns": 75
+  }
 }

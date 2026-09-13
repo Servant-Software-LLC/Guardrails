@@ -60,9 +60,11 @@ deliverer on upgrade, changing what those plans do with the user's branch withou
 
 The tests MUST COMPILE and FAIL. Do NOT implement the behaviour.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside them. An
+**Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs` and `src/Guardrails.Core/Model/WaveNode.cs`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
 out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
 missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
 state-out path and stop.
+
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.
 

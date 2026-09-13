@@ -63,7 +63,7 @@ try {
     # is never written is not "green because correct" — it is absent, and absence is how a
     # never-weaker guarantee quietly stops being asserted anywhere.
     foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
