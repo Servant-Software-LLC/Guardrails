@@ -36,6 +36,7 @@ plan-name/
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
+│   ├── <runId>/supplied/        # harness-owned staging tree for `guardrails supply` — drained + deleted by the harness at a boundary, never read by a guardrail (§7 `supplied[]`)
 │   ├── <runId>/<task-id>/index.html   # static per-task log page — non-authored (§12.2/§12.3)
 │   ├── <runId>/index.html       # static log-site index — written on the fly during a run + by --export (§12.3)
 │   ├── <runId>/wave-NN-slug/index.html # WAVED plans only: per-wave index — that wave's tasks + drill-down (§12.3, #380)
@@ -124,6 +125,16 @@ could not cover `logs/`; hence one plan-root file with leading-slash-anchored pa
 hand-authored `.gitignore` is left untouched) and idempotent, and fires for every plan including
 hand-authored ones. Relocating runtime state out of the committed folder is a separate, larger
 decision (issue #275) and is deliberately NOT done here.
+
+**`logs/<runId>/supplied/` is a harness-owned staging tree, not part of the DAG** (design of record
+`40-in-flight-resource-supply.md`, issue #373). `guardrails supply <plan> <path>...` copies files here —
+staying under the same `logs/` root the scaffolded `.gitignore` above already excludes wholesale, so no
+separate ignore entry is needed. The harness alone drains it: at a task boundary while the run is
+executing, or — for a run that has already halted and exited, with no live task boundary to reach — at
+run start before the first task is scheduled (§7 `supplied[]`). Draining copies the staged tree onto the
+plan branch, commits it, and deletes `logs/<runId>/supplied/` so a second drain is inert. **No guardrail
+ever reads this tree**; it is a hand-off point between the operator (or an in-scope task, or the
+overwatcher, §3.6) and the harness, not workspace content a check verifies.
 
 ### 1.1 `tasks/<id>/samples/` — committed guardrail evidence, outside the loader and outside the hash
 
@@ -1212,6 +1223,32 @@ zero changed paths because it is deleted before the diff. The `to` destinations 
 destinations in `writeScope` as well); an *undeclared* `.claude/` write still fails the check.
 **Subsumes #85:** the `.claude/` block is by path pattern, so no permission-config value unblocks a
 worktree `.claude/` write; `stagingOutputs` is the supported autonomous path.
+
+### 3.6 Supply caller scope (`guardrails supply`) — issue #373
+
+`guardrails supply <plan> <path>...` (design of record `40-in-flight-resource-supply.md`) copies a file
+into the harness-owned staging tree `logs/<runId>/supplied/` (§1) for the harness to commit onto the plan
+branch at its next drain boundary (§7 `supplied[]`). It is an ordinary CLI verb, so anything that can run
+a shell can call it — including a task's own action, mid-attempt, wanting a file it just authored on the
+run's base without ending the run. That makes it a potential **write-scope bypass**: `writeScope` is what
+stops a task writing files it does not own (§3.4), and a task that could call `supply` unchecked would put
+any path onto the run's base without that check ever running.
+
+**DECIDED: a task-invoked `supply` may write only inside that task's own writeScope; an operator
+invocation is unrestricted.** This is a NEW env-derived authorization contract, layered on
+`WriteScope.IsInScope` (§3.4) rather than a reimplementation of it — the same membership rule that gates a
+task's own uncommitted segment writes is applied here to a `supply` CLI argument path, so the two can never
+disagree by drifting apart in two call sites.
+
+**The caller is distinguished via the hermetic `GUARDRAILS_*` namespace (§5.1, issue #442).** A `supply`
+process launched from inside a task action inherits that task's `GUARDRAILS_TASK_ID` / `GUARDRAILS_WORKSPACE`
+/ etc.; an operator's own shell carries none of them. Presence selects a task invocation (scoped to that
+task's declared `writeScope`); absence is an unrestricted operator invocation. This is a guard against the
+accidental and the naive case, not against an adversary — an agent that can run `guardrails supply` can also
+run it with those variables cleared — so it is deliberately backed by a second, independent control: the
+`supplied[]` provenance record (§7) names WHO supplied a given file regardless of what the caller-scope check
+did or did not catch, which is what keeps a supplied file attributable after the fact even if the env check
+is bypassed.
 
 ## 4. Guardrails
 
@@ -2801,7 +2838,26 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
     //   "subject": "12-implement-events-endpoint",  // token; subject = the task/wave the machine judged
     //   "boundary": "task"           // at; boundary + subject locate the entry in decisions[]
     // }
-  }
+  },
+
+  // OPTIONAL, append-only PROVENANCE record for `guardrails supply` (design of record
+  // `40-in-flight-resource-supply.md`, issue #373). A file the operator (or an in-scope task, or the
+  // overwatcher, §3.6) handed the harness this way is NOT the plan's own output, and without a record it
+  // is indistinguishable from one once it is on the plan branch. One entry per DRAIN of the staging tree
+  // `logs/<runId>/supplied/` (§1) — never one per `supply` invocation, since several staged files drain
+  // together in one commit. Absent (not null noise) on a run nobody supplied anything to.
+  "supplied": [
+    {
+      "at": "2026-09-05T07-47-36Z",
+      "commit": "9c1f0ab",              // the drain's commit sha on the plan branch (§5.3)
+      "paths": ["vendor/mermaid.min.js"],
+      "bytes": 214512,
+      // WHO supplied it — the FIFTH field, and load-bearing rather than decorative: `operator` |
+      // `overwatcher` | `task:<folder>`. Without it, a supply performed by anything OTHER than the
+      // operator would have no way to name itself as the supplier.
+      "by": "operator"
+    }
+  ]
 }
 ```
 
@@ -2834,6 +2890,17 @@ only where nobody kept it) sitting on its own audit trail. Written once at the e
 fully resolved — including the deferred path where delivery waits on the terminal gate's verdict
 (`DeliveryPendingTerminalGate`), so an earlier write would record "not delivered" for a run that then
 delivered. Best-effort: a failed journal write never changes the run's verdict.
+
+**`supplied[]` — a supplied file is not the plan's own work (design of record
+`40-in-flight-resource-supply.md`, issue #373).** `at` / `commit` / `paths` / `bytes` record when the drain
+committed, the resulting commit sha on the plan branch (§5.3), the workspace-relative paths that landed, and
+their total size. `by` — `operator` | `overwatcher` | `task:<folder>` — is the FIFTH field, and it is not
+decoration: a record that could name only the operator would make an overwatcher- or task-driven supply
+indistinguishable from one the operator performed, at exactly the moment (a terminal-gate failure, a later
+task behaving oddly) someone needs to know what is in the tree that no task authored. The commit itself
+carries a trailer DERIVED from this field — `Supplied-By: <by>` alongside the existing `Guardrails-Run:
+<runId>` (§5.3) — never the constant `Supplied-By-Operator`, which would be a false statement on any supply
+the operator did not perform.
 
 **`harnessWrite` — the escape hatch's disposition, kept (#532 gap 1).** Every disposition in this record was
 ALREADY computed as a first-class value inside `HarnessWrite.ValidateAndApply` — `Rejected(…)`, `Denied(…)`,
@@ -4277,7 +4344,16 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
-| `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — **the only kind with no `taskId`** |
+| `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
+| `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit` — no `taskId`: a drain (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
+
+**`SuppliedResourcesCommitted` announces a base change the run did not itself author (design of record
+`40-in-flight-resource-supply.md`, issue #373).** A run whose base changed underneath it must say so — a
+silent one is indistinguishable from a harness bug the next time a task behaves unexpectedly. Forwarded
+through every `IRunObserver` decorator like any other member (a decorator that drops it fails the same
+forwarding-sweep test every other member is caught by), it reaches `events.jsonl` as the row above and, for
+a human watching the run, a `[supplied] N resource(s) committed <commit>: <paths>` line in both the live
+table and `--no-ui` console output.
 
 **One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
 `Journal.AttemptOutcome` (`JournalJson.OutcomeToken`) — the same token §7 journals and §15.2's
