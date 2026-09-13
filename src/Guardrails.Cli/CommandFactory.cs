@@ -28,6 +28,7 @@ public static class CommandFactory
         rootCommand.Add(LogsCommand.Create(io));
         rootCommand.Add(AttachCommand.Create(io));
         rootCommand.Add(ResetCommand.Create(io));
+        rootCommand.Add(SupplyCommand.Create(io));
         rootCommand.Add(LockCommand.Create(io));
         rootCommand.Add(MergeCommand.Create(io));
         rootCommand.Add(ProvidersCommand.Create(io));
