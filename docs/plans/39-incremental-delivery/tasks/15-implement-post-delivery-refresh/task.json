@@ -5,7 +5,7 @@
   ],
   "stableId": "n1x5tg",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/Scheduler.cs"
   ],
   "action": {
     "maxTurns": 75

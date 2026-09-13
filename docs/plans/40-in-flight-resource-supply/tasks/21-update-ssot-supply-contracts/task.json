@@ -1,9 +1,10 @@
 {
-  "description": "Record the supply contracts in the SSOT: the staging tree (\u00a71), run.json supplied[] (\u00a77), and the observer event (\u00a78)",
+  "description": "Record the supply contracts in the SSOT: the staging tree, run.json supplied[] with its by field, the observer event, and the caller-scoping rule",
   "dependsOn": [
     "16-wire-drain-at-run-start",
     "06-implement-provenance",
-    "09-implement-observer-cli"
+    "09-implement-observer-cli",
+    "13-implement-caller-scope"
   ],
   "stableId": "u7e3ao",
   "writeScope": [

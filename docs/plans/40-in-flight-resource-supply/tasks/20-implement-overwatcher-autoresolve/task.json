@@ -5,7 +5,10 @@
   ],
   "stableId": "x2z9cf",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/OverwatchFix.cs",
+    "src/Guardrails.Core/Execution/OverwatchFixClassifier.cs",
+    "src/Guardrails.Core/Execution/OverwatchDecision.cs"
   ],
   "action": {
     "maxTurns": 75

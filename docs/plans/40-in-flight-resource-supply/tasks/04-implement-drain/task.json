@@ -1,11 +1,12 @@
 {
-  "description": "Implement SuppliedDrain so the authored tests pass",
+  "description": "Implement SuppliedDrain so the authored tests pass, and declare the ISchedulerJournal member its callers (tasks 15/16) need",
   "dependsOn": [
     "03-author-tests-drain"
   ],
   "stableId": "b2n6ke",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/SuppliedDrain.cs",
+    "src/Guardrails.Core/Execution/ISchedulerJournal.cs"
   ],
   "action": {
     "maxTurns": 75

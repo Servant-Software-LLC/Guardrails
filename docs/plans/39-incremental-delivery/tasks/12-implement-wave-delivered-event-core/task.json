@@ -1,10 +1,12 @@
 {
-  "description": "Forward WaveDelivered through the CORE IRunObserver decorators",
+  "description": "Forward WaveDelivered through the CORE IRunObserver decorators (ObserverProjection, RunEventStream)",
   "dependsOn": [
     "11-author-tests-wave-delivered-event"
   ],
   "stableId": "r9w2ek",
   "writeScope": [
-    "src/Guardrails.Core/Execution/"
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
   ]
 }

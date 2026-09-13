@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=7d7f243a824dfdd8fcecbaf85a5de85f5aa80f810b863bd920ea45ace7d68c63 body-sha256=433af13e8f45b00231ead0151b2ce49d87baad474e5f25ddd565bfb440cd3bc6 -->
+<!-- guardrails:graph v1 source-sha256=06b75e1592d4e658169b8aefa715ac5867fa248b7827085c5738293cb3ffb08b body-sha256=a3c12c1f7114a34fc35bf2dd3043f95debd406d20cd3a0d1bf521ed71d277617 -->
 
 ```mermaid
 flowchart TD
@@ -37,6 +37,7 @@ flowchart TD
   subgraph task_07_author_tests_observer_event["07-author-tests-observer-event"]
     task_07_author_tests_observer_event_gr_0["01-build-passes"]:::guardrail
     task_07_author_tests_observer_event_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_07_author_tests_observer_event_gr_2["03-cli-forwarding-tests-fail-on-stubs"]:::guardrail
   end
   style task_07_author_tests_observer_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_observer_core["08-implement-observer-core"]
@@ -67,15 +68,15 @@ flowchart TD
   style task_13_implement_caller_scope fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_14_author_tests_boundary_wiring["14-author-tests-boundary-wiring"]
     task_14_author_tests_boundary_wiring_gr_0["01-build-passes"]:::guardrail
-    task_14_author_tests_boundary_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_14_author_tests_boundary_wiring_gr_1["02-real-seam-tests-fail-on-current-code"]:::guardrail
   end
   style task_14_author_tests_boundary_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_15_wire_drain_at_task_boundary["15-wire-drain-at-task-boundary"]
-    task_15_wire_drain_at_task_boundary_gr_0["01-tests-pass"]:::guardrail
+    task_15_wire_drain_at_task_boundary_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_15_wire_drain_at_task_boundary fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_16_wire_drain_at_run_start["16-wire-drain-at-run-start"]
-    task_16_wire_drain_at_run_start_gr_0["01-tests-pass"]:::guardrail
+    task_16_wire_drain_at_run_start_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_16_wire_drain_at_run_start fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_17_author_tests_resume_shorthand["17-author-tests-resume-shorthand"]
@@ -85,6 +86,7 @@ flowchart TD
   style task_17_author_tests_resume_shorthand fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_18_implement_resume_shorthand["18-implement-resume-shorthand"]
     task_18_implement_resume_shorthand_gr_0["01-tests-pass"]:::guardrail
+    task_18_implement_resume_shorthand_gr_1["02-forward-census"]:::guardrail
   end
   style task_18_implement_resume_shorthand fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_19_author_tests_overwatcher_autoresolve["19-author-tests-overwatcher-autoresolve"]
@@ -108,10 +110,20 @@ flowchart TD
     task_23_update_domain_knowledge_skill_gr_0["01-skill-documents-supply"]:::guardrail
   end
   style task_23_update_domain_knowledge_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_24_author_tests_halt_text["24-author-tests-halt-text"]
+    task_24_author_tests_halt_text_gr_0["01-build-passes"]:::guardrail
+    task_24_author_tests_halt_text_gr_1["02-tests-fail-on-current-code"]:::guardrail
+  end
+  style task_24_author_tests_halt_text fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_25_implement_halt_text["25-implement-halt-text"]
+    task_25_implement_halt_text_gr_0["01-tests-pass"]:::guardrail
+  end
+  style task_25_implement_halt_text fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
     plan_guardrails_2["03-supplied-tree-union-sound"]:::guardrail
+    plan_guardrails_3["04-solution-builds-at-the-union"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   plan_preflights --> task_01_author_tests_staging_tree
@@ -136,21 +148,26 @@ flowchart TD
   task_11_implement_supply_command --> task_17_author_tests_resume_shorthand
   task_11_implement_supply_command --> task_22_update_readme_supply
   task_11_implement_supply_command --> task_23_update_domain_knowledge_skill
+  task_11_implement_supply_command --> task_24_author_tests_halt_text
   task_12_author_tests_caller_scope --> task_13_implement_caller_scope
+  task_13_implement_caller_scope --> task_11_implement_supply_command
   task_13_implement_caller_scope --> task_19_author_tests_overwatcher_autoresolve
+  task_13_implement_caller_scope --> task_21_update_ssot_supply_contracts
   task_13_implement_caller_scope --> task_23_update_domain_knowledge_skill
   task_14_author_tests_boundary_wiring --> task_15_wire_drain_at_task_boundary
-  task_14_author_tests_boundary_wiring --> task_16_wire_drain_at_run_start
+  task_15_wire_drain_at_task_boundary --> task_16_wire_drain_at_run_start
   task_16_wire_drain_at_run_start --> task_17_author_tests_resume_shorthand
   task_16_wire_drain_at_run_start --> task_21_update_ssot_supply_contracts
+  task_16_wire_drain_at_run_start --> task_24_author_tests_halt_text
   task_17_author_tests_resume_shorthand --> task_18_implement_resume_shorthand
+  task_18_implement_resume_shorthand --> task_25_implement_halt_text
   task_19_author_tests_overwatcher_autoresolve --> task_20_implement_overwatcher_autoresolve
-  task_15_wire_drain_at_task_boundary --> plan_guardrails
-  task_18_implement_resume_shorthand --> plan_guardrails
+  task_24_author_tests_halt_text --> task_25_implement_halt_text
   task_20_implement_overwatcher_autoresolve --> plan_guardrails
   task_21_update_ssot_supply_contracts --> plan_guardrails
   task_22_update_readme_supply --> plan_guardrails
   task_23_update_domain_knowledge_skill --> plan_guardrails
+  task_25_implement_halt_text --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

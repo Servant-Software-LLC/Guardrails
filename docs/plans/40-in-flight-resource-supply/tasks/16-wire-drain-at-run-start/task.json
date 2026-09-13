@@ -1,7 +1,7 @@
 {
-  "description": "Wire the drain into the resume path before the first task is scheduled (the halted-run row \u2014 the measured incident)",
+  "description": "Wire the drain into the resume path before the first task is scheduled (the halted-run row - the measured incident)",
   "dependsOn": [
-    "14-author-tests-boundary-wiring"
+    "15-wire-drain-at-task-boundary"
   ],
   "stableId": "g9m4ta",
   "writeScope": [

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=7d7f243a824dfdd8fcecbaf85a5de85f5aa80f810b863bd920ea45ace7d68c63 -->
+<!-- guardrails:graph v1 source-sha256=06b75e1592d4e658169b8aefa715ac5867fa248b7827085c5738293cb3ffb08b -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -138,6 +138,7 @@
   subgraph task_07_author_tests_observer_event["07-author-tests-observer-event"]
     task_07_author_tests_observer_event_gr_0["01-build-passes"]:::guardrail
     task_07_author_tests_observer_event_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_07_author_tests_observer_event_gr_2["03-cli-forwarding-tests-fail-on-stubs"]:::guardrail
   end
   style task_07_author_tests_observer_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_observer_core["08-implement-observer-core"]
@@ -168,15 +169,15 @@
   style task_13_implement_caller_scope fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_14_author_tests_boundary_wiring["14-author-tests-boundary-wiring"]
     task_14_author_tests_boundary_wiring_gr_0["01-build-passes"]:::guardrail
-    task_14_author_tests_boundary_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_14_author_tests_boundary_wiring_gr_1["02-real-seam-tests-fail-on-current-code"]:::guardrail
   end
   style task_14_author_tests_boundary_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_15_wire_drain_at_task_boundary["15-wire-drain-at-task-boundary"]
-    task_15_wire_drain_at_task_boundary_gr_0["01-tests-pass"]:::guardrail
+    task_15_wire_drain_at_task_boundary_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_15_wire_drain_at_task_boundary fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_16_wire_drain_at_run_start["16-wire-drain-at-run-start"]
-    task_16_wire_drain_at_run_start_gr_0["01-tests-pass"]:::guardrail
+    task_16_wire_drain_at_run_start_gr_0["01-real-seam-tests-pass"]:::guardrail
   end
   style task_16_wire_drain_at_run_start fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_17_author_tests_resume_shorthand["17-author-tests-resume-shorthand"]
@@ -186,6 +187,7 @@
   style task_17_author_tests_resume_shorthand fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_18_implement_resume_shorthand["18-implement-resume-shorthand"]
     task_18_implement_resume_shorthand_gr_0["01-tests-pass"]:::guardrail
+    task_18_implement_resume_shorthand_gr_1["02-forward-census"]:::guardrail
   end
   style task_18_implement_resume_shorthand fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_19_author_tests_overwatcher_autoresolve["19-author-tests-overwatcher-autoresolve"]
@@ -209,10 +211,20 @@
     task_23_update_domain_knowledge_skill_gr_0["01-skill-documents-supply"]:::guardrail
   end
   style task_23_update_domain_knowledge_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_24_author_tests_halt_text["24-author-tests-halt-text"]
+    task_24_author_tests_halt_text_gr_0["01-build-passes"]:::guardrail
+    task_24_author_tests_halt_text_gr_1["02-tests-fail-on-current-code"]:::guardrail
+  end
+  style task_24_author_tests_halt_text fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_25_implement_halt_text["25-implement-halt-text"]
+    task_25_implement_halt_text_gr_0["01-tests-pass"]:::guardrail
+  end
+  style task_25_implement_halt_text fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
     plan_guardrails_2["03-supplied-tree-union-sound"]:::guardrail
+    plan_guardrails_3["04-solution-builds-at-the-union"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   plan_preflights --> task_01_author_tests_staging_tree
@@ -237,21 +249,26 @@
   task_11_implement_supply_command --> task_17_author_tests_resume_shorthand
   task_11_implement_supply_command --> task_22_update_readme_supply
   task_11_implement_supply_command --> task_23_update_domain_knowledge_skill
+  task_11_implement_supply_command --> task_24_author_tests_halt_text
   task_12_author_tests_caller_scope --> task_13_implement_caller_scope
+  task_13_implement_caller_scope --> task_11_implement_supply_command
   task_13_implement_caller_scope --> task_19_author_tests_overwatcher_autoresolve
+  task_13_implement_caller_scope --> task_21_update_ssot_supply_contracts
   task_13_implement_caller_scope --> task_23_update_domain_knowledge_skill
   task_14_author_tests_boundary_wiring --> task_15_wire_drain_at_task_boundary
-  task_14_author_tests_boundary_wiring --> task_16_wire_drain_at_run_start
+  task_15_wire_drain_at_task_boundary --> task_16_wire_drain_at_run_start
   task_16_wire_drain_at_run_start --> task_17_author_tests_resume_shorthand
   task_16_wire_drain_at_run_start --> task_21_update_ssot_supply_contracts
+  task_16_wire_drain_at_run_start --> task_24_author_tests_halt_text
   task_17_author_tests_resume_shorthand --> task_18_implement_resume_shorthand
+  task_18_implement_resume_shorthand --> task_25_implement_halt_text
   task_19_author_tests_overwatcher_autoresolve --> task_20_implement_overwatcher_autoresolve
-  task_15_wire_drain_at_task_boundary --> plan_guardrails
-  task_18_implement_resume_shorthand --> plan_guardrails
+  task_24_author_tests_halt_text --> task_25_implement_halt_text
   task_20_implement_overwatcher_autoresolve --> plan_guardrails
   task_21_update_ssot_supply_contracts --> plan_guardrails
   task_22_update_readme_supply --> plan_guardrails
   task_23_update_domain_knowledge_skill --> plan_guardrails
+  task_25_implement_halt_text --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click plan_preflights_0 href "preflights/01-baseline-core-tests-green.ps1" "01-baseline-core-tests-green" _blank
@@ -267,6 +284,7 @@
   click task_06_implement_provenance_gr_0 href "tasks/06-implement-provenance/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_07_author_tests_observer_event_gr_0 href "tasks/07-author-tests-observer-event/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_07_author_tests_observer_event_gr_1 href "tasks/07-author-tests-observer-event/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_07_author_tests_observer_event_gr_2 href "tasks/07-author-tests-observer-event/guardrails/03-cli-forwarding-tests-fail-on-stubs.ps1" "03-cli-forwarding-tests-fail-on-stubs" _blank
   click task_08_implement_observer_core_gr_0 href "tasks/08-implement-observer-core/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_09_implement_observer_cli_gr_0 href "tasks/09-implement-observer-cli/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_10_author_tests_supply_command_gr_0 href "tasks/10-author-tests-supply-command/guardrails/01-build-passes.ps1" "01-build-passes" _blank
@@ -276,22 +294,27 @@
   click task_12_author_tests_caller_scope_gr_1 href "tasks/12-author-tests-caller-scope/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
   click task_13_implement_caller_scope_gr_0 href "tasks/13-implement-caller-scope/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_14_author_tests_boundary_wiring_gr_0 href "tasks/14-author-tests-boundary-wiring/guardrails/01-build-passes.ps1" "01-build-passes" _blank
-  click task_14_author_tests_boundary_wiring_gr_1 href "tasks/14-author-tests-boundary-wiring/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
-  click task_15_wire_drain_at_task_boundary_gr_0 href "tasks/15-wire-drain-at-task-boundary/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
-  click task_16_wire_drain_at_run_start_gr_0 href "tasks/16-wire-drain-at-run-start/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
+  click task_14_author_tests_boundary_wiring_gr_1 href "tasks/14-author-tests-boundary-wiring/guardrails/02-real-seam-tests-fail-on-current-code.ps1" "02-real-seam-tests-fail-on-current-code" _blank
+  click task_15_wire_drain_at_task_boundary_gr_0 href "tasks/15-wire-drain-at-task-boundary/guardrails/01-real-seam-tests-pass.ps1" "01-real-seam-tests-pass" _blank
+  click task_16_wire_drain_at_run_start_gr_0 href "tasks/16-wire-drain-at-run-start/guardrails/01-real-seam-tests-pass.ps1" "01-real-seam-tests-pass" _blank
   click task_17_author_tests_resume_shorthand_gr_0 href "tasks/17-author-tests-resume-shorthand/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_17_author_tests_resume_shorthand_gr_1 href "tasks/17-author-tests-resume-shorthand/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_18_implement_resume_shorthand_gr_0 href "tasks/18-implement-resume-shorthand/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
+  click task_18_implement_resume_shorthand_gr_1 href "tasks/18-implement-resume-shorthand/guardrails/02-forward-census.ps1" "02-forward-census" _blank
   click task_19_author_tests_overwatcher_autoresolve_gr_0 href "tasks/19-author-tests-overwatcher-autoresolve/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_19_author_tests_overwatcher_autoresolve_gr_1 href "tasks/19-author-tests-overwatcher-autoresolve/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_20_implement_overwatcher_autoresolve_gr_0 href "tasks/20-implement-overwatcher-autoresolve/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_21_update_ssot_supply_contracts_gr_0 href "tasks/21-update-ssot-supply-contracts/guardrails/01-ssot-records-the-contracts.ps1" "01-ssot-records-the-contracts" _blank
   click task_22_update_readme_supply_gr_0 href "tasks/22-update-readme-supply/guardrails/01-readme-documents-supply.ps1" "01-readme-documents-supply" _blank
   click task_23_update_domain_knowledge_skill_gr_0 href "tasks/23-update-domain-knowledge-skill/guardrails/01-skill-documents-supply.ps1" "01-skill-documents-supply" _blank
+  click task_24_author_tests_halt_text_gr_0 href "tasks/24-author-tests-halt-text/guardrails/01-build-passes.ps1" "01-build-passes" _blank
+  click task_24_author_tests_halt_text_gr_1 href "tasks/24-author-tests-halt-text/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
+  click task_25_implement_halt_text_gr_0 href "tasks/25-implement-halt-text/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
   click plan_guardrails_1 href "guardrails/02-all-tests-pass.ps1" "02-all-tests-pass" _blank
-  click plan_guardrails_2 href "guardrails/03-supplied-tree-union-sound.ps1" "03-supplied-tree-union-sound" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_01_author_tests_staging_tree":"tasks/01-author-tests-staging-tree/","task_02_implement_staging_tree":"tasks/02-implement-staging-tree/","task_03_author_tests_drain":"tasks/03-author-tests-drain/","task_04_implement_drain":"tasks/04-implement-drain/","task_05_author_tests_provenance":"tasks/05-author-tests-provenance/","task_06_implement_provenance":"tasks/06-implement-provenance/","task_07_author_tests_observer_event":"tasks/07-author-tests-observer-event/","task_08_implement_observer_core":"tasks/08-implement-observer-core/","task_09_implement_observer_cli":"tasks/09-implement-observer-cli/","task_10_author_tests_supply_command":"tasks/10-author-tests-supply-command/","task_11_implement_supply_command":"tasks/11-implement-supply-command/","task_12_author_tests_caller_scope":"tasks/12-author-tests-caller-scope/","task_13_implement_caller_scope":"tasks/13-implement-caller-scope/","task_14_author_tests_boundary_wiring":"tasks/14-author-tests-boundary-wiring/","task_15_wire_drain_at_task_boundary":"tasks/15-wire-drain-at-task-boundary/","task_16_wire_drain_at_run_start":"tasks/16-wire-drain-at-run-start/","task_17_author_tests_resume_shorthand":"tasks/17-author-tests-resume-shorthand/","task_18_implement_resume_shorthand":"tasks/18-implement-resume-shorthand/","task_19_author_tests_overwatcher_autoresolve":"tasks/19-author-tests-overwatcher-autoresolve/","task_20_implement_overwatcher_autoresolve":"tasks/20-implement-overwatcher-autoresolve/","task_21_update_ssot_supply_contracts":"tasks/21-update-ssot-supply-contracts/","task_22_update_readme_supply":"tasks/22-update-readme-supply/","task_23_update_domain_knowledge_skill":"tasks/23-update-domain-knowledge-skill/"}</script>
+  click plan_guardrails_2 href "guardrails/03-supplied-tree-union-sound.ps1" "03-supplied-tree-union-sound" _blank
+  click plan_guardrails_3 href "guardrails/04-solution-builds-at-the-union.ps1" "04-solution-builds-at-the-union" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_01_author_tests_staging_tree":"tasks/01-author-tests-staging-tree/","task_02_implement_staging_tree":"tasks/02-implement-staging-tree/","task_03_author_tests_drain":"tasks/03-author-tests-drain/","task_04_implement_drain":"tasks/04-implement-drain/","task_05_author_tests_provenance":"tasks/05-author-tests-provenance/","task_06_implement_provenance":"tasks/06-implement-provenance/","task_07_author_tests_observer_event":"tasks/07-author-tests-observer-event/","task_08_implement_observer_core":"tasks/08-implement-observer-core/","task_09_implement_observer_cli":"tasks/09-implement-observer-cli/","task_10_author_tests_supply_command":"tasks/10-author-tests-supply-command/","task_11_implement_supply_command":"tasks/11-implement-supply-command/","task_12_author_tests_caller_scope":"tasks/12-author-tests-caller-scope/","task_13_implement_caller_scope":"tasks/13-implement-caller-scope/","task_14_author_tests_boundary_wiring":"tasks/14-author-tests-boundary-wiring/","task_15_wire_drain_at_task_boundary":"tasks/15-wire-drain-at-task-boundary/","task_16_wire_drain_at_run_start":"tasks/16-wire-drain-at-run-start/","task_17_author_tests_resume_shorthand":"tasks/17-author-tests-resume-shorthand/","task_18_implement_resume_shorthand":"tasks/18-implement-resume-shorthand/","task_19_author_tests_overwatcher_autoresolve":"tasks/19-author-tests-overwatcher-autoresolve/","task_20_implement_overwatcher_autoresolve":"tasks/20-implement-overwatcher-autoresolve/","task_21_update_ssot_supply_contracts":"tasks/21-update-ssot-supply-contracts/","task_22_update_readme_supply":"tasks/22-update-readme-supply/","task_23_update_domain_knowledge_skill":"tasks/23-update-domain-knowledge-skill/","task_24_author_tests_halt_text":"tasks/24-author-tests-halt-text/","task_25_implement_halt_text":"tasks/25-implement-halt-text/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

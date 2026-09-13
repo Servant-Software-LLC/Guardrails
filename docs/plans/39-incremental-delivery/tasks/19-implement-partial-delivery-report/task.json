@@ -5,7 +5,7 @@
   ],
   "stableId": "a5j8ny",
   "writeScope": [
-    "src/Guardrails.Cli/"
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
   ],
   "action": {
     "maxTurns": 75

@@ -1,10 +1,12 @@
 {
-  "description": "Implement the supplied[] journal section so the authored tests pass (BOTH converter directions)",
+  "description": "Implement the supplied[] journal section so the authored tests pass (BOTH converter directions), and deliver the RunJournal write path the drain calls",
   "dependsOn": [
     "05-author-tests-provenance"
   ],
   "stableId": "z5c3ry",
   "writeScope": [
-    "src/Guardrails.Core/Journal/"
+    "src/Guardrails.Core/Journal/SuppliedRecord.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
   ]
 }

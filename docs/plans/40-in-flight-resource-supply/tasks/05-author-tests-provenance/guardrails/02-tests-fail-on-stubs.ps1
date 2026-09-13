@@ -16,10 +16,18 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'SuppliedRecord_RoundTripsThroughTheJournalJson',
-    'SuppliedRecord_CarriesAtCommitPathsAndBytes',
-    'Journal_WithNoSuppliedSection_RoundTripsUnchanged',
+    'SuppliedRecord_CarriesAtCommitPathsBytesAndBy',
     'Journal_AppendsASecondSupplyWithoutLosingTheFirst'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — Journal_WithNoSuppliedSection_RoundTripsUnchanged.
+#   STRUCTURAL REASON: a journal carrying no supplied[] section round-trips unchanged against the
+#   nullable STUB property exactly as it does against the finished one. It is the never-weaker
+#   requirement, so a CORRECT implementation leaves it GREEN on arrival and demanding 'Failed'
+#   here would red a correct plan. It was previously in $pinned and therefore unsatisfiable.
+#   BOUNDARY, stated rather than implied: nothing in this task REQUIRES that test to exist. The
+#   red census can only grade tests that ran. Its value is the regression it catches later, in
+#   task 06's whole-class tests-pass and at the terminal gate, not here.
 
 $results = Join-Path $env:TEMP ("gr40-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

@@ -24,6 +24,14 @@
 
 ## Task
 
+**CONSULT `SupplyCallerScope` before staging anything.** This is the maintainer's DECIDED
+ruling (`d40-agent-callable-supply`): an operator invocation is unrestricted, a task-agent
+invocation may supply only inside that task's own `writeScope`. Tasks 12/13 build the rule and
+task 13 is now an ancestor of this one, so the type exists in your segment — call it. Before
+this review the rule was built, unit-tested and called by NOTHING: the write-scope bypass the
+ruling closed stayed open in the product while every guardrail went green.
+
+
 Fill real logic over the stub in `src/Guardrails.Cli/Commands/SupplyCommand.cs` and **register
 the verb in `CommandFactory.BuildRootCommand`** so `SupplyCommandTests` passes.
 

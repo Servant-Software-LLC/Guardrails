@@ -22,6 +22,12 @@
 
 ## Task
 
+**Drive the REAL `GitWorktreeProvider` over temp repos — the house fake cannot express this
+(review, 2026-09-11).** `FakeWorktreeProvider.MergePlanBranchIntoUserBranch` HARDCODES
+`MergeOnSuccessResult.FastForwarded` and never returns `BranchMoved`, so every scenario this
+task pins is inexpressible on the fake. Construct the real provider over a temp repo and move
+the branch underneath it.
+
 Author failing tests for the behaviour DECIDED in review — design 39 §1c.
 
 **Test file:** `tests/Guardrails.Integration.Tests/WaveDelivery/BranchMovedHaltTests.cs`

@@ -24,16 +24,33 @@
 
 Update `.claude/skills/plan-breakdown/SKILL.md` for design 39 §5 and §1c.
 
-Three changes:
-- **Step 0.8's wave/flat fork gains the SECOND reason to wave** (§2): today the only reason is
-  "downstream tasks cannot be authored until the upstream is real". Per-wave delivery adds "these
-  chains should ship separately". Say plainly that this **costs parallelism** — independent chains put
-  into waves are serialised — and that the cost was weighed and accepted.
+Four changes:
+- **The wave/flat fork gains the SECOND reason to wave** (§2). **Find it by grepping for
+  `Decide FLAT vs WAVED`** — it is substep 8 of `## Step 0 — Preconditions`. An earlier version of
+  this prompt called it "Step 0.8", which does not exist anywhere in the skill; worse, a
+  `## Step 8 — Regeneration merge` DOES exist and is an unrelated section, so shortening the
+  pointer lands the edit in the wrong place (corrected at review, 2026-09-11).
+
+  Today the only reason is "downstream tasks cannot be authored until the upstream is real".
+  Per-wave delivery adds "these chains should ship separately". **REWORD the existing doctrine
+  sentence rather than appending beside it**: `**Do NOT wave a flat plan** —` becomes
+  `**Do NOT wave a flat plan for parallelism** —`, and a guardrail asserts the old unqualified
+  form is GONE precisely because an append leaves both standing. Say plainly that waving **costs
+  parallelism** — independent chains put into waves are serialised — and that the cost was weighed
+  and accepted.
 - **A wave that follows a delivery point gets a positive-baseline ENTRY preflight** over the touched
-  areas, on the same `$baselineArea` machinery Step 5 already has. `validate` warns **GR2078** when one
-  is missing.
-- **Step 7's report names which waves are delivery units and why**, exactly as it already names which
-  waves got a baseline.
+  areas, on the same `$baselineArea` machinery Step 5 already has. Teach the EMISSION RULE, not just
+  the diagnostic: `validate` warns **GR2078** when one is missing, but the skill's job is to make
+  breakdowns emit one in the first place.
+- **`validate` also warns `GR2079`** when a wave sets `delivers: true` and carries no `guardrails/`
+  exit gate — no gate, no delivery, and an author should learn that here rather than from the
+  absence of that wave from the report.
+- **Step 7's report names which waves are delivery points and why**, exactly as it already names
+  which waves got a baseline. Use the phrase **delivery point**; §1b asks for the "and why" because
+  a wave marked `delivers` out of habit is the failure mode this report exists to surface.
+
+The flag itself is `delivers: true` in the wave's **`brief.md` YAML front matter** — there is no
+per-wave manifest, and a `guardrails.json` in a wave directory un-waves the plan.
 
 ## Your deliverable is under `.claude/` — use needsHarnessWrite, do NOT write directly
 

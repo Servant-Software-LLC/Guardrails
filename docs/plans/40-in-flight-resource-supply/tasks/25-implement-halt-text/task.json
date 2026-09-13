@@ -1,0 +1,11 @@
+{
+  "description": "Make the needs-human halt name the asymmetry and print the three-command sequence",
+  "dependsOn": [
+    "24-author-tests-halt-text",
+    "18-implement-resume-shorthand"
+  ],
+  "stableId": "s6k4rb",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ]
+}

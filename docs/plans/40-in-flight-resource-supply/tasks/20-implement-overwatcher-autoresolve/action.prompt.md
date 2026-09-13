@@ -34,9 +34,14 @@ Two conditions are not optional, because they are what the decision rests on:
 
 Do NOT edit the authored tests; emit `{"needsHuman": "<why>"}` if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside
-them. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile
+**Scope boundary (harness-enforced):** Write only to
+`src/Guardrails.Core/Execution/Overwatch.cs`, `src/Guardrails.Core/Execution/OverwatchFix.cs`,
+`src/Guardrails.Core/Execution/OverwatchFixClassifier.cs` and
+`src/Guardrails.Core/Execution/OverwatchDecision.cs`. `OverwatchDecision.cs` holds task 19's throwing
+`OverwatchSupplyAutoResolve.Resolve` stub, which is the symbol the tests call. Earlier attempts
+implemented it correctly there and were rejected only because that file was missing from this
+task's scope; it is in scope now. After this task completes, the harness runs a `git diff`
+membership check and rejects any edit outside these paths. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile
 error caused by a missing symbol in another file, do NOT edit that file — write
 `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 

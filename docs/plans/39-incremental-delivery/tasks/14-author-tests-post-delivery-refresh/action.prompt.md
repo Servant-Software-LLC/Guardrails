@@ -22,6 +22,14 @@
 
 ## Task
 
+**Drive the REAL `GitWorktreeProvider` over temp repos — the house fake cannot express this
+(review, 2026-09-11).** `FakeWorktreeProvider.MergePlanBranchIntoUserBranch` HARDCODES
+`MergeOnSuccessResult.FastForwarded`, so on the fake `AFastForwardDelivery_DoesNotRefresh` is
+trivially green and `ANonFastForwardDelivery_RefreshesThePlanBranch` is **inexpressible**. The
+whole point of this task is the distinction between those two results, so a test on the fake
+would certify nothing. House precedent agrees: 26 test files construct `new GitWorktreeProvider`
+against temp repos, 3 use the fake.
+
 Author failing tests for the refresh DECIDED in review — design 39 §1c.
 
 **Test file:** `tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs`

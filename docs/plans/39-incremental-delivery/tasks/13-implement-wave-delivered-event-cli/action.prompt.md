@@ -22,10 +22,27 @@
 
 ## Task
 
+**Two of the four decorators asserted by a pre-existing test are yours.**
+`tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs` requires
+`OnTheFlyDiagramObserver` and `OnTheFlyLogSiteObserver` to DECLARE every `IRunObserver` member —
+an inherited default does not count. Task 11 turned it red by adding `WaveDelivered`; task 12
+closed the Core half; this task closes the Cli half, and until it does the sweep stays red and
+the terminal gate fails. It is in no `writeScope` and needs no edit — do not touch the test.
+
+The four Cli implementers are `ConsoleRunObserver`, `LiveRunObserver`, `OnTheFlyDiagramObserver`
+and `OnTheFlyLogSiteObserver`. **Your gate runs against `Guardrails.Integration.Tests`**, the
+only test project referencing `Guardrails.Cli` — a test of these four types cannot compile
+anywhere else.
+
+**A LogSite caution.** If you render the event on the exported log site, keep the page
+byte-identical when no delivery has occurred: `LogSiteHaltBannerTests` pins that page
+byte-for-byte, it is in no task''s `writeScope`, and a run that delivers nothing must still
+produce the output it produces today.
+
 Forward `WaveDelivered` through every **CLI** decorator so `WaveDeliveredCliForwardingTests` passes.
 
 **Find them yourself — grep, do not trust a list.** Run
-`grep -rln "IRunObserver" --include=*.cs src/Guardrails.Cli/`. At authoring time that was
+`grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Cli/`. At authoring time that was
 `LiveRunObserver`, `OnTheFlyDiagramObserver`, `OnTheFlyLogSiteObserver` and `ConsoleRunObserver`.
 **If your grep returns a different set, trust the grep.**
 

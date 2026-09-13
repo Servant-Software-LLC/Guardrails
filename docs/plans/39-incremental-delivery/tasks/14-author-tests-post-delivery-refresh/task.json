@@ -1,7 +1,7 @@
 {
-  "description": "Author failing tests for the post-delivery refresh \u2014 ONLY when the delivery was not a fast-forward",
+  "description": "Author failing tests for the post-delivery refresh — ONLY when the delivery was not a fast-forward",
   "dependsOn": [
-    "08-implement-deliver-at-wave-barrier"
+    "23-implement-entry-baseline-kind"
   ],
   "stableId": "b6q3zl",
   "writeScope": [

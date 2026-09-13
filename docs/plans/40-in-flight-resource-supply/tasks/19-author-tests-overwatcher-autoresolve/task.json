@@ -1,12 +1,14 @@
 {
-  "description": "Author failing tests for the overwatcher auto-resolve \u2014 PROPOSE below dial:critical, RESOLVE only at critical",
+  "description": "Author failing tests + the enum stubs for the overwatcher auto-resolve - PROPOSE below dial:critical, RESOLVE only at critical",
   "dependsOn": [
     "13-implement-caller-scope",
     "06-implement-provenance"
   ],
   "stableId": "t4p7nk",
   "writeScope": [
-    "tests/Guardrails.Core.Tests/Supply/OverwatchSupplyAutoResolveTests.cs"
+    "tests/Guardrails.Core.Tests/Supply/OverwatchSupplyAutoResolveTests.cs",
+    "src/Guardrails.Core/Execution/OverwatchFix.cs",
+    "src/Guardrails.Core/Execution/OverwatchDecision.cs"
   ],
   "action": {
     "maxTurns": 75

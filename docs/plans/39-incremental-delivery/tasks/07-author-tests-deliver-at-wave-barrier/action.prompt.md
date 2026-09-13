@@ -38,7 +38,17 @@ carries the wave's commits.
 **The one thing §1 says this design must get right:** the gate must run against the tree the delivery
 will PRODUCE — the user's branch with this wave's commits merged onto it — not merely the plan branch
 as it stands. The plan branch also carries the run's own harness commits and anything a prior wave
-left. Perform the merge first, then gate.
+left.
+
+**The order is a TRIAL MERGE on a scratch ref — DECIDED at review, 2026-09-11.** An earlier
+version of this prompt said "perform the merge first, then gate", which means writing to the
+operator's branch before anything authorises it. That contradicts §3 (the gate is what
+authorises the delivery), contradicts #588 (`TheUsersCheckoutIsNotModified`, which task 16
+pins), and the only way back from a red gate is the un-merge §1a says the interlock CANNOT do.
+So: merge the plan branch onto `refs/guardrails/trial/<waveDir>`, run the wave's `Exit` gate
+against THAT tree — it is the tree the delivery would produce, so §1 is satisfied exactly —
+consult the interlock, and only then fast-forward the user's branch to the trial ref. On red,
+delete the ref; the user's branch never moved.
 
 **Pin these behaviours to these EXACT method names:**
 
@@ -46,7 +56,11 @@ left. Perform the merge first, then gate.
 - `ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint` — §1b: a delivering wave ships everything
   accumulated since the last delivery point.
 - `AWaveWhoseExitGateFails_DoesNotDeliver`
-- `TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone` — the §1 correctness point above.
+- `TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone`
+- `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved` — the failure direction, which
+  nothing asserted before. Without it the cheapest implementation that satisfies the two clauses
+  above is merge-onto-the-user's-branch-then-hard-reset-on-red, which is a destructive write to
+  the operator's checkout. — the §1 correctness point above.
 - `APlanMarkingNoWave_StillMergesOnceAtRunEnd` — the never-weaker requirement, asserted end to end.
 
 The tests MUST COMPILE and FAIL. Do NOT wire the delivery.

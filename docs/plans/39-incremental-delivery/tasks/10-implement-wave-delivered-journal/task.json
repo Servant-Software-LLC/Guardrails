@@ -1,10 +1,12 @@
 {
-  "description": "Implement the delivered journal record (both converter directions) so the authored tests pass",
+  "description": "Implement the delivered journal record (both converter directions) and the RunJournal write path its caller uses",
   "dependsOn": [
     "09-author-tests-wave-delivered-journal"
   ],
   "stableId": "f5b8ai",
   "writeScope": [
-    "src/Guardrails.Core/Journal/"
+    "src/Guardrails.Core/Journal/WaveDeliveredRecord.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
   ]
 }
