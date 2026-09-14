@@ -96,17 +96,25 @@ checkout is not modified, and the only way back from a red gate is the un-merge 
 The scratch ref is a harness-owned ref under `refs/guardrails/`, not a branch, so it never appears in the
 operator's `git branch` output and needs no cleanup beyond the delete.
 
-**What the provider does not offer yet (open: `d39-trial-delivery-primitive`).** No `IWorktreeProvider`
-member builds a trial ref or promotes one. The three checks an operator relies on at delivery are private to
-`GitWorktreeProvider.MergePlanBranchIntoUserBranch`: the #588 moved-HEAD refusal (`:422`), the #448 dirty-tree
-intersection (`:435`), and the #149 rule that the merge commit landing on the user's branch runs their hooks
-(`:474`). The promotion in step 4 is always a fast-forward, which runs no commit hook, so a design that
-reuses only the promotion makes `HookRejected` unreachable for waved delivery. The recommended shape is two
-provider members. The first runs the #588 check, builds `refs/guardrails/trial/<waveDir>` (creating the merge
-commit WITH the user's hooks), and reports whether the user's tip was already an ancestor of the plan tip. The
-second re-runs #588 and #448 against the trial ref and fast-forwards. In the quiet case the trial ref IS the
-plan tip, so the exit gate that already ran on the integration worktree is the gate on the delivered tree;
-only a user branch that moved needs a trial worktree and a second gate run.
+**The trial-delivery primitive — DECIDED (review round 4, `d39-trial-delivery-primitive`).** No
+`IWorktreeProvider` member built a trial ref or promoted one, and the three checks an operator relies on at
+delivery were private to `GitWorktreeProvider.MergePlanBranchIntoUserBranch`: the #588 moved-HEAD refusal
+(`:422`), the #448 dirty-tree intersection (`:435`), and the #149 rule that the merge commit landing on the
+user's branch runs their hooks (`:474`). The promotion in step 4 is always a fast-forward, which runs no commit
+hook, so reusing only the promotion would make `HookRejected` unreachable for waved delivery. The provider
+therefore gains three members:
+
+- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`. When the user's tip is already an ancestor of
+  the plan tip, the trial ref IS the plan tip. Otherwise it creates the merge commit in a harness-owned worktree
+  WITH the user's hooks. It reports whether the user's tip was an ancestor, which is the §1c refresh trigger, and
+  returns a `conflict` or `hook-rejected` refusal when no trial can be built.
+- `PromoteTrialDelivery` runs the #588 check and the #448 intersection against the trial ref, then
+  fast-forwards the user's branch to it. It returns `branch-moved` both when the checkout switched and when the
+  user's branch advanced after the trial was built, and it never falls back to a real merge.
+- `DiscardTrialDelivery` deletes the trial ref.
+
+In the quiet case the trial ref IS the plan tip, so the exit gate that already ran on the integration worktree
+is the gate on the delivered tree; only a user branch that moved needs a trial worktree and a second gate run.
 
 ---
 
@@ -225,10 +233,10 @@ in the same change.
 This is a **precondition, not a follow-up**: no wave may deliver early until the interlock is re-scoped, or
 the feature becomes the way #361 is escaped.
 
-**Ride-along (open: `d39-interlock-ride-along`).** A delivery carries every wave since the last delivery
-(§1b), so "no suppressing decision recorded during that wave", read literally, is too narrow. If wave 02
-records a `proceeded-best-guess` and is held, a clean wave 03's delivery still carries wave 02's commits onto
-the user's branch. The recommended reading scopes the check to the delivery's `covers` list, every wave it
+**Ride-along — DECIDED (review round 4, `d39-interlock-ride-along`).** A delivery carries every wave since
+the last delivery (§1b), so "no suppressing decision recorded during that wave", read literally, is too narrow.
+If wave 02 records a `proceeded-best-guess` and is held, a clean wave 03's delivery still carries wave 02's
+commits onto the user's branch. The interlock therefore scopes the check to the delivery's `covers` list, every wave it
 carries: once a wave is held, every later delivery is held too until run end, unless the operator overrides
 with `--merge-on-success`.
 
@@ -308,12 +316,12 @@ can retrofit it: in both cases the information exists only at the instant of the
 
 ### How a refresh is recorded (post-plan-40 refinement)
 
-> **Status: under review in round 4 (`d39-refresh-record`).** Written 2026-09-13, after plan 40 (#373,
-> PR #711) shipped the `supplied[]` record the paragraph above could only anticipate. It decides what "built
-> once" means now that one of the two records exists. Tasks 14, 15, 20 and 24 through 27 already encode it,
-> so treat it as a proposal until that question is answered.
+> **Status: confirmed in review round 4 (`d39-refresh-record`), with the refresh trigger read from the trial
+> merge's own ancestry result.** Written 2026-09-13, after plan 40 (#373, PR #711) shipped the `supplied[]`
+> record the paragraph above could only anticipate. It decides what "built once" means now that one of the
+> two records exists.
 
-**DECIDED (architect, unreviewed): a sibling `refreshed[]` section, NOT a `kind` on `supplied[]`.** What is
+**DECIDED (architect; confirmed in review round 4): a sibling `refreshed[]` section, NOT a `kind` on `supplied[]`.** What is
 built once is the provenance *contract* and its *reader*, not the record type:
 
 - **One contract.** Both sections are optional, append-only, top-level `run.json` sections, absent (never null)
@@ -435,11 +443,11 @@ checked, silently. The asymmetry is already in the model and points the other wa
 *"always re-evaluated on the current HEAD"* (SSOT §14.6); entry is not. This proposal lands on the side that
 skips.
 
-So the entry gate has to distinguish the two baseline kinds — **a positive baseline re-evaluates; a negative
-one keeps skip-once.** That is the whole change, and it is the only place in this design where the harness
-must grow a new distinction rather than reuse one.
+So the entry gate would have to distinguish the two baseline kinds, a positive baseline re-evaluating and a
+negative one keeping skip-once. *(Superseded: review round 4 dropped this change; see the next paragraph.)*
 
-**REOPENED (review, 2026-09-13; open: `d39-entry-baseline-kind`).** The three paragraphs above assume a run
+**REOPENED, then DECIDED (review round 4, `d39-entry-baseline-kind`): skip-once stays for every entry check,
+and no baseline kind is declared.** The three paragraphs above assume a run
 can reach a passed entry marker whose tree a delivery has since changed. Checked against `RunWavedAsync`, no
 run reaches that state:
 
@@ -616,13 +624,15 @@ refused delivery at that wave's barrier instead of silently postponing it to the
 durable record is the wave's `delivered` entry. The top-level `halt` section stays scoped to gates (#432),
 which is how an end-of-run refusal is recorded today.
 
-**`run.json`'s top-level `delivery` is wrong on a partial run today (open: `d39-partial-delivery-record`).**
+**`run.json`'s top-level `delivery` on a partial run — DECIDED (review round 4, `d39-partial-delivery-record`).**
 `RunCommand.DescribeDelivery` (`RunCommand.cs:2045-2097`) derives it only from the end-of-run merge, and a
-wave gate or barrier halt returns before `Finalize` (`Scheduler.cs:907-912`, `946-954`, `964-969`). When
+wave gate or barrier halt returns before `Finalize` (`Scheduler.cs:907-912`, `946-954`, `964-969`). So when
 wave 02 delivers and wave 03 halts, the #542 record says `delivered: false`, `not-attempted`, "the run was not
-wholly green", while wave 02 is on the user's branch. Whatever the answer, the report's source is a
-`RunReport.WaveDeliveries` map stamped from the journal in `BuildReport`, the one method every report passes
-through, halted or not.
+wholly green", while wave 02 is on the user's branch. The record gains a new outcome, `partially-delivered`,
+with `delivered: false`: `delivered` stays true only when all verified work reached the user's branch, so a
+consumer keyed on it never treats held work as shipped. `deliveredToBranch` and `planBranch` are both set, and
+`reason` names the delivered and held waves. The source is a `RunReport.WaveDeliveries` map stamped from the
+journal in `BuildReport`, the one method every report passes through, halted or not.
 
 **Not in v1:** a log-site banner for a refused delivery. The log site's halt banner reads only `halt`, so a
 refusal at a barrier, like an end-of-run refusal today, is visible on the console and in `run.json` but not
@@ -652,7 +662,7 @@ Three requirements, each earned by a defect already shipped here:
 the wave's delivery begins. `covers` names every wave the delivery carries, ending with the delivering wave, so
 the report can say what a merge actually carried. No new folder.
 
-**Provenance** *(post-plan-40 refinement, NOT yet reviewed in Charter — §1c "How a refresh is recorded")* —
+**Provenance** *(post-plan-40 refinement, confirmed in review round 4 — §1c "How a refresh is recorded")* —
 `run.json` gains `refreshed[]` (`at`, `commit`, `from`, `upstream`, `deliveredWave`, `paths`), a sibling of
 plan 40's `supplied[]`, which is unchanged; `RunJournal.RecordRefreshed` is its write path. The refresh commit
 is `--no-ff` with the plan-branch tip as first parent and carries `Refreshed-From: <from>` /
@@ -666,9 +676,11 @@ no `guardrails/` exit gate, so an author learns that wave cannot deliver rather 
 absence from the report; and **GR2078**, a WARNING when a wave that FOLLOWS a delivery point carries no
 entry preflight (§1c). Both are warnings and neither moves the exit code.
 
-**Harness** — the `Finalize` → `DeliverToUserBranch` path callable at the barrier (against the §1 trial merge); `IRunObserver.WaveDelivered`, forwarded through
-every decorator (the `ObserverForwardingSweepTests` contract); the delivery journaled with `status: running`
-before the merge, per the #625 rule.
+**Harness** — barrier delivery through the §1 trial-delivery provider members (`CreateTrialDelivery`,
+`PromoteTrialDelivery`, `DiscardTrialDelivery`), while the run-end `Finalize` → `DeliverToUserBranch` path
+stays for flat plans and for the waves after the last delivery point; `IRunObserver.WaveDelivered`, forwarded
+through every decorator (the `ObserverForwardingSweepTests` contract); the delivery journaled with
+`status: running` before `PromoteTrialDelivery`, the one write the operator can see, per the #625 rule (§4).
 
 **Wiring and halts (added at review, 2026-09-13).** The bullet above required the event and the journal
 write but gave neither an owner, so the first breakdown built both and wired neither (the #120 shape). The
@@ -677,7 +689,7 @@ Scheduler writes `waves.<dir>.delivered` around every barrier delivery (§4) and
 persisted, so an observer never sees a result the journal does not hold. `BuildReport` stamps
 `RunReport.WaveDeliveries` from the journal on every report, halted ones included. A refused delivery halts
 with `WaveHaltKind.DeliveryRefused`; no `RunHaltKind` is added. The provider members the trial merge needs
-are open (`d39-trial-delivery-primitive`, §1).
+are the three §1 names (`d39-trial-delivery-primitive`).
 
 **Skills** — `plan-breakdown`'s §0 wave/flat fork gains the second reason to wave (§2), and the Step 7
 report names which waves are delivery units.
