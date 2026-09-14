@@ -61,9 +61,15 @@ A test that builds its quiet case by asserting on `FastForwarded` pins nothing.
 delivery is not a fast-forward by the ancestry definition above.
 
 **Make every mid-run change with a script, never a provider double (review 2026-09-13).** A guardrail on
-this task rejects the test file if, outside comments, it uses `FakeWorktreeProvider` or
-`RecordingWorktreeProvider`, or declares or mocks an `IWorktreeProvider`; it also requires
-`new GitWorktreeProvider(`. The house fixture is `WaveExecutionRunTests`: it writes a plan folder with a
+this task requires `new GitWorktreeProvider(` in code. Outside comments, it rejects any of these:
+- `FakeWorktreeProvider` or `RecordingWorktreeProvider`;
+- a string literal naming any provider type other than `GitWorktreeProvider` or `IWorktreeProvider`;
+- a type implementing `IWorktreeProvider`, or a using-alias of a provider type;
+- `IWorktreeProvider` as the first type argument of a generic other than a delegate, `Lazy`, `Task`,
+  `ValueTask`, a collection, `IsAssignableFrom` or `IsType`, so `Mock<>` and `Substitute.For<>` are out;
+- `DispatchProxy`.
+
+The house fixture is `WaveExecutionRunTests`: it writes a plan folder with a
 `.ps1` or `.sh` script per OS and runs the real Scheduler over `new GitWorktreeProvider(repoPath,
 worktreeRoot)`. A task or gate script can run git against the user's repo at the absolute path the fixture
 writes into it, so the teammate commit is made by a wave-01 task script.
@@ -122,13 +128,32 @@ silently blamed on the wave.
   is tracked, so the script does nothing. After the promotion, merging `upstream` into the integration
   worktree would overwrite that untracked file, and git refuses. Give wave-02's task a script that writes a
   sentinel file at an absolute path outside the repo. Assert all of:
-  - `RunAsync` RETURNS a report whose `Abort` is set, the #150 honest-halt report, rather than throwing;
+  - `RunAsync` RETURNS a report whose `Abort` is set, the #150 honest-halt report, rather than throwing,
+    and `Abort.Headline` contains `teammate.txt`. A resume re-runs the gate and is blocked again, so the
+    operator must be told WHICH untracked file to remove;
   - `run.json` has no `refreshed` section;
   - wave-01's `delivered` record still reads `delivered`, since the delivery itself landed;
   - the sentinel does not exist, so wave-02 never ran.
 
   It must reject: continuing to wave-02 on the stale base, recording a refresh that has no commit, and
   cleaning the integration worktree to force the merge through.
+- `AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch` — the wave's work reached the user's branch before
+  the barrier promoted it. The trial then reports `AlreadyDelivered` with `UserTipWasAncestor` false, and
+  the refresh is still owed. Set it up with two scripts:
+  - a wave-01 task script commits `teammate.txt` on the user's branch;
+  - wave-01's exit gate script runs `git -C <user repo> merge --no-edit guardrails/<plan>`, then writes
+    `git -C <user repo> rev-parse HEAD` to a sentinel file at an absolute path outside the repo.
+
+  Call that sha `M`. The plan tip is now an ancestor of the user's branch, but the user's branch is not an
+  ancestor of the plan tip. Wave-02's task script records whether `teammate.txt` exists in its worktree in
+  a second sentinel file, and exits 0 either way. Assert all of:
+  - wave-01's `delivered` record reads `delivered`, and its `commit` is `M`;
+  - the user's branch still points at `M`, so nothing was promoted over it;
+  - `run.json` carries exactly ONE `refreshed` entry, and its `upstream` is `M`;
+  - wave-02's sentinel says `teammate.txt` existed.
+
+  It must reject: reading the trigger only from `PromoteTrialDelivery`'s result, which never runs for an
+  `AlreadyDelivered` trial, and treating `AlreadyDelivered` as nothing left to do.
 
 Assert through the real journal on disk (`run.json`) and real git (`git log`, `git rev-parse`), never
 through a double. `RefreshedRecord`, `RunJournal.RecordRefreshed` and `UnauthoredContentNote` already
@@ -141,7 +166,7 @@ breaks a class that did nothing wrong.
 
 `AFastForwardDelivery_DoesNotRefresh` is declared exempt from the red census: in the quiet case nothing
 moved, so the current code, which never refreshes, already leaves a correct test of it green. It must still
-exist, and task 15's forward census requires it Passed. The other seven tests MUST COMPILE and FAIL. Do NOT
+exist, and task 15's forward census requires it Passed. The other eight tests MUST COMPILE and FAIL. Do NOT
 implement the refresh.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs`. After this

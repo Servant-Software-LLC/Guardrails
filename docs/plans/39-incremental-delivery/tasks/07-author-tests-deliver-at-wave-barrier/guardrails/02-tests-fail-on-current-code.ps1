@@ -44,9 +44,12 @@ $pinned = @(
 #   ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier
 #     STRUCTURAL REASON: the base never delivers at a wave barrier, and the run halts at the later wave's
 #     exit gate, a path that returns before Finalize, so nothing is delivered at run end either.
+#   ADivergedTaskDefinition_BlocksTheBarrierDelivery
+#     STRUCTURAL REASON: the base never delivers at a wave barrier, and a run with a recorded #556
+#     executed-definition divergence is never AllSucceeded, so Finalize delivers nothing at run end.
 #   Each is asserted to EXIST below, and task 08's forward census requires each to be observed Passed.
-#   That is where a merge-before-gate implementation, a leaked trial ref, an ignored opt-out or a
-#   delivery behind an empty gate turns them red.
+#   That is where a merge-before-gate implementation, a leaked trial ref, an ignored opt-out, a
+#   delivery behind an empty gate or a delivery past a divergence turns them red.
 $mustExist = @(
     'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
     'AWaveWhoseExitGateFails_DoesNotDeliver',
@@ -54,7 +57,8 @@ $mustExist = @(
     'AFailedTrialGate_LeavesThePlanBranchUnmoved',
     'TheTrialRefIsDeleted_AfterEitherOutcome',
     'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
-    'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier'
+    'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
+    'ADivergedTaskDefinition_BlocksTheBarrierDelivery'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

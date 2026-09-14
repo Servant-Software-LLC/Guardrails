@@ -48,20 +48,24 @@ append a detached list at the end:
   skip. A promotion is a fast-forward, which runs no hook, so the trial merge commit is where a rejecting
   hook refuses a waved plan's delivery as `hook-rejected`. **Say that barrier delivery obeys the same
   switches as run-end delivery:** `--no-merge-on-success` turns it off at every wave barrier,
-  `--merge-on-success` lifts a held delivery, and a serial run never delivers at a barrier. The interlock
+  `--merge-on-success` lifts a held delivery, a task definition edited mid-run blocks it (#556) as it
+  blocks run-end delivery, and a serial run never delivers at a barrier. The interlock
   is consulted before the trial merge is built, so a held delivery never runs the user's hooks.
 - **The journal record** — `run.json`'s `waves.<dir>.delivered`. A barrier delivery that begins always
   writes `status: running`, with `startedAt` and `covers`, even over an earlier `delivered` record: it is
   written when the delivery begins, after the switches and the interlock pass and before the trial merge
   runs the user's hooks (#625). It then settles as `delivered` (with `commit`) or `refused` (with
   `outcome` and `detail`). A `suppressed` record (with `detail` naming the decision) is written already
-  settled. A resume whose trial finds the plan tip already on the user's branch skips the promotion and
-  restores the prior `delivered` record, or writes one if the crash came before it, so it never records a
-  refusal for a delivery that already landed. A rewound wave's re-run that delivers again replaces its
-  record. Each settled
-  record carries `at` and `covers`, every wave the delivery carries. A wave whose delivery never began
-  has no `delivered` key, for one of three reasons: it never reached its barrier, its exit gate failed,
-  or delivery resolved off. The report reads the wave's own status to tell held from not reached.
+  settled. A resume whose trial finds the plan tip already on the user's branch (equal tips included, as
+  right after a quiet-case promotion) skips the promotion and restores the prior `delivered` record, or
+  writes one if the crash came before it, so it never records a refusal for a delivery that already
+  landed. A rewound wave's re-run that delivers again replaces its record. Each settled record carries
+  `at` and `covers`, every wave the delivery carries. A wave has no `delivered` key when it is not a
+  delivery point, never reached its barrier, failed its exit gate, or had delivery resolved off. Its work
+  reached the user's branch only if a later barrier delivery carried it (the wave is in that record's
+  `covers`) or the run-end delivery landed (the top-level `delivery` record); otherwise the report says
+  held or not reached. **Never teach that a missing `delivered` key means the work is not on the user's
+  branch** — the guardrail refuses that sentence unless it names `covers` or the run-end delivery.
 - **The observer event** — `IRunObserver.WaveDelivered`, raised only for `status: delivered` and only
   after the record is persisted, forwarded through every decorator (the `ObserverForwardingSweepTests`
   contract). It belongs beside the existing `IRunObserver.WaveStarting`/`WaveFinished` mention. It is
@@ -76,9 +80,10 @@ append a detached list at the end:
 - **A refused delivery halts the run at that wave** — every refusal (`branch-moved`, `conflict`,
   `dirty-working-tree`, `hook-rejected`) halts with `WaveHaltKind.DeliveryRefused`, never a gate
   failure. A wave whose exit gate fails on the trial merge also settles its record as `refused`, with
-  outcome `trial-gate-failed`; its `detail` names each failing check, the user's tip the trial was built
-  from, and the range `git log <plan-branch>..<userTip>` of the user's commits the trial merged — a range,
-  not a list. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
+  outcome `trial-gate-failed`, but which halt it raises is decided in review round 5
+  (`d39-trial-gate-failure`). Its `detail` names each failing check, the user's tip the trial was built
+  from, and the sha-keyed range `git log <plan-tip-sha>..<user-tip-sha>` of the user's commits the trial
+  merged — a range, not a list. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
   durable record is the wave's `delivered` entry with `status: refused`, plus a `decisions[]` entry with
   gate `delivery-refused` (boundary `wave`, decision `halted`), so the refusal shows on the console and
   in `observer.jsonl`. The log site does not show that entry, and there is no log-site panel for a

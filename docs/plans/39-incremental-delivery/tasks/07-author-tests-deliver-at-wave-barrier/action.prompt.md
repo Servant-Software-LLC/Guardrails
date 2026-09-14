@@ -42,9 +42,14 @@ branch actually carries the wave's commits. Two house patterns do this, and eith
   `maxParallelism: 1` the run is SERIAL: it has no provider and never delivers at a barrier, so no
   implementation could turn your tests green.
 
-A guardrail enforces this (review 2026-09-13): the test file must construct the real provider or run the
-real command, must not use `FakeWorktreeProvider` or `RecordingWorktreeProvider`, and must not declare any
-type that implements `IWorktreeProvider`. Every row below is observable through git and through files your
+A guardrail enforces this (review 2026-09-13). The test file must construct the real provider or run the real
+command. It must not:
+- use `FakeWorktreeProvider`, `RecordingWorktreeProvider` or any other provider type except the real one,
+  whether in code or named in a string for reflection;
+- declare, alias or `DispatchProxy` a type that implements `IWorktreeProvider`;
+- hand `IWorktreeProvider` to a mocking library.
+
+A `Func<IWorktreeProvider>` helper is fine. Every row below is observable through git and through files your
 fixture's own scripts write, so no provider decorator is needed. When a scenario needs a commit to land on
 the user's branch mid-run, have one of the run's own task or gate scripts make it (`git -C <user repo>`,
 with the path written into the script by your test).
@@ -138,19 +143,41 @@ it ran in, and whether `teammate.txt` existed there.
   `guardrails/` folder; a later wave's exit gate always fails, so the run halts before run end. Assert the
   user's branch tip is exactly where the run started. Rejects: delivering behind zero checks because a wave
   with no checks "passed" its empty gate.
+- `ADivergedTaskDefinition_BlocksTheBarrierDelivery` — #556 (review 2026-09-13): a task whose definition moved
+  after the run loaded it still settles `succeeded`, but the run records a `definition-divergence` decision
+  and delivers nothing.
+  - Build the divergence the way `DivergenceDeliveryGateTests` does: in the delivering wave, one task's
+    action overwrites the `task.json` of a task that depends on it, so that task's definition moves while
+    the run is in flight.
+  - The delivering wave has `delivers: true` and a passing exit gate, and a later wave's exit gate always
+    fails, so the run halts before run end.
+  - Assert the run's `decisions[]` holds a `definition-divergence` entry naming the edited task (so the
+    fixture really diverged), and the user's branch tip is exactly where the run started.
 
-**Seven of these are green on today's code, by design, and the census exempts them from the red
-requirement (not from existing):** `AWaveWhoseExitGateFails_DoesNotDeliver`,
-`AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`,
-`AFailedTrialGate_LeavesThePlanBranchUnmoved`, `TheTrialRefIsDeleted_AfterEitherOutcome`,
-`APlanMarkingNoWave_StillMergesOnceAtRunEnd`, `ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes` and
-`ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`. Nothing delivers at a wave barrier today, so a
-failed gate already delivers nothing, moves no branch and leaves no trial ref; a plan marking no wave
-already merges once at run end; a run with delivery off never moves the user's branch; and a run that halts
-at a wave gate never reaches the run-end delivery. Write them honestly — do NOT couple them to the missing
-feature to force a red. Task 08's forward census requires them Passed once delivery lands, and that is
-where a merge-before-gate, a leaked trial ref, an ignored opt-out or a delivery behind an empty gate turns
-them red.
+  Rejects: a barrier delivery that checks only that the wave's tasks drained green, which ships work whose
+  definition changed under it.
+
+**Eight of these are green on today's code, by design, and the census exempts them from the red
+requirement (not from existing):**
+- `AWaveWhoseExitGateFails_DoesNotDeliver`
+- `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`
+- `AFailedTrialGate_LeavesThePlanBranchUnmoved`
+- `TheTrialRefIsDeleted_AfterEitherOutcome`
+- `APlanMarkingNoWave_StillMergesOnceAtRunEnd`
+- `ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes`
+- `ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`
+- `ADivergedTaskDefinition_BlocksTheBarrierDelivery`
+
+They are green today because nothing delivers at a wave barrier:
+- a failed gate already delivers nothing, moves no branch and leaves no trial ref;
+- a plan marking no wave already merges once at run end;
+- a run with delivery off never moves the user's branch;
+- a run that halts at a wave gate never reaches the run-end delivery;
+- a run with a recorded divergence never delivers at run end.
+
+Write them honestly — do NOT couple them to the missing feature to force a red. Task 08's forward census
+requires them Passed once delivery lands. That is where any of these turns them red: a merge-before-gate, a
+leaked trial ref, an ignored opt-out, a delivery behind an empty gate, or a delivery past a divergence.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here

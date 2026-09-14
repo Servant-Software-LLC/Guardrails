@@ -19,7 +19,8 @@ $pinned = @(
     'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
     'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
     'TheRefreshLandsBeforeTheWaveMarker',
-    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns'
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns',
+    'AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

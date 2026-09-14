@@ -19,7 +19,8 @@ $pinned = @(
     'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
     'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
     'TheRefreshLandsBeforeTheWaveMarker',
-    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns'
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns',
+    'AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFastForwardDelivery_DoesNotRefresh.

@@ -34,9 +34,15 @@ and the user's branch advancing after the trial was built) or #448 (a dirty work
 on `LastMergeOnSuccessDetail`.
 
 **Provoke each refusal with a script, never a provider double (review 2026-09-13).** A guardrail on this
-task rejects the test file if, outside comments, it uses `FakeWorktreeProvider` or
-`RecordingWorktreeProvider`, or declares or mocks an `IWorktreeProvider`; it also requires
-`new GitWorktreeProvider(`. The house fixture is `WaveExecutionRunTests`: it writes a plan folder with a
+task requires `new GitWorktreeProvider(` in code. Outside comments, it rejects any of these:
+- `FakeWorktreeProvider` or `RecordingWorktreeProvider`;
+- a string literal naming any provider type other than `GitWorktreeProvider` or `IWorktreeProvider`;
+- a type implementing `IWorktreeProvider`, or a using-alias of a provider type;
+- `IWorktreeProvider` as the first type argument of a generic other than a delegate, `Lazy`, `Task`,
+  `ValueTask`, a collection, `IsAssignableFrom` or `IsType`, so `Mock<>` and `Substitute.For<>` are out;
+- `DispatchProxy`.
+
+The house fixture is `WaveExecutionRunTests`: it writes a plan folder with a
 `.ps1` or `.sh` script per OS and runs the real Scheduler over `new GitWorktreeProvider(repoPath,
 worktreeRoot)`. A task or gate script can run git against the user's repo at the absolute path the fixture
 writes into it:

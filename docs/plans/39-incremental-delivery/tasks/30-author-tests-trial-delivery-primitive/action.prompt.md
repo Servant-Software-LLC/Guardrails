@@ -54,8 +54,8 @@ becomes unreachable for waved plans. The maintainer chose to keep the hooks.
       public required string TrialRef { get; init; }          // refs/guardrails/trial/<waveDir>
       public string? Commit { get; init; }                    // what TrialRef points at; null when Refusal is set
       public required string UserTip { get; init; }           // the user's branch tip the trial was built from
-      public required bool UserTipWasAncestor { get; init; }  // true: the quiet case, no merge commit, no hook
-      public bool AlreadyDelivered { get; init; }             // true: the plan tip is already an ancestor of the user's tip
+      public required bool UserTipWasAncestor { get; init; }  // true: the user's tip is the plan tip or an ancestor of it; no merge commit, no hook
+      public bool AlreadyDelivered { get; init; }             // true: the user's branch already contains the plan tip (equal tips, or the plan tip is an ancestor)
       public string? WorktreePath { get; init; }              // the harness worktree checked out at Commit; set only when a merge commit was built
       public MergeOnSuccessResult? Refusal { get; init; }     // Conflict or HookRejected when no trial could be built
       public string? RefusalDetail { get; init; }             // the hook's output, or the conflicting paths
@@ -85,15 +85,19 @@ becomes unreachable for waved plans. The maintainer chose to keep the hooks.
 **The contract the tests pin:**
 
 - **`CreateTrialDelivery`** builds `refs/guardrails/trial/<waveDir>` from the user's branch tip
-  (`integ.OriginalBranch`) and the plan branch tip, never touching the user's checkout. It checks three
+  (`integ.OriginalBranch`) and the plan branch tip, never touching the user's checkout. It checks four
   cases, in this order:
-  1. **The quiet case.** The user's tip is an ancestor of the plan tip: the ref points at the plan tip. No
-     merge commit, no hook, no worktree; `UserTipWasAncestor = true`.
-  2. **Already delivered.** Otherwise, the plan tip is already an ancestor of the user's tip, so the work
-     is already on the user's branch: a resume after the promotion landed, or the user merged the plan
-     branch themselves. The ref points at the user's tip, and `Commit` is that tip. No merge commit, no
-     hook, no worktree; `AlreadyDelivered = true`, `UserTipWasAncestor = false`.
-  3. **A merge commit.** Otherwise it creates, in a HARNESS-OWNED worktree, a merge commit whose FIRST
+  1. **Already delivered, quiet.** The user's tip EQUALS the plan tip: a resume right after a quiet-case
+     promotion, whose fast-forward already landed. The ref points at that commit, and `Commit` is it. No
+     merge commit, no hook, no worktree; `AlreadyDelivered = true`, `UserTipWasAncestor = true`. This check
+     comes first because equal tips also pass both ancestry checks below.
+  2. **The quiet case.** The user's tip is a STRICT ancestor of the plan tip: the ref points at the plan
+     tip. No merge commit, no hook, no worktree; `UserTipWasAncestor = true`, `AlreadyDelivered = false`.
+  3. **Already delivered, merged.** The plan tip is a strict ancestor of the user's tip, so the work is
+     already on the user's branch: a resume after a merge-commit promotion landed, or the user merged the
+     plan branch themselves. The ref points at the user's tip, and `Commit` is that tip. No merge commit,
+     no hook, no worktree; `AlreadyDelivered = true`, `UserTipWasAncestor = false`.
+  4. **A merge commit.** Otherwise it creates, in a HARNESS-OWNED worktree, a merge commit whose FIRST
      parent is the user's tip and second parent is the plan tip, WITHOUT `--no-verify`, running the hooks
      the user's own checkout would run, including hooks under a RELATIVE `core.hooksPath`.
      `UserTipWasAncestor = false`. The worktree stays checked out at the new commit and `WorktreePath`
@@ -138,11 +142,26 @@ becomes unreachable for waved plans. The maintainer chose to keep the hooks.
   a relative `core.hooksPath` against THAT worktree, finds nothing, and lets the commit through unchecked.
   This was measured in review (2026-09-13, Windows git 2.53), and the `.git/hooks` fixture in the row above
   cannot see it.
-- `TheQuietCase_CreatesNoMergeCommit_AndRunsNoHook` — the user's branch did not move; install the same
-  failing hook. Assert `UserTipWasAncestor`, `Refusal` null, and the trial ref resolving to the plan
-  tip. Rejects: always creating a merge commit (the hook would reject it).
-- `UserTipWasAncestor_IsCorrectBothWays` — once with the user's branch unmoved (true), once with a user
-  commit mid-run (false). Rejects: a constant, and comparing tips for equality instead of ancestry.
+- `TheQuietCase_CreatesNoMergeCommit_AndRunsNoHook` — the plan branch carries a commit and the user's branch
+  did not move; install the same failing hook. Assert `UserTipWasAncestor`, `AlreadyDelivered` false,
+  `Refusal` null, and the trial ref resolving to the plan tip. Rejects: always creating a merge commit (the
+  hook would reject it).
+- `UserTipWasAncestor_IsCorrectBothWays` — once with a plan commit and the user's branch unmoved (true), once
+  with a user commit mid-run (false). Rejects: a constant, and comparing tips for equality instead of
+  ancestry.
+- `ATrialRebuiltAfterAQuietPromotionLanded_IsAlreadyDelivered` — the resume right after a quiet-case promotion.
+  - With a commit on the plan branch only, build the trial (the quiet case), promote it (`FastForwarded`, so
+    the user's tip now equals the plan tip), and discard it.
+  - Install a failing `pre-commit` hook that also writes a marker file, and call `CreateTrialDelivery` again
+    for the same wave.
+  - Assert `AlreadyDelivered`, `UserTipWasAncestor` true, `Refusal` null, `Commit` equal to both tips,
+    `WorktreePath` null, and no marker file.
+  - Then check out a different branch in the user's repo and call `PromoteTrialDelivery` on that trial. It
+    returns `FastForwarded`, and neither branch moved.
+
+  Rejects: taking the quiet case on equal tips. That promotes again, re-announcing a delivery that already
+  landed; after a switched checkout it refuses that delivery as `BranchMoved` and halts over work already on
+  the user's branch.
 - `ATrialRebuiltAfterItsPromotionLanded_IsAlreadyDelivered` — the resume after a crash that followed the
   promotion.
   - Build a trial in the moved case, promote it (`FastForwarded`), and discard it.
@@ -219,10 +238,14 @@ becomes unreachable for waved plans. The maintainer chose to keep the hooks.
 - `CreateIntegration` gives you the plan branch and its worktree to commit on.
 - Install hooks the way `GitHookIsolationTests` does, including the executable bit on Linux and macOS, for
   the `.husky/_` hook too: CI runs all three.
-- A guardrail requires the test file to construct `new GitWorktreeProvider(`. It forbids
-  `FakeWorktreeProvider`, `RecordingWorktreeProvider` and any type declared to implement
-  `IWorktreeProvider`: every row calls the members on the real provider, so a wrapper would only test
-  the wrapper.
+- A guardrail requires the test file to construct `new GitWorktreeProvider(`. Every row calls the members on
+  the real provider, so a wrapper would only test the wrapper. The guardrail forbids:
+  - `FakeWorktreeProvider`, `RecordingWorktreeProvider`, or any other provider type named in a string for
+    reflection;
+  - any type declared, aliased or `DispatchProxy`-built to implement `IWorktreeProvider`;
+  - `IWorktreeProvider` handed to a mocking library.
+
+  A `Func<IWorktreeProvider>` helper is fine.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here

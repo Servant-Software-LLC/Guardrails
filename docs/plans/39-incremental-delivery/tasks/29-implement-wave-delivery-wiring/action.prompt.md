@@ -33,15 +33,17 @@ wave whose `WaveNode.IsDeliveryPoint` is true, it:
 
 1. applies the one delivery predicate it shares with `Scheduler.Finalize`: `plan.Config.MergeOnSuccess`, the
    #361 interlock over the waves the delivery carries, lifted by `plan.Config.MergeOnSuccessForcedByOperator`,
-   and the serial guard (a worktree provider and an integration handle both present);
+   the serial guard (a worktree provider and an integration handle both present), and #556's
+   executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`;
 2. calls `CreateTrialDelivery`;
 3. gates the trial;
 4. calls `PromoteTrialDelivery`, unless the trial reports `AlreadyDelivered`;
 5. calls `DiscardTrialDelivery` in a `finally`.
 
 This task adds the record, the event and the report around that flow. It never adds a second predicate, a
-second interlock call, or a second trial. If `ASerialWavedRun_NeverDeliversAtABarrier` or
-`ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord` fails, the cause is either a write you placed before
+second interlock call, or a second trial. If `ASerialWavedRun_NeverDeliversAtABarrier`,
+`ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord` or `ADivergedTaskDefinition_BlocksTheBarrierDelivery`
+fails, the cause is either a write you placed before
 task 08's predicate or that shared predicate itself: fix the predicate in place, never duplicate it. Grep
 `Scheduler.cs` for `CreateTrialDelivery`, `PromoteTrialDelivery`, `BuildReport` and `RecordWaveCompleted`
 rather than trusting a line number: this file has moved under several plans. Never call
@@ -83,8 +85,11 @@ write a placeholder. Place every write after task 08's predicate.
     `trial.RefusalDetail`. Nothing is gated or promoted.
   - The trial-tree gate failed (the trial needed a merge commit, and task 08's gate over
     `trial.WorktreePath` did not pass) → `refused`, with `At`, `Outcome` `TrialGateFailed`, and a `Detail`
-    naming each failing check and the user tip the trial merged (`trial.UserTip`). Nothing is promoted. This
-    settles the record whichever halt follows; the halt is task 17's.
+    naming each failing check, the user tip the trial merged (`trial.UserTip`), and the range
+    `git log <planTipSha10>..<userTipSha10>`, which lists exactly the user's commits the trial merged. Take
+    the plan tip from `CurrentPlanBranchTip(integ)` at the barrier, and cut both shas to their first 10
+    characters. Never put a branch name in that range: it goes stale once the plan branch advances. Nothing
+    is promoted. This settles the record whichever halt follows; the halt is task 17's.
   - `trial.AlreadyDelivered` WITH a captured prior `delivered` record (a pure resume: the delivery landed
     and was recorded before the crash) → restore that prior record verbatim, the same `At` and `Commit`, and
     raise no event. Task 08 skips the promotion.

@@ -34,6 +34,7 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    `PromoteTrialDelivery` returned `FastForwarded`, or the trial reports `AlreadyDelivered`: a resume after a
    crash between the promotion and the wave marker, which task 08 does not promote again but whose refresh
    is still owed. Both are exactly the case where the user's branch carries commits the plan branch lacks.
+   Task 14's `AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch` pins the second.
 2. **The refresh commit.** Have the Scheduler's C# perform a merge of `<upstream-sha>` inside the
    integration worktree with the `--no-ff` and `--no-verify` flags, through the same git invocation path its
    other integration-worktree commits already use. You write that call; you never run git yourself, and
@@ -60,8 +61,11 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    through the #150 fault path: `RunAsync` returns the honest-halt report with `Abort` set (`BuildAbort`),
    as a worker-loop fault already does, never an exception escaping `RunAsync`. Write NO record and no wave
    marker, and never continue on the stale base. Never delete or overwrite files in the integration
-   worktree to force the merge through. Task 14's `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns`
-   blocks the merge with an untracked file and expects the abort.
+   worktree to force the merge through. The abort's `Headline` must name, on one line, every path git
+   refused to overwrite. Git's stderr lists them one per tab-indented line after `would be overwritten by
+   merge:`. A gate that leaves such a file behind blocks the merge again on every resume, so the operator
+   has to know which file to remove. Task 14's `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns`
+   blocks the merge with an untracked file and expects the abort to name it.
 6. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
    `WaveHaltKind.ExitGateFailed`, append `UnauthoredContentNote.HeadlineSuffix(...)` to the headline AFTER
    the failing check names, and `UnauthoredContentNote.DetailLines(...)` to the detail. `BuildGateHalt` is

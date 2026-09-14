@@ -47,8 +47,8 @@ one of them. The red comes from the Scheduler never filling it; task 29 does tha
 **What your base already does.** Task 08 owns the barrier delivery DECISION, and it is on your base. At a
 wave whose `WaveNode.IsDeliveryPoint` is true (`delivers: true` and at least one exit-gate check), it first
 applies the delivery predicate it shares with `Scheduler.Finalize`: `mergeOnSuccess`, the #361 interlock
-over every wave the delivery carries (lifted by the operator's `--merge-on-success`), and the serial-mode
-guard. Only then does it call `CreateTrialDelivery`, gate the trial, call `PromoteTrialDelivery` (skipped
+over every wave the delivery carries (lifted by the operator's `--merge-on-success`), the serial-mode
+guard, and #556's executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`. Only then does it call `CreateTrialDelivery`, gate the trial, call `PromoteTrialDelivery` (skipped
 when the trial reports `AlreadyDelivered`), and call `DiscardTrialDelivery` in a `finally`. What your base
 does NOT do is write `waves.<dir>.delivered`, raise `WaveDelivered`, or fill `RunReport.WaveDeliveries`.
 Task 29 adds those, which is why every row below that asserts one of them is red on your base.
@@ -93,6 +93,8 @@ Task 29 adds those, which is why every row below that asserts one of them is red
     time and keeps what it found for that wave, counts its calls, and returns the result the test
     configured (`FastForwarded` by default), with a refusal's detail on `LastMergeOnSuccessDetail`.
   - `DiscardTrialDelivery` does nothing.
+  - `CurrentPlanBranchTip(integ)` returns one recognizable 40-character hex sha for the run: the plan tip.
+    The recorder does not implement it, so without this the interface default returns an empty string.
 - **The observer:** a test-local `IRunObserver` whose `WaveDelivered(wave, delivery)` records the wave, the
   instance, and the record it reads from `run.json` on disk at call time.
 
@@ -154,9 +156,11 @@ rejects.
    hook raised before any gate ran.
 11. `AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered` — one delivering wave. Seed
    that wave's record as `running`, with `startedAt` and `covers`, the state a crash between the `running`
-   write and the settle leaves behind, then run a Scheduler over the reloaded journal. The double's
-   `CreateTrialDelivery` returns `AlreadyDelivered = true`: the wave's commits already reached the user's
-   branch before the crash. The record on disk reads `delivered`, with `outcome: fast-forwarded` and
+   write and the settle leaves behind, then run a Scheduler over the reloaded journal. It models a quiet-case
+   promotion that fast-forwarded the user's branch to the plan tip just before the crash, so the user's tip
+   now EQUALS the plan tip: the double's `CreateTrialDelivery` returns `AlreadyDelivered = true` and
+   `UserTipWasAncestor = true`, with `UserTip` and `Commit` both the double's `CurrentPlanBranchTip` sha
+   (task 30 pins that equal-tips pair). The record on disk reads `delivered`, with `outcome: fast-forwarded` and
    `commit` equal to the trial's `Commit`; `PromoteTrialDelivery` is never called; `WaveDelivered` is
    raised exactly once. Rejects: settling a delivery that already landed as `refused` (review measured a
    resume that reported a git hook rejection for a hook that never ran, then halted every resume after),
@@ -164,9 +168,11 @@ rejects.
    `running`, not `delivered`, so this is the case with no prior `delivered` record: a fresh record,
    announced once.
 12. `AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent` — one delivering wave. Seed that wave's record as
-   `delivered`, with a distinctive `at` and `commit`, the state a crash after the settled write but before
-   the wave marker leaves behind, then run a Scheduler over the reloaded journal with the double returning
-   `AlreadyDelivered = true`. After the run the record on disk is `delivered` with the seeded `at` and
+   `delivered`, with a distinctive `at` and a `commit` that differs from the trial's, so a fresh write is
+   visible. It models the same quiet-case promotion as row 11, recorded this time, with the crash after the
+   settled write but before the wave marker. Run a Scheduler over the reloaded journal with the double
+   returning row 11's equal-tips trial (`AlreadyDelivered = true`, `UserTipWasAncestor = true`, `UserTip`
+   and `Commit` both the plan tip). After the run the record on disk is `delivered` with the seeded `at` and
    `commit` restored verbatim, and `WaveDelivered` is never raised. The record may read `running` while the
    trial is built, because a barrier delivery that begins always journals `running` (#625); do not assert
    otherwise. Rejects: settling a fresh record over a delivery that already landed and was already recorded
@@ -191,13 +197,25 @@ rejects.
    gates it in that worktree. The test-local `IReVerifier` fails that wave's exit guardrails only when it is
    handed the trial's `WorktreePath`, and passes them on the integration worktree. The record on disk reads
    `refused`, with `outcome: trial-gate-failed`, `at`, no `commit`, and a `detail` naming each failing
-   check and the user tip the trial merged (the trial's `UserTip`); `PromoteTrialDelivery` is never called
-   and `WaveDelivered` is never raised. Assert the record and the calls only, not the wave's status or the
-   halt, which task 17 owns. No promotion happens, so task 15's refresh never runs in this row. Rejects: a
-   record left at `running` after the gate refused the merged tree, a gate failure recorded as a trial
-   that could not be built, and promoting a tree whose gate failed.
+   check, the trial's `UserTip`, and the range `git log <planTip10>..<userTip10>`. The double supplies two
+   distinct 40-character hex shas: `<planTip10>` is the first 10 characters of its `CurrentPlanBranchTip`,
+   and `<userTip10>` the first 10 of the trial's `UserTip`. `PromoteTrialDelivery` is never called and
+   `WaveDelivered` is never raised. Assert the record and the calls only, not the wave's status or the halt,
+   which task 17 owns. No promotion happens, so task 15's refresh never runs in this row. Rejects: a record
+   left at `running` after the gate refused the merged tree, a gate failure recorded as a trial that could
+   not be built, a range keyed on a branch name (which goes stale once the plan branch advances), and
+   promoting a tree whose gate failed.
+17. `ADivergedTaskDefinition_BlocksTheBarrierDelivery` — one delivering wave. While a task in that wave
+   executes, the fake executor edits that task's own `task.json` on disk (a real definition change, such as
+   its description; an editor artifact like `.DS_Store` does not count) and returns `DeferredSettle = true`,
+   so the Scheduler's settle, where the #556 executed-definition check lives, sees a definition that moved
+   after the load pinned it. `ExecutedDefinitionDivergenceTests` builds this same edit. As a positive
+   control, the returned report's `HasExecutedDefinitionDivergence` is true. Neither `CreateTrialDelivery`
+   nor `PromoteTrialDelivery` is called, no wave has a `delivered` key, and `WaveDelivered` is never raised.
+   Rejects: a barrier delivery that ignores #556, which `Finalize` honors through `RunReport.AllSucceeded`,
+   so that work a task settled against a moved definition reaches the user's branch mid-run.
 
-**Four rows are exempt from the red census, not from existing.** Each is green on your base by
+**Five rows are exempt from the red census, not from existing.** Each is green on your base by
 construction, and task 29's forward census requires each one Passed:
 
 - `APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone` — nothing on your base writes the record, fills the
@@ -208,6 +226,8 @@ construction, and task 29's forward census requires each one Passed:
   reaches the barrier delivery.
 - `ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord` — nothing writes the record, and task 08's
   shared predicate never builds a trial when delivery is off.
+- `ADivergedTaskDefinition_BlocksTheBarrierDelivery` — nothing writes the record, and task 08's shared
+  predicate blocks a delivery once a task settled against a moved definition (#556), as `Finalize` does.
 
 Write them to assert the guarantee. Do NOT couple any of them to the missing wiring to force a red.
 

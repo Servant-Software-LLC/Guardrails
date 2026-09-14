@@ -17,6 +17,7 @@ $pinned = @(
     'ATrialMergeCommit_RunsHooksFromARelativeUntrackedHooksPath',
     'TheQuietCase_CreatesNoMergeCommit_AndRunsNoHook',
     'UserTipWasAncestor_IsCorrectBothWays',
+    'ATrialRebuiltAfterAQuietPromotionLanded_IsAlreadyDelivered',
     'ATrialRebuiltAfterItsPromotionLanded_IsAlreadyDelivered',
     'TheTrialMergeCommit_HasTheUsersTipAsFirstParent',
     'TheMovedCase_KeepsAWorktreeAtTheTrialCommit_UntilDiscarded',

@@ -5,47 +5,104 @@
 #          integration path is not a directory, and a hand-written IWorktreeProvider wrapper can return
 #          any result it likes, including a refresh that never touched a repo.
 #
-#          The file must construct the real provider, and may not use either house double or declare or
-#          mock an IWorktreeProvider. No wrapper is needed here: every mid-run change these tests make
-#          (the teammate commit, the failing gates, the file that blocks a refresh) is a SCRIPT the
-#          fixture writes, the WaveExecutionRunTests pattern. String literals are neutralized and then
-#          comments are stripped, so a comment explaining why the fake cannot be used neither trips the
-#          ban nor satisfies the requirement.
+#          REQUIRES `new GitWorktreeProvider(` in code. REJECTS, outside comments, what tasks 07 and 30
+#          reject (each a measured way to put a double in front of the Scheduler, verification 2026-09-13):
+#            - FakeWorktreeProvider or RecordingWorktreeProvider in code;
+#            - a type whose base list names IWorktreeProvider, or a using-alias (global or not) of a
+#              provider type, which would hide such a declaration;
+#            - DispatchProxy, which builds an IWorktreeProvider at runtime with no declaration to find;
+#            - a string literal naming any provider type other than GitWorktreeProvider or IWorktreeProvider
+#              (a reflective load such as Type.GetType("...FakeWorktreeProvider..."), or "Fake" +
+#              "WorktreeProvider");
+#            - IWorktreeProvider as the first type argument of a generic that is not a delegate, Lazy, Task,
+#              ValueTask, a collection, IsAssignableFrom or IsType (Mock<IWorktreeProvider>,
+#              Substitute.For<IWorktreeProvider>, DispatchProxy.Create<IWorktreeProvider, T>).
+#          No wrapper is needed here: every mid-run change these tests make (the teammate commit, the
+#          failing gates, the file that blocks a refresh, the user's own merge) is a SCRIPT the fixture
+#          writes, the WaveExecutionRunTests pattern.
 #
-#          BOUNDARY: a static text check. It cannot see a test that constructs the real provider and
-#          then ignores it; the red and forward censuses still carry the behavioral weight.
+#          SCAN ORDER (design 38 section 4.1, #561): ONE left-to-right lexer pass matches string, character
+#          and comment tokens together, so whichever starts first wins. A '//' or '/*' inside a literal never
+#          opens a comment, and a quote inside a comment or a character literal never opens a string. Only
+#          string literals in code are kept for the name check; one inside a comment is never inspected,
+#          the same effect as tasks 07 and 30's replace-then-strip passes.
+#
+#          BOUNDARY: a static text check. Code inside an interpolation hole, and a provider double defined in
+#          ANOTHER test file, are not seen; a real provider constructed and then ignored still passes. The
+#          censuses carry the behavioral weight.
 $ErrorActionPreference = 'Stop'
 
 $file = 'tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs'
-if (-not (Test-Path -LiteralPath $file)) {
+if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
     Write-Output "PRECONDITION: $file does not exist - the suite was never written."
     exit 1
 }
 
-$text = Get-Content -Raw -LiteralPath $file
-# String literals FIRST (raw, then verbatim, then regular), so a literal that spells a comment delimiter
-# (a URL, a glob) is never mistaken for a comment (GR2037, #561); THEN block comments, then line comments.
-$code = [regex]::Replace($text, '"""[\s\S]*?"""', '""')
-$code = [regex]::Replace($code, '@"(?:[^"]|"")*"', '""')
-$code = [regex]::Replace($code, '"(?:\\.|[^"\\\r\n])*"', '""')
-$code = [regex]::Replace($code, '(?s)/\*.*?\*/', '')
-$code = [regex]::Replace($code, '(?m)//.*$', '')
+$raw = Get-Content -Raw -LiteralPath $file
+
+# The lexer's alternatives, in order: raw strings, verbatim strings, regular strings, character literals,
+# block comments, line comments.
+$lexer = @(
+    '(?<raw>\$*"{3,}[\s\S]*?"{3,})',
+    '(?<verb>(?:\$@|@\$|@)"(?:[^"]|"")*")',
+    '(?<str>\$?"(?:\\.|[^"\\\r\n])*")',
+    '(?<chr>''(?:\\.|[^''\\\r\n])'')',
+    '(?<block>/\*[\s\S]*?\*/)',
+    '(?<line>//[^\r\n]*)'
+) -join '|'
+
+$literals = [System.Collections.Generic.List[string]]::new()
+$code = [regex]::Replace($raw, $lexer, {
+    param($m)
+    if ($m.Groups['raw'].Success -or $m.Groups['verb'].Success -or $m.Groups['str'].Success) {
+        $literals.Add($m.Value)
+        return '""'
+    }
+    if ($m.Groups['chr'].Success) { return "' '" }
+    # A comment keeps its line breaks, so line-anchored text after it stays on its own line.
+    return ' ' + ($m.Value -replace '[^\n]', '')
+})
 
 $problems = @()
 if ($code -notmatch 'new\s+GitWorktreeProvider\s*\(') {
-    $problems += "MISSING: no 'new GitWorktreeProvider(' outside comments. These tests must drive the real provider over temp repos."
+    $problems += "MISSING: no 'new GitWorktreeProvider(' in code. These tests must drive the real provider over temp repos."
 }
-foreach ($banned in @('FakeWorktreeProvider', 'RecordingWorktreeProvider')) {
-    if ($code -match "\b$banned\b") {
-        $problems += "BANNED: '$banned' is used outside comments. It cannot express a refresh; drive GitWorktreeProvider."
+foreach ($double in @('FakeWorktreeProvider', 'RecordingWorktreeProvider')) {
+    if ($code -match ('\b' + $double + '\b')) {
+        $problems += "BANNED: '$double' is used in code. It cannot express a refresh; drive GitWorktreeProvider."
     }
 }
-if ($code -match ':\s*IWorktreeProvider\b' -or $code -match '<\s*IWorktreeProvider\s*>') {
-    $problems += "BANNED: a class implementing, or a mock of, IWorktreeProvider. A wrapper can return any result it likes; make each mid-run change with a script the fixture writes."
+$decl = [regex]::Match($code, '\b(class|record|struct|interface)\s+\w+\s*(<[^>]*>)?\s*(\([^)]*\))?\s*:[^{;]*\bIWorktreeProvider\b')
+if ($decl.Success) {
+    $problems += "BANNED: a type implements IWorktreeProvider: '$(($decl.Value -replace '\s+', ' ').Trim())'. Make each mid-run change with a script the fixture writes."
+}
+$alias = [regex]::Match($code, '\busing\s+\w+\s*=\s*[\w.:]*WorktreeProvider\b')
+if ($alias.Success) {
+    $problems += "BANNED: a using-alias of a worktree provider type: '$(($alias.Value -replace '\s+', ' ').Trim())'. An alias hides the type from this check; name the type directly."
+}
+if ($code -match '\bDispatchProxy\b') {
+    $problems += "BANNED: DispatchProxy builds an IWorktreeProvider double at runtime. Drive GitWorktreeProvider."
+}
+$allowedHeads = @('Func', 'Action', 'Lazy', 'Task', 'ValueTask', 'IEnumerable', 'IReadOnlyList', 'IReadOnlyCollection',
+                  'List', 'IList', 'ICollection', 'IsAssignableFrom', 'IsType')
+foreach ($g in [regex]::Matches($code, '\b([A-Za-z_]\w*)\s*<\s*IWorktreeProvider\b')) {
+    if ($allowedHeads -cnotcontains $g.Groups[1].Value) {
+        $problems += "BANNED: IWorktreeProvider handed to '$($g.Groups[1].Value)<...>', which is how a mocking library builds a double. Only a delegate, Lazy, Task, a collection, IsAssignableFrom or IsType may carry it."
+    }
+}
+$allowedNames = @('GitWorktreeProvider', 'IWorktreeProvider')
+foreach ($text in $literals) {
+    foreach ($word in [regex]::Matches($text, '\w*WorktreeProvider\b')) {
+        if ($allowedNames -cnotcontains $word.Value) {
+            $shown = ($text -replace '\s+', ' ')
+            if ($shown.Length -gt 90) { $shown = $shown.Substring(0, 90) + '...' }
+            $problems += "BANNED: a string literal names the provider type '$($word.Value)': $shown. Loading a provider by name is a double by another route; the only provider names a test needs are GitWorktreeProvider and IWorktreeProvider."
+        }
+    }
 }
 
 if ($problems.Count -gt 0) {
-    $problems | ForEach-Object { Write-Output $_ }
+    $problems | Select-Object -Unique | ForEach-Object { Write-Output $_ }
     exit 1
 }
 

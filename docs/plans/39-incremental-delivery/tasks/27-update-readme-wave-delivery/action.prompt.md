@@ -43,7 +43,8 @@ Cover these, in the document's existing operator-facing style:
   that file gets no delivery and no error. **The existing switches apply at every delivery point.** Say
   that `--no-merge-on-success` (or `"mergeOnSuccess": false`) stops a delivery point from delivering
   too, not only the run-end merge, in the sentence that already recommends that flag "whenever you want
-  to inspect before anything lands".
+  to inspect before anything lands". A task definition edited during the run blocks a delivery point's
+  delivery as well (#556), exactly as it blocks the run-end merge.
 - **The interlock is wave-scoped, and a held wave's work rides along.** A machine decision that
   suppresses delivery (a proceeded-best-guess or proceeded-unreviewed) is now checked at every delivery
   point, against every wave that delivery carries. A delivery is held when ANY wave it carries recorded
@@ -56,7 +57,8 @@ Cover these, in the document's existing operator-facing style:
   the gate ran), the merge conflicts, your working tree has changes the merge would overwrite, your git
   hook rejects the merge commit, or the wave's exit gate fails on the trial merge with your new commits
   (`run.json` records that one as `trial-gate-failed`, naming the failing checks, your branch tip, and a
-  `git log <plan-branch>..<your tip>` range you can run to see which of your commits it merged). The run then halts at that wave instead of running later waves
+  sha-keyed `git log <plan-tip-sha>..<your-tip-sha>` range you can run to see which of your commits it
+  merged, and which stays accurate after either branch moves). The run then halts at that wave instead of running later waves
   whose delivery would be refused the same way. Deliveries that already landed stay on your branch, and
   your checkout is not touched. The wave is not marked complete until its delivery settles, so resuming
   after you fix the cause re-attempts that wave's delivery. Say in one sentence that a refused delivery

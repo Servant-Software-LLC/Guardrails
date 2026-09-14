@@ -41,25 +41,31 @@ schema:
   and its subject. A `"refused"` record carries `outcome` (`conflict` | `dirty-working-tree` |
   `hook-rejected` | `branch-moved` | `trial-gate-failed`, the last when the wave's exit gate fails on the
   trial merge) and `detail`. A `trial-gate-failed` detail names each failing check, the user's tip the
-  trial was built from, and the range `git log <plan-branch>..<userTip>`, which lists exactly the user's
-  commits the trial merged. Record it as a range: nothing lists those commits one by one. When a resume's trial finds the plan tip already on the user's branch, it
+  trial was built from, and the range `git log <plan-tip-sha>..<user-tip-sha>`, which lists exactly the
+  user's commits the trial merged. Key the range on the two shas, never on branch names, so it still
+  names the same commits after either branch moves, and record it as a range: nothing lists those commits
+  one by one. When a resume's trial finds the plan tip already on the user's branch (equal tips included,
+  as right after a quiet-case promotion), it
   skips the promotion and restores the prior `"delivered"` record, or writes one if the crash came before
   it, so a resume never records a refusal for a delivery that already landed. A rewound wave's re-run
   that delivers again replaces its record. A delivery the operator forced past a suppressing decision
   records `"delivered"` with a `detail` naming the overridden decision. Null fields are omitted, never
   written as null. `covers` lists every wave the delivery carries, in order, ending with this one,
-  computed from the journal so a resume computes the same set. A wave whose delivery never began has NO
-  `delivered` key — absent, not null — for any of three reasons: it never reached its barrier, its exit
-  gate failed, or delivery resolved off. The report reads the wave's own status to tell a held wave from
-  one not reached;
+  computed from the journal so a resume computes the same set. A wave has NO `delivered` key — absent,
+  not null — when it is not a delivery point, never reached its barrier, failed its exit gate, or had
+  delivery resolved off. The missing key does not say where that wave's work is. The work reached the
+  user's branch only if a later barrier delivery carried it (the wave is in that record's `covers`) or
+  the run-end delivery landed (the top-level `delivery` record). Otherwise the report says the wave is
+  held or not reached, reading the wave's own status;
 - **`branch-moved` has two causes, and the `detail` says which** (design 39 §1, review round 4). Record
   both, each with its remedy: the checkout was switched to another branch (the #588 text — check the
   branch out again, then resume), or the user's branch advanced after the trial was built
   (`'<branch>' moved from <sha10> to <sha10> after the trial was built` — resume, and the next trial
   includes the new commits);
 - **barrier delivery obeys the same switches as run-end delivery**: `--no-merge-on-success` (or
-  `"mergeOnSuccess": false`) turns it off, `--merge-on-success` lifts a held delivery, a serial run never
-  delivers at a barrier, and a wave with no exit gate is never a delivery point. The interlock is
+  `"mergeOnSuccess": false`) turns it off, `--merge-on-success` lifts a held delivery, a task definition
+  edited mid-run blocks it (#556) as it blocks run-end delivery, a serial run never delivers at a
+  barrier, and a wave with no exit gate is never a delivery point. The interlock is
   consulted before the trial merge is built, so a held delivery never runs the user's hooks;
 - the **`WaveDelivered`** observer event, `WaveDelivered(WaveNode, WaveDeliveredRecord)`, raised only for
   a `delivered` record and only after that record is persisted; and `RunReport.WaveDeliveries`, stamped
@@ -67,8 +73,9 @@ schema:
   a `WaveDelivered` line carrying `member`, `waveDir`, `commit` and `covers`. `events.jsonl` (§8.1) gains
   NO delivery kind — the durable record is `waves.<dir>.delivered` — and `guardrails attach` does not
   replay deliveries in v1: its replay skips the line it does not know;
-- the **refused-delivery halt**: every refused wave delivery halts the run at that wave with
-  `WaveHaltKind.DeliveryRefused`, never `ExitGateFailed`. The wave's marker commit and `completed` status
+- the **refused-delivery halt**: a refused wave delivery halts the run at that wave with
+  `WaveHaltKind.DeliveryRefused` — except a failed trial-tree gate (`trial-gate-failed`), whose halt is
+  decided in review round 5 (`d39-trial-gate-failure`). The wave's marker commit and `completed` status
   are written only after its delivery settles, so a resume re-attempts a refused delivery at that wave's
   barrier. No `RunHaltKind` is added, and the top-level `halt` section stays scoped to gates (#432).
   The halt also appends a `decisions[]` entry — `"boundary": "wave"`, `"decision": "halted"`, gate
@@ -78,9 +85,12 @@ schema:
   not show it (its only reader of a decision's gate keeps breakdown gates), and there is no log-site
   panel for a refused delivery in v1; it shows the wave as
   needs-human;
-- the top-level **`delivery`** record (#542) on a run where some waves delivered and a later one halted:
-  outcome **`partially-delivered`** with `delivered: false`. `delivered` stays true only when ALL verified
-  work reached the user's branch;
+- the top-level **`delivery`** record (#542) on a run where some waves delivered and verified work is
+  still held: outcome **`partially-delivered`** with `delivered: false`. `delivered` stays true only when
+  ALL verified work reached the user's branch. `partially-delivered` wins over a held or refused run-end
+  outcome: when earlier waves delivered at their barriers, a run-end delivery that the interlock held or
+  the merge refused still records `partially-delivered`, and `reason` names the holding decision or the
+  refusal's token;
 - **`GR2078`** (a post-delivery wave with no entry preflight) and **`GR2079`** (a `delivers: true`
   wave with no exit gate), BOTH warnings, in the diagnostics registry section. Each entry says what its
   code warns about in the same sentence as the code: correcting the stale sentence below removes

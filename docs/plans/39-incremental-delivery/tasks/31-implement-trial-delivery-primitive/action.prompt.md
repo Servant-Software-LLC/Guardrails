@@ -30,11 +30,16 @@ in `GitWorktreeProvider`, keeping the contract task 30 documented on `IWorktreeP
   - Resolve the user's tip from `integ.OriginalBranch` and the plan tip from `integ.PlanBranchName`.
   - First remove whatever a crashed earlier attempt for the same `waveDir` left behind: its trial ref and
     its trial worktree.
-  - **Quiet case.** If `git merge-base --is-ancestor <user-tip> <plan-tip>` succeeds, point
-    `refs/guardrails/trial/<waveDir>` at the plan tip, and do nothing else. `UserTipWasAncestor = true`.
+  - **Equal tips FIRST.** If the user's tip and the plan tip are the same commit, a quiet-case fast-forward
+    already landed. Point `refs/guardrails/trial/<waveDir>` at that commit, build nothing and run no hook;
+    `AlreadyDelivered = true`, `UserTipWasAncestor = true`, `Commit` = that commit. Equal tips also pass both
+    ancestry checks below, and taking the quiet case would promote again: that re-announces the delivery,
+    and after a switched checkout it refuses a delivery that already landed (review 2026-09-13).
+  - **Quiet case.** Otherwise, if `git merge-base --is-ancestor <user-tip> <plan-tip>` succeeds, point the ref
+    at the plan tip, and do nothing else. `UserTipWasAncestor = true`.
   - **Already delivered.** Otherwise, if `git merge-base --is-ancestor <plan-tip> <user-tip>` succeeds, the
-    work is already on the user's branch: a resume after the promotion landed, or the user merged the plan
-    branch themselves.
+    work is already on the user's branch: a resume after a merge-commit promotion landed, or the user merged
+    the plan branch themselves.
     - Point the ref at the user's tip, build nothing, and run no hook.
     - Set `AlreadyDelivered = true`, `UserTipWasAncestor = false`, and `Commit` to the user's tip.
     - Never fall through to the merge. There, `git merge` says "Already up to date", `git commit` fails

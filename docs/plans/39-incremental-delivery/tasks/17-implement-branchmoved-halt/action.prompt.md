@@ -40,11 +40,16 @@ Then:
   is `JournalJson.DeliveryOutcomeToken(outcome)` and the detail comes from whichever route refused.
 - `BranchMoved` has two causes under one token, `branch-moved`, and the provider's detail says which. Pick
   the remedy for the halt's `Detail` from that detail:
-  - **A switched checkout:** the detail reads `run started on '<branch>'; HEAD is now '<other>'`. The halt's
-    `Detail` says to `check out '<branch>' again`, then resume.
-  - **A branch that advanced after the trial was built:** the detail reads
-    `'<branch>' moved from <sha10> to <sha10> after the trial was built`. The halt's `Detail` says to
-    resume, because the next trial includes the new commits. It must not say to check anything out.
+  - **The checkout is no longer on the pinned branch:** the #588 check's detail starts with `run started on`,
+    and its ending varies: `HEAD is now '<other>'`, `HEAD is now detached (no branch checked out)`, or
+    `the current branch could not be read`. Key on the shared `run started on` prefix, never on one ending,
+    or a detached HEAD is told to resume and is refused again. The halt's `Detail` says to
+    `check out '<branch>' again`, then resume.
+  - **The branch moved after the trial was built:** the detail reads
+    `'<branch>' moved from <sha10> to <sha10> after the trial was built`. Key on the
+    `after the trial was built` suffix, which also covers a branch rewound under the trial. The halt's
+    `Detail` says to resume, because the next trial includes the change. It must not say to check anything
+    out.
 - An `AlreadyDelivered` trial is not a refusal: task 29 settles it as `delivered`. Never halt on it.
 - **Record the halt as a decision too (review 2026-09-13).** At the halt, append one `DecisionEntry`
   through `_journal.RecordDecision` and raise `_observer.DecisionRecorded`, as the Scheduler's other

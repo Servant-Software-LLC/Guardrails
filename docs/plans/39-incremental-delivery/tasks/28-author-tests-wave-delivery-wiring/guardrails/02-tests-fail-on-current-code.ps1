@@ -63,11 +63,18 @@ $pinned = @(
 #   STRUCTURAL REASON: green on this base by construction. Task 08's shared delivery predicate reads
 #   plan.Config.MergeOnSuccess before CreateTrialDelivery, so no trial is built, and nothing on this base
 #   writes the record or raises the event. Task 29 turns it red only by writing before that predicate.
+#
+# ADivergedTaskDefinition_BlocksTheBarrierDelivery (verification of the review fixes, NEW-B1).
+#   STRUCTURAL REASON: green on this base by construction. Task 08's shared delivery predicate blocks a
+#   barrier delivery once a task settled against a moved definition (#556), as Finalize does through
+#   RunReport.AllSucceeded, so no trial is built; and nothing on this base writes the record or raises the
+#   event. Task 29 turns it red only by writing before that predicate.
 $mustExist = @(
     'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone',
     'AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent',
     'ASerialWavedRun_NeverDeliversAtABarrier',
-    'ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord'
+    'ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord',
+    'ADivergedTaskDefinition_BlocksTheBarrierDelivery'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

@@ -212,9 +212,30 @@ if ($runningBegins.Count -eq 0) {
     $failures += "MISSING when the running record is written in $subject — no sentence says a barrier delivery writes status: running when it begins, before the trial merge runs the user's hooks (#625)"
 }
 
-$threeReasons = @($sentences | Where-Object { $_ -match '(?i)exit\s+gate\s+fail' -and $_ -match '(?i)\bdelivered\b' })
-if ($threeReasons.Count -eq 0) {
-    $failures += "MISSING why a wave has no delivered key in $subject — no sentence says a wave whose exit gate failed has no delivered key. 'Never reached its barrier' alone sends an agent looking for a delivery that was never attempted"
+# WHERE a wave's work is when it has no delivered key (design 39 §4, as corrected 2026-09-14). A wave has no
+# key when it is not a delivery point, never reached its barrier, failed its exit gate or had delivery resolved
+# off, so the missing key alone does not say where its work is: the work reached the user's branch only if a
+# later barrier delivery carried it (the wave is in that record's covers) or the run-end delivery landed.
+# This pair REPLACES an earlier clause that required "exit gate failed ... delivered" in one sentence: it
+# enforced the three-reasons shape the correction retired, and a correct four-reasons sentence failed it.
+# POSITIVE: one sentence states the reach rule — it names covers AND the run-end or top-level delivery AND
+# the branch.
+# NEGATIVE: a sentence saying a missing, absent or no delivered key means the work is not on the user's branch,
+# or is held, while naming neither covers nor the run-end delivery. Under that model a wave the run-end merge
+# or a later delivery carried reads as held. A sentence listing why a key is missing ("never reached its
+# barrier", "not a delivery point") does not trip it.
+# MEASURED on master with the same strip before it was added: see the fork L2 report (0 and 0).
+$runEnd = '(?i)(?:run-end|\brun\s+end\b|top-level|end\s+of\s+the\s+run)'
+$reachRule = @($sentences | Where-Object { $_ -match '(?i)\bcovers\b' -and $_ -match $runEnd -and $_ -match '(?i)\bbranch\b' })
+if ($reachRule.Count -eq 0) {
+    $failures += "MISSING where a wave's work is when it has no delivered key, in $subject — no sentence says the work reached the user's branch only if a later barrier delivery carried it (the wave is in that record's covers) or the run-end delivery landed. An agent that does not know that reads every wave without a key as held"
+}
+
+$noKey = '(?i)(?:\b(?:no|absent|missing|without\s+a)\b[^.]{0,20}\bdelivered\b[^.]{0,8}\bkey\b|\bdelivered\b[^.]{0,8}\bkey\b[^.]{0,30}\b(?:absent|missing)\b|\babsence\b)'
+$notOnBranch = '(?i)(?:\bnot\s+(?:on|in)\s+(?:the\s+user[''' + [char]0x2019 + ']?s\s+|your\s+|the\s+)?(?:checkout|branch)\b|\bnever\s+(?:reached|landed\s+on)\s+(?:the\s+user[''' + [char]0x2019 + ']?s\s+|your\s+|the\s+)(?:checkout|branch)\b|\bmeans\b[^.]{0,30}\bheld\b|\bis\s+held\b)'
+$wrongModel = @($sentences | Where-Object { $_ -match $noKey -and $_ -match $notOnBranch -and $_ -notmatch '(?i)\bcovers\b' -and $_ -notmatch $runEnd })
+if ($wrongModel.Count -gt 0) {
+    $failures += "WRONG MODEL PRESENT in ${subject}: '$($wrongModel[0])' — a missing delivered key does not mean a wave's work is off the user's branch: a later barrier delivery (its covers) or the run-end delivery may have carried it there. Say where the work is in terms of covers and the run-end delivery"
 }
 
 if ($failures.Count -gt 0) {

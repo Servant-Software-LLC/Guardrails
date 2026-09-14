@@ -61,7 +61,9 @@ an implementer not named here, stop and write `{"needsHuman": ...}` rather than 
 **A LogSite caution.** If you render the event on the exported log site, keep the page
 byte-identical when no delivery has occurred: `LogSiteHaltBannerTests` pins that page
 byte-for-byte, it is in no task's `writeScope`, and a run that delivers nothing must still
-produce the output it produces today.
+produce the output it produces today. This task's `01-tests-pass.ps1` runs `LogSiteHaltBannerTests`
+beside `WaveDeliveredCliForwardingTests`, so a change to that page halts here rather than at the plan's
+terminal gate.
 
 Forward `WaveDelivered` through both **CLI** decorators, and implement it on both renderers, so
 `WaveDeliveredCliForwardingTests` passes.
