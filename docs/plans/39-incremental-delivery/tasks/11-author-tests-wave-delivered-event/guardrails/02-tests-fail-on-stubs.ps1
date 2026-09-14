@@ -12,8 +12,9 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
+# Event_CarriesTheWaveTheCommitAndWhatItCovered was removed (review 2026-09-13, B5): a payload-shape test
+# of a record handed to a no-op default passes on the stub. Task 28 pins which record the Scheduler raises.
 $pinned = @(
-    'Event_CarriesTheWaveTheCommitAndWhatItCovered',
     'EveryCoreDecorator_ForwardsTheEvent'
 )
 

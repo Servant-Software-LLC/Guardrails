@@ -23,14 +23,19 @@
 ## Task
 
 Author failing tests for design 39 §4 — **a partially-delivered run is a NEW run outcome and must
-render as neither of the two that exist.**
+render as neither of the two that exist**, both in the printed report and in run.json's delivery
+record.
 
 **Test file:** `tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs`
 **Test class:** `PartialDeliveryReportTests`
+**Stub:** add one member, `PartiallyDelivered`, to `DeliveryOutcome` in
+`src/Guardrails.Core/Journal/JournalModel.cs`, so the tests compile. Do NOT add its token:
+`JournalJson`'s converter throws on an unknown member and task 19 owns the `partially-delivered`
+token, so no test in this suite may serialize the new member.
 
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
-**Three requirements, each earned by a defect already shipped here. Encode all three.**
+**Four requirements, each earned by a defect already shipped here. Encode all four.**
 
 - **Printed BEFORE the verdict.** The `mergeOnSuccess` banner (#340) printed AFTER the green summary
   and was read straight past — an operator concluded a run had shipped when it had not.
@@ -39,12 +44,24 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 - **The exit code does not change.** A run with a failed wave is a failed run. The exit code answers
   "did the plan complete"; the delivery block answers "what landed". Conflating them is how a green
   tick comes to certify what it did not check.
+- **run.json's delivery record tells the truth (round 4, `d39-partial-delivery-record`).** Today
+  `RunCommand.DescribeDelivery` derives the #542 record only from the end-of-run merge, so when wave 02
+  delivers and wave 03 halts, run.json says `delivered: false` with outcome `not-attempted` while wave
+  02 is already on the user's branch. DECIDED: a new `partially-delivered` outcome with
+  `delivered: false`. `delivered` stays true only when ALL verified work reached the user's branch, so a
+  consumer keyed on it never treats held work as shipped.
 
 **Pin these behaviours to these EXACT method names:**
 
 - `TheReportNamesDeliveredAndHeldWavesSeparately`
 - `TheReportIsPrintedBeforeTheVerdict` — assert ORDER in the captured output, not mere presence.
 - `TheReportPointsAtGitBranchNoMerged`
+- `DescribeDelivery_APartialDelivery_IsPartiallyDelivered` — a PURE call, with no run and no git:
+  construct a `RunReport` whose `WaveDeliveries` (stamped by task 29) records an earlier wave as
+  `delivered` and whose run halted at a later wave, then call `RunCommand.DescribeDelivery`. Assert
+  `Outcome` is `DeliveryOutcome.PartiallyDelivered`, `Delivered` is `false`, `DeliveredToBranch` and
+  `PlanBranch` are both set, and `Reason` names the delivered wave and the held wave. Rejects keeping
+  `not-attempted`, and rejects `delivered: true` just because something reached the branch.
 - `AFailedWaveDoesNotChangeTheExitCode`
 - `AFullyDeliveredRunReadsAsTodayDoes` — the never-weaker requirement: a plan marking no wave must
   produce the output it produces today.
@@ -52,7 +69,7 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 `AFailedWaveDoesNotChangeTheExitCode` and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from
 the red census: a run with a failed wave already exits 2 on today's code, and a plan that marks no wave
 already prints today's output, so correct tests of both are green on arrival. Write them to assert the
-guarantee, not to fail. They must still exist, and task 19's forward census requires all five Passed.
+guarantee, not to fail. They must still exist, and task 19's forward census requires all six Passed.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
@@ -60,13 +77,13 @@ breaks a class that did nothing wrong. Capture the output whose ORDER you assert
 `StringConsoleIo` handed to `CommandFactory.BuildRootCommand(io)` — never by redirecting `Console.Out`,
 which is process-wide.
 
-The other three tests MUST COMPILE and FAIL. Do NOT implement the report.
+The other four tests MUST COMPILE and FAIL. Do NOT implement the report or the delivery record.
 
-**Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs`. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
-out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
-missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
-state-out path and stop.
+**Scope boundary (harness-enforced):** Write only to
+`tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs` and
+`src/Guardrails.Core/Journal/JournalModel.cs`. After this task completes, the harness runs a `git diff`
+membership check and rejects any edit outside these paths. An out-of-scope edit fails the task
+immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another file,
+do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.
-

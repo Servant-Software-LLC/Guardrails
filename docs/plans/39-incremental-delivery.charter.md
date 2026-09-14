@@ -592,16 +592,22 @@ A partially-delivered run is a **new run outcome** and must render as neither of
 
 **The record, pinned at review (2026-09-13).** §5 required the delivery to be journaled `status: running`
 before the merge but never said where that status lives, and this example used `succeeded`/`failed`, which
-are not wave status tokens. `delivered` is written with `status: "running"` and `startedAt` before any write
-the operator can see (#625), then replaced by one of three settled states:
+are not wave status tokens. Every record carries `startedAt` and `covers`, and ends in one of three settled
+states:
 
 - `delivered`, with `commit` (the user's branch tip after promotion);
-- `refused`, with `outcome` (`conflict` | `dirty-working-tree` | `hook-rejected` | `branch-moved`) and `detail`;
+- `refused`, with `outcome` and `detail`: `conflict` or `hook-rejected` when the trial merge could not be built
+  (review round 4, `d39-trial-delivery-primitive`), `branch-moved` or `dirty-working-tree` when the promotion
+  refused;
 - `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject.
 
-`covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
-A wave that never reached its barrier has no `delivered` key, which is how the report tells *held* from *not
-reached*.
+`status: "running"` precedes the one write the operator can see, `PromoteTrialDelivery` (#625), and is then
+replaced by `delivered` or `refused`. A delivery that never reaches promotion — suppressed by the interlock, or
+refused because the trial could not be built — writes nothing the operator can see, so its record is written
+already settled. `covers` lists every wave the delivery carries, computed from the journal so a resume computes
+the same set. A wave whose delivery never began — it never reached its barrier, or its exit gate failed — has
+no `delivered` key. The absence means that wave's work is not on the user's branch; the report reads the wave's
+own status to say whether it is *held* or *not reached*.
 
 **A refused wave delivery halts the run at that wave — DECIDED (architect, extending
 `d39-branchmoved-midrun`).** The answered question covered `branch-moved`. A `conflict` repeats at every later
@@ -645,8 +651,9 @@ Three requirements, each earned by a defect already shipped here:
 ## 5. Seams and contracts touched
 
 **Schema** — a wave's `brief.md` front matter gains `delivers` (bool, default false; §1b); `run.json`'s `waves.<dir>` gains
-`delivered` (`{at, commit, covers: ["<wave>", …]}` or null — `covers` names the non-delivering waves that
-rode along, so the report can say what a merge actually carried). No new folder.
+`delivered`, the §4 record (`status`, `startedAt`, `at`, `commit`, `outcome`, `detail`, `covers`), absent until
+the wave's delivery begins. `covers` names every wave the delivery carries, ending with the delivering wave, so
+the report can say what a merge actually carried. No new folder.
 
 **Provenance** *(post-plan-40 refinement, NOT yet reviewed in Charter — §1c "How a refresh is recorded")* —
 `run.json` gains `refreshed[]` (`at`, `commit`, `from`, `upstream`, `deliveredWave`, `paths`), a sibling of

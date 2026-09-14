@@ -1,13 +1,11 @@
 # catches: a DECLARED-EXEMPT census row quietly ceasing to exist or to pass. Task 09's red census
-#          excuses ANonDeliveredWave_RecordsDeliveredNull from being Failed (it is green on the stub) but
-#          NOT from existing; this is the other half of that bargain — the pinned behaviours observed
-#          Passed in the runner's own TRX once the record has landed. 01-tests-pass accepts a SKIPPED
-#          test; this does not.
+#          excuses AWaveEntryWithoutADelivery_OmitsTheKey from being Failed (it is green on the stub)
+#          but NOT from existing; this is the other half of that bargain — every one of task 09's pinned
+#          behaviours observed Passed in the runner's own TRX once the record has landed. 01-tests-pass
+#          accepts a SKIPPED test; this does not.
 #
-#          TheDeliveryIsJournaledRunning_BeforeTheMerge is deliberately NOT pinned here: which task
-#          writes the running-then-delivered record around the promotion is being restructured
-#          (review 2026-09-13, finding B5), and pinning it to this task would bind it to a file set
-#          that cannot produce it.
+#          The running-then-settled write AROUND a real delivery is not this task's: task 28 pins it
+#          against the Scheduler (WaveDeliveryWiringTests), and task 29's forward census requires it.
 #
 #          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
 #          (a hollow test passes). What it CAN see is a test that was never written, or one that
@@ -20,8 +18,9 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Delivered_RoundTripsThroughTheJournalJson',
     'Delivered_CarriesAtCommitAndCovers',
-    'Covers_NamesTheNonDeliveringWavesThatRodeAlong',
-    'ANonDeliveredWave_RecordsDeliveredNull'
+    'EveryStatusToken_RoundTrips',
+    'RecordWaveDelivery_ReplacesTheRecordAndPersists',
+    'AWaveEntryWithoutADelivery_OmitsTheKey'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

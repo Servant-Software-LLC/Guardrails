@@ -22,17 +22,34 @@
 
 ## Task
 
-Record design 39 §5's contracts in `docs/plans/02-schemas-and-contracts.md`:
+Record design 39's contracts in `docs/plans/02-schemas-and-contracts.md`. Where design 39 disagrees with
+itself, §4 ("The record, pinned at review") and the review-round-4 answers win over §5's older one-line
+schema:
 
 - a wave's **`brief.md` front matter** gains **`delivers: true`** (bool, **default false**). NOT a
   wave manifest — there is no such thing, and §14.1 says so; the design's first draft was corrected
   at review. Record the front-matter surface in §14.1's layout notes and in §14.10 (`brief.md`),
   and say that `WaveDefinitionHash` already folds it, so flipping the flag on a completed wave
   trips drift;
-- `run.json`'s `waves.<dir>` gains **`delivered`** — `{at, commit, covers: ["<wave>", …]}` or null,
-  where `covers` names the non-delivering waves that rode along, so the report can say what a merge
-  actually carried;
-- the **`WaveDelivered`** observer event;
+- `run.json`'s `waves.<dir>` gains **`delivered`**, the record design 39 §4 pinned:
+  `"delivered": { "status": "delivered", "startedAt": "…", "at": "…", "commit": "…", "outcome": "fast-forwarded", "covers": ["<wave>", …] }`.
+  `status` is `"running"` | `"delivered"` | `"refused"` | `"suppressed"`. It is written `"running"` with
+  `startedAt` BEFORE the user's branch can move (#625), then replaced by one settled state. A `"refused"`
+  record carries `outcome` (`conflict` | `dirty-working-tree` | `hook-rejected` | `branch-moved`) and
+  `detail`; a `"suppressed"` record's `detail` names the decision and its subject. `covers` lists every
+  wave the delivery carries, in order, ending with this one, computed from the journal so a resume
+  computes the same set. A wave that never reached its barrier has NO `delivered` key — absent, not
+  null — which is how the report tells a held wave from one not reached;
+- the **`WaveDelivered`** observer event, `WaveDelivered(WaveNode, WaveDeliveredRecord)`, raised only for
+  a `delivered` record and only after that record is persisted; and `RunReport.WaveDeliveries`, stamped
+  from the journal in `BuildReport` on every report, halted ones included;
+- the **refused-delivery halt**: every refused wave delivery halts the run at that wave with
+  `WaveHaltKind.DeliveryRefused`, never `ExitGateFailed`. The wave's marker commit and `completed` status
+  are written only after its delivery settles, so a resume re-attempts a refused delivery at that wave's
+  barrier. No `RunHaltKind` is added, and the top-level `halt` section stays scoped to gates (#432);
+- the top-level **`delivery`** record (#542) on a run where some waves delivered and a later one halted:
+  outcome **`partially-delivered`** with `delivered: false`. `delivered` stays true only when ALL verified
+  work reached the user's branch;
 - **`GR2078`** (a post-delivery wave with no entry preflight) and **`GR2079`** (a `delivers: true`
   wave with no exit gate), BOTH warnings, in the diagnostics registry section — and while you are
   there, **correct the stale sentence** that currently reads *"an unrelated new code should take
@@ -41,8 +58,15 @@ Record design 39 §5's contracts in `docs/plans/02-schemas-and-contracts.md`:
 - the **trial-merge ref** `refs/guardrails/trial/<waveDir>` (§1): a delivering wave gates against
   the trial merge and only fast-forwards the user's branch on green, which changes §14.3's
   exit-gate contract;
+- the **trial-merge provider members** (§1, review round 4): the trial merge commit is created WITH the
+  user's git hooks — never `--no-verify` — so the commit that lands on the user's branch was
+  **hook-checked** (#149), and the moved-branch (#588) and dirty-tree (#448) checks re-run against the
+  trial ref before the fast-forward;
 - **`DecisionEntry` gains a `Wave` member** (§1a) — the wave-scoped interlock reads a recorded
-  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface;
+  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface. And
+  the **ride-along rule** (review round 4): a delivery is held when **any wave it carries** recorded a
+  suppressing decision — the interlock reads the delivery's `covers`, not only the delivering wave's own
+  decisions;
 - in **§7**, beside `supplied[]`, the **`refreshed[]`** provenance section (design 39 §1c, "How a refresh
   is recorded"): `"refreshed": [ { "at", "commit", "from", "upstream", "deliveredWave", "paths" } ]` —
   absent (never null, never empty) when there was no refresh, and written only after its commit exists;
@@ -50,8 +74,8 @@ Record design 39 §5's contracts in `docs/plans/02-schemas-and-contracts.md`:
   name) in the integration worktree, with the plan-branch tip as FIRST parent and the trailer
   `Refreshed-From: <from>` / `Guardrails-Run: <runId>` — never `Supplied-By:`, because nothing was
   supplied — and its **trigger**: refresh iff the user's branch tip was NOT an ancestor of the
-  plan-branch tip at delivery. Say why the trigger is not `FastForwarded`: the trial merge makes every
-  promotion a fast-forward, so that check would never fire;
+  plan-branch tip at delivery, read from the trial merge's own ancestry result. Say why the trigger is not
+  `FastForwarded`: the trial merge makes every promotion a fast-forward, so that check would never fire;
 - in **§14.3**, the **gate-halt disclosure**: a wave entry-preflight or exit-gate halt appends every
   `supplied[]` and `refreshed[]` record, oldest first (a refresh reads `refresh from '<from>' at
   <upstream, 10 chars>`), AFTER the failing check names, and a run with neither section renders
@@ -69,4 +93,3 @@ missing symbol in another file, do NOT edit that file — write `{"needsHuman": 
 state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.
-

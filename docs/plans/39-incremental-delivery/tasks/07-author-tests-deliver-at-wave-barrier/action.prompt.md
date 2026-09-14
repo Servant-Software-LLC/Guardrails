@@ -50,6 +50,15 @@ against THAT tree — it is the tree the delivery would produce, so §1 is satis
 consult the interlock, and only then fast-forward the user's branch to the trial ref. On red,
 delete the ref; the user's branch never moved.
 
+**The git side of that sequence is a provider primitive now (review round 4,
+`d39-trial-delivery-primitive`).** Task 31 ships `IWorktreeProvider.CreateTrialDelivery`,
+`PromoteTrialDelivery` and `DiscardTrialDelivery` on the real `GitWorktreeProvider`, and task 30 tests them
+directly: the user's git hooks run on the trial merge commit, and promotion re-checks #588 and #448 before
+it fast-forwards. Task 08 wires the Scheduler to them. Your tests still drive the REAL Scheduler over the
+real `GitWorktreeProvider` and assert EFFECTS in git — never that a provider member was called. Do not
+install a git hook in these fixtures: a rejecting hook now refuses the delivery at trial time, and that is
+task 30's row, not one of these.
+
 **Pin these behaviours to these EXACT method names:**
 
 - `ADeliveringWaveMergesAtItsOwnBarrier` — not at run end.

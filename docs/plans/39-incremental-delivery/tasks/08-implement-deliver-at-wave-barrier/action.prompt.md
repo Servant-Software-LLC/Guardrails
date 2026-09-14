@@ -22,29 +22,40 @@
 
 ## Task
 
-**`DeliverAndCleanup` DOES NOT EXIST — corrected at review, 2026-09-11.** `grep -rn
-DeliverAndCleanup src/ tests/` exits 1; the name entered at charter review and propagated into
-the design and into this prompt. The real chain is **`Scheduler.Finalize` →
-`DeliverToUserBranch` → `IWorktreeProvider.MergePlanBranchIntoUserBranch`**. Grep `Scheduler.cs`
-for `DeliverToUserBranch` rather than trusting any name written here.
+Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: a delivering wave delivers at its OWN barrier,
+gated on that wave's `Exit` being green. **The run-end call stays** for every flat plan and for the waves
+after the last delivery point.
 
-Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: `DeliverAndCleanup` becomes callable at a wave
-barrier, gated on that wave's `Exit` being green — **the run-end call stays** for the last wave and for
-every flat plan.
+**Use the trial-delivery primitive (task 31, review round 4 `d39-trial-delivery-primitive`); NEVER call
+`MergePlanBranchIntoUserBranch` at a barrier.** At a delivering wave's barrier:
 
-**Find the seam yourself.** Grep `Scheduler.cs` for `RunWavedAsync` and for the existing
-`DeliverAndCleanup` / `Finalize` call rather than trusting a line number — this file has moved under
-several plans and a cited line is stale on arrival.
+1. `CreateTrialDelivery(integ, waveDir, ct)` builds `refs/guardrails/trial/<waveDir>`: the plan branch
+   merged onto the user's tip, with the user's hooks run on any merge commit. A trial whose `Refusal` is
+   set could not be built — do not gate it or promote it.
+2. Run the wave's `Exit` gate against the TRIAL tree (`trial.Commit`), not the plan branch alone: it is the
+   tree the delivery would produce.
+3. Consult the interlock over the SET of waves this delivery carries — every wave since the previous
+   delivery point, this one included — through `RunOutcomePolicy.SuppressingDecisionForDelivery(decisions,
+   coveredWaves)` (task 06). A held wave's work riding along holds the delivery (review round 4,
+   `d39-interlock-ride-along`). Task 29 later derives that set from the journal so it survives a resume.
+4. Only on a green gate with no suppressing decision, `PromoteTrialDelivery(integ, trial, ct)`, which
+   re-checks #588 and #448 and fast-forwards.
+5. `DiscardTrialDelivery(integ, waveDir)` after EITHER outcome — in a `finally`, so a thrown gate leaves
+   no ref behind.
 
-TRIAL MERGE, then gate, then promote (DECIDED at review, 2026-09-11 — an earlier version of
-this line said "merge first, then gate", which writes to the operator's branch before anything
-authorises it). Merge onto `refs/guardrails/trial/<waveDir>`, gate against that tree, consult
-the interlock, and fast-forward the user's branch only on green; on red delete the ref. The
-exit gate must assert over the tree the delivery produces, not the plan
-branch alone. On red, the PLAN branch must not move either: never merge the user's tip into the integration
-worktree before the gate passes. Delete `refs/guardrails/trial/<waveDir>` after EITHER outcome.
-Task 07 pins both (`AFailedTrialGate_LeavesThePlanBranchUnmoved`,
-`TheTrialRefIsDeleted_AfterEitherOutcome`), and this task's forward census requires them Passed.
+On red, neither branch moves: never merge the user's tip into the integration worktree before the gate
+passes. Task 07 pins both failure directions (`AFailedTrialGate_LeavesThePlanBranchUnmoved`,
+`AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`) and the cleanup
+(`TheTrialRefIsDeleted_AfterEitherOutcome`), and this task's forward census requires them `Passed`.
+
+**Not this task.** Writing `waves.<dir>.delivered` and raising `IRunObserver.WaveDelivered` belong to task
+29, around this promotion. Halting on a refused promotion belongs to tasks 16/17, and the post-delivery
+refresh to task 15. Never treat a wave as delivered unless `PromoteTrialDelivery` returned
+`FastForwarded`.
+
+**Find the seams yourself.** Grep `Scheduler.cs` for `RunWavedAsync`, `Finalize` and `DeliverToUserBranch`
+rather than trusting a line number — this file has moved under several plans and a cited line is stale
+on arrival. `DeliverAndCleanup` never existed; the name entered at charter review.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
@@ -55,4 +66,3 @@ missing symbol in another file, do NOT edit that file — write `{"needsHuman": 
 state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
-

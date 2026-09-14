@@ -1,12 +1,13 @@
 {
-  "description": "Author failing tests for the partially-delivered run outcome \u2014 printed BEFORE the verdict",
+  "description": "Author failing tests for the partially-delivered run outcome \u2014 the report printed BEFORE the verdict, and run.json's delivery record",
   "dependsOn": [
-    "10-implement-wave-delivered-journal",
-    "08-implement-deliver-at-wave-barrier"
+    "25-implement-refresh-provenance",
+    "29-implement-wave-delivery-wiring"
   ],
   "stableId": "l7h4ub",
   "writeScope": [
-    "tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs"
+    "tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs"
   ],
   "action": {
     "maxTurns": 75

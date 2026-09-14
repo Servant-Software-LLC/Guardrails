@@ -15,18 +15,21 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Delivered_RoundTripsThroughTheJournalJson',
     'Delivered_CarriesAtCommitAndCovers',
-    'Covers_NamesTheNonDeliveringWavesThatRodeAlong',
-    'TheDeliveryIsJournaledRunning_BeforeTheMerge'
+    'EveryStatusToken_RoundTrips',
+    'RecordWaveDelivery_ReplacesTheRecordAndPersists'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13) — ANonDeliveredWave_RecordsDeliveredNull.
-#   STRUCTURAL REASON: green on the stub by construction. The stub's `delivered` property on the wave
-#   entry is a WORKING nullable container (only WaveDeliveredRecord's members throw), and JournalJson
-#   writes nulls (DefaultIgnoreCondition = Never, src/Guardrails.Core/Journal/JournalJson.cs:136), so a
-#   correct "null, not absent" round trip passes before the record is implemented. Pinning it red would
-#   force a wrongly-failing test that task 10 cannot fix without editing tests.
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13, B5 restructure) — AWaveEntryWithoutADelivery_OmitsTheKey.
+#   STRUCTURAL REASON: green on the stub by construction. The stub's `Delivered` property on
+#   WaveJournalEntry is a WORKING nullable container carrying [JsonIgnore(WhenWritingNull)], the same
+#   attribute as the Entry/Exit markers beside it (src/Guardrails.Core/Journal/JournalModel.cs), so an
+#   entry that never set it serializes with no "delivered" key before WaveDeliveredRecord is implemented.
+#   Pinning it red would force a test coupled to the stubbed record, which task 10 cannot then turn
+#   green without editing tests.
 #   It is asserted to EXIST below, and task 10's forward census requires it to be observed Passed.
-$mustExist = @('ANonDeliveredWave_RecordsDeliveredNull')
+#   (Covers_NamesTheNonDeliveringWavesThatRodeAlong and TheDeliveryIsJournaledRunning_BeforeTheMerge
+#   moved to task 28, which drives the real Scheduler: this task's files cannot produce either.)
+$mustExist = @('AWaveEntryWithoutADelivery_OmitsTheKey')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

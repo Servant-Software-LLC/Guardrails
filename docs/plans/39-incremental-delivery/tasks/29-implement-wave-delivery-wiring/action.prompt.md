@@ -1,0 +1,104 @@
+## Harness contract (do not remove)
+- Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in
+  the appended sections; write ONLY new/changed keys as a JSON object to
+  GUARDRAILS_STATE_OUT.
+- Write everything you publish under your task's FOLDER NAME as the single top-level
+  key — the name of the directory this task.json lives in (e.g. `29-implement-wave-delivery-wiring`), NOT the
+  stableId. The harness REJECTS a fragment keyed by anything else (every attempt), so:
+  `{ "29-implement-wave-delivery-wiring": { "someKey": "someValue" } }`.
+- EXCEPTION — the CONTROL KEYS `needsHarnessWrite` and `needsHuman` are TOP-LEVEL
+  SIBLINGS of your folder-name key, never nested inside it.
+- If a previous-attempt feedback section is appended, this is a RETRY: fix those
+  specific failures; do not start over.
+- Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
+  code — or reword a document away from its own conventions — to match a check's pattern.
+- If you cannot proceed without a human decision, write
+  {"needsHuman": {"question": "<question>", "kind": "blocked-work"}} to the
+  state-out path and stop. If instead a guardrail reports something ABSENT that you can
+  see is PRESENT, that guardrail is defective: use "kind": "defective-guardrail" and
+  quote (a) the guardrail's exact claim and (b) the file:line that refutes it. If you
+  cannot produce BOTH quotes it is not a defective guardrail — retry the work, or
+  escalate as "blocked-work". Difficulty is never "defective-guardrail".
+
+## Task
+
+Make `WaveDeliveryWiringTests` pass. Design 39 §4 ("The record, pinned at review") and §5 ("Wiring and
+halts"): the Scheduler writes `waves.<dir>.delivered` around every barrier delivery, raises
+`IRunObserver.WaveDelivered` only for a `delivered` record after it is persisted, and `BuildReport` stamps
+`RunReport.WaveDeliveries` from the journal. The first breakdown built the record and the event and wired
+neither, which is #120's shape. This task is the wiring.
+
+**Where.** Task 08 already delivers a `delivers: true` wave at its own barrier through the trial-delivery
+primitive: `CreateTrialDelivery`, the wave's `Exit` gate against the trial tree, the interlock, then
+`PromoteTrialDelivery`, with `DiscardTrialDelivery` in a `finally`. Grep `Scheduler.cs` for
+`PromoteTrialDelivery`, `BuildReport` and `RecordWaveCompleted` rather than trusting a line number: this
+file has moved under several plans. Never call `MergePlanBranchIntoUserBranch` at a barrier; the run-end
+delivery keeps it.
+
+**Reach the journal the way the supply drain does.** `RecordWaveDelivery` is on `RunJournal`, not on
+`ISchedulerJournal`, and `ISchedulerJournal.cs` is outside this scope. Use the
+`if (_journal is Journal.RunJournal runJournal)` pattern the Scheduler already uses before
+`RecordSupplied`. A unit-test fake journal models no durable document, and records nothing.
+
+**1. `covers`, from the journal.** Before anything else at the barrier, walk `plan.Waves` back from this
+wave, reading each earlier wave through `_journal.WaveEntryOf(dir)`, and stop at the nearest one whose
+`Delivered` record has status `Delivered`. `covers` is every wave after that one, in plan order, ending
+with this wave. Never compute it from state held in memory: a resume discards that state, and
+`CoversAfterAResume_StillStartsAfterTheLastDeliveredWave` is the row that catches it. An earlier delivery
+that was refused or suppressed does not end the walk: its work is still not on the user's branch, so this
+delivery carries it.
+
+**2. The interlock reads `covers` (review round 4, ride-along).** Pass this delivery's `covers` to task
+06's wave-scoped interlock, `RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves)`, which
+returns the first suppressing decision among the waves a delivery carries. Task 06 defines
+`SuppressesDelivery(decisions, coveredWaves)` through it, so the answer and its evidence never drift apart
+(#597). A held wave's machine-decided work riding along holds the delivery, and a suppressing decision with
+no `Wave` holds every delivery: task 06 fails closed.
+
+**3. The writes, in this order.** Every record carries `StartedAt`, taken when the barrier delivery
+begins, and `Covers`.
+- **The trial could not be built** (`trial.Refusal` is set): write `refused` with `At`, the matching
+  `Outcome`, and `Detail` from `trial.RefusalDetail`. Nothing is gated or promoted.
+- **The gate is green, and the interlock returns a decision:** write `suppressed` with `At` and a `Detail`
+  naming the decision's token and its subject. Never call `PromoteTrialDelivery`.
+- **Otherwise:** write `running`, with no `At`, and only THEN call `PromoteTrialDelivery` — #625, journal
+  the state before the action the operator can see. Settle by REPLACING that record:
+  - `FastForwarded` → `delivered`, with `At`, `Outcome` `FastForwarded`, and `Commit` = the trial's
+    `Commit` (after a fast-forward the user's branch tip IS that commit; task 30 pins it);
+  - any other result → `refused`, with `At`, the matching `Outcome`, and `Detail` from the provider's
+    `LastMergeOnSuccessDetail`.
+- **A wave whose exit gate fails writes no record.** Its delivery never began. The key's absence means the
+  wave's work is not on the user's branch; the report reads the wave's own status to say why.
+
+Map a `MergeOnSuccessResult` to the `DeliveryOutcome` member of the same name; both enums already exist.
+
+**4. The event.** Raise `_observer.WaveDelivered(wave, record)` only for a `delivered` record, only after
+`RecordWaveDelivery` has returned, and pass the SAME instance you wrote. Never raise it for `running`,
+`refused` or `suppressed`.
+
+**5. The wave marker comes after the delivery settles.** Keep `CommitWaveMarker` and `RecordWaveCompleted`
+AFTER the settled write. This task does not halt on a refusal and does not decide what follows one. Task 17
+adds the `WaveHaltKind.DeliveryRefused` halt between the settled write and the marker, so a resume
+re-attempts a refused delivery at that wave's barrier. Leave the order so it can.
+
+**6. `BuildReport` stamps `WaveDeliveries` on every report.** `BuildReport` is the one method every report
+passes through, halted or not. Fill `WaveDeliveries` there from `plan.Waves`: every wave whose
+`_journal.WaveEntryOf(dir)?.Delivered` is set, keyed by the wave's directory. A wave without a record is
+absent. Never stamp it only in `Finalize`: a wave gate or barrier halt returns before `Finalize`, and
+`AHaltedRunsReport_StillCarriesEarlierWaveDeliveries` pins that path. Task 19 derives the
+`partially-delivered` outcome from this map. In `RunReport.cs`, document the property; its default stays
+empty.
+
+**Not this task.** The refused-delivery halt is task 17's, the `partially-delivered` outcome task 19's, the
+post-delivery refresh task 15's, and forwarding `WaveDelivered` through the observer decorators tasks
+12/13's.
+
+Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
+
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/Scheduler.cs` and `src/Guardrails.Core/Execution/RunReport.cs`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
+out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
+missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
+state-out path and stop.
+
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.

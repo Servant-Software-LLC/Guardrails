@@ -16,7 +16,8 @@ $pinned = @(
     'AWaveWithNoSuppressingDecision_Delivers',
     'AWaveWithASuppressingDecision_DoesNotDeliver',
     'ADecisionInALaterWave_DoesNotRetroactivelySuppressAnEarlierDelivery',
-    'ADecisionInAnEarlierWave_DoesNotSuppressALaterCleanWave',
+    'ADecisionInAnEarlierDeliveredWave_DoesNotSuppressALaterCleanWave',
+    'AHeldWavesWorkRidingAlong_HoldsTheLaterDelivery',
     'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject'
 )
 

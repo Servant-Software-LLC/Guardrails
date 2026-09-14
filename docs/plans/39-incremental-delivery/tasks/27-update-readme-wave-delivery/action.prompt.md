@@ -28,8 +28,8 @@ than trusting a line number). Do NOT add a parallel section: an operator reads o
 two sections that each tell half of it is how one of them goes stale.
 
 Describe what SHIPPED, not the design's rejected alternatives. The sources are design 39
-(`docs/plans/39-incremental-delivery.md` §1b, §1a, §1c and §4) and the SSOT
-(`docs/plans/02-schemas-and-contracts.md`) as task 20 has just updated it. Where they disagree, the
+(`docs/plans/39-incremental-delivery.md` §1b, §1a, §1c and §4, as answered in review round 4) and the
+SSOT (`docs/plans/02-schemas-and-contracts.md`) as task 20 has just updated it. Where they disagree, the
 SSOT and the code win.
 
 Cover these, in the document's existing operator-facing style:
@@ -41,13 +41,29 @@ Cover these, in the document's existing operator-facing style:
   lives plainly: there is no per-wave config file. A `guardrails.json` inside a wave directory is
   silently ignored — the plan stays waved and `validate` does not warn — so an operator who guesses
   that file gets no delivery and no error.
-- **The interlock is wave-scoped.** A wave delivers only if no machine decision that suppresses delivery
-  (a proceeded-best-guess or proceeded-unreviewed) was recorded during that wave. Say this in the
-  sentence that already explains when delivery is held back, so a reader does not meet two rules.
+- **The interlock is wave-scoped, and a held wave's work rides along.** A machine decision that
+  suppresses delivery (a proceeded-best-guess or proceeded-unreviewed) is now checked at every delivery
+  point, against every wave that delivery carries. A delivery is held when ANY wave it carries recorded
+  such a decision, not only the delivering wave, so once a wave is held every later delivery is held too
+  until the run ends, unless you force delivery with `--merge-on-success`. Say this in the sentence that
+  already explains when delivery is held back, so a reader does not meet two rules, and state it in
+  terms of the waves the delivery carries.
+- **A refused delivery halts the run at that wave.** A delivery is refused when your checkout has moved
+  to another branch, the merge conflicts, your working tree has changes the merge would overwrite, or
+  your git hook rejects the merge commit. The run then halts at that wave instead of running later waves
+  whose delivery would be refused the same way. Deliveries that already landed stay on your branch, and
+  your checkout is not touched. The wave is not marked complete until its delivery settles, so resuming
+  after you fix the cause re-attempts that wave's delivery. Say in one sentence that a refused delivery
+  halts the run at that wave.
+- **The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial merge.
+  When your branch has moved on, that merge commit is created with your git hooks, exactly as today's
+  run-end merge commit is. Say that in one sentence.
 - **The partial-delivery report.** A run where an earlier wave delivered and a later wave failed prints
   which waves landed on your branch and which are held on the plan branch, BEFORE the verdict. The exit
   code does not change: a run with a failed wave is still a failed run. `git branch --no-merged` stays
   the confirmation, and the README already points at it — connect the two rather than repeating it.
+  `run.json`'s delivery record says the same thing: its outcome is `partially-delivered` with
+  `delivered: false`, because `delivered` is true only when all verified work reached your branch.
 - **The post-delivery refresh.** When your branch moved independently between deliveries, the harness
   merges it back into the plan branch after delivering, so later waves build on your new commits. That
   admits content no task authored, so `run.json` records it in `refreshed[]`, and a gate failure over a
@@ -55,6 +71,12 @@ Cover these, in the document's existing operator-facing style:
 - **The two new `validate` warnings.** `GR2078`: a wave that follows a delivery point carries no entry
   preflight. `GR2079`: a wave sets `delivers: true` but carries no exit gate, so it cannot deliver. Both
   are warnings and neither moves the exit code.
+
+**Do not write the first breakdown's narrower interlock rule.** An earlier version of this prompt said a
+wave delivers only if no suppressing decision was recorded during that wave. A delivery carries every
+wave since the last one, so under that rule a clean later wave carries a held wave's commits onto your
+branch. The guardrail refuses the narrow rule however it is worded. If you contrast the two, make the
+contrast an explicit negation.
 
 **REWORD one existing sentence — it becomes FALSE.** The section currently says *"Nothing is merged on
 a run that does **not** reach green: a needs-human halt, a failed gate, or a cancellation leaves your

@@ -37,6 +37,11 @@ The four Cli `IRunObserver` implementers play TWO different roles — do not tre
 - **RENDERERS** — `ConsoleRunObserver` and `LiveRunObserver` — wrap nothing (no `_inner`). Implement
   `WaveDelivered` on each by rendering the event; there is nothing to forward to.
 
+The member is `void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery)`, and the
+Scheduler raises it only for a record whose status is `delivered`, after that record is persisted (design
+39 §5). A decorator forwards the record INSTANCE unchanged. A renderer names the wave, the promoted
+`Commit` and the `Covers` list, and never infers anything the record does not say.
+
 `grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Cli/` lists the four, and `grep -c _inner`
 on each file shows its role. If the grep shows an implementer not named here, stop and write
 `{"needsHuman": ...}` rather than guessing its role. **Your gate runs against

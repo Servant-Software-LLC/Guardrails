@@ -1,22 +1,29 @@
-# catches: a DECLARED-EXEMPT census row quietly ceasing to exist, and a pinned behaviour that was
-#          never turned green. Task 22's red census excuses ANegativeBaselineEntryCheck_KeepsSkipOnce
-#          from being Failed (today's skip-once already makes a correct test of it green) but NOT
-#          from existing; this is the other half of that bargain — every task 22 behaviour, exempt
-#          or not, observed Passed in the runner's own TRX once the distinction has landed.
+# catches: a pinned wiring behaviour that was never written, or no longer runs, once the Scheduler is
+#          wired. Task 28's red census excuses APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone from
+#          being Failed (the never-weaker requirement is green on its base) but NOT from existing; this is
+#          the other half of that bargain — all nine of task 28's behaviours observed Passed in the
+#          runner's own TRX. It is also where a wiring that records or raises for a non-delivering wave
+#          turns that exempt row red. 01-tests-pass accepts a SKIPPED test; this does not.
 #
 #          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
-#          (a hollow test passes). What it CAN see is a test that was never written, one that no
-#          longer runs, and the monotone half regressing because re-evaluation was applied to both
-#          kinds.
+#          (a hollow test passes). What it CAN see is a test that was never written, or one that
+#          no longer runs.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'APositiveBaselineEntryCheck_ReEvaluatesAfterADelivery',
-    'ANegativeBaselineEntryCheck_KeepsSkipOnce',
-    'AnEntryGateAfterARefresh_RunsAgainstTheRefreshedTree'
+    'TheDeliveryIsJournaledRunning_BeforeTheUsersBranchMoves',
+    'ADeliveredWave_IsRecordedDeliveredWithThePromotedCommit',
+    'ADeliveryCovers_EveryWaveSinceTheLastDelivery',
+    'CoversAfterAResume_StillStartsAfterTheLastDeliveredWave',
+    'TheSchedulerRaisesWaveDelivered_AfterTheRecordIsPersisted',
+    'ARefusedDelivery_IsRecordedRefusedWithItsOutcome_AndRaisesNoEvent',
+    'ASuppressedDelivery_IsRecordedSuppressed_AndNeverMovesTheUsersBranch',
+    'AHaltedRunsReport_StillCarriesEarlierWaveDeliveries',
+    'ATrialThatCannotBeBuilt_IsRecordedRefused_AndIsNeverPromoted',
+    'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
@@ -25,7 +32,7 @@ New-Item -ItemType Directory -Path $results -Force | Out-Null
 try {
     # Class-scoped, never the bare plan-wide trait (#455).
     & dotnet test "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj" -c Debug --nologo `
-        --filter "FullyQualifiedName~WaveEntryBaselineKindTests" `
+        --filter "FullyQualifiedName~WaveDeliveryWiringTests" `
         --logger "trx;LogFileName=census.trx" --results-directory $results 2>&1 | Out-String | Write-Output
 
     $trx = Get-ChildItem -Path $results -Filter '*.trx' -File | Select-Object -First 1
@@ -43,7 +50,7 @@ try {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
-        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~WaveEntryBaselineKindTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
+        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~WaveDeliveryWiringTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
         exit 1
     }
 

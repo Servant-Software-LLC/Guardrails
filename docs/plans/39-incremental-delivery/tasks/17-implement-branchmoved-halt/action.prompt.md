@@ -22,18 +22,40 @@
 
 ## Task
 
-Make `BranchMovedHaltTests` pass. Design 39 §1c.
+Make `BranchMovedHaltTests` pass. Design 39 §1c and §4 (round 4).
+
+**Every refused wave delivery halts the run at that wave** — a `BranchMoved`, `Conflict`,
+`DirtyWorkingTree` or `HookRejected` refusal — under `WaveHaltKind.DeliveryRefused`. A refusal reaches
+the barrier by one of two routes, and the halt must cover both:
+
+- **The trial could not be built.** `CreateTrialDelivery` returned a `TrialDelivery` whose `Refusal` is
+  `Conflict` or `HookRejected`; no gate ran and nothing was promoted. The detail is `trial.RefusalDetail`.
+- **The promotion refused.** `PromoteTrialDelivery` returned `BranchMoved` or `DirtyWorkingTree`, with the
+  detail on the provider's `LastMergeOnSuccessDetail`. `BranchMoved` here covers both a switched checkout
+  and the user's branch advancing after the trial was built, so the detail, not the token, says which.
+
+Then:
+
+- The halt headline reads `Wave '<dir>' delivery REFUSED (<outcome token>): <detail>`, where the token
+  is `JournalJson.DeliveryOutcomeToken(outcome)` and the detail comes from whichever route refused (for
+  `BranchMoved`, the pinned target and the current HEAD).
+- Later waves do not run.
+- The refused wave writes NO completed marker and NO completed status; it settles needs-human, so a
+  resume re-attempts its delivery at that wave.
+- Task 29 already records the refusal as `refused` on `waves.<dir>.delivered`. Do not write a second
+  record; this task owns the HALT only.
+- Do not add a `RunHaltKind`, and do not write run.json's `halt` section — it is scoped to gates
+  (#432). Do not touch `JournalJson.cs`, `RunHalt.cs` or the CLI.
 
 Do not unwind deliveries that already landed, and do not check the pinned branch back out — #588's
 safe direction is to refuse and leave the operator's checkout untouched.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/Scheduler.cs`. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
-out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
-missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
-state-out path and stop.
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/Scheduler.cs` and
+`src/Guardrails.Core/Execution/RunReport.cs`. After this task completes, the harness runs a `git diff`
+membership check and rejects any edit outside these paths. An out-of-scope edit fails the task
+immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another file,
+do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
-

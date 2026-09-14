@@ -39,7 +39,9 @@ $definedOnce = @(
     @{ File = 'src/Guardrails.Core/Model/WaveNode.cs';              Pattern = '(class|record)\s+WaveNode' },
     @{ File = 'src/Guardrails.Core/Execution/DecisionEntry.cs';     Pattern = '(class|record)\s+DecisionEntry' },
     @{ File = 'src/Guardrails.Core/Journal/RefreshedRecord.cs';     Pattern = '(class|record)\s+RefreshedRecord' },
-    @{ File = 'src/Guardrails.Core/Journal/UnauthoredContentNote.cs'; Pattern = '(class|record)\s+UnauthoredContentNote' }
+    @{ File = 'src/Guardrails.Core/Journal/UnauthoredContentNote.cs'; Pattern = '(class|record)\s+UnauthoredContentNote' },
+    @{ File = 'src/Guardrails.Core/Execution/TrialDelivery.cs';      Pattern = '(class|record)\s+TrialDelivery\b' },
+    @{ File = 'src/Guardrails.Core/Journal/WaveDeliveredRecord.cs'; Pattern = 'enum\s+WaveDeliveryStatus\b' }
 )
 foreach ($d in $definedOnce) {
     if (-not (Test-Path $d.File)) { continue }   # union-safe: not landed yet

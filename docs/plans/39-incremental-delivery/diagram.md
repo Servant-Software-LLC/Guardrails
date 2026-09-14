@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=2ed7627ceee2d82a69b1a65d7dcbc02802a248b187e2510cc28031ac5f8048cb body-sha256=cd52267d5964ca1d220976cae88fdfa3119a757ca9c1055eb91687b4f6e16e2f -->
+<!-- guardrails:graph v1 source-sha256=1cecb1d3eccc71984d38a10d25fdefc9aa99de22449a376fd56613f94535bec7 body-sha256=c96da4fa8b9d078867fd4927c1ef599b07190fbbc6a2547a3823bec3a6c3f160 -->
 
 ```mermaid
 flowchart TD
@@ -112,16 +112,6 @@ flowchart TD
     task_21_update_plan_breakdown_skill_gr_0["01-skill-teaches-wave-delivery"]:::guardrail
   end
   style task_21_update_plan_breakdown_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_22_author_tests_entry_baseline_kind["22-author-tests-entry-baseline-kind"]
-    task_22_author_tests_entry_baseline_kind_gr_0["01-build-passes"]:::guardrail
-    task_22_author_tests_entry_baseline_kind_gr_1["02-tests-fail-on-current-code"]:::guardrail
-  end
-  style task_22_author_tests_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_23_implement_entry_baseline_kind["23-implement-entry-baseline-kind"]
-    task_23_implement_entry_baseline_kind_gr_0["01-tests-pass"]:::guardrail
-    task_23_implement_entry_baseline_kind_gr_1["02-forward-census"]:::guardrail
-  end
-  style task_23_implement_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_24_author_tests_refresh_provenance["24-author-tests-refresh-provenance"]
     task_24_author_tests_refresh_provenance_gr_0["01-build-passes"]:::guardrail
     task_24_author_tests_refresh_provenance_gr_1["02-tests-fail-on-stubs"]:::guardrail
@@ -140,6 +130,26 @@ flowchart TD
     task_27_update_readme_wave_delivery_gr_0["01-readme-documents-wave-delivery"]:::guardrail
   end
   style task_27_update_readme_wave_delivery fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_28_author_tests_wave_delivery_wiring["28-author-tests-wave-delivery-wiring"]
+    task_28_author_tests_wave_delivery_wiring_gr_0["01-build-passes"]:::guardrail
+    task_28_author_tests_wave_delivery_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+  end
+  style task_28_author_tests_wave_delivery_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_29_implement_wave_delivery_wiring["29-implement-wave-delivery-wiring"]
+    task_29_implement_wave_delivery_wiring_gr_0["01-tests-pass"]:::guardrail
+    task_29_implement_wave_delivery_wiring_gr_1["02-forward-census"]:::guardrail
+  end
+  style task_29_implement_wave_delivery_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_30_author_tests_trial_delivery_primitive["30-author-tests-trial-delivery-primitive"]
+    task_30_author_tests_trial_delivery_primitive_gr_0["01-build-passes"]:::guardrail
+    task_30_author_tests_trial_delivery_primitive_gr_1["02-tests-fail-on-stubs"]:::guardrail
+  end
+  style task_30_author_tests_trial_delivery_primitive fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_31_implement_trial_delivery_primitive["31-implement-trial-delivery-primitive"]
+    task_31_implement_trial_delivery_primitive_gr_0["01-tests-pass"]:::guardrail
+    task_31_implement_trial_delivery_primitive_gr_1["02-forward-census"]:::guardrail
+  end
+  style task_31_implement_trial_delivery_primitive fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -147,12 +157,12 @@ flowchart TD
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   plan_preflights --> task_01_author_tests_wave_delivers_flag
+  plan_preflights --> task_30_author_tests_trial_delivery_primitive
   task_01_author_tests_wave_delivers_flag --> task_02_implement_wave_delivers_flag
   task_02_implement_wave_delivers_flag --> task_03_author_tests_delivery_diagnostics
   task_02_implement_wave_delivers_flag --> task_05_author_tests_wave_scoped_interlock
   task_02_implement_wave_delivers_flag --> task_07_author_tests_deliver_at_wave_barrier
   task_02_implement_wave_delivers_flag --> task_09_author_tests_wave_delivered_journal
-  task_02_implement_wave_delivers_flag --> task_11_author_tests_wave_delivered_event
   task_02_implement_wave_delivers_flag --> task_21_update_plan_breakdown_skill
   task_03_author_tests_delivery_diagnostics --> task_04_implement_delivery_diagnostics
   task_04_implement_delivery_diagnostics --> task_20_update_ssot_wave_delivery
@@ -161,14 +171,16 @@ flowchart TD
   task_06_implement_wave_scoped_interlock --> task_07_author_tests_deliver_at_wave_barrier
   task_06_implement_wave_scoped_interlock --> task_20_update_ssot_wave_delivery
   task_07_author_tests_deliver_at_wave_barrier --> task_08_implement_deliver_at_wave_barrier
-  task_08_implement_deliver_at_wave_barrier --> task_18_author_tests_partial_delivery_report
-  task_08_implement_deliver_at_wave_barrier --> task_22_author_tests_entry_baseline_kind
+  task_08_implement_deliver_at_wave_barrier --> task_28_author_tests_wave_delivery_wiring
   task_09_author_tests_wave_delivered_journal --> task_10_implement_wave_delivered_journal
-  task_10_implement_wave_delivered_journal --> task_18_author_tests_partial_delivery_report
+  task_09_author_tests_wave_delivered_journal --> task_11_author_tests_wave_delivered_event
+  task_10_implement_wave_delivered_journal --> task_12_implement_wave_delivered_event_core
   task_10_implement_wave_delivered_journal --> task_20_update_ssot_wave_delivery
   task_10_implement_wave_delivered_journal --> task_24_author_tests_refresh_provenance
+  task_10_implement_wave_delivered_journal --> task_28_author_tests_wave_delivery_wiring
   task_11_author_tests_wave_delivered_event --> task_12_implement_wave_delivered_event_core
   task_11_author_tests_wave_delivered_event --> task_13_implement_wave_delivered_event_cli
+  task_11_author_tests_wave_delivered_event --> task_28_author_tests_wave_delivery_wiring
   task_12_implement_wave_delivered_event_core --> task_13_implement_wave_delivered_event_cli
   task_13_implement_wave_delivered_event_cli --> task_20_update_ssot_wave_delivery
   task_14_author_tests_post_delivery_refresh --> task_15_implement_post_delivery_refresh
@@ -177,15 +189,19 @@ flowchart TD
   task_16_author_tests_branchmoved_halt --> task_17_implement_branchmoved_halt
   task_17_implement_branchmoved_halt --> task_20_update_ssot_wave_delivery
   task_18_author_tests_partial_delivery_report --> task_19_implement_partial_delivery_report
+  task_19_implement_partial_delivery_report --> task_20_update_ssot_wave_delivery
   task_20_update_ssot_wave_delivery --> task_26_update_domain_knowledge_skill
   task_20_update_ssot_wave_delivery --> task_27_update_readme_wave_delivery
-  task_22_author_tests_entry_baseline_kind --> task_23_implement_entry_baseline_kind
-  task_23_implement_entry_baseline_kind --> task_14_author_tests_post_delivery_refresh
-  task_23_implement_entry_baseline_kind --> task_16_author_tests_branchmoved_halt
   task_24_author_tests_refresh_provenance --> task_25_implement_refresh_provenance
   task_25_implement_refresh_provenance --> task_14_author_tests_post_delivery_refresh
+  task_25_implement_refresh_provenance --> task_18_author_tests_partial_delivery_report
   task_25_implement_refresh_provenance --> task_20_update_ssot_wave_delivery
-  task_19_implement_partial_delivery_report --> plan_guardrails
+  task_28_author_tests_wave_delivery_wiring --> task_29_implement_wave_delivery_wiring
+  task_29_implement_wave_delivery_wiring --> task_14_author_tests_post_delivery_refresh
+  task_29_implement_wave_delivery_wiring --> task_16_author_tests_branchmoved_halt
+  task_29_implement_wave_delivery_wiring --> task_18_author_tests_partial_delivery_report
+  task_30_author_tests_trial_delivery_primitive --> task_31_implement_trial_delivery_primitive
+  task_31_implement_trial_delivery_primitive --> task_07_author_tests_deliver_at_wave_barrier
   task_21_update_plan_breakdown_skill --> plan_guardrails
   task_26_update_domain_knowledge_skill --> plan_guardrails
   task_27_update_readme_wave_delivery --> plan_guardrails

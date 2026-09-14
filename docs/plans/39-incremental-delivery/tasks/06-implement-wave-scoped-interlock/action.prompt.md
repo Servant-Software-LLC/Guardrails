@@ -30,7 +30,32 @@ boundaries — which are the ones that actually produce `proceeded-best-guess` �
 Task 05 stubs the `Wave` member; populate it at each site that CREATES a decision, so the
 interlock reads a recorded fact rather than reverse-engineering one from a string.
 
-Make `WaveScopedInterlockTests` pass: the interlock becomes per-wave rather than run-scoped.
+Make `WaveScopedInterlockTests` pass: the interlock is scoped to the waves a delivery CARRIES, rather than
+evaluated once for the run.
+
+**Implement the set-based entry point task 05 stubbed in `RunOutcomePolicy.cs` (review round 4,
+`d39-interlock-ride-along`):**
+
+```csharp
+public static DecisionEntry? SuppressingDecisionForDelivery(
+    IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves)
+
+public static bool SuppressesDelivery(
+    IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
+    SuppressingDecisionForDelivery(decisions, coveredWaves) is not null;
+```
+
+- `SuppressingDecisionForDelivery` returns the FIRST `proceeded-best-guess` / `proceeded-unreviewed`
+  decision whose `Wave` is in `coveredWaves`, or whose `Wave` is null — a suppressing decision recorded
+  outside any wave holds every delivery, so the check fails closed — else null.
+- The bool overload is defined in terms of the entry, exactly like the existing run-scoped pair, so the
+  answer and its evidence cannot drift apart (#597).
+- A delivery covers every wave since the previous delivery point, this one included (§1b). So a held
+  wave's work riding along holds the later delivery, and a wave whose work already reached the user's
+  branch is not in the set.
+- Task 08 calls it at the wave barrier; task 29 later derives `coveredWaves` from the journal so the set
+  survives a resume. Leave the single-argument `SuppressesDelivery` / `SuppressingDecision` untouched:
+  the run-end interlock still uses them.
 
 **Find the current call yourself** — grep for `SuppressingDecision` and `MergeOnSuccessForcedByOperator`
 rather than trusting a line number; `Scheduler.cs` has moved under several plans.
@@ -48,4 +73,3 @@ missing symbol in another file, do NOT edit that file — write `{"needsHuman": 
 state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
-

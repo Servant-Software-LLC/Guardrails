@@ -15,6 +15,7 @@ $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
     'TheReportPointsAtGitBranchNoMerged',
+    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered',
     'AFailedWaveDoesNotChangeTheExitCode',
     'AFullyDeliveredRunReadsAsTodayDoes'
 )

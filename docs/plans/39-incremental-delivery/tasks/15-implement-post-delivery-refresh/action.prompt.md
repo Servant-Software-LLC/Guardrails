@@ -25,14 +25,19 @@
 Make `PostDeliveryRefreshTests` pass. Design 39 §1c, including its subsection **"How a refresh is
 recorded (post-plan-40 refinement)"**, which is the contract below.
 
-1. **Trigger by ANCESTRY, never by `FastForwarded`.** Under §1's trial merge the promotion of the user's
-   branch is ALWAYS a fast-forward to `refs/guardrails/trial/<waveDir>`, so
-   `MergeOnSuccessResult.FastForwarded` is true on every delivery and a check on it would never refresh.
-   Refresh if and only if the user's branch tip was NOT an ancestor of the plan-branch tip at delivery
-   time — exactly when the trial merge had to create a merge commit.
-2. **The refresh commit.** In the integration worktree, run `git merge --no-ff --no-verify <upstream-sha>`,
-   where `<upstream-sha>` is the user's branch tip AFTER the promotion. Merge the sha, never the branch
-   name, so the record names exactly what was merged. The plan-branch tip from BEFORE the refresh must be
+1. **Read the trigger from the trial result — never compute ancestry yourself (review round 4,
+   `d39-refresh-record`).** Under §1's trial merge the promotion of the user's branch is ALWAYS a
+   fast-forward to `refs/guardrails/trial/<waveDir>`, so `MergeOnSuccessResult.FastForwarded` is true on
+   every delivery and a check on it alone would never refresh. The delivering wave's `TrialDelivery`
+   (task 31, built by task 08's barrier flow) already knows: refresh if and only if
+   `trial.UserTipWasAncestor` is false AND `PromoteTrialDelivery` returned `FastForwarded` — exactly when
+   the trial merge had to create a merge commit and that commit landed.
+2. **The refresh commit.** Have the Scheduler's C# perform a merge of `<upstream-sha>` inside the
+   integration worktree with the `--no-ff` and `--no-verify` flags, through the same git invocation path its
+   other integration-worktree commits already use. You write that call; you never run git yourself, and
+   your granted tools do not include it. `<upstream-sha>` is the user's branch tip AFTER the promotion,
+   which is `trial.Commit`. Merge the sha, never the branch name, so the record names exactly what was
+   merged. The plan-branch tip from BEFORE the refresh must be
    the FIRST parent: never fast-forward the plan branch onto the delivered commit, which can push earlier
    waves' task commits off its `--first-parent` spine. The message is `Refreshed-From: <from>` /
    `Guardrails-Run: <runId>`, where `<from>` is the integration handle's `OriginalBranch` and `<runId>` is

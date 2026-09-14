@@ -23,7 +23,8 @@
 ## Task
 
 Record plan 39's wave-delivery model in `.claude/skills/guardrails-domain-knowledge/SKILL.md` —
-design 39 §1, §1a, §1b, §1c and §5, and the SSOT sections task 20 wrote.
+design 39 §1, §1a, §1b, §1c, §4 and §5 as answered in review round 4, and the SSOT sections task 20
+wrote.
 
 **This is the surface an AGENT reads, and nothing tests it.** The SSOT is the contract; this skill is
 where every agent working in this repo learns the model. A capability the domain skill does not
@@ -36,15 +37,39 @@ append a detached list at the end:
 - **The per-wave `delivers` flag** — `delivers: true` in a wave's `brief.md` YAML front matter,
   default false, with no per-wave manifest; and a wave with no `guardrails/` exit gate is never a
   delivery point (`GR2079` warns).
-- **Per-wave delivery at the barrier** — a delivering wave's work ships to the user's branch when its
-  exit gate passes against the trial merge, not only at run end. Find the existing
-  `**End-of-run delivery**` bullet and extend it; do not leave it implying delivery happens only once.
-- **The journal record** — `run.json`'s `waves.<dir>.delivered` (`{at, commit, covers}`, or null).
-- **The observer event** — `IRunObserver.WaveDelivered`, forwarded through every decorator (the
-  `ObserverForwardingSweepTests` contract). It belongs beside the existing
-  `IRunObserver.WaveStarting`/`WaveFinished` mention.
-- **The wave-scoped interlock** — a machine decision holds back delivery for its OWN wave only, not
-  the whole run. Use that phrase: `wave-scoped interlock`.
+- **Per-wave delivery at the barrier, through a trial merge** — a delivering wave's work ships to the
+  user's branch when its exit gate passes against the trial merge, not only at run end. Find the
+  existing `**End-of-run delivery**` bullet and extend it; do not leave it implying delivery happens
+  only once. `IWorktreeProvider.CreateTrialDelivery` builds the trial merge in a harness-owned worktree,
+  and `PromoteTrialDelivery` re-checks #588 (a moved HEAD) and #448 (a dirty working tree) before it
+  fast-forwards the user's branch. **Say in one sentence that the trial merge commit is created with the
+  user's git hooks** (#149). A promotion is a fast-forward, which runs no hook, so the trial merge
+  commit is where a rejecting hook refuses a waved plan's delivery as `hook-rejected`.
+- **The journal record** — `run.json`'s `waves.<dir>.delivered`. It is written with `status: running`
+  and `startedAt` before the merge (#625), then settles as `delivered` (with `commit`), `refused` (with
+  `outcome` and `detail`) or `suppressed` (with `detail` naming the decision). Each settled record
+  carries `at` and `covers`, every wave the delivery carries. A wave that never reached its barrier has
+  no `delivered` key, which is how the report tells held from not reached.
+- **The observer event** — `IRunObserver.WaveDelivered`, raised only for `status: delivered` and only
+  after the record is persisted, forwarded through every decorator (the `ObserverForwardingSweepTests`
+  contract). It belongs beside the existing `IRunObserver.WaveStarting`/`WaveFinished` mention.
+- **The wave-scoped interlock, and ride-along** — the #361 interlock is checked per delivery, against
+  the waves that delivery carries (its `covers` list). A delivery is held when ANY wave it carries
+  recorded a suppressing decision (a proceeded-best-guess or proceeded-unreviewed), so once a wave is
+  held, every later delivery is held too until run end, unless the operator forces delivery with
+  `--merge-on-success`. Use the phrase `wave-scoped interlock`, and state the ride-along rule in one
+  sentence, in terms of the waves the delivery carries.
+- **A refused delivery halts the run at that wave** — every refusal (`branch-moved`, `conflict`,
+  `dirty-working-tree`, `hook-rejected`) halts with `WaveHaltKind.DeliveryRefused`, never a gate
+  failure. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
+  durable record is the wave's `delivered` entry with `status: refused`. The wave's marker commit and
+  `completed` status are written only after its delivery settles, so a resume re-attempts a refused
+  delivery at that wave's barrier.
+- **The partially-delivered outcome** — when some waves reached the user's branch and verified work is
+  still held, `run.json`'s top-level `delivery` record reads `partially-delivered` with
+  `delivered: false`, derived from `RunReport.WaveDeliveries`. `delivered` is true only when ALL
+  verified work landed. The report naming the delivered and held waves prints BEFORE the verdict, and
+  the exit code does not change.
 - **The post-delivery refresh and the entry preflight that makes it safe** — when the user's branch
   has moved on (its tip is not an ancestor of the plan-branch tip at delivery), the plan branch merges
   the delivered user tip back in; the next wave then re-verifies its own baseline before spending
@@ -56,6 +81,13 @@ append a detached list at the end:
 
 Also add `GR2078` and `GR2079` to the GR-code ledger — the list that already carries
 `GR2042 = StructuralOverScope`.
+
+**The interlock rule the first breakdown taught is SUPERSEDED, and the skill must not state it.** An
+earlier version of this prompt said a machine decision holds back delivery for its OWN wave only. A
+delivery carries every wave since the last delivery, so under that rule a held wave's commits ride a
+later clean delivery onto the user's branch. Never describe the interlock as consulting only the
+delivering wave. If you contrast the two, make it an explicit negation ("a decision does not hold back
+only its own wave"). The guardrail refuses the narrow rule however it is worded.
 
 **A refresh is not a supply, and the skill must not say otherwise.** Never describe a refresh as
 recorded in `supplied[]`, as having a `by` value, or as carrying a supply trailer. When you contrast the

@@ -1,0 +1,16 @@
+{
+  "description": "Author failing Scheduler tests for the wave delivery wiring: the running-then-settled waves.<dir>.delivered record around the promotion, covers from the journal, WaveDelivered after the write, and RunReport.WaveDeliveries on every report",
+  "dependsOn": [
+    "08-implement-deliver-at-wave-barrier",
+    "10-implement-wave-delivered-journal",
+    "11-author-tests-wave-delivered-event"
+  ],
+  "stableId": "w7k3dq",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveryWiringTests.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

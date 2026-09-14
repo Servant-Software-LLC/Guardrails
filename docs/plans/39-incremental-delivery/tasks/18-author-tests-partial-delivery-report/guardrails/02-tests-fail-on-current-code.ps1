@@ -15,7 +15,8 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
-    'TheReportPointsAtGitBranchNoMerged'
+    'TheReportPointsAtGitBranchNoMerged',
+    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.

@@ -15,17 +15,22 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'ADeliveryHittingBranchMoved_HaltsTheRunAtThatWave',
     'LaterWavesDoNotRun_AfterABranchMovedHalt',
-    'TheHaltNamesThePinnedTargetAndTheCurrentHead'
+    'TheHaltNamesThePinnedTargetAndTheCurrentHead',
+    'TheHaltKindIsDeliveryRefused_NotAGateFailure',
+    'TheRefusalIsDurable_OnTheWaveNotInHalt',
+    'AConflictingWaveDelivery_AlsoHaltsAtThatWave',
+    'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the halt.
-#   TheUsersCheckoutIsNotModified (review 2026-09-11).
-#     STRUCTURAL REASON: #588 already refuses a moved HEAD WITHOUT touching the checkout —
-#     MergePlanBranchIntoUserBranch returns BranchMoved and never checks the pinned branch back out
-#     — so a correct test of this guarantee is green on current code by construction.
+#   TheUsersCheckoutIsNotModified (review 2026-09-11; restated for round 4, 2026-09-13).
+#     STRUCTURAL REASON: the #588 refusal never checks the pinned branch back out — at run end
+#     MergePlanBranchIntoUserBranch returns BranchMoved, and at a barrier task 31's promotion re-check
+#     refuses before the fast-forward — so on this task's base (after tasks 29 and 31) a correct test
+#     of this guarantee is green by construction.
 #   AlreadyDeliveredWavesStayDelivered (review 2026-09-13).
-#     STRUCTURAL REASON: nothing in current code unwinds a merge that landed on the user's branch —
-#     a BranchMoved refusal rewrites no branch — so a test of this never-unwind guarantee is green
+#     STRUCTURAL REASON: nothing on this task's base unwinds a merge that landed on the user's branch —
+#     a refused delivery rewrites no branch — so a test of this never-unwind guarantee is green
 #     on arrival. Its red half (that the earlier wave delivered at all) belongs to task 07's suite,
 #     not this one; pinning it red here rewards only a wrongly-failing test that task 17 (it cannot
 #     edit tests) could never turn green.

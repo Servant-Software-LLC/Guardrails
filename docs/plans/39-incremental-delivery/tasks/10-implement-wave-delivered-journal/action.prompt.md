@@ -22,19 +22,33 @@
 
 ## Task
 
-Fill real logic over the stub so `WaveDeliveredJournalTests` passes. Design 39 §4/§5.
+Fill real logic over the stubs so `WaveDeliveredJournalTests` passes. Design 39 §4 ("The record, pinned
+at review").
 
-**Both converter directions, in the same change.** A write-side-only converter passes its own
-serialize test and kills the next run on the read — verify the round-trip test actually exercises the
-read path before calling this done.
+- **`WaveDeliveredRecord`** — plain auto-properties with the members' own types; `Status`, `StartedAt`
+  and `Covers` are `required`. `Outcome` is the EXISTING `DeliveryOutcome`, serialized by its existing
+  converter unchanged.
+- **The `WaveDeliveryStatus` tokens, in `JournalJson.cs`** — `running`, `delivered`, `refused`,
+  `suppressed`. Follow the file's own pattern: a static token method beside `DeliveryOutcomeToken`, and a
+  converter registered in `Build()` beside `WaveStatusConverter`, handling BOTH directions and throwing on
+  an unknown member. Without a converter System.Text.Json writes the enum's ORDINAL; with a write-only one
+  the next read-modify-write of `run.json` throws and kills the run (#625). Check that the round-trip test
+  really exercises the read path before calling this done.
+- **`RunJournal.RecordWaveDelivery(waveDir, record)`** — the house wave-write shape the methods beside it
+  use: take the journal lock, `GetOrCreateWave(waveDir)`,
+  `UpdateWave(waveDir, existing with { Delivered = record })`, `Persist()`. REPLACE the record, never
+  append, and keep the wave's `Status`, `Entry`, `Exit`, `DefinitionHash` and `MarkerSha` exactly as they
+  were — that is what separates it from `ResetWaveToPending`, which drops them on purpose.
+
+The Scheduler's calls to `RecordWaveDelivery`, and the `WaveDelivered` event, are tasks 28/29 — do not
+reach into `Scheduler.cs`.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Journal/WaveDeliveredRecord.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, and `src/Guardrails.Core/Journal/RunJournal.cs`. After this
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Journal/WaveDeliveredRecord.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, `src/Guardrails.Core/Journal/RunJournal.cs`, and `src/Guardrails.Core/Journal/JournalJson.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
 out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
 missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
 state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
-

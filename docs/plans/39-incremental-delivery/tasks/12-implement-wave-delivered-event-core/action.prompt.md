@@ -36,7 +36,10 @@ Note also that `grep -rln` returns FILES, not implementers: 17 files in Core men
 `NullObserver`, whose contract is to swallow and which must NOT forward.
 
 Forward `WaveDelivered` through every **Core** `IRunObserver` decorator so `WaveDeliveredEventTests`
-passes.
+passes. The member is `void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery)`.
+Forward the record INSTANCE unchanged — never rebuild it or re-read it — so every observer downstream sees
+exactly the record the journal persisted (design 39 §5). If `RunEventStream` emits a row for it, the row's
+fields come from that record as given.
 
 **Find them yourself — grep, do not trust a list.** Run
 `grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Core/`. At authoring time that was

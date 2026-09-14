@@ -6,8 +6,14 @@
 #          on arrival and toothless. Replaced with 'wave-scoped interlock', measured 0.
 #          MEASURED: 'WaveDelivered' would also be satisfied by a mention of WaveDeliveredRecord, so the
 #          observer clause uses 'IRunObserver.WaveDelivered'.
-#          The NEGATIVE clause is the part appending cannot satisfy: it refuses the model design 39
-#          REJECTED (a refresh recorded as a supply, with a false Supplied-By: trailer).
+#          ROUND 4 (design 39 review, 2026-09-13), MEASURED at cb0a7857 with the same strip:
+#          'DeliveryRefused' 0 and 'partially-delivered' 0; the ride-along, trial-merge-hooks and
+#          superseded-interlock sentence clauses each 0 sentences. 'refused' (8x), 'held' (8x),
+#          'carries' (16x), 'covers' (7x) and 'hook' (18x) are ALREADY present, so none is a token on its
+#          own: each is read only inside a sentence clause that measured 0.
+#          The NEGATIVE clauses are the part appending cannot satisfy. One refuses the model design 39
+#          REJECTED (a refresh recorded as a supply, with a false Supplied-By: trailer); the other refuses
+#          the interlock rule round 4 SUPERSEDED (a decision holds back only its own wave).
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
@@ -73,7 +79,7 @@ if ($doc -notmatch [regex]::Escape('GR2079')) {
 }
 
 if ($doc -notmatch [regex]::Escape('wave-scoped interlock')) {
-    $failures += "MISSING 'wave-scoped interlock' in $subject — the skill does not say a machine decision now holds back only its own wave, so an agent will reason from the old run-wide interlock"
+    $failures += "MISSING 'wave-scoped interlock' in $subject — the skill does not name the interlock that is checked per delivery against the waves that delivery carries, so an agent will reason from the old run-wide interlock"
 }
 
 if ($doc -notmatch [regex]::Escape('refreshed[]')) {
@@ -82,6 +88,14 @@ if ($doc -notmatch [regex]::Escape('refreshed[]')) {
 
 if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
     $failures += "MISSING 'UnauthoredContentNote' in $subject — the single reader of supplied[] and refreshed[] is not named, which invites the next feature to read only one section"
+}
+
+if ($doc -notmatch [regex]::Escape('DeliveryRefused')) {
+    $failures += "MISSING 'DeliveryRefused' in $subject — the skill does not say a refused wave delivery (branch-moved, conflict, dirty-working-tree, hook-rejected) halts the run at that wave under WaveHaltKind.DeliveryRefused, so an agent reading a barrier refusal looks for a gate failure or a run-level halt that is never written"
+}
+
+if ($doc -notmatch [regex]::Escape('partially-delivered')) {
+    $failures += "MISSING 'partially-delivered' in $subject — run.json's delivery outcome for a run where some waves reached the user's branch and verified work is still held (delivered: false) is not described, so an agent reads delivered: false as 'nothing shipped'"
 }
 
 # NEGATIVE: the model design 39 §1c REJECTED — a refresh described as a supply. Anchored on MEANING
@@ -104,6 +118,65 @@ foreach ($p in $rejectedModel) {
         $failures += "REJECTED MODEL PRESENT in $subject — '$($Matches[0])': a refresh is described as a supply. Design 39 §1c records a refresh in its own refreshed[] section with a Refreshed-From: trailer; a refresh has no supplier, so a by value, a supplied[] entry or a Supplied-By trailer for it is a false statement. Say what a refresh IS, and make any contrast with a supply an explicit negation"
         break
     }
+}
+
+# SENTENCE CLAUSES (#470): each clause below asserts a MEANING within ONE sentence, never a bare word —
+# every word it reads is already present in the subject on its own (see header).
+$flat = $doc -replace '\s+', ' '
+$sentences = [regex]::Split($flat, '(?<=[.!?])\s+')
+
+# The interlock vocabulary. $carriedMeaning is the ride-along scope stated as MEANING: any wave, every
+# (later) wave or delivery, the waves a delivery carries or covers, riding along, until run end. The bare
+# label "ride-along" is deliberately absent — a label beside a false rule does not make the rule true.
+# The superseded-rule clause below uses this BROAD form as its exemption, so a correct contrast is never
+# refused.
+$decisionWord = '(?i)(?:\bdecisions?\b|proceeded-best-guess|proceeded-unreviewed)'
+$carriedMeaning = '(?i)(?:\bany\s+(?:of\s+the\s+)?waves?\b|\bevery\s+(?:later\s+|following\s+|subsequent\s+)?(?:waves?|deliver(?:y|ies))\b|\bevery\s+later\b|\blater\s+deliver(?:y|ies)\b|\ball\s+(?:the\s+)?waves\b|\bcarr(?:y|ies|ied|ying)\b|\bcovers\b|\brides?\s+along\b|\brode\s+along\b|\buntil\s+(?:the\s+)?run\s+end\b)'
+
+# POSITIVE: the ride-along rule (d39-interlock-ride-along) is STATED — one sentence that names a decision,
+# a delivery, holding it back, and the carried scope. It reads a NARROWER vocabulary than the exemption
+# above. MEASURED at cb0a7857: the broad form (any hold word, a bare 'carrying') was ALREADY satisfied by
+# one sentence of this subject — the wave-loop bullet's "Decision ... blocked ... a next-wave stub carrying
+# a brief.md" — green on arrival and toothless. With the hold words limited to held / holds back /
+# suppress / withheld, a delivery word required, and 'carry' only as "carries its work / the wave", it
+# measures 0 sentences here and in README.md, and still accepts six independently worded statements.
+$holdDelivery = '(?i)(?:\bheld\b|\bholds?\s+back\b|\bholding\s+back\b|\bsuppress(?:es|ed|ing)?\b|\bwithh(?:o|e)ld\b)'
+$deliverWord = '(?i)\bdeliver(?:y|ies|s|ed|ing)?\b'
+$carriedScope = '(?i)(?:\bany\s+(?:of\s+the\s+)?waves?\b|\bevery\s+(?:later\s+|following\s+|subsequent\s+)?(?:waves?|deliver(?:y|ies))\b|\bevery\s+later\b|\blater\s+deliver(?:y|ies)\b|\bwaves?\s+(?:it|the\s+delivery|that\s+delivery|a\s+delivery)\s+(?:carr(?:y|ies)|covers)\b|\bcarr(?:y|ies|ied|ying)\s+(?:its|the|that|a\s+held|every)\s+(?:held\s+)?(?:work|waves?|commits)\b|\bcovers\b|\brides?\s+along\b|\brode\s+along\b|\buntil\s+(?:the\s+)?run\s+end\b)'
+$rideAlong = @($sentences | Where-Object { $_ -match $decisionWord -and $_ -match $holdDelivery -and $_ -match $deliverWord -and $_ -match $carriedScope })
+if ($rideAlong.Count -eq 0) {
+    $failures += "MISSING the ride-along rule in $subject — no sentence says a delivery is held when ANY wave it carries recorded a suppressing decision. A delivery carries every wave since the last one, so a decision recorded in a held non-delivering wave still reaches the user's branch unless every later delivery is held too. State it in one sentence, in terms of the waves the delivery carries"
+}
+
+# NEGATIVE: the interlock rule round 4 SUPERSEDED — a decision holds back its own wave ONLY, or a wave
+# delivers only if no decision was recorded during THAT wave. Anchored on MEANING (#470), in two forms:
+# 'its own wave' with only / alone / solely within 40 characters, or a one-wave scope (during / in /
+# within / from that wave) in a sentence that says 'only'. Either form fails only in a sentence that also
+# names a decision and holding, suppressing or delivering, and states NO carried scope. An explicit
+# negation of the narrow scope ("does not hold back only its own wave") is the correct contrast and does
+# not trip it. MEASURED at cb0a7857: 0 sentences in the subject.
+$ownWaveOnly = '(?i)(?:\b(?:only|solely|exclusively)\b[^.]{0,40}?\b(?:its|their)\s+own\s+waves?\b|\b(?:its|their)\s+own\s+waves?\b[^.]{0,40}?\b(?:only|alone|solely|exclusively)\b)'
+$oneWaveScope = '(?i)\b(?:during|in|within|from)\s+(?:that|this|the\s+same|the\s+delivering|its)\s+wave\b'
+$scopeTouch = '(?i)(?:\bheld\b|\bholds?\b|\bholding\b|\bsuppress|\bdeliver|\binterlock\b|\bwithh(?:o|e)ld\b|\bblock)'
+$narrowTarget = '(?:\b(?:only|solely|alone|exclusively)\b|\bown\s+wave\b|\b(?:that|this|the\s+same|the\s+delivering)\s+wave\b)'
+$negatedScope = '(?i)(?:\b(?:not|never|no\s+longer|nor)\b|n[''' + [char]0x2019 + ']t\b)[^.]{0,30}?' + $narrowTarget
+$superseded = @($sentences | Where-Object {
+    ($_ -match $ownWaveOnly -or ($_ -match $oneWaveScope -and $_ -match '(?i)\bonly\b')) -and
+    $_ -match $decisionWord -and $_ -match $scopeTouch -and
+    $_ -notmatch $carriedMeaning -and $_ -notmatch $negatedScope
+})
+if ($superseded.Count -gt 0) {
+    $failures += "SUPERSEDED INTERLOCK RULE PRESENT in ${subject}: '$($superseded[0])' — design 39 round 4 (d39-interlock-ride-along) scopes the interlock to every wave a delivery carries: a delivery is held when ANY wave it carries recorded a suppressing decision, so once a wave is held every later delivery is held too. A rule that consults only the delivering wave lets a held wave's commits ride a later clean delivery onto the user's branch. Reword that sentence in terms of the waves the delivery carries"
+}
+
+# POSITIVE: the trial merge commit keeps the user's git hooks (d39-trial-delivery-primitive, #149). A
+# promotion is a fast-forward, and a fast-forward runs no hook, so the trial merge commit is where
+# hook-rejected can still happen for a waved plan. One sentence naming the trial and a hook; the
+# lookahead keeps the outcome token 'hook-rejected' from standing in for the statement.
+# MEASURED at cb0a7857: 0 sentences.
+$trialHooks = @($sentences | Where-Object { $_ -match '(?i)\btrial\b' -and $_ -match '(?i)\bhooks?\b(?!-)' })
+if ($trialHooks.Count -eq 0) {
+    $failures += "MISSING the trial-merge hook rule in $subject — no sentence says the trial merge commit is created with the user's git hooks. A promotion is a fast-forward, which runs no hook, so an agent that does not know the trial merge keeps them will reason that hook-rejected cannot happen for a waved plan"
 }
 
 if ($failures.Count -gt 0) {

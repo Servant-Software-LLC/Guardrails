@@ -1,0 +1,15 @@
+{
+  "description": "Implement the trial-delivery primitive in GitWorktreeProvider so the authored tests pass: the trial merge commit keeps the user's hooks, and promotion re-checks #588 and #448 and only fast-forwards",
+  "dependsOn": [
+    "30-author-tests-trial-delivery-primitive"
+  ],
+  "stableId": "i4u6zn",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GitWorktreeProvider.cs",
+    "src/Guardrails.Core/Execution/IWorktreeProvider.cs",
+    "src/Guardrails.Core/Execution/TrialDelivery.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

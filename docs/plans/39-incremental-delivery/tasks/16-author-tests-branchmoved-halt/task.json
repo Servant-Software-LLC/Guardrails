@@ -1,11 +1,12 @@
 {
-  "description": "Author failing tests for halting at the wave whose delivery hits BranchMoved",
+  "description": "Author failing tests for halting at the wave whose delivery is refused (BranchMoved, conflict, dirty working tree, hook rejected), under WaveHaltKind.DeliveryRefused",
   "dependsOn": [
-    "23-implement-entry-baseline-kind"
+    "29-implement-wave-delivery-wiring"
   ],
   "stableId": "d8k2pv",
   "writeScope": [
-    "tests/Guardrails.Integration.Tests/WaveDelivery/BranchMovedHaltTests.cs"
+    "tests/Guardrails.Integration.Tests/WaveDelivery/BranchMovedHaltTests.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs"
   ],
   "action": {
     "maxTurns": 75

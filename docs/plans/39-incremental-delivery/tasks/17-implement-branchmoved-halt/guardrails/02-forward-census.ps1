@@ -15,6 +15,10 @@ $pinned = @(
     'ADeliveryHittingBranchMoved_HaltsTheRunAtThatWave',
     'LaterWavesDoNotRun_AfterABranchMovedHalt',
     'TheHaltNamesThePinnedTargetAndTheCurrentHead',
+    'TheHaltKindIsDeliveryRefused_NotAGateFailure',
+    'TheRefusalIsDurable_OnTheWaveNotInHalt',
+    'AConflictingWaveDelivery_AlsoHaltsAtThatWave',
+    'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave',
     'AlreadyDeliveredWavesStayDelivered',
     'TheUsersCheckoutIsNotModified'
 )

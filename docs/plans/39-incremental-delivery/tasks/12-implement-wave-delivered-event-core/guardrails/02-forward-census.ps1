@@ -4,9 +4,10 @@
 #          behaviours observed Passed in the runner's own TRX once the Core forwarding has landed.
 #          01-tests-pass accepts a SKIPPED test; this does not.
 #
-#          Event_CarriesTheWaveTheCommitAndWhatItCovered is deliberately NOT pinned here: which task
-#          RAISES WaveDelivered around the promotion is being restructured (review 2026-09-13, finding
-#          B5), and pinning it to this task would bind it to a file set that cannot raise the event.
+#          No payload row is pinned here. Which record the Scheduler raises, and that it raises it only
+#          for a settled `delivered` record after the write, are pinned by task 28 (WaveDeliveryWiringTests)
+#          and required by task 29's forward census (review 2026-09-13, B5). Task 11 no longer authors a
+#          payload-shape test: one passed on the stub.
 #
 #          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
 #          (a hollow test passes). What it CAN see is a test that was never written, or one that

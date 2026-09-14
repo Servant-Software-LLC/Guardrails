@@ -40,8 +40,14 @@ Four changes:
   and accepted.
 - **A wave that follows a delivery point gets a positive-baseline ENTRY preflight** over the touched
   areas, on the same `$baselineArea` machinery Step 5 already has. Teach the EMISSION RULE, not just
-  the diagnostic: `validate` warns **GR2078** when one is missing, but the skill's job is to make
-  breakdowns emit one in the first place.
+  the diagnostic, and say why it must be POSITIVE. Every entry check is skip-once: it is evaluated when
+  its wave starts, and nothing re-evaluates it after a later delivery. A delivery and its refresh land at
+  the delivering wave's own barrier, before the next wave's entry gate runs, so that entry preflight is
+  the one moment the next wave's baseline is checked against the refreshed tree. `validate` warns
+  **GR2078** when a post-delivery wave has no entry preflight at all, but GR2078 is satisfied by ANY
+  preflight, including a negative check that only asserts the wave's own work is not there yet. Only
+  this skill's emission rule and `/guardrails-review` make it a positive baseline, so the skill has to
+  say so.
 - **`validate` also warns `GR2079`** when a wave sets `delivers: true` and carries no `guardrails/`
   exit gate — no gate, no delivery, and an author should learn that here rather than from the
   absence of that wave from the report.

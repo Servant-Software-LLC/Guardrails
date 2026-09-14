@@ -23,7 +23,7 @@
 ## Task
 
 Author failing tests for the `WaveDelivered` announcement, plus the interface member they compile
-against — design 39 §5.
+against — design 39 §5 ("Wiring and halts").
 
 **Test file 1:** `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs`
 **Test file 2:** `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`
@@ -37,12 +37,23 @@ edit a `.csproj`, and the first draft put this class in Core.Tests — where the
 cannot compile and the compiling test proves nothing. The repo's own
 `ObserverForwardingSweepTests` lives in Integration.Tests for exactly this reason.
 
-**Test classes:** `WaveDeliveredEventTests` (the event shape + the CORE decorators) and
+**Test classes:** `WaveDeliveredEventTests` (the CORE decorators) and
 `WaveDeliveredCliForwardingTests` (the CLI decorators). Two classes because two tasks implement them:
 splitting the forwarding by assembly keeps each retry bounded, which a single six-file wiring task does
 not — GR2042 flagged exactly that fingerprint on plan 40's first draft.
-**Interface change:** add `WaveDelivered` to `IRunObserver.cs` with a **no-op default implementation**,
-so every existing implementer still compiles.
+
+**Interface change:** add this member to `IRunObserver.cs`, beside `WaveStarting` and `WaveFinished`,
+with a **no-op default implementation** so every existing implementer still compiles:
+
+```csharp
+void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery) { }
+```
+
+Document it as design 39 §5 says: the Scheduler raises it only for a record whose status is `delivered`,
+and only after that record is persisted, so an observer never sees a result the journal does not hold.
+`WaveDeliveredRecord` is on your base as task 09's stub: construct one with an object initializer and never
+read its members here. Its getters throw until task 10 lands, and the same-instance assertion below needs
+none of them.
 
 **Decorators and renderers are different, and only decorators forward (review, 2026-09-13).** Every
 `IRunObserver` implementer is one of two things:
@@ -64,7 +75,6 @@ a projection quietly dropped two new events and everything stayed green.
 
 **Pin these behaviours to these EXACT method names:**
 
-- `Event_CarriesTheWaveTheCommitAndWhatItCovered`
 - `EveryCoreDecorator_ForwardsTheEvent` — `RunEventStream` and `ObserverProjection`. **Model this on
   `tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs`**, which already
   does this job and has been through the failure modes. Read it first. In particular it
@@ -73,18 +83,29 @@ a projection quietly dropped two new events and everything stayed green.
   `private sealed class NullObserver` (in `IRunObserver.cs`), whose contract is to SWALLOW. A
   "derive the set by reflection" test would demand forwarding from the one type designed not to,
   and would be permanently red for a task that cannot edit it. Copy its declared exemption and
-  its non-vacuity floor too.
+  its non-vacuity floor too. Pass one `WaveDeliveredRecord` instance and assert that SAME instance
+  reaches the inner observer — a decorator that rebuilds or re-reads the record is not forwarding it.
 - `EveryCliDecorator_ForwardsTheEvent` — `OnTheFlyDiagramObserver` and `OnTheFlyLogSiteObserver`,
-  and ONLY those two.
+  and ONLY those two, with the same same-instance assertion.
 - `ADecoratorThatDropsTheEvent_IsCaught` — the negative control. Without it, a sweep that enumerates
   zero decorators passes and proves nothing.
+
+**No payload-shape test here (review, 2026-09-13).** An earlier draft pinned
+`Event_CarriesTheWaveTheCommitAndWhatItCovered`. A shape test of a record handed to a no-op default passes
+on the stub, and which record the Scheduler raises, and when, cannot be seen from this task's files.
+Task 28 pins that against the real Scheduler.
 
 `ADecoratorThatDropsTheEvent_IsCaught` is exempt from the red census: it drives the sweep's detection
 against a test-local decorator that swallows the event and never touches production forwarding, so a
 correct test is green on arrival. It must still exist, and task 12's forward census requires it
 Passed. Do NOT couple it to the missing forwarding to force a red.
 
-The tests MUST COMPILE, and the other three MUST FAIL. Do NOT implement the forwarding.
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong.
+
+The tests MUST COMPILE, and `EveryCoreDecorator_ForwardsTheEvent` and
+`EveryCliDecorator_ForwardsTheEvent` MUST FAIL. Do NOT implement the forwarding.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs`, `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`, and `src/Guardrails.Core/Execution/IRunObserver.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
@@ -93,4 +114,3 @@ missing symbol in another file, do NOT edit that file — write `{"needsHuman": 
 state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.
-

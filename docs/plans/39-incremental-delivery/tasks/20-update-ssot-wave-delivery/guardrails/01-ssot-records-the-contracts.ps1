@@ -5,7 +5,9 @@
 #          with '"delivers"', measured 0.
 #          MEASURED: 'covers' was already present 28x in docs/plans/02-schemas-and-contracts.md — green on
 #          arrival and therefore toothless, hidden behind its siblings' failure. Replaced
-#          with 'covers: [', measured 0.
+#          with 'covers: [', measured 0 — but 'covers: [' can never match the JSON form the SSOT
+#          records a run.json field in, so a correct edit stayed red (review 2026-09-13). Replaced
+#          again with '"covers": [', measured 0.
 #          required-present clause, so every one has teeth.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -57,8 +59,8 @@ if ($doc -notmatch [regex]::Escape('WaveDelivered')) {
     $failures += "MISSING 'WaveDelivered' in $subject — the observer event is not recorded"
 }
 
-if ($doc -notmatch [regex]::Escape('covers: [')) {
-    $failures += "MISSING 'covers: [' in $subject — the covers[] field is not recorded, so a reader cannot tell what a merge carried"
+if ($doc -notmatch [regex]::Escape('"covers": [')) {
+    $failures += 'MISSING ''"covers": ['' in ' + $subject + ' — the delivery record''s covers list is not recorded in its JSON form, so a reader cannot tell what a merge carried'
 }
 
 if ($doc -notmatch [regex]::Escape('GR2079')) {
@@ -114,6 +116,34 @@ if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
 
 if ($doc -notmatch [regex]::Escape('refresh from ''')) {
     $failures += 'MISSING ''refresh from '''' in ' + $subject + ' — the gate-halt disclosure is not recorded in §14.3'
+}
+
+# The pinned delivery record (design 39 §4) and the review-round-4 answers (2026-09-13). Each token below
+# MEASURED 0 in the comment-stripped subject, with the strip above, on branch plan-breakdown/39-post-40-adjust
+# at cb0a7857 before it was added here. ('"running"' and '"startedAt"' were rejected: each is already
+# present 2x, so neither would have teeth.)
+if ($doc -notmatch [regex]::Escape('"refused"')) {
+    $failures += 'MISSING ''"refused"'' in ' + $subject + ' — the delivery record''s refused status is not recorded, so a reader cannot tell a refused delivery from one not reached'
+}
+
+if ($doc -notmatch [regex]::Escape('"suppressed"')) {
+    $failures += 'MISSING ''"suppressed"'' in ' + $subject + ' — the delivery record''s suppressed status is not recorded, so a delivery the interlock held reads as missing'
+}
+
+if ($doc -notmatch [regex]::Escape('DeliveryRefused')) {
+    $failures += 'MISSING ''DeliveryRefused'' in ' + $subject + ' — the refused-delivery halt kind is not recorded, so a refusal reads as a gate failure over a wave whose every check passed'
+}
+
+if ($doc -notmatch [regex]::Escape('partially-delivered')) {
+    $failures += 'MISSING ''partially-delivered'' in ' + $subject + ' — the #542 delivery record''s outcome for a partly delivered run is not recorded, so an unattended consumer cannot tell held work from shipped work'
+}
+
+if ($doc -notmatch [regex]::Escape('any wave it carries')) {
+    $failures += 'MISSING ''any wave it carries'' in ' + $subject + ' — the ride-along interlock rule is not recorded, so nothing says a clean wave''s delivery is held when it carries a held wave''s machine-decided commits'
+}
+
+if ($doc -notmatch [regex]::Escape('hook-checked')) {
+    $failures += 'MISSING ''hook-checked'' in ' + $subject + ' — the trial merge commit running the user''s git hooks (#149) is not recorded, so nothing says the commit that lands on the user''s branch was hook-checked'
 }
 
 if ($failures.Count -gt 0) {
