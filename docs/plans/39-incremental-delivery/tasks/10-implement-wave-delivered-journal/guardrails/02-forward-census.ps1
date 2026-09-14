@@ -1,7 +1,13 @@
-# catches: a DECLARED-EXEMPT census row quietly ceasing to exist. Its sibling red census excuses
-#          these names from being Failed (a correct implementation leaves them green) but NOT from
-#          existing; this is the other half of that bargain — every pinned behaviour, exempt or
-#          not, observed Passed in the runner's own TRX once the implementation has landed.
+# catches: a DECLARED-EXEMPT census row quietly ceasing to exist or to pass. Task 09's red census
+#          excuses ANonDeliveredWave_RecordsDeliveredNull from being Failed (it is green on the stub) but
+#          NOT from existing; this is the other half of that bargain — the pinned behaviours observed
+#          Passed in the runner's own TRX once the record has landed. 01-tests-pass accepts a SKIPPED
+#          test; this does not.
+#
+#          TheDeliveryIsJournaledRunning_BeforeTheMerge is deliberately NOT pinned here: which task
+#          writes the running-then-delivered record around the promotion is being restructured
+#          (review 2026-09-13, finding B5), and pinning it to this task would bind it to a file set
+#          that cannot produce it.
 #
 #          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
 #          (a hollow test passes). What it CAN see is a test that was never written, or one that
@@ -12,14 +18,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'ADeliveringWaveMergesAtItsOwnBarrier',
-    'ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint',
-    'AWaveWhoseExitGateFails_DoesNotDeliver',
-    'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone',
-    'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
-    'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved',
-    'AFailedTrialGate_LeavesThePlanBranchUnmoved',
-    'TheTrialRefIsDeleted_AfterEitherOutcome'
+    'Delivered_RoundTripsThroughTheJournalJson',
+    'Delivered_CarriesAtCommitAndCovers',
+    'Covers_NamesTheNonDeliveringWavesThatRodeAlong',
+    'ANonDeliveredWave_RecordsDeliveredNull'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
@@ -27,8 +29,8 @@ New-Item -ItemType Directory -Path $results -Force | Out-Null
 
 try {
     # Class-scoped, never the bare plan-wide trait (#455).
-    & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo `
-        --filter "FullyQualifiedName~WaveBarrierDeliveryTests" `
+    & dotnet test "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj" -c Debug --nologo `
+        --filter "FullyQualifiedName~WaveDeliveredJournalTests" `
         --logger "trx;LogFileName=census.trx" --results-directory $results 2>&1 | Out-String | Write-Output
 
     $trx = Get-ChildItem -Path $results -Filter '*.trx' -File | Select-Object -First 1
@@ -46,7 +48,7 @@ try {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
-        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~WaveBarrierDeliveryTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
+        Write-Output "PRECONDITION: the filter 'FullyQualifiedName~WaveDeliveredJournalTests' matched NO tests. A zero-match filter exits 0 and certifies nothing — fix the filter or the class name."
         exit 1
     }
 

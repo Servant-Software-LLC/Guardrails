@@ -1,12 +1,17 @@
 # catches: an implementation that does not satisfy the tests authored upstream — and, via the
 #          zero-match guard, a filter that silently selects nothing (which exits 0 and would certify
 #          the task on an empty set, #455).
+#
+#          It runs against Guardrails.Integration.Tests, where task 11 writes
+#          WaveDeliveredCliForwardingTests and the ONLY test project referencing Guardrails.Cli
+#          (review 2026-09-13, finding B1: pointed at Guardrails.Core.Tests, this filter could never
+#          match, so every attempt ended ZERO-MATCH whatever the agent did).
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-$out = & dotnet test "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~WaveDeliveredCliForwardingTests" 2>&1 | Out-String
+$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~WaveDeliveredCliForwardingTests" 2>&1 | Out-String
 $code = $LASTEXITCODE
 
 Write-Output $out

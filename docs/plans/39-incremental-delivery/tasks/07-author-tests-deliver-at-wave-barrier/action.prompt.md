@@ -56,14 +56,39 @@ delete the ref; the user's branch never moved.
 - `ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint` — §1b: a delivering wave ships everything
   accumulated since the last delivery point.
 - `AWaveWhoseExitGateFails_DoesNotDeliver`
-- `TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone`
+- `TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone` — the §1 correctness point above.
 - `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved` — the failure direction, which
   nothing asserted before. Without it the cheapest implementation that satisfies the two clauses
   above is merge-onto-the-user's-branch-then-hard-reset-on-red, which is a destructive write to
-  the operator's checkout. — the §1 correctness point above.
+  the operator's checkout.
+- `AFailedTrialGate_LeavesThePlanBranchUnmoved` — the same failure direction on the OTHER branch.
+  Scenario: a wave with `delivers: true`; a commit lands on the user's branch mid-run, so the trial
+  merge has to create a merge commit; that wave's exit gate fails. Assert the user's mid-run commit
+  is NOT an ancestor of the plan branch (`git merge-base --is-ancestor <user-commit>
+  guardrails/<plan>` exits 1). This rejects a delivery that merges the user's tip into the
+  integration worktree before gating, which on red leaves commits no task authored on the plan
+  branch with no record.
+- `TheTrialRefIsDeleted_AfterEitherOutcome` — Scenario: the same delivering wave, with a user commit
+  landing mid-run, run once with its exit gate passing and once with it failing. After EACH run,
+  `refs/guardrails/trial/<waveDir>` does not exist (`git show-ref --verify` fails). Assert only the
+  ref's absence here; the rows above pin what the delivery itself does.
 - `APlanMarkingNoWave_StillMergesOnceAtRunEnd` — the never-weaker requirement, asserted end to end.
 
-The tests MUST COMPILE and FAIL. Do NOT wire the delivery.
+**Five of these are green on today's code, by design, and the census exempts them from the red
+requirement (not from existing):** `AWaveWhoseExitGateFails_DoesNotDeliver`,
+`AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`,
+`AFailedTrialGate_LeavesThePlanBranchUnmoved`, `TheTrialRefIsDeleted_AfterEitherOutcome` and
+`APlanMarkingNoWave_StillMergesOnceAtRunEnd`. Nothing delivers at a wave barrier today, so a failed
+gate already delivers nothing, moves no branch and leaves no trial ref, and a plan marking no wave
+already merges once at run end. Write them honestly — do NOT couple them to the missing feature to
+force a red. Task 08's forward census requires them Passed once delivery lands, and that is where a
+merge-before-gate or a leaked trial ref turns them red.
+
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong.
+
+The tests MUST COMPILE, and the other three MUST FAIL. Do NOT wire the delivery.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/WaveBarrierDeliveryTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

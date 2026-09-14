@@ -14,9 +14,17 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'Event_CarriesTheWaveTheCommitAndWhatItCovered',
-    'EveryCoreDecorator_ForwardsTheEvent',
-    'ADecoratorThatDropsTheEvent_IsCaught'
+    'EveryCoreDecorator_ForwardsTheEvent'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13) — ADecoratorThatDropsTheEvent_IsCaught.
+#   STRUCTURAL REASON: the negative control never touches production forwarding. It drives the sweep's
+#   detection against a TEST-LOCAL decorator that swallows the event, so a correct test is green on
+#   arrival and must stay green; what it guards against is a sweep that stops catching a dropper.
+#   Pinning it red would force a test coupled to the missing forwarding, which task 12 cannot then
+#   turn green without editing tests.
+#   It is asserted to EXIST below, and task 12's forward census requires it to be observed Passed.
+$mustExist = @('ADecoratorThatDropsTheEvent_IsCaught')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -49,6 +57,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how a
+    # never-weaker guarantee quietly stops being asserted anywhere.
+    foreach ($name in $mustExist) {
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
     }
 

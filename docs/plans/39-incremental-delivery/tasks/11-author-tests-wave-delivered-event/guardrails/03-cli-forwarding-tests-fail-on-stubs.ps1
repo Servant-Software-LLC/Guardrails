@@ -6,8 +6,8 @@
 #          zero-match guard content, exit 0, with src/Guardrails.Cli/ untouched.
 #
 #          It runs against Guardrails.Integration.Tests, the ONLY test project referencing
-#          Guardrails.Cli. Guardrails.Core.Tests references Guardrails.Core alone — 0 `using
-#          Guardrails.Cli` across its files against 156 there — and says so in its own
+#          Guardrails.Cli. Guardrails.Core.Tests references Guardrails.Core alone — no `using
+#          Guardrails.Cli` anywhere in it — and says so in its own
 #          PlanSource/PlanSourceWiringTests.cs:21.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false

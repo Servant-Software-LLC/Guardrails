@@ -29,10 +29,10 @@ against — design 39 §5.
 **Test file 2:** `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`
 
 **The CLI class lives in Guardrails.Integration.Tests, and it MUST (review, 2026-09-11).**
-`Guardrails.Core.Tests` references `Guardrails.Core` and nothing else — measured: zero
-`using Guardrails.Cli` across its 264 files against 156 in Integration.Tests, and
+`Guardrails.Core.Tests` references `Guardrails.Core` and nothing else — it has no
+`using Guardrails.Cli` anywhere, while Integration.Tests uses it throughout — and
 `tests/Guardrails.Core.Tests/PlanSource/PlanSourceWiringTests.cs:21` states the constraint in
-its own header. The four CLI decorators are in `src/Guardrails.Cli`, no task in this plan may
+its own header. The CLI observers are in `src/Guardrails.Cli`, no task in this plan may
 edit a `.csproj`, and the first draft put this class in Core.Tests — where the honest test
 cannot compile and the compiling test proves nothing. The repo's own
 `ObserverForwardingSweepTests` lives in Integration.Tests for exactly this reason.
@@ -44,6 +44,18 @@ not — GR2042 flagged exactly that fingerprint on plan 40's first draft.
 **Interface change:** add `WaveDelivered` to `IRunObserver.cs` with a **no-op default implementation**,
 so every existing implementer still compiles.
 
+**Decorators and renderers are different, and only decorators forward (review, 2026-09-13).** Every
+`IRunObserver` implementer is one of two things:
+- A **DECORATOR** wraps an inner observer and passes every event on to it. There are four:
+  `RunEventStream` and `ObserverProjection` in Core, and `OnTheFlyDiagramObserver` and
+  `OnTheFlyLogSiteObserver` in the Cli (each Cli one holds an `_inner`). These are exactly the types
+  `ObserverForwardingSweepTests` hand-lists in its `decoratorNames` array.
+- A **RENDERER** wraps nothing: `ConsoleRunObserver` and `LiveRunObserver` have no `_inner`. They
+  implement the new member by rendering the event; there is nothing for them to forward to.
+
+A forwarding test that includes a renderer demands something that cannot happen, and stays red for
+task 13 forever. Hand-list the decorators; never derive the set from `: IRunObserver`.
+
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
 **The `ObserverForwardingSweepTests` contract is named in §5 for a reason.** An event that exists but
@@ -53,7 +65,7 @@ a projection quietly dropped two new events and everything stayed green.
 **Pin these behaviours to these EXACT method names:**
 
 - `Event_CarriesTheWaveTheCommitAndWhatItCovered`
-- `EveryCoreDecorator_ForwardsTheEvent` — **model this on
+- `EveryCoreDecorator_ForwardsTheEvent` — `RunEventStream` and `ObserverProjection`. **Model this on
   `tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs`**, which already
   does this job and has been through the failure modes. Read it first. In particular it
   DELIBERATELY hand-lists its decorators rather than reflecting over every `IRunObserver`
@@ -62,11 +74,17 @@ a projection quietly dropped two new events and everything stayed green.
   "derive the set by reflection" test would demand forwarding from the one type designed not to,
   and would be permanently red for a task that cannot edit it. Copy its declared exemption and
   its non-vacuity floor too.
-- `EveryCliDecorator_ForwardsTheEvent`
+- `EveryCliDecorator_ForwardsTheEvent` — `OnTheFlyDiagramObserver` and `OnTheFlyLogSiteObserver`,
+  and ONLY those two.
 - `ADecoratorThatDropsTheEvent_IsCaught` — the negative control. Without it, a sweep that enumerates
   zero decorators passes and proves nothing.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the forwarding.
+`ADecoratorThatDropsTheEvent_IsCaught` is exempt from the red census: it drives the sweep's detection
+against a test-local decorator that swallows the event and never touches production forwarding, so a
+correct test is green on arrival. It must still exist, and task 12's forward census requires it
+Passed. Do NOT couple it to the missing forwarding to force a red.
+
+The tests MUST COMPILE, and the other three MUST FAIL. Do NOT implement the forwarding.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs`, `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`, and `src/Guardrails.Core/Execution/IRunObserver.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

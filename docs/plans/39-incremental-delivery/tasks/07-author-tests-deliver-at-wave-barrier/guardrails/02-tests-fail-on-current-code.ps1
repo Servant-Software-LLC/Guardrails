@@ -15,16 +15,37 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'ADeliveringWaveMergesAtItsOwnBarrier',
     'ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint',
-    'AWaveWhoseExitGateFails_DoesNotDeliver',
-    'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone',
-    'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved'
+    'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — APlanMarkingNoWave_StillMergesOnceAtRunEnd.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('APlanMarkingNoWave_StillMergesOnceAtRunEnd')
+# DECLARED RED-CENSUS EXEMPTIONS (reviews 2026-09-11 and 2026-09-13). Each row is TRUE on this task's
+# base, because nothing delivers at a wave barrier yet, so a correct test is green on arrival. Pinning
+# any of them red would force a test coupled to the missing feature, which task 08 cannot then turn
+# green without editing tests.
+#   APlanMarkingNoWave_StillMergesOnceAtRunEnd
+#     STRUCTURAL REASON: the never-weaker requirement. A plan marking no wave already merges once at
+#     run end on this base (the #340 default), and a correct implementation must leave that unchanged.
+#   AWaveWhoseExitGateFails_DoesNotDeliver
+#     STRUCTURAL REASON: the base has no per-wave delivery, so a wave whose exit gate fails already
+#     delivers nothing.
+#   AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved
+#     STRUCTURAL REASON: the base never writes the user's branch at a wave barrier, so it is unmoved
+#     whatever the gate says.
+#   AFailedTrialGate_LeavesThePlanBranchUnmoved
+#     STRUCTURAL REASON: the base never merges the user's branch into the plan branch, so the user's
+#     mid-run commit is never an ancestor of it.
+#   TheTrialRefIsDeleted_AfterEitherOutcome
+#     STRUCTURAL REASON: the base never creates refs/guardrails/trial/<waveDir>, so the ref is absent
+#     after either outcome.
+#   Each is asserted to EXIST below, and task 08's forward census requires each to be observed Passed.
+#   That is where a merge-before-gate implementation, or a leaked trial ref, turns them red.
+$mustExist = @(
+    'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
+    'AWaveWhoseExitGateFails_DoesNotDeliver',
+    'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved',
+    'AFailedTrialGate_LeavesThePlanBranchUnmoved',
+    'TheTrialRefIsDeleted_AfterEitherOutcome'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

@@ -49,7 +49,12 @@ shipped.
 - `TheDeliveryIsJournaledRunning_BeforeTheMerge` — the #625 rule: the state is written before the
   action, so a crash mid-merge is recoverable and post-mortem tooling can see it happened.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the record.
+`ANonDeliveredWave_RecordsDeliveredNull` is exempt from the red census. Make the stub's `delivered`
+property on the wave entry a WORKING nullable container (only `WaveDeliveredRecord`'s members throw):
+`JournalJson` writes nulls, so a correct test of it is green on arrival. It must still exist, and
+task 10's forward census requires it Passed. Do NOT couple it to the missing record to force a red.
+
+The tests MUST COMPILE, and the other four MUST FAIL. Do NOT implement the record.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs`, `src/Guardrails.Core/Journal/WaveDeliveredRecord.cs`, and `src/Guardrails.Core/Journal/JournalModel.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

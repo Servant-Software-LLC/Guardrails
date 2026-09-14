@@ -41,7 +41,10 @@ this line said "merge first, then gate", which writes to the operator's branch b
 authorises it). Merge onto `refs/guardrails/trial/<waveDir>`, gate against that tree, consult
 the interlock, and fast-forward the user's branch only on green; on red delete the ref. The
 exit gate must assert over the tree the delivery produces, not the plan
-branch alone.
+branch alone. On red, the PLAN branch must not move either: never merge the user's tip into the integration
+worktree before the gate passes. Delete `refs/guardrails/trial/<waveDir>` after EITHER outcome.
+Task 07 pins both (`AFailedTrialGate_LeavesThePlanBranchUnmoved`,
+`TheTrialRefIsDeleted_AfterEitherOutcome`), and this task's forward census requires them Passed.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 

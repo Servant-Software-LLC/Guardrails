@@ -16,9 +16,17 @@ $pinned = @(
     'Delivered_RoundTripsThroughTheJournalJson',
     'Delivered_CarriesAtCommitAndCovers',
     'Covers_NamesTheNonDeliveringWavesThatRodeAlong',
-    'ANonDeliveredWave_RecordsDeliveredNull',
     'TheDeliveryIsJournaledRunning_BeforeTheMerge'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13) — ANonDeliveredWave_RecordsDeliveredNull.
+#   STRUCTURAL REASON: green on the stub by construction. The stub's `delivered` property on the wave
+#   entry is a WORKING nullable container (only WaveDeliveredRecord's members throw), and JournalJson
+#   writes nulls (DefaultIgnoreCondition = Never, src/Guardrails.Core/Journal/JournalJson.cs:136), so a
+#   correct "null, not absent" round trip passes before the record is implemented. Pinning it red would
+#   force a wrongly-failing test that task 10 cannot fix without editing tests.
+#   It is asserted to EXIST below, and task 10's forward census requires it to be observed Passed.
+$mustExist = @('ANonDeliveredWave_RecordsDeliveredNull')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -51,6 +59,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how a
+    # never-weaker guarantee quietly stops being asserted anywhere.
+    foreach ($name in $mustExist) {
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
     }
 
