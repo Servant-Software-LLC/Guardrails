@@ -15,7 +15,8 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'ADeliveringWaveMergesAtItsOwnBarrier',
     'ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint',
-    'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone'
+    'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone',
+    'TheOperatorOverride_LiftsABarrierSuppression'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS (reviews 2026-09-11 and 2026-09-13). Each row is TRUE on this task's
@@ -37,14 +38,23 @@ $pinned = @(
 #   TheTrialRefIsDeleted_AfterEitherOutcome
 #     STRUCTURAL REASON: the base never creates refs/guardrails/trial/<waveDir>, so the ref is absent
 #     after either outcome.
+#   ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes
+#     STRUCTURAL REASON: the base never delivers at a wave barrier, and with mergeOnSuccess off Finalize
+#     delivers nothing at run end, so the user's branch is unmoved.
+#   ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier
+#     STRUCTURAL REASON: the base never delivers at a wave barrier, and the run halts at the later wave's
+#     exit gate, a path that returns before Finalize, so nothing is delivered at run end either.
 #   Each is asserted to EXIST below, and task 08's forward census requires each to be observed Passed.
-#   That is where a merge-before-gate implementation, or a leaked trial ref, turns them red.
+#   That is where a merge-before-gate implementation, a leaked trial ref, an ignored opt-out or a
+#   delivery behind an empty gate turns them red.
 $mustExist = @(
     'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
     'AWaveWhoseExitGateFails_DoesNotDeliver',
     'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved',
     'AFailedTrialGate_LeavesThePlanBranchUnmoved',
-    'TheTrialRefIsDeleted_AfterEitherOutcome'
+    'TheTrialRefIsDeleted_AfterEitherOutcome',
+    'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
+    'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

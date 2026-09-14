@@ -179,6 +179,44 @@ if ($trialHooks.Count -eq 0) {
     $failures += "MISSING the trial-merge hook rule in $subject — no sentence says the trial merge commit is created with the user's git hooks. A promotion is a fast-forward, which runs no hook, so an agent that does not know the trial merge keeps them will reason that hook-rejected cannot happen for a waved plan"
 }
 
+# Review of 1a809bce (2026-09-13), both lenses. MEASURED at 1a809bce with the same strip: 'delivery-refused'
+# 0 and 'core.hooksPath' 0; the switches, advanced-branch, running-begins and three-reasons sentence
+# clauses each 0 sentences. 'no-merge-on-success' (3x), 'running' (12x), 'serial' (13x) and 'branch-moved'
+# (1x) are ALREADY present, so each is read only inside a sentence clause. A switched-checkout clause was
+# REJECTED: the existing #588 sentence ("If the checkout MOVED during the run — a branch switch ...")
+# already satisfies it, so it would have no teeth.
+if ($doc -notmatch [regex]::Escape('delivery-refused')) {
+    $failures += "MISSING 'delivery-refused' in $subject — the decisions[] gate a refused delivery records is not described, so an agent looking for a refusal outside the console finds nothing"
+}
+
+if ($doc -notmatch [regex]::Escape('trial-gate-failed')) {
+    $failures += "MISSING 'trial-gate-failed' in $subject — the refused outcome a failed trial-tree gate records is not described (measured 0 at 1a809bce), so an agent reading that record does not know the wave's own gate passed and the merge with the user's commits is what failed"
+}
+
+if ($doc -notmatch [regex]::Escape('core.hooksPath')) {
+    $failures += "MISSING 'core.hooksPath' in $subject — the skill does not say the trial merge commit runs hooks from the user's resolved hooks directory, so an agent will not suspect a relative core.hooksPath (husky's layout) when a hook seems not to run"
+}
+
+$switches = @($sentences | Where-Object { $_ -match '(?i)no-merge-on-success' -and $_ -match '(?i)\bbarrier\b|delivery\s+points?|\bwaves?\b' })
+if ($switches.Count -eq 0) {
+    $failures += "MISSING the barrier-delivery switches in $subject — no sentence says --no-merge-on-success also stops a wave's barrier delivery. An agent that reads it as a run-end switch only reasons that a delivering wave lands on the user's branch under it"
+}
+
+$advanced = @($sentences | Where-Object { $_ -match '(?i)\badvanc(?:e|es|ed|ing)\b|new\s+commits|\bcommitted\b' -and $_ -match '(?i)\btrial\b' })
+if ($advanced.Count -eq 0) {
+    $failures += "MISSING branch-moved's advanced-branch cause in $subject — no sentence says a delivery is also refused as branch-moved when the user's branch advanced after the trial was built. That cause needs only a resume, while a switched checkout needs the branch checked out again"
+}
+
+$runningBegins = @($sentences | Where-Object { $_ -match '(?i)\brunning\b' -and $_ -match '(?i)\b(?:begins?|starts?)\b' -and $_ -match '(?i)\bdeliver' })
+if ($runningBegins.Count -eq 0) {
+    $failures += "MISSING when the running record is written in $subject — no sentence says a barrier delivery writes status: running when it begins, before the trial merge runs the user's hooks (#625)"
+}
+
+$threeReasons = @($sentences | Where-Object { $_ -match '(?i)exit\s+gate\s+fail' -and $_ -match '(?i)\bdelivered\b' })
+if ($threeReasons.Count -eq 0) {
+    $failures += "MISSING why a wave has no delivered key in $subject — no sentence says a wave whose exit gate failed has no delivered key. 'Never reached its barrier' alone sends an agent looking for a delivery that was never attempted"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) contract clause(s) failed in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

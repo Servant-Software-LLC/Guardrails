@@ -22,40 +22,96 @@
 
 ## Task
 
-Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: a delivering wave delivers at its OWN barrier,
-gated on that wave's `Exit` being green. **The run-end call stays** for every flat plan and for the waves
-after the last delivery point.
+Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: a wave that is a delivery point delivers at its OWN
+barrier, through the trial merge, gated on that wave's `Exit` being green.
 
-**Use the trial-delivery primitive (task 31, review round 4 `d39-trial-delivery-primitive`); NEVER call
-`MergePlanBranchIntoUserBranch` at a barrier.** At a delivering wave's barrier:
+**PENDING (round 5, `d39-barrier-terminal-gate`): which waves stay with the run-end call.** Before review
+this read: the run-end call stays for every flat plan and for the waves after the last delivery point.
+Round 5 decides the plan's final wave, and plans with a plan-level `guardrails/` folder (#457).
 
-1. `CreateTrialDelivery(integ, waveDir, ct)` builds `refs/guardrails/trial/<waveDir>`: the plan branch
-   merged onto the user's tip, with the user's hooks run on any merge commit. A trial whose `Refusal` is
-   set could not be built — do not gate it or promote it.
-2. Run the wave's `Exit` gate against the TRIAL tree (`trial.Commit`), not the plan branch alone: it is the
-   tree the delivery would produce.
-3. Consult the interlock over the SET of waves this delivery carries — every wave since the previous
-   delivery point, this one included — through `RunOutcomePolicy.SuppressingDecisionForDelivery(decisions,
-   coveredWaves)` (task 06). A held wave's work riding along holds the delivery (review round 4,
-   `d39-interlock-ride-along`). Task 29 later derives that set from the journal so it survives a resume.
-4. Only on a green gate with no suppressing decision, `PromoteTrialDelivery(integ, trial, ct)`, which
-   re-checks #588 and #448 and fast-forwards.
-5. `DiscardTrialDelivery(integ, waveDir)` after EITHER outcome — in a `finally`, so a thrown gate leaves
-   no ref behind.
+**One delivery decision, shared with run end (review 2026-09-13).** `Scheduler.Finalize` already decides
+whether the run-end delivery may happen from four inputs:
+
+- `plan.Config.MergeOnSuccess` (#340);
+- the #361 interlock over `decisions[]`;
+- `plan.Config.MergeOnSuccessForcedByOperator`, the `--merge-on-success` flag that lifts the interlock
+  (#597);
+- the serial guard: `_worktreeProvider != null && integ != null`.
+
+EXTRACT that decision into one method both call sites use — never a copy that can drift. The two sites
+differ only in the suppressing decision they pass in. `Finalize` passes the run-scoped
+`RunOutcomePolicy.SuppressingDecision(decisions)`, exactly as today. The barrier passes
+`RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves)` (task 06) over the SET of waves
+this delivery carries: every wave since the previous delivery point, this one included (review round 4,
+`d39-interlock-ride-along`). Task 29 later derives that set from the journal so it survives a resume.
+
+`Finalize`'s observable behavior must not change: its #457 terminal-gate deferral, its #597 "forced past a
+decision" flag and its #340 `WhollyGreenButUndelivered` flag stay exactly as they are. `MergeOnSuccessTests`
+and `RunOutcomeWiringTests` pin that behavior, and this task's tests-pass guardrail runs both.
+
+**At a wave that is a delivery point.** Read `WaveNode.IsDeliveryPoint` (task 02: `delivers: true` AND at
+least one exit-gate check), never `WaveNode.Delivers` alone, so a wave with no checks never delivers behind
+an empty gate. **NEVER call `MergePlanBranchIntoUserBranch` at a barrier**; use the trial-delivery primitive
+(task 31, review round 4 `d39-trial-delivery-primitive`):
+
+1. **Decide first.** Evaluate the shared decision. If delivery is off, the run is serial, or a suppressing
+   decision holds the delivery and the operator did not force it, deliver nothing at this barrier and build
+   no trial. `CreateTrialDelivery` runs the user's git hooks, and a delivery the interlock holds must never
+   run them.
+2. **Build the trial.** `CreateTrialDelivery(integ, waveDir, ct)` builds `refs/guardrails/trial/<waveDir>`.
+   A trial whose `Refusal` is set could not be built: do not gate it or promote it.
+3. **Gate the trial tree.**
+   - When `trial.UserTipWasAncestor` is true, the trial IS the plan-branch tip, so the wave's exit gate that
+     already ran on the integration worktree is that gate. Do not run it twice.
+   - Otherwise run the SAME exit gate again in `trial.WorktreePath`, a harness-owned worktree checked out at
+     `trial.Commit`. Give the existing exit-gate evaluation its workspace as a parameter rather than
+     duplicating it; grep `RunWaveExitGateAsync`, which reads `integ.IntegrationWorktreePath` today.
+   - When `trial.AlreadyDelivered` is true, the trial's tree is already on the user's branch (a resume after
+     a crash that followed the promotion), so run no gate.
+4. **Promote only on green.** `PromoteTrialDelivery(integ, trial, ct)` re-checks #588 and #448 and
+   fast-forwards. Skip it when `trial.AlreadyDelivered`.
+5. **Always discard.** Call `DiscardTrialDelivery(integ, waveDir)` in a `finally`, so a thrown gate leaves no
+   trial ref and no trial worktree behind.
+
+**PENDING (round 5, `d39-trial-gate-failure`): how a failed trial-tree gate halts.** Until that is decided,
+the requirement is what task 07 pins: no promotion, neither branch moves, and the trial is discarded.
+Whichever way it halts, the report of a failed trial-tree gate names three things (lead decision, 2026-09-13):
+- each failing check;
+- `trial.UserTip`;
+- the range `<plan-branch>..<UserTip>`, the `git log` range that lists exactly the user's commits the trial
+  merged.
+
+Do not add a commit-list member to `TrialDelivery` for this.
 
 On red, neither branch moves: never merge the user's tip into the integration worktree before the gate
-passes. Task 07 pins both failure directions (`AFailedTrialGate_LeavesThePlanBranchUnmoved`,
-`AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`) and the cleanup
-(`TheTrialRefIsDeleted_AfterEitherOutcome`), and this task's forward census requires them `Passed`.
+passes. Task 07 pins:
 
-**Not this task.** Writing `waves.<dir>.delivered` and raising `IRunObserver.WaveDelivered` belong to task
-29, around this promotion. Halting on a refused promotion belongs to tasks 16/17, and the post-delivery
-refresh to task 15. Never treat a wave as delivered unless `PromoteTrialDelivery` returned
-`FastForwarded`.
+- a delivering wave merging at its own barrier (`ADeliveringWaveMergesAtItsOwnBarrier`), carrying the waves
+  since the last delivery point (`ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint`), and the gate on the
+  merged tree (`TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone`);
+- a failed gate delivering nothing (`AWaveWhoseExitGateFails_DoesNotDeliver`), and a plan marking no wave
+  still merging once at run end (`APlanMarkingNoWave_StillMergesOnceAtRunEnd`);
+- both failure directions (`AFailedTrialGate_LeavesThePlanBranchUnmoved`,
+  `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`);
+- the cleanup (`TheTrialRefIsDeleted_AfterEitherOutcome`);
+- the opt-out (`ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes`);
+- the override (`TheOperatorOverride_LiftsABarrierSuppression`);
+- the empty gate (`ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`).
 
-**Find the seams yourself.** Grep `Scheduler.cs` for `RunWavedAsync`, `Finalize` and `DeliverToUserBranch`
-rather than trusting a line number — this file has moved under several plans and a cited line is stale
-on arrival. `DeliverAndCleanup` never existed; the name entered at charter review.
+This task's forward census requires all eleven of task 07's rows to pass.
+
+**Not this task.**
+- Task 29 writes `waves.<dir>.delivered`, including its `running` state before the trial is built, and
+  raises `IRunObserver.WaveDelivered`.
+- Tasks 16/17 halt on a refused delivery and record its `decisions[]` entry.
+- Task 15 owns the post-delivery refresh.
+
+Never treat a wave as delivered unless `PromoteTrialDelivery` returned `FastForwarded` or the trial was
+`AlreadyDelivered`.
+
+**Find the seams yourself.** Grep `Scheduler.cs` for `RunWavedAsync`, `Finalize`, `DeliverToUserBranch` and
+`RunWaveExitGateAsync` rather than trusting a line number — this file has moved under several plans and a
+cited line is stale on arrival. `DeliverAndCleanup` never existed; the name entered at charter review.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 

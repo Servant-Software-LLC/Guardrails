@@ -28,14 +28,23 @@ record.
 
 **Test file:** `tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs`
 **Test class:** `PartialDeliveryReportTests`
-**Stub:** add one member, `PartiallyDelivered`, to `DeliveryOutcome` in
-`src/Guardrails.Core/Journal/JournalModel.cs`, so the tests compile. Do NOT add its token:
-`JournalJson`'s converter throws on an unknown member and task 19 owns the `partially-delivered`
-token, so no test in this suite may serialize the new member.
+
+**Stubs, so the tests compile:**
+
+- Add one member, `PartiallyDelivered`, to `DeliveryOutcome` in `src/Guardrails.Core/Journal/JournalModel.cs`.
+  Do NOT add its token: task 19 owns the `partially-delivered` token in `JournalJson`, whose converter
+  throws on an unknown member in both directions. Only `PartiallyDelivered_RoundTripsThroughTheJournal`
+  writes the new member through the journal, and it is red for exactly that reason until task 19 adds
+  the token to the writer AND the reader. No other test in this suite serializes it.
+- In `src/Guardrails.Cli/Commands/RunCommand.cs`, change `PrintWaveHalt` from `private static` to
+  `public static`, and change nothing else in that file. It is the method that prints a wave halt's
+  label. The Cli assembly ships no `InternalsVisibleTo`, so a public method is the house test seam —
+  `DescribeDelivery` and `RenderUndeliveredWorkWarning` are public for the same reason.
+  `WaveHaltKind.DeliveryRefused` already exists: task 16 added it.
 
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
-**Four requirements, each earned by a defect already shipped here. Encode all four.**
+**Five requirements, each earned by a defect already shipped here. Encode all five.**
 
 - **Printed BEFORE the verdict.** The `mergeOnSuccess` banner (#340) printed AFTER the green summary
   and was read straight past — an operator concluded a run had shipped when it had not.
@@ -50,6 +59,11 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   02 is already on the user's branch. DECIDED: a new `partially-delivered` outcome with
   `delivered: false`. `delivered` stays true only when ALL verified work reached the user's branch, so a
   consumer keyed on it never treats held work as shipped.
+- **Nothing that already landed is described as undelivered (review, 2026-09-13).** `DescribeDelivery`
+  checks `WhollyGreenButUndelivered` before anything else, and the `*** WORK NOT DELIVERED ***` banner
+  says the verified work is "NOT on your checkout". On a waved run whose earlier waves delivered at their
+  barriers while the run-end delivery was held or refused, both statements are false about the waves
+  that landed. DECIDED: `partially-delivered` wins whenever work both landed and is still held.
 
 **Pin these behaviours to these EXACT method names:**
 
@@ -58,18 +72,57 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 - `TheReportPointsAtGitBranchNoMerged`
 - `DescribeDelivery_APartialDelivery_IsPartiallyDelivered` — a PURE call, with no run and no git:
   construct a `RunReport` whose `WaveDeliveries` (stamped by task 29) records an earlier wave as
-  `delivered` and whose run halted at a later wave, then call `RunCommand.DescribeDelivery`. Assert
+  `delivered` and whose run halted at a later wave whose record reads `refused` with outcome
+  `DeliveryOutcome.TrialGateFailed` (the refusal a failed trial-tree gate writes, added by task 09), then
+  call `RunCommand.DescribeDelivery`. Assert
   `Outcome` is `DeliveryOutcome.PartiallyDelivered`, `Delivered` is `false`, `DeliveredToBranch` and
   `PlanBranch` are both set, and `Reason` names the delivered wave and the held wave. Rejects keeping
   `not-attempted`, and rejects `delivered: true` just because something reached the branch.
+- `DescribeDelivery_AGreenRunWhoseRunEndDeliveryWasHeld_IsPartiallyDelivered` — a PURE call. Construct a
+  `RunReport` that is wholly green but undelivered (`WhollyGreenButUndelivered`), whose
+  `DeliverySuppressingDecision` is a `proceeded-best-guess` recorded at a later wave's task, and whose
+  `WaveDeliveries` records an earlier wave as `delivered`. Assert `Outcome` is `PartiallyDelivered`,
+  `Delivered` is `false`, `PlanBranch` is set, and `Reason` names the delivered wave AND still names the
+  suppressing decision and its subject. Rejects checking `WhollyGreenButUndelivered` first, and rejects a
+  reason that drops the decision the operator has to judge.
+- `DescribeDelivery_ARefusedRunEndMergeAfterAWaveDelivered_IsPartiallyDelivered` — a PURE call. The
+  run-end merge ran and was refused (`MergeOnSuccessOutcome` is `Conflict`, with a
+  `MergeOnSuccessDetail`), and `WaveDeliveries` records an earlier wave as `delivered`. Assert `Outcome`
+  is `PartiallyDelivered`, `Delivered` is `false`, `Detail` is the merge detail, and `Reason` names the
+  delivered wave and the refusal's token, `conflict`. Rejects returning the refusal's own outcome, which
+  says nothing about the wave already on the user's branch.
+- `TheUndeliveredWorkBanner_NamesTheWavesThatAlreadyDelivered` — a PURE call to
+  `RunCommand.RenderUndeliveredWorkWarning` with a `StringWriter`, over a wholly-green-but-undelivered
+  report whose `WaveDeliveries` records an earlier wave as `delivered`. Assert the banner names that
+  wave's directory. Rejects a banner that tells the operator nothing is on their checkout when one wave
+  already is.
+- `PartiallyDelivered_RoundTripsThroughTheJournal` — record a `DeliverySection` whose `Outcome` is
+  `PartiallyDelivered` through `RunJournal.RecordDelivery`, reload with `RunJournal.LoadOrCreate`, and
+  assert the reloaded `Document.Delivery.Outcome` is `PartiallyDelivered` — the pattern
+  `RunJournalDeliveryTests.TheDeliveryRecord_SurvivesAReload_SoItAnswersTheQuestionAfterTheRunIsOver`
+  uses. Rejects a token added to the writer only: the next resume of that run, which is the resume that
+  re-attempts the held wave, would throw reading run.json.
+- `ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt` — call `RunCommand.PrintWaveHalt` with a
+  `WaveHalt` whose `Kind` is `WaveHaltKind.DeliveryRefused`, capturing through a `StringConsoleIo`. Assert
+  the label line starts with `WAVE DELIVERY REFUSED:`, and the output contains neither `WAVE HALT:` nor
+  `GATE FAILED`. Rejects the generic fallback label, and any label that reads as a failed gate over a
+  wave whose every check passed.
+- `DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered` — a PURE call. `WaveDeliveries`
+  records an earlier wave as `delivered`, the later waves have no `delivered` key, and the run-end merge
+  delivered them (`MergeOnSuccessOutcome` is `FastForwarded`, `DeliveredToBranch` set). Assert `Delivered`
+  is `true`, `Outcome` is `FastForwarded`, and `Reason` and `PlanBranch` are null, exactly as for a flat
+  plan's delivered run. A wave with no `delivered` key is not held when the run-end merge carried it
+  there. Rejects counting every wave without a per-wave record as held.
 - `AFailedWaveDoesNotChangeTheExitCode`
 - `AFullyDeliveredRunReadsAsTodayDoes` — the never-weaker requirement: a plan marking no wave must
   produce the output it produces today.
 
-`AFailedWaveDoesNotChangeTheExitCode` and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from
-the red census: a run with a failed wave already exits 2 on today's code, and a plan that marks no wave
-already prints today's output, so correct tests of both are green on arrival. Write them to assert the
-guarantee, not to fail. They must still exist, and task 19's forward census requires all six Passed.
+`DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered`, `AFailedWaveDoesNotChangeTheExitCode`
+and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from the red census. `DescribeDelivery`
+returns a landed run-end merge as delivered without reading `WaveDeliveries`; a run with a failed wave
+already exits 2; and a plan that marks no wave already prints today's output. So correct tests of all
+three are green on arrival. Write them to assert the guarantee, not to fail. They must still exist, and
+task 19's forward census requires all twelve Passed.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
@@ -77,13 +130,15 @@ breaks a class that did nothing wrong. Capture the output whose ORDER you assert
 `StringConsoleIo` handed to `CommandFactory.BuildRootCommand(io)` — never by redirecting `Console.Out`,
 which is process-wide.
 
-The other four tests MUST COMPILE and FAIL. Do NOT implement the report or the delivery record.
+The other nine tests MUST COMPILE and FAIL. Do NOT implement the report, the delivery record, the
+banner or the label.
 
 **Scope boundary (harness-enforced):** Write only to
-`tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs` and
-`src/Guardrails.Core/Journal/JournalModel.cs`. After this task completes, the harness runs a `git diff`
-membership check and rejects any edit outside these paths. An out-of-scope edit fails the task
-immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another file,
-do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+`tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs`,
+`src/Guardrails.Core/Journal/JournalModel.cs` and `src/Guardrails.Cli/Commands/RunCommand.cs`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths.
+An out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused
+by a missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}`
+to the state-out path and stop.
 
 **The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.

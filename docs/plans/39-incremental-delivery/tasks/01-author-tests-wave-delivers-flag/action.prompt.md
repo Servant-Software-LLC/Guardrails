@@ -36,14 +36,33 @@ Author failing tests AND the minimal stub for the per-wave `delivers` flag — d
 
 **Test file:** `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs`
 **Test class:** `WaveDeliversFlagTests`
-**Stub:** add `Delivers` to `src/Guardrails.Core/Model/WaveNode.cs`, and make its getter THROW:
-`public bool Delivers { get => throw new NotImplementedException(); init { } }`. Any other member the
-stub adds (a delivery-point predicate, say) throws too. A working `bool Delivers { get; init; }`
-returns `false`, which is exactly what `Delivers_DefaultsToFalse_WhenTheManifestOmitsIt` and
-`AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint` assert, so both would pass on the stub and fail
-the red census (review, 2026-09-13). `WaveNode` is a `sealed record`, so its generated
-`Equals`/`GetHashCode`/`ToString` also throw while the stub stands; that is expected, and task 02
-replaces the stub.
+**Stub: TWO members on `src/Guardrails.Core/Model/WaveNode.cs`, both with THROWING getters.**
+
+```csharp
+/// <summary>The wave's DECLARED <c>delivers: true</c>, from its brief.md front matter. Default false.</summary>
+public bool Delivers { get => throw new NotImplementedException(); init { } }
+
+/// <summary>True only when the wave delivers at its barrier: <see cref="Delivers"/> AND at least one exit-gate check.</summary>
+public bool IsDeliveryPoint => throw new NotImplementedException();
+```
+
+They are two members because two consumers need two different facts (review, 2026-09-13).
+- `GR2079` (task 04: a wave sets `delivers: true` but has no exit gate) needs the DECLARED flag, because
+  it must name exactly the waves whose flag cannot take effect.
+- The barrier delivery (tasks 08 and 29) needs the EFFECTIVE predicate. An empty exit gate returns
+  `Pass`, so a gate-less delivering wave would otherwise deliver behind zero checks.
+
+One member can serve only one of them.
+
+Why the getters throw: a working `bool Delivers { get; init; }` returns `false`, which is exactly what
+`Delivers_DefaultsToFalse_WhenTheManifestOmitsIt` and the two `IsDeliveryPoint`-is-false rows assert, so
+they would pass on the stub and fail the red census (review, 2026-09-13). `WaveNode` is a `sealed
+record`, so its generated `Equals`/`GetHashCode`/`ToString` also throw while the stub stands; that is
+expected, and task 02 replaces both stubs.
+
+Build the plans with `WavePlanBuilder` (`WaveBrief` writes a wave's `brief.md`, `WaveGuardrail` adds an
+exit-gate check) and load them through it, so every row reads the members from a node the real loader
+built.
 
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
@@ -63,7 +82,15 @@ deliverer on upgrade, changing what those plans do with the user's branch withou
   `WaveDefinitionHash.Compute` → `GateDefinitionOf` already folds `brief.md` when present, and
   says so in its own comment. Assert it rather than assuming it.
 - `AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint` — §3: no gate, no delivery, regardless of the
-  flag. It waits for the plan-wide gate like today.
+  flag. A wave whose `brief.md` sets `delivers: true` and that has no `guardrails/` folder has
+  `IsDeliveryPoint == false`. It waits for the run-end delivery like today.
+- `Delivers_StaysTheDeclaredFlag_WhenTheWaveHasNoExitGate` — that same wave has `Delivers == true`.
+  Rejects folding the gate check into `Delivers`, which would leave `GR2079` nothing to fire on.
+- `IsDeliveryPoint_IsTrue_WhenTheWaveDeliversAndHasAnExitGate` — `delivers: true` plus one exit-gate
+  check. Rejects a predicate that is always false.
+- `IsDeliveryPoint_IsFalse_WhenTheManifestOmitsDelivers` — an exit-gate check and no `delivers` key.
+  Rejects treating "has an exit gate" alone as a delivery point, which would turn every gated wave of an
+  existing waved plan into a per-wave deliverer.
 - `APlanMarkingNoWave_LoadsIdenticallyToBefore` — assert the never-weaker property directly rather
   than trusting it falls out.
 

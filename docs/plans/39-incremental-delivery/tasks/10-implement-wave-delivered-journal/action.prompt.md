@@ -27,18 +27,28 @@ at review").
 
 - **`WaveDeliveredRecord`** — plain auto-properties with the members' own types; `Status`, `StartedAt`
   and `Covers` are `required`. `Outcome` is the EXISTING `DeliveryOutcome`, serialized by its existing
-  converter unchanged.
+  converter, which gains exactly one token (below). KEEP the `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]` attributes
+  task 09's stub put on `At`, `Commit`, `Outcome` and `Detail`. `JournalJson.Options` writes nulls, so
+  without them a `running` delivery serializes `"at": null` and three more null keys, and
+  `ARunningRecord_WritesNoSettledKeys` stays red.
 - **The `WaveDeliveryStatus` tokens, in `JournalJson.cs`** — `running`, `delivered`, `refused`,
   `suppressed`. Follow the file's own pattern: a static token method beside `DeliveryOutcomeToken`, and a
   converter registered in `Build()` beside `WaveStatusConverter`, handling BOTH directions and throwing on
   an unknown member. Without a converter System.Text.Json writes the enum's ORDINAL; with a write-only one
   the next read-modify-write of `run.json` throws and kills the run (#625). Check that the round-trip test
   really exercises the read path before calling this done.
+- **The `trial-gate-failed` token, in `JournalJson.cs`** — for `DeliveryOutcome.TrialGateFailed`, which
+  task 09 added. Add it to `DeliveryOutcomeToken` AND to `DeliveryOutcomeConverter.Read`: the converter
+  throws on an unknown member in both directions, and a record that writes but cannot be read back breaks
+  the next resume. `TheTrialGateFailedOutcome_RoundTrips` pins both directions. Add no other outcome:
+  tasks 18/19 add `PartiallyDelivered` and its token later.
 - **`RunJournal.RecordWaveDelivery(waveDir, record)`** — the house wave-write shape the methods beside it
   use: take the journal lock, `GetOrCreateWave(waveDir)`,
   `UpdateWave(waveDir, existing with { Delivered = record })`, `Persist()`. REPLACE the record, never
   append, and keep the wave's `Status`, `Entry`, `Exit`, `DefinitionHash` and `MarkerSha` exactly as they
-  were — that is what separates it from `ResetWaveToPending`, which drops them on purpose.
+  were — that is what separates it from `ResetWaveToPending`, which drops them on purpose. It is the
+  unconditional write primitive. Restoring a prior `delivered` record when a resume finds the delivery
+  already landed is task 29's Scheduler policy, so do not build it in here.
 
 The Scheduler's calls to `RecordWaveDelivery`, and the `WaveDelivered` event, are tasks 28/29 — do not
 reach into `Scheduler.cs`.

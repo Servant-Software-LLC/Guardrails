@@ -33,25 +33,58 @@ schema:
   trips drift;
 - `run.json`'s `waves.<dir>` gains **`delivered`**, the record design 39 §4 pinned:
   `"delivered": { "status": "delivered", "startedAt": "…", "at": "…", "commit": "…", "outcome": "fast-forwarded", "covers": ["<wave>", …] }`.
-  `status` is `"running"` | `"delivered"` | `"refused"` | `"suppressed"`. It is written `"running"` with
-  `startedAt` BEFORE the user's branch can move (#625), then replaced by one settled state. A `"refused"`
-  record carries `outcome` (`conflict` | `dirty-working-tree` | `hook-rejected` | `branch-moved`) and
-  `detail`; a `"suppressed"` record's `detail` names the decision and its subject. `covers` lists every
-  wave the delivery carries, in order, ending with this one, computed from the journal so a resume
-  computes the same set. A wave that never reached its barrier has NO `delivered` key — absent, not
-  null — which is how the report tells a held wave from one not reached;
+  `status` is `"running"` | `"delivered"` | `"refused"` | `"suppressed"`. A barrier delivery that begins
+  always writes `"running"`, with `startedAt` and `covers`, even over an existing `"delivered"` record:
+  it is written when the delivery begins — after the delivery switches and the interlock pass, and
+  before the trial merge runs the user's hooks (#625) — and is then replaced by `"delivered"` or
+  `"refused"`. A `"suppressed"` record is written already settled, and its `detail` names the decision
+  and its subject. A `"refused"` record carries `outcome` (`conflict` | `dirty-working-tree` |
+  `hook-rejected` | `branch-moved` | `trial-gate-failed`, the last when the wave's exit gate fails on the
+  trial merge) and `detail`. A `trial-gate-failed` detail names each failing check, the user's tip the
+  trial was built from, and the range `git log <plan-branch>..<userTip>`, which lists exactly the user's
+  commits the trial merged. Record it as a range: nothing lists those commits one by one. When a resume's trial finds the plan tip already on the user's branch, it
+  skips the promotion and restores the prior `"delivered"` record, or writes one if the crash came before
+  it, so a resume never records a refusal for a delivery that already landed. A rewound wave's re-run
+  that delivers again replaces its record. A delivery the operator forced past a suppressing decision
+  records `"delivered"` with a `detail` naming the overridden decision. Null fields are omitted, never
+  written as null. `covers` lists every wave the delivery carries, in order, ending with this one,
+  computed from the journal so a resume computes the same set. A wave whose delivery never began has NO
+  `delivered` key — absent, not null — for any of three reasons: it never reached its barrier, its exit
+  gate failed, or delivery resolved off. The report reads the wave's own status to tell a held wave from
+  one not reached;
+- **`branch-moved` has two causes, and the `detail` says which** (design 39 §1, review round 4). Record
+  both, each with its remedy: the checkout was switched to another branch (the #588 text — check the
+  branch out again, then resume), or the user's branch advanced after the trial was built
+  (`'<branch>' moved from <sha10> to <sha10> after the trial was built` — resume, and the next trial
+  includes the new commits);
+- **barrier delivery obeys the same switches as run-end delivery**: `--no-merge-on-success` (or
+  `"mergeOnSuccess": false`) turns it off, `--merge-on-success` lifts a held delivery, a serial run never
+  delivers at a barrier, and a wave with no exit gate is never a delivery point. The interlock is
+  consulted before the trial merge is built, so a held delivery never runs the user's hooks;
 - the **`WaveDelivered`** observer event, `WaveDelivered(WaveNode, WaveDeliveredRecord)`, raised only for
   a `delivered` record and only after that record is persisted; and `RunReport.WaveDeliveries`, stamped
-  from the journal in `BuildReport` on every report, halted ones included;
+  from the journal in `BuildReport` on every report, halted ones included. In §8, `observer.jsonl` gains
+  a `WaveDelivered` line carrying `member`, `waveDir`, `commit` and `covers`. `events.jsonl` (§8.1) gains
+  NO delivery kind — the durable record is `waves.<dir>.delivered` — and `guardrails attach` does not
+  replay deliveries in v1: its replay skips the line it does not know;
 - the **refused-delivery halt**: every refused wave delivery halts the run at that wave with
   `WaveHaltKind.DeliveryRefused`, never `ExitGateFailed`. The wave's marker commit and `completed` status
   are written only after its delivery settles, so a resume re-attempts a refused delivery at that wave's
-  barrier. No `RunHaltKind` is added, and the top-level `halt` section stays scoped to gates (#432);
+  barrier. No `RunHaltKind` is added, and the top-level `halt` section stays scoped to gates (#432).
+  The halt also appends a `decisions[]` entry — `"boundary": "wave"`, `"decision": "halted"`, gate
+  `delivery-refused`, and the wave directory as both `subject` and `wave` — so the refusal shows on the
+  console and in `observer.jsonl`. It changes no outcome, exit code or answer-file behavior:
+  `RunOutcomePolicy` acts only on `proceeded-best-guess` and `proceeded-unreviewed`. The log site does
+  not show it (its only reader of a decision's gate keeps breakdown gates), and there is no log-site
+  panel for a refused delivery in v1; it shows the wave as
+  needs-human;
 - the top-level **`delivery`** record (#542) on a run where some waves delivered and a later one halted:
   outcome **`partially-delivered`** with `delivered: false`. `delivered` stays true only when ALL verified
   work reached the user's branch;
 - **`GR2078`** (a post-delivery wave with no entry preflight) and **`GR2079`** (a `delivers: true`
-  wave with no exit gate), BOTH warnings, in the diagnostics registry section — and while you are
+  wave with no exit gate), BOTH warnings, in the diagnostics registry section. Each entry says what its
+  code warns about in the same sentence as the code: correcting the stale sentence below removes
+  `GR2078`'s only current mention, and a bare code in a list records no contract. While you are
   there, **correct the stale sentence** that currently reads *"an unrelated new code should take
   `GR2078`"*: this plan takes GR2078 and GR2079, so the next free code is **GR2080**. GR2077 stays
   reserved by name;
@@ -60,10 +93,14 @@ schema:
   exit-gate contract;
 - the **trial-merge provider members** (§1, review round 4): the trial merge commit is created WITH the
   user's git hooks — never `--no-verify` — so the commit that lands on the user's branch was
-  **hook-checked** (#149), and the moved-branch (#588) and dirty-tree (#448) checks re-run against the
-  trial ref before the fast-forward;
+  **hook-checked** (#149). The hooks come from the user's resolved hooks directory, including a relative
+  `core.hooksPath` such as husky's, which a harness-owned worktree would otherwise skip. The moved-branch
+  (#588) and dirty-tree (#448) checks re-run against the trial ref before the fast-forward;
 - **`DecisionEntry` gains a `Wave` member** (§1a) — the wave-scoped interlock reads a recorded
-  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface. And
+  attribution rather than parsing `Subject`. That is a change to the shared `decisions[]` surface: show
+  it in §7's `decisions[]` JSON as `"wave": "<waveDir>"`, omitted when null. Only the two decisions that
+  suppress delivery (`proceeded-best-guess` and `proceeded-unreviewed`) and the refused-delivery entry
+  above set it; every other entry leaves it null. And
   the **ride-along rule** (review round 4): a delivery is held when **any wave it carries** recorded a
   suppressing decision — the interlock reads the delivery's `covers`, not only the delivering wave's own
   decisions;

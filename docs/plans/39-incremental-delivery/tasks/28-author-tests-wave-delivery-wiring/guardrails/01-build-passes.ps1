@@ -3,7 +3,7 @@
 #          without this the next guardrail cannot tell garbage from a real red — and the
 #          implementation task (whose writeScope EXCLUDES the test file) could not fix the compile
 #          error anyway, dead-ending the run (#155).
-#          Subject: tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs
+#          Subject: tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveryWiringTests.cs
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 

@@ -16,7 +16,14 @@ $pinned = @(
     'Delivered_RoundTripsThroughTheJournalJson',
     'Delivered_CarriesAtCommitAndCovers',
     'EveryStatusToken_RoundTrips',
-    'RecordWaveDelivery_ReplacesTheRecordAndPersists'
+    'RecordWaveDelivery_ReplacesTheRecordAndPersists',
+    # A-N1 (review of 1a809bce): JournalJson.Options writes nulls, so a running record without
+    # [JsonIgnore(WhenWritingNull)] on At/Commit/Outcome/Detail carries four null keys. Red on this base
+    # because the stub's getters throw when the serializer reads them.
+    'ARunningRecord_WritesNoSettledKeys',
+    # Lead follow-up to the review of 1a809bce: the trial-tree gate's refusal outcome. Red on this base
+    # because JournalJson.DeliveryOutcomeToken's discard arm throws on the unregistered member.
+    'TheTrialGateFailedOutcome_RoundTrips'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-13, B5 restructure) — AWaveEntryWithoutADelivery_OmitsTheKey.

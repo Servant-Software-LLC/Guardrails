@@ -24,64 +24,101 @@
 
 Make `WaveDeliveryWiringTests` pass. Design 39 §4 ("The record, pinned at review") and §5 ("Wiring and
 halts"): the Scheduler writes `waves.<dir>.delivered` around every barrier delivery, raises
-`IRunObserver.WaveDelivered` only for a `delivered` record after it is persisted, and `BuildReport` stamps
+`IRunObserver.WaveDelivered` only after a `delivered` record is persisted, and `BuildReport` stamps
 `RunReport.WaveDeliveries` from the journal. The first breakdown built the record and the event and wired
 neither, which is #120's shape. This task is the wiring.
 
-**Where.** Task 08 already delivers a `delivers: true` wave at its own barrier through the trial-delivery
-primitive: `CreateTrialDelivery`, the wave's `Exit` gate against the trial tree, the interlock, then
-`PromoteTrialDelivery`, with `DiscardTrialDelivery` in a `finally`. Grep `Scheduler.cs` for
-`PromoteTrialDelivery`, `BuildReport` and `RecordWaveCompleted` rather than trusting a line number: this
-file has moved under several plans. Never call `MergePlanBranchIntoUserBranch` at a barrier; the run-end
-delivery keeps it.
+**Where, and what is already decided there.** Task 08 owns the barrier delivery DECISION and its order. At a
+wave whose `WaveNode.IsDeliveryPoint` is true, it:
+
+1. applies the one delivery predicate it shares with `Scheduler.Finalize`: `plan.Config.MergeOnSuccess`, the
+   #361 interlock over the waves the delivery carries, lifted by `plan.Config.MergeOnSuccessForcedByOperator`,
+   and the serial guard (a worktree provider and an integration handle both present);
+2. calls `CreateTrialDelivery`;
+3. gates the trial;
+4. calls `PromoteTrialDelivery`, unless the trial reports `AlreadyDelivered`;
+5. calls `DiscardTrialDelivery` in a `finally`.
+
+This task adds the record, the event and the report around that flow. It never adds a second predicate, a
+second interlock call, or a second trial. If `ASerialWavedRun_NeverDeliversAtABarrier` or
+`ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord` fails, the cause is either a write you placed before
+task 08's predicate or that shared predicate itself: fix the predicate in place, never duplicate it. Grep
+`Scheduler.cs` for `CreateTrialDelivery`, `PromoteTrialDelivery`, `BuildReport` and `RecordWaveCompleted`
+rather than trusting a line number: this file has moved under several plans. Never call
+`MergePlanBranchIntoUserBranch` at a barrier; the run-end delivery keeps it.
 
 **Reach the journal the way the supply drain does.** `RecordWaveDelivery` is on `RunJournal`, not on
 `ISchedulerJournal`, and `ISchedulerJournal.cs` is outside this scope. Use the
 `if (_journal is Journal.RunJournal runJournal)` pattern the Scheduler already uses before
 `RecordSupplied`. A unit-test fake journal models no durable document, and records nothing.
 
-**1. `covers`, from the journal.** Before anything else at the barrier, walk `plan.Waves` back from this
-wave, reading each earlier wave through `_journal.WaveEntryOf(dir)`, and stop at the nearest one whose
-`Delivered` record has status `Delivered`. `covers` is every wave after that one, in plan order, ending
-with this wave. Never compute it from state held in memory: a resume discards that state, and
-`CoversAfterAResume_StillStartsAfterTheLastDeliveredWave` is the row that catches it. An earlier delivery
-that was refused or suppressed does not end the walk: its work is still not on the user's branch, so this
-delivery carries it.
+**1. `covers`, from the journal.** Walk `plan.Waves` back from this wave, reading each earlier wave through
+`_journal.WaveEntryOf(dir)`, and stop at the nearest one whose `Delivered` record has status `Delivered`.
+`covers` is every wave after that one, in plan order, ending with this wave. Never compute it from state held
+in memory: a resume discards that state, and `CoversAfterAResume_StillStartsAfterTheLastDeliveredWave` is the
+row that catches it. An earlier delivery that was refused or suppressed does not end the walk: its work is
+still not on the user's branch, so this delivery carries it.
 
-**2. The interlock reads `covers` (review round 4, ride-along).** Pass this delivery's `covers` to task
-06's wave-scoped interlock, `RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves)`, which
-returns the first suppressing decision among the waves a delivery carries. Task 06 defines
-`SuppressesDelivery(decisions, coveredWaves)` through it, so the answer and its evidence never drift apart
-(#597). A held wave's machine-decided work riding along holds the delivery, and a suppressing decision with
+Hand this set to the interlock call task 08 already makes,
+`RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves)`, replacing whatever set task 08
+computed in memory (its prompt defers the journal-derived set to this task). Do not add a second call. A held
+wave's machine-decided work riding along holds the delivery (review round 4), and a suppressing decision with
 no `Wave` holds every delivery: task 06 fails closed.
 
-**3. The writes, in this order.** Every record carries `StartedAt`, taken when the barrier delivery
-begins, and `Covers`.
-- **The trial could not be built** (`trial.Refusal` is set): write `refused` with `At`, the matching
-  `Outcome`, and `Detail` from `trial.RefusalDetail`. Nothing is gated or promoted.
-- **The gate is green, and the interlock returns a decision:** write `suppressed` with `At` and a `Detail`
-  naming the decision's token and its subject. Never call `PromoteTrialDelivery`.
-- **Otherwise:** write `running`, with no `At`, and only THEN call `PromoteTrialDelivery` — #625, journal
-  the state before the action the operator can see. Settle by REPLACING that record:
-  - `FastForwarded` → `delivered`, with `At`, `Outcome` `FastForwarded`, and `Commit` = the trial's
-    `Commit` (after a fast-forward the user's branch tip IS that commit; task 30 pins it);
-  - any other result → `refused`, with `At`, the matching `Outcome`, and `Detail` from the provider's
-    `LastMergeOnSuccessDetail`.
-- **A wave whose exit gate fails writes no record.** Its delivery never began. The key's absence means the
-  wave's work is not on the user's branch; the report reads the wave's own status to say why.
+**2. The writes.** Every record carries `StartedAt`, taken when the barrier delivery begins, and `Covers`.
+Leave every field you do not set null; the record's serialization omits null fields (tasks 09/10), so never
+write a placeholder. Place every write after task 08's predicate.
+
+- **Delivery resolved off** (`mergeOnSuccess` is false, or the run is serial): write nothing. The absent key
+  means the wave's work is not on the user's branch.
+- **The interlock holds it** (a suppressing decision the operator did not override): write `suppressed`,
+  already settled, with `At` and a `Detail` naming the decision's token and its subject. No trial is built,
+  so nothing the operator can see happens first.
+- **Otherwise, the delivery begins.** First capture the wave's prior record if it reads `delivered` (a resume
+  after a crash that followed the settled write, or a rewound wave running again). Then write `running`
+  (no `At`) BEFORE `CreateTrialDelivery`, always, even over that prior record. That is #625: journal the
+  state before the first action the operator can see, and the trial merge runs the user's git hooks. Then
+  settle by REPLACING the `running` record:
+  - `trial.Refusal` is set → `refused`, with `At`, the matching `Outcome`, and `Detail` from
+    `trial.RefusalDetail`. Nothing is gated or promoted.
+  - The trial-tree gate failed (the trial needed a merge commit, and task 08's gate over
+    `trial.WorktreePath` did not pass) → `refused`, with `At`, `Outcome` `TrialGateFailed`, and a `Detail`
+    naming each failing check and the user tip the trial merged (`trial.UserTip`). Nothing is promoted. This
+    settles the record whichever halt follows; the halt is task 17's.
+  - `trial.AlreadyDelivered` WITH a captured prior `delivered` record (a pure resume: the delivery landed
+    and was recorded before the crash) → restore that prior record verbatim, the same `At` and `Commit`, and
+    raise no event. Task 08 skips the promotion.
+  - `trial.AlreadyDelivered` WITHOUT a prior `delivered` record (a crash between the fast-forward and the
+    settled write) → a fresh `delivered`, with `At`, `Outcome` `FastForwarded`, and `Commit` = the trial's
+    `Commit`, announced once. Task 08 skips the promotion.
+
+    Never settle an `AlreadyDelivered` trial as `refused`: the trial, not the status of an earlier record,
+    is what tells a resume that the delivery already landed.
+  - `PromoteTrialDelivery` returned `FastForwarded` → `delivered`, with `At`, `Outcome` `FastForwarded`, and
+    `Commit` = the trial's `Commit` (after a fast-forward the user's branch tip IS that commit; task 30 pins
+    it). When the operator override lifted a suppressing decision for this delivery, `Detail` names that
+    decision's token and its subject, so `run.json` keeps #597's trace of the override.
+  - Any other promotion result → `refused`, with `At`, the matching `Outcome`, and `Detail` from the
+    provider's `LastMergeOnSuccessDetail`.
+
+  Every other trial proceeds normally, and its settled record replaces whatever the wave had before. That is
+  how a rewound wave's re-run records a new delivery.
+- **A wave whose exit gate fails before its barrier writes no record.** Its delivery never began.
 
 Map a `MergeOnSuccessResult` to the `DeliveryOutcome` member of the same name; both enums already exist.
+`DeliveryOutcome.TrialGateFailed` has no `MergeOnSuccessResult` counterpart; task 09 declares it.
 
-**4. The event.** Raise `_observer.WaveDelivered(wave, record)` only for a `delivered` record, only after
+**3. The event.** Raise `_observer.WaveDelivered(wave, record)` only for a `delivered` record, only after
 `RecordWaveDelivery` has returned, and pass the SAME instance you wrote. Never raise it for `running`,
-`refused` or `suppressed`.
+`refused` or `suppressed`, or for a prior record you restored: that delivery was already announced.
 
-**5. The wave marker comes after the delivery settles.** Keep `CommitWaveMarker` and `RecordWaveCompleted`
-AFTER the settled write. This task does not halt on a refusal and does not decide what follows one. Task 17
-adds the `WaveHaltKind.DeliveryRefused` halt between the settled write and the marker, so a resume
-re-attempts a refused delivery at that wave's barrier. Leave the order so it can.
+**4. What follows the settled write.** Keep `CommitWaveMarker` and `RecordWaveCompleted` AFTER the settled
+write, and leave the code between them open. Task 17 adds the `WaveHaltKind.DeliveryRefused` halt right
+after the settled write, so a resume re-attempts a refused delivery at that wave's barrier. Task 15 adds the
+post-delivery refresh and its `RecordRefreshed` before the marker, so a crash cannot skip the refresh. This
+task does neither.
 
-**6. `BuildReport` stamps `WaveDeliveries` on every report.** `BuildReport` is the one method every report
+**5. `BuildReport` stamps `WaveDeliveries` on every report.** `BuildReport` is the one method every report
 passes through, halted or not. Fill `WaveDeliveries` there from `plan.Waves`: every wave whose
 `_journal.WaveEntryOf(dir)?.Delivered` is set, keyed by the wave's directory. A wave without a record is
 absent. Never stamp it only in `Finalize`: a wave gate or barrier halt returns before `Finalize`, and
@@ -89,9 +126,9 @@ absent. Never stamp it only in `Finalize`: a wave gate or barrier halt returns b
 `partially-delivered` outcome from this map. In `RunReport.cs`, document the property; its default stays
 empty.
 
-**Not this task.** The refused-delivery halt is task 17's, the `partially-delivered` outcome task 19's, the
-post-delivery refresh task 15's, and forwarding `WaveDelivered` through the observer decorators tasks
-12/13's.
+**Not this task.** The delivery decision and the trial's order are task 08's. The refused-delivery halt and
+its `decisions[]` entry are task 17's, the `partially-delivered` outcome task 19's, the post-delivery refresh
+task 15's, and forwarding `WaveDelivered` through the observer decorators tasks 12/13's.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 

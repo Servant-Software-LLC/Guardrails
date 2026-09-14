@@ -30,8 +30,10 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    fast-forward to `refs/guardrails/trial/<waveDir>`, so `MergeOnSuccessResult.FastForwarded` is true on
    every delivery and a check on it alone would never refresh. The delivering wave's `TrialDelivery`
    (task 31, built by task 08's barrier flow) already knows: refresh if and only if
-   `trial.UserTipWasAncestor` is false AND `PromoteTrialDelivery` returned `FastForwarded` — exactly when
-   the trial merge had to create a merge commit and that commit landed.
+   `trial.UserTipWasAncestor` is false AND the delivery settled as delivered. That means either
+   `PromoteTrialDelivery` returned `FastForwarded`, or the trial reports `AlreadyDelivered`: a resume after a
+   crash between the promotion and the wave marker, which task 08 does not promote again but whose refresh
+   is still owed. Both are exactly the case where the user's branch carries commits the plan branch lacks.
 2. **The refresh commit.** Have the Scheduler's C# perform a merge of `<upstream-sha>` inside the
    integration worktree with the `--no-ff` and `--no-verify` flags, through the same git invocation path its
    other integration-worktree commits already use. You write that call; you never run git yourself, and
@@ -48,10 +50,19 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    reaching the journal through the same `_journal is Journal.RunJournal` cast the shipped supply drain
    uses. `RefreshedRecord`, `RecordRefreshed` and `UnauthoredContentNote` already exist (task 25): use
    them, never re-declare them.
-4. **A refresh that fails is a fault, not a skip.** The upstream already contains everything the plan
-   branch delivered, so the merge is conflict-free by construction. If git fails anyway, throw into the
-   #150 fault path — an honest halt with NO record written — never continue on the stale base.
-5. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
+4. **Before the wave marker (review 2026-09-13).** At a delivering barrier the order is: the delivery
+   settles, then the refresh commit and `RecordRefreshed`, then `CommitWaveMarker`. Never write the marker
+   first: a crash between the two would resume past a wave whose refresh never happened, and the next wave
+   would build on the stale base with nothing naming the difference. Task 14's
+   `TheRefreshLandsBeforeTheWaveMarker` pins it.
+5. **A refresh that fails is a fault, not a skip.** The upstream already contains everything the plan
+   branch delivered, so the merge is conflict-free by construction. If git fails anyway, end the run
+   through the #150 fault path: `RunAsync` returns the honest-halt report with `Abort` set (`BuildAbort`),
+   as a worker-loop fault already does, never an exception escaping `RunAsync`. Write NO record and no wave
+   marker, and never continue on the stale base. Never delete or overwrite files in the integration
+   worktree to force the merge through. Task 14's `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns`
+   blocks the merge with an untracked file and expects the abort.
+6. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
    `WaveHaltKind.ExitGateFailed`, append `UnauthoredContentNote.HeadlineSuffix(...)` to the headline AFTER
    the failing check names, and `UnauthoredContentNote.DetailLines(...)` to the detail. `BuildGateHalt` is
    `static` today — give it the journal state it needs rather than re-reading `run.json` from disk. When
@@ -67,5 +78,5 @@ out-of-scope edit fails the task immediately and consumes a retry. If you hit a 
 missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
 state-out path and stop.
 
-**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green. The one exception is task 28's `WaveDeliveryWiringTests`, which are already green on your base: this task's guardrail re-runs them, because you edit the same barrier they drive, so keep them green.
 

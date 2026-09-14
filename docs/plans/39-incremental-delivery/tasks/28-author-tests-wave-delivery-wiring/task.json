@@ -1,5 +1,5 @@
 {
-  "description": "Author failing Scheduler tests for the wave delivery wiring: the running-then-settled waves.<dir>.delivered record around the promotion, covers from the journal, WaveDelivered after the write, and RunReport.WaveDeliveries on every report",
+  "description": "Author failing Scheduler tests for the wave delivery wiring: the waves.<dir>.delivered record journaled running before the trial is built and settled after it, covers from the journal, an already-landed delivery on resume, a failed trial-tree gate, the override trace, WaveDelivered after the write, and RunReport.WaveDeliveries on every report",
   "dependsOn": [
     "08-implement-deliver-at-wave-barrier",
     "10-implement-wave-delivered-journal",

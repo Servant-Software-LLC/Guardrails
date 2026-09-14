@@ -1,9 +1,11 @@
 # catches: a pinned wiring behaviour that was never written, or no longer runs, once the Scheduler is
-#          wired. Task 28's red census excuses APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone from
-#          being Failed (the never-weaker requirement is green on its base) but NOT from existing; this is
-#          the other half of that bargain — all nine of task 28's behaviours observed Passed in the
-#          runner's own TRX. It is also where a wiring that records or raises for a non-delivering wave
-#          turns that exempt row red. 01-tests-pass accepts a SKIPPED test; this does not.
+#          wired. Task 28's red census excuses four rows from being Failed (each is green on its base by
+#          construction) but NOT from existing; this is the other half of that bargain — all sixteen of
+#          task 28's behaviours observed Passed in the runner's own TRX. It is also where the exempt rows
+#          turn red: a wiring that records or raises for a non-delivering wave, settles a fresh record (or
+#          raises again) over a delivery that was already recorded, or writes a record before task 08's
+#          delivery predicate (a serial run, or mergeOnSuccess off). 01-tests-pass accepts a SKIPPED test;
+#          this does not.
 #
 #          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
 #          (a hollow test passes). What it CAN see is a test that was never written, or one that
@@ -14,7 +16,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'TheDeliveryIsJournaledRunning_BeforeTheUsersBranchMoves',
+    'TheDeliveryIsJournaledRunning_BeforeTheTrialIsBuilt',
     'ADeliveredWave_IsRecordedDeliveredWithThePromotedCommit',
     'ADeliveryCovers_EveryWaveSinceTheLastDelivery',
     'CoversAfterAResume_StillStartsAfterTheLastDeliveredWave',
@@ -23,7 +25,13 @@ $pinned = @(
     'ASuppressedDelivery_IsRecordedSuppressed_AndNeverMovesTheUsersBranch',
     'AHaltedRunsReport_StillCarriesEarlierWaveDeliveries',
     'ATrialThatCannotBeBuilt_IsRecordedRefused_AndIsNeverPromoted',
-    'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone'
+    'AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered',
+    'AForcedDelivery_NamesTheDecisionItOverrodeInItsDetail',
+    'AFailedTrialTreeGate_IsRecordedRefused_AndIsNeverPromoted',
+    'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone',
+    'AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent',
+    'ASerialWavedRun_NeverDeliversAtABarrier',
+    'ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
@@ -44,9 +52,9 @@ try {
     }
 
     [xml]$doc = Get-Content -Raw -LiteralPath $trx.FullName
-    $results_nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
+    $nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
 
-    if ($results_nodes.Count -lt 1) {
+    if ($nodes.Count -lt 1) {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
@@ -56,7 +64,7 @@ try {
 
     $failures = @()
     foreach ($name in $pinned) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }

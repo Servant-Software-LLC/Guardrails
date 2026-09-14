@@ -17,7 +17,9 @@ $pinned = @(
     'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
     'TheRefreshIsRecordedAsProvenance',
     'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
-    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh'
+    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
+    'TheRefreshLandsBeforeTheWaveMarker',
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

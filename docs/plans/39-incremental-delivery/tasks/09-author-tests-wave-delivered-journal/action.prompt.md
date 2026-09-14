@@ -36,11 +36,11 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 | Member | Type | Meaning |
 |---|---|---|
 | `Status` | `required WaveDeliveryStatus` | `running` \| `delivered` \| `refused` \| `suppressed` |
-| `StartedAt` | `required DateTimeOffset` | written with `running`, before anything the operator can see moves (#625) |
-| `At` | `DateTimeOffset?` | when the delivery settled; absent while `running` |
+| `StartedAt` | `required DateTimeOffset` | when the barrier reached this delivery. A `running` record is written the moment the delivery is allowed, before the trial merge runs the user's hooks (#625); a `suppressed` record is written already settled |
+| `At` | `DateTimeOffset?` | when the delivery settled; absent (no key at all) while `running` |
 | `Commit` | `string?` | the user's branch tip after promotion; only when `delivered` |
-| `Outcome` | `DeliveryOutcome?` | `fast-forwarded` when delivered; `conflict` \| `dirty-working-tree` \| `hook-rejected` \| `branch-moved` when refused — the EXISTING enum and its existing tokens |
-| `Detail` | `string?` | the refusal detail, or the suppressing decision and its subject |
+| `Outcome` | `DeliveryOutcome?` | `fast-forwarded` when delivered; `conflict` \| `dirty-working-tree` \| `hook-rejected` \| `branch-moved` \| `trial-gate-failed` when refused — the EXISTING enum and its existing tokens, plus the one new member below. `trial-gate-failed` means the wave's exit gate failed on the trial merge with the user's branch, so nothing was promoted |
+| `Detail` | `string?` | the refusal detail; on `suppressed`, the suppressing decision and its subject; on a delivery that `--merge-on-success` forced past a held decision, the decision it overrode |
 | `Covers` | `required IReadOnlyList<string>` | every wave the delivery carries, in order, ending with this one |
 
 **Write these stubs, and make them COMPILE:**
@@ -49,13 +49,25 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   seven members above, each getter throwing `NotImplementedException` (an `init { }` accessor is fine),
   and `public enum WaveDeliveryStatus { Running, Delivered, Refused, Suppressed }` beside it. An enum is
   data and cannot throw; its MISSING JSON TOKENS are what keep `EveryStatusToken_RoundTrips` red until
-  task 10 registers them.
+  task 10 registers them. Put `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]` on the four
+  nullable members, `At`, `Commit`, `Outcome` and `Detail`, exactly as every optional member of
+  `WaveJournalEntry` carries it. `JournalJson.Options` writes nulls (`DefaultIgnoreCondition = Never` in
+  `JournalJson.cs`), so without the attribute a `running` record would carry `"at": null` and three more
+  null keys that §4 says are absent. The attribute is part of the declaration, not the logic, so it
+  belongs in the stub.
 - `WaveJournalEntry.Delivered` in `src/Guardrails.Core/Journal/JournalModel.cs` — a WORKING nullable
   property,
   `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public WaveDeliveredRecord? Delivered { get; init; }`,
   the exact shape of the `Entry` and `Exit` markers beside it.
 - `RunJournal.RecordWaveDelivery(string waveDir, WaveDeliveredRecord record)` in
   `src/Guardrails.Core/Journal/RunJournal.cs` — throwing.
+- `DeliveryOutcome.TrialGateFailed` in `src/Guardrails.Core/Journal/JournalModel.cs`, appended after
+  `BranchMoved`, with a doc comment saying the wave's exit gate failed on the trial merge so nothing was
+  promoted, and that it is written only on a wave's `delivered` record, never on run.json's top-level
+  `delivery`. An enum member is its whole declaration. Do NOT add its token: `JournalJson`'s outcome
+  converter throws on an unknown member in both directions, which is what keeps
+  `TheTrialGateFailedOutcome_RoundTrips` red until task 10 adds it. Add no other member; tasks 18/19 add
+  `PartiallyDelivered` later.
 
 **Pin these behaviours to these EXACT method names:**
 
@@ -78,20 +90,32 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 - `AWaveEntryWithoutADelivery_OmitsTheKey` — a wave entry that never set `Delivered` serializes with NO
   `"delivered"` key, and reads back `null`. Absent, not null: the report tells a *held* wave from one
   *not reached* by it (§4).
+- `ARunningRecord_WritesNoSettledKeys` — serialize a wave entry whose `Delivered` is a `running` record
+  (`Status`, `StartedAt` and `Covers` set, nothing else) through `JournalJson.Options`, and parse the JSON.
+  The `delivered` object has `status`, `startedAt` and `covers`, and has NO `at`, `commit`, `outcome` or
+  `detail` property at all: absent, not present with a null value. Rejects a record that drops the
+  `[JsonIgnore(WhenWritingNull)]` attributes. Assert against the values you put in the initializer.
+- `TheTrialGateFailedOutcome_RoundTrips` — serialize `DeliveryOutcome.TrialGateFailed` through
+  `JournalJson.Options`: it writes exactly `"trial-gate-failed"`, and `"trial-gate-failed"` reads back to
+  the same member. Test the enum value itself, not a record, so the row is about the token. Rejects
+  System.Text.Json's numeric output, a drifting spelling, and a token added to the writer only: the next
+  resume reads run.json and would throw.
 
 `AWaveEntryWithoutADelivery_OmitsTheKey` is exempt from the red census: `Delivered` is a working container
 in the stub, so a correct test of it is green on arrival. It must still exist, and task 10's forward
 census requires it Passed. Do NOT couple it to the stubbed record to force a red.
 
 **Who writes the record around a real delivery is not this task.** Tasks 28/29 pin and wire the
-running-then-settled write, `covers`, and the `WaveDelivered` event against the real Scheduler. These
-tests are the record, its wire form, and its one write path.
+running-then-settled write (when `running` is written, how a resume restores a prior `delivered` record,
+and when `trial-gate-failed` is recorded), `covers`, and the `WaveDelivered` event against the real
+Scheduler. These tests
+are the record, its wire form, and its one write path, which replaces whatever record it is given.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE, and the other four MUST FAIL. Do NOT implement the record, its tokens, or the
+The tests MUST COMPILE, and the other six MUST FAIL. Do NOT implement the record, its tokens, or the
 write.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs`, `src/Guardrails.Core/Journal/WaveDeliveredRecord.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, and `src/Guardrails.Core/Journal/RunJournal.cs`. After this

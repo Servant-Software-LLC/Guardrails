@@ -23,46 +23,84 @@
 ## Task
 
 Make `TrialDeliveryPrimitiveTests` pass — design 39 §1's trial merge, review round 4's
-`d39-trial-delivery-primitive` answer. Implement the three members in `GitWorktreeProvider`, keeping
-the contract task 30 documented on `IWorktreeProvider`.
+`d39-trial-delivery-primitive` answer, as corrected by the 2026-09-13 reviews. Implement the three members
+in `GitWorktreeProvider`, keeping the contract task 30 documented on `IWorktreeProvider`.
 
 - **`CreateTrialDelivery`.**
   - Resolve the user's tip from `integ.OriginalBranch` and the plan tip from `integ.PlanBranchName`.
-  - **Quiet case** — `git merge-base --is-ancestor <user-tip> <plan-tip>` succeeds: point
-    `refs/guardrails/trial/<waveDir>` at the plan tip, and nothing else.
-  - **Otherwise** build the merge in a TEMPORARY worktree the harness owns (for example a detached
-    `git worktree add` under the integration root) — never in the user's checkout, and never in the
-    integration worktree, which is on the plan branch. Check out the user's tip, `git merge --no-commit
-    <plan-tip>`, then `git commit --no-edit` WITHOUT `--no-verify`, so the user's hooks run. That is the
-    same command pair `MergePlanBranchIntoUserBranch` uses for its user-facing commit, with the same
-    `TryGitInWithStderr` capture of the hook's stderr. On success, point the trial ref at the new commit.
-  - A conflict or a rejecting hook: abort the merge, leave no ref, and return the refusal with its
-    detail.
-  - Always remove the temporary worktree.
+  - First remove whatever a crashed earlier attempt for the same `waveDir` left behind: its trial ref and
+    its trial worktree.
+  - **Quiet case.** If `git merge-base --is-ancestor <user-tip> <plan-tip>` succeeds, point
+    `refs/guardrails/trial/<waveDir>` at the plan tip, and do nothing else. `UserTipWasAncestor = true`.
+  - **Already delivered.** Otherwise, if `git merge-base --is-ancestor <plan-tip> <user-tip>` succeeds, the
+    work is already on the user's branch: a resume after the promotion landed, or the user merged the plan
+    branch themselves.
+    - Point the ref at the user's tip, build nothing, and run no hook.
+    - Set `AlreadyDelivered = true`, `UserTipWasAncestor = false`, and `Commit` to the user's tip.
+    - Never fall through to the merge. There, `git merge` says "Already up to date", `git commit` fails
+      with "nothing to commit", and that failure reads as a hook rejection that halts every resume
+      (review 2026-09-13, measured).
+  - **Otherwise, build the merge** in a worktree the harness owns, for example a detached
+    `git worktree add` under the integration root. Never use the user's checkout, and never the
+    integration worktree, which is on the plan branch.
+    - Check out the user's tip and run `git merge --no-commit <plan-tip>`.
+    - Commit with `--no-edit` and WITHOUT `--no-verify`, so the user's hooks run.
+    - Capture the hook's stderr with `TryGitInWithStderr`, as `MergePlanBranchIntoUserBranch` does for its
+      user-facing commit.
+  - **Run the hooks the user's own checkout would run.**
+    - `MergePlanBranchIntoUserBranch` commits in the user's checkout, where git finds hooks relative to
+      that checkout.
+    - A harness worktree resolves a RELATIVE `core.hooksPath` against ITSELF instead. husky's untracked
+      `.husky/_` is then not found, and the commit goes through unchecked (review 2026-09-13, measured on
+      Windows git 2.53).
+    - So resolve the hooks directory in the user's repo (`rev-parse --git-path hooks`), make it absolute
+      against the user's repo root when git returns a relative path, and pass it to the commit as
+      `-c core.hooksPath=<absolute path>`.
+  - **On success**, point the trial ref at the new commit and KEEP the worktree: return its path as
+    `WorktreePath`, so the Scheduler can run the wave's exit gate in the trial tree. Only
+    `DiscardTrialDelivery` removes it.
+  - **A conflict.** Collect the conflicting paths (`git diff --name-only --diff-filter=U`), ordinal-sorted
+    and newline-separated, as `RefusalDetail`. Then abort the merge, remove the worktree, leave no ref, and
+    return `Refusal = Conflict`.
+  - **A rejecting hook.** `RefusalDetail` is the hook's trimmed stderr. Abort the merge, remove the
+    worktree, leave no ref, and return `Refusal = HookRejected`.
 - **`PromoteTrialDelivery`.**
-  - A trial carrying a `Refusal` returns it unchanged and touches nothing.
-  - Otherwise run the #588 check (`HeadMovedDetail(integ.OriginalBranch)`) FIRST, then the #448
-    intersection computed against the TRIAL REF, not the plan branch (`BlockingDirtyPaths` takes the ref
-    it compares with). Set `LastMergeOnSuccessDetail` exactly as `MergePlanBranchIntoUserBranch` does.
-  - Then `git merge --ff-only <trial ref>` in the user's repo.
-  - If the user's branch no longer points at `trial.UserTip`, it advanced after the trial was built:
-    return `BranchMoved` with a detail naming the tip the trial was built from, and attempt no merge.
-    Never fall back to a real merge the way `MergePlanBranchIntoUserBranch` does when `--ff-only` fails.
-    The gate authorized the trial's tree, and nothing else may land.
-- **`DiscardTrialDelivery`.** `git update-ref -d` on the trial ref, ignoring a missing ref, plus cleanup
-  of any temporary worktree a failed create left behind.
+  - A trial carrying a `Refusal` returns it unchanged and touches nothing. An `AlreadyDelivered` trial
+    returns `FastForwarded` and touches nothing: its tree is already on the user's branch.
+  - Otherwise check, in this order, setting `LastMergeOnSuccessDetail` the way
+    `MergePlanBranchIntoUserBranch` does:
+    1. #588: `HeadMovedDetail(integ.OriginalBranch)`. A switched checkout returns `BranchMoved` with that
+       text.
+    2. The user's branch still points at `trial.UserTip`. If not, it moved after the trial was built:
+       return `BranchMoved` and attempt no merge. After an advance, the detail reads exactly
+       `'<branch>' moved from <sha10> to <sha10> after the trial was built` (the tip the trial was built
+       from, then the tip now). Compare the sha itself, never the result of `--ff-only`: after the user
+       rewinds their branch, the fast-forward to the trial commit SUCCEEDS and re-lands the commit they
+       dropped.
+    3. #448: the intersection computed against the TRIAL REF, not the plan branch (`BlockingDirtyPaths`
+       takes the ref it compares with). Return `DirtyWorkingTree` with the paths.
+  - Then run `git merge --ff-only <trial ref>` in the user's repo. Never fall back to a real merge the way
+    `MergePlanBranchIntoUserBranch` does when `--ff-only` fails. The gate authorized the trial's tree, and
+    nothing else may land.
+- **`DiscardTrialDelivery`.** Run `git update-ref -d` on the trial ref, ignoring a missing ref. Remove the
+  trial worktree (`git worktree remove --force`, then prune), ignoring one that is already gone.
 
-Then replace task 30's throwing DEFAULT bodies on `IWorktreeProvider` with the in-process behaviour
-every other member's default already models, so a Scheduler running on `FakeWorktreeProvider` or
-`RecordingWorktreeProvider` reaches a waved delivery without throwing:
+**Leave task 30's throwing DEFAULT bodies on `IWorktreeProvider` exactly as they are** (review 2026-09-13).
+A test double that forgets one of these members must fail loudly. A quiet default would let it record a
+delivery with an empty commit while the user's branch never moved. Nothing in the plan needs a default:
+`FakeWorktreeProvider` is not constructed anywhere in `src/`, and every test that delivers either drives the
+real provider or implements the members it uses.
 
-- `CreateTrialDelivery` returns a quiet-case trial whose `Commit` is `CurrentPlanBranchTip(integ)`.
-- `PromoteTrialDelivery` returns `FastForwarded` — the same result the fake's
-  `MergePlanBranchIntoUserBranch` hardcodes.
-- `DiscardTrialDelivery` does nothing.
+**Document both `BranchMoved` causes on `IWorktreeProvider`.** The summary of `LastMergeOnSuccessDetail`
+says `BranchMoved` carries "the branch the run started on and the one HEAD is on now". From a promotion it
+can also mean the branch moved after the trial was built. Name both causes, and on the trial members say
+which remedy each needs. After an advance, the operator resumes, and the next trial includes the new
+commits. After a switched checkout, they check the branch out again first.
 
-Do NOT change `MergePlanBranchIntoUserBranch`. The run-end delivery still uses it for every flat plan and
-for the waves after the last delivery point.
+Do NOT change `MergePlanBranchIntoUserBranch`: the run-end delivery still uses it for every flat plan and for
+the waves the barrier does not deliver. This task's tests-pass guardrail also runs `MergeOnSuccessTests`,
+which pins that path, and `GitHookIsolationTests`, which pins the #149 hook rules (harness commits skip the
+user's hooks; the user-facing commit keeps them).
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 

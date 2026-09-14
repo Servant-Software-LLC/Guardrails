@@ -19,6 +19,8 @@ $pinned = @(
     'TheRefusalIsDurable_OnTheWaveNotInHalt',
     'AConflictingWaveDelivery_AlsoHaltsAtThatWave',
     'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave',
+    'TheHaltNamesBothTips_WhenTheUsersBranchAdvancedAfterTheTrial',
+    'ARefusedDelivery_RecordsAHaltedDecision',
     'AlreadyDeliveredWavesStayDelivered',
     'TheUsersCheckoutIsNotModified'
 )

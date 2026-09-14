@@ -18,7 +18,8 @@ $pinned = @(
     'ADecisionInAnEarlierDeliveredWave_DoesNotSuppressALaterCleanWave',
     'AHeldWavesWorkRidingAlong_HoldsTheLaterDelivery',
     'TheOperatorOverrideStillLiftsTheInterlock',
-    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject'
+    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject',
+    'TheSchedulersProceededUnreviewedDecision_RecordsItsWave'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

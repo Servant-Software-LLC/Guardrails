@@ -19,7 +19,10 @@ $pinned = @(
     'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
     'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved',
     'AFailedTrialGate_LeavesThePlanBranchUnmoved',
-    'TheTrialRefIsDeleted_AfterEitherOutcome'
+    'TheTrialRefIsDeleted_AfterEitherOutcome',
+    'TheOperatorOverride_LiftsABarrierSuppression',
+    'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
+    'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

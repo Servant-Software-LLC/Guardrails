@@ -1,12 +1,19 @@
 # catches: an implementation that does not satisfy the tests authored upstream — and, via the
 #          zero-match guard, a filter that silently selects nothing (which exits 0 and would certify
 #          the task on an empty set, #455).
+#
+#          ALSO runs MergeOnSuccessTests and RunOutcomeWiringTests (review 2026-09-13): this task
+#          EXTRACTS Finalize's delivery decision so the barrier can share it, and those two classes pin
+#          the run-end behavior that must not change - the #340 opt-out, the #361 interlock and its #597
+#          override, and the #588/#448/#149 refusals. Without them a broken Finalize reaches only the
+#          plan-root terminal gate, where no task may fix it. The forward census still scopes itself to
+#          WaveBarrierDeliveryTests, so a missing barrier class cannot hide behind these green ones.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~WaveBarrierDeliveryTests" 2>&1 | Out-String
+$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~WaveBarrierDeliveryTests|FullyQualifiedName~MergeOnSuccessTests|FullyQualifiedName~RunOutcomeWiringTests" 2>&1 | Out-String
 $code = $LASTEXITCODE
 
 Write-Output $out
@@ -38,7 +45,7 @@ $failed = 0
 if ($out -match 'Passed:\s+(\d+)') { $passed = [int]$Matches[1] }
 if ($out -match 'Failed:\s+(\d+)') { $failed = [int]$Matches[1] }
 if (($passed + $failed) -lt 1) {
-    Write-Output "ZERO-MATCH: the filter 'FullyQualifiedName~WaveBarrierDeliveryTests' executed no tests — that exits 0 and would certify this task on an empty set."
+    Write-Output "ZERO-MATCH: the filter 'FullyQualifiedName~WaveBarrierDeliveryTests|FullyQualifiedName~MergeOnSuccessTests|FullyQualifiedName~RunOutcomeWiringTests' executed no tests — that exits 0 and would certify this task on an empty set."
     exit 1
 }
 

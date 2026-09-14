@@ -60,6 +60,14 @@ A test that builds its quiet case by asserting on `FastForwarded` pins nothing.
 `teammate.txt` while the run is in flight (after the plan branch is cut, before wave-01 delivers), so the
 delivery is not a fast-forward by the ancestry definition above.
 
+**Make every mid-run change with a script, never a provider double (review 2026-09-13).** A guardrail on
+this task rejects the test file if, outside comments, it uses `FakeWorktreeProvider` or
+`RecordingWorktreeProvider`, or declares or mocks an `IWorktreeProvider`; it also requires
+`new GitWorktreeProvider(`. The house fixture is `WaveExecutionRunTests`: it writes a plan folder with a
+`.ps1` or `.sh` script per OS and runs the real Scheduler over `new GitWorktreeProvider(repoPath,
+worktreeRoot)`. A task or gate script can run git against the user's repo at the absolute path the fixture
+writes into it, so the teammate commit is made by a wave-01 task script.
+
 **Why it matters, so the tests assert the right thing.** Once the user's branch advances
 independently, delivery 2 becomes a merge commit on their branch only, delivery 3 can no longer
 fast-forward, and each later delivery merges a plan branch one more wave out of date — with AI-merge
@@ -81,10 +89,9 @@ silently blamed on the wave.
     never fast-forwarded onto the delivered commit — and therefore so does its first parent `<commit>^1`;
   - `<commit>^1` differs from `upstream`, and `teammate.txt` is ABSENT from `<commit>^1`'s tree
     (`git cat-file -e <commit>^1:teammate.txt` fails): the first parent is the plan side, not the
-    user's. Do NOT assert that `<commit>^1` equals a plan-branch tip you captured yourself — whether the
-    wave marker commit lands before or after the delivery, and the trial merge's own parent order, are
-    not fixed by the design, so a correct implementation can legitimately put a different plan-side
-    commit there;
+    user's. Do NOT assert that `<commit>^1` equals a plan-branch tip you captured yourself: the harness
+    may commit on the plan branch between the wave's last task and the refresh, so a correct
+    implementation can legitimately put a different plan-side commit there;
   - `paths` contains `teammate.txt`;
   - the commit message carries `Refreshed-From: <branch>` and `Guardrails-Run: <runId>`, and does NOT
     contain `Supplied-By:`.
@@ -102,6 +109,26 @@ silently blamed on the wave.
 - `AnExitGateFailureOverARefreshedTree_NamesTheRefresh` — the same assertions with NO entry preflight and a
   wave-02 EXIT gate that fails when `teammate.txt` exists; the headline starts with
   `Wave '<wave-02 dir>' exit gate FAILED: <check name>`. It must reject: wiring only the entry-gate halt.
+- `TheRefreshLandsBeforeTheWaveMarker` — in the non-fast-forward scenario, read wave-01's `markerSha` from
+  `run.json` (`waves.<wave-01 dir>.markerSha`) and assert that `git merge-base --is-ancestor
+  <refreshed[0].commit> <markerSha>` succeeds. At a delivering barrier the order is: the delivery settles,
+  then the refresh commit and its record, then the wave marker. It must reject: writing the marker first,
+  which lets a crash between the two resume past a wave whose refresh never happened, so the next wave builds
+  on the stale base with no `refreshed` record naming the difference.
+- `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns` — make the refresh merge itself fail. Wave-01's
+  exit gate script creates an UNTRACKED `teammate.txt` in its working directory when that file is absent,
+  and exits 0. The plan-branch exit gate runs in the integration worktree, where the plan side has no such
+  file, so the script leaves one there. The trial-tree gate runs in the trial worktree, where `teammate.txt`
+  is tracked, so the script does nothing. After the promotion, merging `upstream` into the integration
+  worktree would overwrite that untracked file, and git refuses. Give wave-02's task a script that writes a
+  sentinel file at an absolute path outside the repo. Assert all of:
+  - `RunAsync` RETURNS a report whose `Abort` is set, the #150 honest-halt report, rather than throwing;
+  - `run.json` has no `refreshed` section;
+  - wave-01's `delivered` record still reads `delivered`, since the delivery itself landed;
+  - the sentinel does not exist, so wave-02 never ran.
+
+  It must reject: continuing to wave-02 on the stale base, recording a refresh that has no commit, and
+  cleaning the integration worktree to force the merge through.
 
 Assert through the real journal on disk (`run.json`) and real git (`git log`, `git rev-parse`), never
 through a double. `RefreshedRecord`, `RunJournal.RecordRefreshed` and `UnauthoredContentNote` already
@@ -112,7 +139,10 @@ refreshes, records, and names.
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the refresh.
+`AFastForwardDelivery_DoesNotRefresh` is declared exempt from the red census: in the quiet case nothing
+moved, so the current code, which never refreshes, already leaves a correct test of it green. It must still
+exist, and task 15's forward census requires it Passed. The other seven tests MUST COMPILE and FAIL. Do NOT
+implement the refresh.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/PostDeliveryRefreshTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

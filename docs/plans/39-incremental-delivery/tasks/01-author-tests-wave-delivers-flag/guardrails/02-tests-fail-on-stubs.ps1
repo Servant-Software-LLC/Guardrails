@@ -15,7 +15,10 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Delivers_DefaultsToFalse_WhenTheManifestOmitsIt',
     'Delivers_IsTrue_WhenTheManifestSetsIt',
-    'AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint'
+    'AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint',
+    'Delivers_StaysTheDeclaredFlag_WhenTheWaveHasNoExitGate',
+    'IsDeliveryPoint_IsTrue_WhenTheWaveDeliversAndHasAnExitGate',
+    'IsDeliveryPoint_IsFalse_WhenTheManifestOmitsDelivers'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS. Each is asserted to EXIST below, and the paired implement task's

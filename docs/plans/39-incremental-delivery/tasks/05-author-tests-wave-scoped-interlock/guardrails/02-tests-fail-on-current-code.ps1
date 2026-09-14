@@ -18,7 +18,8 @@ $pinned = @(
     'ADecisionInALaterWave_DoesNotRetroactivelySuppressAnEarlierDelivery',
     'ADecisionInAnEarlierDeliveredWave_DoesNotSuppressALaterCleanWave',
     'AHeldWavesWorkRidingAlong_HoldsTheLaterDelivery',
-    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject'
+    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject',
+    'TheSchedulersProceededUnreviewedDecision_RecordsItsWave'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — TheOperatorOverrideStillLiftsTheInterlock.

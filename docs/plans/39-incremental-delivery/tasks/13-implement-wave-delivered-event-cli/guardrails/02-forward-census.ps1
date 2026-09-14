@@ -12,7 +12,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'EveryCliDecorator_ForwardsTheEvent'
+    'EveryCliDecorator_ForwardsTheEvent',
+    # A-N6 (review of 1a809bce): the two renderers print the delivery. Task 11's 03 census pins both red.
+    'ConsoleRunObserver_PrintsTheDeliveredWaveAndCommit',
+    'LiveRunObserver_PrintsTheDeliveredWaveAndCommit'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
@@ -33,9 +36,9 @@ try {
     }
 
     [xml]$doc = Get-Content -Raw -LiteralPath $trx.FullName
-    $results_nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
+    $nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
 
-    if ($results_nodes.Count -lt 1) {
+    if ($nodes.Count -lt 1) {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
@@ -45,7 +48,7 @@ try {
 
     $failures = @()
     foreach ($name in $pinned) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }

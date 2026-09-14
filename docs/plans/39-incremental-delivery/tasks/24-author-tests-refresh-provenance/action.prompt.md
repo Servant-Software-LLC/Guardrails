@@ -109,7 +109,7 @@ The house precedent for this shape is plan 40's shipped
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the record, the reader or the journal write.
+The other six tests MUST COMPILE and FAIL. Do NOT implement the record, the reader or the journal write.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/RefreshProvenanceTests.cs`, `src/Guardrails.Core/Journal/RefreshedRecord.cs`, `src/Guardrails.Core/Journal/UnauthoredContentNote.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, and `src/Guardrails.Core/Journal/RunJournal.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

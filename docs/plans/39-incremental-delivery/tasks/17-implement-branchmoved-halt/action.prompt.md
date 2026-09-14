@@ -37,13 +37,32 @@ the barrier by one of two routes, and the halt must cover both:
 Then:
 
 - The halt headline reads `Wave '<dir>' delivery REFUSED (<outcome token>): <detail>`, where the token
-  is `JournalJson.DeliveryOutcomeToken(outcome)` and the detail comes from whichever route refused (for
-  `BranchMoved`, the pinned target and the current HEAD).
+  is `JournalJson.DeliveryOutcomeToken(outcome)` and the detail comes from whichever route refused.
+- `BranchMoved` has two causes under one token, `branch-moved`, and the provider's detail says which. Pick
+  the remedy for the halt's `Detail` from that detail:
+  - **A switched checkout:** the detail reads `run started on '<branch>'; HEAD is now '<other>'`. The halt's
+    `Detail` says to `check out '<branch>' again`, then resume.
+  - **A branch that advanced after the trial was built:** the detail reads
+    `'<branch>' moved from <sha10> to <sha10> after the trial was built`. The halt's `Detail` says to
+    resume, because the next trial includes the new commits. It must not say to check anything out.
+- An `AlreadyDelivered` trial is not a refusal: task 29 settles it as `delivered`. Never halt on it.
+- **Record the halt as a decision too (review 2026-09-13).** At the halt, append one `DecisionEntry`
+  through `_journal.RecordDecision` and raise `_observer.DecisionRecorded`, as the Scheduler's other
+  decision sites do. Set:
+  - `Boundary = "wave"`;
+  - `Policy = AutonomyPolicies.Token(_plan.Config.AutonomyPolicy)`, as `ExecutedDefinitionDivergenceDecision` sets it;
+  - `Decision = DecisionTokens.Halted`;
+  - `Gate = "delivery-refused"`;
+  - `Subject` and `Wave`, both the refused wave's directory;
+  - `Headline`, the halt headline.
+
+  Build it in `Scheduler.cs`, and do not edit `DecisionEntry.cs`. `halted` changes no delivery or exit
+  code: `RunOutcomePolicy` suppresses delivery only on `proceeded-best-guess` and `proceeded-unreviewed`.
 - Later waves do not run.
 - The refused wave writes NO completed marker and NO completed status; it settles needs-human, so a
   resume re-attempts its delivery at that wave.
 - Task 29 already records the refusal as `refused` on `waves.<dir>.delivered`. Do not write a second
-  record; this task owns the HALT only.
+  delivery record; this task owns the HALT and its decision entry.
 - Do not add a `RunHaltKind`, and do not write run.json's `halt` section — it is scoped to gates
   (#432). Do not touch `JournalJson.cs`, `RunHalt.cs` or the CLI.
 
@@ -58,4 +77,4 @@ membership check and rejects any edit outside these paths. An out-of-scope edit 
 immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another file,
 do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 
-**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green. The one exception is task 28's `WaveDeliveryWiringTests`, which are already green on your base: this task's guardrail re-runs them, because you edit the same barrier they drive, so keep them green.

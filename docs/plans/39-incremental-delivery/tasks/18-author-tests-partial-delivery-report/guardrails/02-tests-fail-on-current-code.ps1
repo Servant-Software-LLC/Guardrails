@@ -16,7 +16,19 @@ $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
     'TheReportPointsAtGitBranchNoMerged',
-    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered'
+    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered',
+    # Review of 1a809bce (2026-09-13). Each is red on this task's base, measured by grep: nothing in
+    # RunCommand.cs reads RunReport.WaveDeliveries until task 19, so DescribeDelivery returns
+    # NotAttempted for a held run-end delivery (RunCommand.cs:2113-2142) and the refusal's own token for
+    # a refused one (:2070-2096); the banner names no wave (:2168-2215); DeliveryOutcomeToken's discard
+    # arm throws JsonException on the new member (JournalJson.cs:83); and PrintWaveHalt's label switch
+    # has no DeliveryRefused arm, so it prints the generic 'WAVE HALT' (RunCommand.cs:1757-1767). No
+    # task between master and this one writes RunCommand.cs or JournalJson.cs.
+    'DescribeDelivery_AGreenRunWhoseRunEndDeliveryWasHeld_IsPartiallyDelivered',
+    'DescribeDelivery_ARefusedRunEndMergeAfterAWaveDelivered_IsPartiallyDelivered',
+    'TheUndeliveredWorkBanner_NamesTheWavesThatAlreadyDelivered',
+    'PartiallyDelivered_RoundTripsThroughTheJournal',
+    'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.
@@ -28,10 +40,16 @@ $pinned = @(
 #     code, and the report must not change that, so a correct test is green on arrival. Pinning it
 #     red rewards only a wrongly-failing test that task 19 (it cannot edit tests) could never turn
 #     green.
+#   DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered (review of 1a809bce, 2026-09-13).
+#     STRUCTURAL REASON: on current code DescribeDelivery returns a run-end merge that landed as
+#     delivered/fast-forwarded from MergeOnSuccessOutcome alone (RunCommand.cs:2070-2096) and never reads
+#     WaveDeliveries, so a correct test is green on arrival. It exists to stop task 19 from counting the
+#     waves the run-end merge carried, which have no per-wave delivered key, as held.
 #   Each is asserted to EXIST below, and task 19's forward census requires each Passed.
 $mustExist = @(
     'AFullyDeliveredRunReadsAsTodayDoes',
-    'AFailedWaveDoesNotChangeTheExitCode'
+    'AFailedWaveDoesNotChangeTheExitCode',
+    'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

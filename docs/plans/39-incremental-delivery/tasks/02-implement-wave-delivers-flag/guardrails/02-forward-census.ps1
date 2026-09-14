@@ -15,6 +15,9 @@ $pinned = @(
     'Delivers_DefaultsToFalse_WhenTheManifestOmitsIt',
     'Delivers_IsTrue_WhenTheManifestSetsIt',
     'AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint',
+    'Delivers_StaysTheDeclaredFlag_WhenTheWaveHasNoExitGate',
+    'IsDeliveryPoint_IsTrue_WhenTheWaveDeliversAndHasAnExitGate',
+    'IsDeliveryPoint_IsFalse_WhenTheManifestOmitsDelivers',
     'APlanMarkingNoWave_LoadsIdenticallyToBefore',
     'WaveDefinitionHash_ChangesWhenDeliversChanges'
 )

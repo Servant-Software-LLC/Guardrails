@@ -113,8 +113,8 @@ therefore gains three members:
 - `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking three cases in order:
   - The user's tip is already an ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
   - The plan tip is already an ancestor of the user's tip (`AlreadyDelivered`). This is a resume after the
-    promotion landed, or a user who merged the plan branch themselves. The trial is the user's tip, and nothing
-    is merged or promoted.
+    promotion landed, or a user who merged the plan branch themselves. The trial is the user's tip. Nothing is
+    merged or promoted, and no trial-tree gate runs, because the delivery already landed.
   - Otherwise it creates the merge commit in a harness-owned worktree (`WorktreePath`, kept for the trial-tree
     gate) WITH the user's hooks, resolved from their hooks directory (`git rev-parse --git-path hooks`, made
     absolute). *(Review round 5 measured that a harness worktree silently skips a relative `core.hooksPath`,
@@ -642,9 +642,12 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
   is restored unchanged and no second `WaveDelivered` event is raised. With no prior record, `delivered` is
   written then.
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
-- A wave whose delivery never began has no `delivered` key: it never reached its barrier, its exit gate failed,
-  or delivery resolved off (`--no-merge-on-success`, a serial run). The absence means that wave's work is not on
-  the user's branch; the report reads the wave's own status to say whether it is *held* or *not reached*.
+- A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
+  reached its barrier, failed its exit gate, or had delivery resolved off (`--no-merge-on-success`, a serial run).
+  Its work reached the user's branch only if a later barrier delivery carried it (it is in that record's `covers`)
+  or the run-end delivery landed (`run.json`'s top-level `delivery`). Otherwise the report reads the wave's own
+  status to say whether it is *held* or *not reached*. *(Round 5: the first wording said a missing key always
+  meant "not on the user's branch", which is false for every wave the run-end delivery carries.)*
 
 **A refused wave delivery halts the run at that wave — DECIDED (architect, extending
 `d39-branchmoved-midrun`).** The answered question covered `branch-moved`. A `conflict` repeats at every later
@@ -669,7 +672,8 @@ journal in `BuildReport`, the one method every report passes through, halted or 
 **Not in v1:** a log-site banner for a refused delivery. The log site's halt banner reads only `halt`, so a
 refusal at a barrier, like an end-of-run refusal today, is visible on the console and in `run.json` but not
 on the log site. Round 5 narrowed the gap: the halt also records a `decisions[]` entry (boundary `wave`,
-decision `halted`, gate `delivery-refused`), so the cause shows wherever decisions already render.
+decision `halted`, gate `delivery-refused`), which the console and `observer.jsonl` show. The log site's decision
+panel shows only breakdown gates, so the log site still does not.
 
 ```
 DELIVERED to your branch: wave-01-issue-510, wave-02-issue-511 (2 of 4 waves)
@@ -853,8 +857,9 @@ fixed without a question. The fixes below change behavior an operator sees, so c
 - **The refresh commit and its record land before the wave marker,** so a crash between them cannot skip the refresh.
 - **The new provider members keep their throwing defaults,** so a test double that forgets one fails loudly instead
   of recording a delivery that never happened.
-- **A refused delivery also writes a `decisions[]` entry** (gate `delivery-refused`), so the cause shows wherever
-  decisions already render. A log-site panel stays out of v1.
+- **A refused delivery also writes a `decisions[]` entry** (gate `delivery-refused`), so the cause shows on the
+  console and in `observer.jsonl`. The log site's decision panel shows only breakdown gates, so a log-site panel for
+  a refused delivery stays out of v1.
 - **`BranchMoved` names which of its two causes happened.** A switched checkout and a branch that advanced after the
   trial was built get different detail text and remedies.
 - **A wave's declared `delivers` flag is separate from whether it is a delivery point,** so a wave with no exit gate

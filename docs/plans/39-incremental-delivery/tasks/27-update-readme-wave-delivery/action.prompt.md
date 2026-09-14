@@ -40,7 +40,10 @@ Cover these, in the document's existing operator-facing style:
   it. A plan that marks no wave behaves exactly as today — one merge at run end. Say where the flag
   lives plainly: there is no per-wave config file. A `guardrails.json` inside a wave directory is
   silently ignored — the plan stays waved and `validate` does not warn — so an operator who guesses
-  that file gets no delivery and no error.
+  that file gets no delivery and no error. **The existing switches apply at every delivery point.** Say
+  that `--no-merge-on-success` (or `"mergeOnSuccess": false`) stops a delivery point from delivering
+  too, not only the run-end merge, in the sentence that already recommends that flag "whenever you want
+  to inspect before anything lands".
 - **The interlock is wave-scoped, and a held wave's work rides along.** A machine decision that
   suppresses delivery (a proceeded-best-guess or proceeded-unreviewed) is now checked at every delivery
   point, against every wave that delivery carries. A delivery is held when ANY wave it carries recorded
@@ -49,15 +52,24 @@ Cover these, in the document's existing operator-facing style:
   already explains when delivery is held back, so a reader does not meet two rules, and state it in
   terms of the waves the delivery carries.
 - **A refused delivery halts the run at that wave.** A delivery is refused when your checkout has moved
-  to another branch, the merge conflicts, your working tree has changes the merge would overwrite, or
-  your git hook rejects the merge commit. The run then halts at that wave instead of running later waves
+  to another branch, your branch gained commits after the trial merge was built (you kept working while
+  the gate ran), the merge conflicts, your working tree has changes the merge would overwrite, your git
+  hook rejects the merge commit, or the wave's exit gate fails on the trial merge with your new commits
+  (`run.json` records that one as `trial-gate-failed`, naming the failing checks, your branch tip, and a
+  `git log <plan-branch>..<your tip>` range you can run to see which of your commits it merged). The run then halts at that wave instead of running later waves
   whose delivery would be refused the same way. Deliveries that already landed stay on your branch, and
   your checkout is not touched. The wave is not marked complete until its delivery settles, so resuming
   after you fix the cause re-attempts that wave's delivery. Say in one sentence that a refused delivery
-  halts the run at that wave.
+  halts the run at that wave. **Give the two branch causes their own remedies**, because they differ: a
+  checkout switched to another branch needs that branch checked out again before you resume; a branch
+  that advanced after the trial was built needs only a resume, since the next trial includes your new
+  commits. Also say that `run.json` records the refusal in `decisions[]` as `delivery-refused`, which the
+  console shows, and that the log site shows only the wave as needs-human: there is no log-site panel for
+  a refused delivery in this version.
 - **The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial merge.
   When your branch has moved on, that merge commit is created with your git hooks, exactly as today's
-  run-end merge commit is. Say that in one sentence.
+  run-end merge commit is. Say that in one sentence, and say that hooks installed under a relative
+  `core.hooksPath` — the way husky installs them — run too.
 - **The partial-delivery report.** A run where an earlier wave delivered and a later wave failed prints
   which waves landed on your branch and which are held on the plan branch, BEFORE the verdict. The exit
   code does not change: a run with a failed wave is still a failed run. `git branch --no-merged` stays

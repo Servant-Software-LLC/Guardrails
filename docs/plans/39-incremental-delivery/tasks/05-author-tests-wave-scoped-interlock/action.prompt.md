@@ -33,11 +33,22 @@ round 4 (`d39-interlock-ride-along`).
 said *"`decisions[]` entries carry a wave attribution already"*. They do not. `DecisionEntry`
 has eighteen public members and none is a wave; `Subject` is free text documented as *"a task id
 / wave dir / the drifted unit(s)"*, and only the `Boundary = "wave"` factories put a wave dir
-there. The `task` (Overwatch) and `drift` boundaries — the ones that actually produce
-`proceeded-best-guess` — put a TASK ID. So deriving the wave by string-splitting a §14.2
-wave-qualified id would be undocumented, waved-plans-only, and silently wrong for exactly the
-boundaries that matter. Add a real `Wave` member as a stub; task 06 populates it at the point
-each decision is made.
+there. The `task` boundary, where the needs-human gate records a `proceeded-best-guess`, puts a
+TASK ID. So deriving the wave by string-splitting a §14.2 wave-qualified id would be undocumented,
+waved-plans-only, and silently wrong for exactly the boundaries that matter. Add a real `Wave` member
+as a stub; task 06 populates it at the two sites that create a suppressing decision.
+
+Declare it as a WORKING optional member, like the other optional members on `DecisionEntry`:
+
+```csharp
+/// <summary>The wave directory this decision concerned; null when it concerned no single wave.</summary>
+[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+public string? Wave { get; init; }
+```
+
+Keep the attribute. `run.json` is serialized with nulls included (`JournalJson` sets
+`DefaultIgnoreCondition = Never`), so without it every decision the harness writes gains
+`"wave": null`, against the additive-field promise in the comment above those members.
 
 **The interlock's new entry point is your second stub (round 4, 2026-09-13).** A delivery carries every
 wave since the previous delivery point (§1b), so the check takes the SET of waves the delivery covers,
@@ -90,8 +101,23 @@ branch, which is the #361 escape that answer ruled out.
 - `TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject` — assert the wave is read
   from the decision's own member. A test that passes by splitting `Subject` would certify the
   parsing convention this task exists to avoid.
+- `TheSchedulersProceededUnreviewedDecision_RecordsItsWave` — drive the REAL `Scheduler` through the
+  review gate's proceed-unreviewed path, the way
+  `SchedulerReviewGateTests.ProceedUnreviewed_UnreviewedWaveRuns_RecordsProceededUnreviewedDecision` does:
+  - a `WavePlanBuilder` plan whose wave 02 is an empty JIT stub carrying a `brief.md`;
+  - `autonomyPolicy: auto` with `gateThresholds.review-gate` set to `ReviewGateDecision.ProceedUnreviewed`;
+  - a stub breakdown runner that authors wave 02;
+  - a `RecordingWorktreeProvider`, a real `RunJournal` and a `FileEscalationSink`.
+
+  That file's helpers are private nested types, so copy the few you need into your class. Assert that the
+  recorded `proceeded-unreviewed` entry's `Wave` equals wave 02's directory. Every other row builds its
+  decisions by hand, so without this one nothing proves a real decision site stamps the wave, and task 06
+  could implement the policy while stamping nothing. It is red on the stubs because no site populates
+  `Wave` yet.
 - `TheOperatorOverrideStillLiftsTheInterlock` — `--merge-on-success` remains the documented override
-  and must still work per delivery.
+  and must still lift the RUN-END interlock. This row pins the run-end call only. The barrier delivery's
+  override belongs to task 08, through the delivery predicate it shares with `Finalize`, and task 07 pins
+  it; do not try to exercise a barrier here.
 
 **One row is DECLARED EXEMPT from the red census:** `TheOperatorOverrideStillLiftsTheInterlock`. The
 override already wins on current code (#361/#597, `RunReport.DeliveryForcedPastDecision`); wave

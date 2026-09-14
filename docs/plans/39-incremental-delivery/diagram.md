@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=1cecb1d3eccc71984d38a10d25fdefc9aa99de22449a376fd56613f94535bec7 body-sha256=c96da4fa8b9d078867fd4927c1ef599b07190fbbc6a2547a3823bec3a6c3f160 -->
+<!-- guardrails:graph v1 source-sha256=ba43a5095f6d1c6641e895767c59be77142787a3a5b5b7d93b9713c8a391f176 body-sha256=3b02ac80815f68fe617b6f8702e69b1994d8450bacf315812224bc443ee193c1 -->
 
 ```mermaid
 flowchart TD
@@ -41,6 +41,7 @@ flowchart TD
   subgraph task_07_author_tests_deliver_at_wave_barrier["07-author-tests-deliver-at-wave-barrier"]
     task_07_author_tests_deliver_at_wave_barrier_gr_0["01-build-passes"]:::guardrail
     task_07_author_tests_deliver_at_wave_barrier_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_07_author_tests_deliver_at_wave_barrier_gr_2["03-drives-the-real-provider"]:::guardrail
   end
   style task_07_author_tests_deliver_at_wave_barrier fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_deliver_at_wave_barrier["08-implement-deliver-at-wave-barrier"]
@@ -77,6 +78,7 @@ flowchart TD
   subgraph task_14_author_tests_post_delivery_refresh["14-author-tests-post-delivery-refresh"]
     task_14_author_tests_post_delivery_refresh_gr_0["01-build-passes"]:::guardrail
     task_14_author_tests_post_delivery_refresh_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_14_author_tests_post_delivery_refresh_gr_2["03-drives-real-provider"]:::guardrail
   end
   style task_14_author_tests_post_delivery_refresh fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_15_implement_post_delivery_refresh["15-implement-post-delivery-refresh"]
@@ -87,6 +89,7 @@ flowchart TD
   subgraph task_16_author_tests_branchmoved_halt["16-author-tests-branchmoved-halt"]
     task_16_author_tests_branchmoved_halt_gr_0["01-build-passes"]:::guardrail
     task_16_author_tests_branchmoved_halt_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_16_author_tests_branchmoved_halt_gr_2["03-drives-real-provider"]:::guardrail
   end
   style task_16_author_tests_branchmoved_halt fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_17_implement_branchmoved_halt["17-implement-branchmoved-halt"]
@@ -143,6 +146,7 @@ flowchart TD
   subgraph task_30_author_tests_trial_delivery_primitive["30-author-tests-trial-delivery-primitive"]
     task_30_author_tests_trial_delivery_primitive_gr_0["01-build-passes"]:::guardrail
     task_30_author_tests_trial_delivery_primitive_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_30_author_tests_trial_delivery_primitive_gr_2["03-drives-the-real-provider"]:::guardrail
   end
   style task_30_author_tests_trial_delivery_primitive fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_31_implement_trial_delivery_primitive["31-implement-trial-delivery-primitive"]
@@ -187,6 +191,7 @@ flowchart TD
   task_15_implement_post_delivery_refresh --> task_17_implement_branchmoved_halt
   task_15_implement_post_delivery_refresh --> task_20_update_ssot_wave_delivery
   task_16_author_tests_branchmoved_halt --> task_17_implement_branchmoved_halt
+  task_16_author_tests_branchmoved_halt --> task_18_author_tests_partial_delivery_report
   task_17_implement_branchmoved_halt --> task_20_update_ssot_wave_delivery
   task_18_author_tests_partial_delivery_report --> task_19_implement_partial_delivery_report
   task_19_implement_partial_delivery_report --> task_20_update_ssot_wave_delivery

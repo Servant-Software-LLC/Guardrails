@@ -9,7 +9,9 @@
 #          RunReport.WaveDeliveries, a WORKING property that defaults to empty: hundreds of tests construct
 #          and print RunReport, so a throwing getter would break them. Each pinned row is red because the
 #          Scheduler on this base writes no waves.<dir>.delivered record, raises no WaveDelivered, and
-#          stamps no WaveDeliveries (the #120 shape task 29 closes).
+#          stamps no WaveDeliveries (the #120 shape task 29 closes). Task 08's delivery DECISION (the shared
+#          predicate, the interlock before the trial, the skipped promotion of an AlreadyDelivered trial) IS
+#          on this base, so a row whose only assertion is that decision is green here and is exempted below.
 #
 #          BOUNDARY: this proves each test is COUPLED TO THE CODE PATH, not that its assertion is
 #          correct. An invoking-then-hollow test is red on this base, green after, and PASSES this.
@@ -19,7 +21,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
-    'TheDeliveryIsJournaledRunning_BeforeTheUsersBranchMoves',
+    'TheDeliveryIsJournaledRunning_BeforeTheTrialIsBuilt',
     'ADeliveredWave_IsRecordedDeliveredWithThePromotedCommit',
     'ADeliveryCovers_EveryWaveSinceTheLastDelivery',
     'CoversAfterAResume_StillStartsAfterTheLastDeliveredWave',
@@ -27,18 +29,46 @@ $pinned = @(
     'ARefusedDelivery_IsRecordedRefusedWithItsOutcome_AndRaisesNoEvent',
     'ASuppressedDelivery_IsRecordedSuppressed_AndNeverMovesTheUsersBranch',
     'AHaltedRunsReport_StillCarriesEarlierWaveDeliveries',
-    'ATrialThatCannotBeBuilt_IsRecordedRefused_AndIsNeverPromoted'
+    'ATrialThatCannotBeBuilt_IsRecordedRefused_AndIsNeverPromoted',
+    'AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered',
+    'AForcedDelivery_NamesTheDecisionItOverrodeInItsDetail',
+    'AFailedTrialTreeGate_IsRecordedRefused_AndIsNeverPromoted'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13, B5) — APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone.
+# DECLARED RED-CENSUS EXEMPTIONS. Each is asserted to EXIST below, and task 29's forward census requires each
+# to be observed Passed; that is where a wiring that breaks the guarantee turns it red.
+#
+# APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone (review 2026-09-13, B5).
 #   STRUCTURAL REASON: green on this base by construction. It is the never-weaker requirement: a plan none
 #   of whose waves sets `delivers: true` gets no `delivered` key, an empty RunReport.WaveDeliveries, and no
 #   WaveDelivered. On this base NOTHING writes the record, fills the map or raises the event for ANY plan,
 #   and the stub property defaults to empty, so a correct test passes before task 29 lands. Coupling it to
 #   the missing wiring to force a red would make it wrong once the wiring exists.
-#   It is asserted to EXIST below, and task 29's forward census requires it to be observed Passed — that is
-#   where a wiring that records or raises for a non-delivering wave turns it red.
-$mustExist = @('APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone')
+#
+# AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent (review of 1a809bce, C-B3).
+#   STRUCTURAL REASON: green on this base by construction. The test SEEDS a `delivered` record through
+#   RunJournal.RecordWaveDelivery (task 10) and asserts that after the run it is `delivered` with the seeded
+#   `at` and `commit`, with no WaveDelivered. On this base nothing writes a record or raises the event, so
+#   the seeded record cannot change. Task 29 must journal `running` over it and then restore it verbatim
+#   for an AlreadyDelivered trial; settling a fresh record, or raising the event again, is what its forward
+#   census catches.
+#
+# ASerialWavedRun_NeverDeliversAtABarrier (review of 1a809bce, A-B1(c)).
+#   STRUCTURAL REASON: green on this base by construction. A Scheduler with no worktree provider has no
+#   integration handle, and task 08's serial guard never reaches the barrier delivery; on top of that,
+#   nothing on this base writes the record, fills the map or raises the event. Task 29 turns it red only by
+#   writing before task 08's predicate.
+#
+# ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord (review of 1a809bce, A-B1(a)).
+#   STRUCTURAL REASON: green on this base by construction. Task 08's shared delivery predicate reads
+#   plan.Config.MergeOnSuccess before CreateTrialDelivery, so no trial is built, and nothing on this base
+#   writes the record or raises the event. Task 29 turns it red only by writing before that predicate.
+$mustExist = @(
+    'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone',
+    'AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent',
+    'ASerialWavedRun_NeverDeliversAtABarrier',
+    'ABarrierDelivery_WithMergeOnSuccessOff_WritesNoRecord'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -92,7 +122,7 @@ try {
         exit 1
     }
 
-    Write-Output "Red census: all $($pinned.Count) pinned behaviour(s) observed Failed."
+    Write-Output "Red census: all $($pinned.Count) pinned behaviour(s) observed Failed; all $($mustExist.Count) declared exemption(s) exist."
     exit 0
 }
 finally {

@@ -146,6 +146,58 @@ if ($doc -notmatch [regex]::Escape('hook-checked')) {
     $failures += 'MISSING ''hook-checked'' in ' + $subject + ' — the trial merge commit running the user''s git hooks (#149) is not recorded, so nothing says the commit that lands on the user''s branch was hook-checked'
 }
 
+# Review of 1a809bce (2026-09-13), both lenses. Each clause below MEASURED 0 in the comment-stripped
+# subject, with the strip above, on branch plan-breakdown/39-post-40-adjust before it was added here. The
+# last three are SENTENCE clauses (#470): 'GR2078' (1x), '"running"' (2x), 'startedAt' (7x) and
+# 'branch-moved' are already present on their own, so none is read as a bare token. No token claims an
+# events.jsonl delivery kind: the lead decided events.jsonl gains none.
+if ($doc -notmatch [regex]::Escape('WaveDeliveries')) {
+    $failures += 'MISSING ''WaveDeliveries'' in ' + $subject + ' — RunReport.WaveDeliveries, the one source the delivery record and the partial-delivery report read, is not recorded'
+}
+
+if ($doc -notmatch [regex]::Escape('"wave":')) {
+    $failures += 'MISSING ''"wave":'' in ' + $subject + ' — the decisions[] entry''s new wave field is not recorded in its JSON form, so a reader of the shared decisions[] surface cannot tell which wave a suppressing decision holds'
+}
+
+if ($doc -notmatch [regex]::Escape('delivery-refused')) {
+    $failures += 'MISSING ''delivery-refused'' in ' + $subject + ' — the decisions[] gate a refused delivery records is not recorded, so nothing says where a refusal shows beyond the console'
+}
+
+if ($doc -notmatch [regex]::Escape('after the trial was built')) {
+    $failures += 'MISSING ''after the trial was built'' in ' + $subject + ' — branch-moved''s second cause (the user''s branch advanced while the gate ran) is not recorded, so a reader takes every branch-moved for a switched checkout and applies the wrong remedy'
+}
+
+if ($doc -notmatch [regex]::Escape('trial-gate-failed')) {
+    $failures += 'MISSING ''trial-gate-failed'' in ' + $subject + ' — the refused outcome a failed trial-tree gate records is not listed, so a reader cannot tell a gate that failed on the merge with the user''s commits from any other refusal'
+}
+
+if ($doc -notmatch [regex]::Escape('core.hooksPath')) {
+    $failures += 'MISSING ''core.hooksPath'' in ' + $subject + ' — the rule that the trial merge commit runs hooks from the user''s resolved hooks directory is not recorded; a relative core.hooksPath (husky''s layout) is silently skipped in a harness-owned worktree'
+}
+
+$flat = $doc -replace '\s+', ' '
+$sentences = [regex]::Split($flat, '(?<=[.!?])\s+')
+
+# GR2078 stated in the same sentence as what it warns about. The negative clause above removes the code's
+# only current mention, so a bare 'GR2078' in a list would satisfy a token clause without recording the
+# contract.
+$gr2078 = @($sentences | Where-Object { $_ -match '\bGR2078\b' -and $_ -match '(?i)\bpreflights?\b' })
+if ($gr2078.Count -eq 0) {
+    $failures += "MISSING a GR2078 registry sentence in $subject — no sentence names GR2078 together with the entry preflight it warns about (a wave that follows a delivery point carries no entry preflight)"
+}
+
+# 'running' is written when a barrier delivery BEGINS, before the trial merge runs the user's hooks.
+$runningBegins = @($sentences | Where-Object { $_ -match '(?i)\brunning\b' -and $_ -match '(?i)\b(?:begins?|starts?)\b' -and $_ -match '(?i)\bdeliver' })
+if ($runningBegins.Count -eq 0) {
+    $failures += "MISSING when the running record is written in $subject — no sentence says a barrier delivery writes running when it begins. Written only before the fast-forward, the longest stretch of a delivery (building the trial merge, which runs the user's hooks) leaves no record (#625)"
+}
+
+# branch-moved's first cause, stated as meaning: a checkout switched to another branch.
+$switched = @($sentences | Where-Object { $_ -match '(?i)branch-moved|BranchMoved' -and $_ -match '(?i)\bswitch|checked\s+out|another\s+branch' })
+if ($switched.Count -eq 0) {
+    $failures += "MISSING branch-moved's switched-checkout cause in $subject — no sentence ties branch-moved to a checkout switched to another branch, whose remedy (check the branch out again, then resume) differs from the advanced-branch cause"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) missing contract token(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

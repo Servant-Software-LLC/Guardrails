@@ -39,14 +39,24 @@ The four Cli `IRunObserver` implementers play TWO different roles — do not tre
 
 The member is `void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery)`, and the
 Scheduler raises it only for a record whose status is `delivered`, after that record is persisted (design
-39 §5). A decorator forwards the record INSTANCE unchanged. A renderer names the wave, the promoted
-`Commit` and the `Covers` list, and never infers anything the record does not say.
+39 §5). A decorator forwards the record INSTANCE unchanged. A renderer prints ONE line naming the wave's
+directory, the promoted `Commit` and the `Covers` list, plus the record's `Detail` when it has one (a
+delivery that `--merge-on-success` forced past a held decision names the decision it overrode there), and
+never infers anything the record does not say. `ConsoleRunObserver_PrintsTheDeliveredWaveAndCommit` and
+`LiveRunObserver_PrintsTheDeliveredWaveAndCommit` pin that the line exists and names the wave and the
+commit; an empty body passes every forwarding row and fails these two.
 
-`grep -rn ": IRunObserver" --include=*.cs src/Guardrails.Cli/` lists the four, and `grep -c _inner`
-on each file shows its role. If the grep shows an implementer not named here, stop and write
-`{"needsHuman": ...}` rather than guessing its role. **Your gate runs against
-`Guardrails.Integration.Tests`**, the only test project referencing `Guardrails.Cli` — a test of
-these types cannot compile anywhere else.
+- **`ConsoleRunObserver`** writes the line under its lock, the way its `[supplied]` line for
+  `SuppliedResourcesCommitted` does.
+- **`LiveRunObserver`** adds it as a narrative entry through `AppendNarrative`, the way `WaveFinished` and
+  `SuppliedResourcesCommitted` do. Never write to the console beside the live region: a raw write there
+  corrupts the table (#145).
+
+The Grep tool with the pattern `: IRunObserver` over `src/Guardrails.Cli/` (glob `*.cs`) lists the four,
+and the Grep tool's count mode with the pattern `_inner` on each file shows its role. If the search shows
+an implementer not named here, stop and write `{"needsHuman": ...}` rather than guessing its role.
+**Your gate runs against `Guardrails.Integration.Tests`**, the only test project referencing
+`Guardrails.Cli` — a test of these types cannot compile anywhere else.
 
 **A LogSite caution.** If you render the event on the exported log site, keep the page
 byte-identical when no delivery has occurred: `LogSiteHaltBannerTests` pins that page

@@ -41,18 +41,32 @@ append a detached list at the end:
   user's branch when its exit gate passes against the trial merge, not only at run end. Find the
   existing `**End-of-run delivery**` bullet and extend it; do not leave it implying delivery happens
   only once. `IWorktreeProvider.CreateTrialDelivery` builds the trial merge in a harness-owned worktree,
-  and `PromoteTrialDelivery` re-checks #588 (a moved HEAD) and #448 (a dirty working tree) before it
+  and `PromoteTrialDelivery` re-checks #588 (a moved branch) and #448 (a dirty working tree) before it
   fast-forwards the user's branch. **Say in one sentence that the trial merge commit is created with the
-  user's git hooks** (#149). A promotion is a fast-forward, which runs no hook, so the trial merge
-  commit is where a rejecting hook refuses a waved plan's delivery as `hook-rejected`.
-- **The journal record** — `run.json`'s `waves.<dir>.delivered`. It is written with `status: running`
-  and `startedAt` before the merge (#625), then settles as `delivered` (with `commit`), `refused` (with
-  `outcome` and `detail`) or `suppressed` (with `detail` naming the decision). Each settled record
-  carries `at` and `covers`, every wave the delivery carries. A wave that never reached its barrier has
-  no `delivered` key, which is how the report tells held from not reached.
+  user's git hooks** (#149), taken from the user's resolved hooks directory — including a relative
+  `core.hooksPath`, which is how husky installs them and which a harness-owned worktree would otherwise
+  skip. A promotion is a fast-forward, which runs no hook, so the trial merge commit is where a rejecting
+  hook refuses a waved plan's delivery as `hook-rejected`. **Say that barrier delivery obeys the same
+  switches as run-end delivery:** `--no-merge-on-success` turns it off at every wave barrier,
+  `--merge-on-success` lifts a held delivery, and a serial run never delivers at a barrier. The interlock
+  is consulted before the trial merge is built, so a held delivery never runs the user's hooks.
+- **The journal record** — `run.json`'s `waves.<dir>.delivered`. A barrier delivery that begins always
+  writes `status: running`, with `startedAt` and `covers`, even over an earlier `delivered` record: it is
+  written when the delivery begins, after the switches and the interlock pass and before the trial merge
+  runs the user's hooks (#625). It then settles as `delivered` (with `commit`) or `refused` (with
+  `outcome` and `detail`). A `suppressed` record (with `detail` naming the decision) is written already
+  settled. A resume whose trial finds the plan tip already on the user's branch skips the promotion and
+  restores the prior `delivered` record, or writes one if the crash came before it, so it never records a
+  refusal for a delivery that already landed. A rewound wave's re-run that delivers again replaces its
+  record. Each settled
+  record carries `at` and `covers`, every wave the delivery carries. A wave whose delivery never began
+  has no `delivered` key, for one of three reasons: it never reached its barrier, its exit gate failed,
+  or delivery resolved off. The report reads the wave's own status to tell held from not reached.
 - **The observer event** — `IRunObserver.WaveDelivered`, raised only for `status: delivered` and only
   after the record is persisted, forwarded through every decorator (the `ObserverForwardingSweepTests`
-  contract). It belongs beside the existing `IRunObserver.WaveStarting`/`WaveFinished` mention.
+  contract). It belongs beside the existing `IRunObserver.WaveStarting`/`WaveFinished` mention. It is
+  projected into `observer.jsonl` as a `WaveDelivered` line (`member`, `waveDir`, `commit`, `covers`);
+  `events.jsonl` gains no delivery kind, and `guardrails attach` does not replay deliveries in v1.
 - **The wave-scoped interlock, and ride-along** — the #361 interlock is checked per delivery, against
   the waves that delivery carries (its `covers` list). A delivery is held when ANY wave it carries
   recorded a suppressing decision (a proceeded-best-guess or proceeded-unreviewed), so once a wave is
@@ -61,10 +75,19 @@ append a detached list at the end:
   sentence, in terms of the waves the delivery carries.
 - **A refused delivery halts the run at that wave** — every refusal (`branch-moved`, `conflict`,
   `dirty-working-tree`, `hook-rejected`) halts with `WaveHaltKind.DeliveryRefused`, never a gate
-  failure. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
-  durable record is the wave's `delivered` entry with `status: refused`. The wave's marker commit and
+  failure. A wave whose exit gate fails on the trial merge also settles its record as `refused`, with
+  outcome `trial-gate-failed`; its `detail` names each failing check, the user's tip the trial was built
+  from, and the range `git log <plan-branch>..<userTip>` of the user's commits the trial merged — a range,
+  not a list. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
+  durable record is the wave's `delivered` entry with `status: refused`, plus a `decisions[]` entry with
+  gate `delivery-refused` (boundary `wave`, decision `halted`), so the refusal shows on the console and
+  in `observer.jsonl`. The log site does not show that entry, and there is no log-site panel for a
+  refused delivery in v1. The wave's marker commit and
   `completed` status are written only after its delivery settles, so a resume re-attempts a refused
-  delivery at that wave's barrier.
+  delivery at that wave's barrier. **Name both causes of `branch-moved`, each with its remedy:** the
+  checkout was switched to another branch (check the branch out again, then resume), or the user's
+  branch advanced after the trial was built, typically a commit made while the gate ran (resume: the
+  next trial includes the new commits).
 - **The partially-delivered outcome** — when some waves reached the user's branch and verified work is
   still held, `run.json`'s top-level `delivery` record reads `partially-delivered` with
   `delivered: false`, derived from `RunReport.WaveDeliveries`. `delivered` is true only when ALL

@@ -38,7 +38,7 @@ cannot compile and the compiling test proves nothing. The repo's own
 `ObserverForwardingSweepTests` lives in Integration.Tests for exactly this reason.
 
 **Test classes:** `WaveDeliveredEventTests` (the CORE decorators) and
-`WaveDeliveredCliForwardingTests` (the CLI decorators). Two classes because two tasks implement them:
+`WaveDeliveredCliForwardingTests` (the CLI decorators and renderers). Two classes because two tasks implement them:
 splitting the forwarding by assembly keeps each retry bounded, which a single six-file wiring task does
 not — GR2042 flagged exactly that fingerprint on plan 40's first draft.
 
@@ -89,23 +89,58 @@ a projection quietly dropped two new events and everything stayed green.
   and ONLY those two, with the same same-instance assertion.
 - `ADecoratorThatDropsTheEvent_IsCaught` — the negative control. Without it, a sweep that enumerates
   zero decorators passes and proves nothing.
+- `ObserverProjection_AppendsTheDeliveryToObserverJsonl` (in `WaveDeliveredEventTests`) — call
+  `WaveDelivered` on an `ObserverProjection` over a temp directory, typed as `IRunObserver` (a default
+  interface member resolves only through the interface), then read `observer.jsonl`. Exactly one line,
+  carrying `"member": "WaveDelivered"`, the wave's `waveDir`, the record's `commit`, and its `covers` as a
+  JSON array in order — the shape `ObserverProjection`'s `SuppliedResourcesCommitted` line already uses.
+  `observer.jsonl` is the verbatim record of every observer call, and `guardrails attach` tails it; a
+  decorator that forwards without appending drops the delivery from it.
+- `RunEventStream_AppendsNoEventsRowForADelivery` (in `WaveDeliveredEventTests`) — call `WaveDelivered` on a
+  `RunEventStream` over a temp directory: no `events.jsonl` row is written. DECIDED: `events.jsonl` gains
+  no `wave-delivered` kind. `RunEventStream` writes no row for any wave-level event today (`WaveStarting`,
+  `WaveFinished` and `WaveGateFinished` only forward), and a delivery's durable, machine-readable record is
+  `run.json`'s `waves.<dir>.delivered`, persisted before the event is raised.
+- `ConsoleRunObserver_PrintsTheDeliveredWaveAndCommit` (in `WaveDeliveredCliForwardingTests`) — the
+  `--no-ui` renderer: `IRunObserver observer = new ConsoleRunObserver(writer)` over a `StringWriter`; call
+  `WaveDelivered`, and assert the output names the wave's directory and the commit.
+- `LiveRunObserver_PrintsTheDeliveredWaveAndCommit` (in `WaveDeliveredCliForwardingTests`) — the live
+  table: a Spectre `TestConsole` (`.Interactive()`), a `LiveRunObserver` over it, `WaveDelivered` called
+  through `IRunObserver`, and after disposal `console.Output` names the wave's directory and the commit.
+  A renderer that implements the member with an empty body passes every forwarding row; these two rows
+  are what fail it.
 
-**No payload-shape test here (review, 2026-09-13).** An earlier draft pinned
+**Model the last four on plan 40's precedent:**
+`tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs` and
+`tests/Guardrails.Integration.Tests/Supply/SuppliedObserverCliForwardingTests.cs` test
+`SuppliedResourcesCommitted` the same way. Build every record with an object initializer and assert against
+the literal values you put in it. Never read a `WaveDeliveredRecord` getter in a test: they throw until
+task 10 lands.
+
+**No payload-shape test of the RAISED record here (review, 2026-09-13).** An earlier draft pinned
 `Event_CarriesTheWaveTheCommitAndWhatItCovered`. A shape test of a record handed to a no-op default passes
 on the stub, and which record the Scheduler raises, and when, cannot be seen from this task's files.
-Task 28 pins that against the real Scheduler.
+Task 28 pins that against the real Scheduler. The projection and renderer rows above assert something
+different: what an observer WRITES when it is handed a record, which the interface's no-op default never
+writes.
 
-`ADecoratorThatDropsTheEvent_IsCaught` is exempt from the red census: it drives the sweep's detection
-against a test-local decorator that swallows the event and never touches production forwarding, so a
-correct test is green on arrival. It must still exist, and task 12's forward census requires it
-Passed. Do NOT couple it to the missing forwarding to force a red.
+Two rows are exempt from the red census, and both must still exist:
+- `ADecoratorThatDropsTheEvent_IsCaught` drives the sweep's detection against a test-local decorator that
+  swallows the event and never touches production forwarding, so a correct test is green on arrival.
+- `RunEventStream_AppendsNoEventsRowForADelivery` asserts an absence, and on this task's base
+  `RunEventStream` inherits the no-op default, which writes nothing.
+
+Task 12's forward census requires both Passed. Do NOT couple either to the missing forwarding to force a
+red.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE, and `EveryCoreDecorator_ForwardsTheEvent` and
-`EveryCliDecorator_ForwardsTheEvent` MUST FAIL. Do NOT implement the forwarding.
+The tests MUST COMPILE, and the other five MUST FAIL: `EveryCoreDecorator_ForwardsTheEvent`,
+`ObserverProjection_AppendsTheDeliveryToObserverJsonl`, `EveryCliDecorator_ForwardsTheEvent`,
+`ConsoleRunObserver_PrintsTheDeliveredWaveAndCommit` and `LiveRunObserver_PrintsTheDeliveredWaveAndCommit`.
+Do NOT implement the forwarding, the projection or the rendering.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredEventTests.cs`, `tests/Guardrails.Integration.Tests/WaveDelivery/WaveDeliveredCliForwardingTests.cs`, and `src/Guardrails.Core/Execution/IRunObserver.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

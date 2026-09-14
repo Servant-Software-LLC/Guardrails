@@ -1,12 +1,19 @@
 # catches: an implementation that does not satisfy the tests authored upstream - and, via the
 #          zero-match guard, a filter that silently selects nothing (which exits 0 and would certify
 #          the task on an empty set, #455).
+#
+#          ALSO runs MergeOnSuccessTests and GitHookIsolationTests (review 2026-09-13, finding A-N8): the
+#          prompt's "do not change MergePlanBranchIntoUserBranch" had no check at this task, and this task
+#          edits the same file and the same commit-with-hooks code path. MergeOnSuccessTests pins the run-end
+#          delivery (#340/#448/#588/#149); GitHookIsolationTests pins the #149 split (harness commits skip the
+#          user's hooks, the user-facing commit keeps them). The forward census still scopes itself to
+#          TrialDeliveryPrimitiveTests, so a missing trial class cannot hide behind these green ones.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~TrialDeliveryPrimitiveTests" 2>&1 | Out-String
+$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~TrialDeliveryPrimitiveTests|FullyQualifiedName~MergeOnSuccessTests|FullyQualifiedName~GitHookIsolationTests" 2>&1 | Out-String
 $code = $LASTEXITCODE
 
 Write-Output $out
@@ -38,7 +45,7 @@ $failed = 0
 if ($out -match 'Passed:\s+(\d+)') { $passed = [int]$Matches[1] }
 if ($out -match 'Failed:\s+(\d+)') { $failed = [int]$Matches[1] }
 if (($passed + $failed) -lt 1) {
-    Write-Output "ZERO-MATCH: the filter 'FullyQualifiedName~TrialDeliveryPrimitiveTests' executed no tests - that exits 0 and would certify this task on an empty set."
+    Write-Output "ZERO-MATCH: the filter 'FullyQualifiedName~TrialDeliveryPrimitiveTests|FullyQualifiedName~MergeOnSuccessTests|FullyQualifiedName~GitHookIsolationTests' executed no tests - that exits 0 and would certify this task on an empty set."
     exit 1
 }
 

@@ -14,13 +14,18 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'ATrialMergeCommit_RunsTheUsersHooks_SoAHookCanRejectIt',
+    'ATrialMergeCommit_RunsHooksFromARelativeUntrackedHooksPath',
     'TheQuietCase_CreatesNoMergeCommit_AndRunsNoHook',
     'UserTipWasAncestor_IsCorrectBothWays',
+    'ATrialRebuiltAfterItsPromotionLanded_IsAlreadyDelivered',
     'TheTrialMergeCommit_HasTheUsersTipAsFirstParent',
+    'TheMovedCase_KeepsAWorktreeAtTheTrialCommit_UntilDiscarded',
+    'ATrialThatConflicts_IsRefusedWithTheConflictingPaths',
     'CreatingATrial_NeverTouchesTheUsersCheckout',
     'Promotion_RefusesWhenTheCheckoutMovedToAnotherBranch',
     'Promotion_RefusesDirtTheFastForwardWouldOverwrite',
     'Promotion_RefusesWhenTheUsersBranchAdvancedAfterTheTrial',
+    'Promotion_RefusesWhenTheUsersBranchWasRewoundAfterTheTrial',
     'Promotion_FastForwardsTheUsersBranchToTheTrialCommit',
     'Discard_RemovesTheTrialRef'
 )

@@ -164,6 +164,34 @@ if ($mergeHooks.Count -eq 0) {
     $failures += "MISSING the merge-commit hook rule in $subject — no sentence says the merge commit a delivery creates runs your git hooks. An operator who does not know that cannot tell why a delivery was refused as hook-rejected, or that a waved plan still runs their hooks"
 }
 
+# Review of 1a809bce (2026-09-13), both lenses. MEASURED at 1a809bce with the same strip: 'delivery-refused'
+# 0; the switches, advanced-branch and hooks-path sentence clauses each 0 sentences. 'no-merge-on-success'
+# is ALREADY present 6x, and a sentence naming it beside 'wave' already exists in the CLI reference row, so
+# the switches clause reads only barrier / delivery point / every or each delivery. The README never
+# describes serial mode, so there is no serial clause.
+if ($doc -notmatch [regex]::Escape('delivery-refused')) {
+    $failures += "MISSING 'delivery-refused' in $subject — the README does not say where run.json records a refused delivery, so an operator whose log site shows a needs-human wave with no cause has nowhere to look"
+}
+
+if ($doc -notmatch [regex]::Escape('trial-gate-failed')) {
+    $failures += "MISSING 'trial-gate-failed' in $subject — the refusal recorded when a wave's exit gate fails on the trial merge with your new commits is not documented (measured 0 at 1a809bce), so an operator reading run.json cannot tell it from a failure of the wave's own work"
+}
+
+$switches = @($sentences | Where-Object { $_ -match '(?i)no-merge-on-success' -and $_ -match '(?i)\bbarrier\b|delivery\s+points?|every\s+deliver|each\s+deliver' })
+if ($switches.Count -eq 0) {
+    $failures += "MISSING the delivery-point switch in $subject — no sentence says --no-merge-on-success also stops a delivery point from delivering. An operator who uses it to inspect before anything lands would otherwise expect a waved plan to hold every wave"
+}
+
+$advanced = @($sentences | Where-Object { $_ -match '(?i)\badvanc(?:e|es|ed|ing)\b|new\s+commits|gained\s+commits|\bcommitted\b|kept\s+working' -and $_ -match '(?i)\btrial\b' })
+if ($advanced.Count -eq 0) {
+    $failures += "MISSING the advanced-branch refusal in $subject — no sentence says a delivery is refused when your branch gained commits after the trial merge was built. That cause needs only a resume, while a switched checkout needs your branch checked out again first"
+}
+
+$hooksPath = @($sentences | Where-Object { $_ -match '(?i)hooksPath|husky' -and $_ -match '(?i)\bhooks?\b' })
+if ($hooksPath.Count -eq 0) {
+    $failures += "MISSING the relative hooks path in $subject — no sentence says hooks under a relative core.hooksPath (husky's layout) run on the delivery's merge commit, so a husky user has no reason to expect their hooks to gate a waved delivery"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) README contract failure(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

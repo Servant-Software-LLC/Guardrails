@@ -28,6 +28,22 @@ Both are **WARNINGS**. Neither moves the exit code. The design records why: an E
 that are correct-but-unguarded, and #181's worth-it gate exists because a FALSE baseline is worse than
 none.
 
+**Which member each check reads (review, 2026-09-13).**
+- `GR2079` reads `WaveNode.Delivers`, the declared flag: it names a wave that sets `delivers: true` and
+  has no exit gate.
+- `GR2078` fires for a wave with no entry preflight that follows a delivery point, meaning an earlier
+  wave whose `WaveNode.IsDeliveryPoint` is true.
+
+**Emit both through `Warning(DiagnosticCodes.<Name>, …)`, naming the constant inline at the call,** the
+way the validator's existing warnings do (for example `Warning(DiagnosticCodes.TieringInert, …)`).
+`DiagnosticCatalogueTests.EverySeverityMarkerMatchesWhatTheSourceTreeActuallyDoes` finds a code's
+severity by scanning `src/` for `Warning(DiagnosticCodes.<Name>` or `Error(DiagnosticCodes.<Name>`, or
+for a `Code = DiagnosticCodes.<Name>, … Severity = …` initializer. Task 03 gave both codes a
+`GRxxxx (WARNING) — ` doc-comment marker before any emission site existed, so that test is red on your
+base. A call site the scan can see turns it green; a code passed through a variable reads as emitted
+nowhere. This task's tests-pass guardrail runs `DiagnosticCatalogueTests` alongside
+`WaveDeliveryDiagnosticsTests`. Keep both markers `(WARNING)`.
+
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
 **Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, and `src/Guardrails.Core/Loading/DiagnosticCatalogue.cs`. After this

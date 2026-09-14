@@ -17,7 +17,9 @@ $pinned = @(
     'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
     'TheRefreshIsRecordedAsProvenance',
     'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
-    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh'
+    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
+    'TheRefreshLandsBeforeTheWaveMarker',
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFastForwardDelivery_DoesNotRefresh.

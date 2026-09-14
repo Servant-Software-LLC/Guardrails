@@ -19,7 +19,9 @@ $pinned = @(
     'TheHaltKindIsDeliveryRefused_NotAGateFailure',
     'TheRefusalIsDurable_OnTheWaveNotInHalt',
     'AConflictingWaveDelivery_AlsoHaltsAtThatWave',
-    'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave'
+    'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave',
+    'TheHaltNamesBothTips_WhenTheUsersBranchAdvancedAfterTheTrial',
+    'ARefusedDelivery_RecordsAHaltedDecision'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the halt.
