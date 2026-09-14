@@ -69,8 +69,20 @@ if ($doc -notmatch [regex]::Escape('refs/guardrails/trial/')) {
     $failures += "MISSING 'refs/guardrails/trial/' in $subject — the trial-merge ref is not recorded. §1 DECIDED that a delivering wave gates against a TRIAL MERGE on a scratch ref and only promotes on green; that changes §14.3's exit-gate contract and a reader cannot infer it"
 }
 
-if ($doc -match [regex]::Escape('should take **`GR2078`**')) {
-    $failures += "STALE TEXT STILL PRESENT: 'should take **`GR2078`**' in $subject — the registry ladder still says an unrelated new code should take GR2078. This plan TAKES GR2078 and GR2079, so that sentence is now false and must read GR2080. A positive clause cannot catch this - only requiring the stale text to be GONE proves the correction happened rather than being appended beside it"
+# NEGATIVE: the registry ladder's stale "an unrelated new code should take GR2078". This plan TAKES
+# GR2078 and GR2079, so that claim is now false and must name GR2080. Anchored on MEANING, not on
+# formatting (#470, review W3): bold, backticks and line wraps are ignored, and "the next free code is
+# GR2078" is the same claim in other words. MEASURED at 9598c1d7: exactly 1 match in the subject (the
+# ladder sentence); 0 against a rewrite naming GR2080.
+$staleNextCode = @(
+    '(?i)\b(?:should|would|will|must)\s+(?:take|use|get|claim)\s+[*_`\s]*GR2078\b',
+    '(?i)\bnext\s+free\s+(?:code\s+)?(?:is\s+)?[*_`\s]*GR2078\b'
+)
+foreach ($p in $staleNextCode) {
+    if ($doc -match $p) {
+        $failures += "STALE CLAIM STILL PRESENT in $subject — '$($Matches[0])': the registry ladder still says a new code should take GR2078. This plan TAKES GR2078 and GR2079, so the next free code is GR2080. A positive clause cannot catch this - only requiring the stale claim to be GONE proves the correction happened rather than being appended beside it"
+        break
+    }
 }
 
 # Post-plan-40 refinement (design 39 §1c, "How a refresh is recorded"). Each token below MEASURED 0 in the

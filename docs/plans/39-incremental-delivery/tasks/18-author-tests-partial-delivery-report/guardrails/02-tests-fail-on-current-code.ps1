@@ -15,15 +15,23 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
-    'TheReportPointsAtGitBranchNoMerged',
-    'AFailedWaveDoesNotChangeTheExitCode'
+    'TheReportPointsAtGitBranchNoMerged'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFullyDeliveredRunReadsAsTodayDoes.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('AFullyDeliveredRunReadsAsTodayDoes')
+# DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.
+#   AFullyDeliveredRunReadsAsTodayDoes (review 2026-09-11).
+#     STRUCTURAL REASON: a plan that marks no wave prints exactly today's output on current code by
+#     definition, so a correct test of "reads as today does" is green on arrival.
+#   AFailedWaveDoesNotChangeTheExitCode (review 2026-09-13).
+#     STRUCTURAL REASON: a run with a failed wave already exits 2 (ExitCodes.TaskFailed) on current
+#     code, and the report must not change that, so a correct test is green on arrival. Pinning it
+#     red rewards only a wrongly-failing test that task 19 (it cannot edit tests) could never turn
+#     green.
+#   Each is asserted to EXIST below, and task 19's forward census requires each Passed.
+$mustExist = @(
+    'AFullyDeliveredRunReadsAsTodayDoes',
+    'AFailedWaveDoesNotChangeTheExitCode'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

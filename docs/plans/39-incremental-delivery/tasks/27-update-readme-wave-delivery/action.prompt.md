@@ -38,8 +38,9 @@ Cover these, in the document's existing operator-facing style:
   (default false). A delivering wave is a **delivery point**: when its exit gate passes, the plan branch
   as it stands merges into your branch at that wave's barrier, carrying the non-delivering waves before
   it. A plan that marks no wave behaves exactly as today — one merge at run end. Say where the flag
-  lives plainly: there is no per-wave config file, and a `guardrails.json` inside a wave directory
-  un-waves the plan.
+  lives plainly: there is no per-wave config file. A `guardrails.json` inside a wave directory is
+  silently ignored — the plan stays waved and `validate` does not warn — so an operator who guesses
+  that file gets no delivery and no error.
 - **The interlock is wave-scoped.** A wave delivers only if no machine decision that suppresses delivery
   (a proceeded-best-guess or proceeded-unreviewed) was recorded during that wave. Say this in the
   sentence that already explains when delivery is held back, so a reader does not meet two rules.

@@ -2,8 +2,8 @@
 #          Each required token below measured ZERO occurrences in README.md on branch
 #          plan-breakdown/39-post-40-adjust at authoring time (#478), after this script's own
 #          comment strip — the expected answer for a required-present clause, so every one has teeth.
-#          The NEGATIVE clause at the end targets a sentence plan 39 makes FALSE, and measured
-#          PRESENT (1) at authoring time: it is the part appending text cannot satisfy.
+#          The NEGATIVE clause at the end targets a claim plan 39 makes FALSE, and measured
+#          PRESENT (1 sentence) at authoring time: it is the part appending text cannot satisfy.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
@@ -52,7 +52,7 @@ if ($doc -notmatch [regex]::Escape('delivers: true')) {
 }
 
 if ($doc -notmatch [regex]::Escape('brief.md')) {
-    $failures += "MISSING 'brief.md' in $subject — the README does not say WHERE the flag lives. There is no per-wave config file, and the obvious guess (a guardrails.json in the wave directory) silently un-waves the plan"
+    $failures += "MISSING 'brief.md' in $subject — the README does not say WHERE the flag lives. There is no per-wave config file, and the obvious guess (a guardrails.json in the wave directory) is silently ignored: the plan stays waved and validate does not warn"
 }
 
 if ($doc -notmatch [regex]::Escape('delivery point')) {
@@ -75,14 +75,24 @@ if ($doc -notmatch [regex]::Escape('GR2079')) {
     $failures += "MISSING 'GR2079' in $subject — the warning for a delivering wave with no exit gate is not documented, so an operator learns it only from a validate run"
 }
 
-# NEGATIVE: plan 39 makes this sentence FALSE. Once a wave delivers at its barrier, a later wave's
-# needs-human halt or failed gate no longer leaves the user's branch untouched — the earlier delivery
-# has already landed. Matched across line wraps and with or without the bold markers; -match is
-# case-insensitive. An appended qualifier elsewhere leaves this claim standing, which is why the
-# clause asserts the verbatim unqualified form is GONE rather than that a qualifier exists.
-$falseClaim = 'Nothing\s+is\s+merged\s+on\s+a\s+run\s+that\s+does\s+(\*\*)?not(\*\*)?\s+reach\s+green:\s+a\s+needs-human\s+halt,\s+a\s+failed\s+gate,\s+or\s+a\s+cancellation\s+leaves\s+your\s+branch\s+untouched\s+either\s+way'
-if ($doc -match $falseClaim) {
-    $failures += "STILL PRESENT in ${subject}: 'Nothing is merged on a run that does not reach green: a needs-human halt, a failed gate, or a cancellation leaves your branch untouched either way.' Per-wave delivery makes this false — a wave that delivered at its barrier has already landed when a later wave halts. Reword that sentence so it is true for waved plans; do not leave it standing beside a qualifier"
+# NEGATIVE: plan 39 makes the UNQUALIFIED claim false that a run which does not reach green leaves
+# the user's branch untouched — a wave that delivered at its barrier has already landed when a later
+# wave halts. Anchored on MEANING (#470, review W3), sentence by sentence, not on one wording. A
+# sentence fails when it (1) says nothing is merged or the branch stays untouched, (2) is about a
+# halt, a failed gate, a cancellation or a run that does not reach green, and (3) carries NO
+# waved-plan qualifier (flat, waved, wave(s), earlier, already, unless, except, delivery point,
+# delivers, barrier). Dropping "either way", reordering the halt list or removing the bold does not
+# escape it; a rewrite that scopes the claim to flat plans, or says an earlier delivery stays, does.
+# MEASURED at 9598c1d7: exactly 1 matching sentence in the subject (the one under "Delivery on
+# success"); 0 against a correct flat/waved rewrite.
+$flat = $doc -replace '\s+', ' '
+$sentences = [regex]::Split($flat, '(?<=[.!?])\s+')
+$saysUntouched = '(?i)(?:branch[^.]{0,40}?\b(?:untouched|unchanged|as\s+it\s+was)\b|\b(?:untouched|unchanged)\b[^.]{0,20}?branch|\bnothing\s+(?:is\s+)?merged\b|\bnot\s+merged\b|\bnever\s+merged\b)'
+$aboutNotGreen = '(?i)(?:needs-human|failed\s+gate|\bhalts?\b|\bhalted\b|cancel|does\s+[*_`]*not[*_`]*\s+reach\s+green|not\s+green)'
+$wavedQualifier = '(?i)(?:\bflat\b|\bwaved?\b|\bwaves\b|earlier|already|unless|except|delivery\s+point|delivers|barrier)'
+$falseClaims = @($sentences | Where-Object { $_ -match $saysUntouched -and $_ -match $aboutNotGreen -and $_ -notmatch $wavedQualifier })
+if ($falseClaims.Count -gt 0) {
+    $failures += "UNQUALIFIED CLAIM STILL PRESENT in ${subject}: '$($falseClaims[0])' — per-wave delivery makes this false: a wave that delivered at its barrier has already landed when a later wave halts. Reword that sentence so it is true for flat AND waved plans; do not leave it standing beside a qualifier elsewhere"
 }
 
 if ($failures.Count -gt 0) {

@@ -77,8 +77,14 @@ silently blamed on the wave.
   - `run.json` carries exactly ONE `refreshed` entry and NO `supplied` section;
   - `from` is the pinned delivery branch, and `deliveredWave` is wave-01's directory name;
   - `upstream` equals the user's branch tip after delivery AND equals `<commit>^2`;
-  - `<commit>^1` is the plan-branch tip from BEFORE the refresh, and `commit` appears in
-    `git log --first-parent guardrails/<plan>` (the plan branch was merged into, not fast-forwarded);
+  - `commit` appears in `git log --first-parent guardrails/<plan>` — the plan branch was merged INTO,
+    never fast-forwarded onto the delivered commit — and therefore so does its first parent `<commit>^1`;
+  - `<commit>^1` differs from `upstream`, and `teammate.txt` is ABSENT from `<commit>^1`'s tree
+    (`git cat-file -e <commit>^1:teammate.txt` fails): the first parent is the plan side, not the
+    user's. Do NOT assert that `<commit>^1` equals a plan-branch tip you captured yourself — whether the
+    wave marker commit lands before or after the delivery, and the trial merge's own parent order, are
+    not fixed by the design, so a correct implementation can legitimately put a different plan-side
+    commit there;
   - `paths` contains `teammate.txt`;
   - the commit message carries `Refreshed-From: <branch>` and `Guardrails-Run: <runId>`, and does NOT
     contain `Supplied-By:`.
@@ -101,6 +107,10 @@ Assert through the real journal on disk (`run.json`) and real git (`git log`, `g
 through a double. `RefreshedRecord`, `RunJournal.RecordRefreshed` and `UnauthoredContentNote` already
 exist and are covered by `RefreshProvenanceTests` (tasks 24/25); this suite proves the Scheduler actually
 refreshes, records, and names.
+
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong.
 
 The tests MUST COMPILE and FAIL. Do NOT implement the refresh.
 

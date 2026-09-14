@@ -15,15 +15,25 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'ADeliveryHittingBranchMoved_HaltsTheRunAtThatWave',
     'LaterWavesDoNotRun_AfterABranchMovedHalt',
-    'TheHaltNamesThePinnedTargetAndTheCurrentHead',
-    'AlreadyDeliveredWavesStayDelivered'
+    'TheHaltNamesThePinnedTargetAndTheCurrentHead'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — TheUsersCheckoutIsNotModified.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('TheUsersCheckoutIsNotModified')
+# DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the halt.
+#   TheUsersCheckoutIsNotModified (review 2026-09-11).
+#     STRUCTURAL REASON: #588 already refuses a moved HEAD WITHOUT touching the checkout —
+#     MergePlanBranchIntoUserBranch returns BranchMoved and never checks the pinned branch back out
+#     — so a correct test of this guarantee is green on current code by construction.
+#   AlreadyDeliveredWavesStayDelivered (review 2026-09-13).
+#     STRUCTURAL REASON: nothing in current code unwinds a merge that landed on the user's branch —
+#     a BranchMoved refusal rewrites no branch — so a test of this never-unwind guarantee is green
+#     on arrival. Its red half (that the earlier wave delivered at all) belongs to task 07's suite,
+#     not this one; pinning it red here rewards only a wrongly-failing test that task 17 (it cannot
+#     edit tests) could never turn green.
+#   Each is asserted to EXIST below, and task 17's forward census requires each Passed.
+$mustExist = @(
+    'TheUsersCheckoutIsNotModified',
+    'AlreadyDeliveredWavesStayDelivered'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

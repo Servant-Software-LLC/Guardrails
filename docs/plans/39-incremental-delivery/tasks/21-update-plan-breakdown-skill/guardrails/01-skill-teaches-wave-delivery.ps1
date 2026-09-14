@@ -68,8 +68,17 @@ if ($doc -notmatch [regex]::Escape('delivery point')) {
     $failures += "MISSING 'delivery point' in $subject — the Step 7 report does not name which waves are delivery points. §1b asks for it by name, and it is what makes a wave marked delivers-by-habit visible to its author"
 }
 
-if ($doc -match [regex]::Escape('**Do NOT wave a flat plan** —')) {
-    $failures += "STALE TEXT STILL PRESENT: '**Do NOT wave a flat plan** —' in $subject — the OLD unqualified doctrine sentence is still there. The ruling REWORDS it to `"do not wave a flat plan FOR PARALLELISM`"; leaving the unqualified form standing beside the new text is exactly the append-instead-of-edit this clause exists to catch"
+# NEGATIVE: the OLD unqualified doctrine "do not wave a flat plan". The ruling rewords it to "do not wave
+# a flat plan FOR PARALLELISM"; the unqualified form must be GONE, not merely joined by new text.
+# Anchored on MEANING (#470, review W3): any "do not / don't / never wave a flat plan" NOT followed,
+# within the same sentence, by "for parallelism" — bold markers, the dash and the words around it do not
+# matter. MEASURED at 9598c1d7: exactly 1 match in the subject (Step 0's doctrine line, the only
+# "wave a flat plan" in the file); 0 against the reworded form.
+# (The typographic apostrophe U+2019 is spliced in with [char]0x2019: PowerShell treats that literal
+# character as a string delimiter, so it cannot appear inside a quoted pattern.)
+$unqualifiedDoctrine = '(?i)(?:do\s+not|don[''' + [char]0x2019 + ']t|never)\s+wave\s+a\s+flat\s+plan(?![^.]{0,60}?for\s+parallelism)'
+if ($doc -match $unqualifiedDoctrine) {
+    $failures += "STALE DOCTRINE STILL PRESENT in $subject — '$($Matches[0])' with no 'for parallelism' in the same sentence. The ruling REWORDS it to 'do not wave a flat plan FOR PARALLELISM'; leaving the unqualified form standing beside the new text is exactly the append-instead-of-edit this clause exists to catch"
 }
 
 if ($failures.Count -gt 0) {

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=8d2ce0bbd03976b64643df58a07f81239a5e77bcd78a8ff76bd8c129e26e0403 -->
+<!-- guardrails:graph v1 source-sha256=2ed7627ceee2d82a69b1a65d7dcbc02802a248b187e2510cc28031ac5f8048cb -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -156,6 +156,7 @@
   style task_09_author_tests_wave_delivered_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_10_implement_wave_delivered_journal["10-implement-wave-delivered-journal"]
     task_10_implement_wave_delivered_journal_gr_0["01-tests-pass"]:::guardrail
+    task_10_implement_wave_delivered_journal_gr_1["02-forward-census"]:::guardrail
   end
   style task_10_implement_wave_delivered_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_11_author_tests_wave_delivered_event["11-author-tests-wave-delivered-event"]
@@ -166,6 +167,7 @@
   style task_11_author_tests_wave_delivered_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_12_implement_wave_delivered_event_core["12-implement-wave-delivered-event-core"]
     task_12_implement_wave_delivered_event_core_gr_0["01-tests-pass"]:::guardrail
+    task_12_implement_wave_delivered_event_core_gr_1["02-forward-census"]:::guardrail
   end
   style task_12_implement_wave_delivered_event_core fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_13_implement_wave_delivered_event_cli["13-implement-wave-delivered-event-cli"]
@@ -218,6 +220,7 @@
   style task_22_author_tests_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_23_implement_entry_baseline_kind["23-implement-entry-baseline-kind"]
     task_23_implement_entry_baseline_kind_gr_0["01-tests-pass"]:::guardrail
+    task_23_implement_entry_baseline_kind_gr_1["02-forward-census"]:::guardrail
   end
   style task_23_implement_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_24_author_tests_refresh_provenance["24-author-tests-refresh-provenance"]
@@ -311,10 +314,12 @@
   click task_09_author_tests_wave_delivered_journal_gr_0 href "tasks/09-author-tests-wave-delivered-journal/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_09_author_tests_wave_delivered_journal_gr_1 href "tasks/09-author-tests-wave-delivered-journal/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
   click task_10_implement_wave_delivered_journal_gr_0 href "tasks/10-implement-wave-delivered-journal/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
+  click task_10_implement_wave_delivered_journal_gr_1 href "tasks/10-implement-wave-delivered-journal/guardrails/02-forward-census.ps1" "02-forward-census" _blank
   click task_11_author_tests_wave_delivered_event_gr_0 href "tasks/11-author-tests-wave-delivered-event/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_11_author_tests_wave_delivered_event_gr_1 href "tasks/11-author-tests-wave-delivered-event/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
   click task_11_author_tests_wave_delivered_event_gr_2 href "tasks/11-author-tests-wave-delivered-event/guardrails/03-cli-forwarding-tests-fail-on-stubs.ps1" "03-cli-forwarding-tests-fail-on-stubs" _blank
   click task_12_implement_wave_delivered_event_core_gr_0 href "tasks/12-implement-wave-delivered-event-core/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
+  click task_12_implement_wave_delivered_event_core_gr_1 href "tasks/12-implement-wave-delivered-event-core/guardrails/02-forward-census.ps1" "02-forward-census" _blank
   click task_13_implement_wave_delivered_event_cli_gr_0 href "tasks/13-implement-wave-delivered-event-cli/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
   click task_13_implement_wave_delivered_event_cli_gr_1 href "tasks/13-implement-wave-delivered-event-cli/guardrails/02-forward-census.ps1" "02-forward-census" _blank
   click task_14_author_tests_post_delivery_refresh_gr_0 href "tasks/14-author-tests-post-delivery-refresh/guardrails/01-build-passes.ps1" "01-build-passes" _blank
@@ -334,6 +339,7 @@
   click task_22_author_tests_entry_baseline_kind_gr_0 href "tasks/22-author-tests-entry-baseline-kind/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_22_author_tests_entry_baseline_kind_gr_1 href "tasks/22-author-tests-entry-baseline-kind/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_23_implement_entry_baseline_kind_gr_0 href "tasks/23-implement-entry-baseline-kind/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank
+  click task_23_implement_entry_baseline_kind_gr_1 href "tasks/23-implement-entry-baseline-kind/guardrails/02-forward-census.ps1" "02-forward-census" _blank
   click task_24_author_tests_refresh_provenance_gr_0 href "tasks/24-author-tests-refresh-provenance/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_24_author_tests_refresh_provenance_gr_1 href "tasks/24-author-tests-refresh-provenance/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
   click task_25_implement_refresh_provenance_gr_0 href "tasks/25-implement-refresh-provenance/guardrails/01-tests-pass.ps1" "01-tests-pass" _blank

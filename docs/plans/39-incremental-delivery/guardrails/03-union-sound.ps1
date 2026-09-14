@@ -37,7 +37,9 @@ foreach ($root in $roots) {
 $definedOnce = @(
     @{ File = 'src/Guardrails.Core/Journal/WaveDeliveredRecord.cs'; Pattern = '(class|record)\s+WaveDeliveredRecord' },
     @{ File = 'src/Guardrails.Core/Model/WaveNode.cs';              Pattern = '(class|record)\s+WaveNode' },
-    @{ File = 'src/Guardrails.Core/Execution/DecisionEntry.cs';     Pattern = '(class|record)\s+DecisionEntry' }
+    @{ File = 'src/Guardrails.Core/Execution/DecisionEntry.cs';     Pattern = '(class|record)\s+DecisionEntry' },
+    @{ File = 'src/Guardrails.Core/Journal/RefreshedRecord.cs';     Pattern = '(class|record)\s+RefreshedRecord' },
+    @{ File = 'src/Guardrails.Core/Journal/UnauthoredContentNote.cs'; Pattern = '(class|record)\s+UnauthoredContentNote' }
 )
 foreach ($d in $definedOnce) {
     if (-not (Test-Path $d.File)) { continue }   # union-safe: not landed yet

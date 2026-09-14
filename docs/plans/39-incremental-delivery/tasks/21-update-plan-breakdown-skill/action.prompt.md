@@ -50,7 +50,9 @@ Four changes:
   a wave marked `delivers` out of habit is the failure mode this report exists to surface.
 
 The flag itself is `delivers: true` in the wave's **`brief.md` YAML front matter** — there is no
-per-wave manifest, and a `guardrails.json` in a wave directory un-waves the plan.
+per-wave manifest. A `guardrails.json` dropped into a wave directory is silently IGNORED: the plan stays
+waved and `validate` does not warn, so an author who guesses that file gets no delivery and no error.
+Teach `brief.md` by name.
 
 ## Your deliverable is under `.claude/` — use needsHarnessWrite, do NOT write directly
 

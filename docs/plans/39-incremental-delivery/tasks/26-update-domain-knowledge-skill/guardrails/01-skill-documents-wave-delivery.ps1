@@ -84,8 +84,26 @@ if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
     $failures += "MISSING 'UnauthoredContentNote' in $subject — the single reader of supplied[] and refreshed[] is not named, which invites the next feature to read only one section"
 }
 
-if ($doc -match 'Supplied-By:\s*refresh') {
-    $failures += "REJECTED MODEL PRESENT: 'Supplied-By: refresh' in $subject — design 39 §1c records a refresh in its own refreshed[] section with a Refreshed-From: trailer. A refresh has no supplier, so a Supplied-By: trailer on it is a false statement, and describing it that way teaches every agent the model the design rejected"
+# NEGATIVE: the model design 39 §1c REJECTED — a refresh described as a supply. Anchored on MEANING
+# (#470, review W3), not on one literal: a refresh given a `by` value, a Supplied-By trailer naming a
+# refresh, a refresh recorded as or in supplied[], or a refresh commit carrying Supplied-By. An explicit
+# negation in between ("not", "never", "rather than", "instead of", "unlike") is the CORRECT contrast and
+# does not trip it, and neither does naming both sections side by side ("reads supplied[] and
+# refreshed[]"). MEASURED at 9598c1d7: 0 matches in the subject.
+# (The typographic apostrophe U+2019 is spliced in with [char]0x2019: PowerShell treats that literal
+# character as a string delimiter, so it cannot appear inside a quoted pattern.)
+$negationFree = '(?:(?!\bnot\b|\bnever\b|n[''' + [char]0x2019 + ']t\b|rather\s+than|instead\s+of|unlike)[^.])'
+$rejectedModel = @(
+    '(?i)\bby\s*[:=]\s*[`"'']?\s*refresh',
+    '(?i)Supplied-By:\s*[`"'']?\s*refresh',
+    ('(?i)\brefresh(?:es|ed)?\b' + $negationFree + '{0,24}?\b(?:recorded|stored|written|journaled|logged|appended|kept)\s+(?:as|in|into|to|under)\s+(?:an?\s+|the\s+)?[`"'']?supplied\b'),
+    ('(?i)\brefresh(?:[''' + [char]0x2019 + ']s)?\s+(?:merge\s+)?commits?\b' + $negationFree + '{0,40}?Supplied-By')
+)
+foreach ($p in $rejectedModel) {
+    if ($doc -match $p) {
+        $failures += "REJECTED MODEL PRESENT in $subject — '$($Matches[0])': a refresh is described as a supply. Design 39 §1c records a refresh in its own refreshed[] section with a Refreshed-From: trailer; a refresh has no supplier, so a by value, a supplied[] entry or a Supplied-By trailer for it is a false statement. Say what a refresh IS, and make any contrast with a supply an explicit negation"
+        break
+    }
 }
 
 if ($failures.Count -gt 0) {

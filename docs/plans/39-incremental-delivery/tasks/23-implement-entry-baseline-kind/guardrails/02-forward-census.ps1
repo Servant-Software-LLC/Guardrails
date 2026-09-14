@@ -1,15 +1,13 @@
-# catches: shipping the post-delivery refresh WITHOUT the control that makes it defensible.
-#          Design §1c calls this "the only place in this design where the harness must grow a new
-#          distinction": a positive baseline re-evaluates, a negative one keeps skip-once. Today
-#          Scheduler.RunWaveEntryGateAsync documents "Skip-once: a passed entry marker for this
-#          wave is not re-evaluated on resume" for BOTH kinds, so after a refresh admits the
-#          user's commits into the tree, the next wave would pass over a tree it never checked —
-#          "silently", in the design's own word.
+# catches: a DECLARED-EXEMPT census row quietly ceasing to exist, and a pinned behaviour that was
+#          never turned green. Task 22's red census excuses ANegativeBaselineEntryCheck_KeepsSkipOnce
+#          from being Failed (today's skip-once already makes a correct test of it green) but NOT
+#          from existing; this is the other half of that bargain — every task 22 behaviour, exempt
+#          or not, observed Passed in the runner's own TRX once the distinction has landed.
 #
-#          There is no stub file, and the reason is the one tasks 14 and 16 give: the production
-#          type already exists. RunWaveEntryGateAsync is there; what is missing is the
-#          DISTINCTION, not a type. Grep Scheduler.cs for RunWaveEntryGateAsync rather than
-#          trusting a line number.
+#          FORWARD polarity, and its boundary stated: a forward census cannot see a hollow body
+#          (a hollow test passes). What it CAN see is a test that was never written, one that no
+#          longer runs, and the monotone half regressing because re-evaluation was applied to both
+#          kinds.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
@@ -17,16 +15,9 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'APositiveBaselineEntryCheck_ReEvaluatesAfterADelivery',
+    'ANegativeBaselineEntryCheck_KeepsSkipOnce',
     'AnEntryGateAfterARefresh_RunsAgainstTheRefreshedTree'
 )
-
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13) — ANegativeBaselineEntryCheck_KeepsSkipOnce.
-#   STRUCTURAL REASON: today's RunWaveEntryGateAsync already returns Pass for EVERY passed entry
-#   marker, whatever its kind — the skip-once branch at Scheduler.cs:1400-1404 on 5b2b0bbf — so a
-#   correct test of the monotone half is green on current code by construction. Pinning it red
-#   would reward only a wrongly-failing test, which task 23 (it cannot edit tests) could never turn
-#   green. It is asserted to EXIST below, and task 23's forward census requires it Passed.
-$mustExist = @('ANegativeBaselineEntryCheck_KeepsSkipOnce')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -62,16 +53,8 @@ try {
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }
-        elseif ($node.outcome -ne 'Failed') {
-            $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'."
-        }
-    }
-
-    # The DECLARED exemption is exempt from the RED requirement, not from EXISTING.
-    foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
-        if (-not $node) {
-            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
+        elseif ($node.outcome -ne 'Passed') {
+            $failures += "[$name] outcome was '$($node.outcome)', expected 'Passed'."
         }
     }
 
@@ -82,7 +65,7 @@ try {
         exit 1
     }
 
-    Write-Output "Census: all $($pinned.Count) pinned behaviour(s) observed Failed; $($mustExist.Count) declared exemption(s) present."
+    Write-Output "Census: all $($pinned.Count) pinned behaviour(s) observed Passed."
     exit 0
 }
 finally {

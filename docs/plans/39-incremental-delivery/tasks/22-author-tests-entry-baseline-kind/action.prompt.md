@@ -62,7 +62,16 @@ trusting a line number; this file is large and several tasks in this plan edit i
 - `AnEntryGateAfterARefresh_RunsAgainstTheRefreshedTree` — the end-to-end one: the point of the
   whole distinction is that the tree a refresh produced is actually checked.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the distinction.
+`ANegativeBaselineEntryCheck_KeepsSkipOnce` is declared EXEMPT from the red census: today's
+`RunWaveEntryGateAsync` already skips every passed entry marker whatever its kind, so a correct test of
+the monotone half is green on arrival. Write it to assert the guarantee, not to fail. It must still
+exist, and task 23's forward census requires all three Passed.
+
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong.
+
+The other two tests MUST COMPILE and FAIL. Do NOT implement the distinction.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveEntryBaselineKindTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside

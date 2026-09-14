@@ -53,7 +53,17 @@ identical refusal. DECIDED: **halt at that wave.**
 - `TheUsersCheckoutIsNotModified` — #588's safe direction: refusing leaves the checkout untouched
   rather than checking the pinned branch back out and stomping a deliberate switch.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the halt.
+`AlreadyDeliveredWavesStayDelivered` and `TheUsersCheckoutIsNotModified` are the never-weaker halves,
+and both are declared EXEMPT from the red census: nothing in today's code unwinds a merge that already
+landed, and #588 already refuses a moved HEAD without touching the checkout, so correct tests of either
+are green on arrival. Write them to assert the guarantee, not to fail. They must still exist, and task
+17's forward census requires all five Passed.
+
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong.
+
+The other three tests MUST COMPILE and FAIL. Do NOT implement the halt.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/BranchMovedHaltTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

@@ -49,7 +49,18 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
 - `AFullyDeliveredRunReadsAsTodayDoes` — the never-weaker requirement: a plan marking no wave must
   produce the output it produces today.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the report.
+`AFailedWaveDoesNotChangeTheExitCode` and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from
+the red census: a run with a failed wave already exits 2 on today's code, and a plan that marks no wave
+already prints today's output, so correct tests of both are green on arrival. Write them to assert the
+guarantee, not to fail. They must still exist, and task 19's forward census requires all five Passed.
+
+**No process-wide state (#520).** Do not set environment variables, change the current directory, or
+touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
+breaks a class that did nothing wrong. Capture the output whose ORDER you assert through a
+`StringConsoleIo` handed to `CommandFactory.BuildRootCommand(io)` — never by redirecting `Console.Out`,
+which is process-wide.
+
+The other three tests MUST COMPILE and FAIL. Do NOT implement the report.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/PartialDeliveryReportTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=8d2ce0bbd03976b64643df58a07f81239a5e77bcd78a8ff76bd8c129e26e0403 body-sha256=e6317c7400b17baa3fc0fb9820a78b4b63867cb544aef5dd73336e4fa608597d -->
+<!-- guardrails:graph v1 source-sha256=2ed7627ceee2d82a69b1a65d7dcbc02802a248b187e2510cc28031ac5f8048cb body-sha256=cd52267d5964ca1d220976cae88fdfa3119a757ca9c1055eb91687b4f6e16e2f -->
 
 ```mermaid
 flowchart TD
@@ -55,6 +55,7 @@ flowchart TD
   style task_09_author_tests_wave_delivered_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_10_implement_wave_delivered_journal["10-implement-wave-delivered-journal"]
     task_10_implement_wave_delivered_journal_gr_0["01-tests-pass"]:::guardrail
+    task_10_implement_wave_delivered_journal_gr_1["02-forward-census"]:::guardrail
   end
   style task_10_implement_wave_delivered_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_11_author_tests_wave_delivered_event["11-author-tests-wave-delivered-event"]
@@ -65,6 +66,7 @@ flowchart TD
   style task_11_author_tests_wave_delivered_event fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_12_implement_wave_delivered_event_core["12-implement-wave-delivered-event-core"]
     task_12_implement_wave_delivered_event_core_gr_0["01-tests-pass"]:::guardrail
+    task_12_implement_wave_delivered_event_core_gr_1["02-forward-census"]:::guardrail
   end
   style task_12_implement_wave_delivered_event_core fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_13_implement_wave_delivered_event_cli["13-implement-wave-delivered-event-cli"]
@@ -117,6 +119,7 @@ flowchart TD
   style task_22_author_tests_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_23_implement_entry_baseline_kind["23-implement-entry-baseline-kind"]
     task_23_implement_entry_baseline_kind_gr_0["01-tests-pass"]:::guardrail
+    task_23_implement_entry_baseline_kind_gr_1["02-forward-census"]:::guardrail
   end
   style task_23_implement_entry_baseline_kind fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_24_author_tests_refresh_provenance["24-author-tests-refresh-provenance"]

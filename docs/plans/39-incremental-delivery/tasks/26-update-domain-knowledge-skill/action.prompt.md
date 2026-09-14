@@ -57,10 +57,11 @@ append a detached list at the end:
 Also add `GR2078` and `GR2079` to the GR-code ledger — the list that already carries
 `GR2042 = StructuralOverScope`.
 
-**A refresh is not a supply, and the skill must not say otherwise.** Do not describe a refresh as an
-entry in `supplied[]` or as carrying a `Supplied-By:` trailer — not even as a rejected alternative
-spelled out literally, because a guardrail refuses the literal `Supplied-By: refresh`. Say it in
-words.
+**A refresh is not a supply, and the skill must not say otherwise.** Never describe a refresh as
+recorded in `supplied[]`, as having a `by` value, or as carrying a supply trailer. When you contrast the
+two, say what a refresh IS — its own `refreshed[]` section and a `Refreshed-From:` trailer — and make
+any comparison an explicit negation ("a refresh is never recorded in `supplied[]`"). The guardrail
+refuses an un-negated description of the rejected model, however it is worded.
 
 ## Your deliverable is under `.claude/` — use needsHarnessWrite, do NOT write directly
 
