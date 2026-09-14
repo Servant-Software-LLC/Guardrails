@@ -15,15 +15,21 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Delivers_DefaultsToFalse_WhenTheManifestOmitsIt',
     'Delivers_IsTrue_WhenTheManifestSetsIt',
-    'AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint',
-    'WaveDefinitionHash_ChangesWhenDeliversChanges'
+    'AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — APlanMarkingNoWave_LoadsIdenticallyToBefore.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('APlanMarkingNoWave_LoadsIdenticallyToBefore')
+# DECLARED RED-CENSUS EXEMPTIONS. Each is asserted to EXIST below, and the paired implement task's
+# forward census (task 02) requires each to be observed Passed.
+#   APlanMarkingNoWave_LoadsIdenticallyToBefore (review 2026-09-11)
+#     STRUCTURAL REASON: it pins behaviour that must NOT change. A plan that marks no wave loads the
+#     same before and after this feature, so a correct test has nothing to be red about; demanding
+#     Failed would force a test coupled to the stub instead of to the never-weaker property.
+#   WaveDefinitionHash_ChangesWhenDeliversChanges (review 2026-09-13, B3)
+#     STRUCTURAL REASON: WaveDefinitionHash.Compute -> GateDefinitionOf already folds brief.md, so
+#     adding `delivers: true` there moves the wave's hash on CURRENT code (measured with
+#     `guardrails plan-hash` on examples/waved-hello). A correct test is green on the base; pinning it
+#     red let only a wrongly-failing test through task 01, and task 02 cannot edit tests.
+$mustExist = @('APlanMarkingNoWave_LoadsIdenticallyToBefore', 'WaveDefinitionHash_ChangesWhenDeliversChanges')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

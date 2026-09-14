@@ -54,15 +54,21 @@ or a decision in wave 4 could retroactively suppress waves 1-3 that already land
 - `AWaveWithASuppressingDecision_DoesNotDeliver`
 - `ADecisionInALaterWave_DoesNotRetroactivelySuppressAnEarlierDelivery` — the direction that cannot be
   undone: the earlier wave's merge already happened.
-- `ADecisionInAnEarlierWave_DoesNotSuppressALaterCleanWave`
+- `ADecisionInAnEarlierWave_DoesNotSuppressALaterCleanWave` — the opposite direction, so the scoping
+  is genuinely per-wave rather than a sticky run-level flag wearing a wave's name.
 - `TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject` — assert the wave is read
   from the decision's own member. A test that passes by splitting `Subject` would certify the
-  parsing convention this task exists to avoid. — the opposite direction, so the scoping
-  is genuinely per-wave rather than a sticky run-level flag wearing a wave's name.
+  parsing convention this task exists to avoid.
 - `TheOperatorOverrideStillLiftsTheInterlock` — `--merge-on-success` remains the documented override
   and must still work per wave.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the scoping.
+**One row is DECLARED EXEMPT from the red census:** `TheOperatorOverrideStillLiftsTheInterlock`. The
+override already wins on current code (#361/#597, `RunReport.DeliveryForcedPastDecision`); wave
+scoping changes which decisions suppress, never whether the override lifts them, so a correct test is
+green on arrival. It must still EXIST: the census asserts that, and task 06's forward census requires
+it observed `Passed`.
+
+The other tests MUST COMPILE and FAIL. Do NOT implement the scoping.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveScopedInterlockTests.cs` and `src/Guardrails.Core/Execution/DecisionEntry.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

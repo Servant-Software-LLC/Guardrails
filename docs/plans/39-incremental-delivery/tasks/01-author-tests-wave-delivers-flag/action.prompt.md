@@ -26,15 +26,24 @@
 `delivers: true` in the **YAML front matter of the wave's existing optional `brief.md`**
 (`WaveNode.BriefFileName`), NOT a new per-wave JSON manifest. The design's first draft said
 "the wave's own manifest"; **there is no wave manifest**, SSOT §14.1 says v1 has *"no per-wave
-config in v1"*, and the obvious guess is destructive: `WaveFolder.TryResolveWaveTarget` treats a
-directory carrying its own `guardrails.json` as **a plan in its own right, never a wave**, so
-dropping a config into `wave-NN/` silently un-waves the plan. Do not create a new file.
+config in v1"*, and the obvious guess fails SILENTLY: a `guardrails.json` dropped into `wave-NN/` is
+ignored by the plan's loader. The plan stays waved, `validate` says nothing, and a flag written there
+is never read, so it looks as if it worked (measured, review 2026-09-13). Only a command pointed at
+that wave directory itself treats it as a separate plan (`WaveFolder.TryResolveWaveTarget`). Do not
+create a new file.
 
 Author failing tests AND the minimal stub for the per-wave `delivers` flag — design 39 §1b and §3.
 
 **Test file:** `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs`
 **Test class:** `WaveDeliversFlagTests`
-**Stub:** add `Delivers` to `src/Guardrails.Core/Model/WaveNode.cs`.
+**Stub:** add `Delivers` to `src/Guardrails.Core/Model/WaveNode.cs`, and make its getter THROW:
+`public bool Delivers { get => throw new NotImplementedException(); init { } }`. Any other member the
+stub adds (a delivery-point predicate, say) throws too. A working `bool Delivers { get; init; }`
+returns `false`, which is exactly what `Delivers_DefaultsToFalse_WhenTheManifestOmitsIt` and
+`AWaveWithNoGuardrailsFolder_IsNeverADeliveryPoint` assert, so both would pass on the stub and fail
+the red census (review, 2026-09-13). `WaveNode` is a `sealed record`, so its generated
+`Equals`/`GetHashCode`/`ToString` also throw while the stub stands; that is expected, and task 02
+replaces the stub.
 
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
@@ -58,7 +67,16 @@ deliverer on upgrade, changing what those plans do with the user's branch withou
 - `APlanMarkingNoWave_LoadsIdenticallyToBefore` — assert the never-weaker property directly rather
   than trusting it falls out.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the behaviour.
+**Two rows are DECLARED EXEMPT from the red census.**
+- `WaveDefinitionHash_ChangesWhenDeliversChanges`: the hash already folds `brief.md` (see its bullet),
+  so a correct test is green on arrival (measured with `guardrails plan-hash`, review 2026-09-13).
+- `APlanMarkingNoWave_LoadsIdenticallyToBefore`: it pins behaviour that must NOT change, so a correct
+  test has nothing to be red about.
+
+Both must still EXIST: the census asserts that, and task 02's forward census requires each observed
+`Passed`. Write them correctly; do NOT make them fail to please the census.
+
+The pinned tests MUST COMPILE and FAIL; the exempt rows need not. Do NOT implement the behaviour.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliversFlagTests.cs` and `src/Guardrails.Core/Model/WaveNode.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

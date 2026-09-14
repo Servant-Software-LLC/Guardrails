@@ -14,15 +14,21 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 $pinned = @(
     'GR2078_FiresWhenAPostDeliveryWaveHasNoEntryPreflight',
-    'GR2079_FiresWhenADeliveringWaveHasNoExitGate',
-    'GR2077_RemainsReservedAndUnallocated'
+    'GR2079_FiresWhenADeliveringWaveHasNoExitGate'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — GR2078_IsSilentWhenTheWaveHasOne, GR2078_IsSilentForAWaveThatFollowsNoDelivery, GR2079_IsSilentWhenTheWaveHasAnExitGate, BothAreWarnings_AndDoNotMoveTheExitCode.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('GR2078_IsSilentWhenTheWaveHasOne', 'GR2078_IsSilentForAWaveThatFollowsNoDelivery', 'GR2079_IsSilentWhenTheWaveHasAnExitGate', 'BothAreWarnings_AndDoNotMoveTheExitCode')
+# DECLARED RED-CENSUS EXEMPTIONS. Each is asserted to EXIST below, and the paired implement task's
+# forward census (task 04) requires each to be observed Passed.
+#   GR2078_IsSilentWhenTheWaveHasOne, GR2078_IsSilentForAWaveThatFollowsNoDelivery,
+#   GR2079_IsSilentWhenTheWaveHasAnExitGate, BothAreWarnings_AndDoNotMoveTheExitCode (review 2026-09-11)
+#     STRUCTURAL REASON: a diagnostic that does not exist yet is silent and moves no exit code, so each
+#     of these passes by construction on the stub tree (measured: demanding Failed made this task
+#     unsatisfiable).
+#   GR2077_RemainsReservedAndUnallocated (review 2026-09-13, B2)
+#     STRUCTURAL REASON: this task's own 03-codes-and-marker.ps1 refuses any constant equal to "GR2077",
+#     so on every tree that passes it a correct reservation test is green. Pinning it red let only a
+#     wrongly-failing test through task 03, and task 04 cannot edit tests.
+$mustExist = @('GR2078_IsSilentWhenTheWaveHasOne', 'GR2078_IsSilentForAWaveThatFollowsNoDelivery', 'GR2079_IsSilentWhenTheWaveHasAnExitGate', 'BothAreWarnings_AndDoNotMoveTheExitCode', 'GR2077_RemainsReservedAndUnallocated')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null

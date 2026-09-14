@@ -51,6 +51,8 @@ names the last taken code, and that claim goes stale the moment you add two.
   every wave, only on one that follows a delivery point.
 - `GR2079_FiresWhenADeliveringWaveHasNoExitGate`
 - `GR2079_IsSilentWhenTheWaveHasAnExitGate`
+- `BothAreWarnings_AndDoNotMoveTheExitCode` — a warning that silently became an error would fail
+  correct-but-unguarded plans.
 - `GR2077_RemainsReservedAndUnallocated` — assert no `DiagnosticCodes` constant equals
   `"GR2077"`. The reservation was prose-only: the pre-existing catalogue tests cannot catch
   taking it, because `TheNextFreeMarkerNamesACodeThatIsActuallyFree` only checks the marker is
@@ -58,21 +60,25 @@ names the last taken code, and that claim goes stale the moment you add two.
   and `NoTwoConstantsShareACode` never sees GR2077 at all since it is reserved in a COMMENT, not
   a constant.
 
-**Note the three DECLARED-EXEMPT rows.** `GR2078_IsSilentWhenTheWaveHasOne`,
-`GR2078_IsSilentForAWaveThatFollowsNoDelivery`, `GR2079_IsSilentWhenTheWaveHasAnExitGate` and
-`BothAreWarnings_AndDoNotMoveTheExitCode` are NOT in the red census, because a diagnostic that
-does not exist yet is silent and emits no exit code — they pass by construction on the stub tree
-and demanding `Failed` from them made this task unsatisfiable (measured). They must still EXIST;
-the census asserts that, and task 04's forward census requires each observed `Passed`.
+**Five rows are DECLARED EXEMPT from the red census.**
+- `GR2078_IsSilentWhenTheWaveHasOne`, `GR2078_IsSilentForAWaveThatFollowsNoDelivery`,
+  `GR2079_IsSilentWhenTheWaveHasAnExitGate` and `BothAreWarnings_AndDoNotMoveTheExitCode`: a
+  diagnostic that does not exist yet is silent and emits no exit code, so they pass by construction
+  on the stub tree, and demanding `Failed` from them made this task unsatisfiable (measured).
+- `GR2077_RemainsReservedAndUnallocated`: this task's own third guardrail refuses a `"GR2077"`
+  constant, so on every tree that passes it a correct reservation test is green. Pinning it red let
+  only a wrongly-failing test through (review, 2026-09-13). Write it correctly; do NOT make it fail
+  to please the census.
+
+All five must still EXIST: the census asserts that, and task 04's forward census requires each
+observed `Passed`.
 
 **A third guardrail now checks the NUMBERING** (`03-codes-and-marker.ps1`): both constants
 declared, GR2077 still unallocated, and exactly one live next-free marker reading GR2080. Before
 it existed the cheapest passing implementation wrote the tests against the string literals and
 never opened `DiagnosticCodes.cs`.
-- `BothAreWarnings_AndDoNotMoveTheExitCode` — a warning that silently became an error would fail
-  correct-but-unguarded plans.
 
-The tests MUST COMPILE and FAIL. Do NOT implement the checks.
+The pinned tests MUST COMPILE and FAIL; the exempt rows pass. Do NOT implement the checks.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveryDiagnosticsTests.cs` and `src/Guardrails.Core/Loading/DiagnosticCodes.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

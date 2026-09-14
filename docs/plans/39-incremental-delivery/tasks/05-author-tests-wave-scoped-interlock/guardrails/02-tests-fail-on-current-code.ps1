@@ -21,7 +21,10 @@ $pinned = @(
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — TheOperatorOverrideStillLiftsTheInterlock.
-#   STRUCTURAL REASON: 
+#   STRUCTURAL REASON: the operator override already wins on CURRENT code: --merge-on-success delivers
+#   past a suppressing decision today (#361/#597, RunReport.DeliveryForcedPastDecision). Wave scoping
+#   changes WHICH decisions suppress, never whether the override lifts them, so a correct test is green
+#   on the base; it pins that the override survives the change.
 #   Each is asserted to EXIST below, and the paired implement task's forward census
 #   requires each to be observed Passed.
 $mustExist = @('TheOperatorOverrideStillLiftsTheInterlock')
