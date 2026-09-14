@@ -584,8 +584,9 @@ failure in one stage no longer strands the finished work of the others.
 Much smaller than the first draft:
 
 - **The delivery path becomes callable at a wave barrier**, gated on that wave's `Exit` being green
-  against the TRIAL MERGE (§1) — not only at run end. The run-end call stays for the last wave and for
-  every flat plan. **The entry point is `Scheduler.Finalize` → `DeliverToUserBranch` →
+  against the TRIAL MERGE (§1) — not only at run end. The plan's final wave never delivers at its barrier:
+  it always delivers through the run-end call, after the #457 terminal gate passes (review round 5,
+  `d39-barrier-terminal-gate`), and so does every flat plan. **The entry point is `Scheduler.Finalize` → `DeliverToUserBranch` →
   `IWorktreeProvider.MergePlanBranchIntoUserBranch`** — corrected at review, 2026-09-11: there is no method
   called `DeliverAndCleanup` anywhere in the tree (`grep -rn DeliverAndCleanup src/ tests/` exits 1). The
   name entered at charter review and propagated; grep `Scheduler.cs` for `DeliverToUserBranch` rather than
@@ -631,7 +632,8 @@ example used `succeeded`/`failed`, which are not wave status tokens. Every recor
   - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5), with `detail` naming
     the failing checks, the user's tip, and the range `git log <plan-tip-sha>..<user-tip-sha>`;
   - `branch-moved` or `dirty-working-tree` when the promotion refused.
-- `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject.
+- `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject, or when an earlier
+  `hook-rejected` refusal in the run held it, with `detail` naming that rejection.
 
 `status: "running"` is journaled when a barrier delivery begins: after §1 step 1 lets it proceed, and before
 `CreateTrialDelivery` runs the user's hooks (#625). It is then replaced by `delivered` or `refused`, and
@@ -644,6 +646,9 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
   written then. One narrow exception is accepted in v1: after a crash between the refresh commit and the wave
   marker, the resume takes the quiet case. It fast-forwards the user's branch onto the refresh commit, which the
   next delivery would carry anyway, rewrites the record's `commit`, and announces the delivery a second time.
+- A rewind (drift resolution, or `guardrails reset <plan> <wave>`) keeps the wave's `delivered` record, because its
+  commits are already on the user's branch. If the re-run reaches its barrier and delivers again, the new record
+  replaces the old one (review round 5, `d39-rewind-delivered-wave`).
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
 - A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
   reached its barrier, failed its exit gate, had delivery resolved off (`--no-merge-on-success`, a serial run), or
@@ -654,13 +659,26 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
   meant "not on the user's branch", which is false for every wave the run-end delivery carries.)*
 
 **A refused wave delivery halts the run at that wave — DECIDED (architect, extending
-`d39-branchmoved-midrun`).** The answered question covered `branch-moved`. A `conflict` repeats at every later
-delivery for the same reason, and `dirty-working-tree` or `hook-rejected` needs an operator action before
-anything can land. So every refusal halts with its own `WaveHaltKind.DeliveryRefused`. It never reuses
-`ExitGateFailed`, whose console label would say a gate failed over a wave whose every check passed. The wave's
-marker commit and `completed` status are written only after its delivery settles, so a resume re-attempts a
-refused delivery at that wave's barrier instead of silently postponing it to the next delivery point. The
-durable record is the wave's `delivered` entry. The top-level `halt` section stays scoped to gates (#432),
+`d39-branchmoved-midrun`; narrowed in review round 5).** The answered question covered `branch-moved`. A
+`conflict` repeats at every later delivery for the same reason, and `dirty-working-tree` needs an operator action
+before anything can land. So those three refusals halt with their own `WaveHaltKind.DeliveryRefused`, which never
+reuses `ExitGateFailed`, whose console label would say a gate failed over a wave whose every check passed. Two
+refusals do not halt that way:
+
+- **`trial-gate-failed` halts as an exit-gate failure** (review round 5, `d39-trial-gate-failure`). A gate really
+  did fail, on the tree the delivery would produce, so the halt goes through the existing exit-gate path: `run.json`'s
+  `halt` section, the gate logs and the log-site banner. The wave's recorded exit reads failed, and its gate logs
+  hold the trial run's output. The headline says the gate failed on the merge with the user's branch, and names the
+  user's tip and `git log <plan-tip-sha>..<user-tip-sha>`.
+- **`hook-rejected` does not halt** (review round 5, `d39-hooks-untracked-tooling`). A hook that needs untracked
+  tooling, such as husky with lint-staged needing `node_modules`, fails in the harness-owned trial worktree even
+  though it would pass in the user's checkout. So the rejected delivery and every later barrier delivery are held,
+  each later one recorded `suppressed` with a detail naming the rejection, and the run continues. The run-end merge
+  runs the user's hooks in the user's own checkout, as today, and a genuine rejection still stops it there.
+
+The wave's marker commit and `completed` status are written only after its delivery settles, so a resume
+re-attempts a halted delivery at that wave's barrier instead of silently postponing it to the next delivery point.
+The durable record is the wave's `delivered` entry. The top-level `halt` section stays scoped to gates (#432),
 which is how an end-of-run refusal is recorded today.
 
 **`run.json`'s top-level `delivery` on a partial run — DECIDED (review round 4, `d39-partial-delivery-record`).**
@@ -671,13 +689,17 @@ wholly green", while wave 02 is on the user's branch. The record gains a new out
 with `delivered: false`: `delivered` stays true only when all verified work reached the user's branch, so a
 consumer keyed on it never treats held work as shipped. `deliveredToBranch` and `planBranch` are both set, and
 `reason` names the delivered and held waves. The source is a `RunReport.WaveDeliveries` map stamped from the
-journal in `BuildReport`, the one method every report passes through, halted or not.
+journal in `BuildReport`, the one method every report passes through, halted or not. The record is written even
+when the plan-level terminal gate fails after earlier waves delivered at their barriers (review round 5,
+`d39-barrier-terminal-gate`). A run whose run-end merge landed after `hook-rejected` holds reads delivered, not
+partially-delivered, because that merge carried the held waves.
 
 **Not in v1:** a log-site banner for a refused delivery. The log site's halt banner reads only `halt`, so a
 refusal at a barrier, like an end-of-run refusal today, is visible on the console and in `run.json` but not
 on the log site. Round 5 narrowed the gap: the halt also records a `decisions[]` entry (boundary `wave`,
 decision `halted`, gate `delivery-refused`), which the console and `observer.jsonl` show. The log site's decision
-panel shows only breakdown gates, so the log site still does not.
+panel shows only breakdown gates, so the log site still does not. A failed trial-tree gate is the exception: it
+halts through `halt`, so the log site shows it.
 
 ```
 DELIVERED to your branch: wave-01-issue-510, wave-02-issue-511 (2 of 4 waves)
@@ -719,8 +741,8 @@ entry preflight (§1c). Both are warnings and neither moves the exit code.
 
 **Harness** — barrier delivery through the §1 trial-delivery provider members (`CreateTrialDelivery`,
 `PromoteTrialDelivery`, `DiscardTrialDelivery`), decided by the one delivery predicate `Finalize` also uses,
-while the run-end `Finalize` → `DeliverToUserBranch` path stays for flat plans and for the waves after the
-last delivery point; `IRunObserver.WaveDelivered`, forwarded through every decorator (the
+while the run-end `Finalize` → `DeliverToUserBranch` path stays for flat plans, for the waves after the last
+delivery point, and for the plan's final wave, which never delivers at its barrier; `IRunObserver.WaveDelivered`, forwarded through every decorator (the
 `ObserverForwardingSweepTests` contract) and projected into `observer.jsonl` (`events.jsonl` gains no delivery
 row, and `guardrails attach` does not replay deliveries in v1); the delivery journaled with `status: running`
 when the barrier delivery begins, before the trial merge runs the user's hooks, per the #625 rule (§4).
@@ -730,9 +752,10 @@ write but gave neither an owner, so the first breakdown built both and wired nei
 Scheduler writes `waves.<dir>.delivered` around every barrier delivery (§4) and raises
 `IRunObserver.WaveDelivered(WaveNode, WaveDeliveredRecord)` only for `status: delivered`, after the record is
 persisted, so an observer never sees a result the journal does not hold. `BuildReport` stamps
-`RunReport.WaveDeliveries` from the journal on every report, halted ones included. A refused delivery halts
-with `WaveHaltKind.DeliveryRefused` and records a `decisions[]` entry (boundary `wave`, decision `halted`,
-gate `delivery-refused`); no `RunHaltKind` is added. The provider members the trial merge needs are the three
+`RunReport.WaveDeliveries` from the journal on every report, halted ones included. A `conflict`, `branch-moved` or
+`dirty-working-tree` refusal halts with `WaveHaltKind.DeliveryRefused` and records a `decisions[]` entry (boundary
+`wave`, decision `halted`, gate `delivery-refused`). A `trial-gate-failed` refusal halts as an exit-gate failure,
+and a `hook-rejected` one holds instead of halting (§4). No `RunHaltKind` is added. The provider members the trial merge needs are the three
 §1 names (`d39-trial-delivery-primitive`).
 
 **Skills** — `plan-breakdown`'s §0 wave/flat fork gains the second reason to wave (§2), and the Step 7
