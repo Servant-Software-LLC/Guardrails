@@ -21,6 +21,7 @@ $pinned = @(
     'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave',
     'TheHaltNamesBothTips_WhenTheUsersBranchAdvancedAfterTheTrial',
     'ARefusedDelivery_RecordsAHaltedDecision',
+    'AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries',
     'AlreadyDeliveredWavesStayDelivered',
     'TheUsersCheckoutIsNotModified'
 )

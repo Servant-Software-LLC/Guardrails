@@ -25,7 +25,9 @@ $pinned = @(
     # [JsonIgnore(WhenWritingNull)] attributes, because JournalJson.Options writes nulls.
     'ARunningRecord_WritesNoSettledKeys',
     # Lead follow-up: the trial-gate-failed token, in DeliveryOutcomeToken AND the converter's Read.
-    'TheTrialGateFailedOutcome_RoundTrips'
+    'TheTrialGateFailedOutcome_RoundTrips',
+    # Review round 5, d39-rewind-delivered-wave: ResetWaveToPending keeps the delivered record.
+    'ResettingADeliveredWave_KeepsItsDeliveryRecord'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

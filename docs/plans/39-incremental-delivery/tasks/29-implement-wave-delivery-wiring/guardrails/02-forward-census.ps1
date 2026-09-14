@@ -1,6 +1,6 @@
 # catches: a pinned wiring behaviour that was never written, or no longer runs, once the Scheduler is
 #          wired. Task 28's red census excuses five rows from being Failed (each is green on its base by
-#          construction) but NOT from existing; this is the other half of that bargain — all seventeen of
+#          construction) but NOT from existing; this is the other half of that bargain — all nineteen of
 #          task 28's behaviours observed Passed in the runner's own TRX. It is also where the exempt rows
 #          turn red: a wiring that records or raises for a non-delivering wave, settles a fresh record (or
 #          raises again) over a delivery that was already recorded, or writes a record before task 08's
@@ -28,6 +28,8 @@ $pinned = @(
     'AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered',
     'AForcedDelivery_NamesTheDecisionItOverrodeInItsDetail',
     'AFailedTrialTreeGate_IsRecordedRefused_AndIsNeverPromoted',
+    'ALaterBarrierAfterAHookRejection_IsRecordedSuppressedNamingIt',
+    'AResumeAfterAHookRejection_StillHoldsLaterDeliveries',
     'APlanMarkingNoWave_RecordsNoDeliveryAndReportsNone',
     'AResumeOverADeliveredRecord_KeepsItAndRaisesNoEvent',
     'ASerialWavedRun_NeverDeliversAtABarrier',

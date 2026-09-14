@@ -91,7 +91,7 @@ if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
 }
 
 if ($doc -notmatch [regex]::Escape('DeliveryRefused')) {
-    $failures += "MISSING 'DeliveryRefused' in $subject — the skill does not say a refused wave delivery (branch-moved, conflict, dirty-working-tree, hook-rejected) halts the run at that wave under WaveHaltKind.DeliveryRefused, so an agent reading a barrier refusal looks for a gate failure or a run-level halt that is never written"
+    $failures += "MISSING 'DeliveryRefused' in $subject — the skill does not say a refused wave delivery (branch-moved, conflict, dirty-working-tree) halts the run at that wave under WaveHaltKind.DeliveryRefused, so an agent reading a barrier refusal looks for a gate failure or a run-level halt that is never written"
 }
 
 if ($doc -notmatch [regex]::Escape('partially-delivered')) {
@@ -254,6 +254,16 @@ if ($wrongModel.Count -gt 0) {
 $branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
 if ($doc -match $branchRange) {
     $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — a trial-gate-failed detail names the user's commits as the sha-keyed range git log <plan-tip-sha>..<user-tip-sha>. A range keyed on the plan branch's name lists different commits once either branch moves"
+}
+
+# Review round 5 (d39-hooks-untracked-tooling, answered 2026-09-14): a rejecting hook holds that delivery and every
+# later barrier delivery to run end instead of halting. A SENTENCE clause (#470): 'hook-rejected' (1x) and
+# 'node_modules' (4x) are already present on their own. MEASURED on master with the strip above: 0 sentences.
+# Its run-end vocabulary is its own: $runEnd above also accepts 'top-level', which belongs to the reach rule.
+$runEndOnly = '(?i)(?:run-end|\brun\s+end\b|end\s+of\s+the\s+run|\brun\s+ends\b)'
+$holdRule = @($sentences | Where-Object { $_ -match '(?i)hook-rejected|\bhooks?\b(?!-)' -and $_ -match '(?i)\bheld\b|\bholds?\b|\bwaits?\b|\bwaiting\b' -and $_ -match $runEndOnly })
+if ($holdRule.Count -eq 0) {
+    $failures += "MISSING the hook hold rule in $subject — no sentence says a rejecting hook holds that delivery and every later barrier delivery to run end, where the run-end merge runs the user's hooks in the user's own checkout. An agent without it expects hook-rejected to halt the run"
 }
 
 if ($failures.Count -gt 0) {

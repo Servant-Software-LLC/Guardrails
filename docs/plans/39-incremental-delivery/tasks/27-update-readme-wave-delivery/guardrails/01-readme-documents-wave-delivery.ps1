@@ -153,7 +153,7 @@ if ($superseded.Count -gt 0) {
 # sentence naming a refusal, a halt and a wave. MEASURED at cb0a7857: 0 sentences.
 $refusedHalt = @($sentences | Where-Object { $_ -match '(?i)\brefus(?:e|es|ed|al|ing)\b' -and $_ -match '(?i)\bhalt(?:s|ed|ing)?\b' -and $_ -match '(?i)\bwaves?\b' })
 if ($refusedHalt.Count -eq 0) {
-    $failures += "MISSING the refused-delivery halt in $subject — no sentence says a refused delivery (your branch moved, a conflict, a dirty working tree, a rejecting hook) halts the run at that wave. An operator who does not know that reads the halt as a failed gate, and does not know that resuming re-attempts the delivery"
+    $failures += "MISSING the refused-delivery halt in $subject — no sentence says a refused delivery (your branch moved, a conflict, a dirty working tree) halts the run at that wave. An operator who does not know that reads the halt as a failed gate, and does not know that resuming re-attempts the delivery"
 }
 
 # POSITIVE: the merge commit a delivery creates runs the operator's git hooks (#149, kept for the trial
@@ -200,6 +200,21 @@ if ($hooksPath.Count -eq 0) {
 $branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
 if ($doc -match $branchRange) {
     $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — the range that shows which of your commits a failed trial gate merged is the sha-keyed git log <plan-tip-sha>..<your-tip-sha>. A range keyed on the plan branch's name shows different commits once either branch moves"
+}
+
+# Review round 5, answered 2026-09-14. SENTENCE clauses (#470). MEASURED on master with the strip above: 0
+# sentences for each.
+# d39-barrier-terminal-gate: the plan's final wave delivers at the end of the run, after the plan-level terminal gate.
+$runEndOnly = '(?i)(?:run-end|\brun\s+end\b|end\s+of\s+the\s+run|\brun\s+ends\b)'
+$finalWaveRule = @($sentences | Where-Object { $_ -match '(?i)\b(?:final|last)\s+wave\b' -and $_ -match $runEndOnly -and $_ -match '(?i)terminal\s+gate|#457|plan-level\s+(?:guardrails|gate|checks?)' })
+if ($finalWaveRule.Count -eq 0) {
+    $failures += "MISSING the final-wave rule in $subject — no sentence says the plan's final wave delivers at the end of the run, after the plan-level terminal gate passes. An operator without it expects the final wave to land on their branch ahead of a terminal gate that can still fail"
+}
+
+# d39-hooks-untracked-tooling: a rejecting hook holds this delivery and every later one to the end of the run.
+$holdRule = @($sentences | Where-Object { $_ -match '(?i)hook-rejected|\bhooks?\b(?!-)' -and $_ -match '(?i)\bheld\b|\bholds?\b|\bwaits?\b|\bwaiting\b' -and $_ -match $runEndOnly })
+if ($holdRule.Count -eq 0) {
+    $failures += "MISSING the hook hold rule in $subject — no sentence says that when your git hook rejects the trial merge commit, this delivery and every later one wait for the end of the run, where the final merge runs your hooks in your own checkout. An operator without it reads a rejected hook as a halt, or as work lost"
 }
 
 if ($failures.Count -gt 0) {

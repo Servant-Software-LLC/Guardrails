@@ -40,15 +40,19 @@ schema:
   `"refused"`. A `"suppressed"` record is written already settled, and its `detail` names the decision
   and its subject. A `"refused"` record carries `outcome` (`conflict` | `dirty-working-tree` |
   `hook-rejected` | `branch-moved` | `trial-gate-failed`, the last when the wave's exit gate fails on the
-  trial merge) and `detail`. A `trial-gate-failed` detail names each failing check, the user's tip the
+  trial merge) and `detail`. A `hook-rejected` record does not halt the run (the hold rule below), and every
+  later barrier delivery in that run writes `"suppressed"` with a `detail` naming that rejection. A
+  `trial-gate-failed` detail names each failing check, the user's tip the
   trial was built from, and the range `git log <plan-tip-sha>..<user-tip-sha>`, which lists exactly the
   user's commits the trial merged. Key the range on the two shas, never on branch names, so it still
   names the same commits after either branch moves, and record it as a range: nothing lists those commits
   one by one. When a resume's trial finds the plan tip already on the user's branch (equal tips included,
   as right after a quiet-case promotion), it
   skips the promotion and restores the prior `"delivered"` record, or writes one if the crash came before
-  it, so a resume never records a refusal for a delivery that already landed. A rewound wave's re-run
-  that delivers again replaces its record. A delivery the operator forced past a suppressing decision
+  it, so a resume never records a refusal for a delivery that already landed. A rewind — drift resolution
+  or `guardrails reset <plan> <wave>` — keeps a delivered wave's record, because its commits are already
+  on the user's branch (review round 5, `d39-rewind-delivered-wave`); a re-run that delivers again
+  replaces it. A delivery the operator forced past a suppressing decision
   records `"delivered"` with a `detail` naming the overridden decision. Null fields are omitted, never
   written as null. `covers` lists every wave the delivery carries, in order, ending with this one,
   computed from the journal so a resume computes the same set. A wave has NO `delivered` key — absent,
@@ -69,18 +73,34 @@ schema:
   edited mid-run blocks it (#556) as it blocks run-end delivery, a serial run never delivers at a
   barrier, and a wave with no exit gate is never a delivery point. The interlock is
   consulted before the trial merge is built, so a held delivery never runs the user's hooks;
+- **the plan's final wave never delivers at its barrier** (review round 5, `d39-barrier-terminal-gate`): it
+  delivers through the run-end delivery, which waits for the plan-level terminal gate when the plan
+  declares one (#457). Earlier waves deliver at their own barriers, before that gate can run. When the
+  terminal gate fails after earlier waves delivered, the top-level `delivery` record is still written —
+  before the CLI's terminal-gate halt returns — and reads `partially-delivered`;
+- **a rejecting hook holds delivery instead of halting** (review round 5, `d39-hooks-untracked-tooling`):
+  when the user's hook rejects a trial merge commit, that delivery and every later barrier delivery are
+  held to run end, where the run-end merge runs the user's hooks in the user's own checkout. The
+  rejecting wave's record reads `"refused"` with outcome `hook-rejected`, each later barrier's record reads
+  `"suppressed"` with a `detail` naming that rejection, and no status is added. Say why: a hook that needs
+  untracked tooling, such as `node_modules`, fails in a harness-owned worktree and passes in the user's
+  checkout;
 - the **`WaveDelivered`** observer event, `WaveDelivered(WaveNode, WaveDeliveredRecord)`, raised only for
   a `delivered` record and only after that record is persisted; and `RunReport.WaveDeliveries`, stamped
   from the journal in `BuildReport` on every report, halted ones included. In §8, `observer.jsonl` gains
   a `WaveDelivered` line carrying `member`, `waveDir`, `commit` and `covers`. `events.jsonl` (§8.1) gains
   NO delivery kind — the durable record is `waves.<dir>.delivered` — and `guardrails attach` does not
   replay deliveries in v1: its replay skips the line it does not know;
-- the **refused-delivery halt**: a refused wave delivery halts the run at that wave with
-  `WaveHaltKind.DeliveryRefused` — except a failed trial-tree gate (`trial-gate-failed`), whose halt is
-  decided in review round 5 (`d39-trial-gate-failure`). The wave's marker commit and `completed` status
+- the **refused-delivery halt**: a `conflict`, `branch-moved` or `dirty-working-tree` refusal halts the run
+  at that wave with `WaveHaltKind.DeliveryRefused` (a `hook-rejected` trial holds instead, above). **A
+  failed trial-tree gate halts as an exit-gate failure** (review round 5, `d39-trial-gate-failure`): it goes
+  through the existing gate halt — `run.json`'s `halt` section, the gate logs and the log-site halt banner —
+  with a headline saying the gate failed on the merge with the user's branch and naming the user's tip and
+  `git log <plan-tip-sha>..<user-tip-sha>`, while the wave's record still reads `"refused"` with outcome
+  `trial-gate-failed`. The wave's marker commit and `completed` status
   are written only after its delivery settles, so a resume re-attempts a refused delivery at that wave's
   barrier. No `RunHaltKind` is added, and the top-level `halt` section stays scoped to gates (#432).
-  The halt also appends a `decisions[]` entry — `"boundary": "wave"`, `"decision": "halted"`, gate
+  A `DeliveryRefused` halt also appends a `decisions[]` entry — `"boundary": "wave"`, `"decision": "halted"`, gate
   `delivery-refused`, and the wave directory as both `subject` and `wave` — so the refusal shows on the
   console and in `observer.jsonl`. It changes no outcome, exit code or answer-file behavior:
   `RunOutcomePolicy` acts only on `proceeded-best-guess` and `proceeded-unreviewed`. The log site does
@@ -92,7 +112,8 @@ schema:
   ALL verified work reached the user's branch. `partially-delivered` wins over a held or refused run-end
   outcome: when earlier waves delivered at their barriers, a run-end delivery that the interlock held or
   the merge refused still records `partially-delivered`, and `reason` names the holding decision or the
-  refusal's token;
+  refusal's token. When a rejecting hook held barrier deliveries and the run-end merge then landed, the run
+  is delivered, not partially delivered: the run-end merge carried every held wave;
 - **`GR2078`** (a post-delivery wave with no entry preflight) and **`GR2079`** (a `delivers: true`
   wave with no exit gate), BOTH warnings, in the diagnostics registry section. Each entry says what its
   code warns about in the same sentence as the code: correcting the stale sentence below removes

@@ -28,7 +28,8 @@
 the fake. A barrier delivery now goes through the trial-delivery members tasks 30/31 added to
 `IWorktreeProvider`, and a refusal arrives by one of TWO routes. `CreateTrialDelivery` refuses while
 building the trial, before any gate runs: a conflict with the user's branch, or the user's git hook
-rejecting the trial merge commit (#149), returned as the trial's `Refusal` with its `RefusalDetail`.
+rejecting the trial merge commit (#149, which holds deliveries instead of halting; see below), returned as
+the trial's `Refusal` with its `RefusalDetail`.
 `PromoteTrialDelivery` refuses after the gate: #588 (`BranchMoved`, which covers both a switched checkout
 and the user's branch advancing after the trial was built) or #448 (a dirty working tree), with the detail
 on `LastMergeOnSuccessDetail`.
@@ -55,6 +56,15 @@ writes into it:
   gate script commits again on the user's branch, but only when `teammate.txt` exists in its working
   directory. That is true in the trial worktree and false in the integration worktree, where the
   plan-branch gate runs first.
+- **A hook that rejects only the trial:** install a `pre-commit` hook in the user's repo that exits non-zero
+  unless an untracked `hook-ok.txt` exists in its working directory, and create that file in the user's
+  checkout only. A wave-01 task script commits `teammate.txt` on the user's branch, and the hook passes there.
+  The trial then needs a merge commit, which the harness builds in its own worktree, where `hook-ok.txt` is
+  absent, so the hook rejects it. The run-end merge runs in the user's checkout, where the hook passes.
+
+**Every fixture ends with a wave after the last delivering one.** The plan's final wave never delivers at its
+barrier (review round 5, `d39-barrier-terminal-gate`), so a refusal pinned at wave-02's barrier needs a
+wave-03.
 
 Author failing tests for the behaviour DECIDED in review — design 39 §1c and §4 (round 4).
 
@@ -73,9 +83,11 @@ a soft landing. Per-wave it fires at a wave's barrier with later waves still to 
 is not transient** — the operator checked out a different branch, so every later delivery hits the
 identical refusal.
 
-DECIDED (design 39, round 4): **every refused wave delivery halts the run at that wave** — a moved
-branch, a conflict, a dirty working tree or a hook rejection — under the new
-`WaveHaltKind.DeliveryRefused`. No `RunHaltKind` is added: run.json's `halt` section is scoped to gates
+DECIDED (design 39, round 4, narrowed in round 5): **a refused wave delivery halts the run at that wave** —
+a moved branch, a conflict or a dirty working tree — under the new `WaveHaltKind.DeliveryRefused`. Two
+outcomes do NOT halt here. A hook-rejected trial holds this and every later barrier delivery to run end,
+where the merge runs the user's hooks in their own checkout (`d39-hooks-untracked-tooling`). A failed
+trial-tree gate is an exit-gate halt that task 08 raises (`d39-trial-gate-failure`). No `RunHaltKind` is added: run.json's `halt` section is scoped to gates
 (#432), so the refusal is durable on the wave instead. The wave's completed marker is written only after
 its delivery settles, so a resume re-attempts a refused delivery at that wave. Task 29 already records
 the refusal as `refused` on `waves.<dir>.delivered`; this suite pins the HALT.
@@ -97,6 +109,21 @@ the refusal as `refused` on `waves.<dir>.delivered`; this suite pins the HALT.
 - `AConflictingWaveDelivery_AlsoHaltsAtThatWave` — rejects halting on `BranchMoved` alone. The conflict
   surfaces when the trial is BUILT (`CreateTrialDelivery` returns a `Refusal`), so this row also rejects a
   halt wired only to `PromoteTrialDelivery`'s result.
+- `AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries` — the one refusal that does NOT halt. A
+  rejecting hook may need tooling or untracked files that exist only in the user's own checkout, so the run
+  holds this and every later barrier delivery to run end, where the merge runs the hook there. Use the hook
+  fixture above with three waves: wave-01 and wave-02 carry `delivers: true`, and wave-03 is the final
+  wave. Each wave's task writes its own file on the plan side. Wave-01's task script also writes the user's
+  tip after its commit to a sentinel file, and wave-03's task script writes the user's branch tip to a
+  second sentinel. Assert all of:
+  - wave-01's `delivered` record reads `refused` with outcome `hook-rejected`, so the hook really rejected
+    the trial, and wave-02's reads `suppressed`;
+  - the run has no `DeliveryRefused` halt, and wave-03 ran;
+  - the two sentinels hold the same sha, so neither barrier promoted anything;
+  - after the run, the user's branch contains all three waves' files, so the run-end delivery landed.
+
+  It rejects halting on `hook-rejected` like the other refusals, and a later barrier that delivers past the
+  held wave.
 - `TheHaltNamesBothTips_WhenTheUsersBranchAdvancedAfterTheTrial` — the other `BranchMoved` cause: the user's
   branch gained a commit after the trial was built, as a user keeps working while the gate runs. Assert all of:
   - the halt headline contains `'<branch>' moved from <sha10> to <sha10> after the trial was built`, where
@@ -123,8 +150,18 @@ the refusal as `refused` on `waves.<dir>.delivered`; this suite pins the HALT.
 and both are declared EXEMPT from the red census: nothing on this task's base unwinds a merge that
 already landed, and the #588 refusal never checks the pinned branch back out (neither at run end nor in
 task 31's promotion re-check at a barrier), so correct tests of either are green on arrival. Write them
-to assert the guarantee, not to fail. They must still exist, and task 17's forward census requires all
-eleven Passed.
+to assert the guarantee, not to fail.
+
+`AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries` is declared EXEMPT too, and it is green on
+this task's base for four reasons:
+- nothing halts on any refusal until task 17;
+- task 08 already holds later barrier deliveries after a hook rejection;
+- task 29 already records the rejection;
+- the run-end delivery already lands.
+
+Its teeth are task 17's forward census, which requires it Passed, so task 17 cannot halt on a hook
+rejection. All three exempt tests must still exist, and task 17's forward census requires all twelve
+Passed.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here

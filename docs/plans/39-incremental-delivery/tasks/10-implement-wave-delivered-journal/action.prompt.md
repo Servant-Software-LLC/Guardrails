@@ -49,6 +49,14 @@ at review").
   were — that is what separates it from `ResetWaveToPending`, which drops them on purpose. It is the
   unconditional write primitive. Restoring a prior `delivered` record when a resume finds the delivery
   already landed is task 29's Scheduler policy, so do not build it in here.
+- **`RunJournal.ResetWaveToPending(waveDir)` keeps `Delivered` (review round 5,
+  `d39-rewind-delivered-wave`).** It still resets the wave to `Pending` and clears `DefinitionHash`,
+  `MarkerSha`, `Entry` and `Exit`, exactly as today, but carries the existing `Delivered` record over
+  unchanged. The delivered commits are on the user's branch and cannot be un-merged, so a reset that forgot
+  the record would make run.json call shipped work held. Update its doc comment to say so, and change
+  nothing else about it, including its early return for an unknown wave.
+  `ResettingADeliveredWave_KeepsItsDeliveryRecord` pins it. A re-run that delivers again replaces the
+  record through task 29's Scheduler write, not here.
 
 The Scheduler's calls to `RecordWaveDelivery`, and the `WaveDelivered` event, are tasks 28/29 — do not
 reach into `Scheduler.cs`.

@@ -32,7 +32,9 @@ $pinned = @(
     'ATrialThatCannotBeBuilt_IsRecordedRefused_AndIsNeverPromoted',
     'AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered',
     'AForcedDelivery_NamesTheDecisionItOverrodeInItsDetail',
-    'AFailedTrialTreeGate_IsRecordedRefused_AndIsNeverPromoted'
+    'AFailedTrialTreeGate_IsRecordedRefused_AndIsNeverPromoted',
+    'ALaterBarrierAfterAHookRejection_IsRecordedSuppressedNamingIt',
+    'AResumeAfterAHookRejection_StillHoldsLaterDeliveries'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS. Each is asserted to EXIST below, and task 29's forward census requires each

@@ -72,10 +72,14 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    blocks the merge with an untracked file and expects the abort to name it.
 6. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
    `WaveHaltKind.ExitGateFailed`, append `UnauthoredContentNote.HeadlineSuffix(...)` to the headline AFTER
-   the failing check names, and `UnauthoredContentNote.DetailLines(...)` to the detail. `BuildGateHalt` is
-   `static` today — give it the journal state it needs rather than re-reading `run.json` from disk. When
-   the run has neither `supplied[]` nor `refreshed[]`, the headline and detail must be byte-identical to
-   today's. `RecordGateHalt` already copies the headline into `run.json`'s `halt.headline`, so do not touch
+   the failing check names, and `UnauthoredContentNote.DetailLines(...)` to the detail. A failed trial-tree
+   gate reaches `BuildGateHalt` as `ExitGateFailed`, with task 08's trial disclosure already in the
+   headline: it failed on the merge with the user's branch, naming `trial.UserTip` and the sha range (review
+   round 5, `d39-trial-gate-failure`). Keep that disclosure intact and in place, and append the suffix
+   AFTER it. If `BuildGateHalt` is still `static`, give it the journal state it needs rather than
+   re-reading `run.json` from disk. When the run has neither `supplied[]` nor `refreshed[]`, the headline
+   and detail must be byte-identical to what `BuildGateHalt` produced before this task, trial disclosure
+   included. `RecordGateHalt` already copies the headline into `run.json`'s `halt.headline`, so do not touch
    the `RunHalt` schema or the CLI.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.

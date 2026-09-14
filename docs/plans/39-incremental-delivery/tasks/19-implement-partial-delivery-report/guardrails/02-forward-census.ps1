@@ -22,6 +22,9 @@ $pinned = @(
     'PartiallyDelivered_RoundTripsThroughTheJournal',
     'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt',
     'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered',
+    'DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning',
     'AFailedWaveDoesNotChangeTheExitCode',
     'AFullyDeliveredRunReadsAsTodayDoes'
 )

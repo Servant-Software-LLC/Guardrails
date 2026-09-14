@@ -1,5 +1,5 @@
 {
-  "description": "Author failing tests for halting at the wave whose delivery is refused (BranchMoved, conflict, dirty working tree, hook rejected), under WaveHaltKind.DeliveryRefused",
+  "description": "Author failing tests for halting at the wave whose delivery is refused (BranchMoved, conflict, dirty working tree) under WaveHaltKind.DeliveryRefused, and for a hook-rejected trial that holds deliveries instead of halting",
   "dependsOn": [
     "29-implement-wave-delivery-wiring"
   ],

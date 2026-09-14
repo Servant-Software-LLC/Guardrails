@@ -37,7 +37,11 @@ Cover these, in the document's existing operator-facing style:
 - **Per-wave delivery.** A wave opts in with `delivers: true` in its `brief.md` YAML front matter
   (default false). A delivering wave is a **delivery point**: when its exit gate passes, the plan branch
   as it stands merges into your branch at that wave's barrier, carrying the non-delivering waves before
-  it. A plan that marks no wave behaves exactly as today — one merge at run end. Say where the flag
+  it. **The plan's final wave is the exception** (review round 5): say in one sentence that the final wave
+  always delivers at the end of the run, after the plan-level terminal gate (`<plan>/guardrails/`) passes,
+  so work never lands on your branch ahead of a terminal gate that then fails. Earlier waves deliver
+  before that gate can run, so if it fails after they delivered, `run.json` records `partially-delivered`.
+  A plan that marks no wave behaves exactly as today — one merge at run end. Say where the flag
   lives plainly: there is no per-wave config file. A `guardrails.json` inside a wave directory is
   silently ignored — the plan stays waved and `validate` does not warn — so an operator who guesses
   that file gets no delivery and no error. **The existing switches apply at every delivery point.** Say
@@ -54,11 +58,8 @@ Cover these, in the document's existing operator-facing style:
   terms of the waves the delivery carries.
 - **A refused delivery halts the run at that wave.** A delivery is refused when your checkout has moved
   to another branch, your branch gained commits after the trial merge was built (you kept working while
-  the gate ran), the merge conflicts, your working tree has changes the merge would overwrite, your git
-  hook rejects the merge commit, or the wave's exit gate fails on the trial merge with your new commits
-  (`run.json` records that one as `trial-gate-failed`, naming the failing checks, your branch tip, and a
-  sha-keyed `git log <plan-tip-sha>..<your-tip-sha>` range you can run to see which of your commits it
-  merged, and which stays accurate after either branch moves). The run then halts at that wave instead of running later waves
+  the gate ran), the merge conflicts, or your working tree has changes the merge would overwrite. The run
+  then halts at that wave instead of running later waves
   whose delivery would be refused the same way. Deliveries that already landed stay on your branch, and
   your checkout is not touched. The wave is not marked complete until its delivery settles, so resuming
   after you fix the cause re-attempts that wave's delivery. Say in one sentence that a refused delivery
@@ -68,6 +69,17 @@ Cover these, in the document's existing operator-facing style:
   commits. Also say that `run.json` records the refusal in `decisions[]` as `delivery-refused`, which the
   console shows, and that the log site shows only the wave as needs-human: there is no log-site panel for
   a refused delivery in this version.
+- **A failed exit gate on the trial merge** (review round 5). When the wave's exit gate fails on the trial
+  merge with your new commits, the run halts exactly as it does for any failed exit gate — the halt
+  banner, `run.json`'s `halt` section and the gate logs — and the headline says the gate failed on the
+  merge with your branch, naming your branch tip and a sha-keyed `git log <plan-tip-sha>..<your-tip-sha>`
+  range you can run to see which of your commits it merged (it stays accurate after either branch
+  moves). `run.json` records that wave's delivery as `trial-gate-failed`.
+- **A rejecting hook holds delivery; it does not halt** (review round 5). Say in one sentence that if your
+  git hook rejects the trial merge commit, this delivery and every later one wait for the end of the run,
+  where the final merge runs your hooks in your own checkout. Say why: a hook that needs untracked
+  tooling, such as `node_modules`, can fail in the harness's worktree and pass in yours. If that final
+  merge lands, the run is delivered.
 - **The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial merge.
   When your branch has moved on, that merge commit is created with your git hooks, exactly as today's
   run-end merge commit is. Say that in one sentence, and say that hooks installed under a relative
@@ -77,7 +89,9 @@ Cover these, in the document's existing operator-facing style:
   code does not change: a run with a failed wave is still a failed run. `git branch --no-merged` stays
   the confirmation, and the README already points at it — connect the two rather than repeating it.
   `run.json`'s delivery record says the same thing: its outcome is `partially-delivered` with
-  `delivered: false`, because `delivered` is true only when all verified work reached your branch.
+  `delivered: false`, because `delivered` is true only when all verified work reached your branch. A run
+  whose final merge lands after a rejecting hook held its deliveries is delivered, not partially
+  delivered: that merge carried every held wave.
 - **The post-delivery refresh.** When your branch moved independently between deliveries, the harness
   merges it back into the plan branch after delivering, so later waves build on your new commits. That
   admits content no task authored, so `run.json` records it in `refreshed[]`, and a gate failure over a

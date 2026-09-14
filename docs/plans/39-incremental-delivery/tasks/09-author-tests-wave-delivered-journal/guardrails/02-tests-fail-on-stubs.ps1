@@ -23,7 +23,12 @@ $pinned = @(
     'ARunningRecord_WritesNoSettledKeys',
     # Lead follow-up to the review of 1a809bce: the trial-tree gate's refusal outcome. Red on this base
     # because JournalJson.DeliveryOutcomeToken's discard arm throws on the unregistered member.
-    'TheTrialGateFailedOutcome_RoundTrips'
+    'TheTrialGateFailedOutcome_RoundTrips',
+    # Review round 5, d39-rewind-delivered-wave: a rewind keeps the delivered record. Red on this base
+    # because ResetWaveToPending replaces the whole entry with a bare pending one (RunJournal.cs,
+    # `UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending })`); RecordWaveDelivery
+    # also throws here. After task 10 only a preserving reset turns it green.
+    'ResettingADeliveredWave_KeepsItsDeliveryRecord'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-13, B5 restructure) — AWaveEntryWithoutADelivery_OmitsTheKey.

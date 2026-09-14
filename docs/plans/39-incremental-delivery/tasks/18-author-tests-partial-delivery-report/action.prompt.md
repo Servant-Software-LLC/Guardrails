@@ -63,7 +63,10 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   checks `WhollyGreenButUndelivered` before anything else, and the `*** WORK NOT DELIVERED ***` banner
   says the verified work is "NOT on your checkout". On a waved run whose earlier waves delivered at their
   barriers while the run-end delivery was held or refused, both statements are false about the waves
-  that landed. DECIDED: `partially-delivered` wins whenever work both landed and is still held.
+  that landed. DECIDED: `partially-delivered` wins whenever work both landed and is still held. A
+  plan-level terminal gate that fails after earlier waves delivered is the same case (review round 5,
+  `d39-barrier-terminal-gate`), and today `RunCommand` returns on that path before writing any delivery
+  record at all.
 
 **Pin these behaviours to these EXACT method names:**
 
@@ -113,16 +116,40 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   is `true`, `Outcome` is `FastForwarded`, and `Reason` and `PlanBranch` are null, exactly as for a flat
   plan's delivered run. A wave with no `delivered` key is not held when the run-end merge carried it
   there. Rejects counting every wave without a per-wave record as held.
+- `DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered` — a PURE call (review
+  round 5, `d39-hooks-untracked-tooling`). `WaveDeliveries` records an earlier wave `delivered`, the next
+  wave `refused` with outcome `DeliveryOutcome.HookRejected`, and a later wave `suppressed` with a `Detail`
+  naming that rejection; the run-end merge then landed in the user's checkout (`MergeOnSuccessOutcome` is
+  `Merged`, `DeliveredToBranch` set). Assert `Delivered` is `true`, `Outcome` is `Merged`, and `Reason` and
+  `PlanBranch` are null. A rejecting hook holds deliveries to run end rather than halting, and a run-end
+  merge that landed carried every held wave. Rejects counting a `refused` or `suppressed` barrier record as
+  held work once the run-end merge landed.
+- `ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered` — a PURE call (review round 5,
+  `d39-barrier-terminal-gate`). `WaveDeliveries` records an earlier wave `delivered`, every task succeeded,
+  the plan-level terminal gate did not pass (`terminalGatePassed: false`), and the final wave has no
+  `delivered` key: the final wave always delivers at run end, which the failed gate withheld. Assert
+  `Outcome` is `PartiallyDelivered`, `Delivered` is `false`, and `Reason` names the delivered wave and the
+  failed terminal gate. Rejects the never-attempted terminal-gate reason, which says nothing about the wave
+  already on the user's branch.
+- `ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning` — drive a waved run
+  through `CommandFactory.BuildRootCommand(io)` over a temp repo, the way the report-order rows do: an
+  earlier wave marked `delivers: true` delivers at its barrier, the final wave's tasks succeed, and a
+  plan-level `guardrails/` check exits 1. After the run, reload the journal with `RunJournal.LoadOrCreate`
+  and assert `Document.Delivery` is not null and its `Outcome` is `PartiallyDelivered`. Rejects writing the
+  record after `RunCommand`'s terminal-gate early return, which today skips the write entirely, so
+  run.json says nothing about a wave already on the user's branch.
 - `AFailedWaveDoesNotChangeTheExitCode`
 - `AFullyDeliveredRunReadsAsTodayDoes` — the never-weaker requirement: a plan marking no wave must
   produce the output it produces today.
 
-`DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered`, `AFailedWaveDoesNotChangeTheExitCode`
-and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from the red census. `DescribeDelivery`
-returns a landed run-end merge as delivered without reading `WaveDeliveries`; a run with a failed wave
-already exits 2; and a plan that marks no wave already prints today's output. So correct tests of all
-three are green on arrival. Write them to assert the guarantee, not to fail. They must still exist, and
-task 19's forward census requires all twelve Passed.
+`DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered`,
+`DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered`,
+`AFailedWaveDoesNotChangeTheExitCode` and `AFullyDeliveredRunReadsAsTodayDoes` are declared EXEMPT from the
+red census. `DescribeDelivery` returns a landed run-end merge as delivered without reading
+`WaveDeliveries`, whatever the barrier records say; a run with a failed wave already exits 2; and a plan
+that marks no wave already prints today's output. So correct tests of all four are green on arrival. Write
+them to assert the guarantee, not to fail. They must still exist, and task 19's forward census requires
+all fifteen Passed.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
@@ -130,7 +157,7 @@ breaks a class that did nothing wrong. Capture the output whose ORDER you assert
 `StringConsoleIo` handed to `CommandFactory.BuildRootCommand(io)` — never by redirecting `Console.Out`,
 which is process-wide.
 
-The other nine tests MUST COMPILE and FAIL. Do NOT implement the report, the delivery record, the
+The other eleven tests MUST COMPILE and FAIL. Do NOT implement the report, the delivery record, the
 banner or the label.
 
 **Scope boundary (harness-enforced):** Write only to

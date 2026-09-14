@@ -1,5 +1,5 @@
 {
-  "description": "Halt the run at the wave whose delivery is refused, under WaveHaltKind.DeliveryRefused",
+  "description": "Halt the run at the wave whose delivery is refused (conflict, branch-moved, dirty-working-tree; never hook-rejected), under WaveHaltKind.DeliveryRefused",
   "dependsOn": [
     "16-author-tests-branchmoved-halt",
     "15-implement-post-delivery-refresh"

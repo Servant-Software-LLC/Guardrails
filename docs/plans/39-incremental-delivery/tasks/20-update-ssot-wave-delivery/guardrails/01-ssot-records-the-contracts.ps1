@@ -210,6 +210,24 @@ if ($doc -match $branchRange) {
     $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — a trial-gate-failed detail names the user's commits as the sha-keyed range git log <plan-tip-sha>..<user-tip-sha>. A range keyed on the plan branch's name lists different commits once either branch moves, and the plan branch moves again at the next task"
 }
 
+# Review round 5, answered 2026-09-14. MEASURED on master with the strip above: 0 sentences for each clause
+# below. 'node_modules' was REJECTED as a token (already present 4x in this subject), and 'last wave' alone is
+# present 6x, so both rules are SENTENCE clauses (#470).
+# d39-barrier-terminal-gate: the plan's final wave never delivers at its barrier; it delivers at run end, after
+# the plan-level terminal gate (#457).
+$runEndOnly = '(?i)(?:run-end|\brun\s+end\b|end\s+of\s+the\s+run|\brun\s+ends\b)'
+$finalWaveRule = @($sentences | Where-Object { $_ -match '(?i)\b(?:final|last)\s+wave\b' -and $_ -match $runEndOnly -and $_ -match '(?i)terminal\s+gate|#457|plan-level\s+(?:guardrails|gate|checks?)' })
+if ($finalWaveRule.Count -eq 0) {
+    $failures += "MISSING the final-wave rule in $subject — no sentence says the plan's final wave delivers at run end, after the plan-level terminal gate (#457). Without it a reader expects the final wave to deliver at its own barrier, ahead of a terminal gate that can still fail"
+}
+
+# d39-hooks-untracked-tooling: a rejecting hook holds that delivery and every later barrier delivery to run end
+# instead of halting.
+$holdRule = @($sentences | Where-Object { $_ -match '(?i)hook-rejected|\bhooks?\b(?!-)' -and $_ -match '(?i)\bheld\b|\bholds?\b|\bwaits?\b|\bwaiting\b' -and $_ -match $runEndOnly })
+if ($holdRule.Count -eq 0) {
+    $failures += "MISSING the hook hold rule in $subject — no sentence says a rejecting hook holds that delivery and every later barrier delivery to run end, where the run-end merge runs the user's hooks in the user's checkout. Without it a reader expects hook-rejected to halt the run"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) missing contract token(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

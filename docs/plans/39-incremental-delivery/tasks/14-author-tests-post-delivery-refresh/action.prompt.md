@@ -56,7 +56,10 @@ and discriminates nothing. The names keep the design's vocabulary:
 A test that builds its quiet case by asserting on `FastForwarded` pins nothing.
 
 **The fixture.** Real `GitWorktreeProvider` over a temp repo. Wave-01's `brief.md` front matter carries
-`delivers: true`. For every non-fast-forward scenario, the user's branch gets a REAL commit adding
+`delivers: true`, and EVERY fixture has a later wave-02 that does not deliver. The plan's final wave never
+delivers at its barrier (review round 5, `d39-barrier-terminal-gate`), so a wave-01 barrier delivery needs a
+wave after it. Because wave-02 is not a delivery point, its gates always run on the plan branch, never on a
+trial tree, so its gate failures are ordinary entry and exit halts. For every non-fast-forward scenario, the user's branch gets a REAL commit adding
 `teammate.txt` while the run is in flight (after the plan branch is cut, before wave-01 delivers), so the
 delivery is not a fast-forward by the ancestry definition above.
 

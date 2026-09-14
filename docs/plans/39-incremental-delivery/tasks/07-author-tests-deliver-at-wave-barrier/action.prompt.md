@@ -54,9 +54,9 @@ fixture's own scripts write, so no provider decorator is needed. When a scenario
 the user's branch mid-run, have one of the run's own task or gate scripts make it (`git -C <user repo>`,
 with the path written into the script by your test).
 
-**Two fixture rules keep every row independent of decisions still open in review round 5.** A delivering
-wave in these tests is never the plan's final wave, and no fixture plan has a plan-level `guardrails/`
-folder.
+**Two fixture rules.** The plan's final wave always delivers at run end (review round 5), so a wave that must
+deliver at its barrier is never the plan's final wave. Only `TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`
+gives its plan a plan-level `guardrails/` folder.
 
 **The one thing §1 says this design must get right:** the gate must run against the tree the delivery
 will PRODUCE — the user's branch with this wave's commits merged onto it — not merely the plan branch
@@ -80,13 +80,20 @@ is a delivery point:
 4. Only on green, fast-forward the user's branch to the trial commit. On red, delete the ref; the user's
    branch never moved.
 
+Review round 5 settled three edge cases:
+- the plan's final wave never delivers at its barrier and is left to the run-end delivery;
+- a failure of the gate on the trial tree halts the run as an exit-gate failure whose headline names the trial
+  merge;
+- a trial the user's hook rejects holds this and every later barrier delivery without halting, and leaves the
+  work to the run-end merge in the user's own checkout.
+
 **The git side of that sequence is a provider primitive (review round 4,
 `d39-trial-delivery-primitive`).** Task 31 ships `IWorktreeProvider.CreateTrialDelivery`,
 `PromoteTrialDelivery` and `DiscardTrialDelivery` on the real `GitWorktreeProvider`, and task 30 tests them
 directly: the user's git hooks run on the trial merge commit, and promotion re-checks #588 and #448 before
 it fast-forwards. Task 08 wires the Scheduler to them. Your tests assert EFFECTS in git and in files your
-scripts write — never that a provider member was called. Do not install a git hook in these fixtures: a
-rejecting hook refuses the delivery at trial time, and that is task 30's row, not one of these.
+scripts write — never that a provider member was called. Do not install a git hook in these fixtures, except in
+`AHookRejectedTrial_HoldsEveryLaterBarrierDelivery`: the hook behavior of the trial itself is task 30's to pin.
 
 **The merged-tree scenario several rows share.** A wave with `delivers: true` whose exit-gate check FAILS
 when `teammate.txt` exists in the tree it runs in, plus a commit adding `teammate.txt` that lands on the
@@ -156,8 +163,54 @@ it ran in, and whether `teammate.txt` existed there.
 
   Rejects: a barrier delivery that checks only that the wave's tasks drained green, which ships work whose
   definition changed under it.
+- `TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier` — review round 5 (`d39-barrier-terminal-gate`): the plan's
+  final wave never delivers at its barrier; the run-end delivery lands it, after the plan-level terminal gate.
+  - Two waves: the first does not deliver. The FINAL wave has `delivers: true`, a passing exit gate, and a task
+    that writes a file no other task writes (for example `src/final.txt`).
+  - Give the plan a plan-level `guardrails/` check. It passes, and it appends one line to a log file outside
+    the repo saying whether the user's branch already contains that file (`git -C <user repo> cat-file -e
+    <branch>:src/final.txt`). The CLI runs this terminal gate after the Scheduler returns, so drive this row
+    through the real `run` command in process.
+  - Assert the log records the file ABSENT, and that after the run the user's branch carries it.
 
-**Eight of these are green on today's code, by design, and the census exempts them from the red
+  Rejects: a barrier delivery at the final wave, which lands work before the plan-level gate has checked it
+  (#457).
+- `AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge` — review round 5
+  (`d39-trial-gate-failure`), in the merged-tree scenario. Assert:
+  - the run halts at the delivering wave as an exit-gate failure: `RunReport.WaveHalt.Kind` is `ExitGateFailed`
+    for that wave, or, when you run the real command, run.json's `halt.kind` is `wave-exit-gate-failed`;
+  - the halt headline contains the user's mid-run commit's sha cut to 10 characters, and a range
+    `<sha10>..<userTipSha10>` whose left side resolves to a commit on the plan branch that does not contain the
+    user's mid-run commit;
+  - the user's branch tip is still their mid-run commit;
+  - the plan branch has no `Guardrails-Wave: <waveDir>` marker commit for that wave.
+
+  Rejects: a trial-tree gate failure that halts as a refused delivery or not at all, and a headline that leaves
+  the operator hunting for which of their commits broke the gate.
+- `AHookRejectedTrial_HoldsEveryLaterBarrierDelivery` — review round 5 (`d39-hooks-untracked-tooling`): a hook
+  that fails only in a harness worktree holds deliveries instead of halting.
+  - **The hook.** Install a `pre-commit` hook in the repo's `.git/hooks`. It appends the directory it runs in to a
+    log file outside the repo, then exits non-zero unless an UNTRACKED file (for example `tooling.ok`, excluded
+    through `.git/info/exclude`) exists in that directory. Create the file in the user's checkout only, so the
+    hook passes there and fails in any harness worktree.
+  - **The plan.** Three waves: the first two have `delivers: true` and passing exit gates, and the final wave
+    passes. A commit lands on the user's branch mid-run, before the first wave's barrier (commit it with
+    `--no-verify`), so every trial needs a merge commit.
+  - **The observation.** A task or exit-gate check in the final wave appends to a second log whether the user's
+    branch contains the first two waves' work at that moment.
+
+  Assert:
+  - the run did not halt: the final wave ran;
+  - the hook's log records exactly ONE run outside the user's checkout: the first barrier's trial, with the
+    second barrier building none;
+  - the second log records the first two waves' work ABSENT from the user's branch;
+  - after the run, the user's branch carries every wave's work through a merge commit whose first parent is the
+    user's mid-run commit: the run-end delivery, whose hook ran in the user's checkout.
+
+  Rejects: halting on the rejection, which throws away a run whose hook passes in the user's own checkout; and
+  building a trial at every later barrier, which runs a hook already known to fail there.
+
+**Nine of these are green on today's code, by design, and the census exempts them from the red
 requirement (not from existing):**
 - `AWaveWhoseExitGateFails_DoesNotDeliver`
 - `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`
@@ -167,23 +220,26 @@ requirement (not from existing):**
 - `ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes`
 - `ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`
 - `ADivergedTaskDefinition_BlocksTheBarrierDelivery`
+- `TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`
 
 They are green today because nothing delivers at a wave barrier:
 - a failed gate already delivers nothing, moves no branch and leaves no trial ref;
 - a plan marking no wave already merges once at run end;
 - a run with delivery off never moves the user's branch;
 - a run that halts at a wave gate never reaches the run-end delivery;
-- a run with a recorded divergence never delivers at run end.
+- a run with a recorded divergence never delivers at run end;
+- a plan with a plan-level `guardrails/` folder already delivers once, after that gate passes.
 
 Write them honestly — do NOT couple them to the missing feature to force a red. Task 08's forward census
 requires them Passed once delivery lands. That is where any of these turns them red: a merge-before-gate, a
-leaked trial ref, an ignored opt-out, a delivery behind an empty gate, or a delivery past a divergence.
+leaked trial ref, an ignored opt-out, a delivery behind an empty gate, a delivery past a divergence, or a
+barrier delivery at the final wave.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE, and the other four MUST FAIL. Do NOT wire the delivery.
+The tests MUST COMPILE, and the other six MUST FAIL. Do NOT wire the delivery.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Integration.Tests/WaveDelivery/WaveBarrierDeliveryTests.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

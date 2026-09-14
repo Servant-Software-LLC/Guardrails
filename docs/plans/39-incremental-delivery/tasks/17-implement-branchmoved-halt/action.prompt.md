@@ -22,17 +22,26 @@
 
 ## Task
 
-Make `BranchMovedHaltTests` pass. Design 39 §1c and §4 (round 4).
+Make `BranchMovedHaltTests` pass. Design 39 §1c and §4 (round 4, narrowed in round 5).
 
-**Every refused wave delivery halts the run at that wave** — a `BranchMoved`, `Conflict`,
-`DirtyWorkingTree` or `HookRejected` refusal — under `WaveHaltKind.DeliveryRefused`. A refusal reaches
-the barrier by one of two routes, and the halt must cover both:
+**A refused wave delivery halts the run at that wave** — a `conflict`, `branch-moved` or
+`dirty-working-tree` outcome, and no other — under `WaveHaltKind.DeliveryRefused`. A halting refusal
+reaches the barrier by one of two routes, and the halt must cover both:
 
 - **The trial could not be built.** `CreateTrialDelivery` returned a `TrialDelivery` whose `Refusal` is
-  `Conflict` or `HookRejected`; no gate ran and nothing was promoted. The detail is `trial.RefusalDetail`.
+  `Conflict`; no gate ran and nothing was promoted. The detail is `trial.RefusalDetail`.
 - **The promotion refused.** `PromoteTrialDelivery` returned `BranchMoved` or `DirtyWorkingTree`, with the
   detail on the provider's `LastMergeOnSuccessDetail`. `BranchMoved` here covers both a switched checkout
   and the user's branch advancing after the trial was built, so the detail, not the token, says which.
+
+**Never halt on these two (review round 5):**
+- **`hook-rejected`** (`d39-hooks-untracked-tooling`). Task 08 holds this and every later barrier delivery
+  to run end, where the merge runs the user's hooks in their own checkout, and task 29 records the
+  rejection. The run continues. `AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries` pins this,
+  and this task's forward census requires it Passed.
+- **`trial-gate-failed`** (`d39-trial-gate-failure`). Task 08 raises a failed trial-tree gate as an
+  `ExitGateFailed` halt through `BuildGateHalt`, with a trial disclosure. It is not a delivery refusal, and
+  this task adds nothing for it.
 
 Then:
 

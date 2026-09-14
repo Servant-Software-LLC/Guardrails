@@ -23,7 +23,10 @@ $pinned = @(
     'TheOperatorOverride_LiftsABarrierSuppression',
     'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
     'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
-    'ADivergedTaskDefinition_BlocksTheBarrierDelivery'
+    'ADivergedTaskDefinition_BlocksTheBarrierDelivery',
+    'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier',
+    'AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge',
+    'AHookRejectedTrial_HoldsEveryLaterBarrierDelivery'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

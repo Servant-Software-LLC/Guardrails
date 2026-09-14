@@ -39,7 +39,11 @@ the summary and was read straight past by a real operator.
 - **What "held" means.** A wave with no `delivered` key is NOT held when the run-end merge landed
   (`FastForwarded` or `Merged`): that merge carried every wave after the last delivery point, so the run
   is delivered, exactly as a flat plan's is. Work is held only when the run-end delivery did not land —
-  it halted first, was suppressed, was refused, or delivery resolved off.
+  it halted first, was suppressed, was refused, or delivery resolved off. The same holds for a wave whose
+  barrier record reads `refused` with `hook-rejected`, or `suppressed` because that rejection held it
+  (review round 5, `d39-hooks-untracked-tooling`): a rejecting hook holds deliveries to run end instead of
+  halting, and a run-end merge that landed carried those waves too, so the run is delivered.
+  `DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered` pins it.
 - **Every `DeliveryOutcome` member is a possible wave-record outcome**, including `TrialGateFailed` (a
   failed trial-tree gate, added by task 09). Any switch you write over `DeliveryOutcome` handles it without
   throwing, and names outcomes through `JournalJson.DeliveryOutcomeToken`.
@@ -53,6 +57,16 @@ the summary and was read straight past by a real operator.
   `DeliveryOutcomeConverter.Read`. The converter throws on an unknown member, and a record that writes
   but cannot be read back breaks the next resume (#625) — the resume that re-attempts the held wave.
   `PartiallyDelivered_RoundTripsThroughTheJournal` pins both directions.
+
+**Record the delivery before the terminal-gate early return (review round 5, `d39-barrier-terminal-gate`).**
+The plan's final wave always delivers at run end, after the plan-level terminal gate, while earlier waves
+deliver at their barriers. When that gate fails, `RunCommand` returns early (grep for
+`PrintTerminalGateFailure`; `RunCommand.cs:829` today) before `journal.RecordDelivery` (`:847`), so a run
+whose earlier waves already delivered writes no delivery record at all. Move the record ahead of that return,
+keeping its best-effort handling and the task-failed exit code, so it reads `partially-delivered` with a
+`Reason` naming the failed terminal gate. `ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered`
+pins the outcome, and `ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning` pins
+the order.
 
 **The banner.** `RenderUndeliveredWorkWarning` names the waves that already delivered and says they are
 on the user's branch. Its "NOT on your checkout" wording stays true only for the work still held.

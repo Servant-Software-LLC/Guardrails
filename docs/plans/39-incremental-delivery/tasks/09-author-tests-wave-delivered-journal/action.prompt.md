@@ -86,7 +86,7 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   same wave; re-read `run.json` from disk. Exactly the `delivered` record is there, and the wave's
   `status` and `entry` marker are untouched. Rejects appending a second record, never persisting, and
   building a fresh `WaveJournalEntry` that drops the markers (the shape `ResetWaveToPending` uses on
-  purpose, and this method must not).
+  purpose for every field except `Delivered`, and this method must not).
 - `AWaveEntryWithoutADelivery_OmitsTheKey` — a wave entry that never set `Delivered` serializes with NO
   `"delivered"` key, and reads back `null`. Absent, not null: the report tells a *held* wave from one
   *not reached* by it (§4).
@@ -100,6 +100,16 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   the same member. Test the enum value itself, not a record, so the row is about the token. Rejects
   System.Text.Json's numeric output, a drifting spelling, and a token added to the writer only: the next
   resume reads run.json and would throw.
+- `ResettingADeliveredWave_KeepsItsDeliveryRecord` — review round 5, `d39-rewind-delivered-wave`: a
+  delivery cannot be undone, so a rewind must not forget it. A real `RunJournal` in a temp directory:
+  `RecordWaveEntry`, `RecordWaveExit`, `RecordWaveCompleted` (a hash and a marker sha), then
+  `RecordWaveDelivery` with a `delivered` record; call `ResetWaveToPending(waveDir)`; re-read `run.json`
+  from disk. The wave's `status` is `pending` and its `definitionHash`, `markerSha`, `entry` and `exit` are
+  gone, exactly as today, while `delivered` is still there with every member equal to the one recorded.
+  Compare member by member, never with the record's `Equals`: `Covers` is a list, which record equality
+  compares by reference. Rejects today's reset, which replaces the entry with a bare pending one and so
+  makes run.json and the partial-delivery report call shipped work held. What happens when the re-run
+  delivers again belongs to task 29; pin nothing about it here.
 
 `AWaveEntryWithoutADelivery_OmitsTheKey` is exempt from the red census: `Delivered` is a working container
 in the stub, so a correct test of it is green on arrival. It must still exist, and task 10's forward
@@ -115,7 +125,7 @@ are the record, its wire form, and its one write path, which replaces whatever r
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE, and the other six MUST FAIL. Do NOT implement the record, its tokens, or the
+The tests MUST COMPILE, and the other seven MUST FAIL. Do NOT implement the record, its tokens, or the
 write.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs`, `src/Guardrails.Core/Journal/WaveDeliveredRecord.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, and `src/Guardrails.Core/Journal/RunJournal.cs`. After this

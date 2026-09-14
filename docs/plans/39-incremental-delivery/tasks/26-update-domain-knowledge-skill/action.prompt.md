@@ -46,7 +46,8 @@ append a detached list at the end:
   user's git hooks** (#149), taken from the user's resolved hooks directory — including a relative
   `core.hooksPath`, which is how husky installs them and which a harness-owned worktree would otherwise
   skip. A promotion is a fast-forward, which runs no hook, so the trial merge commit is where a rejecting
-  hook refuses a waved plan's delivery as `hook-rejected`. **Say that barrier delivery obeys the same
+  hook is caught for a waved plan: the wave's record reads `refused` with outcome `hook-rejected`, and
+  delivery is then held rather than halted (the refused-delivery bullet below). **Say that barrier delivery obeys the same
   switches as run-end delivery:** `--no-merge-on-success` turns it off at every wave barrier,
   `--merge-on-success` lifts a held delivery, a task definition edited mid-run blocks it (#556) as it
   blocks run-end delivery, and a serial run never delivers at a barrier. The interlock
@@ -59,7 +60,9 @@ append a detached list at the end:
   settled. A resume whose trial finds the plan tip already on the user's branch (equal tips included, as
   right after a quiet-case promotion) skips the promotion and restores the prior `delivered` record, or
   writes one if the crash came before it, so it never records a refusal for a delivery that already
-  landed. A rewound wave's re-run that delivers again replaces its record. Each settled record carries
+  landed. A rewind (drift resolution, or `guardrails reset <plan> <wave>`) keeps a delivered wave's
+  record, since its commits are already on the user's branch; a re-run that delivers again replaces it.
+  Each settled record carries
   `at` and `covers`, every wave the delivery carries. A wave has no `delivered` key when it is not a
   delivery point, never reached its barrier, failed its exit gate, had delivery resolved off
   (`--no-merge-on-success`, or a serial run), or had its delivery withheld by #556 (a task definition
@@ -79,13 +82,21 @@ append a detached list at the end:
   held, every later delivery is held too until run end, unless the operator forces delivery with
   `--merge-on-success`. Use the phrase `wave-scoped interlock`, and state the ride-along rule in one
   sentence, in terms of the waves the delivery carries.
-- **A refused delivery halts the run at that wave** — every refusal (`branch-moved`, `conflict`,
-  `dirty-working-tree`, `hook-rejected`) halts with `WaveHaltKind.DeliveryRefused`, never a gate
-  failure. A wave whose exit gate fails on the trial merge also settles its record as `refused`, with
-  outcome `trial-gate-failed`, but which halt it raises is decided in review round 5
-  (`d39-trial-gate-failure`). Its `detail` names each failing check, the user's tip the trial was built
-  from, and the sha-keyed range `git log <plan-tip-sha>..<user-tip-sha>` of the user's commits the trial
-  merged — a range, not a list. No `RunHaltKind` is added, and `run.json`'s `halt` section stays scoped to gates (#432): the
+- **A refused delivery halts the run at that wave** — a `branch-moved`, `conflict` or `dirty-working-tree`
+  refusal halts with `WaveHaltKind.DeliveryRefused`, never a gate failure. **A failed trial-tree gate halts
+  as an exit-gate failure** (review round 5, `d39-trial-gate-failure`): it goes through the existing gate
+  halt — `run.json`'s `halt` section, the gate logs and the log-site halt banner — with a headline saying
+  the gate failed on the merge with the user's branch and naming the user's tip and the sha-keyed range
+  `git log <plan-tip-sha>..<user-tip-sha>` of the user's commits the trial merged, a range rather than a
+  list. The wave's record still settles as `refused` with outcome `trial-gate-failed`, and its `detail`
+  names each failing check, the tip and the same range. **A rejecting hook holds instead of halting**
+  (review round 5, `d39-hooks-untracked-tooling`). Say in one sentence that when the user's hook rejects a
+  trial merge commit, that delivery and every later barrier delivery are held to run end, where the
+  run-end merge runs the user's hooks in the user's own checkout, and say why: a hook that needs untracked
+  tooling, such as `node_modules`, fails in a harness-owned worktree and passes in the checkout. The
+  rejecting wave's record reads `refused` with outcome `hook-rejected`; each later barrier's record reads
+  `suppressed`, with a `detail` naming that rejection. For a `DeliveryRefused` halt, no `RunHaltKind` is
+  added, and `run.json`'s `halt` section stays scoped to gates (#432): the
   durable record is the wave's `delivered` entry with `status: refused`, plus a `decisions[]` entry with
   gate `delivery-refused` (boundary `wave`, decision `halted`), so the refusal shows on the console and
   in `observer.jsonl`. The log site does not show that entry, and there is no log-site panel for a
@@ -98,8 +109,9 @@ append a detached list at the end:
 - **The partially-delivered outcome** — when some waves reached the user's branch and verified work is
   still held, `run.json`'s top-level `delivery` record reads `partially-delivered` with
   `delivered: false`, derived from `RunReport.WaveDeliveries`. `delivered` is true only when ALL
-  verified work landed. The report naming the delivered and held waves prints BEFORE the verdict, and
-  the exit code does not change.
+  verified work landed. When a rejecting hook held barrier deliveries and the run-end merge then landed,
+  the run is delivered, not partially delivered: that merge carried every held wave. The report naming the
+  delivered and held waves prints BEFORE the verdict, and the exit code does not change.
 - **The post-delivery refresh and the entry preflight that makes it safe** — when the user's branch
   has moved on (its tip is not an ancestor of the plan-branch tip at delivery), the plan branch merges
   the delivered user tip back in; the next wave then re-verifies its own baseline before spending

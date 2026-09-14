@@ -48,7 +48,9 @@ one of them. The red comes from the Scheduler never filling it; task 29 does tha
 wave whose `WaveNode.IsDeliveryPoint` is true (`delivers: true` and at least one exit-gate check), it first
 applies the delivery predicate it shares with `Scheduler.Finalize`: `mergeOnSuccess`, the #361 interlock
 over every wave the delivery carries (lifted by the operator's `--merge-on-success`), the serial-mode
-guard, and #556's executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`. Only then does it call `CreateTrialDelivery`, gate the trial, call `PromoteTrialDelivery` (skipped
+guard, and #556's executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`.
+At a barrier it also holds every delivery that follows a hook-rejected trial earlier in the run (round 5,
+`d39-hooks-untracked-tooling`). Only then does it call `CreateTrialDelivery`, gate the trial, call `PromoteTrialDelivery` (skipped
 when the trial reports `AlreadyDelivered`), and call `DiscardTrialDelivery` in a `finally`. What your base
 does NOT do is write `waves.<dir>.delivered`, raise `WaveDelivered`, or fill `RunReport.WaveDeliveries`.
 Task 29 adds those, which is why every row below that asserts one of them is red on your base.
@@ -63,6 +65,11 @@ Task 29 adds those, which is why every row below that asserts one of them is red
   path it gates, so the same seam can fail a gate only on a trial's `WorktreePath`. Change the run's configuration on the loaded plan
   with `plan with { Config = plan.Config with { ... } }`, the form `SchedulerWaveExecutionTests` uses for
   `AutonomyPolicy`.
+  **End every plan with a tail wave.** A barrier never delivers at the plan's final wave, which delivers at
+  run end instead (round 5, `d39-barrier-terminal-gate`). So every plan below ends with one extra wave that
+  does not set `delivers: true` (for example `wave-99-tail`, holding one task), after every wave a row names.
+  "One delivering wave" means that wave plus the tail. Without the tail a row's delivering wave would be the
+  final one, and an exempt row could pass for that reason instead of the one it names.
 - **The journal:** a real `RunJournal.LoadOrCreate(plan)`. Read the record back from `run.json` on disk
   (`RunJournal.JournalPath`) through `JournalJson.Options` — never from the in-memory document, which
   cannot tell a persisted record from an unpersisted one. A row that SEEDS a record writes it through
@@ -124,7 +131,7 @@ rejects.
    once, for wave 01; the record it reads from disk at call time is already `delivered`, and the instance
    it is handed matches that record. Wave 02's suppressed delivery raises nothing. **Run B:** one
    delivering wave whose promotion returns `BranchMoved`; nothing is raised. Keep the two apart: after
-   task 17 a refusal halts the run, and after a suppression every later delivery in the run is held too,
+   task 17 a `BranchMoved` refusal halts the run, and after a suppression every later delivery in the run is held too,
    so neither can share a run with a delivery that must still raise. Rejects: raising before the write
    (#513), raising on a refusal or a suppression, and never raising (#120).
 6. `ARefusedDelivery_IsRecordedRefusedWithItsOutcome_AndRaisesNoEvent` — the double's promotion returns
@@ -151,8 +158,9 @@ rejects.
    `CreateTrialDelivery` returns a trial whose `Refusal` is `HookRejected`, with a `RefusalDetail`. The
    record on disk reads `refused`, with `outcome: hook-rejected`, that detail, `at`, and no `commit`;
    `PromoteTrialDelivery` is never called and `WaveDelivered` is never raised. Assert the record and the
-   calls only, not the wave's status or what follows, so the test holds before and after task 17 adds the
-   halt. Rejects: gating or promoting a trial that was never built, and dropping a refusal the user's own
+   calls only, not the wave's status or what follows: round 5 made a hook-rejected trial hold every later
+   barrier delivery to run end instead of halting, and row 18 pins what those later barriers record.
+   Rejects: gating or promoting a trial that was never built, and dropping a refusal the user's own
    hook raised before any gate ran.
 11. `AResumeAfterACrashMidDelivery_RecordsAnAlreadyDeliveredTrialAsDelivered` — one delivering wave. Seed
    that wave's record as `running`, with `startedAt` and `covers`, the state a crash between the `running`
@@ -201,7 +209,7 @@ rejects.
    distinct 40-character hex shas: `<planTip10>` is the first 10 characters of its `CurrentPlanBranchTip`,
    and `<userTip10>` the first 10 of the trial's `UserTip`. `PromoteTrialDelivery` is never called and
    `WaveDelivered` is never raised. Assert the record and the calls only, not the wave's status or the halt,
-   which task 17 owns. No promotion happens, so task 15's refresh never runs in this row. Rejects: a record
+   which task 08 owns (round 5: an exit-gate halt on the trial tree). No promotion happens, so task 15's refresh never runs in this row. Rejects: a record
    left at `running` after the gate refused the merged tree, a gate failure recorded as a trial that could
    not be built, a range keyed on a branch name (which goes stale once the plan branch advances), and
    promoting a tree whose gate failed.
@@ -214,6 +222,26 @@ rejects.
    nor `PromoteTrialDelivery` is called, no wave has a `delivered` key, and `WaveDelivered` is never raised.
    Rejects: a barrier delivery that ignores #556, which `Finalize` honors through `RunReport.AllSucceeded`,
    so that work a task settled against a moved definition reaches the user's branch mid-run.
+18. `ALaterBarrierAfterAHookRejection_IsRecordedSuppressedNamingIt` — waves 01 and 02 both deliver, plus the
+   tail. The double refuses wave 01's trial with `HookRejected` and a `RefusalDetail`, and wave 02 then
+   reaches its barrier. Wave 01's record reads `refused` with `outcome: hook-rejected`. Wave 02's record
+   reads `suppressed`, with no `commit` and a `detail` naming wave 01's directory and `hook-rejected`.
+   `CreateTrialDelivery` is called once, for wave 01 only, and `WaveDelivered` is never raised. Round 5
+   (`d39-hooks-untracked-tooling`): a hook-rejected trial holds this and every later barrier delivery to run
+   end, where the merge runs the user's hooks in their own checkout. Rejects: a later barrier that builds
+   another trial and runs the same rejecting hook again, a later wave with no record, and a `suppressed`
+   record whose detail does not name the rejection that held it.
+19. `AResumeAfterAHookRejection_StillHoldsLaterDeliveries` — waves 01 and 02 both deliver, plus the tail.
+   The first run's double refuses wave 01's trial with `HookRejected`, and a failing wave-02 task stops the
+   run in wave 02, after wave 01 completed and before wave 02's barrier. Then seed wave 01's record through
+   `RunJournal.RecordWaveDelivery` as `refused`, with `outcome: hook-rejected`, a detail, `startedAt`, `at`
+   and `covers`: the record the first process journaled before it stopped. Resume with a NEW `Scheduler`
+   and a NEW double over `RunJournal.LoadOrCreate(plan)`, with nothing failing. In the resumed run,
+   `CreateTrialDelivery` is never called for wave 02, wave 02's record reads `suppressed` with a `detail`
+   naming wave 01's directory and `hook-rejected`, and `WaveDelivered` is never raised. On your base, task
+   08's hook-rejection flag lives only in process memory, so the resumed run builds wave 02's trial and
+   writes no record. Rejects: a hold that a resume forgets, which runs the same rejecting hook again at the
+   next barrier.
 
 **Five rows are exempt from the red census, not from existing.** Each is green on your base by
 construction, and task 29's forward census requires each one Passed:
@@ -235,7 +263,7 @@ Write them to assert the guarantee. Do NOT couple any of them to the missing wir
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
 breaks a class that did nothing wrong.
 
-The tests MUST COMPILE, and the other twelve MUST FAIL. Do NOT wire the Scheduler.
+The tests MUST COMPILE, and the other fourteen MUST FAIL. Do NOT wire the Scheduler.
 
 **Scope boundary (harness-enforced):** Write only to `tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveryWiringTests.cs` and `src/Guardrails.Core/Execution/RunReport.cs`. After this
 task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An

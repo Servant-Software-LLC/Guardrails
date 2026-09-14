@@ -36,10 +36,17 @@ $pinned = @(
 #     on arrival. Its red half (that the earlier wave delivered at all) belongs to task 07's suite,
 #     not this one; pinning it red here rewards only a wrongly-failing test that task 17 (it cannot
 #     edit tests) could never turn green.
+#   AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries (review round 5, d39-hooks-untracked-tooling).
+#     STRUCTURAL REASON: a hook rejection is the one refusal that must NOT halt. On this task's base (after
+#     tasks 08 and 29) nothing halts on any refusal yet, task 08 holds every later barrier delivery after a
+#     hook rejection, task 29 records it refused / hook-rejected, and the run-end delivery lands, so a
+#     correct test is green on arrival. Its teeth are task 17's forward census: a task 17 that halts on
+#     hook-rejected turns it red there.
 #   Each is asserted to EXIST below, and task 17's forward census requires each Passed.
 $mustExist = @(
     'TheUsersCheckoutIsNotModified',
-    'AlreadyDeliveredWavesStayDelivered'
+    'AlreadyDeliveredWavesStayDelivered',
+    'AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

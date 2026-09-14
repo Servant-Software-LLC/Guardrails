@@ -25,9 +25,12 @@
 Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: a wave that is a delivery point delivers at its OWN barrier,
 through the trial merge, gated on that wave's `Exit` being green.
 
-**PENDING (round 5, `d39-barrier-terminal-gate`): which waves stay with the run-end call.** Before review this
-read: the run-end call stays for every flat plan and for the waves after the last delivery point. Round 5
-decides the plan's final wave, and plans with a plan-level `guardrails/` folder (#457).
+**The plan's final wave always delivers at run end (review round 5, `d39-barrier-terminal-gate`).** Never
+barrier-deliver at the plan's FINAL wave, whatever its `IsDeliveryPoint` says. Leave it, together with every
+wave after the last earlier delivery point, to `Finalize`'s run-end delivery, which already waits for a
+plan-level `guardrails/` terminal gate to pass (#457). Earlier waves that are delivery points still deliver at
+their own barrier, even in a plan with a plan-level `guardrails/` folder: that gate checks the whole plan and
+cannot run until every wave has finished. Every flat plan keeps the run-end call.
 
 **One delivery decision, shared with run end (review 2026-09-13).** `Scheduler.Finalize` already decides whether
 the run-end delivery may happen. EXTRACT that decision into one method both call sites use — never a copy that
@@ -61,8 +64,14 @@ The two call sites differ only in the suppressing decision they pass in. `Finali
 delivery carries: every wave since the previous delivery point, this one included (review round 4,
 `d39-interlock-ride-along`). Task 29 later derives that set from the journal so it survives a resume.
 
-**PENDING (round 5, `d39-hooks-untracked-tooling`).** If a hook-rejected trial is to hold deliveries instead of
-halting, the shared decision gains one more barrier term: no earlier hook-rejected refusal in this run.
+**A hook-rejected trial holds deliveries; it does not halt (review round 5, `d39-hooks-untracked-tooling`).** The
+trial merge commit runs the user's hooks in a harness worktree. There, a hook that needs untracked tooling from
+the user's own checkout (a gitignored `node_modules`, say) fails, even though the same hook passes in that
+checkout. So the shared decision gains one more barrier term: **no hook-rejected trial earlier in this run**.
+- Once a trial comes back `HookRejected`, every later barrier delivery is held and builds no trial.
+- Track the rejection in the Scheduler for the run. Task 29 records the rejecting wave's delivery as `refused`
+  and each later held one as `suppressed`.
+- At run end, `Finalize` delivers normally, and its merge runs the hooks in the user's own checkout.
 
 `Finalize`'s observable behavior must not change: its #457 terminal-gate deferral, its #597 "forced past a
 decision" flag and its #340 `WhollyGreenButUndelivered` flag stay exactly as they are. `MergeOnSuccessTests`,
@@ -79,6 +88,9 @@ review round 4 `d39-trial-delivery-primitive`):
    withholds must never run them.
 2. **Build the trial.** `CreateTrialDelivery(integ, waveDir, ct)` builds `refs/guardrails/trial/<waveDir>`. A
    trial whose `Refusal` is set could not be built: do not gate it or promote it.
+   - A `HookRejected` refusal does NOT halt the run. Discard the trial, remember the rejection for the shared
+     decision above, and carry on with the next wave.
+   - A `Conflict` refusal is the halt tasks 16/17 build.
 3. **Gate the trial tree.** Check these in this order:
    - **`trial.AlreadyDelivered` FIRST.** The trial's tree is already on the user's branch (a resume after a
      crash that followed the promotion), so run no gate and skip the promotion. An already-delivered trial has
@@ -88,23 +100,34 @@ review round 4 `d39-trial-delivery-primitive`):
      gate that already ran on the integration worktree is that gate. Do not run it twice.
    - Otherwise run the SAME exit gate again in `trial.WorktreePath`, a harness-owned worktree checked out at
      `trial.Commit`. Give the existing exit-gate evaluation its workspace as a parameter rather than
-     duplicating it; grep `RunWaveExitGateAsync`, which reads `integ.IntegrationWorktreePath` today.
+     duplicating it; grep `RunWaveExitGateAsync`, which reads `integ.IntegrationWorktreePath` today. A failure
+     there halts the run as an exit-gate failure, described below.
 4. **Promote only on green.** `PromoteTrialDelivery(integ, trial, ct)` re-checks #588 and #448 and
    fast-forwards. Never call it for an already-delivered trial or after a failed trial-tree gate.
 5. **Always discard.** Call `DiscardTrialDelivery(integ, waveDir)` in a `finally`, so a thrown gate leaves no
    trial ref and no trial worktree behind.
 
-**PENDING (round 5, `d39-trial-gate-failure`): how a failed trial-tree gate halts.** Until that is decided, the
-requirement is what task 07 pins: no promotion, neither branch moves, and the trial is discarded. Whichever way
-it halts, the report of a failed trial-tree gate names three things (lead decision, 2026-09-13):
-- each failing check;
-- `trial.UserTip`;
+**A failed trial-tree gate is an exit-gate failure (review round 5, `d39-trial-gate-failure`).** A gate really
+failed, on the tree the delivery would produce. So halt through the EXISTING exit-gate path, exactly as a failed
+exit gate on the plan branch halts today (grep for where `RunWaveExitGateAsync`'s result is checked):
+- the wave settles needs-human, later waves are blocked, and NO wave-completion marker is written;
+- the halt is `BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, <the trial gate's failed checks>)`, recorded with
+  `RecordGateHalt`, so run.json gets its `halt` section and the log site shows its banner;
+- nothing is promoted, and the trial is still discarded in the `finally`.
+
+The wave's recorded exit reads failed, and the wave-keyed gate logs hold the trial run's output. Both are
+intended: a gate failed on the tree that would have landed, and a resume re-runs the exit gate anyway.
+
+After the failing check names, the halt headline says the gate failed on the trial merge with the user's
+branch, and names:
+- `trial.UserTip`, cut to 10 characters;
 - the range `<planTipSha10>..<userTipSha10>`, over which `git log` lists exactly the user's commits the trial
   merged. `<planTipSha10>` is the plan-branch tip the trial was built from (`CurrentPlanBranchTip(integ)` at the
   barrier) and `<userTipSha10>` is `trial.UserTip`, each cut to 10 characters. Key the range on shas, never on
   a branch name, which moves.
 
-Do not add a commit-list member to `TrialDelivery` for this.
+Do not add a commit-list member to `TrialDelivery` for this. Task 15 later appends its unauthored-content note to
+`BuildGateHalt` headlines, after this disclosure. Task 29 records the delivery as `refused` / `trial-gate-failed`.
 
 On red, neither branch moves: never merge the user's tip into the integration worktree before the gate passes.
 Task 07 pins:
@@ -120,9 +143,12 @@ Task 07 pins:
 - the opt-out (`ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes`);
 - the override (`TheOperatorOverride_LiftsABarrierSuppression`);
 - the empty gate (`ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`);
-- the #556 divergence (`ADivergedTaskDefinition_BlocksTheBarrierDelivery`).
+- the #556 divergence (`ADivergedTaskDefinition_BlocksTheBarrierDelivery`);
+- the final wave (`TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`);
+- the trial-tree gate halt (`AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge`);
+- the hook hold (`AHookRejectedTrial_HoldsEveryLaterBarrierDelivery`).
 
-This task's forward census requires all twelve of task 07's rows to pass.
+This task's forward census requires all fifteen of task 07's rows to pass.
 
 **Not this task.**
 - Task 29 writes `waves.<dir>.delivered`, including its `running` state before the trial is built, and raises

@@ -33,12 +33,16 @@ wave whose `WaveNode.IsDeliveryPoint` is true, it:
 
 1. applies the one delivery predicate it shares with `Scheduler.Finalize`: `plan.Config.MergeOnSuccess`, the
    #361 interlock over the waves the delivery carries, lifted by `plan.Config.MergeOnSuccessForcedByOperator`,
-   the serial guard (a worktree provider and an integration handle both present), and #556's
-   executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`;
+   the serial guard (a worktree provider and an integration handle both present), #556's
+   executed-definition divergence, which `Finalize` honors through `RunReport.AllSucceeded`, and, at a
+   barrier, no hook-rejected trial earlier in this run (round 5, `d39-hooks-untracked-tooling`);
 2. calls `CreateTrialDelivery`;
 3. gates the trial;
 4. calls `PromoteTrialDelivery`, unless the trial reports `AlreadyDelivered`;
 5. calls `DiscardTrialDelivery` in a `finally`.
+
+A barrier never delivers at the plan's final wave (round 5, `d39-barrier-terminal-gate`): that wave delivers
+at run end through `Finalize` and gets no barrier record.
 
 This task adds the record, the event and the report around that flow. It never adds a second predicate, a
 second interlock call, or a second trial. If `ASerialWavedRun_NeverDeliversAtABarrier`,
@@ -72,27 +76,42 @@ Leave every field you do not set null; the record's serialization omits null fie
 write a placeholder. Place every write after task 08's predicate.
 
 - **No delivery at this barrier:** write nothing when delivery resolved off (`mergeOnSuccess` is false, or
-  the run is serial), or when #556 withholds it (a task definition was edited mid-run). A missing key does
+  the run is serial), when #556 withholds it (a task definition was edited mid-run), or at the plan's final
+  wave, which delivers at run end. A missing key does
   not by itself say where the work is. Design §4's rule: a wave with no key has its work on the user's branch
   only if a later barrier delivery's `covers` includes it or the run-end delivery landed, and a serial run
   has no plan branch at all.
 - **The interlock holds it** (a suppressing decision the operator did not override): write `suppressed`,
   already settled, with `At` and a `Detail` naming the decision's token and its subject. No trial is built,
   so nothing the operator can see happens first.
+- **An earlier barrier's trial was hook-rejected** (round 5, `d39-hooks-untracked-tooling`: task 08's
+  predicate then holds this and every later barrier delivery to run end, where the merge runs the user's hooks
+  in their own checkout): write `suppressed`, already settled, with `At` and a `Detail` naming that earlier
+  wave's directory and `hook-rejected`. No trial is built.
+
+  **The journal drives the HOLD, not only its detail.** Any wave before this one in plan order whose
+  `delivered` record reads `refused` with outcome `hook-rejected` holds this delivery. Task 08 could only
+  track the rejection in process memory, because no delivery records existed on its base, and a resume
+  forgets that flag. Replace 08's in-memory flag with this journal lookup, or feed the flag from it, fixing
+  the shared predicate in place; never add a second hold. Use the same lookup to name the rejecting wave in
+  the `Detail`. `AResumeAfterAHookRejection_StillHoldsLaterDeliveries` is the row that catches a hold a
+  resume forgets.
 - **Otherwise, the delivery begins.** First capture the wave's prior record if it reads `delivered` (a resume
   after a crash that followed the settled write, or a rewound wave running again). Then write `running`
   (no `At`) BEFORE `CreateTrialDelivery`, always, even over that prior record. That is #625: journal the
   state before the first action the operator can see, and the trial merge runs the user's git hooks. Then
   settle by REPLACING the `running` record:
   - `trial.Refusal` is set → `refused`, with `At`, the matching `Outcome`, and `Detail` from
-    `trial.RefusalDetail`. Nothing is gated or promoted.
+    `trial.RefusalDetail`. Nothing is gated or promoted. A `HookRejected` refusal does not halt the run:
+    task 08's predicate holds every later barrier delivery to run end instead (round 5).
   - The trial-tree gate failed (the trial needed a merge commit, and task 08's gate over
     `trial.WorktreePath` did not pass) → `refused`, with `At`, `Outcome` `TrialGateFailed`, and a `Detail`
     naming each failing check, the user tip the trial merged (`trial.UserTip`), and the range
     `git log <planTipSha10>..<userTipSha10>`, which lists exactly the user's commits the trial merged. Take
     the plan tip from `CurrentPlanBranchTip(integ)` at the barrier, and cut both shas to their first 10
     characters. Never put a branch name in that range: it goes stale once the plan branch advances. Nothing
-    is promoted. This settles the record whichever halt follows; the halt is task 17's.
+    is promoted. Task 08 then halts through the exit-gate halt on the trial tree (round 5,
+    `d39-trial-gate-failure`).
   - `trial.AlreadyDelivered` WITH a captured prior `delivered` record (a pure resume: the delivery landed
     and was recorded before the crash) → restore that prior record verbatim, the same `At` and `Commit`, and
     raise no event. Task 08 skips the promotion.
@@ -122,7 +141,8 @@ Map a `MergeOnSuccessResult` to the `DeliveryOutcome` member of the same name; b
 
 **4. What follows the settled write.** Keep `CommitWaveMarker` and `RecordWaveCompleted` AFTER the settled
 write, and leave the code between them open. Task 17 adds the `WaveHaltKind.DeliveryRefused` halt right
-after the settled write, so a resume re-attempts a refused delivery at that wave's barrier. Task 15 adds the
+after the settled write for a refusal that halts, so a resume re-attempts it at that wave's barrier; a
+`hook-rejected` trial holds later deliveries instead (round 5), and task 08 halts a failed trial-tree gate. Task 15 adds the
 post-delivery refresh and its `RecordRefreshed` before the marker, so a crash cannot skip the refresh. This
 task does neither.
 

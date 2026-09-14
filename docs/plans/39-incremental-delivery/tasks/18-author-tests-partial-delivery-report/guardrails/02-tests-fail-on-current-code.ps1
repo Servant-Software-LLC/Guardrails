@@ -28,7 +28,13 @@ $pinned = @(
     'DescribeDelivery_ARefusedRunEndMergeAfterAWaveDelivered_IsPartiallyDelivered',
     'TheUndeliveredWorkBanner_NamesTheWavesThatAlreadyDelivered',
     'PartiallyDelivered_RoundTripsThroughTheJournal',
-    'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt'
+    'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt',
+    # Review round 5 (d39-barrier-terminal-gate), red on base by grep: with terminalGatePassed false and no
+    # merge outcome, DescribeDelivery returns NotAttempted with the terminal-gate reason (RunCommand.cs:2128-
+    # 2129), naming no delivered wave; and RunCommand returns on a failed terminal gate (:829-834) before
+    # journal.RecordDelivery (:847), so the reloaded journal's Delivery is null.
+    'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.
@@ -45,11 +51,18 @@ $pinned = @(
 #     delivered/fast-forwarded from MergeOnSuccessOutcome alone (RunCommand.cs:2070-2096) and never reads
 #     WaveDeliveries, so a correct test is green on arrival. It exists to stop task 19 from counting the
 #     waves the run-end merge carried, which have no per-wave delivered key, as held.
+#   DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered (review round 5,
+#   d39-hooks-untracked-tooling).
+#     STRUCTURAL REASON: on current code DescribeDelivery returns a landed run-end merge as delivered/merged
+#     from MergeOnSuccessOutcome alone (RunCommand.cs:2070-2096), whatever WaveDeliveries holds, so a correct
+#     test is green on arrival. It exists to stop task 19 from counting a refused hook-rejected or a
+#     suppressed barrier record as held once the run-end merge carried those waves.
 #   Each is asserted to EXIST below, and task 19's forward census requires each Passed.
 $mustExist = @(
     'AFullyDeliveredRunReadsAsTodayDoes',
     'AFailedWaveDoesNotChangeTheExitCode',
-    'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered'
+    'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered',
+    'DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

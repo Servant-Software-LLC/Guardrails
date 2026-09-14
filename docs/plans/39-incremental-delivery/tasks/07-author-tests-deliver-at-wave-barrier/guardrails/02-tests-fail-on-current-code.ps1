@@ -16,7 +16,9 @@ $pinned = @(
     'ADeliveringWaveMergesAtItsOwnBarrier',
     'ANonDeliveringWaveRidesAlongToTheNextDeliveryPoint',
     'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone',
-    'TheOperatorOverride_LiftsABarrierSuppression'
+    'TheOperatorOverride_LiftsABarrierSuppression',
+    'AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge',
+    'AHookRejectedTrial_HoldsEveryLaterBarrierDelivery'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS (reviews 2026-09-11 and 2026-09-13). Each row is TRUE on this task's
@@ -47,9 +49,14 @@ $pinned = @(
 #   ADivergedTaskDefinition_BlocksTheBarrierDelivery
 #     STRUCTURAL REASON: the base never delivers at a wave barrier, and a run with a recorded #556
 #     executed-definition divergence is never AllSucceeded, so Finalize delivers nothing at run end.
+#   TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier
+#     STRUCTURAL REASON: the base never delivers at a wave barrier, and with a plan-level guardrails/
+#     folder Finalize defers the run-end delivery until the CLI's terminal gate passes (#457), so the
+#     gate logs the final wave's file absent and the deferred delivery then lands it.
 #   Each is asserted to EXIST below, and task 08's forward census requires each to be observed Passed.
 #   That is where a merge-before-gate implementation, a leaked trial ref, an ignored opt-out, a
-#   delivery behind an empty gate or a delivery past a divergence turns them red.
+#   delivery behind an empty gate, a delivery past a divergence or a barrier delivery at the final
+#   wave turns them red.
 $mustExist = @(
     'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
     'AWaveWhoseExitGateFails_DoesNotDeliver',
@@ -58,7 +65,8 @@ $mustExist = @(
     'TheTrialRefIsDeleted_AfterEitherOutcome',
     'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
     'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
-    'ADivergedTaskDefinition_BlocksTheBarrierDelivery'
+    'ADivergedTaskDefinition_BlocksTheBarrierDelivery',
+    'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
