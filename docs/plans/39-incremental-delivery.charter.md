@@ -89,8 +89,8 @@ checkout is not modified, and the only way back from a red gate is the un-merge 
 **cannot** do. The order is therefore:
 
 1. Decide whether this barrier delivers at all, with the same predicate run-end delivery uses:
-   `mergeOnSuccess`, the §1a interlock and its `--merge-on-success` override, and the serial guard. A held
-   delivery builds no trial and runs no hook. *(Review round 5: the first build consulted the interlock only
+   `mergeOnSuccess`, the §1a interlock and its `--merge-on-success` override, the serial guard, and #556 (no task
+   definition edited mid-run). A held delivery builds no trial and runs no hook. *(Review round 5: the first build consulted the interlock only
    after the trial, and ignored `--no-merge-on-success` and serial mode at a barrier.)*
 2. Merge the plan branch onto a throwaway ref — `refs/guardrails/trial/<waveDir>` — never onto the
    user's branch.
@@ -110,11 +110,14 @@ user's branch runs their hooks (`:474`). The promotion in step 4 is always a fas
 hook, so reusing only the promotion would make `HookRejected` unreachable for waved delivery. The provider
 therefore gains three members:
 
-- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking three cases in order:
-  - The user's tip is already an ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
-  - The plan tip is already an ancestor of the user's tip (`AlreadyDelivered`). This is a resume after the
-    promotion landed, or a user who merged the plan branch themselves. The trial is the user's tip. Nothing is
-    merged or promoted, and no trial-tree gate runs, because the delivery already landed.
+- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking four cases in order:
+  - The user's tip equals the plan tip (`AlreadyDelivered`, with the user's tip counted as an ancestor). This is a
+    resume right after a quiet-case promotion landed. Nothing is merged, promoted or gated, and no refresh is owed.
+  - The user's tip is a strict ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
+  - The plan tip is a strict ancestor of the user's tip (`AlreadyDelivered`). This is a resume after a promotion
+    that built a merge commit landed, or a user who merged the plan branch themselves. The trial is the user's tip.
+    Nothing is merged or promoted, and no trial-tree gate runs, because the delivery already landed; the §1c
+    refresh is still owed.
   - Otherwise it creates the merge commit in a harness-owned worktree (`WorktreePath`, kept for the trial-tree
     gate) WITH the user's hooks, resolved from their hooks directory (`git rev-parse --git-path hooks`, made
     absolute). *(Review round 5 measured that a harness worktree silently skips a relative `core.hooksPath`,
@@ -628,7 +631,8 @@ example used `succeeded`/`failed`, which are not wave status tokens. Every recor
 - `refused`, with `outcome` and `detail`. The outcome is:
   - `conflict` or `hook-rejected` when the trial merge could not be built (review round 4,
     `d39-trial-delivery-primitive`);
-  - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5);
+  - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5), with `detail` naming
+    the failing checks, the user's tip, and the range `git log <plan-tip-sha>..<user-tip-sha>`;
   - `branch-moved` or `dirty-working-tree` when the promotion refused.
 - `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject.
 
@@ -640,7 +644,9 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
 - A delivery the interlock holds runs nothing, so its `suppressed` record is written already settled.
 - On a resume whose delivery already landed (the trial reports `AlreadyDelivered`), a prior `delivered` record
   is restored unchanged and no second `WaveDelivered` event is raised. With no prior record, `delivered` is
-  written then.
+  written then. One narrow exception is accepted in v1: after a crash between the refresh commit and the wave
+  marker, the resume takes the quiet case. It fast-forwards the user's branch onto the refresh commit, which the
+  next delivery would carry anyway, rewrites the record's `commit`, and announces the delivery a second time.
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
 - A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
   reached its barrier, failed its exit gate, or had delivery resolved off (`--no-merge-on-success`, a serial run).
@@ -864,6 +870,12 @@ fixed without a question. The fixes below change behavior an operator sees, so c
   trial was built get different detail text and remedies.
 - **A wave's declared `delivers` flag is separate from whether it is a delivery point,** so a wave with no exit gate
   never delivers.
+- **Barrier delivery also honors #556.** A task whose definition was edited mid-run blocks the delivery, exactly as
+  it blocks run-end delivery today. Found on verification: the first fix checked only that the tasks were green.
+- **A resume right after a quiet-case promotion** (your tip equals the plan tip) recognizes that the delivery landed,
+  instead of promoting again and possibly recording a refusal for work already on your branch.
+- **A `trial-gate-failed` record names your commits by sha range** (`git log <plan-tip-sha>..<your-tip-sha>`), so the
+  range stays true after the plan branch moves on.
 
 :::question
 {"id": "d39-barrier-terminal-gate", "title": "A waved plan has a plan-level guardrails/ folder, the terminal gate that runs after every wave. When may its waves deliver?", "mode": "single", "options": ["Earlier waves deliver at their barrier; the plan's final wave always delivers at run end, after the terminal gate passes", "No early delivery for such a plan: every wave waits for run end, and validate warns that its delivers flags do nothing", "Every delivering wave delivers at its barrier, the final wave included, before the terminal gate runs"], "recommended": "Earlier waves deliver at their barrier; the plan's final wave always delivers at run end, after the terminal gate passes", "rationale": "What the code does: #457 holds run-end delivery until the plan-level guardrails/ gate passes (Scheduler.cs:1189-1207), because that gate runs in the CLI after the Scheduler returns. Barrier delivery happens before it, and no task says what to do about that; both reviewers found it. Two cases differ. An earlier wave's delivery has to precede the terminal gate, which checks the whole plan and cannot run until every wave finishes; your earlier answers (per-wave delivery, a per-wave delivers flag) already accepted that. The final wave is different: delivering it before the gate gains nothing and repeats the #457 incident, work landing on your branch that the plan-level gate then fails. Design section 3 already says the run-end call stays for the last wave, and task 08 contradicts it. The first option follows section 3: the final wave delivers through today's run-end path, which already waits for the gate. When the terminal gate fails after earlier waves delivered, run.json records partially-delivered; today RunCommand returns before writing any delivery record on that path (RunCommand.cs:829, before the write at :847). The second option is the strict reading of #457 and makes delivers: true do nothing in any plan with a terminal gate. The third is listed only so it is on the record as rejected. PLAN FOLDER. First option: task 08 leaves the final wave to the run-end delivery and task 07 pins it; task 19 writes the delivery record before the terminal-gate early return and task 18 pins it; tasks 20 and 27 record the rule. Second option: task 08 skips barrier delivery whenever the plan has plan-level guardrails; tasks 03/04 gain a warning code (GR2080, the next free); tasks 07, 20, 21 and 27 change to match. Third option: tasks 20 and 27 record the exception to #457, and tasks 18/19 still gain the record on the early-return path.", "target": "human"}
@@ -875,4 +887,8 @@ fixed without a question. The fixes below change behavior an operator sees, so c
 
 :::question
 {"id": "d39-trial-gate-failure", "title": "Your branch moved during the run. The wave's exit gate passed on the plan branch but fails on the trial merge with your new commits. What does the run report?", "mode": "single", "options": ["An exit-gate failure on the trial tree, whose halt headline says it failed on the merge with your branch and names the commits of yours it merged", "A refused delivery: DeliveryRefused with a new outcome, trial-gate-failed, naming the failing checks and your commits"], "recommended": "An exit-gate failure on the trial tree, whose halt headline says it failed on the merge with your branch and names the commits of yours it merged", "rationale": "Why this is asked: section 1 requires the gate to run on the tree the delivery would produce, and when your branch moved that needs a second gate run in a worktree at the trial commit. The reviews found no task hands that worktree to the Scheduler, which is fixed without a question. What neither the design nor the tasks say is how a failure there is recorded. Here a gate really did fail, so the reason section 4 gives for a separate DeliveryRefused halt kind (a console label saying a gate failed over a wave whose every check passed) does not apply. The first option reuses the exit-gate halt: run.json's halt section, the failed checks' output kept as artifacts, and the log-site halt banner, all within #432's rule that the halt section is for gates. Its risk is blame, WAVE EXIT GATE FAILED over a wave whose own tree passed, and naming the trial merge and your commits in the headline answers that, the way section 1c's note names a refresh. The second option keeps the wave's own gate green in the record and treats the combination as undeliverable, but a refused delivery writes no halt section and keeps no check output, so you would get the failing check names without what they printed. A resume re-runs the gate either way. PLAN FOLDER. Under either option the wave's delivered record settles refused with outcome trial-gate-failed, because the record is journaled running before the trial is built (tasks 09, 10, 28, 29 and 20); the options differ only in the halt. First option: task 08 halts through the existing exit-gate halt with the trial disclosure; task 07 pins it; tasks 16 and 17 do not change; tasks 20 and 26 record the headline. Second option: task 17 also halts with DeliveryRefused on a failed trial gate and task 16 pins it; tasks 20, 26 and 27 record it.", "target": "human"}
+:::
+
+:::question
+{"id": "d39-hooks-untracked-tooling", "title": "Your git hook needs untracked tooling, such as husky with lint-staged needing node_modules. The trial merge commit is made in a harness worktree that lacks it. What should a delivery point do?", "mode": "single", "options": ["Hold, don't halt: a hook-rejected trial holds this and every later barrier delivery, and the run-end merge runs your hooks in your own checkout, as today", "Keep halting, but name the cause: the refusal says the hook ran in a harness worktree without your untracked files, and the docs say not to mark delivery points in such a repo", "Make the tooling available: link your untracked tooling, such as node_modules, into the trial worktree before the commit"], "recommended": "Hold, don't halt: a hook-rejected trial holds this and every later barrier delivery, and the run-end merge runs your hooks in your own checkout, as today", "rationale": "Found by the adversarial verification, measured on Windows git with a hand-built husky layout whose hook runs a gitignored node_modules/.bin/lint-staged. A commit in your checkout exits 0, meaning the hook ran and passed. The trial merge commit without round 5's hooks-path fix also exits 0, but only because the hook never ran, which is what that fix corrects. With the fix it exits 1: lint-staged not found. So in a husky and lint-staged repo every delivery point refuses as hook-rejected and halts under section 4's rule that every refusal halts, and every resume refuses the same way, even though the run-end merge, which runs in your own checkout, would pass. The first option keeps the #149 promise, because the same hooks still run on the commit that lands, at run end in your checkout. It turns the dead end into today's behavior: the run finishes, the held waves deliver together at run end, and a genuine rejection, such as a secret found, still stops the run-end merge exactly as it does now. It gives up incremental delivery in such a repo, and says so: the wave's record reads refused with hook-rejected, and each later barrier record names that rejection. Its cost is that a genuine rejection found at a barrier lets the run keep paying for later waves before the run-end merge refuses again. The second option keeps section 4's halt and makes the cause clear, but leaves the dead end, because the only way through is to edit the plan. The third is specific to one ecosystem, differs by platform (junctions and symlinks), and a linked tool can still read files the worktree does not have. PLAN FOLDER. First option: task 08's predicate holds a barrier delivery after an earlier hook-rejected refusal in the run; task 17 halts on every refusal except hook-rejected, and task 16's hook row asserts the run continues; tasks 28 and 29 record the later deliveries as held, naming the rejection; tasks 18, 19, 20, 26 and 27 follow. Second option: task 31's refusal detail names the harness worktree and the missing untracked files; tasks 20, 26 and 27 name the workaround. Third option: tasks 30 and 31 gain a linking step and a row per platform.", "target": "human"}
 :::

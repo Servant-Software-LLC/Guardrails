@@ -86,8 +86,8 @@ checkout is not modified, and the only way back from a red gate is the un-merge 
 **cannot** do. The order is therefore:
 
 1. Decide whether this barrier delivers at all, with the same predicate run-end delivery uses:
-   `mergeOnSuccess`, the §1a interlock and its `--merge-on-success` override, and the serial guard. A held
-   delivery builds no trial and runs no hook. *(Review round 5: the first build consulted the interlock only
+   `mergeOnSuccess`, the §1a interlock and its `--merge-on-success` override, the serial guard, and #556 (no task
+   definition edited mid-run). A held delivery builds no trial and runs no hook. *(Review round 5: the first build consulted the interlock only
    after the trial, and ignored `--no-merge-on-success` and serial mode at a barrier.)*
 2. Merge the plan branch onto a throwaway ref — `refs/guardrails/trial/<waveDir>` — never onto the
    user's branch.
@@ -107,11 +107,14 @@ user's branch runs their hooks (`:474`). The promotion in step 4 is always a fas
 hook, so reusing only the promotion would make `HookRejected` unreachable for waved delivery. The provider
 therefore gains three members:
 
-- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking three cases in order:
-  - The user's tip is already an ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
-  - The plan tip is already an ancestor of the user's tip (`AlreadyDelivered`). This is a resume after the
-    promotion landed, or a user who merged the plan branch themselves. The trial is the user's tip. Nothing is
-    merged or promoted, and no trial-tree gate runs, because the delivery already landed.
+- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking four cases in order:
+  - The user's tip equals the plan tip (`AlreadyDelivered`, with the user's tip counted as an ancestor). This is a
+    resume right after a quiet-case promotion landed. Nothing is merged, promoted or gated, and no refresh is owed.
+  - The user's tip is a strict ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
+  - The plan tip is a strict ancestor of the user's tip (`AlreadyDelivered`). This is a resume after a promotion
+    that built a merge commit landed, or a user who merged the plan branch themselves. The trial is the user's tip.
+    Nothing is merged or promoted, and no trial-tree gate runs, because the delivery already landed; the §1c
+    refresh is still owed.
   - Otherwise it creates the merge commit in a harness-owned worktree (`WorktreePath`, kept for the trial-tree
     gate) WITH the user's hooks, resolved from their hooks directory (`git rev-parse --git-path hooks`, made
     absolute). *(Review round 5 measured that a harness worktree silently skips a relative `core.hooksPath`,
@@ -625,7 +628,8 @@ example used `succeeded`/`failed`, which are not wave status tokens. Every recor
 - `refused`, with `outcome` and `detail`. The outcome is:
   - `conflict` or `hook-rejected` when the trial merge could not be built (review round 4,
     `d39-trial-delivery-primitive`);
-  - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5);
+  - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5), with `detail` naming
+    the failing checks, the user's tip, and the range `git log <plan-tip-sha>..<user-tip-sha>`;
   - `branch-moved` or `dirty-working-tree` when the promotion refused.
 - `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject.
 
@@ -637,7 +641,9 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
 - A delivery the interlock holds runs nothing, so its `suppressed` record is written already settled.
 - On a resume whose delivery already landed (the trial reports `AlreadyDelivered`), a prior `delivered` record
   is restored unchanged and no second `WaveDelivered` event is raised. With no prior record, `delivered` is
-  written then.
+  written then. One narrow exception is accepted in v1: after a crash between the refresh commit and the wave
+  marker, the resume takes the quiet case. It fast-forwards the user's branch onto the refresh commit, which the
+  next delivery would carry anyway, rewrites the record's `commit`, and announces the delivery a second time.
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
 - A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
   reached its barrier, failed its exit gate, or had delivery resolved off (`--no-merge-on-success`, a serial run).
