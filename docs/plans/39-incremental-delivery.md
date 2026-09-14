@@ -654,7 +654,8 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
 - A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
   reached its barrier, failed its exit gate, had delivery resolved off (`--no-merge-on-success`, a serial run), or
-  had its delivery withheld by #556 (a task definition edited mid-run). Its work reached the user's branch only if
+  had its delivery withheld by #556 (a task definition edited mid-run), or is the plan's final wave, which delivers at
+  run end. Its work reached the user's branch only if
   a later barrier delivery carried it (it is in that record's `covers`) or the run-end delivery landed (`run.json`'s
   top-level `delivery`). A serial run has no plan branch at all; its work is already in the checkout. Otherwise the report reads the wave's own
   status to say whether it is *held* or *not reached*. *(Round 5: the first wording said a missing key always
@@ -676,7 +677,9 @@ refusals do not halt that way:
   tooling, such as husky with lint-staged needing `node_modules`, fails in the harness-owned trial worktree even
   though it would pass in the user's checkout. So the rejected delivery and every later barrier delivery are held,
   each later one recorded `suppressed` with a detail naming the rejection, and the run continues. The run-end merge
-  runs the user's hooks in the user's own checkout, as today, and a genuine rejection still stops it there.
+  runs the user's hooks in the user's own checkout, as today, and a genuine rejection still stops it there. The
+  end-of-run report names the held waves and the hook's output, so a run that ends delivered still says that
+  incremental delivery was held.
 
 The wave's marker commit and `completed` status are written only after its delivery settles, so a resume
 re-attempts a halted delivery at that wave's barrier instead of silently postponing it to the next delivery point.

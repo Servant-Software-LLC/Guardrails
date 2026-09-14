@@ -176,6 +176,19 @@ it ran in, and whether `teammate.txt` existed there.
 
   Rejects: a barrier delivery at the final wave, which lands work before the plan-level gate has checked it
   (#457).
+- `TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd` — the same round-5 rule with NO plan-level
+  `guardrails/` folder. The answer is unconditional, so the final wave never delivers at its barrier.
+  - Use the merged-tree scenario at the plan's FINAL wave: `delivers: true`, a task that writes a file no other
+    task writes (for example `src/final.txt`), and an exit-gate check that fails only when `teammate.txt`
+    exists.
+  - The user's mid-run commit lands before that wave's barrier. The plan has no plan-level `guardrails/` folder.
+  - The merged-tree check is the tripwire: only a trial built at the final wave runs the gate on a tree that
+    has `teammate.txt`, and that halts.
+  - Assert the run did not halt (`RunReport.WaveHalt` is null, or run.json has no `halt` section), and that
+    after the run the user's branch carries `src/final.txt`.
+
+  Rejects: keying the final-wave exception on the plan having a plan-level `guardrails/` folder, the condition
+  `Finalize` already reads. That exception still barrier-delivers the final wave of every plan without one.
 - `AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge` — review round 5
   (`d39-trial-gate-failure`), in the merged-tree scenario. Assert:
   - the run halts at the delivering wave as an exit-gate failure: `RunReport.WaveHalt.Kind` is `ExitGateFailed`
@@ -194,10 +207,16 @@ it ran in, and whether `teammate.txt` existed there.
   which reaches the console but leaves run.json and the log-site banner blaming a wave whose own tree passed.
 - `AHookRejectedTrial_HoldsEveryLaterBarrierDelivery` — review round 5 (`d39-hooks-untracked-tooling`): a hook
   that fails only in a harness worktree holds deliveries instead of halting.
-  - **The hook.** Install a `pre-commit` hook in the repo's `.git/hooks`. It appends the directory it runs in to a
-    log file outside the repo, then exits non-zero unless an UNTRACKED file (for example `tooling.ok`, excluded
-    through `.git/info/exclude`) exists in that directory. Create the file in the user's checkout only, so the
-    hook passes there and fails in any harness worktree.
+  - **The hook.** Install a `pre-commit` hook in the repo's `.git/hooks` the way `GitHookIsolationTests` does,
+    INCLUDING the executable bit: on Linux and macOS git silently skips a hook that is not executable, so the
+    row would pass on Windows and fail in CI. The hook checks for an UNTRACKED file (for example `tooling.ok`,
+    excluded through `.git/info/exclude`) in the directory it runs in.
+    - Absent: it appends the word `rejected` to a log file outside the repo and exits non-zero.
+    - Present: it appends `passed` and exits 0.
+    - Log the verdict, never the directory: Git for Windows reports the working directory in a different path
+      format (`/tmp/...`) from the one your test holds.
+    - Create `tooling.ok` in the user's checkout only, so the hook passes there and fails in any harness
+      worktree.
   - **The plan.** Three waves: the first two have `delivers: true` and passing exit gates, and the final wave
     passes. A commit lands on the user's branch mid-run, before the first wave's barrier (commit it with
     `--no-verify`), so every trial needs a merge commit.
@@ -206,8 +225,8 @@ it ran in, and whether `teammate.txt` existed there.
 
   Assert:
   - the run did not halt: the final wave ran;
-  - the hook's log records exactly ONE run outside the user's checkout: the first barrier's trial, with the
-    second barrier building none;
+  - the hook's log holds exactly ONE `rejected` line, from the first barrier's trial: the second barrier built
+    none. It holds at most one `passed` line, from the run-end merge in the user's checkout;
   - the second log records the first two waves' work ABSENT from the user's branch;
   - after the run, the user's branch carries every wave's work through a merge commit whose first parent is the
     user's mid-run commit: the run-end delivery, whose hook ran in the user's checkout.
@@ -215,7 +234,7 @@ it ran in, and whether `teammate.txt` existed there.
   Rejects: halting on the rejection, which throws away a run whose hook passes in the user's own checkout; and
   building a trial at every later barrier, which runs a hook already known to fail there.
 
-**Nine of these are green on today's code, by design, and the census exempts them from the red
+**Ten of these are green on today's code, by design, and the census exempts them from the red
 requirement (not from existing):**
 - `AWaveWhoseExitGateFails_DoesNotDeliver`
 - `AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved`
@@ -226,6 +245,7 @@ requirement (not from existing):**
 - `ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`
 - `ADivergedTaskDefinition_BlocksTheBarrierDelivery`
 - `TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`
+- `TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd`
 
 They are green today because nothing delivers at a wave barrier:
 - a failed gate already delivers nothing, moves no branch and leaves no trial ref;
@@ -233,7 +253,9 @@ They are green today because nothing delivers at a wave barrier:
 - a run with delivery off never moves the user's branch;
 - a run that halts at a wave gate never reaches the run-end delivery;
 - a run with a recorded divergence never delivers at run end;
-- a plan with a plan-level `guardrails/` folder already delivers once, after that gate passes.
+- a plan with a plan-level `guardrails/` folder already delivers once, after that gate passes;
+- a final wave's exit gate runs only on the plan branch, so a check that fails only on a merge with the user's
+  branch never fires, and the run-end merge lands the work.
 
 Write them honestly — do NOT couple them to the missing feature to force a red. Task 08's forward census
 requires them Passed once delivery lands. That is where any of these turns them red: a merge-before-gate, a

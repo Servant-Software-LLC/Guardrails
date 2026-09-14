@@ -68,6 +68,20 @@ keeping its best-effort handling and the task-failed exit code, so it reads `par
 pins the outcome, and `ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning` pins
 the order.
 
+**The report's renderer.** Implement `RenderWaveDeliveryReport` (task 18's stub) as the end-of-run delivery
+report and call it from the run path before the verdict; the CLI-driven rows, such as
+`TheReportIsPrintedBeforeTheVerdict`, fail if it is left unwired.
+
+**A hook hold is named in the report (final adversarial pass).** When any `WaveDeliveries` record reads
+`refused` with outcome `hook-rejected`, the report prints one line naming the rejecting wave, the hook's
+detail from that record, and the later waves held with it — for example: *"Incremental delivery was held
+from wave-02: your git hook rejected the trial merge commit (<detail>); the held waves delivered together at
+run end."* Say the held waves delivered together only when the run-end merge landed. This is report text
+only: `DescribeDelivery`'s `Delivered`, `Outcome` and `Reason` do not change, no `decisions[]` entry is
+written, and no observer member is added. Otherwise a husky repo that marks waves `delivers: true` reads
+as a green, delivered run on every run, and the operator never learns incremental delivery was held back.
+`TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded` pins it.
+
 **The banner.** `RenderUndeliveredWorkWarning` names the waves that already delivered and says they are
 on the user's branch. Its "NOT on your checkout" wording stays true only for the work still held.
 

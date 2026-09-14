@@ -53,6 +53,12 @@ task 08's predicate or that shared predicate itself: fix the predicate in place,
 rather than trusting a line number: this file has moved under several plans. Never call
 `MergePlanBranchIntoUserBranch` at a barrier; the run-end delivery keeps it.
 
+**This task's tests-pass guardrail also runs task 07's `WaveBarrierDeliveryTests`.** You edit the barrier code
+that every behavior task 08 built runs through: the trial-tree gate's exit halt, the hook-rejection hold that
+builds exactly one trial, the final wave delivering at run end, the operator override, and #556. Those
+Integration tests are the only ones that pin it, so both runs must pass. If one of task 07's rows turns red,
+your change broke task 08's behavior: fix the change, never the test.
+
 **Reach the journal the way the supply drain does.** `RecordWaveDelivery` is on `RunJournal`, not on
 `ISchedulerJournal`, and `ISchedulerJournal.cs` is outside this scope. Use the
 `if (_journal is Journal.RunJournal runJournal)` pattern the Scheduler already uses before

@@ -266,6 +266,14 @@ if ($holdRule.Count -eq 0) {
     $failures += "MISSING the hook hold rule in $subject — no sentence says a rejecting hook holds that delivery and every later barrier delivery to run end, where the run-end merge runs the user's hooks in the user's own checkout. An agent without it expects hook-rejected to halt the run"
 }
 
+# Review round 5 (d39-barrier-terminal-gate), added to this task by the final adversarial pass (NIT-4): the plan's
+# final wave never delivers at its barrier; it delivers at run end, after the plan-level terminal gate (#457). A
+# SENTENCE clause (#470): 'last wave' alone is already present 1x. MEASURED on master with the strip above: 0.
+$finalWaveRule = @($sentences | Where-Object { $_ -match '(?i)\b(?:final|last)\s+wave\b' -and $_ -match $runEndOnly -and $_ -match '(?i)terminal\s+gate|#457|plan-level\s+(?:guardrails|gate|checks?)' })
+if ($finalWaveRule.Count -eq 0) {
+    $failures += "MISSING the final-wave rule in $subject — no sentence says the plan's final wave delivers at run end, after the plan-level terminal gate (#457). An agent without it expects the final wave to deliver at its own barrier, ahead of a terminal gate that can still fail"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) contract clause(s) failed in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

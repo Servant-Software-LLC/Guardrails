@@ -53,6 +53,10 @@ $pinned = @(
 #     STRUCTURAL REASON: the base never delivers at a wave barrier, and with a plan-level guardrails/
 #     folder Finalize defers the run-end delivery until the CLI's terminal gate passes (#457), so the
 #     gate logs the final wave's file absent and the deferred delivery then lands it.
+#   TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd
+#     STRUCTURAL REASON: the base never delivers at a wave barrier, so no trial-tree gate ever runs; the
+#     final wave's exit gate passes on the plan branch, where teammate.txt never exists, and Finalize's
+#     run-end merge lands its work with no halt.
 #   Each is asserted to EXIST below, and task 08's forward census requires each to be observed Passed.
 #   That is where a merge-before-gate implementation, a leaked trial ref, an ignored opt-out, a
 #   delivery behind an empty gate, a delivery past a divergence or a barrier delivery at the final
@@ -66,7 +70,8 @@ $mustExist = @(
     'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
     'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
     'ADivergedTaskDefinition_BlocksTheBarrierDelivery',
-    'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier'
+    'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier',
+    'TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

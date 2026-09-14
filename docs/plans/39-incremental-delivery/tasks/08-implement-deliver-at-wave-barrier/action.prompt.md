@@ -26,7 +26,8 @@ Make `WaveBarrierDeliveryTests` pass. Design 39 §1/§3: a wave that is a delive
 through the trial merge, gated on that wave's `Exit` being green.
 
 **The plan's final wave always delivers at run end (review round 5, `d39-barrier-terminal-gate`).** Never
-barrier-deliver at the plan's FINAL wave, whatever its `IsDeliveryPoint` says. Leave it, together with every
+barrier-deliver at the plan's FINAL wave, whatever its `IsDeliveryPoint` says and whether or not the plan has a
+plan-level `guardrails/` folder. Never key this on `plan.PlanGuardrails`: the rule is about the wave's position. Leave it, together with every
 wave after the last earlier delivery point, to `Finalize`'s run-end delivery, which already waits for a
 plan-level `guardrails/` terminal gate to pass (#457). Earlier waves that are delivery points still deliver at
 their own barrier, even in a plan with a plan-level `guardrails/` folder: that gate checks the whole plan and
@@ -151,11 +152,12 @@ Task 07 pins:
 - the override (`TheOperatorOverride_LiftsABarrierSuppression`);
 - the empty gate (`ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier`);
 - the #556 divergence (`ADivergedTaskDefinition_BlocksTheBarrierDelivery`);
-- the final wave (`TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`);
+- the final wave, with and without a plan-level gate (`TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier`,
+  `TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd`);
 - the trial-tree gate halt (`AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge`);
 - the hook hold (`AHookRejectedTrial_HoldsEveryLaterBarrierDelivery`).
 
-This task's forward census requires all fifteen of task 07's rows to pass.
+This task's forward census requires all sixteen of task 07's rows to pass.
 
 **Not this task.**
 - Task 29 writes `waves.<dir>.delivered`, including its `running` state before the trial is built, and raises

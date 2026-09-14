@@ -34,7 +34,10 @@ $pinned = @(
     # 2129), naming no delivered wave; and RunCommand returns on a failed terminal gate (:829-834) before
     # journal.RecordDelivery (:847), so the reloaded journal's Delivery is null.
     'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
-    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning'
+    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning',
+    # Final adversarial pass (WEAK-2): red on base because RenderWaveDeliveryReport is this task's own throwing
+    # stub; nothing on the base renders a hook hold, so the green, delivered run says nothing about it.
+    'TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded'
 )
 
 # DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.

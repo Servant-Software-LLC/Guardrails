@@ -57,8 +57,9 @@ schema:
   written as null. `covers` lists every wave the delivery carries, in order, ending with this one,
   computed from the journal so a resume computes the same set. A wave has NO `delivered` key — absent,
   not null — when it is not a delivery point, never reached its barrier, failed its exit gate, had
-  delivery resolved off (`--no-merge-on-success`, or a serial run), or had its delivery withheld by #556
-  (a task definition edited mid-run). The missing key does not say where that wave's work is. The work
+  delivery resolved off (`--no-merge-on-success`, or a serial run), had its delivery withheld by #556
+  (a task definition edited mid-run), or is the plan's final wave, which delivers at run end and so never
+  writes a barrier record. The missing key does not say where that wave's work is. The work
   reached the user's branch only if a later barrier delivery carried it (the wave is in that record's
   `covers`) or the run-end delivery landed (the top-level `delivery` record). Otherwise the report says
   the wave is held or not reached, reading the wave's own status. A serial run is different again: it has
@@ -85,7 +86,9 @@ schema:
   rejecting wave's record reads `"refused"` with outcome `hook-rejected`, each later barrier's record reads
   `"suppressed"` with a `detail` naming that rejection, and no status is added. Say why: a hook that needs
   untracked tooling, such as `node_modules`, fails in a harness-owned worktree and passes in the user's
-  checkout;
+  checkout. The hold is visible in the end-of-run delivery report, which names the rejecting wave, the
+  hook's detail and the waves held with it; the top-level `delivery` record does not change for it, and no
+  `decisions[]` entry or observer event is added;
 - the **`WaveDelivered`** observer event, `WaveDelivered(WaveNode, WaveDeliveredRecord)`, raised only for
   a `delivered` record and only after that record is persisted; and `RunReport.WaveDeliveries`, stamped
   from the journal in `BuildReport` on every report, halted ones included. In §8, `observer.jsonl` gains

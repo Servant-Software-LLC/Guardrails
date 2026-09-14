@@ -25,6 +25,7 @@ $pinned = @(
     'DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered',
     'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
     'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning',
+    'TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded',
     'AFailedWaveDoesNotChangeTheExitCode',
     'AFullyDeliveredRunReadsAsTodayDoes'
 )

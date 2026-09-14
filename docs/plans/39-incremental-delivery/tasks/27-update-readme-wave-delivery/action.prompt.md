@@ -80,7 +80,9 @@ Cover these, in the document's existing operator-facing style:
   where the final merge runs your hooks in your own checkout. Say why: a hook that needs untracked
   tooling, such as `node_modules`, can fail in the harness's worktree and pass in yours. If that final
   merge lands, the run is delivered. Also say that `--merge-on-success` does not lift this hold: the
-  override applies to a delivery a suppressing decision held, not to one a rejecting hook held.
+  override applies to a delivery a suppressing decision held, not to one a rejecting hook held. And say
+  that the end-of-run report names the wave whose hook rejected the merge, the hook's message and the
+  waves held with it, so a green, delivered run still tells you incremental delivery was held back.
 - **The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial merge.
   When your branch has moved on, that merge commit is created with your git hooks, exactly as today's
   run-end merge commit is. Say that in one sentence, and say that hooks installed under a relative

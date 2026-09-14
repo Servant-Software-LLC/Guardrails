@@ -25,6 +25,7 @@ $pinned = @(
     'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
     'ADivergedTaskDefinition_BlocksTheBarrierDelivery',
     'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier',
+    'TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd',
     'AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge',
     'AHookRejectedTrial_HoldsEveryLaterBarrierDelivery'
 )

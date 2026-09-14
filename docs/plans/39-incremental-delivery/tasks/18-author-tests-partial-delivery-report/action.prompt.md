@@ -36,11 +36,13 @@ record.
   throws on an unknown member in both directions. Only `PartiallyDelivered_RoundTripsThroughTheJournal`
   writes the new member through the journal, and it is red for exactly that reason until task 19 adds
   the token to the writer AND the reader. No other test in this suite serializes it.
-- In `src/Guardrails.Cli/Commands/RunCommand.cs`, change `PrintWaveHalt` from `private static` to
-  `public static`, and change nothing else in that file. It is the method that prints a wave halt's
-  label. The Cli assembly ships no `InternalsVisibleTo`, so a public method is the house test seam —
-  `DescribeDelivery` and `RenderUndeliveredWorkWarning` are public for the same reason.
-  `WaveHaltKind.DeliveryRefused` already exists: task 16 added it.
+- In `src/Guardrails.Cli/Commands/RunCommand.cs`, make two changes and nothing else. Change `PrintWaveHalt`
+  from `private static` to `public static`: it is the method that prints a wave halt's label. And add the
+  end-of-run delivery report's renderer as a throwing stub,
+  `public static void RenderWaveDeliveryReport(RunReport report, TextWriter output) => throw new NotImplementedException();`,
+  which task 19 implements and calls before the verdict. The Cli assembly ships no `InternalsVisibleTo`, so
+  a public method is the house test seam — `DescribeDelivery` and `RenderUndeliveredWorkWarning` are public
+  for the same reason. `WaveHaltKind.DeliveryRefused` already exists: task 16 added it.
 
 Every test carries `[Trait("Category", "WaveDelivery")]`.
 
@@ -124,6 +126,15 @@ Every test carries `[Trait("Category", "WaveDelivery")]`.
   `PlanBranch` are null. A rejecting hook holds deliveries to run end rather than halting, and a run-end
   merge that landed carried every held wave. Rejects counting a `refused` or `suppressed` barrier record as
   held work once the run-end merge landed.
+- `TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded` — PURE calls (final adversarial pass). Build the
+  report the row above describes: a `refused` barrier record with outcome `HookRejected` whose `Detail`
+  carries the hook's output, a later wave `suppressed` by that rejection, and a run-end merge that landed.
+  Call `RunCommand.RenderWaveDeliveryReport` with a `StringWriter`, and assert the output names the
+  rejecting wave's directory, the hook's detail, and the later held wave's directory. Then call
+  `RunCommand.DescribeDelivery` on the same report and assert it still reads `Delivered` true, `Outcome`
+  `Merged` and a null `Reason`: the hold shows in the report only, and the delivery record does not
+  change. Rejects a run that reads green and delivered while the hook silently held back every incremental
+  delivery.
 - `ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered` — a PURE call (review round 5,
   `d39-barrier-terminal-gate`). `WaveDeliveries` records an earlier wave `delivered`, every task succeeded,
   the plan-level terminal gate did not pass (`terminalGatePassed: false`), and the final wave has no
@@ -149,7 +160,7 @@ red census. `DescribeDelivery` returns a landed run-end merge as delivered witho
 `WaveDeliveries`, whatever the barrier records say; a run with a failed wave already exits 2; and a plan
 that marks no wave already prints today's output. So correct tests of all four are green on arrival. Write
 them to assert the guarantee, not to fail. They must still exist, and task 19's forward census requires
-all fifteen Passed.
+all sixteen Passed.
 
 **No process-wide state (#520).** Do not set environment variables, change the current directory, or
 touch the console or the culture — pass values in. xUnit runs classes in parallel, and a mutation here
@@ -157,7 +168,7 @@ breaks a class that did nothing wrong. Capture the output whose ORDER you assert
 `StringConsoleIo` handed to `CommandFactory.BuildRootCommand(io)` — never by redirecting `Console.Out`,
 which is process-wide.
 
-The other eleven tests MUST COMPILE and FAIL. Do NOT implement the report, the delivery record, the
+The other twelve tests MUST COMPILE and FAIL. Do NOT implement the report, the delivery record, the
 banner or the label.
 
 **Scope boundary (harness-enforced):** Write only to

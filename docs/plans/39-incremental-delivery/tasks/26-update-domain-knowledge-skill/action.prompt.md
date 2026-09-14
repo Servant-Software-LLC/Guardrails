@@ -52,7 +52,10 @@ append a detached list at the end:
   `--merge-on-success` lifts a delivery the §1a interlock held (a suppressing decision) but never a hold a
   rejecting hook caused, a task definition edited mid-run blocks it (#556) as it
   blocks run-end delivery, and a serial run never delivers at a barrier. The interlock
-  is consulted before the trial merge is built, so a held delivery never runs the user's hooks.
+  is consulted before the trial merge is built, so a held delivery never runs the user's hooks. **Say that
+  the plan's final wave never delivers at its barrier** (review round 5, `d39-barrier-terminal-gate`): it
+  delivers at run end, after the plan-level terminal gate passes (#457), while earlier waves deliver at
+  their own barriers.
 - **The journal record** — `run.json`'s `waves.<dir>.delivered`. A barrier delivery that begins always
   writes `status: running`, with `startedAt` and `covers`, even over an earlier `delivered` record: it is
   written when the delivery begins, after the switches and the interlock pass and before the trial merge
@@ -66,12 +69,14 @@ append a detached list at the end:
   Each settled record carries
   `at` and `covers`, every wave the delivery carries. A wave has no `delivered` key when it is not a
   delivery point, never reached its barrier, failed its exit gate, had delivery resolved off
-  (`--no-merge-on-success`, or a serial run), or had its delivery withheld by #556 (a task definition
-  edited mid-run). Its work reached the user's branch only if a later barrier delivery carried it (the
+  (`--no-merge-on-success`, or a serial run), had its delivery withheld by #556 (a task definition
+  edited mid-run), or is the plan's final wave, which delivers at run end and so never writes a barrier
+  record. Its work reached the user's branch only if a later barrier delivery carried it (the
   wave is in that record's `covers`) or the run-end delivery landed (the top-level `delivery` record);
   otherwise the report says held or not reached. A serial run has no plan branch at all: its work is
   already in the checkout. **Never teach that a missing `delivered` key means the work is not on the user's
-  branch** — the guardrail refuses that sentence unless it names `covers` or the run-end delivery.
+  branch** — the guardrail refuses that sentence unless it states the reach rule, which means it names
+  `covers` or says "only if". Naming only the run-end delivery is not enough.
 - **The observer event** — `IRunObserver.WaveDelivered`, raised only for `status: delivered` and only
   after the record is persisted, forwarded through every decorator (the `ObserverForwardingSweepTests`
   contract). It belongs beside the existing `IRunObserver.WaveStarting`/`WaveFinished` mention. It is
@@ -96,7 +101,9 @@ append a detached list at the end:
   run-end merge runs the user's hooks in the user's own checkout, and say why: a hook that needs untracked
   tooling, such as `node_modules`, fails in a harness-owned worktree and passes in the checkout. The
   rejecting wave's record reads `refused` with outcome `hook-rejected`; each later barrier's record reads
-  `suppressed`, with a `detail` naming that rejection. For a `DeliveryRefused` halt, no `RunHaltKind` is
+  `suppressed`, with a `detail` naming that rejection. The hold shows in the end-of-run delivery report,
+  which names the rejecting wave, the hook's detail and the waves held with it; the top-level `delivery`
+  record does not change for it. For a `DeliveryRefused` halt, no `RunHaltKind` is
   added, and `run.json`'s `halt` section stays scoped to gates (#432): the
   durable record is the wave's `delivered` entry with `status: refused`, plus a `decisions[]` entry with
   gate `delivery-refused` (boundary `wave`, decision `halted`), so the refusal shows on the console and

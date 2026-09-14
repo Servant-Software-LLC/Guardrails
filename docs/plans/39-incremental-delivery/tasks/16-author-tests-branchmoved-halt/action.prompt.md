@@ -56,9 +56,14 @@ writes into it:
   gate script commits again on the user's branch, but only when `teammate.txt` exists in its working
   directory. That is true in the trial worktree and false in the integration worktree, where the
   plan-branch gate runs first.
-- **A hook that rejects only the trial:** install a `pre-commit` hook in the user's repo that exits non-zero
-  unless an untracked `hook-ok.txt` exists in its working directory, and create that file in the user's
-  checkout only. A wave-01 task script commits `teammate.txt` on the user's branch, and the hook passes there.
+- **A hook that rejects only the trial:** install a `pre-commit` hook in the user's repo the way
+  `GitHookIsolationTests` does, including `File.SetUnixFileMode` for the executable bit. On Linux and macOS,
+  git silently ignores a hook that is not executable, so without it the row passes on Windows and fails
+  elsewhere. The hook exits non-zero unless an untracked `hook-ok.txt` exists in its working directory, and
+  that file is created in the user's checkout only. Before exiting, the hook appends its VERDICT, `passed`
+  or `rejected`, to a log file at an absolute path outside the repo. Never log or compare the hook's working
+  directory: Git for Windows reports `$(pwd)` as a `/tmp/...` path, so a directory comparison misfires. A
+  wave-01 task script commits `teammate.txt` on the user's branch, and the hook passes there.
   The trial then needs a merge commit, which the harness builds in its own worktree, where `hook-ok.txt` is
   absent, so the hook rejects it. The run-end merge runs in the user's checkout, where the hook passes.
 
@@ -116,8 +121,10 @@ the refusal as `refused` on `waves.<dir>.delivered`; this suite pins the HALT.
   wave. Each wave's task writes its own file on the plan side. Wave-01's task script also writes the user's
   tip after its commit to a sentinel file, and wave-03's task script writes the user's branch tip to a
   second sentinel. Assert all of:
-  - wave-01's `delivered` record reads `refused` with outcome `hook-rejected`, so the hook really rejected
-    the trial, and wave-02's reads `suppressed`;
+  - wave-01's `delivered` record reads `refused` with outcome `hook-rejected`, and wave-02's reads
+    `suppressed`;
+  - the hook log contains `rejected`, and its last line is `passed`: the hook rejected the trial, then ran
+    again on the run-end merge and passed;
   - the run has no `DeliveryRefused` halt, and wave-03 ran;
   - the two sentinels hold the same sha, so neither barrier promoted anything;
   - after the run, the user's branch contains all three waves' files, so the run-end delivery landed.
