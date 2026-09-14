@@ -49,7 +49,8 @@ append a detached list at the end:
   hook is caught for a waved plan: the wave's record reads `refused` with outcome `hook-rejected`, and
   delivery is then held rather than halted (the refused-delivery bullet below). **Say that barrier delivery obeys the same
   switches as run-end delivery:** `--no-merge-on-success` turns it off at every wave barrier,
-  `--merge-on-success` lifts a held delivery, a task definition edited mid-run blocks it (#556) as it
+  `--merge-on-success` lifts a delivery the §1a interlock held (a suppressing decision) but never a hold a
+  rejecting hook caused, a task definition edited mid-run blocks it (#556) as it
   blocks run-end delivery, and a serial run never delivers at a barrier. The interlock
   is consulted before the trial merge is built, so a held delivery never runs the user's hooks.
 - **The journal record** — `run.json`'s `waves.<dir>.delivered`. A barrier delivery that begins always

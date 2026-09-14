@@ -651,7 +651,9 @@ it only before `PromoteTrialDelivery`, which left the hook run and the second ga
   next delivery would carry anyway, rewrites the record's `commit`, and announces the delivery a second time.
 - A rewind (drift resolution, or `guardrails reset <plan> <wave>`) keeps the wave's `delivered` record, because its
   commits are already on the user's branch. If the re-run reaches its barrier and delivers again, the new record
-  replaces the old one (review round 5, `d39-rewind-delivered-wave`).
+  replaces the old one (review round 5, `d39-rewind-delivered-wave`). A re-run that is refused or held instead also
+  replaces it, while the earlier delivery's commits stay on the user's branch. If the run then stops before its
+  run-end merge, the report can call that work held, which is an accepted v1 limitation.
 - `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
 - A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
   reached its barrier, failed its exit gate, had delivery resolved off (`--no-merge-on-success`, a serial run), or

@@ -53,7 +53,7 @@ Cover these, in the document's existing operator-facing style:
   suppresses delivery (a proceeded-best-guess or proceeded-unreviewed) is now checked at every delivery
   point, against every wave that delivery carries. A delivery is held when ANY wave it carries recorded
   such a decision, not only the delivering wave, so once a wave is held every later delivery is held too
-  until the run ends, unless you force delivery with `--merge-on-success`. Say this in the sentence that
+  until the run ends, unless you force delivery past that decision with `--merge-on-success`. Say this in the sentence that
   already explains when delivery is held back, so a reader does not meet two rules, and state it in
   terms of the waves the delivery carries.
 - **A refused delivery halts the run at that wave.** A delivery is refused when your checkout has moved
@@ -79,7 +79,8 @@ Cover these, in the document's existing operator-facing style:
   git hook rejects the trial merge commit, this delivery and every later one wait for the end of the run,
   where the final merge runs your hooks in your own checkout. Say why: a hook that needs untracked
   tooling, such as `node_modules`, can fail in the harness's worktree and pass in yours. If that final
-  merge lands, the run is delivered.
+  merge lands, the run is delivered. Also say that `--merge-on-success` does not lift this hold: the
+  override applies to a delivery a suppressing decision held, not to one a rejecting hook held.
 - **The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial merge.
   When your branch has moved on, that merge commit is created with your git hooks, exactly as today's
   run-end merge commit is. Say that in one sentence, and say that hooks installed under a relative

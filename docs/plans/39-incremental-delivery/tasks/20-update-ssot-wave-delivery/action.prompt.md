@@ -69,7 +69,8 @@ schema:
   (`'<branch>' moved from <sha10> to <sha10> after the trial was built` — resume, and the next trial
   includes the new commits);
 - **barrier delivery obeys the same switches as run-end delivery**: `--no-merge-on-success` (or
-  `"mergeOnSuccess": false`) turns it off, `--merge-on-success` lifts a held delivery, a task definition
+  `"mergeOnSuccess": false`) turns it off, `--merge-on-success` lifts a delivery the §1a interlock held (a suppressing
+  decision) but never a hold a rejecting hook caused, a task definition
   edited mid-run blocks it (#556) as it blocks run-end delivery, a serial run never delivers at a
   barrier, and a wave with no exit gate is never a delivery point. The interlock is
   consulted before the trial merge is built, so a held delivery never runs the user's hooks;

@@ -69,6 +69,7 @@ trial merge commit runs the user's hooks in a harness worktree. There, a hook th
 the user's own checkout (a gitignored `node_modules`, say) fails, even though the same hook passes in that
 checkout. So the shared decision gains one more barrier term: **no hook-rejected trial earlier in this run**.
 - Once a trial comes back `HookRejected`, every later barrier delivery is held and builds no trial.
+  `--merge-on-success` does not lift this hold: the override lifts only a delivery the §1a interlock held.
 - Track the rejection in the Scheduler for the run. Task 29 records the rejecting wave's delivery as `refused`
   and each later held one as `suppressed`.
 - At run end, `Finalize` delivers normally, and its merge runs the hooks in the user's own checkout.
@@ -125,6 +126,12 @@ branch, and names:
   merged. `<planTipSha10>` is the plan-branch tip the trial was built from (`CurrentPlanBranchTip(integ)` at the
   barrier) and `<userTipSha10>` is `trial.UserTip`, each cut to 10 characters. Key the range on shas, never on
   a branch name, which moves.
+
+**Compose the FULL headline, trial disclosure included, BEFORE calling `RecordGateHalt`.** `RecordGateHalt` copies
+the headline into run.json's `halt.headline`, and the log-site banner reads it from there. A disclosure appended
+afterward reaches the console only: run.json and the banner would then say just "exit gate FAILED" over a wave
+whose own tree passed. The disclosure is what makes that halt fair to the wave, which is why round 5 accepted it.
+Task 07 pins `halt.headline` equal to `WaveHalt.Headline`.
 
 Do not add a commit-list member to `TrialDelivery` for this. Task 15 later appends its unauthored-content note to
 `BuildGateHalt` headlines, after this disclosure. Task 29 records the delivery as `refused` / `trial-gate-failed`.

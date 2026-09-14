@@ -135,8 +135,9 @@ it ran in, and whether `teammate.txt` existed there.
   does, or `--no-merge-on-success` on the in-process command. Assert the user's branch tip is exactly where
   the run started. Rejects: a barrier delivery that ignores the operator's opt-out, which moves the user's
   branch mid-run while the end-of-run banner still says nothing was delivered.
-- `TheOperatorOverride_LiftsABarrierSuppression` — the `--merge-on-success` override lifts a held barrier
-  delivery exactly as it lifts the run-end one (review 2026-09-13). A wave the delivery carries (the
+- `TheOperatorOverride_LiftsABarrierSuppression` — the `--merge-on-success` override lifts a barrier delivery
+  that the §1a interlock held (a suppressing decision in a wave the delivery carries), exactly as it lifts the
+  run-end one (review 2026-09-13). It never lifts the hold that follows a hook-rejected trial. A wave the delivery carries (the
   delivering wave itself or an earlier one) records a real `proceeded-unreviewed` decision: build it the
   way `RunOutcomeWiringTests` builds its proceed-unreviewed plan (autonomy policy `auto`, the
   `review-gate: "proceed-unreviewed"` threshold, and a fake `breakdown` runner). The delivering wave has
@@ -182,11 +183,15 @@ it ran in, and whether `teammate.txt` existed there.
   - the halt headline contains the user's mid-run commit's sha cut to 10 characters, and a range
     `<sha10>..<userTipSha10>` whose left side resolves to a commit on the plan branch that does not contain the
     user's mid-run commit;
+  - the DURABLE headline carries the same disclosure: run.json's `halt.headline` equals the report's
+    `WaveHalt.Headline`, and itself contains that sha and that range. Drive the real `run` command, or read
+    run.json after constructing the Scheduler directly, the way task 14 pins the refresh disclosure;
   - the user's branch tip is still their mid-run commit;
   - the plan branch has no `Guardrails-Wave: <waveDir>` marker commit for that wave.
 
-  Rejects: a trial-tree gate failure that halts as a refused delivery or not at all, and a headline that leaves
-  the operator hunting for which of their commits broke the gate.
+  Rejects: a trial-tree gate failure that halts as a refused delivery or not at all; a headline that leaves the
+  operator hunting for which of their commits broke the gate; and a disclosure appended after `RecordGateHalt`,
+  which reaches the console but leaves run.json and the log-site banner blaming a wave whose own tree passed.
 - `AHookRejectedTrial_HoldsEveryLaterBarrierDelivery` — review round 5 (`d39-hooks-untracked-tooling`): a hook
   that fails only in a harness worktree holds deliveries instead of halting.
   - **The hook.** Install a `pre-commit` hook in the repo's `.git/hooks`. It appends the directory it runs in to a
