@@ -37,7 +37,7 @@ on `LastMergeOnSuccessDetail`.
 task requires `new GitWorktreeProvider(` in code. Outside comments, it rejects any of these:
 - `FakeWorktreeProvider` or `RecordingWorktreeProvider`;
 - a string literal naming any provider type other than `GitWorktreeProvider` or `IWorktreeProvider`;
-- a type implementing `IWorktreeProvider`, or a using-alias of a provider type;
+- a type implementing `IWorktreeProvider`, or a using-alias of `IWorktreeProvider`;
 - `IWorktreeProvider` as the first type argument of a generic other than a delegate, `Lazy`, `Task`,
   `ValueTask`, a collection, `IsAssignableFrom` or `IsType`, so `Mock<>` and `Substitute.For<>` are out;
 - `DispatchProxy`.

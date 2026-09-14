@@ -71,8 +71,11 @@ no `Wave` holds every delivery: task 06 fails closed.
 Leave every field you do not set null; the record's serialization omits null fields (tasks 09/10), so never
 write a placeholder. Place every write after task 08's predicate.
 
-- **Delivery resolved off** (`mergeOnSuccess` is false, or the run is serial): write nothing. The absent key
-  means the wave's work is not on the user's branch.
+- **No delivery at this barrier:** write nothing when delivery resolved off (`mergeOnSuccess` is false, or
+  the run is serial), or when #556 withholds it (a task definition was edited mid-run). A missing key does
+  not by itself say where the work is. Design §4's rule: a wave with no key has its work on the user's branch
+  only if a later barrier delivery's `covers` includes it or the run-end delivery landed, and a serial run
+  has no plan branch at all.
 - **The interlock holds it** (a suppressing decision the operator did not override): write `suppressed`,
   already settled, with `At` and a `Detail` naming the decision's token and its subject. No trial is built,
   so nothing the operator can see happens first.

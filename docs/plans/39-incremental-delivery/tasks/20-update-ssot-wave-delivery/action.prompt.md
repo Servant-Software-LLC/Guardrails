@@ -52,11 +52,13 @@ schema:
   records `"delivered"` with a `detail` naming the overridden decision. Null fields are omitted, never
   written as null. `covers` lists every wave the delivery carries, in order, ending with this one,
   computed from the journal so a resume computes the same set. A wave has NO `delivered` key — absent,
-  not null — when it is not a delivery point, never reached its barrier, failed its exit gate, or had
-  delivery resolved off. The missing key does not say where that wave's work is. The work reached the
-  user's branch only if a later barrier delivery carried it (the wave is in that record's `covers`) or
-  the run-end delivery landed (the top-level `delivery` record). Otherwise the report says the wave is
-  held or not reached, reading the wave's own status;
+  not null — when it is not a delivery point, never reached its barrier, failed its exit gate, had
+  delivery resolved off (`--no-merge-on-success`, or a serial run), or had its delivery withheld by #556
+  (a task definition edited mid-run). The missing key does not say where that wave's work is. The work
+  reached the user's branch only if a later barrier delivery carried it (the wave is in that record's
+  `covers`) or the run-end delivery landed (the top-level `delivery` record). Otherwise the report says
+  the wave is held or not reached, reading the wave's own status. A serial run is different again: it has
+  no plan branch at all, and its work is already in the checkout;
 - **`branch-moved` has two causes, and the `detail` says which** (design 39 §1, review round 4). Record
   both, each with its remedy: the checkout was switched to another branch (the #588 text — check the
   branch out again, then resume), or the user's branch advanced after the trial was built

@@ -197,7 +197,12 @@ if ($doc -notmatch [regex]::Escape('core.hooksPath')) {
     $failures += "MISSING 'core.hooksPath' in $subject — the skill does not say the trial merge commit runs hooks from the user's resolved hooks directory, so an agent will not suspect a relative core.hooksPath (husky's layout) when a hook seems not to run"
 }
 
-$switches = @($sentences | Where-Object { $_ -match '(?i)no-merge-on-success' -and $_ -match '(?i)\bbarrier\b|delivery\s+points?|\bwaves?\b' })
+# The switches sentence must SAY the flag acts on barrier delivery (turns it off, stops, blocks, applies ...).
+# Naming the flag beside 'barrier' is not enough: the no-delivered-key reasons sentence this skill must also
+# carry ("... never reached its barrier ... had delivery resolved off (--no-merge-on-success, a serial run)")
+# names both and would otherwise satisfy this clause on its own (measured by the fork L2 proof, 2026-09-14).
+$switchVerb = '(?i)(?:\bturns?\s+(?:\w+\s+){0,3}off\b|\bswitch(?:es)?\s+(?:\w+\s+){0,2}off\b|\bstops?\b|\bdisables?\b|\bblocks?\b|\bprevents?\b|\bapplies\b|\bobeys?\b|\bhonou?rs?\b|\brespects?\b)'
+$switches = @($sentences | Where-Object { $_ -match '(?i)no-merge-on-success' -and $_ -match '(?i)\bbarrier\b|delivery\s+points?|\bwaves?\b' -and $_ -match $switchVerb })
 if ($switches.Count -eq 0) {
     $failures += "MISSING the barrier-delivery switches in $subject — no sentence says --no-merge-on-success also stops a wave's barrier delivery. An agent that reads it as a run-end switch only reasons that a delivering wave lands on the user's branch under it"
 }
@@ -221,9 +226,11 @@ if ($runningBegins.Count -eq 0) {
 # POSITIVE: one sentence states the reach rule — it names covers AND the run-end or top-level delivery AND
 # the branch.
 # NEGATIVE: a sentence saying a missing, absent or no delivered key means the work is not on the user's branch,
-# or is held, while naming neither covers nor the run-end delivery. Under that model a wave the run-end merge
-# or a later delivery carried reads as held. A sentence listing why a key is missing ("never reached its
-# barrier", "not a delivery point") does not trip it.
+# or is held, unless that sentence STATES the reach rule — it names covers, or says "only if". Under that model
+# a wave the run-end merge or a later delivery carried reads as held. Merely MENTIONING the run-end delivery is
+# not an exemption (adversarial re-verification, measured): "... is not on the user's branch, even if the
+# run-end delivery was attempted" is still the wrong model. A sentence listing why a key is missing ("never
+# reached its barrier", "not a delivery point") does not trip it.
 # MEASURED on master with the same strip before it was added: see the fork L2 report (0 and 0).
 $runEnd = '(?i)(?:run-end|\brun\s+end\b|top-level|end\s+of\s+the\s+run)'
 $reachRule = @($sentences | Where-Object { $_ -match '(?i)\bcovers\b' -and $_ -match $runEnd -and $_ -match '(?i)\bbranch\b' })
@@ -233,9 +240,20 @@ if ($reachRule.Count -eq 0) {
 
 $noKey = '(?i)(?:\b(?:no|absent|missing|without\s+a)\b[^.]{0,20}\bdelivered\b[^.]{0,8}\bkey\b|\bdelivered\b[^.]{0,8}\bkey\b[^.]{0,30}\b(?:absent|missing)\b|\babsence\b)'
 $notOnBranch = '(?i)(?:\bnot\s+(?:on|in)\s+(?:the\s+user[''' + [char]0x2019 + ']?s\s+|your\s+|the\s+)?(?:checkout|branch)\b|\bnever\s+(?:reached|landed\s+on)\s+(?:the\s+user[''' + [char]0x2019 + ']?s\s+|your\s+|the\s+)(?:checkout|branch)\b|\bmeans\b[^.]{0,30}\bheld\b|\bis\s+held\b)'
-$wrongModel = @($sentences | Where-Object { $_ -match $noKey -and $_ -match $notOnBranch -and $_ -notmatch '(?i)\bcovers\b' -and $_ -notmatch $runEnd })
+$reachStated = '(?i)\bcovers\b|\bonly\s+if\b'
+$wrongModel = @($sentences | Where-Object { $_ -match $noKey -and $_ -match $notOnBranch -and $_ -notmatch $reachStated })
 if ($wrongModel.Count -gt 0) {
     $failures += "WRONG MODEL PRESENT in ${subject}: '$($wrongModel[0])' — a missing delivered key does not mean a wave's work is off the user's branch: a later barrier delivery (its covers) or the run-end delivery may have carried it there. Say where the work is in terms of covers and the run-end delivery"
+}
+
+# NEGATIVE: a branch-named trial-gate-failed range (verification of the review fixes, 2026-09-14). The prompt
+# quotes the range, so the skill may too: it must be the SHA-keyed git log <plan-tip-sha>..<user-tip-sha>, never a
+# range keyed on the plan branch's NAME, which lists different commits as soon as either branch moves. Read as
+# a `git log` range starting at a plan-branch placeholder, or a plan-branch placeholder ranging to the user's or
+# your tip. MEASURED on master with the strip above: 0 matches.
+$branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
+if ($doc -match $branchRange) {
+    $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — a trial-gate-failed detail names the user's commits as the sha-keyed range git log <plan-tip-sha>..<user-tip-sha>. A range keyed on the plan branch's name lists different commits once either branch moves"
 }
 
 if ($failures.Count -gt 0) {

@@ -61,10 +61,12 @@ append a detached list at the end:
   writes one if the crash came before it, so it never records a refusal for a delivery that already
   landed. A rewound wave's re-run that delivers again replaces its record. Each settled record carries
   `at` and `covers`, every wave the delivery carries. A wave has no `delivered` key when it is not a
-  delivery point, never reached its barrier, failed its exit gate, or had delivery resolved off. Its work
-  reached the user's branch only if a later barrier delivery carried it (the wave is in that record's
-  `covers`) or the run-end delivery landed (the top-level `delivery` record); otherwise the report says
-  held or not reached. **Never teach that a missing `delivered` key means the work is not on the user's
+  delivery point, never reached its barrier, failed its exit gate, had delivery resolved off
+  (`--no-merge-on-success`, or a serial run), or had its delivery withheld by #556 (a task definition
+  edited mid-run). Its work reached the user's branch only if a later barrier delivery carried it (the
+  wave is in that record's `covers`) or the run-end delivery landed (the top-level `delivery` record);
+  otherwise the report says held or not reached. A serial run has no plan branch at all: its work is
+  already in the checkout. **Never teach that a missing `delivered` key means the work is not on the user's
   branch** — the guardrail refuses that sentence unless it names `covers` or the run-end delivery.
 - **The observer event** — `IRunObserver.WaveDelivered`, raised only for `status: delivered` and only
   after the record is persisted, forwarded through every decorator (the `ObserverForwardingSweepTests`

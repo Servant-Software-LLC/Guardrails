@@ -8,8 +8,8 @@
 #          REQUIRES `new GitWorktreeProvider(` in code. REJECTS, outside comments, what tasks 07 and 30
 #          reject (each a measured way to put a double in front of the Scheduler, verification 2026-09-13):
 #            - FakeWorktreeProvider or RecordingWorktreeProvider in code;
-#            - a type whose base list names IWorktreeProvider, or a using-alias (global or not) of a
-#              provider type, which would hide such a declaration;
+#            - a type whose base list names IWorktreeProvider, or a using-alias (global or not) of
+#              IWorktreeProvider, which would hide such a declaration;
 #            - DispatchProxy, which builds an IWorktreeProvider at runtime with no declaration to find;
 #            - a string literal naming any provider type other than GitWorktreeProvider or IWorktreeProvider
 #              (a reflective load such as Type.GetType("...FakeWorktreeProvider..."), or "Fake" +
@@ -76,9 +76,9 @@ $decl = [regex]::Match($code, '\b(class|record|struct|interface)\s+\w+\s*(<[^>]*
 if ($decl.Success) {
     $problems += "BANNED: a type implements IWorktreeProvider: '$(($decl.Value -replace '\s+', ' ').Trim())'. Make each mid-run change with a script the fixture writes."
 }
-$alias = [regex]::Match($code, '\busing\s+\w+\s*=\s*[\w.:]*WorktreeProvider\b')
+$alias = [regex]::Match($code, '\busing\s+\w+\s*=\s*[\w.:]*\bIWorktreeProvider\b')
 if ($alias.Success) {
-    $problems += "BANNED: a using-alias of a worktree provider type: '$(($alias.Value -replace '\s+', ' ').Trim())'. An alias hides the type from this check; name the type directly."
+    $problems += "BANNED: a using-alias of IWorktreeProvider: '$(($alias.Value -replace '\s+', ' ').Trim())'. An alias hides a declaration that implements it; name the interface directly."
 }
 if ($code -match '\bDispatchProxy\b') {
     $problems += "BANNED: DispatchProxy builds an IWorktreeProvider double at runtime. Drive GitWorktreeProvider."

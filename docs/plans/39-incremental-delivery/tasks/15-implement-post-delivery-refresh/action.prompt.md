@@ -61,10 +61,14 @@ recorded (post-plan-40 refinement)"**, which is the contract below.
    through the #150 fault path: `RunAsync` returns the honest-halt report with `Abort` set (`BuildAbort`),
    as a worker-loop fault already does, never an exception escaping `RunAsync`. Write NO record and no wave
    marker, and never continue on the stale base. Never delete or overwrite files in the integration
-   worktree to force the merge through. The abort's `Headline` must name, on one line, every path git
-   refused to overwrite. Git's stderr lists them one per tab-indented line after `would be overwritten by
-   merge:`. A gate that leaves such a file behind blocks the merge again on every resume, so the operator
-   has to know which file to remove. Task 14's `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns`
+   worktree to force the merge through. The abort's `Headline` must name, on one line, every untracked
+   path that blocks the merge. Never parse git's error prose to find them: git localizes it, so under a
+   non-English locale the names would silently disappear. Have the Scheduler's C# compute them the way
+   step 3 computes `Paths`: the untracked files in the integration worktree
+   (`git ls-files --others --exclude-standard`), intersected with the paths the merge brings in
+   (`git diff --name-only <plan-tip> <upstream-sha>`). The merge's own exit code still decides whether it
+   refused; the intersection only names why. A gate that leaves such a file behind blocks the merge again
+   on every resume, so the operator has to know which file to remove. Task 14's `AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns`
    blocks the merge with an untracked file and expects the abort to name it.
 6. **The gate halt names it.** In `BuildGateHalt`, for BOTH `WaveHaltKind.EntryGateFailed` and
    `WaveHaltKind.ExitGateFailed`, append `UnauthoredContentNote.HeadlineSuffix(...)` to the headline AFTER

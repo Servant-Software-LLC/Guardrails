@@ -192,6 +192,16 @@ if ($hooksPath.Count -eq 0) {
     $failures += "MISSING the relative hooks path in $subject — no sentence says hooks under a relative core.hooksPath (husky's layout) run on the delivery's merge commit, so a husky user has no reason to expect their hooks to gate a waved delivery"
 }
 
+# NEGATIVE: a branch-named trial-gate-failed range (verification of the review fixes, 2026-09-14). The README
+# gives the operator a range to run; it must be the SHA-keyed git log <plan-tip-sha>..<your-tip-sha>, never one
+# keyed on the plan branch's NAME, which lists different commits once either branch moves. Read as a `git log`
+# range starting at a plan-branch placeholder, or a plan-branch placeholder ranging to the user's or your tip.
+# MEASURED on master with the strip above: 0 matches.
+$branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
+if ($doc -match $branchRange) {
+    $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — the range that shows which of your commits a failed trial gate merged is the sha-keyed git log <plan-tip-sha>..<your-tip-sha>. A range keyed on the plan branch's name shows different commits once either branch moves"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) README contract failure(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

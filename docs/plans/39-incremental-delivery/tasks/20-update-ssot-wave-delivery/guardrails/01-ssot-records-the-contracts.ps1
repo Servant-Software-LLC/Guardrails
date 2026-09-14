@@ -198,6 +198,18 @@ if ($switched.Count -eq 0) {
     $failures += "MISSING branch-moved's switched-checkout cause in $subject — no sentence ties branch-moved to a checkout switched to another branch, whose remedy (check the branch out again, then resume) differs from the advanced-branch cause"
 }
 
+# NEGATIVE: a branch-named trial-gate-failed range (verification of the review fixes, 2026-09-14). The detail
+# names the user's commits the trial merged as a SHA-keyed range, git log <plan-tip-sha>..<user-tip-sha>; a
+# range keyed on the plan branch's NAME lists different commits as soon as either branch moves. Read as a
+# `git log` range starting at a plan-branch placeholder, or a plan-branch placeholder ranging to the user's or
+# your tip, so the unrelated #576 probe `git rev-list --count <planBranch>..HEAD` already in this subject does
+# not trip it (the broad form, any '<planBranch>..', measured 1 match there for that reason). MEASURED on
+# master with the strip above: 0 matches.
+$branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
+if ($doc -match $branchRange) {
+    $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — a trial-gate-failed detail names the user's commits as the sha-keyed range git log <plan-tip-sha>..<user-tip-sha>. A range keyed on the plan branch's name lists different commits once either branch moves, and the plan branch moves again at the next task"
+}
+
 if ($failures.Count -gt 0) {
     Write-Output "=== $($failures.Count) missing contract token(s) in $subject ==="
     $failures | ForEach-Object { Write-Output $_ }

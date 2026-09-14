@@ -48,6 +48,13 @@ tasks drain green and its exit gate passes over work #556 says must never ship. 
 the run SO FAR, and fail closed: any divergence recorded so far in this run withholds this barrier's delivery
 and every later one.
 
+**Never call `BuildReport(...).AllSucceeded` at a barrier.** `BuildReport` marks every task that has not started
+yet `Cancelled`, and `IsGreen` accepts only `Succeeded` or `Skipped`, so that call is false at every barrier
+before the last and nothing would ever deliver. At a barrier, "every task green" means every task in the waves
+drained so far, and "no divergence" means none recorded so far. The extracted method takes those terms as
+inputs: the barrier passes its per-barrier values, and `Finalize` passes the run-end ones it reads from the
+finished report today.
+
 The two call sites differ only in the suppressing decision they pass in. `Finalize` passes the run-scoped
 `RunOutcomePolicy.SuppressingDecision(decisions)`, exactly as today. The barrier passes
 `RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves)` (task 06) over the SET of waves this
