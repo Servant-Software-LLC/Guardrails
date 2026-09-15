@@ -69,6 +69,23 @@ public sealed class GateClassifierTests
         Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
     }
 
+    [Fact]
+    public void NoRoute_IsHardBlockerPermanent()
+    {
+        // #707 review: no candidate block serves the requested tier (#201, DoR §6.2) — a routing-configuration gap.
+        // Every retry resolves the same way, and no best-guess supplies a runner block.
+        GateSignal signal = GateSignal.NoRoute("no candidate block serves the 'hard' tier, at it or above it");
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
+    [Fact]
+    public void WriteScopeGap_IsHardBlockerPermanent()
+    {
+        // #707: every retry is handed the same scope, and the fix is a task.json edit no best-guess makes.
+        GateSignal signal = GateSignal.WriteScopeGap("src/Stub.cs was written outside this task's writeScope again");
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
     // ── Class (a): judgment call (the ONLY dial-eligible class) ───────────────────────────────────
 
     [Fact]

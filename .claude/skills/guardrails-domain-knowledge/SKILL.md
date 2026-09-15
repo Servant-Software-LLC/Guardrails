@@ -470,7 +470,11 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   path; when the repeat rule halts on a test, the halt leads with "keeps editing a test" and offers widening the
   scope only second. Otherwise the halt names each path, the `task.json`, and the one-line `writeScope` entry to
   add. Its salvage is taken only with in-scope work, filtered to the enforced scope. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
-  `doomed` verdict stays advisory (SSOT section 3.4).
+  `doomed` verdict stays advisory (SSOT section 3.4). **Autonomous routing (#707 review):** the three HARNESS
+  needs-human halts — this gap halt, the #86/#104 permission wall, and the #201 no-route settle — set
+  `TaskResult.HardBlocker` and escalate as `hard-blocker-permanent`, never through the criticality judge and never
+  past a best-guess. Only an agent's own needsHuman (`TaskResult.NeedsHumanQuestion`) is a judgment call. The
+  shared `needs human: ` summary prefix is for human-facing readers only, and no routing reads it.
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
   hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
