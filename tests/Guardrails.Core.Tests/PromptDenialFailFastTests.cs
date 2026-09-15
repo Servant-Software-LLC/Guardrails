@@ -195,6 +195,52 @@ public sealed class PromptDenialFailFastTests : IDisposable
         Assert.DoesNotContain("aborted after", result.Summary);
     }
 
+    // ── #708 W7: the runner reports which refusals were commands (the production seam) ──────────────
+
+    private const string RefusedBashCommand = "git push origin HEAD";
+
+    private const string BashToolUseLine =
+        """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_push","name":"Bash","input":{"command":"git push origin HEAD"}}]}}""";
+
+    private const string BashRefusalLine =
+        """{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_push","is_error":true,"content":"This command requires approval"}]}}""";
+
+    [Fact]
+    public async Task Runner_ReportsARefusedBashCommand_InRefusedCommands()
+    {
+        // #708: the scanner tells commands from paths, but the harness only sees what ClaudePromptRunner copies onto PromptResult.
+        // Every executor test builds its PromptResult by hand, so a copy dropped here would go unseen by all of them.
+        var runner = new ClaudePromptRunner(
+            "claude",
+            WriteFakeCli("refuse-bash", [BashToolUseLine, BashRefusalLine], sleepSeconds: 0, tail: ResultLine),
+            new ProcessRunner());
+
+        PromptResult result = await runner.RunAsync(Invocation(abortAfter: null), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed);
+        Assert.Equal(new[] { RefusedBashCommand }, result.BlockedWritePaths);
+        Assert.Equal(new[] { RefusedBashCommand }, result.RefusedCommands);
+    }
+
+    [Fact]
+    public async Task Runner_ReportsARefusedBashCommand_OnTheFailFastAbortToo()
+    {
+        // The #452 abort builds its own PromptResult, so it needs its own copy of the same list.
+        string childUp = Path.Combine(_root, "refuse-bash-hang.started");
+        var runner = new ClaudePromptRunner(
+            "overwatch",
+            WriteFakeCli(
+                "refuse-bash-hang",
+                [BashToolUseLine, BashRefusalLine, BashToolUseLine, BashRefusalLine, BashToolUseLine, BashRefusalLine],
+                sleepSeconds: 600, tail: null, startedMarkerPath: childUp),
+            new ProcessRunner());
+
+        PromptResult result = await runner.RunAsync(Invocation(abortAfter: 3), TestContext.Current.CancellationToken);
+
+        Assert.Contains("aborted after 3 consecutive permission-denied tool calls", result.Summary);
+        Assert.Equal(new[] { RefusedBashCommand }, result.RefusedCommands);
+    }
+
     // ── Fixtures ────────────────────────────────────────────────────────────────────────────────────
 
     private const string DenialLine =
