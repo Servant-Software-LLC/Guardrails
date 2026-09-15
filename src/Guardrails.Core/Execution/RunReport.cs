@@ -38,9 +38,8 @@ public sealed record TaskResult
     /// The question the agent asked, as a FIELD (issue #606).
     ///
     /// <para>
-    /// It was already carried — spliced into <see cref="Summary"/> as <c>"needs human: {question}"</c> and
-    /// parsed back out by <c>Scheduler.ExtractNeedsHumanQuestion</c>. That round trip is fine inside one
-    /// process and useless at the edge: the event stream's only carrier for it is the free-text
+    /// It was already carried — spliced into <see cref="Summary"/> as <c>"needs human: {question}"</c> — and a
+    /// prose splice is useless at the edge: the event stream's only carrier for it is the free-text
     /// <c>detail</c>, which #585 layer 3 WITHHOLDS from webhook deliveries by default. So a supervising
     /// agent learns that a task needs a human and <b>not what was asked</b>, and has to read
     /// <c>events.jsonl</c> off the filesystem to find out — precisely the read #585 exists to remove,
@@ -59,8 +58,13 @@ public sealed record TaskResult
     /// <para>
     /// Rides here beside <see cref="NeedsHumanOptions"/> and <see cref="NeedsHumanKind"/>, following the
     /// precedent they set twice: structured, never a substring. <see cref="Summary"/> keeps its
-    /// <c>"needs human: …"</c> prefix unchanged — every existing reader, including the prose parse, is
-    /// undisturbed.
+    /// <c>"needs human: …"</c> prefix unchanged for every human-facing reader.
+    /// </para>
+    ///
+    /// <para>
+    /// It is also the ONE signal the autonomous classify-then-act dispatch routes a judgment call on (#707 review).
+    /// Only the agent's own needsHuman sets it. Three HARNESS halts share the summary prefix, so the prefix cannot
+    /// tell the agent's question from them; they carry <see cref="HardBlocker"/> instead.
     /// </para>
     /// </summary>
     public string? NeedsHumanQuestion { get; init; }
@@ -81,12 +85,26 @@ public sealed record TaskResult
     /// lets a human adjudicate. Rides HERE, beside <see cref="NeedsHumanOptions"/> and for the same reason
     /// (the #387 precedent), so no <see cref="IRunObserver"/> member is needed — <c>TaskFinished</c> already
     /// delivers it to every observer.
-    /// <para><b>Never stamped into <see cref="Summary"/>.</b> <c>Scheduler.ExtractNeedsHumanQuestion</c>
-    /// parses the literal <c>needs human: </c> prefix out of the summary and treats the remainder as the
-    /// escalation's question; a kind spliced in there would either break that dispatch or pollute the
-    /// recorded question. It is a FIELD, never a substring.</para>
+    /// <para><b>Never stamped into <see cref="Summary"/>:</b> a kind spliced into that prose would pollute the
+    /// question a human reads. It is a FIELD, never a substring.</para>
     /// </summary>
     public string? NeedsHumanKind { get; init; }
+
+    /// <summary>
+    /// The deterministic blocker a HARNESS-decided needs-human halt stopped on (#707 review):
+    /// <list type="bullet">
+    ///   <item>a permission wall, <see cref="GateSignal.PermissionWall"/> (#86/#104);</item>
+    ///   <item>no route for the requested tier, <see cref="GateSignal.NoRoute"/> (#201);</item>
+    ///   <item>a write-scope gap the plan caused, <see cref="GateSignal.WriteScopeGap"/> (#707).</item>
+    /// </list>
+    /// Null for every other outcome, including an agent's own needsHuman, which carries
+    /// <see cref="NeedsHumanQuestion"/> instead.
+    /// <para>The autonomous classify-then-act dispatch routes on this field and on <see cref="NeedsHumanQuestion"/>,
+    /// never on <see cref="Summary"/>'s <c>needs human: </c> prefix, which these halts share with the agent's
+    /// question. Routing on that prose sent all three to the criticality judge, and a below-threshold best-guess
+    /// then re-drove the task with a fresh budget past a blocker no guess can clear.</para>
+    /// </summary>
+    public GateSignal? HardBlocker { get; init; }
 
     /// <summary>
     /// In worktree mode, the path to the validated fragment file for deferred B1 settle in the

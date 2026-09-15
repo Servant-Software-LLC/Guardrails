@@ -121,11 +121,10 @@ public sealed class NeedsHumanQuestionOnTheWireTests
     }
 
     /// <summary>
-    /// <c>Summary</c> keeps its <c>"needs human: …"</c> prefix, unchanged. Every existing reader is
-    /// undisturbed — including <c>Scheduler.ExtractNeedsHumanQuestion</c>, which parses that prefix to
-    /// drive the escalation dispatch. This is an addition, not a migration: a fix that moved the question
-    /// out of the summary would have broken the autonomous classify-then-act path on the way to fixing a
-    /// webhook.
+    /// <c>Summary</c> keeps its <c>"needs human: …"</c> prefix, unchanged, for every human-facing reader (the
+    /// console, the status table and the log site print it). This is an addition, not a migration. No routing reads
+    /// that prose any more: since the #707 review the autonomous classify-then-act dispatch keys on the structured
+    /// question and on <c>TaskResult.HardBlocker</c>, because three harness halts share the prefix.
     /// </summary>
     [Fact]
     public void TheSummaryIsUnchanged_SoTheExistingProseReaderStillWorks()

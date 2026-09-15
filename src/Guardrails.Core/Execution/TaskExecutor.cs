@@ -1363,24 +1363,12 @@ public sealed class TaskExecutor : ITaskExecutor
                     SalvageRef? gapSalvage = scopeCheck.InScopePaths.Count > 0
                         ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedScope)
                         : null;
-                    return _journaler.FailedAttempt(
-                        task, attemptNumber, startedAt, relativeLogDir, logDir,
+                    return _journaler.WriteScopeGapHalt(
+                        task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                         RetryPolicy.ForWriteScopeGapHalt(
                             task, attemptNumber, scopeCheck, scopeGap, gapSalvage, outOfScopePatchPath),
-                        // This attempt IS the final one: the harness has decided no further attempt can help, so the
-                        // journal settles the task needs-human now rather than after the budget runs out.
-                        isFinal: true,
-                        AttemptOutcome.WriteScopeViolation,
-                        new TaskResult
-                        {
-                            TaskId = task.Id,
-                            Outcome = TaskOutcome.NeedsHuman,
-                            ActionExitCode = action.ExitCode,
-                            Summary = RetryPolicy.WriteScopeGapSummary(task, scopeGap)
-                        },
-                        costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
-                        turns: action.Turns,
-                        segments: AttemptJournaler.SegmentsFor(action),
+                        RetryPolicy.WriteScopeGapSummary(task, scopeGap),
+                        provenance: provenance, segments: AttemptJournaler.SegmentsFor(action),
                         harnessWrite: harnessWriteRecord);
                 }
 
