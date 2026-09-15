@@ -283,6 +283,13 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
         _inner.SuppliedResourcesCommitted(paths, commit);
 
+    // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
+    // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
+    // lesson again). This observer does not ACT on it: a wave's delivery is not a shape of the DAG, so it
+    // forwards and nothing else.
+    public void WaveDelivered(WaveNode wave, Core.Journal.WaveDeliveredRecord delivery) =>
+        _inner.WaveDelivered(wave, delivery);
+
     /// <summary>
     /// Badge a wave's entry/exit gate leaves from their PER-CHECK results (issue #513). Declared
     /// explicitly rather than inherited, for the reason the interface's own doc gives: a default-method

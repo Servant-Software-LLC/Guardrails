@@ -375,4 +375,17 @@ public sealed class ConsoleRunObserver : IRunObserver
                 $"[supplied] {paths.Count} resource(s) committed {commit}: {string.Join(", ", paths)}");
         }
     }
+
+    public void WaveDelivered(WaveNode wave, Core.Journal.WaveDeliveredRecord delivery)
+    {
+        lock (_gate)
+        {
+            // Design 39 §5: states exactly what the record says and infers nothing beyond it — Detail is
+            // already the decision an override named (e.g. what --merge-on-success forced past), never
+            // re-derived here.
+            string covers = string.Join(", ", delivery.Covers);
+            string detail = string.IsNullOrEmpty(delivery.Detail) ? "" : $" — {delivery.Detail}";
+            _output.WriteLine($"[delivered] {wave.Dir}: {delivery.Commit} (covers {covers}){detail}");
+        }
+    }
 }

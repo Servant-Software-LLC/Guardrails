@@ -826,6 +826,21 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void WaveDelivered(WaveNode wave, Core.Journal.WaveDeliveredRecord delivery)
+    {
+        lock (_gate)
+        {
+            // Design 39 §5, the live twin of ConsoleRunObserver's line. NON-coalescing (like WaveFinished/
+            // SuppliedResourcesCommitted): a delivery is a distinct, rare event worth its own line, never
+            // folded into a count. States exactly what the record says and infers nothing beyond it.
+            string covers = string.Join(", ", delivery.Covers.Select(Markup.Escape));
+            string detail = string.IsNullOrEmpty(delivery.Detail) ? "" : $" — {Markup.Escape(delivery.Detail)}";
+            AppendNarrative(
+                $"[bold]delivered:[/] {Markup.Escape(wave.Dir)} — [grey]{Markup.Escape(delivery.Commit ?? "")}[/] "
+                + $"(covers {covers}){detail}");
+        }
+    }
+
     public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)
