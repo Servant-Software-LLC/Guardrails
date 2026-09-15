@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
@@ -746,20 +747,7 @@ public static class RetryPolicy
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
-        foreach (WriteScopeOffense offense in scopeCheck.OffendingPaths)
-        {
-            text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)})");
-            if (offense.Preview is { } preview)
-            {
-                text.AppendLine($"  - {preview.SizeBytes} byte(s) before revert:");
-                text.AppendLine("    ```");
-                foreach (string previewLine in preview.TextPreview.Replace("\r\n", "\n").Split('\n'))
-                {
-                    text.AppendLine($"    {previewLine}");
-                }
-                text.AppendLine("    ```");
-            }
-        }
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
 
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
@@ -815,6 +803,144 @@ public static class RetryPolicy
             text.AppendLine($"- `{entry}`");
         }
     }
+
+    /// <summary>
+    /// Each offending path with its git status letter (#253) and, for a new file, the forensic preview captured
+    /// before the revert deleted it. On a scope-gap halt (issue #707) each path also says WHY it is evidence: the
+    /// upstream task that last committed it, or that an earlier attempt wrote it out of scope too.
+    /// </summary>
+    private static void AppendOffenses(StringBuilder text, IReadOnlyList<WriteScopeOffense> offenses, WriteScopeGap? gap)
+    {
+        foreach (WriteScopeOffense offense in offenses)
+        {
+            string evidence = "";
+            if (gap is not null)
+            {
+                if (gap.UpstreamAuthorByPath.TryGetValue(offense.Path, out string? author))
+                {
+                    evidence += $"; last committed by upstream task `{author}`";
+                }
+
+                if (gap.RepeatedPaths.Contains(offense.Path, StringComparer.Ordinal))
+                {
+                    evidence += "; also written outside the scope on an earlier attempt";
+                }
+            }
+
+            text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)}{evidence})");
+            if (offense.Preview is { } preview)
+            {
+                text.AppendLine($"  - {preview.SizeBytes} byte(s) before revert:");
+                text.AppendLine("    ```");
+                foreach (string previewLine in preview.TextPreview.Replace("\r\n", "\n").Split('\n'))
+                {
+                    text.AppendLine($"    {previewLine}");
+                }
+                text.AppendLine("    ```");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The <c>feedback.md</c> of a write-scope violation the harness HALTED instead of retrying (issue #707): a
+    /// scope gap the plan caused, which no retry can clear because every retry is handed the same scope. Plan
+    /// 40's task 20 spent four attempts, two overwatch diagnoses and a best-guess on a one-line
+    /// <c>task.json</c> fix. Written for the human who must decide, so it carries in one read: why no retry can
+    /// help, each path with the evidence against it, the scope as enforced, exactly where the fix goes, and the
+    /// entry to add. It keeps the <c>## Write-scope violation</c> marker, so telemetry classifies the attempt as
+    /// the violation it was. <paramref name="salvageRef"/> is the attempt's IN-SCOPE work, preserved because no
+    /// reset follows a halt and the tree is orphaned (#554).
+    /// </summary>
+    public static string ForWriteScopeGapHalt(
+        TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null)
+    {
+        IReadOnlyList<string> paths = GapPaths(gap);
+        var text = new StringBuilder();
+        text.AppendLine($"# Task '{task.Id}' needs a human: its writeScope does not cover what it keeps changing");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying: a retry is handed");
+        text.AppendLine("the same writeScope, so it cannot change a path that scope does not cover.");
+        if (gap.UpstreamAuthorByPath.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine("Every path below was last committed by a task this one depends on, and this attempt changed");
+            text.AppendLine("NOTHING inside its own writeScope. That is the shape of a scope the plan got wrong — for");
+            text.AppendLine("example, a stub an upstream task created that no downstream task is allowed to write.");
+        }
+
+        if (gap.RepeatedPaths.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine("A path marked below was written outside this task's writeScope on an earlier attempt as");
+            text.AppendLine("well, after that attempt's feedback had already named it.");
+        }
+
+        text.AppendLine();
+        text.AppendLine("## Write-scope violation");
+        text.AppendLine();
+        text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap);
+        text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
+        text.AppendLine("## If this task genuinely has to change it");
+        text.AppendLine();
+        text.AppendLine($"Add it to `writeScope` in `{TaskJsonPath(task)}`, a one-line change:");
+        text.AppendLine();
+        text.AppendLine($"    {JsonEntries(paths)}");
+        text.AppendLine();
+        text.AppendLine("then resume the run. The task starts again with a fresh retry budget.");
+        text.AppendLine();
+        text.AppendLine("## If it does not");
+        text.AppendLine();
+        text.AppendLine("The scope is right and the agent is wrong. Tighten this task's prompt so it stays inside the");
+        text.AppendLine("scope above, then resume the run.");
+        AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// The one-line <see cref="TaskResult.Summary"/> of a scope-gap halt (issue #707), complete on its own because
+    /// it is what the live table, <c>run.json</c> and an escalation record show: the path, why no retry can help,
+    /// and the exact <c>task.json</c> fix. It keeps the stable <c>needs human: </c> prefix every harness
+    /// needs-human summary carries.
+    /// </summary>
+    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap)
+    {
+        IReadOnlyList<string> paths = GapPaths(gap);
+        string why = gap.UpstreamAuthorByPath.Count > 0
+            ? "probable plan scope gap: this attempt changed nothing inside its writeScope, and everything it did " +
+              "change was last committed by an upstream task (" +
+              string.Join(", ", gap.UpstreamAuthorByPath
+                  .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                  .Select(kv => $"{kv.Key} by {kv.Value}")) + ")"
+            : $"write-scope gap: {string.Join(", ", paths)} was written outside this task's writeScope again, " +
+              "after an earlier attempt's feedback named it";
+        string pronoun = paths.Count == 1 ? "it" : "them";
+        return $"needs human: {why}; if this task must change {pronoun}, add {JsonEntries(paths)} to writeScope in " +
+               TaskJsonPath(task);
+    }
+
+    /// <summary>Every path a scope-gap halt is about, in ordinal order.</summary>
+    private static IReadOnlyList<string> GapPaths(WriteScopeGap gap) =>
+        gap.RepeatedPaths.Concat(gap.UpstreamAuthorByPath.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>The paths as the JSON string literals a human pastes into a <c>writeScope</c> array.</summary>
+    private static string JsonEntries(IReadOnlyList<string> paths) =>
+        string.Join(", ", paths.Select(p => JsonSerializer.Serialize(p, JsonLiteral)));
+
+    /// <summary>Readable JSON literals: a path's non-ASCII characters stay as written instead of <c>\uXXXX</c>.</summary>
+    private static readonly JsonSerializerOptions JsonLiteral =
+        new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    /// <summary>The task's own <c>task.json</c>, forward-slashed so it reads the same on every OS.</summary>
+    private static string TaskJsonPath(TaskNode task) =>
+        Path.Combine(task.Directory, "task.json").Replace('\\', '/');
 
     /// <summary>Human-readable label for a <see cref="WriteScopeOffense.Status"/> letter.</summary>
     private static string DescribeStatus(char status) => status switch

@@ -565,6 +565,51 @@ public sealed class WriteScopeCheckTests
     }
 
     // -------------------------------------------------------------------------
+    // Issues #707 / #705: the in-scope half of the same diff
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// The check reports the changed paths the scope DOES cover, from the very diff that found the offenses —
+    /// the fact that tells "the attempt did real in-scope work and strayed" apart from "every change it made
+    /// was outside its scope", which the first-attempt plan-gap halt (#707) and an honest salvage header (#705)
+    /// both turn on.
+    /// </summary>
+    [Fact]
+    public void Check_ReportsTheInScopeChangedPaths_FromTheSameDiff()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("src/Feature.cs", "// base", "add base feature");
+        string taskBase = repo.HeadSha();
+        File.WriteAllText(Path.Combine(repo.RepoPath, "src", "Feature.cs"), "// in-scope work");
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "notes.md"), "stray");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.False(result.Passed);
+        Assert.Equal("docs/notes.md", Assert.Single(result.OffendingPaths).Path);
+        Assert.Equal(["src/Feature.cs"], result.InScopePaths);
+    }
+
+    /// <summary>
+    /// DECLARED CONTROL — green before the in-scope set was populated as well as after: an attempt whose every
+    /// change is out of scope reports NO in-scope path.
+    /// </summary>
+    [Fact]
+    public void Check_EveryChangeOutOfScope_ReportsNoInScopePaths()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "notes.md"), "stray");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.Single(result.OffendingPaths);
+        Assert.Empty(result.InScopePaths);
+    }
+
+    // -------------------------------------------------------------------------
     // Issue #280: phase-2 scope-clean (StripOutOfScope) — strips silently, returns what it stripped,
     // and NEVER touches the reconstructable dep set (invisible to Check's staging).
     // -------------------------------------------------------------------------

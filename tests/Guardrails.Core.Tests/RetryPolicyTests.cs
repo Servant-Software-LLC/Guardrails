@@ -762,6 +762,66 @@ public sealed class RetryPolicyTests
         Assert.Contains("writeScope is EMPTY", feedback);
     }
 
+    // ── #707 a scope gap the PLAN caused halts with the one-line fix ──────────────────────────────
+
+    private const string DecisionPath = "src/Guardrails.Core/Execution/OverwatchDecision.cs";
+
+    [Fact]
+    public void WriteScopeGapHalt_RepeatedPath_NamesThePath_TheTaskJson_AndTheOneLineFix()
+    {
+        // #707 item 1: the same path written out of scope on a second attempt. The halt must hand the human
+        // everything needed to decide in one read: the path, WHERE the fix goes, and the exact entry to add.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+        var gap = new WriteScopeGap(RepeatedPaths: [DecisionPath], UpstreamAuthorByPath: new Dictionary<string, string>());
+
+        string feedback = RetryPolicy.ForWriteScopeGapHalt(
+            PromptTask("20-implement"), attempt: 2, Violation(offenses, "src/Guardrails.Core/Execution/Overwatch.cs"), gap);
+
+        Assert.Contains("## Write-scope violation", feedback);          // telemetry's marker survives on the halt
+        Assert.Contains($"`{DecisionPath}`", feedback);
+        Assert.Contains("/fake/tasks/20-implement/task.json", feedback);  // where the one-line fix goes
+        Assert.Contains($"\"{DecisionPath}\"", feedback);                // the writeScope entry to add, as JSON
+        Assert.Contains("earlier attempt", feedback);                    // why no retry can help
+        Assert.Equal(["src/Guardrails.Core/Execution/Overwatch.cs"], BulletPathsAfter(feedback, AllowedPathsLead));
+    }
+
+    [Fact]
+    public void WriteScopeGapHalt_UpstreamAuthoredPath_NamesTheUpstreamTask_AndClaimsNoRepeat()
+    {
+        // #707 item 2: halted on the FIRST attempt because an upstream task last committed the path. The text
+        // must name that task, and must not describe a repeat that never happened.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+        var gap = new WriteScopeGap(
+            RepeatedPaths: [],
+            UpstreamAuthorByPath: new Dictionary<string, string> { [DecisionPath] = "19-author-tests-overwatcher-autoresolve" });
+
+        string feedback = RetryPolicy.ForWriteScopeGapHalt(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, "src/Guardrails.Core/Execution/Overwatch.cs"), gap);
+
+        Assert.Contains("`19-author-tests-overwatcher-autoresolve`", feedback);
+        Assert.Contains($"\"{DecisionPath}\"", feedback);
+        Assert.DoesNotContain("earlier attempt", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeGapSummary_KeepsTheNeedsHumanPrefix_AndNamesThePathAndTheFix()
+    {
+        // The summary is what a live table, run.json and the escalation record show. It keeps the stable
+        // `needs human: ` prefix every harness needs-human summary carries, and is complete on its own.
+        var repeated = new WriteScopeGap(["src/Stub.cs"], new Dictionary<string, string>());
+        var upstream = new WriteScopeGap([], new Dictionary<string, string> { ["src/Stub.cs"] = "01-author" });
+
+        foreach (WriteScopeGap gap in new[] { repeated, upstream })
+        {
+            string summary = RetryPolicy.WriteScopeGapSummary(PromptTask("02-implement"), gap);
+            Assert.StartsWith("needs human: ", summary);
+            Assert.Contains("\"src/Stub.cs\"", summary);
+            Assert.Contains("/fake/tasks/02-implement/task.json", summary);
+        }
+
+        Assert.Contains("01-author", RetryPolicy.WriteScopeGapSummary(PromptTask("02-implement"), upstream));
+    }
+
     /// <summary>The lead-in line the allowed-path list follows (#706).</summary>
     private const string AllowedPathsLead = "This task's writeScope allows changes ONLY to:";
 
@@ -778,5 +838,5 @@ public sealed class RetryPolicyTests
 
     /// <summary>A failed <see cref="WriteScopeCheckResult"/> for <paramref name="offenses"/> under <paramref name="scope"/>.</summary>
     private static WriteScopeCheckResult Violation(IReadOnlyList<WriteScopeOffense> offenses, params string[] scope) =>
-        new() { Passed = false, Scope = scope, OffendingPaths = offenses };
+        new() { Passed = false, Scope = scope, OffendingPaths = offenses, InScopePaths = [] };
 }
