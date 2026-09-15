@@ -1603,9 +1603,11 @@ public sealed class MergeOnSuccessTests
     /// <summary>
     /// Issue #588 through the SCHEDULER — the report contract. A wholly-green run whose checkout moved
     /// mid-run must stamp <see cref="MergeOnSuccessResult.BranchMoved"/> and leave
-    /// <see cref="RunReport.DeliveredToBranch"/> <b>null</b>. That null is the headline: the CLI's
-    /// "delivered to X" line is driven off it, and the pre-fix report filled it from the branch pinned at
-    /// run start — printing a truthful-looking delivery to a branch the work never reached.
+    /// <see cref="RunReport.DeliveredToBranch"/> <b>null</b>: this flat plan has no barrier delivery, so nothing
+    /// landed anywhere. The pre-fix report filled it from the branch pinned at run start — a truthful-looking
+    /// delivery to a branch the work never reached. (Design 39 §4 also sets the field for a barrier delivery
+    /// that landed, so the CLI's "delivered to X" notice no longer keys on the field alone: it also requires
+    /// the run-end merge to have landed.)
     /// </summary>
     [Fact]
     public async Task MergeOnSuccess_CheckoutMovedDuringRun_ReportsBranchMoved_AndNamesNoDeliveryTarget()
