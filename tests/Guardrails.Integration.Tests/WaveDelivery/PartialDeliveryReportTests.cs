@@ -651,10 +651,27 @@ public sealed class PartialDeliveryReportTests
         (int exit, string output) = await RunCliAsync("run", s.PlanDir, "--no-ui", "--no-log-server");
 
         Assert.Equal(ExitCodes.TaskFailed, exit);
-        int markerIndex = output.IndexOf("git branch --no-merged", StringComparison.Ordinal);
-        Assert.True(markerIndex >= 0, "the delivery report was not printed:\n" + output);
-        Assert.Contains(s.DeliveredWaveDir, output, StringComparison.Ordinal);
-        Assert.Contains(s.HaltedWaveDir, output, StringComparison.Ordinal);
+
+        // Asked of the report's OWN lines. Both wave dirs also appear in the per-task summary
+        // ("wave-01-deliver/01-write"), so searching the whole output passed whatever the report said —
+        // including a report that named the delivered wave as the held one.
+        int start = output.IndexOf("WAVE DELIVERY REPORT", StringComparison.Ordinal);
+        Assert.True(start >= 0, "the delivery report was not printed:\n" + output);
+        int end = output.IndexOf("git branch --no-merged", start, StringComparison.Ordinal);
+        Assert.True(end >= 0, "the delivery report does not point at `git branch --no-merged`:\n" + output);
+        string[] reportLines = [.. output[start..end].Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0)];
+        string block = string.Join("\n", reportLines);
+
+        string[] deliveredLines = [.. reportLines.Where(l => l.StartsWith("Delivered", StringComparison.Ordinal))];
+        Assert.True(deliveredLines.Length == 1, $"expected exactly one 'Delivered…' line in the report:\n{block}");
+        Assert.Contains(s.DeliveredWaveDir, deliveredLines[0], StringComparison.Ordinal);
+        Assert.DoesNotContain(s.HaltedWaveDir, deliveredLines[0], StringComparison.Ordinal);
+
+        string[] heldLines = [.. reportLines.Where(l => l.StartsWith("Held", StringComparison.Ordinal))];
+        Assert.True(heldLines.Any(l => l.Contains(s.HaltedWaveDir, StringComparison.Ordinal)),
+            $"no 'Held…' line in the report names {s.HaltedWaveDir}:\n{block}");
+        Assert.True(heldLines.All(l => !l.Contains(s.DeliveredWaveDir, StringComparison.Ordinal)),
+            $"a 'Held…' line in the report names the delivered wave {s.DeliveredWaveDir}:\n{block}");
     }
 
     [Fact]
