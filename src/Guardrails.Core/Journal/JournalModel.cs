@@ -245,7 +245,8 @@ public sealed record DeliverySection
     /// <summary>
     /// The user's branch the work was delivered TO, whenever any of it landed — by the run-end merge, or by a
     /// wave's barrier delivery on a partially-delivered run (design 39 §4; mirrors
-    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null when nothing landed.
+    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null when nothing landed. A resume that delivered nothing
+    /// itself keeps the branch the delivering process recorded (<see cref="RunJournal.RecordDelivery"/>).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DeliveredToBranch { get; init; }

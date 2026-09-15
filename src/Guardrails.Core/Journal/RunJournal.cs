@@ -678,6 +678,19 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             // this method. Re-reading makes the write additive: take what is actually on disk, add the one
             // field, put it back.
             JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+
+            // B1 (design 39 §4): a partially-delivered record names the branch its barrier deliveries landed on, but
+            // a resume that delivered nothing itself has no branch of its own to name — every process re-pins its
+            // target from HEAD, which may now be another branch or detached. Keep the branch the earlier process
+            // recorded rather than erase it; never carry the literal "HEAD". Partially-delivered only: every other
+            // outcome's branch describes this run's own run-end merge.
+            if (delivery is { Outcome: DeliveryOutcome.PartiallyDelivered, DeliveredToBranch: null }
+                && current.Delivery?.DeliveredToBranch is { Length: > 0 } earlier
+                && !string.Equals(earlier, "HEAD", StringComparison.Ordinal))
+            {
+                delivery = delivery with { DeliveredToBranch = earlier };
+            }
+
             _document = current with { Delivery = delivery };
             Persist();
         }

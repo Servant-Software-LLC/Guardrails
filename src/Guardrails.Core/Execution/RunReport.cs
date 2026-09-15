@@ -295,8 +295,10 @@ public sealed record RunReport
     /// The user's original branch name this run's work was DELIVERED to (issue #340): set when the end-of-run
     /// merge-back actually ran and succeeded (<see cref="MergeOnSuccessOutcome"/> is
     /// <see cref="MergeOnSuccessResult.FastForwarded"/> or <see cref="MergeOnSuccessResult.Merged"/>), and —
-    /// design 39 §4 — whenever an earlier wave's barrier delivery landed (<see cref="WaveDeliveries"/> holds a
-    /// <c>delivered</c> record), so a partially-delivered run names it too. Null when nothing landed. Purely
+    /// design 39 §4 — whenever a barrier delivery THIS PROCESS settled landed (<see cref="WaveDeliveries"/> holds a
+    /// <c>delivered</c> record), so a partially-delivered run names it too. Null when nothing landed in this
+    /// process: a resume never credits itself with an earlier process's delivery, and
+    /// <c>RunJournal.RecordDelivery</c> keeps the branch that process recorded. Purely
     /// descriptive — it does NOT change the delivery gate or the exit code, and it is NOT a "the run-end merge
     /// landed" flag: read <see cref="MergeOnSuccessOutcome"/> for that. The CLI names the branch in
     /// <c>run.json</c>'s <c>delivery.deliveredToBranch</c> and in the one-time "delivered by default" notice,

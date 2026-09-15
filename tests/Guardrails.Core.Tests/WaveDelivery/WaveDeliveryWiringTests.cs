@@ -212,9 +212,32 @@ public sealed class WaveDeliveryWiringTests
 
         public void DiscardTrialDelivery(IntegrationHandle integ, string waveDir) { }
 
+        /// <summary>The user's branch this process pins at run start, when a row configures it; null keeps the recorder's "main".</summary>
+        public string? OriginalBranchOverride { get; set; }
+
+        /// <summary>When true, <see cref="CreateIntegration"/> throws — a resume whose integration setup faults.</summary>
+        public bool ThrowOnCreateIntegration { get; set; }
+
         // Explicit delegation of every member RecordingWorktreeProvider implements (see class remarks).
-        public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct) =>
-            _inner.CreateIntegration(planName, runId, ct);
+        public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct)
+        {
+            if (ThrowOnCreateIntegration)
+            {
+                throw new InvalidOperationException("integration setup faulted on resume (test fixture)");
+            }
+
+            IntegrationHandle handle = _inner.CreateIntegration(planName, runId, ct);
+            return OriginalBranchOverride is not { } branch
+                ? handle
+                : new IntegrationHandle
+                {
+                    IntegrationWorktreePath = handle.IntegrationWorktreePath,
+                    PlanBranchName = handle.PlanBranchName,
+                    OriginalBranch = branch,
+                    OriginalHeadSha = handle.OriginalHeadSha,
+                    RunId = handle.RunId
+                };
+        }
         public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct) =>
             _inner.CreateSegment(taskId, attempt, integ, ct);
         public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt) =>
@@ -1118,5 +1141,93 @@ public sealed class WaveDeliveryWiringTests
 
         Assert.Equal(MergeOnSuccessResult.Conflict, completed.MergeOnSuccessOutcome);
         Assert.Equal("main", completed.DeliveredToBranch);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // B1: a resume never renames the branch an EARLIER process delivered to. Every process re-pins its
+    // OriginalBranch from HEAD (GitWorktreeProvider.CreateIntegration), so a resume after `git switch -c spike`,
+    // or on a detached HEAD, pins a branch no delivery ever reached. The CLI writes delivery.deliveredToBranch
+    // from RunReport.DeliveredToBranch through RunJournal.RecordDelivery; RecordPartialDelivery mirrors that
+    // write here, because Core.Tests cannot reference the CLI's DescribeDelivery.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static void RecordPartialDelivery(RunJournal journal, RunReport report) =>
+        journal.RecordDelivery(new DeliverySection
+        {
+            Delivered = false,
+            Outcome = DeliveryOutcome.PartiallyDelivered,
+            Reason = "fixture: the CLI's DescribeDelivery copies RunReport.DeliveredToBranch",
+            PlanBranch = "guardrails/plan",
+            DeliveredToBranch = report.DeliveredToBranch
+        });
+
+    private static string? DeliveredToBranchOnDisk(RunJournal journal) =>
+        JournalReader.Read(journal.JournalPath).Delivery?.DeliveredToBranch;
+
+    private static WavePlanBuilder DeliverThenTail()
+    {
+        var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        return b;
+    }
+
+    [Theory]
+    [Trait("Category", "WaveDelivery")]
+    [InlineData("spike")]
+    [InlineData("HEAD")]
+    public async Task AResumePinnedToAnotherBranch_NeverRenamesTheBranchAnEarlierProcessDeliveredTo(string resumeBranch)
+    {
+        using WavePlanBuilder b = DeliverThenTail();
+        PlanDefinition plan = Load(b);
+
+        // Process 1: wave-01 delivers to master; the tail's task needs a human.
+        RunJournal journal1 = RunJournal.LoadOrCreate(plan);
+        var provider1 = new DeliveryTestProvider(journal1, PlanTip) { OriginalBranchOverride = "master" };
+        RunReport report1 = await NewScheduler(plan, new WaveFakeExecutor(failIds: ["wave-99-tail/01-t"]), journal1, provider1)
+            .RunAsync(plan, Ct);
+        AssertWaveDelivered(report1, "wave-01-deliver");
+        Assert.Equal("master", report1.DeliveredToBranch);
+        RecordPartialDelivery(journal1, report1);
+        Assert.Equal("master", DeliveredToBranchOnDisk(journal1));
+
+        // Process 2: a resume pinned to another branch (or a detached HEAD). wave-01 is already complete, so
+        // this process delivers nothing, and the tail needs a human again.
+        RunJournal journal2 = RunJournal.LoadOrCreate(plan);
+        var provider2 = new DeliveryTestProvider(journal2, PlanTip) { OriginalBranchOverride = resumeBranch };
+        RunReport report2 = await NewScheduler(plan, new WaveFakeExecutor(failIds: ["wave-99-tail/01-t"]), journal2, provider2)
+            .RunAsync(plan, Ct);
+
+        Assert.Equal(0, provider2.PromoteTrialDeliveryCalls);
+        AssertWaveDelivered(report2, "wave-01-deliver"); // process 1's record is still on the report
+        Assert.True(report2.DeliveredToBranch is null,
+            $"this process delivered nothing, yet its report names '{report2.DeliveredToBranch}' as the branch it delivered to.");
+
+        RecordPartialDelivery(journal2, report2);
+        Assert.Equal("master", DeliveredToBranchOnDisk(journal2));
+    }
+
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task AResumeWhoseIntegrationSetupFaults_KeepsTheBranchAnEarlierProcessDeliveredTo()
+    {
+        using WavePlanBuilder b = DeliverThenTail();
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal1 = RunJournal.LoadOrCreate(plan);
+        var provider1 = new DeliveryTestProvider(journal1, PlanTip) { OriginalBranchOverride = "master" };
+        RunReport report1 = await NewScheduler(plan, new WaveFakeExecutor(failIds: ["wave-99-tail/01-t"]), journal1, provider1)
+            .RunAsync(plan, Ct);
+        RecordPartialDelivery(journal1, report1);
+        Assert.Equal("master", DeliveredToBranchOnDisk(journal1));
+
+        RunJournal journal2 = RunJournal.LoadOrCreate(plan);
+        var provider2 = new DeliveryTestProvider(journal2, PlanTip) { ThrowOnCreateIntegration = true };
+        RunReport report2 = await NewScheduler(plan, new WaveFakeExecutor(), journal2, provider2).RunAsync(plan, Ct);
+
+        Assert.NotNull(report2.Abort);
+        RecordPartialDelivery(journal2, report2);
+        Assert.Equal("master", DeliveredToBranchOnDisk(journal2));
     }
 }
