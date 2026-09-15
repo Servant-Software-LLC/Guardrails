@@ -169,6 +169,28 @@ public sealed record JournalDocument
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RunEnvironment? Environment { get; init; }
 
+    /// <summary>
+    /// OPTIONAL record of WHICH PROCESS owns this run, and whether that process recorded the end of it (SSOT §7
+    /// <c>owner</c>, issue #704) — the fact <c>guardrails status</c> needs to tell a run that is still going from
+    /// one whose process died mid-flight.
+    /// <para>
+    /// <b>The gap this closes.</b> A run on a laptop that slept, or rebooted, left <c>run.json</c> exactly as a
+    /// live run leaves it: tasks <c>pending</c>, or worse <c>running</c>, and nothing saying the process behind
+    /// them was gone. <c>status</c> read that as a run in progress — and on a LIVE run it described the in-flight
+    /// task as leftover state a resume would discard. Wrong in both directions, for one reason: nothing here
+    /// named a process to check.
+    /// </para>
+    /// <para>
+    /// Stamped by <c>guardrails run</c> alone — never by <c>reset</c>, <c>supply</c> or a dry run, each of which
+    /// would name a process that owns nothing. REPLACED by every run that claims the journal (a resume is a new
+    /// process), and completed with <see cref="RunOwner.FinishedAt"/> when that run ends. Additive and
+    /// backward-compatible on the same terms as <see cref="PlanPreflights"/>: absent (never <c>null</c> noise)
+    /// in every journal written before it.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RunOwner? Owner { get; init; }
+
     // NOTE (issue #419): the Windows short-junction root is NO LONGER journaled. It was the field that made
     // the junction durable RUN STATE (forcing a resume onto the same .a..z letter and a sweep as the only
     // reclaim), which is the leak #407/#419 chased. The junction is now a process-scoped cwd alias
@@ -932,6 +954,42 @@ public sealed record RunEnvironment
 
     /// <summary>The skill version (plan-breakdown / guardrails-review) this run executed under, when known.</summary>
     public string? SkillVersion { get; init; }
+}
+
+/// <summary>
+/// The process that owns a run (SSOT §7 <c>owner</c>, issue #704): its pid, its OS start time, the host it runs
+/// on, and — once the run is over — when it recorded that. A pid alone is not an identity, because the OS hands
+/// a freed pid to the next process that asks; the pid AND the start time together name one process for as long
+/// as it lives, which is the same pair the #407 worktree lock records.
+/// </summary>
+public sealed record RunOwner
+{
+    /// <summary>The owning harness process's id.</summary>
+    public required int Pid { get; init; }
+
+    /// <summary>
+    /// When the owning PROCESS started, as the OS reports it (UTC) — the half that tells this process apart from a
+    /// later one handed the same pid. Deliberately not when the run started: it is compared against the live
+    /// process table, which knows nothing about runs.
+    /// </summary>
+    public required DateTimeOffset ProcessStartedAt { get; init; }
+
+    /// <summary>
+    /// The machine the owning process runs on. A pid means nothing on any other machine, so a <c>status</c> run
+    /// elsewhere (a plan folder on a shared drive) says it cannot check rather than calling the run dead. Absent
+    /// when the host name could not be read.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Host { get; init; }
+
+    /// <summary>
+    /// When the owning process recorded the END of its run — any outcome: green, halted, cancelled, or a fault it
+    /// surfaced. ABSENT while the run is going, and absent for good when the process vanished before it got there
+    /// (killed, crashed hard, the machine rebooted): that absence, with the process gone, is exactly what
+    /// "exited without finishing" means.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? FinishedAt { get; init; }
 }
 
 /// <summary>

@@ -87,9 +87,13 @@ public static class DryRun
         PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses,
         JournalDocument? journal, IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes, TextWriter output)
     {
+        // #704: sized from the longest task id by the SAME rule `guardrails status` uses — a fixed ,-36 pushed a
+        // longer id's row out of line.
+        int taskWidth = StatusCommand.TaskColumnWidth(plan.Tasks.Select(t => t.Id));
+
         output.WriteLine("Per-task resolution:");
-        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"TIER",-26} {"RETRY BUDGET",-13} RESUME");
-        output.WriteLine(new string('-', 105));
+        output.WriteLine($"  {"TASK".PadRight(taskWidth)} {"KIND",-7} {"RUNNER",-10} {"TIER",-26} {"RETRY BUDGET",-13} RESUME");
+        output.WriteLine(new string('-', taskWidth + 69));
 
         foreach (TaskNode task in plan.Tasks)
         {
@@ -105,7 +109,7 @@ public static class DryRun
                 : WouldSkip(task, statuses) ? "SKIP (succeeded)" : "run";
 
             output.WriteLine(
-                $"  {task.Id,-36} {kind,-7} {RunnerCell(plan, task, route),-10} " +
+                $"  {task.Id.PadRight(taskWidth)} {kind,-7} {RunnerCell(plan, task, route),-10} " +
                 $"{TierCell(task, route),-26} {budget,-13} {resume}");
         }
 

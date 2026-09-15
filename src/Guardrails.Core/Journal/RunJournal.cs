@@ -685,6 +685,64 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record WHICH PROCESS owns this run (SSOT §7 <c>owner</c>, issue #704) — called by <c>guardrails run</c> at
+    /// run START, beside <see cref="RecordEnvironment"/> and for the same ordering reason: BEFORE the Scheduler's
+    /// own, later <see cref="LoadOrCreate"/>, which then carries the section forward from disk.
+    /// <para>
+    /// REPLACES any previous owner, including one that recorded its end: a resume is a new process claiming the
+    /// same journal, and the previous run's <see cref="RunOwner.FinishedAt"/> describes a process that no longer
+    /// owns anything. Re-reads from disk first, like <see cref="RecordDelivery"/>.
+    /// </para>
+    /// </summary>
+    public void RecordOwner(RunOwner owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        lock (_gate)
+        {
+            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+            _document = current with { Owner = owner };
+            Persist();
+        }
+    }
+
+    /// <summary>
+    /// Record that <paramref name="owner"/> reached the END of its run (SSOT §7 <c>owner.finishedAt</c>, issue
+    /// #704) — the last journal write a run makes, whatever its outcome.
+    /// <para>
+    /// A no-op unless the journal's recorded owner IS <paramref name="owner"/> (same pid, same start time): a run
+    /// another process has since claimed must not be marked finished on that process's behalf, or <c>status</c>
+    /// would call a live run over. Also a no-op when <c>run.json</c> no longer exists — a run's last write must
+    /// never recreate a journal someone deleted underneath it. Re-reads from disk first, like
+    /// <see cref="RecordDelivery"/>: this is called from the CLI's instance, long after the Scheduler's own
+    /// instance settled every task.
+    /// </para>
+    /// </summary>
+    public void RecordOwnerFinished(RunOwner owner, DateTimeOffset finishedAt)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        lock (_gate)
+        {
+            if (!File.Exists(_journalPath))
+            {
+                return;
+            }
+
+            JournalDocument current = Read(_journalPath);
+            if (current.Owner is not { } recorded
+                || recorded.Pid != owner.Pid
+                || recorded.ProcessStartedAt != owner.ProcessStartedAt)
+            {
+                return;
+            }
+
+            _document = current with { Owner = recorded with { FinishedAt = finishedAt } };
+            Persist();
+        }
+    }
+
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 
     /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>
