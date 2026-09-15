@@ -3152,21 +3152,31 @@ public sealed class Scheduler
         {
             if (trial.Refusal is { } refusal)
             {
-                // A Conflict refusal is the halt tasks 16/17 build; fabricating that shape ahead of their
-                // own design risks disagreeing with it, so for now this delivery is simply held. A
-                // HookRejected refusal holds every LATER barrier delivery too (round 5) — via the journal
+                // A HookRejected refusal holds every LATER barrier delivery too (round 5) — via the journal
                 // lookup above on the next barrier, not a sticky in-process flag, so a resume sees the same
-                // hold.
+                // hold; it never halts (task 08/29, design 39 §1c/§4 review round 5 "d39-hooks-untracked-tooling").
+                // Every OTHER refusal from CreateTrialDelivery — a real Conflict, the only other shape it
+                // returns — is not transient: every later wave would hit the identical refusal, so it HALTS
+                // the run at this wave instead of merely holding it (design 39 §1c/§4).
+                Journal.DeliveryOutcome outcome = ToDeliveryOutcome(refusal);
                 SettleDelivery(wave, new Journal.WaveDeliveredRecord
                 {
                     Status = Journal.WaveDeliveryStatus.Refused,
                     StartedAt = startedAt,
                     At = DateTimeOffset.UtcNow,
-                    Outcome = ToDeliveryOutcome(refusal),
+                    Outcome = outcome,
                     Detail = trial.RefusalDetail,
                     Covers = coveredWaves
                 }, announce: false);
-                return null;
+
+                if (refusal == MergeOnSuccessResult.HookRejected)
+                {
+                    return null;
+                }
+
+                RunReport conflictHalt = HaltForDeliveryRefusal(
+                    plan, waves, waveIndex, wave, integ, outcome, trial.RefusalDetail, settled, directoryOwner, ct);
+                return conflictHalt;
             }
 
             if (trial.AlreadyDelivered)
@@ -3281,15 +3291,23 @@ public sealed class Scheduler
             }
             else
             {
+                // #588 (BranchMoved) / #448 (DirtyWorkingTree): neither is transient — every later wave's
+                // promotion would hit the identical refusal — so this HALTS the run at this wave instead of
+                // merely holding it (design 39 §1c/§4, narrowed round 5 from the HookRejected hold above).
+                Journal.DeliveryOutcome outcome = ToDeliveryOutcome(promoted);
                 SettleDelivery(wave, new Journal.WaveDeliveredRecord
                 {
                     Status = Journal.WaveDeliveryStatus.Refused,
                     StartedAt = startedAt,
                     At = DateTimeOffset.UtcNow,
-                    Outcome = ToDeliveryOutcome(promoted),
+                    Outcome = outcome,
                     Detail = provider.LastMergeOnSuccessDetail,
                     Covers = coveredWaves
                 }, announce: false);
+
+                return HaltForDeliveryRefusal(
+                    plan, waves, waveIndex, wave, integ, outcome, provider.LastMergeOnSuccessDetail, settled,
+                    directoryOwner, ct);
             }
 
             return null;
@@ -3475,6 +3493,85 @@ public sealed class Scheduler
     /// <summary>A suppressed record's <c>Detail</c> naming the earlier wave whose trial came back hook-rejected (design 39 §4/§5, review round 5).</summary>
     private static string HookRejectionHoldDetail(WaveNode rejectingWave) =>
         $"{rejectingWave.Dir}: {Journal.JournalJson.DeliveryOutcomeToken(Journal.DeliveryOutcome.HookRejected)}";
+
+    /// <summary>
+    /// Design 39 §1c/§4 (round 4, narrowed round 5): a delivery refusal that is NOT transient — a
+    /// <c>conflict</c>, <c>branch-moved</c> or <c>dirty-working-tree</c> outcome — halts the run at
+    /// <paramref name="wave"/> under <see cref="WaveHaltKind.DeliveryRefused"/>, because every later wave
+    /// would hit the identical refusal. The caller has already journaled the settled <c>refused</c> record
+    /// (design 39 §4/§5) before reaching here; this only builds and records the HALT itself — the wave
+    /// marker, decision entry and report, mirroring the shape of the trial-tree-gate halt right above it,
+    /// but WITHOUT <see cref="RecordGateHalt"/>: <c>run.json</c>'s <c>halt</c> section is scoped to gates
+    /// (#432) and a delivery refusal is not one — every check on this wave PASSED.
+    /// </summary>
+    private RunReport HaltForDeliveryRefusal(
+        PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle integ,
+        Journal.DeliveryOutcome outcome, string? detail, Dictionary<string, TaskResult> settled,
+        Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        string token = Journal.JournalJson.DeliveryOutcomeToken(outcome);
+        string headline = $"Wave '{wave.Dir}' delivery REFUSED ({token}): {detail}";
+
+        var halt = new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.DeliveryRefused,
+            Headline = headline,
+            Detail = DeliveryRefusedRemedyDetail(outcome, detail, integ.OriginalBranch)
+        };
+
+        _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+        BlockLaterWaves(waves, waveIndex, wave, settled);
+        _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+
+        var decision = new DecisionEntry
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(plan.Config.AutonomyPolicy),
+            Decision = DecisionTokens.Halted,
+            Gate = "delivery-refused",
+            Subject = wave.Dir,
+            Wave = wave.Dir,
+            Headline = headline
+        };
+        _journal.RecordDecision(decision);
+        _observer.DecisionRecorded(decision);
+
+        RunReport halted = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+            with { WaveHalt = halt };
+        if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+        return halted;
+    }
+
+    /// <summary>
+    /// The halt's remedy line (design 39 §1c/§4 review round 5): a <c>branch-moved</c> refusal has TWO
+    /// causes under the one <c>branch-moved</c> token, and the remedy differs by which one the provider's
+    /// detail names. Keyed on the shared <c>run started on</c> prefix (never one ending — a detached HEAD's
+    /// ending differs from a switched-checkout's, and both need the SAME "check out again" remedy) and on
+    /// the <c>after the trial was built</c> suffix (which also covers a rewound branch): the checkout is
+    /// still on the pinned branch there, so the fix is simply to resume — telling the operator to check
+    /// anything out would be actively wrong. A <c>conflict</c> or <c>dirty-working-tree</c> refusal names no
+    /// single remedy action here (resolving either is content-specific); its own detail already says what
+    /// blocked it, so the halt just tells the operator to resume once it is resolved.
+    /// </summary>
+    private static string DeliveryRefusedRemedyDetail(
+        Journal.DeliveryOutcome outcome, string? detail, string originalBranch)
+    {
+        if (outcome == Journal.DeliveryOutcome.BranchMoved && detail is not null)
+        {
+            if (detail.StartsWith("run started on", StringComparison.Ordinal))
+            {
+                return $"check out '{originalBranch}' again, then resume.";
+            }
+
+            if (detail.Contains("after the trial was built", StringComparison.Ordinal))
+            {
+                return "The change is already on the plan side of the next trial — resume.";
+            }
+        }
+
+        return "Resolve the condition named above, then resume.";
+    }
 
     /// <summary>
     /// The nearest wave before <paramref name="waveIndex"/>, in plan order, whose <c>delivered</c> record
