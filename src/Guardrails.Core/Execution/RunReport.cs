@@ -480,9 +480,14 @@ public sealed record RunReport
 
     /// <summary>
     /// Every wave's OWN barrier-delivery result this run recorded, keyed by wave directory (design 39
-    /// §4/§5) — the report's copy of <c>run.json</c>'s <c>waves.&lt;dir&gt;.delivered</c>. Empty until the
-    /// Scheduler fills it (task 29); MUST NOT throw — hundreds of tests construct and print
-    /// <see cref="RunReport"/>, and a throwing getter would break every one of them.
+    /// §4/§5) — the report's copy of <c>run.json</c>'s <c>waves.&lt;dir&gt;.delivered</c>. A wave with no
+    /// entry here either was never a delivery point, never reached its barrier, or held its delivery with
+    /// no record (delivery resolved off, or a #556 divergence withheld it) — the JOURNAL, not this map
+    /// alone, says whether its work is on the user's branch (see <see cref="Journal.WaveDeliveredRecord"/>).
+    /// Stamped by <see cref="Scheduler.BuildReport"/> — the one method every report passes through, halted
+    /// or not — from <c>run.json</c>, so a wave-gate or barrier halt still carries every earlier delivery.
+    /// Defaults empty; MUST NOT throw — hundreds of tests construct and print <see cref="RunReport"/>, and
+    /// a throwing getter would break every one of them.
     /// </summary>
     public IReadOnlyDictionary<string, Journal.WaveDeliveredRecord> WaveDeliveries { get; init; } =
         new Dictionary<string, Journal.WaveDeliveredRecord>();
