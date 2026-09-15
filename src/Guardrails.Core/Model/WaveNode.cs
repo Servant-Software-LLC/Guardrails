@@ -77,4 +77,10 @@ public sealed record WaveNode
     /// (§5.4 names it), which is the one place that name and its contents pull apart.</para>
     /// </summary>
     public string? DefinitionHashAtLoad { get; init; }
+
+    /// <summary>The wave's DECLARED <c>delivers: true</c>, from its brief.md front matter. Default false.</summary>
+    public bool Delivers { get => throw new NotImplementedException(); init { } }
+
+    /// <summary>True only when the wave delivers at its barrier: <see cref="Delivers"/> AND at least one exit-gate check.</summary>
+    public bool IsDeliveryPoint => throw new NotImplementedException();
 }
