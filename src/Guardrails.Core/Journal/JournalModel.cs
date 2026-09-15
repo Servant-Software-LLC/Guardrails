@@ -221,8 +221,9 @@ public sealed record DeliverySection
     public string? PlanBranch { get; init; }
 
     /// <summary>
-    /// The user's branch the work was delivered TO, when it was (mirrors
-    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null otherwise.
+    /// The user's branch the work was delivered TO, whenever any of it landed — by the run-end merge, or by a
+    /// wave's barrier delivery on a partially-delivered run (design 39 §4; mirrors
+    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null when nothing landed.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DeliveredToBranch { get; init; }
