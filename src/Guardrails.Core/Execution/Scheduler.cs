@@ -4174,9 +4174,11 @@ public sealed class Scheduler
 
     /// <summary>
     /// Map a just-settled task's outcome to a <see cref="GateSignal"/> and dispatch it through
-    /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). Three task-level stops are dial/forensic-eligible: an
-    /// agent-emitted <c>{"needsHuman": "…"}</c> (a class-(a) judgment call, recognised by the settled
-    /// <see cref="TaskResult.Summary"/>'s stable <c>needs human: </c> prefix); a rate-limit EXHAUSTION (a
+    /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). These task-level stops are dial/forensic-eligible: an
+    /// agent-emitted <c>{"needsHuman": "…"}</c> (a class-(a) judgment call, recognised by
+    /// <see cref="TaskResult.NeedsHumanQuestion"/>, which only the agent's own needsHuman sets); a HARNESS needs-human
+    /// halt carrying <see cref="TaskResult.HardBlocker"/> (a permission wall, a no-route settle or a write-scope gap —
+    /// class (c), escalated without the judge, #707 review); a rate-limit EXHAUSTION (a
     /// class-(b) transient that never cleared → <see cref="TaskOutcome.RateLimited"/>); and a SUCCEEDED task
     /// that carries a <see cref="TaskResult.ResolvedTransient"/> signal (a class-(b) transient that DID clear
     /// within the pause budget — the executor already resolved it, so this only RECORDS the <c>blocker-retried</c>
@@ -4189,14 +4191,26 @@ public sealed class Scheduler
         {
             string definitionHash = Journal.TaskDefinitionHash.Compute(task);
 
-            if (result.Outcome == TaskOutcome.NeedsHuman
-                && ExtractNeedsHumanQuestion(result.Summary) is { } question)
+            // #707 review: routing reads STRUCTURED fields only, never the summary's prose. Three harness halts share
+            // the `needs human: ` prefix with an agent's own question, and routing on that prefix sent all three to
+            // the criticality judge, whose below-threshold best-guess re-drove the task with a fresh budget past a
+            // blocker no guess can clear, and turned delivery off.
+            if (result.Outcome == TaskOutcome.NeedsHuman && result.NeedsHumanQuestion is { } question)
             {
                 await ClassifyAndActAsync(
                     GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
                     question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
                     ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind, waveDir: task.WaveDir)
                     .ConfigureAwait(false);
+            }
+            else if (result.Outcome == TaskOutcome.NeedsHuman && result.HardBlocker is { } blocker)
+            {
+                // The HARNESS stopped the task. Its own signal is classified, and the halt's summary is the context
+                // a human answers the escalation with.
+                await ClassifyAndActAsync(
+                    blocker, gate: "needs-human", subject: task.Id, boundary: "task", question: result.Summary,
+                    definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman, ct,
+                    waveDir: task.WaveDir).ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.RateLimited)
             {
@@ -4503,18 +4517,6 @@ public sealed class Scheduler
             _ => null
         };
         return (perGate ?? cfg.EscalationThreshold).ToString().ToLowerInvariant();
-    }
-
-    /// <summary>
-    /// The agent-emitted needs-human question carried on a settled <see cref="TaskResult.Summary"/> (the
-    /// executor stamps <c>needs human: &lt;question&gt;</c> for an agent <c>{"needsHuman": …}</c> short-circuit).
-    /// Returns null for any other needs-human summary (a terminal exhaustion, a cost cap) so those are NOT
-    /// misclassified as dial-eligible judgment calls.
-    /// </summary>
-    private static string? ExtractNeedsHumanQuestion(string summary)
-    {
-        const string prefix = "needs human: ";
-        return summary.StartsWith(prefix, StringComparison.Ordinal) ? summary[prefix.Length..] : null;
     }
 
     /// <summary>

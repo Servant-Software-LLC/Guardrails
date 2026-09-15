@@ -1233,6 +1233,20 @@ stable `needs human: ` prefix, the path, and (except for that test variant) the 
 domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
 diagnose this halt.
 
+**Harness halts route as hard blockers in autonomous mode, never as judgment calls (#707 review).** Three
+needs-human halts are decided by the HARNESS on a blocker no retry and no best-guess can clear: this write-scope-gap
+halt, the §9.3 permission wall, and the no-route settle (#201, DoR §6.2). Their summaries share the
+`needs human: ` prefix with an agent's own question, and the classify-then-act dispatch used to recognize "the agent
+asked" by that prefix. So all three were judgment calls: the criticality judge ran, and below the threshold a
+best-guess re-drove the task with a fresh budget, recorded `proceeded-best-guess`, and turned delivery off. Routing
+now reads structured fields only.
+- `TaskResult.NeedsHumanQuestion` is set by an agent's own `needsHuman` alone (#606), and is the one judgment call.
+- `TaskResult.HardBlocker` is a `GateSignal` set by the three halts' producers: `PermissionWall`, `NoRoute` and
+  `WriteScopeGap`. Each classifies `hard-blocker-permanent` and escalates at the `needs-human` gate without
+  consulting the judge.
+
+The summary prefix stays for human-facing readers, and no machine decision reads it.
+
 **Out-of-scope work stays recoverable, and salvage says only what is true (issue #705).** The scoped revert
 destroys the offending bytes, which is exactly wrong when the out-of-scope write IS the deliverable — and every
 plan scope gap looks like that. So before the revert the harness writes `out-of-scope.patch` (§8) into the
@@ -4791,8 +4805,9 @@ to find out — the read layer 3 exists to remove, reintroduced on the path wher
 #361's answer-injection path an escalation with no content. Widening `detail` was rejected for the reason
 the paragraph below gives; a question is written by the HARNESS for a human and carries no tool output,
 which is a different risk profile and is why it gets its own field and its own disclosure. `detail` keeps
-the `needs human: …` prefix unchanged, so every existing reader — including the prose parse that drives
-the autonomous escalation dispatch — is undisturbed.
+the `needs human: …` prefix unchanged for every human-facing reader. No machine decision reads that prose: the
+autonomous escalation dispatch routes on this structured question (an agent's own needsHuman) and on
+`TaskResult.HardBlocker` (a harness halt), never on the prefix (§3.4, #707 review).
 
 **`attempt-finished` is the journal's `AttemptRecord`, emitted live.** `IRunObserver.AttemptFinished`
 carries the whole `Journal.AttemptRecord` (§7), so the row is a projection of the record the journal
@@ -6162,6 +6177,11 @@ and a `stagingOutputs` attempt whose moved deliverable passes its guardrails is 
 outcome (action failed or guardrails failed) with an un-recoverable `.claude/` wall present; its
 `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`, then the session-wide
 `bypassPermissions` fallback (the settings-grant remedy is retired, #273).
+
+**In autonomous mode a permission-wall halt is a hard blocker.** Its `TaskResult` carries
+`HardBlocker = GateSignal.PermissionWall(decision)`, so the classify-then-act dispatch escalates it as
+`hard-blocker-permanent` without consulting the criticality judge, and never proceeds on a best-guess past it. A
+wall is a missing grant, which no best-guess supplies (§3.4, #707 review).
 
 ### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
 

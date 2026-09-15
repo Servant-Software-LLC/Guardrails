@@ -557,8 +557,8 @@ internal sealed class AttemptJournaler
             TaskId = task.Id,
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = action.ExitCode,
-            // The kind is deliberately NOT spliced into this summary: Scheduler.ExtractNeedsHumanQuestion
-            // parses the `needs human: ` prefix and treats the remainder as the escalation's question.
+            // The kind is deliberately NOT spliced into this summary: it would pollute the question a human reads.
+            // Routing reads the structured NeedsHumanQuestion below, never this prose (#707 review).
             Summary = $"needs human: {question}",
             // #606: the same question, structured. The splice above stays for every existing reader; this
             // is what reaches an event consumer that never sees `detail`.
@@ -636,7 +636,9 @@ internal sealed class AttemptJournaler
         {
             TaskId = task.Id,
             Outcome = TaskOutcome.NeedsHuman,
-            Summary = $"needs human: {reason}"
+            Summary = $"needs human: {reason}",
+            // #707 review: a routing-configuration gap is a hard blocker, never a judgment call for the judge.
+            HardBlocker = GateSignal.NoRoute(reason)
         }, FeedbackPath: null, Outcome: AttemptOutcome.NoRoute);
     }
 
@@ -694,9 +696,39 @@ internal sealed class AttemptJournaler
             TaskId = task.Id,
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = action.ExitCode,
-            Summary = summary
+            Summary = summary,
+            // #707 review: a wall is a missing grant — a hard blocker, never a judgment call for the judge.
+            HardBlocker = GateSignal.PermissionWall(decision)
         }, FeedbackPath: null, Outcome: AttemptOutcome.PermissionDenied);
     }
+
+    /// <summary>
+    /// The write-scope-gap halt (issue #707): a write-scope violation the harness settles <c>needs-human</c> on this
+    /// attempt instead of retrying, because every retry is handed the same scope. Journals the attempt with its true
+    /// <see cref="AttemptOutcome.WriteScopeViolation"/> outcome and task status <c>needs-human</c> — the
+    /// <see cref="FailedAttempt"/> record shape, because this attempt IS the final one — and returns a non-green
+    /// <see cref="TaskOutcome.NeedsHuman"/> result. The wording is the caller's
+    /// (<c>RetryPolicy.ForWriteScopeGapHalt</c> / <c>WriteScopeGapSummary</c>); the result shape is this method's,
+    /// beside the other two harness halts, <see cref="PermissionWall"/> and <see cref="NoRoute"/>.
+    /// </summary>
+    public AttemptResult WriteScopeGapHalt(
+        TaskNode task, int attemptNumber, DateTimeOffset startedAt, string relativeLogDir, string logDir,
+        ActionRun action, string feedback, string summary, AttemptProvenance? provenance = null,
+        AttemptSegments? segments = null, HarnessWriteRecord? harnessWrite = null) =>
+        FailedAttempt(
+            task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal: true,
+            AttemptOutcome.WriteScopeViolation,
+            new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.NeedsHuman,
+                ActionExitCode = action.ExitCode,
+                Summary = summary,
+                // #707 review: every retry is handed the same scope — a hard blocker, never a judgment call.
+                HardBlocker = GateSignal.WriteScopeGap(summary)
+            },
+            costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
+            segments: segments, harnessWrite: harnessWrite);
 
     /// <summary>
     /// #329: the OUTCOME-AWARE structural <c>.claude/</c>-wall halt. #326 settles a NON-converged attempt

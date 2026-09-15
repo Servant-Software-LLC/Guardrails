@@ -55,6 +55,12 @@ public enum GateSignalKind
     /// <summary>A permission-wall halt decision (<see cref="PermissionWallDecision"/>, #266 / #86 / #104).</summary>
     PermissionWall,
 
+    /// <summary>No candidate block serves the tier a task asked for, at it or above it (#201, DoR §6.2) — a routing-configuration gap.</summary>
+    NoRoute,
+
+    /// <summary>A write-scope gap the plan caused (#707): the task keeps needing a path its writeScope does not cover.</summary>
+    WriteScopeGap,
+
     /// <summary>An infrastructure fault / honest abort (<see cref="RunAbort"/>, #150).</summary>
     InfrastructureFault,
 
@@ -114,6 +120,14 @@ public sealed record GateSignal
     /// <summary>A permission-wall halt decision (#266 / #86 / #104).</summary>
     public static GateSignal PermissionWall(PermissionWallDecision decision) =>
         new(GateSignalKind.PermissionWall) { Wall = decision };
+
+    /// <summary>No route for the requested tier (#201, DoR §6.2), carrying the no-route reason.</summary>
+    public static GateSignal NoRoute(string reason) =>
+        new(GateSignalKind.NoRoute) { Detail = reason };
+
+    /// <summary>A write-scope gap the plan caused (#707), carrying the halt's summary.</summary>
+    public static GateSignal WriteScopeGap(string detail) =>
+        new(GateSignalKind.WriteScopeGap) { Detail = detail };
 
     /// <summary>An infrastructure fault / honest abort (#150).</summary>
     public static GateSignal InfrastructureFault(RunAbort abort) =>
@@ -178,6 +192,11 @@ public static class GateClassifier
             // an infrastructure fault / RunAbort (#150) is an honest abort; a plan/wave preflight failure
             // (SSOT §3.3/§14.3) means the environment is not ready. All escalate with full context.
             GateSignalKind.PermissionWall => GateClass.HardBlockerPermanent,
+            // #707 review: the same shape as a wall. No route for the requested tier (#201) and a write-scope gap the
+            // plan caused (#707) are both fixed by a config or task.json edit, which no retry makes (every retry
+            // resolves the same route / is handed the same scope) and no best-guess grants.
+            GateSignalKind.NoRoute => GateClass.HardBlockerPermanent,
+            GateSignalKind.WriteScopeGap => GateClass.HardBlockerPermanent,
             GateSignalKind.InfrastructureFault => GateClass.HardBlockerPermanent,
             GateSignalKind.PreflightFailure => GateClass.HardBlockerPermanent,
 
