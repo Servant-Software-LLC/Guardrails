@@ -156,6 +156,12 @@ public sealed class TaskExecutor : ITaskExecutor
         // EARLY rather than burning the rest of the budget on the identical, un-retryable wall.
         var permissionWalls = new PermissionWallTracker();
 
+        // #707: every path this task has written OUTSIDE its writeScope, across attempts. A path that recurs is a
+        // scope gap no retry can clear, because every retry is handed the same scope. The write-scope analogue of
+        // the permission-wall tracker above, and deliberately a separate record: the wall tracker reads what the
+        // RUNTIME refused, this reads what the write-scope CHECK found.
+        var pathsWrittenOutOfScope = new HashSet<string>(StringComparer.Ordinal);
+
         // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
         // consuming the retry budget, bounded by the cumulative wall-clock pause budget.
         // #511 gives that budget a SECOND horizon: a limit that names its reset ("resets 8:30pm") is a
@@ -208,7 +214,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
-                    guardrailFailedRetries, permissionWalls, cancellationToken)
+                    guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -727,6 +733,7 @@ public sealed class TaskExecutor : ITaskExecutor
         int maxTurnsRetries,
         int guardrailFailedRetries,
         PermissionWallTracker permissionWalls,
+        HashSet<string> pathsWrittenOutOfScope,
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
@@ -1327,6 +1334,45 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Scoped revert: restore only the out-of-scope paths to taskBase state.
                 WriteScopeCheck.ScopedRevert(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths);
 
+                // --- #707: a write-scope gap the PLAN caused halts needs-human instead of retrying -------------
+                // Plan 40's task 20 wrote the same out-of-scope file on attempts 1 and 2 and was retried to
+                // exhaustion: four attempts, two overwatch diagnoses and a best-guess for a one-line task.json fix.
+                // Every retry is handed the same scope, so a retry cannot clear a gap in it. Two deterministic
+                // rules, both read off facts the harness already holds (WriteScopeGapOf):
+                //   • the SAME path written out of scope on an earlier attempt too (the #86 repeat rule's analogue);
+                //   • on any attempt, every offending path last committed by an upstream task, with no in-scope
+                //     change at all — the plan-40 shape, caught before a second attempt is spent.
+                // Prompt actions only: a script cannot self-correct, and its reproduction is #264's domain, whose
+                // byte-identical-output guard is deliberate. Kept apart from the #86 permission-wall halt above.
+                // Recorded for EVERY violation, so a later attempt can recognise a repeat.
+                IReadOnlyList<string> repeatedOutOfScope =
+                    RecordOutOfScopeWrites(scopeCheck.OffendingPaths, pathsWrittenOutOfScope);
+                if (task.Action.Kind == ActionKind.Prompt
+                    && WriteScopeGapOf(task, worktree, scopeCheck, repeatedOutOfScope) is { } scopeGap)
+                {
+                    // A halt resets nothing: the loop returns before the F2 reset, so the tree is orphaned exactly
+                    // as on an agent's own needsHuman, and its in-scope work is preserved the same way (#554).
+                    SalvageRef? gapSalvage = TryStashEscalatingAttempt(task, worktree, attemptNumber);
+                    return _journaler.FailedAttempt(
+                        task, attemptNumber, startedAt, relativeLogDir, logDir,
+                        RetryPolicy.ForWriteScopeGapHalt(task, attemptNumber, scopeCheck, scopeGap, gapSalvage),
+                        // This attempt IS the final one: the harness has decided no further attempt can help, so the
+                        // journal settles the task needs-human now rather than after the budget runs out.
+                        isFinal: true,
+                        AttemptOutcome.WriteScopeViolation,
+                        new TaskResult
+                        {
+                            TaskId = task.Id,
+                            Outcome = TaskOutcome.NeedsHuman,
+                            ActionExitCode = action.ExitCode,
+                            Summary = RetryPolicy.WriteScopeGapSummary(task, scopeGap)
+                        },
+                        costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
+                        turns: action.Turns,
+                        segments: AttemptJournaler.SegmentsFor(action),
+                        harnessWrite: harnessWriteRecord);
+                }
+
                 // #306: STASH the (now out-of-scope-reverted) attempt so the retry can recover the good
                 // IN-SCOPE work instead of re-authoring — and so the feedback stops falsely claiming the
                 // in-scope changes "are preserved" when the F2 reset is about to discard them too.
@@ -1791,6 +1837,107 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static string FingerprintWriteScopeViolation(IReadOnlyList<WriteScopeOffense> offenses) =>
         "write-scope" + string.Join("", offenses.Select(o => $"{o.Status}{o.Path}"));
+
+    /// <summary>
+    /// The memory behind #707's repeat rule: add this violation's real offending paths to the task's running set
+    /// and return the ones already in it — paths this task ALSO wrote out of scope on an earlier attempt. Keyed on
+    /// the path alone, like the #86 repeat rule: a second write to the same out-of-scope file is the same gap, in
+    /// whichever way it was changed. The WS_2 git-error sentinel (status <c>?</c>) is not a path and never counts.
+    /// </summary>
+    private static IReadOnlyList<string> RecordOutOfScopeWrites(
+        IReadOnlyList<WriteScopeOffense> offenses, HashSet<string> pathsWrittenOutOfScope)
+    {
+        List<string> paths = offenses
+            .Where(o => o.Status != '?')
+            .Select(o => o.Path)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        List<string> repeated = paths.Where(pathsWrittenOutOfScope.Contains).ToList();
+        pathsWrittenOutOfScope.UnionWith(paths);
+        return repeated;
+    }
+
+    /// <summary>
+    /// Whether a write-scope violation is a gap the PLAN caused (issue #707), decided deterministically — no model
+    /// judges it. Null for an ordinary retry. Two rules, either sufficient:
+    /// <list type="number">
+    ///   <item><b>Repeat.</b> <paramref name="repeated"/> is non-empty: a path written out of scope on an earlier
+    ///     attempt as well, after that attempt's feedback named it.</item>
+    ///   <item><b>Upstream author, first occurrence.</b> EVERY offending path was last committed by a transitive
+    ///     <c>dependsOn</c> ancestor of this task, AND the attempt changed nothing inside its own scope. The second
+    ///     condition is load-bearing. An ancestor-authored path alone does not distinguish a stub the plan forgot
+    ///     to give this task from a test file the plan deliberately withheld from it (the TDD split keeps an
+    ///     implement task off its tests through exactly this check). An implement task that did real in-scope work
+    ///     and also touched an upstream file is the second shape, which a retry corrects; one whose ENTIRE change
+    ///     landed in upstream-authored files outside its scope has nothing a retry could keep. That case is
+    ///     plan 40's, where attempts 1 and 2 put all of their work into the stub file.</item>
+    /// </list>
+    /// </summary>
+    private WriteScopeGap? WriteScopeGapOf(
+        TaskNode task, WorktreeHandle worktree, WriteScopeCheckResult scopeCheck, IReadOnlyList<string> repeated)
+    {
+        IReadOnlyDictionary<string, string> upstreamAuthors = scopeCheck.InScopePaths.Count == 0
+            ? UpstreamAuthorsOfEveryOffense(task, worktree, scopeCheck.OffendingPaths)
+            : new Dictionary<string, string>();
+
+        return repeated.Count == 0 && upstreamAuthors.Count == 0
+            ? null
+            : new WriteScopeGap(repeated, upstreamAuthors);
+    }
+
+    /// <summary>
+    /// Offending path → the ancestor task that last committed it, or EMPTY unless that holds for every offending
+    /// path (#707's first-occurrence rule is all or nothing). A commit's author is its <c>Guardrails-Task:</c>
+    /// trailer (<see cref="GitWorktreeProvider.LastCommitTaskTrailer"/>), trusted only when the task is a
+    /// transitive dependency of this one AND the commit's <c>Guardrails-Task-Hash:</c> equals that task's
+    /// definition hash as this run loaded it. The hash keeps a commit made under some other definition of that id
+    /// from counting; it is defense in depth, because such a trailer reachable from the run's base is normally
+    /// settled first by the plan-branch reconcile (SSOT §7.2), before any attempt runs. An added path (no history
+    /// at the base) or the git-error sentinel ends the search: neither can have been authored upstream.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> UpstreamAuthorsOfEveryOffense(
+        TaskNode task, WorktreeHandle worktree, IReadOnlyList<WriteScopeOffense> offenses)
+    {
+        var authors = new Dictionary<string, string>(StringComparer.Ordinal);
+        IReadOnlySet<string> ancestors = _graph.TransitiveDependenciesOf(task.Id);
+        if (ancestors.Count == 0)
+        {
+            return authors;
+        }
+
+        foreach (WriteScopeOffense offense in offenses)
+        {
+            if (offense.Status is not ('M' or 'D'))
+            {
+                return new Dictionary<string, string>();
+            }
+
+            (string? author, string? hash) =
+                GitWorktreeProvider.LastCommitTaskTrailer(worktree.WorktreePath, worktree.TaskBase, offense.Path);
+            if (!IsUpstreamAuthor(author, hash, ancestors, _tasksById))
+            {
+                return new Dictionary<string, string>();
+            }
+
+            authors[offense.Path] = author!;
+        }
+
+        return authors;
+    }
+
+    /// <summary>
+    /// #707's attribution rule, on its own so it can be pinned without git: a commit's <c>Guardrails-Task:</c>
+    /// trailer names an upstream author of this task only when that task is a transitive dependency AND the
+    /// trailer's <c>Guardrails-Task-Hash:</c> equals the definition hash this run loaded for it. A trailer with
+    /// no hash (an old or fake-provider commit) names no one.
+    /// </summary>
+    internal static bool IsUpstreamAuthor(
+        string? author, string? hash, IReadOnlySet<string> ancestors, IReadOnlyDictionary<string, TaskNode> tasksById) =>
+        author is not null
+        && hash is not null
+        && ancestors.Contains(author)
+        && tasksById.TryGetValue(author, out TaskNode? ancestor)
+        && string.Equals(ancestor.DefinitionHashAtLoad, hash, StringComparison.Ordinal);
 
     /// <summary>
     /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a
