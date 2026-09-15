@@ -2956,9 +2956,63 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
       "deliveredWave": "wave-02-issue-510", // the wave whose non-fast-forward delivery triggered it
       "paths": ["src/Teammate.cs"]      // git diff --name-only <commit>^1 <commit>, forward-slash, ordinal-sorted
     }
-  ]
+  ],
+
+  // OPTIONAL record of WHICH PROCESS owns this run (issue #704) — what `guardrails status` checks to tell a run
+  // that is still going from one whose process died mid-flight (a laptop that slept or rebooted, a killed
+  // process), which otherwise leaves this file exactly as a live run leaves it. Stamped by `guardrails run`
+  // ALONE, immediately after it loads the journal — never by `reset`, `supply` or `--dry-run`, which would name a
+  // process that owns nothing — and REPLACED by every run that claims the journal (a resume is a new process).
+  // Absent (never null noise) in every journal written before #704.
+  "owner": {
+    "pid": 14168,                       // the owning harness process
+    "processStartedAt": "2026-09-13T04:15:59.8123456+00:00",
+                                        // when that PROCESS started, as the OS reports it (UTC, full precision) —
+                                        //   the half that tells it apart from a later process handed the same pid
+    "host": "LAPTOP-7",                 // OPTIONAL: a pid means nothing on another machine. ABSENT when unreadable
+    "finishedAt": "2026-09-13T05:02:11.441+00:00"
+                                        // OPTIONAL: written when the run ENDS by any path that unwinds — green,
+                                        //   halted, cancelled, an early return, a fault the harness surfaced. ABSENT
+                                        //   while the run is going, and absent for good when the process vanished
+                                        //   first (killed, hard crash, reboot). Cleared by the next run's claim.
+  }
 }
 ```
+
+**`owner` — liveness is decided from facts, never from a duration (#704).** `guardrails status` prints one
+line between its `Run <runId>` header and the table, from this verdict, in precedence order:
+
+| Verdict | Condition | The line |
+|---|---|---|
+| `FINISHED` | `owner.finishedAt` is present | `Run state: FINISHED — owner process <pid> recorded its end at <t>; nothing is running.` |
+| `RUNNING` | a process with `owner.pid` is running now AND its start time matches `processStartedAt` | `Run state: RUNNING — owner process <pid> is alive. Last journal write <t> (<age> ago).` |
+| `UNKNOWN` (another host) | not running here, and `owner.host` names a different machine | `Run state: UNKNOWN — owner process <pid> ran on host '<host>', and its liveness can only be checked there. Last journal write <t> (<age> ago).` |
+| `EXITED WITHOUT FINISHING` | any other owner | `Run state: EXITED WITHOUT FINISHING — owner process <pid> is gone and never recorded an end, so nothing is running. Last journal write <t> (<age> ago). Resume with: guardrails run <folder>` |
+| `UNKNOWN` (not recorded) | no `owner` section | `Run state: UNKNOWN — this journal names no owner process (it predates #704), so a live run and a dead one look the same here. Last journal write <t> (<age> ago).` |
+
+- **A pid alone is not an identity** — the OS reuses a freed pid — so a live process counts only when its start
+  time matches too. The comparison is exact on Windows and macOS, which store the creation time. On Linux it
+  tolerates one minute: .NET reconstructs a start time per READING process from `CLOCK_REALTIME_COARSE` minus
+  `CLOCK_BOOTTIME`, so the run and the `status` that checks it disagree by clock resolution and by any wall-clock
+  step between their readings. A step larger than that while the run is alive (a VM clock corrected by hours)
+  reads a live Linux run as exited; a false "running" would need a full lap of `pid_max` inside that minute.
+- **The host comparison never outranks the process table**: a matching live process is the owner even if the
+  machine's name changed under it (macOS renames a laptop that joins another network).
+- **"Last journal write" is an OBSERVATION, never an input.** It is `run.json`'s modification time, shown so an
+  operator can tell a live-but-stuck run from a live-and-busy one. There is deliberately no wall-clock stall rule
+  ("no progress for N minutes ⇒ dead"): a suspend advances the clock, so it would condemn a healthy run on exactly
+  the laptops this exists for, and on Windows neither `TickCount64` nor `Stopwatch` excludes suspend.
+- **The table follows the verdict.** Under `EXITED WITHOUT FINISHING` or `FINISHED`, a task the journal holds
+  `running` prints `interrupted` — in the STATUS column and in the #639 resume footer — because it is not in
+  progress and a resume re-runs it. Under `RUNNING` the resume footer is withheld: a live run's table is its
+  current state, not a last outcome, and its in-flight task is not leftover state. Under either `UNKNOWN` the
+  journal's own words stand, since nothing disproves them.
+- **`finishedAt` is written only for the owner that claimed the run** (same pid and start time), so a run winding
+  down never marks a newer claim finished, and it never recreates a `run.json` deleted underneath it. Both owner
+  writes re-read the journal from disk first (the `delivery` hazard below) and are best-effort: a failed write
+  costs a less certain line, never a run's verdict.
+- The TASK column — in this table and in `run --dry-run`'s per-task table — is as wide as the plan's longest task
+  id (never narrower than its header), so every row stays aligned and parseable.
 
 **`waves.<dir>.delivered` — the per-wave barrier-delivery record (design of record
 `39-incremental-delivery.md` §4, issue #525; full mechanics in §14.12).** Present only on a wave that is a

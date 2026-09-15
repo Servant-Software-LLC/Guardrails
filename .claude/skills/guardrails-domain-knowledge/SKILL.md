@@ -677,6 +677,17 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   regardless of per-task outcomes.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
   `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
+  **Is the run ALIVE? Read `guardrails status`'s `Run state:` line, never the table (#704).** A run whose process
+  died — a laptop that slept or rebooted, a killed process — leaves `run.json` exactly as a live run leaves it, so
+  `pending`/`running` rows prove nothing either way. `run.json`'s top-level `owner` (`pid` + `processStartedAt` +
+  `host`, plus `finishedAt` once the run ends by any path that unwinds) lets `status` decide from FACTS:
+  `RUNNING` (that pid, with that start time, is alive), `EXITED WITHOUT FINISHING` (gone and no recorded end —
+  resume with `guardrails run`), `FINISHED`, or `UNKNOWN` (owned on another host, or a pre-#704 journal). A dead
+  run's `running` task prints `interrupted`; a live run gets no resume footer. **Never resume a run that reads
+  RUNNING** — two processes would drive one journal. RUNNING means alive, not progressing: the line's "last
+  journal write … ago" is how you spot an alive-but-stuck owner, and it is an OBSERVATION, never a verdict. There
+  is deliberately no wall-clock stall timeout, because a suspend advances the clock and would condemn a healthy
+  run on exactly the machines this is for (SSOT §7 `owner`).
   **Definition-drift halt (#274 Part A):** editing an already-`succeeded` task and re-running no longer
   silently reuses the stale cached segment (the pre-Part-A bug ran the OLD version -- even under `--fresh`
   before Part B). On resume, BEFORE the DAG is built, the harness recomputes each pre-settled-green task's

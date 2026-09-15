@@ -426,6 +426,14 @@ public static class RunCommand
         RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
         string runId = journal.Document.RunId;
 
+        // Issue #704 — name THIS process as the run's owner, and record that the run ended on every way out of
+        // this method that unwinds (the `using` covers every return and throw below). A run whose process vanished
+        // — killed, crashed hard, a laptop rebooting under it — never gets that second write, and
+        // `guardrails status` reads the difference: a live owner is RUNNING, a gone one with no recorded end
+        // EXITED WITHOUT FINISHING. Claimed before RecordEnvironment and the Scheduler's own later LoadOrCreate, for
+        // the ordering reason spelled out at RecordEnvironment below.
+        using RunOwnership ownership = RunOwnership.Claim(journal);
+
         // #383/#407/#419 worktree-mode run-start setup: the startup GC (a crash BACKSTOP now, #419), the
         // liveness lock, and — on Windows — a FRESH short junction for this run. The junction is a
         // PROCESS-SCOPED cwd alias (issue #419): threaded IN-MEMORY (no longer journaled), released on every
