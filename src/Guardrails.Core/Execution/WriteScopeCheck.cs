@@ -61,11 +61,13 @@ public static class WriteScopeCheck
             {
                 Passed = false,
                 Scope = scope,
-                OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }]
+                OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }],
+                InScopePaths = []
             };
         }
 
         var offending = new List<WriteScopeOffense>();
+        var inScope = new List<string>();
         foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string line = rawLine.Trim();
@@ -89,13 +91,18 @@ public static class WriteScopeCheck
                     Preview = CapturePreviewIfNewFile(repoPath, path, status)
                 });
             }
+            else
+            {
+                inScope.Add(path);
+            }
         }
 
         return new WriteScopeCheckResult
         {
             Passed = offending.Count == 0,
             Scope = scope,
-            OffendingPaths = offending
+            OffendingPaths = offending,
+            InScopePaths = inScope
         };
     }
 
@@ -348,7 +355,26 @@ public sealed record WriteScopeCheckResult
 
     /// <summary>Changed paths that fall outside the declared write-scope. Empty when <see cref="Passed"/>.</summary>
     public IReadOnlyList<WriteScopeOffense> OffendingPaths { get; init; } = [];
+
+    /// <summary>
+    /// Changed paths the declared write-scope DOES cover — the in-scope work the attempt made, from the same
+    /// diff that found the offenses. Empty on the git-error sentinel.
+    /// </summary>
+    public required IReadOnlyList<string> InScopePaths { get; init; }
 }
+
+/// <summary>
+/// Why a write-scope violation halted <c>needs-human</c> instead of retrying (issue #707). Both halves are
+/// deterministic facts the harness already holds; no model judged either.
+/// </summary>
+/// <param name="RepeatedPaths">Offending paths this task ALSO wrote out of scope on an earlier attempt.</param>
+/// <param name="UpstreamAuthorByPath">
+/// Offending path → the upstream task (a transitive <c>dependsOn</c> ancestor) that last committed it. Non-empty
+/// only when EVERY offending path is upstream-authored and the attempt changed nothing inside its own scope.
+/// </param>
+public sealed record WriteScopeGap(
+    IReadOnlyList<string> RepeatedPaths,
+    IReadOnlyDictionary<string, string> UpstreamAuthorByPath);
 
 /// <summary>
 /// One offending path from a write-scope violation (issue #253), paired with its raw

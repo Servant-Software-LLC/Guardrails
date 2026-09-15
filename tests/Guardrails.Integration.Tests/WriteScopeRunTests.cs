@@ -4,6 +4,7 @@ using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
+using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Integration.Tests;
 
@@ -88,6 +89,188 @@ public sealed class WriteScopeRunTests
         string feedback = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-impl", 1), "feedback.md"));
         Assert.Contains("`docs/notes.md`", feedback);
         Assert.Equal(["src/Impl.cs"], BulletPathsAfter(feedback, AllowedPathsLead));
+    }
+
+    // ── #707: a scope gap the PLAN caused is halted, not retried to exhaustion ─────────────────
+
+    [Fact]
+    public async Task RepeatedOutOfScopePath_HaltsNeedsHumanOnTheSecondAttempt_NamingThePathAndTheFix_Issue707()
+    {
+        // Plan 40's task 20 wrote OverwatchDecision.cs out of scope on attempt 1 AND attempt 2 — unambiguous
+        // after the second — and the run retried twice more. The stub here is seeded by a plain commit with no
+        // Guardrails-Task: trailer, so the first-occurrence upstream rule cannot fire: this pins the REPEAT rule.
+        using var repo = new TempGitRepo();
+        repo.Commit("src/Stub.cs", "stub");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent((_, call, invocation) =>
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", $"implemented on call {call}"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.StartsWith("needs human: ", task.Summary);
+        Assert.Contains("src/Stub.cs", task.Summary);
+
+        var entry = JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-implement"];
+        Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+        Assert.Equal(
+            [AttemptOutcome.WriteScopeViolation, AttemptOutcome.WriteScopeViolation],
+            entry.Attempts.Select(a => a.Outcome));
+
+        string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-implement", 2), "feedback.md"));
+        Assert.Contains("\"src/Stub.cs\"", halt);
+        Assert.Contains(Path.Combine(planDir, "tasks", "01-implement", "task.json").Replace('\\', '/'), halt);
+        // Attempt 1 was an ordinary retry: one write outside scope is not yet evidence of a plan gap.
+        string retry = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-implement", 1), "feedback.md"));
+        Assert.StartsWith("# Attempt 1 of task '01-implement' failed", retry);
+    }
+
+    [Fact]
+    public async Task DifferentOutOfScopePathOnEachAttempt_KeepsRetrying_Issue707()
+    {
+        // CONTROL: the halt keys on an IDENTICAL path. Two violations on two different paths are ordinary retries,
+        // and the third attempt converges.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 2, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent((_, call, invocation) =>
+            WriteFile(invocation.WorkingDirectory, call switch { 1 => "docs/a.md", 2 => "docs/b.md", _ => "src/Impl.cs" }, "work"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        Assert.Equal(3, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-implement"].Attempts.Count);
+    }
+
+    [Fact]
+    public async Task UpstreamAuthoredPath_WithNoInScopeChange_HaltsOnTheFirstAttempt_NamingTheUpstreamTask_Issue707()
+    {
+        // The plan-40 shape: the authoring task put the stub in a file the implementing task may not write. The
+        // evidence is deterministic after ONE attempt — the path was last committed by a task this one depends
+        // on, and this attempt changed nothing inside its own scope.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"], DependsOn: ["01-author"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", taskId == "01-author" ? "stub" : "implemented"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, report.Tasks.Single(t => t.TaskId == "01-author").Outcome);
+        TaskResult implement = report.Tasks.Single(t => t.TaskId == "02-implement");
+        Assert.Equal(TaskOutcome.NeedsHuman, implement.Outcome);
+        Assert.Contains("01-author", implement.Summary);
+        Assert.Contains("src/Stub.cs", implement.Summary);
+
+        AttemptRecord only = Assert.Single(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts);
+        Assert.Equal(AttemptOutcome.WriteScopeViolation, only.Outcome);
+        string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 1), "feedback.md"));
+        Assert.Contains("`01-author`", halt);
+        Assert.Contains("\"src/Stub.cs\"", halt);
+    }
+
+    [Fact]
+    public async Task UpstreamAuthoredPath_WithInScopeWorkToo_IsRetriedFirst_ThenHaltsOnTheRepeat_Issue707()
+    {
+        // CONTROL for the first-occurrence rule's in-scope condition. An implementing task that did real in-scope
+        // work AND edited an upstream-authored file looks exactly like one editing a protected upstream TEST
+        // file — a mistake a retry corrects. So it is retried; only the repeat halts.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"], DependsOn: ["01-author"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+        {
+            if (taskId == "01-author")
+            {
+                WriteFile(invocation.WorkingDirectory, "src/Stub.cs", "stub");
+                return;
+            }
+
+            WriteFile(invocation.WorkingDirectory, "src/Impl.cs", "in-scope work");
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", "and an edit to the upstream file");
+        });
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+    }
+
+    [Fact]
+    public async Task PathLastCommittedByATaskThisOneDoesNotDependOn_IsNotAPlanGap_Issue707()
+    {
+        // CONTROL for the ancestry condition, varying ONLY ancestry. The stub is committed under a real trailer
+        // naming 01-other with 01-other's own loaded definition hash — everything the rule trusts, except that
+        // 01-other is not a dependency of 02. (Two independent tasks cannot set this up through a run: an
+        // independent task forks from the run's base, not from a sibling's commit.) Retried first, halted on the repeat.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-other", ["src/Other.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"]));
+        repo.Commit("src/Stub.cs", "stub",
+            $"stub\n\nGuardrails-Task: 01-other\nGuardrails-Run: earlier\nGuardrails-Task-Hash: {LoadedDefinitionHash(planDir, "01-other")}");
+        var agent = ImplementerEditingTheStub(out Func<bool> sawTheStub);
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.True(sawTheStub(), "not vacuous: 02-implement must MODIFY a committed src/Stub.cs, not add one");
+        Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+    }
+
+    /// <summary>
+    /// An agent for which every task but <c>02-implement</c> writes nothing, and <c>02-implement</c> edits ONLY
+    /// <c>src/Stub.cs</c>. <paramref name="sawTheStub"/> reports whether that file already existed when it did —
+    /// the proof a control is exercising a MODIFIED upstream file rather than an added one.
+    /// </summary>
+    private static ScriptedAgent ImplementerEditingTheStub(out Func<bool> sawTheStub)
+    {
+        bool saw = false;
+        sawTheStub = () => saw;
+        return new ScriptedAgent((taskId, _, invocation) =>
+        {
+            if (taskId != "02-implement")
+            {
+                return;
+            }
+
+            saw |= File.Exists(Path.Combine(invocation.WorkingDirectory, "src", "Stub.cs"));
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", "implemented");
+        });
+    }
+
+    /// <summary>The definition hash a run of <paramref name="planDir"/> loads for <paramref name="taskId"/>.</summary>
+    private static string LoadedDefinitionHash(string planDir, string taskId)
+    {
+        string? hash = new PlanLoader().Load(planDir).Plan!.Tasks.Single(t => t.Id == taskId).DefinitionHashAtLoad;
+        Assert.False(string.IsNullOrEmpty(hash), $"the loader must pin a definition hash for {taskId}");
+        return hash!;
+    }
+
+    [Fact]
+    public void LastCommitTaskTrailer_ReadsTheLatestCommitTouchingThePath_AndOnlyARealTrailerBlock_Issue707()
+    {
+        // The fact the first-occurrence rule reads: WHICH task last committed a path, from the commit's own
+        // trailer block — the same attribution discipline the resume pre-pass uses.
+        using var repo = new TempGitRepo();
+        repo.Commit("src/Stub.cs", "stub",
+            "author the stub\n\nGuardrails-Task: 01-author\nGuardrails-Run: run-1\nGuardrails-Task-Hash: sha256:abc");
+        repo.Commit("src/Other.cs", "other", "unrelated\n\nGuardrails-Task: 03-other\nGuardrails-Run: run-1");
+        string head = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
+
+        Assert.Equal(("01-author", "sha256:abc"),
+            GitWorktreeProvider.LastCommitTaskTrailer(repo.RepoPath, head, "src/Stub.cs"));
+
+        // Controls: a hand fix that merely MENTIONS a trailer in prose is not attribution, and a path no commit
+        // ever touched has no author at all.
+        repo.Commit("src/Stub.cs", "hand fix", "hand fix; see Guardrails-Task: 01-author for context");
+        head = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
+        Assert.Equal(((string?)null, (string?)null),
+            GitWorktreeProvider.LastCommitTaskTrailer(repo.RepoPath, head, "src/Stub.cs"));
+        Assert.Equal(((string?)null, (string?)null),
+            GitWorktreeProvider.LastCommitTaskTrailer(repo.RepoPath, head, "src/Never.cs"));
     }
 
     // ── fixture: plan, agent, runs ─────────────────────────────────────────────────────────────
@@ -287,6 +470,14 @@ public sealed class WriteScopeRunTests
             File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# write-scope run test");
             Git(RepoPath, "add", ".");
             Git(RepoPath, "commit", "-m", "Initial commit");
+        }
+
+        /// <summary>Commit <paramref name="content"/> at <paramref name="relativePath"/> on the checked-out branch.</summary>
+        public void Commit(string relativePath, string content, string message = "seed")
+        {
+            WriteFile(RepoPath, relativePath, content);
+            Git(RepoPath, "add", "--", relativePath);
+            Git(RepoPath, "commit", "-m", message);
         }
 
         public static string Git(string workingDir, params string[] args)

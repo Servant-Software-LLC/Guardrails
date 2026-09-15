@@ -455,6 +455,14 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   already accurate, and no stash is needed).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
+- **Write-scope gap halt (#707)**: a PROMPT action's write-scope violation settles `needs-human` on that
+  attempt (outcome `write-scope-violation`) instead of retrying when (1) an offending path was ALSO written out
+  of scope on an earlier attempt, or (2) on any attempt, EVERY offending path was last committed by a transitive
+  `dependsOn` ancestor (its `Guardrails-Task:` trailer plus a matching `Guardrails-Task-Hash:`) AND the attempt
+  changed nothing inside its own scope. The in-scope condition keeps an implement task that merely touched a
+  protected upstream test file on the ordinary retry path. The halt names each path, the `task.json`, and the
+  one-line `writeScope` entry to add. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
+  `doomed` verdict stays advisory (SSOT section 3.4).
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
   hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
