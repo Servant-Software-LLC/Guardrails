@@ -909,9 +909,9 @@ mints a new `runId` and forks a fresh segment at `planHead`; `reuse`/`fork` are 
 policies and never reach across runs, so nothing ever hands the old tree back). The guard is therefore
 **`IsRealGitSegment`, not `WorktreeWillReset`** — a *final* escalating attempt still preserves, which is
 exactly the attempt whose work a human is about to build on. The staged set is **filtered to the task's
-declared `writeScope`** — `PreserveAttemptToRef` gained a `restrictToScope` parameter for exactly this
-divergence (`null` on the retry path, which keeps its snapshot byte-identical to pre-#554; the task's
-`writeScope` array on the escalation path), enforced by `RestrictStagedSetToScope`, which lists the
+enforced scope** (its declared `writeScope` plus its `stagingOutputs` destinations) — `PreserveAttemptToRef`
+gained a `restrictToScope` parameter for exactly this divergence (`null` on the retry path, which keeps its
+snapshot byte-identical to pre-#554; the enforced scope on the escalation path), enforced by `RestrictStagedSetToScope`, which lists the
 already-staged set and `git reset`s every path outside scope back out of the throwaway index before
 `write-tree`: this short-circuit fires well upstream of the write-scope check and `ScopedRevert`, so
 `PreserveAttemptToRef`'s otherwise-unfiltered `git add -A` would write an escalating agent's out-of-scope
@@ -921,9 +921,12 @@ suppression is structurally inapplicable here** — it keys off the failed-guard
 residual as the retry path (a protected file *inside* the task's own `writeScope` is still stashed, caught
 if re-gamed by the deterministic per-attempt re-check). **The feedback wording on this path must not claim
 a rollback** — nothing was rolled back; the honest framing states the tree is orphaned and the ref/patch
-are the only durable copies. The **write-scope-gap halt** (§3.4, issue #707) reuses this preservation unchanged:
-it too returns before the F2 reset, so its in-scope work is preserved the same way (scope-filtered, and no ref
-when nothing in scope changed) and offered in its `feedback.md` under the neutral prior-attempt framing.
+are the only durable copies. The **write-scope-gap halt** (§3.4, issue #707) reuses this preservation: it too
+returns before the F2 reset, so its in-scope work is preserved the same way and offered in its `feedback.md` under
+the neutral prior-attempt framing — but only when the write-scope check saw an in-scope change, because with none
+the snapshot could hold only index churn (§3.4). Both escalation-path callers filter to the task's ENFORCED scope
+(the declared `writeScope` plus its `stagingOutputs` destinations), so a staged deliverable already moved into its
+`.claude/` destination is not dropped from the only durable copy.
 
 **Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
 record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
@@ -1201,8 +1204,10 @@ true outcome, `write-scope-violation`, and task status `needs-human`.
 1. **Repeat.** An offending path was ALSO written out of scope on an earlier attempt of this task. It is tracked
    per task within one execution, keyed on the path alone, with the git-error sentinel excluded: the write-scope
    analogue of the §9.3 #86 repeat rule, and a separate record from it.
-2. **Upstream author, first occurrence.** EVERY offending path is a modify or a delete whose most recent commit
-   reachable from `taskBase` carries a `Guardrails-Task:` trailer naming a transitive `dependsOn` ancestor and a
+2. **Upstream author, first occurrence.** EVERY offending path is a modify or a delete, is NOT a test file (the
+   conservative `TestPathConvention.LooksLikeTestPath` reading GR2075, the grades-its-own-test lint, also uses),
+   and has a most recent commit
+   reachable from `taskBase` carrying a `Guardrails-Task:` trailer naming a transitive `dependsOn` ancestor and a
    `Guardrails-Task-Hash:` equal to that ancestor's definition hash as this run loaded it (read from the commit's
    last trailer block, the resume pre-pass's attribution rule), AND the attempt changed NOTHING inside its own
    scope (`WriteScopeCheckResult.InScopePaths` is empty). The in-scope condition is load-bearing. An
@@ -1211,13 +1216,20 @@ true outcome, `write-scope-violation`, and task status `needs-human`.
    real in-scope work and also touched an upstream file is retried, and rule 1 bounds that at one extra attempt.
    The hash condition keeps a commit made under some other definition of that id from counting. It is defense
    in depth: such a trailer reachable from the run's base is normally settled first by the plan-branch
-   reconcile (§7.2), before any attempt runs.
+   reconcile (§7.2), before any attempt runs. A **test** path never takes this rule: in a correctly split TDD
+   plan the stub sits inside the implementing task's own scope, so the only upstream-authored file this rule
+   could still fire on is a test — where "widen the scope" is the wrong advice. It is retried, and rule 1
+   halts it on the repeat.
 
 The halt's `feedback.md` keeps the `## Write-scope violation` marker. It names each path with its evidence (the
 upstream author, or the earlier attempt), lists the allowed scope, and gives the absolute `task.json` path and the
 exact JSON entry to add to `writeScope`. Because no reset follows a halt, it also appends the attempt's in-scope
-salvage (§3.2). The `TaskResult.Summary` carries the stable `needs human: ` prefix, the path, and the same one-line
-fix. **Script** actions are excluded: they cannot self-correct, and their reproduction is the #264 short-circuit's
+salvage (§3.2), taken only when the check saw an in-scope change (with none, the revert took everything the agent
+wrote and a snapshot could hold only index churn) and filtered to the enforced scope, so a staged deliverable is
+kept. When a repeated path is a **test file**, the halt LEADS with that — "the agent keeps editing `<path>`, a test
+file" normally authored upstream and protected by the plan's TDD split — and offers widening the scope only as the
+less likely alternative, after it in `feedback.md` and never in the summary. The `TaskResult.Summary` carries the
+stable `needs human: ` prefix, the path, and (except for that test variant) the same one-line fix. **Script** actions are excluded: they cannot self-correct, and their reproduction is the #264 short-circuit's
 domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
 diagnose this halt.
 

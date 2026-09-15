@@ -986,7 +986,7 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.NeedsHuman(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, question,
                 action.NeedsHumanOptions, action.NeedsHumanKind, provenance: provenance,
-                salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber),
+                salvage: TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []),
                 segments: AttemptJournaler.SegmentsFor(action));
         }
 
@@ -1356,8 +1356,13 @@ public sealed class TaskExecutor : ITaskExecutor
                     && WriteScopeGapOf(task, worktree, scopeCheck, repeatedOutOfScope) is { } scopeGap)
                 {
                     // A halt resets nothing: the loop returns before the F2 reset, so the tree is orphaned exactly
-                    // as on an agent's own needsHuman, and its in-scope work is preserved the same way (#554).
-                    SalvageRef? gapSalvage = TryStashEscalatingAttempt(task, worktree, attemptNumber);
+                    // as on an agent's own needsHuman, and its in-scope work is preserved the same way (#554) —
+                    // behind the SAME in-scope gate as the retry stash below (#705). With no in-scope change the
+                    // revert took everything the agent wrote, and a snapshot could hold only index churn that the
+                    // resumed attempt would then be told was work "left behind".
+                    SalvageRef? gapSalvage = scopeCheck.InScopePaths.Count > 0
+                        ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedScope)
+                        : null;
                     return _journaler.FailedAttempt(
                         task, attemptNumber, startedAt, relativeLogDir, logDir,
                         RetryPolicy.ForWriteScopeGapHalt(
@@ -1689,7 +1694,10 @@ public sealed class TaskExecutor : ITaskExecutor
     ///     wrong: no reset follows, and on a FINAL attempt <c>WorktreeWillReset</c> is false — yet a final
     ///     escalating attempt is precisely the one whose work a human is about to build on, because there
     ///     is no next attempt to hand it to, only a person. So it preserves regardless of <c>isFinal</c>.</item>
-    ///   <item><b>The staged set is filtered to <c>writeScope</c>.</b> The retry path reaches its stash
+    ///   <item><b>The staged set is filtered to the ENFORCED scope</b> — <c>writeScope</c> plus the
+    ///     <c>stagingOutputs</c> destinations, <paramref name="enforcedScope"/>. The declared array alone dropped a
+    ///     staging task's in-scope deliverable from the #707 halt's salvage, which runs AFTER the staging move has
+    ///     put it in its <c>.claude/</c> destination. The retry path reaches its stash
     ///     only after the write-scope check and <c>ScopedRevert</c>, so its tree is already scope-clean;
     ///     this site is ~250 lines upstream of both. And the retry path's protected-artifact suppression
     ///     cannot stand in: it keys off the FAILED guardrail list, which is empty here because no
@@ -1704,9 +1712,10 @@ public sealed class TaskExecutor : ITaskExecutor
     ///     produces an empty filtered patch and is correctly offered nothing.</item>
     /// </list>
     /// </summary>
-    private SalvageRef? TryStashEscalatingAttempt(TaskNode task, WorktreeHandle worktree, int attemptNumber) =>
+    private SalvageRef? TryStashEscalatingAttempt(
+        TaskNode task, WorktreeHandle worktree, int attemptNumber, IReadOnlyList<string> enforcedScope) =>
         IsRealGitSegment(worktree)
-            ? TryStash(task, worktree, attemptNumber, task.WriteScope ?? [], dropRefWhenNothingToSalvage: true)
+            ? TryStash(task, worktree, attemptNumber, enforcedScope, dropRefWhenNothingToSalvage: true)
             : null;
 
     /// <summary>
@@ -1904,7 +1913,8 @@ public sealed class TaskExecutor : ITaskExecutor
     /// definition hash as this run loaded it. The hash keeps a commit made under some other definition of that id
     /// from counting; it is defense in depth, because such a trailer reachable from the run's base is normally
     /// settled first by the plan-branch reconcile (SSOT §7.2), before any attempt runs. An added path (no history
-    /// at the base) or the git-error sentinel ends the search: neither can have been authored upstream.
+    /// at the base) or the git-error sentinel ends the search, since neither can have been authored upstream, and so
+    /// does a test path (<see cref="TestPathConvention"/>), for which a scope-gap reading is the wrong advice.
     /// </summary>
     private IReadOnlyDictionary<string, string> UpstreamAuthorsOfEveryOffense(
         TaskNode task, WorktreeHandle worktree, IReadOnlyList<WriteScopeOffense> offenses)
@@ -1918,7 +1928,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
         foreach (WriteScopeOffense offense in offenses)
         {
-            if (offense.Status is not ('M' or 'D'))
+            // A test path never takes this rule: in a correctly split TDD plan the implementing task's own scope
+            // holds the stub, so an upstream-authored file it hits out of scope is a protected TEST, and "widen the
+            // scope" is the wrong advice for it. The repeat rule still halts it, and says it is a test.
+            if (offense.Status is not ('M' or 'D') || TestPathConvention.LooksLikeTestPath(offense.Path))
             {
                 return new Dictionary<string, string>();
             }
