@@ -115,6 +115,13 @@ internal sealed class DependencyContextBuilder
     internal const string SalvagePatchFileName = "prior-attempt.patch";
 
     /// <summary>
+    /// The out-of-scope copy a write-scope violation keeps in its own log dir (issue #705), written by
+    /// <see cref="AttemptArtifacts.WriteOutOfScopePatch"/> and read back by <see cref="BuildPriorAttempts"/> — one
+    /// spelling for both, so the writer and the reader cannot drift.
+    /// </summary>
+    internal const string OutOfScopePatchFileName = "out-of-scope.patch";
+
+    /// <summary>
     /// The git ref an attempt's preserved working tree lives at, DERIVED from the task id and the attempt
     /// number exactly as <c>TaskExecutor.TryStash</c> mints it (issue #554, plan 31 §3.3). One owner of the
     /// format: the composed-prompt carry (<see cref="BuildPriorAttempts"/>) and the escalation gate context
@@ -156,6 +163,11 @@ internal sealed class DependencyContextBuilder
             // the next agent at something that may not exist.
             string? salvagePatch = ExistingOrNull(Path.Combine(absLogDir, SalvagePatchFileName));
 
+            // #707 review W4: the out-of-scope copy a write-scope violation kept (#705), for the attempt that runs
+            // after a human widens the scope. Whether it is offered is the composer's call, against the scope it is
+            // composing for — this only reports what the copy touches.
+            string? outOfScopePatch = ExistingOrNull(Path.Combine(absLogDir, OutOfScopePatchFileName));
+
             refs.Add(new PriorAttemptRef
             {
                 Attempt = record.Attempt,
@@ -164,11 +176,57 @@ internal sealed class DependencyContextBuilder
                 TranscriptPath = ExistingOrNull(Path.Combine(absLogDir, "transcript.md")),
                 FeedbackPath = ExistingOrNull(Path.Combine(absLogDir, "feedback.md")),
                 SalvagePatchPath = salvagePatch,
-                SalvageRefName = salvagePatch is null ? null : SalvageRefNameFor(taskId, record.Attempt)
+                SalvageRefName = salvagePatch is null ? null : SalvageRefNameFor(taskId, record.Attempt),
+                OutOfScopePatchPath = outOfScopePatch,
+                OutOfScopePaths = outOfScopePatch is null ? [] : PatchedPaths(outOfScopePatch)
             });
         }
 
         return refs;
+    }
+
+    /// <summary>
+    /// The paths a kept <c>out-of-scope.patch</c> touches, read from its <c>diff --git a/&lt;path&gt; b/&lt;path&gt;</c>
+    /// file headers (#707 review W4). The capture passes <c>--no-renames</c>, so both halves of a header name the same
+    /// path, and the path is recovered by splitting the header in half — which stays unambiguous for a path with
+    /// spaces. A header git QUOTES (a path with a quote or a control character) does not have that shape and is
+    /// skipped: a missed path is silence here, never a wrong offer. Empty, never an exception, when the file cannot be
+    /// read.
+    /// </summary>
+    private static IReadOnlyList<string> PatchedPaths(string patchPath)
+    {
+        const string headerPrefix = "diff --git a/";
+        const string secondHalfPrefix = " b/";
+        try
+        {
+            var paths = new List<string>();
+            foreach (string line in File.ReadLines(patchPath))
+            {
+                if (!line.StartsWith(headerPrefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                string halves = line[headerPrefix.Length..];
+                int twoPaths = halves.Length - secondHalfPrefix.Length;
+                if (twoPaths <= 0 || twoPaths % 2 != 0)
+                {
+                    continue;
+                }
+
+                string path = halves[..(twoPaths / 2)];
+                if (string.Equals(halves[(twoPaths / 2)..], secondHalfPrefix + path, StringComparison.Ordinal))
+                {
+                    paths.Add(path);
+                }
+            }
+
+            return paths;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     /// <summary>Resolve a journal's plan-relative log dir (forward-slash) to an absolute path.</summary>

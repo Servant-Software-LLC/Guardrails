@@ -73,4 +73,17 @@ public sealed record PriorAttemptRef
     /// <see cref="Execution.DependencyContextBuilder.SalvageRefNameFor"/>, which owns the format.
     /// </summary>
     public string? SalvageRefName { get; init; }
+
+    /// <summary>
+    /// Absolute path to that attempt's <c>out-of-scope.patch</c> — the out-of-scope changes a write-scope violation
+    /// kept before the scoped revert (#705) — or null when it kept none. Found by probing the log dir, like
+    /// <see cref="SalvagePatchPath"/>, and never journaled.
+    /// </summary>
+    public string? OutOfScopePatchPath { get; init; }
+
+    /// <summary>
+    /// The paths <see cref="OutOfScopePatchPath"/> touches, read from its file headers (#707 review W4). The composer
+    /// offers the ones the CURRENT enforced scope covers as work to recover. Empty when there is no patch.
+    /// </summary>
+    public IReadOnlyList<string> OutOfScopePaths { get; init; } = [];
 }

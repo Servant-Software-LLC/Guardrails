@@ -100,12 +100,13 @@ internal static class AttemptArtifacts
     /// <summary>
     /// Write <c>out-of-scope.patch</c> (issue #705): a write-scope violation's offending changes, captured before the
     /// scoped revert destroyed them. It sits beside <c>prior-attempt.patch</c> in the attempt's own log dir, never in
-    /// the segment worktree, and it is never offered to a retry as salvage: it is for the human deciding whether the
-    /// task's scope should grow. Returns the path written, or null when <paramref name="patch"/> is empty — so an
-    /// empty file never stands in for kept work — or when the write fails.
+    /// the segment worktree. It is never offered to a retry under the scope that rejected it: it is for the human
+    /// deciding whether the task's scope should grow. Only once the scope covers a path in it does a later attempt's
+    /// composed prompt offer that path back as work to recover (#707 review W4). Returns the path written, or null when
+    /// <paramref name="patch"/> is empty — so an empty file never stands in for kept work — or when the write fails.
     /// </summary>
     public static string? WriteOutOfScopePatch(string logDir, string patch) =>
-        WritePatch(logDir, "out-of-scope.patch", patch);
+        WritePatch(logDir, DependencyContextBuilder.OutOfScopePatchFileName, patch);
 
     /// <summary>
     /// The one best-effort patch writer behind <see cref="WriteSalvagePatch"/> and <see cref="WriteOutOfScopePatch"/>:

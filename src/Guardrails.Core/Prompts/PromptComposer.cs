@@ -20,6 +20,9 @@ namespace Guardrails.Core.Prompts;
 ///   check gates on, never from author prose (issue #706).</item>
 /// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
 ///   plus pointers to ALL prior attempts' transcript/feedback (issue #26 Gaps 2 &amp; 3).</item>
+/// <item>(actions, worktree mode, only when the enforced scope now covers a path an earlier attempt's
+///   <c>out-of-scope.patch</c> touched) <c>## Out-of-scope work an earlier attempt left is now in scope</c> — that
+///   kept work, offered to recover (#707 review W4).</item>
 /// <item>(guardrails) <c>## Verdict contract</c> — verifier instructions + the verdict file path.</item>
 /// <item>(worktree mode only) <c>## Worktree safety</c> — a warning that <c>git stash</c> is NOT
 ///   safe here (issue #192: <c>refs/stash</c> is repo-wide, not worktree-scoped, so a concurrent
@@ -76,6 +79,7 @@ public static class PromptComposer
         AppendStagingOutputs(text, stagingDir, stagingOutputs);
         AppendWriteScope(text, writeScope);
         AppendPreviousAttempt(text, feedbackPath, priorAttempts);
+        AppendRecoverableOutOfScopeWork(text, priorAttempts, writeScope);
         AppendInjectedHumanAnswer(text, injectedHumanAnswer);
         AppendWorktreeSafety(text, isWorktreeMode);
         return text.ToString();
@@ -415,6 +419,63 @@ public static class PromptComposer
             text,
             new Execution.SalvageRef(refName, DiffStat: "", preserved.Attempt, preserved.SalvagePatchPath),
             Execution.SalvageFraming.PriorAttempt);
+    }
+
+    /// <summary>
+    /// Out-of-scope work an earlier attempt left that the scope NOW covers (#707 review W4 — #705's second audience).
+    /// A write-scope violation keeps its out-of-scope changes as <c>out-of-scope.patch</c> and tells the retry they
+    /// are "not for you", which is true while the scope excludes them. Once a human widens the scope to cover them,
+    /// the attempt that runs next is pointed at that kept work to recover instead of re-authoring it, and told this
+    /// supersedes the earlier note. Emitted ONLY when <paramref name="writeScope"/> — the enforced scope, null in
+    /// serial mode — covers at least one kept path; otherwise the copy stays out of the agent's instructions entirely,
+    /// so the retry's own "not for you" is never contradicted. Offers the most recent such copy, and only the paths
+    /// in it the scope now covers.
+    /// </summary>
+    private static void AppendRecoverableOutOfScopeWork(
+        StringBuilder text, IReadOnlyList<PriorAttemptRef>? priorAttempts, IReadOnlyList<string>? writeScope)
+    {
+        if (writeScope is null || priorAttempts is null)
+        {
+            return;
+        }
+
+        // Most recent first (DependencyContextBuilder.BuildPriorAttempts orders them descending).
+        foreach (PriorAttemptRef attempt in priorAttempts)
+        {
+            if (attempt.OutOfScopePatchPath is not { } keptCopy)
+            {
+                continue;
+            }
+
+            List<string> nowInScope = attempt.OutOfScopePaths
+                .Where(path => Execution.WriteScope.IsInScope(path, writeScope))
+                .ToList();
+            if (nowInScope.Count == 0)
+            {
+                continue;
+            }
+
+            text.Append("\n## Out-of-scope work an earlier attempt left is now in scope\n\n");
+            text.Append($"Attempt {attempt.Attempt} changed the paths below while they were OUTSIDE this task's writeScope, and the\n");
+            text.Append("harness kept that work before reverting it. The scope now covers them. The kept copy is a plain unified\n");
+            text.Append("diff at:\n\n");
+            text.Append('`').Append(keptCopy.Replace('\\', '/')).Append("`\n\n");
+            foreach (string path in nowInScope)
+            {
+                text.Append("- `").Append(path).Append("`\n");
+            }
+
+            text.Append('\n');
+            text.Append("Recover each one from its hunk in that file with your file-editing tool instead of re-authoring it. This\n");
+            text.Append("supersedes the \"not for you\" note in that attempt's feedback, which was true under the scope it ran with.\n");
+            if (nowInScope.Count < attempt.OutOfScopePaths.Count)
+            {
+                text.Append("The same copy also changes paths that are still outside this task's writeScope. Leave those alone:\n");
+                text.Append("writing them fails the write-scope check again.\n");
+            }
+
+            return;
+        }
     }
 
     /// <summary>
