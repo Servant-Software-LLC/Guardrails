@@ -32,7 +32,7 @@ public sealed class TerminalGateVisibilityTests : IDisposable
     {
         Directory.CreateDirectory(LogsRoot);
         return new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, LogsRoot, RunId, [Task("01-alpha"), Task("02-beta")], liveUrlForTask: null);
+            IRunObserver.Null, LogsRoot, RunId, [Task("01-alpha"), Task("02-beta")], liveUrlForTask: null, liveRunUrl: null);
     }
 
     private static TaskNode Task(string id) => new()

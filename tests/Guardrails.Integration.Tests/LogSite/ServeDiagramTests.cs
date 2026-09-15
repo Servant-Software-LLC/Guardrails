@@ -143,7 +143,8 @@ public sealed class ServeDiagramTests
     {
         LogServer? server = LogServer.TryStart(planDir, TempPlan.RunId, tasks, port: 0, TextWriter.Null);
         Assert.NotNull(server); // a normal host can bind a loopback ephemeral port
-        return server!;
+        server!.StartServing(static () => new Dictionary<string, string>()); // it answers nothing until it has a status source (#713)
+        return server;
     }
 
     private static async Task<string> GetStringAsync(string url) =>

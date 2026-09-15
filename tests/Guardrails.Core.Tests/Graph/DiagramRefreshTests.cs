@@ -29,7 +29,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void DuringRunPage_HasNoMetaRefresh_SoPanZoomAndScrollSurvive()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         // The property is "no whole-document reload at all" — not merely a slower interval — so
         // this checks for the http-equiv mechanism itself, not any particular content="..." value.
@@ -39,8 +39,8 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void LivePoll_IsPresentDuringTheRun_AndAbsentOnTheFinalSettledPage()
     {
-        string duringRunHtml = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
-        string settledHtml = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: false);
+        string duringRunHtml = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
+        string settledHtml = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: false, liveDiagramUrl: null);
 
         // Both halves in one test: the contrast IS the property. Asserting only the absence half
         // would pass today against a page that has no poll mechanism at all.
@@ -51,7 +51,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void LivePollInterval_IsAtLeastFiveSeconds_ForADagThatChangesAtTaskBoundaries()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Match match = Regex.Match(html, @"GR_LIVE_POLL_MS\s*=\s*(\d+)");
         Assert.True(
@@ -65,7 +65,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void FileViewFallback_IsPresentAndHidden_SoAnUnpollablePageSaysItIsNotLive()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         // Anchor on the literal HTML attribute syntax (not a bare substring search) so this can
         // never accidentally match a "#gr-live-offline { ... }" CSS selector instead of the element.
@@ -110,7 +110,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void AFailedStatusPoll_CountsButDoesNotStopTheTimer()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         // Scope the search to the STATUS POLL. The page carries other catch blocks (the pan-zoom code has
         // one), and an unscoped IndexOf finds the first of them — which is how a mis-aimed anchor reports
@@ -136,7 +136,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void TheStatusPollFailureThreshold_IsMoreThanOne()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Match match = Regex.Match(html, @"const GR_LIVE_MAX_FAILS = (\d+);");
         Assert.True(match.Success, "expected a named consecutive-failure threshold");
@@ -153,7 +153,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void AFileUrl_ShowsTheOfflineNoticeUpFront_AndNeverStartsTheTimer()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains(
             "if (window.location.protocol === 'file:') { showLiveOfflineNotice(); return; }",
@@ -168,7 +168,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void ThePausedNotice_IsReversible_AndThePagePausesWhileHidden()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains("id=\"gr-live-paused\"", html, StringComparison.Ordinal);
         Assert.Contains("setLivePausedNotice(false);", html, StringComparison.Ordinal);
@@ -187,7 +187,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void FileViewFallback_NamesTheCommandThatProducesALiveCopy()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         int idAttrIndex = html.IndexOf("id=\"gr-live-offline\"", StringComparison.Ordinal);
         Assert.True(idAttrIndex >= 0, "expected the offline notice on the during-run page");
@@ -207,7 +207,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void SourceSha256AndEmbeddedSource_AreUnchangedByTheLiveUpdateChanges()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         string firstLine = html.Split('\n')[0];
         Assert.Equal($"<!-- guardrails:graph v1 source-sha256={Hash} -->", firstLine);
@@ -246,7 +246,7 @@ public sealed class DiagramRefreshTests
     [Fact]
     public void FileViewFallback_WithoutALogServer_KeepsGuardrailsLogs_AndLinksNoServer()
     {
-        string notice = OfflineNotice(HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true));
+        string notice = OfflineNotice(HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null));
 
         Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
         Assert.DoesNotContain("http://", notice, StringComparison.Ordinal);

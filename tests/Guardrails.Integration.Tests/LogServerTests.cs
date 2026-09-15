@@ -69,16 +69,56 @@ public sealed class LogServerTests
         Assert.Contains("location.reload()", html, StringComparison.Ordinal);
     }
 
+    /// <summary>A status source that lists no task at all.</summary>
+    private static readonly Func<IReadOnlyDictionary<string, string>> NoStatuses =
+        static () => new Dictionary<string, string>(StringComparer.Ordinal);
+
     [Fact]
-    public async Task Root_WithNoStatusSource_SaysUnknown_NeverTheAttemptNumber()
+    public async Task TheServer_AnswersNoRequest_UntilItsStatusSourceIsWired()
     {
-        // #713: the Status column is the harness's word for each task, handed to this server by whoever holds
-        // it: the run's in-process site observer, or the journal `guardrails logs` reads. A server nobody wired
-        // must say it does not know. It must never fall back to "the highest attempt-N directory on disk",
-        // which is how a finished task, a running task and a failed one all came to read "attempt 1".
+        // #713 review, N1. The server used to accept requests the moment it bound, and its status source arrived
+        // later: under `guardrails run` the URL is printed before the observer chain that owns the statuses even
+        // exists. A request in that window rendered every row "unknown" (reproduced: 25 of 25 rows on a first
+        // fetch). The server now binds first, so its URLs are known, and accepts nothing until StartServing hands
+        // it the source. A request that arrives early waits for it instead of being answered wrongly.
+        using var temp = new TempPlan();
+        LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, [Task("01-alpha", "First task")], port: 0, TextWriter.Null);
+        Assert.NotNull(server);
+        await using (server)
+        {
+            Assert.False(server!.IsServing, "the server was accepting requests before it had a status source to answer them with");
+
+            Task<string> early = GetStringAsync(server.BaseUrl);
+            server.StartServing(() => new Dictionary<string, string>(StringComparer.Ordinal) { ["01-alpha"] = "succeeded" });
+
+            Assert.True(server.IsServing);
+            string html = await early.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            Assert.Contains("<td class=\"status\" data-status=\"succeeded\">succeeded</td>", html, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task StartServing_TakesExactlyOneStatusSource()
+    {
+        // #713 review, W1. Two sources are two readers that can disagree. A second call is a wiring bug, so it must
+        // fail where it happens rather than quietly replace the source the page was already showing.
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First task")]);
+
+        Assert.Throws<InvalidOperationException>(() => server.StartServing(NoStatuses));
+    }
+
+    [Fact]
+    public async Task Root_ATaskItsSourceDoesNotList_ReadsUnknown_NeverTheAttemptNumber()
+    {
+        // #713: the Status column is the harness's word for each task, handed to this server by whoever holds it:
+        // the run's in-process site observer, or the journal `guardrails logs` reads. For a task that source does
+        // not list, the page must say it does not know. It must never fall back to "the highest attempt-N
+        // directory on disk", which is how a finished task, a running task and a failed one all came to read
+        // "attempt 1".
         using var temp = new TempPlan();
         temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
-        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First task")]);
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First task")]); // wired with NoStatuses
 
         string html = await GetStringAsync(server.BaseUrl);
 
@@ -581,7 +621,8 @@ public sealed class LogServerTests
         // The server serves logs/<runId>/ (SSOT §8); the fixtures below write under the same runId.
         LogServer? server = LogServer.TryStart(planDir, TempPlan.RunId, tasks, port: 0, TextWriter.Null);
         Assert.NotNull(server); // a normal host can bind a loopback ephemeral port
-        return server!;
+        server!.StartServing(NoStatuses); // it answers nothing until it has a status source (#713)
+        return server;
     }
 
     private static async Task<string> GetStringAsync(string url) =>
@@ -713,7 +754,8 @@ public sealed class LogServerTests
     {
         LogServer? server = LogServer.TryStart(planDir, TempPlan.RunId, tasks, port: 0, TextWriter.Null, proceedUnreviewed);
         Assert.NotNull(server);
-        return server!;
+        server!.StartServing(NoStatuses); // it answers nothing until it has a status source (#713)
+        return server;
     }
 
     private static readonly string[] PickOptions = ["a pre-authored unreviewed wave", "the JIT BreakdownComplete path"];

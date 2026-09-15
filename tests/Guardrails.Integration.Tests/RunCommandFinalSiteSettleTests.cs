@@ -30,8 +30,8 @@ public sealed class RunCommandFinalSiteSettleTests
 
         // The during-run pages exist and are mid-flight: the diagram shows the Terminal Gate spinning
         // (its phase was about to run), the log index still refreshes itself.
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
-        OnTheFlyLogSiteObserver.WriteInitialIndex(temp.LogsRoot, TempPlan.RunId, plan.Tasks, liveUrlForTask: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
+        OnTheFlyLogSiteObserver.WriteInitialIndex(temp.LogsRoot, TempPlan.RunId, plan.Tasks, liveUrlForTask: null, liveRunUrl: null);
         observer.PlanGuardrailsStarting();
         Assert.Contains("GR_LOG_POLL_MS", temp.ReadIndex());
         Assert.Equal("running", Status(temp.ReadDiagram(), "plan_guardrails"));
@@ -57,7 +57,7 @@ public sealed class RunCommandFinalSiteSettleTests
         PlanDefinition plan = temp.PlanWithTerminalGate("01-a");
         temp.WriteCorruptJournal(); // WriteDurableFinalSite's JournalReader.Read will throw on this
 
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
         observer.PlanGuardrailsStarting();
 
         // A finally must never throw: the durable-log-site export fails on the corrupt journal, but the

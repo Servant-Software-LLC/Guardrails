@@ -26,7 +26,7 @@ public sealed class OnTheFlyDiagramTests
     {
         using var temp = new TempLogs();
         PlanDefinition plan = Plan(TaskWith("01-a", "01-build"), TaskWith("02-b", "01-check"));
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         // Initial: fresh run → every node pending (empty status).
         observer.WriteInitialDiagram();
@@ -58,7 +58,7 @@ public sealed class OnTheFlyDiagramTests
     {
         using var temp = new TempLogs();
         PlanDefinition plan = Plan(TaskWith("01-a", "01-build"));
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         observer.TaskStarting(plan.Tasks[0]);
         observer.GuardrailFinished(plan.Tasks[0], new GuardrailResult { Name = "01-build", Passed = false, Reason = "boom" });
@@ -77,7 +77,7 @@ public sealed class OnTheFlyDiagramTests
             planPreflights: [],
             planGuardrails: ["01-full-suite"],
             TaskWith("01-a", "01-check"));
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         observer.PlanGuardrailsStarting();
         Assert.Equal("running", Status(temp.ReadDiagram(), "plan_guardrails"));
@@ -96,7 +96,7 @@ public sealed class OnTheFlyDiagramTests
             planPreflights: [],
             planGuardrails: ["01-full-suite"],
             TaskWith("01-a", "01-check"));
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         // Simulate the issue #333 fault shape: a task is left running (its cancel propagated as an
         // OperationCanceledException, skipping its settle) AND the Terminal Gate bracket was flipped to
@@ -151,7 +151,7 @@ public sealed class OnTheFlyDiagramTests
             },
         };
 
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journal);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journal, liveDiagramUrl: null);
         observer.WriteInitialDiagram();
 
         string html = temp.ReadDiagram();
@@ -173,7 +173,7 @@ public sealed class OnTheFlyDiagramTests
             TaskWithChecks("01-a", preflightNames: ["01-ready"], guardrailNames: ["01-build"]));
 
         JournalDocument journal = SeedNeedsHumanJournal("01-a", AttemptOutcome.TaskPreflightFailed, "01-ready");
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journal);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journal, liveDiagramUrl: null);
         observer.WriteInitialDiagram();
 
         string html = temp.ReadDiagram();
@@ -194,7 +194,7 @@ public sealed class OnTheFlyDiagramTests
 
         // (1) The PREFLIGHT failed → only the `_pf_` leaf is painted (pre-#338 this painted the `_gr_` leaf).
         JournalDocument preflightJournal = SeedNeedsHumanJournal("01-a", AttemptOutcome.TaskPreflightFailed, "01-check");
-        var pfObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, preflightJournal);
+        var pfObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, preflightJournal, liveDiagramUrl: null);
         pfObserver.WriteInitialDiagram();
         string pfHtml = temp.ReadDiagram();
         Assert.Equal("failed", Status(pfHtml, "task_01_a_pf_0"));
@@ -202,7 +202,7 @@ public sealed class OnTheFlyDiagramTests
 
         // (2) A GUARDRAIL failed → only the `_gr_` leaf is painted (its own kind, unchanged).
         JournalDocument guardrailJournal = SeedNeedsHumanJournal("01-a", AttemptOutcome.GuardrailFailed, "01-check");
-        var grObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, guardrailJournal);
+        var grObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, guardrailJournal, liveDiagramUrl: null);
         grObserver.WriteInitialDiagram();
         string grHtml = temp.ReadDiagram();
         Assert.Equal("failed", Status(grHtml, "task_01_a_gr_0"));
@@ -216,7 +216,7 @@ public sealed class OnTheFlyDiagramTests
         TaskNode[] tasks = Enumerable.Range(1, 16).Select(i => TaskWith($"{i:00}-t", "01-check")).ToArray();
         PlanDefinition plan = Plan(tasks);
         DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
-        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
         observer.WriteInitialDiagram();
 
         // TCS gate: hold every worker until released, so all 16 hammer the one lock simultaneously —
@@ -259,7 +259,7 @@ public sealed class OnTheFlyDiagramTests
 
         PlanDefinition plan = Plan(TaskWith("01-a", "01-build"));
         var inner = new RecordingObserver();
-        var observer = new OnTheFlyDiagramObserver(inner, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(inner, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         // None of these must throw despite the un-writable diagram path; the events still forward.
         observer.WriteInitialDiagram();
@@ -279,7 +279,7 @@ public sealed class OnTheFlyDiagramTests
         using var temp = new TempLogs();
         PlanDefinition plan = Plan(TaskWith("01-a", "01-check"));
         var inner = new RecordingObserver();
-        var observer = new OnTheFlyDiagramObserver(inner, temp.LogsRoot, plan, journalForSeed: null);
+        var observer = new OnTheFlyDiagramObserver(inner, temp.LogsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
         TaskNode a = plan.Tasks[0];
         var wave = new WaveNode

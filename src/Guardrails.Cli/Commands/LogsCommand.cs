@@ -117,7 +117,7 @@ public static class LogsCommand
         // task, and the static index above was rendered from it. It is read again on every page load rather than
         // taken from `document`: this command attaches to runs still in flight (#552), the page reloads itself,
         // and a startup snapshot would go on calling a task that has since finished "running".
-        server.UseTaskStatusSource(() => JournalStatuses(journalPath));
+        server.StartServing(() => JournalStatuses(journalPath));
 
         await using (server.ConfigureAwait(false))
         {

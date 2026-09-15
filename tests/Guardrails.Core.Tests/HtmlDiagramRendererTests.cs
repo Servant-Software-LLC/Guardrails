@@ -549,7 +549,7 @@ public sealed class HtmlDiagramRendererTests
     [Fact]
     public void Render_5Arg_EmbedsNodeStatus_AsJsonBlob()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains("id=\"node-status\"", html, StringComparison.Ordinal);
         Assert.Contains("\"task_01_a\"", html, StringComparison.Ordinal);
@@ -560,7 +560,7 @@ public sealed class HtmlDiagramRendererTests
     [Fact]
     public void Render_DefinesBadgeFunction_AndInvokesItAfterMermaidRenderResolves()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains("function addStatusBadges(svgEl)", html, StringComparison.Ordinal);
 
@@ -575,7 +575,7 @@ public sealed class HtmlDiagramRendererTests
     {
         // Self-contained assets (file:// + strict-CSP safe): an animateTransform spinner + inline-SVG
         // paths, positioned from each node's getBBox() upper-right corner. No external image URL.
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains("animateTransform", html, StringComparison.Ordinal);
         Assert.Contains("getBBox()", html, StringComparison.Ordinal);
@@ -588,7 +588,7 @@ public sealed class HtmlDiagramRendererTests
     [Fact]
     public void Render_DuringRunTrue_ActiveSpinner()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         Assert.Contains("const GR_DURING_RUN = true;", html, StringComparison.Ordinal);
     }
@@ -596,7 +596,7 @@ public sealed class HtmlDiagramRendererTests
     [Fact]
     public void Render_DuringRunFalse_HasNoMetaRefresh_AndInactiveSpinner()
     {
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: false);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: false, liveDiagramUrl: null);
 
         Assert.DoesNotContain("http-equiv=\"refresh\"", html, StringComparison.Ordinal);
         Assert.Contains("const GR_DURING_RUN = false;", html, StringComparison.Ordinal);
@@ -619,7 +619,7 @@ public sealed class HtmlDiagramRendererTests
     public void Render_5Arg_NullStatus_Throws()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            HtmlDiagramRenderer.Render(Source, Hash, NoTargets, null!, duringRun: false));
+            HtmlDiagramRenderer.Render(Source, Hash, NoTargets, null!, duringRun: false, liveDiagramUrl: null));
     }
 
     [Fact]
@@ -627,9 +627,9 @@ public sealed class HtmlDiagramRendererTests
     {
         // Load-bearing: status is pure chrome. The provenance line (source-sha256) — and thus what
         // graph --check reads — must be byte-identical regardless of the status map (or duringRun).
-        string firstNoStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, NoTargets, duringRun: false)
+        string firstNoStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, NoTargets, duringRun: false, liveDiagramUrl: null)
             .Split('\n')[0];
-        string firstWithStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true)
+        string firstWithStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null)
             .Split('\n')[0];
 
         Assert.Equal($"<!-- guardrails:graph v1 source-sha256={Hash} -->", firstNoStatus);
@@ -642,7 +642,7 @@ public sealed class HtmlDiagramRendererTests
         // Like the legend/search chrome, the node-status blob + badge logic must live OUTSIDE the
         // raw-text <script id="graph-source"> element, so it can never reach what parses that source
         // (rendering) or hashes it (GraphSourceHash / source-sha256).
-        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null);
 
         int scriptStart = html.IndexOf("id=\"graph-source\"", StringComparison.Ordinal);
         int scriptEnd = html.IndexOf("</script>", scriptStart, StringComparison.Ordinal);
@@ -656,7 +656,7 @@ public sealed class HtmlDiagramRendererTests
     public void Render_5Arg_IsDeterministic()
     {
         Assert.Equal(
-            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true),
-            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true));
+            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null),
+            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: null));
     }
 }

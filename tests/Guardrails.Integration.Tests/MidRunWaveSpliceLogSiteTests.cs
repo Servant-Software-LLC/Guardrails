@@ -42,7 +42,7 @@ public sealed class MidRunWaveSpliceLogSiteTests
         WaveNode stub = temp.Wave("wave-02-consumers", 2, "consumers");
 
         var observer = new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, waves: [w1, stub]);
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, liveRunUrl: null, waves: [w1, stub]);
         observer.WriteInitialIndex();
 
         // Before: the stub's page is an empty table, and the plan index lists only wave-01's task.
@@ -79,7 +79,7 @@ public sealed class MidRunWaveSpliceLogSiteTests
         WaveNode stub = temp.Wave("wave-02-consumers", 2, "consumers");
 
         var observer = new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, waves: [w1, stub]);
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, liveRunUrl: null, waves: [w1, stub]);
         observer.WriteInitialIndex();
 
         TaskNode s1 = temp.WaveTask("wave-02-consumers", "01-author-repo-tests");
@@ -115,7 +115,7 @@ public sealed class MidRunWaveSpliceLogSiteTests
         WaveNode stub = temp.Wave("wave-02-consumers", 2, "consumers");
 
         var observer = new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, waves: [w1, stub]);
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, liveRunUrl: null, waves: [w1, stub]);
         observer.WriteInitialIndex();
 
         WaveBreakdownContext context = BreakdownContext("wave-02-consumers", temp.Dir);
@@ -155,7 +155,7 @@ public sealed class MidRunWaveSpliceLogSiteTests
         WaveNode stub = temp.Wave("wave-02-consumers", 2, "consumers");
 
         var observer = new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, waves: [w1, stub]);
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [w1t], liveUrlForTask: null, liveRunUrl: null, waves: [w1, stub]);
         observer.WriteInitialIndex();
 
         TaskNode spliced = temp.WaveTask("wave-02-consumers", "01-author-repo-tests");

@@ -7461,10 +7461,19 @@ dies when the harness stops, it is deliberately **not** part of the durable navi
   - **Status** is the task's status word in the static index's vocabulary (`succeeded`, `running`,
     `needs-human`, `pending`, …), rendered in the index's own `class="status" data-status="…"` cell so the
     shared colors apply (issue #713). The server never derives it. Under `guardrails run` it is the
-    in-process status map the during-run static index is rendered from, so those two pages cannot disagree
-    and the live page is never a second reader of the journal the harness is writing. Under `guardrails logs`
-    (§12.2), which runs no harness, it is the journal, re-read on every page load. A task the source does
-    not list, or a server with no source, reads `unknown`.
+    in-process status map the during-run static index is rendered from, so both pages render from one map
+    and the live page is never a second reader of the journal the harness is writing. That is not a promise
+    that the two can never differ for a moment. A finishing task's status is set, and the index file
+    rewritten, under separate acquisitions of the observer's lock, and a failed index write is retried only
+    by the next event, so the live page can briefly be ahead of the index file. It never shows a status the
+    map did not hold. Under `guardrails logs` (§12.2), which runs no harness, it is the journal, re-read on
+    every page load. A task the source does not list reads `unknown`.
+  - **Bind, then serve (#713 review).** `LogServer.TryStart` only binds, so a run can print its URLs before
+    anything exists to answer them. The server accepts no request until `StartServing` wires the Status
+    column's source, which it takes exactly once (a second source throws). Under `guardrails run` that
+    happens as the observer chain is built, just after the URL is printed. A request that arrives in between
+    waits in the listener's queue and is then answered with the source in place; it used to be answered at
+    once, with every row reading `unknown`.
   - **Latest attempt** is the newest `attempt-N/` directory on disk (`—` when there is none). It is detail
     beside the status and never stands in for it: an attempt directory exists from the moment the attempt
     starts, so it cannot say how the attempt ended. Before #713 it WAS the column, and a succeeded task, a
@@ -7499,7 +7508,7 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 | Route | Serves |
 |---|---|
-| `GET /` | the **live run view** (issues #573, #713): one row per task with its **Status** word (the in-process status map under `run`, the journal under `logs`; `unknown` with no source) and its **Latest attempt**, each task linked to `/tasks/{id}`, plus the canonical static index file `logs/<runId>/index.html` named by its absolute path (shown as text — a browser blocks `http://` → `file://`) |
+| `GET /` | the **live run view** (issues #573, #713): one row per task with its **Status** word (the in-process status map under `run`, the journal under `logs`; `unknown` for a task the source does not list; no request is answered before the source is wired) and its **Latest attempt**, each task linked to `/tasks/{id}`, plus the canonical static index file `logs/<runId>/index.html` named by its absolute path (shown as text — a browser blocks `http://` → `file://`) |
 | `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt), plus a **Source** section (issue #141 item 3). An active-task **deadend** — no "all tasks" link (issue #143); the user reaches it from the static index and returns via Back |
 | `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[], fileDetails[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), the selected attempt's filenames, and a `fileDetails[]` of `{ name, size, empty }` per file (so a zero-byte capture is greyed + "(empty)" in the file dropdown — issue #141 item 4) |
 | `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
@@ -7629,7 +7638,10 @@ The journal-projected coloured **Status** column (`succeeded` / `running` / `nee
 / `failed` / `pending`) lives on that static index (§12.3), which is the durable all-tasks surface. The
 live run view at `GET /` shows the same word for each task (issue #713): `logs` hands its server the
 journal, re-read on every page load, because this command attaches to runs still in flight and a
-startup snapshot would keep a finished task reading `running`.
+startup snapshot would keep a finished task reading `running`. That makes a served tab a long-lived
+reader of `run.json` while a run is writing it, which is safe only because the harness's atomic write
+retries its final replace while another handle holds the file (issue #727). Before that retry, a page
+reloading during a run could abort the run with "Access to the path is denied".
 
 | Flag | Default | Meaning |
 |---|---|---|

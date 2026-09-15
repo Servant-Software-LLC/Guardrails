@@ -156,7 +156,7 @@ public static class HtmlDiagramRenderer
     /// </summary>
     public static string Render(
         string mermaidSource, string sourceHash, IReadOnlyDictionary<string, string> taskFolderTargets)
-        => Render(mermaidSource, sourceHash, taskFolderTargets, NoStatus, duringRun: false);
+        => Render(mermaidSource, sourceHash, taskFolderTargets, NoStatus, duringRun: false, liveDiagramUrl: null);
 
     /// <summary>
     /// Build the <c>diagram.html</c> document for <paramref name="mermaidSource"/> stamped with
@@ -191,7 +191,7 @@ public static class HtmlDiagramRenderer
         IReadOnlyDictionary<string, string> taskFolderTargets,
         IReadOnlyDictionary<string, string> statusByNodeId,
         bool duringRun,
-        string? liveDiagramUrl = null)
+        string? liveDiagramUrl)
     {
         ArgumentNullException.ThrowIfNull(mermaidSource);
         ArgumentException.ThrowIfNullOrEmpty(sourceHash);

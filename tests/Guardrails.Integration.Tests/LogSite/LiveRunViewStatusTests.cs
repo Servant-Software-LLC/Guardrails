@@ -201,8 +201,8 @@ public sealed class LiveRunViewStatusTests
 
         /// <summary>The chain exactly as <c>guardrails run</c> composes it when its log server is up.</summary>
         public OnTheFlyDiagramObserver Chain(LogServer server) => RunCommand.BuildObserverChain(
-            IRunObserver.Null, LogsRoot, RunId, Plan, server.UrlForTask, diagramSeed: null,
-            onRow: null, includeDetail: false, logServer: server);
+            IRunObserver.Null, LogsRoot, RunId, Plan, logServer: server, diagramSeed: null,
+            onRow: null, includeDetail: false);
 
         public void WriteAttempt(string taskId, int attempt)
         {

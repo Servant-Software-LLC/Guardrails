@@ -679,8 +679,6 @@ public static class RunCommand
                     + "terminal for a live view.\n");
             }
 
-            Func<string, string?>? logUrlForTask = logServer is null ? null : logServer.UrlForTask;
-
             // The on-the-fly static site (issue #141 item 2) is written for BOTH the live and the
             // --no-ui paths — a file:// "all tasks" page that updates as tasks settle, useful headless
             // or interactive. It lives under logs/<runId>/, the same tree the executor writes attempts
@@ -725,30 +723,16 @@ public static class RunCommand
             string? faultKind = null;
             try
             {
-                if (live)
+                // #714 review (W1): ONE path opens everything the run shows, for the live table and --no-ui alike. The
+                // only difference between them is which observer the chain wraps (see OpenRunSurfacesAsync). The live
+                // table is disposed as soon as the DAG has drained, before the terminal gate or anything else writes
+                // to the console (#145).
+                RunSurfaces surfaces = await OpenRunSurfacesAsync(
+                    live, logsRoot, runId, probe.Plan, diagramSeed, logServer, onRow, onEventDetail, allTasks, io)
+                    .ConfigureAwait(false);
+                diagramObserver = surfaces.Chain;
+                await using (surfaces.LiveTable)
                 {
-                    // Write the initial all-pending index + the seeded live diagram AND print their links
-                    // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
-                    // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
-                    // So both static writes + their links must precede the live region.
-                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves, logServer?.BaseUrl);
-                    PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
-                    OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed, logServer?.DiagramUrl);
-                    PrintDiagramLink(logsRoot, logServer, io); // status diagram link at run START (#714: the live copy when served)
-
-                    await using var liveObserver = new LiveRunObserver(
-                        probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
-                        probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail, logServer);
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail, logServer);
-                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves, logServer?.BaseUrl);
-                    PrintStaticIndexLink(logsRoot, io);
-                    diagramObserver.WriteInitialDiagram();
-                    PrintDiagramLink(logsRoot, logServer, io);
                     (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -3275,49 +3259,132 @@ public static class RunCommand
         Func<string, string?>? logUrlForTask,
         JournalDocument? diagramSeed)
     {
-        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed, onRow: null, includeDetail: false, logServer: null);
+        return ComposeObserverChain(
+            inner, logsRoot, runId, plan, diagramSeed, onRow: null, includeDetail: false,
+            logUrlForTask, liveRunUrl: null, liveDiagramUrl: null, statusTarget: null);
     }
 
     /// <summary>
-    /// #585 layer 3 (design doc 36 §3.1) overload: adds <paramref name="onRow"/> (the webhook dispatcher's
-    /// <c>Emit</c>, or null when no <c>--on-event</c> URL is configured) and <paramref name="includeDetail"/>
-    /// (<c>--on-event-detail</c>), and is the one that actually builds the chain — the six-argument overload
-    /// above delegates to this one with <c>onRow: null, includeDetail: false, logServer: null</c>. A NEW overload rather than
-    /// two parameters added onto the six-argument member: <c>RunCommandObserverWiringTests</c>,
-    /// <c>RunFinishedExitPathTests</c> and <c>ObserverForwardingSweepTests</c> (plan 34, predating this
-    /// plan) call the six-argument shape directly and sit outside this task's write scope, so widening
-    /// that member in place would break their compilation for a change none of them asked for. <see cref="RunAsync"/>'s
-    /// own two call sites use THIS overload, which takes <paramref name="onRow"/>/<paramref name="includeDetail"/>
-    /// with NO default value: a defaulted parameter would let a production call site silently deliver
-    /// nothing (the plan-34 §3 swallow hazard), so the compiler forces both call sites to state their
-    /// answer explicitly.
+    /// #585 layer 3 (design doc 36 §3.1) overload, the production one: adds <paramref name="onRow"/> (the webhook
+    /// dispatcher's <c>Emit</c>, or null when no <c>--on-event</c> URL is configured), <paramref name="includeDetail"/>
+    /// (<c>--on-event-detail</c>) and <paramref name="logServer"/>. A NEW overload rather than parameters added onto
+    /// the six-argument member: <c>RunCommandObserverWiringTests</c>, <c>RunFinishedExitPathTests</c> and
+    /// <c>ObserverForwardingSweepTests</c> (plan 34, predating this plan) call the six-argument shape directly, so
+    /// widening that member in place would break their compilation for a change none of them asked for.
+    /// <see cref="OpenRunSurfacesAsync"/>, the run's one call site, uses THIS overload, and none of its parameters has
+    /// a default value: a defaulted parameter would let a production call site silently deliver nothing (the plan-34
+    /// §3 swallow hazard), so the compiler forces the call site to state its answer explicitly.
     ///
-    /// <para><paramref name="logServer"/> is the run's live log server, or null when none was started. The chain
-    /// hands it the log-site observer's status map, the one the during-run index is rendered from, as the source
-    /// of the live run view's Status column (issue #713), so those two pages cannot disagree. In turn it hands
-    /// both during-run writers the server's URLs (issue #714), so a page opened as a file links the live copy in
-    /// its offline notice. It has no default for the same reason as <paramref name="onRow"/>: a call site that
-    /// dropped it would leave that column reading <c>unknown</c>, and those notices naming the wrong remedy, for
-    /// the whole run. It travels beside <paramref name="logUrlForTask"/>, which production derives from the same
-    /// server, because the six-argument shape takes a task-URL resolver and no server.</para>
+    /// <para><paramref name="logServer"/> is the run's live log server, or null when none was started. Every live
+    /// link the chain needs is derived from it here, once: the per-task URLs, the live run view's and the diagram's
+    /// URLs (issue #714), and the status source the server starts serving from (issue #713). A call site that
+    /// dropped it would leave the live run view unserved and every offline notice naming the wrong remedy for the
+    /// whole run.</para>
     /// </summary>
     public static OnTheFlyDiagramObserver BuildObserverChain(
         IRunObserver inner,
         string logsRoot,
         string runId,
         Core.Model.PlanDefinition plan,
-        Func<string, string?>? logUrlForTask,
+        LogServer? logServer,
+        JournalDocument? diagramSeed,
+        Action<EventDelivery>? onRow,
+        bool includeDetail)
+    {
+        return ComposeObserverChain(
+            inner, logsRoot, runId, plan, diagramSeed, onRow, includeDetail,
+            logServer is null ? null : logServer.UrlForTask, logServer?.BaseUrl, logServer?.DiagramUrl, logServer);
+    }
+
+    /// <summary>
+    /// The chain itself, built from explicit pieces. Both public overloads come here, the production one with every
+    /// piece taken from its one server. <paramref name="statusTarget"/> is started serving from the log-site
+    /// observer's status map, the map the during-run index is rendered from (issue #713).
+    /// </summary>
+    private static OnTheFlyDiagramObserver ComposeObserverChain(
+        IRunObserver inner,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
         JournalDocument? diagramSeed,
         Action<EventDelivery>? onRow,
         bool includeDetail,
-        LogServer? logServer)
+        Func<string, string?>? taskUrl,
+        string? liveRunUrl,
+        string? liveDiagramUrl,
+        LogServer? statusTarget)
     {
         var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
         var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
         var siteObserver = new OnTheFlyLogSiteObserver(
-            observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves, logServer?.BaseUrl);
-        logServer?.UseTaskStatusSource(siteObserver.StatusSnapshot);
-        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed, logServer?.DiagramUrl);
+            observerProjection, logsRoot, runId, plan.Tasks, taskUrl, liveRunUrl, plan.Waves);
+        statusTarget?.StartServing(siteObserver.StatusSnapshot);
+        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed, liveDiagramUrl);
+    }
+
+    /// <summary>
+    /// What a run shows while it goes (#714 review, W1): the observer chain every event passes through, and the live
+    /// progress table when the console can show one.
+    /// </summary>
+    /// <param name="Chain">The observer chain; its head is what the run reports every event to.</param>
+    /// <param name="LiveTable">The live progress table, or null under <c>--no-ui</c> or a console that cannot show
+    /// one. The caller disposes it once the DAG has drained, before anything else writes to the console.</param>
+    public sealed record RunSurfaces(OnTheFlyDiagramObserver Chain, LiveRunObserver? LiveTable);
+
+    /// <summary>
+    /// Open everything a run shows while it goes, through the ONE path the live table and <c>--no-ui</c> both take
+    /// (#714 review, W1): write the initial index and diagram, print both links, then build the chosen observer and
+    /// the chain around it. <paramref name="liveTable"/> changes only which observer the chain wraps.
+    ///
+    /// <para><b>Why one path.</b> Each branch of <c>RunAsync</c> used to hand the server's URLs and status source over
+    /// on its own lines. The live-table branch needs an interactive console, so no test can run it, and a review
+    /// deleted all four of its handoffs with every related test still green. Nothing branch-specific is left to
+    /// delete now, and <c>RunSurfacesTests</c> opens the surfaces both ways and requires them to match.</para>
+    ///
+    /// <para><b>Order.</b> The pages and links come first because the live table's constructor starts the Spectre
+    /// live region, and a console write into an active region corrupts the table (#145 Bug 1). If building the chain
+    /// then throws, the table is disposed before the exception leaves, so a failed start never strands the console
+    /// inside a live region.</para>
+    ///
+    /// <para>Public because the Cli assembly ships no <c>InternalsVisibleTo</c>.</para>
+    /// </summary>
+    public static async Task<RunSurfaces> OpenRunSurfacesAsync(
+        bool liveTable,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
+        JournalDocument? diagramSeed,
+        LogServer? logServer,
+        Action<EventDelivery>? onRow,
+        bool includeDetail,
+        bool allTasks,
+        IConsoleIo io)
+    {
+        Func<string, string?>? taskUrl = logServer is null ? null : logServer.UrlForTask;
+        OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, plan.Tasks, taskUrl, logServer?.BaseUrl, plan.Waves);
+        PrintStaticIndexLink(logsRoot, io);
+        OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, plan, diagramSeed, logServer?.DiagramUrl);
+        PrintDiagramLink(logsRoot, logServer, io);
+
+        // #379: the table collapses completed waves unless --all-tasks.
+        LiveRunObserver? table = liveTable
+            ? new LiveRunObserver(plan.Tasks, taskUrl, plan.PlanDirectory, runId, plan.Waves, allTasks)
+            : null;
+        try
+        {
+            IRunObserver inner = table is null ? new ConsoleRunObserver(io.Out) : table;
+            return new RunSurfaces(
+                BuildObserverChain(inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail), table);
+        }
+        catch
+        {
+            if (table is not null)
+            {
+                await table.DisposeAsync().ConfigureAwait(false);
+            }
+
+            throw;
+        }
     }
 
     /// <summary>

@@ -58,7 +58,7 @@ public sealed class OverwatchNoVerdictRenderingTests
         {
             var inner = new RecordingObserver();
             IRunObserver logSite = new OnTheFlyLogSiteObserver(
-                inner, logsRoot, runId: "run-1", tasks: [], liveUrlForTask: null);
+                inner, logsRoot, runId: "run-1", tasks: [], liveUrlForTask: null, liveRunUrl: null);
 
             logSite.OverwatchNoVerdict("01-task", Reason);
 

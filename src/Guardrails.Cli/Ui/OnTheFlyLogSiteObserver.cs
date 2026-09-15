@@ -124,8 +124,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         string runId,
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? liveUrlForTask,
-        IReadOnlyList<WaveNode>? waves = null,
-        string? liveRunUrl = null)
+        string? liveRunUrl,
+        IReadOnlyList<WaveNode>? waves = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _logsRoot = logsRoot;
@@ -143,7 +143,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// <summary>
     /// Write the initial all-pending index at run start (every task pending, plain text), so the "all
     /// tasks" page exists and is browsable the moment the run begins. Best-effort. Delegates to the
-    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, IReadOnlyList{WaveNode}, string?)"/>.
+    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, string?, IReadOnlyList{WaveNode})"/>.
     /// </summary>
     public void WriteInitialIndex()
     {
@@ -158,7 +158,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
             waves = _waves;
         }
 
-        WriteInitialIndex(_logsRoot, _runId, tasks, _liveUrlForTask, waves, _liveRunUrl);
+        WriteInitialIndex(_logsRoot, _runId, tasks, _liveUrlForTask, _liveRunUrl, waves);
     }
 
     /// <summary>
@@ -176,15 +176,16 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// so the static signature matches the instance's link-resolution surface for callers.</param>
     /// <param name="waves">The plan's waves (issue #380), or null/empty for a FLAT plan — each wave's own
     /// all-pending <c>&lt;waveDir&gt;/index.html</c> is seeded too so a wave page is browsable from run start.</param>
-    /// <param name="liveRunUrl">The run's live run view, or null when no server is up (issue #714). The live-table
-    /// branch writes this page before any observer exists, so the offline notice's link has to come in here.</param>
+    /// <param name="liveRunUrl">The run's live run view, or null when no server is up (issue #714).
+    /// <c>RunCommand.OpenRunSurfacesAsync</c> writes this page before the observer chain exists, so the offline
+    /// notice's link has to come in here.</param>
     public static void WriteInitialIndex(
         string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? liveUrlForTask,
-        IReadOnlyList<WaveNode>? waves = null,
-        string? liveRunUrl = null)
+        string? liveRunUrl,
+        IReadOnlyList<WaveNode>? waves = null)
     {
         _ = liveUrlForTask; // no task is running at the all-pending start, so no live link is resolved yet
         string pending = LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending);
