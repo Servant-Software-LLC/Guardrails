@@ -1186,7 +1186,11 @@ commit) is unchanged and still fully gated.
 per attempt — the declared `writeScope` (a null coalesced to `[]`, #389) plus the implicit `stagingOutputs`
 destinations (`<to>**` for a directory `to`, plus `.guardrails-staging/**`) — and reads it twice: it is the
 array the check gates on, and it is rendered into the composed action prompt as a harness-generated
-`## Write scope (harness-enforced)` section (§9) listing every entry as a backticked bullet. A violation's
+`## Write scope (harness-enforced)` section (§9) listing every entry as a backticked bullet. Beneath the entries,
+the section states the matcher's rules as `WriteScope.IsInScope` applies them. An entry that ends in `/`, or whose
+last segment has no file extension, is a directory covering everything beneath it. A bare dotfile entry such as
+`.gitignore` also covers that exact file (#262). `*` matches within one segment. `**` matches ONE or more whole
+segments, never zero, so `src/**/Foo.cs` does not cover `src/Foo.cs` (#707 review). A violation's
 `feedback.md` lists the same entries after the offending paths, under the line
 `This task's writeScope allows changes ONLY to:`, read off `WriteScopeCheckResult.Scope` (the array the verdict
 was computed against); for a prompt action it then names the `needsHuman` route for a path the task cannot do
