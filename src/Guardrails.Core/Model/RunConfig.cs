@@ -163,8 +163,9 @@ public sealed record RunConfig
     /// <summary>
     /// WHICH input decided <see cref="MergeOnSuccess"/> (issue #710): the CLI flag, <c>guardrails.json</c>, or
     /// the #340 default — the SSOT §2 precedence order. <c>PlanLoader</c> records <c>Config</c> or
-    /// <c>Default</c>, and the run command upgrades it to <c>Flag</c> when <c>--merge-on-success</c> or
-    /// <c>--no-merge-on-success</c> overrides the value.
+    /// <c>Default</c>. The run command upgrades it to <c>Flag</c> when <c>--merge-on-success</c> or
+    /// <c>--no-merge-on-success</c> overrides the value, or to <c>FlagAndConfig</c> when the flag sets the value
+    /// the <c>guardrails.json</c> key already had, so both places are named.
     /// <para>
     /// <b>The defect this closes.</b> A run resumed with <c>--no-merge-on-success</c> that had also recorded a
     /// <c>proceeded-best-guess</c> printed "mergeOnSuccess is ON" and named only the autonomous-mode
@@ -293,9 +294,9 @@ public sealed record RunConfig
 }
 
 /// <summary>
-/// Where a run's resolved <see cref="RunConfig.MergeOnSuccess"/> came from (issue #710), in the SSOT §2
-/// precedence order, lowest first. The zero value is <see cref="Default"/>, matching
-/// <see cref="RunConfig.MergeOnSuccess"/>'s own <c>true</c> default.
+/// Where a run's resolved <see cref="RunConfig.MergeOnSuccess"/> came from (issue #710). The first three follow the
+/// SSOT §2 precedence order, lowest first; <see cref="FlagAndConfig"/> is <see cref="Flag"/> when the file agreed.
+/// The zero value is <see cref="Default"/>, matching <see cref="RunConfig.MergeOnSuccess"/>'s own <c>true</c> default.
 /// </summary>
 public enum MergeOnSuccessSource
 {
@@ -306,5 +307,11 @@ public enum MergeOnSuccessSource
     Config,
 
     /// <summary><c>--merge-on-success</c> or <c>--no-merge-on-success</c>, passed for this run.</summary>
-    Flag
+    Flag,
+
+    /// <summary>
+    /// A CLI flag AND the <c>guardrails.json</c> key, set to the same value. Both are named, because an operator
+    /// who drops the flag on the next resume is still held by the file.
+    /// </summary>
+    FlagAndConfig
 }

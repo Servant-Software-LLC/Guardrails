@@ -104,12 +104,13 @@ public sealed class UndeliveredWorkWarningTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // Issue #597 — the banner's TWO causes. WhollyGreenButUndelivered covers both "mergeOnSuccess is
+    // Issue #597 — the banner's two causes. WhollyGreenButUndelivered covers both "mergeOnSuccess is
     // genuinely off" and "the #361 autonomous-mode interlock held the work back", and the banner used to
     // render only the first. On a suppression-by-decision run BOTH halves of that text were false:
     // mergeOnSuccess was ON (the #340 default), and the recommended --merge-on-success could not lift the
     // interlock. The measured operator burned three dead ends (guardrails.json → the default in source →
-    // the release history) before finding the real cause in RunOutcomePolicy.
+    // the release history) before finding the real cause in RunOutcomePolicy. Issue #710 then found the two
+    // causes can hold at once, which makes three cases; the #710 section below pins all three.
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     private static DecisionEntry BestGuessAt(string subject) => new()
@@ -158,8 +159,8 @@ public sealed class UndeliveredWorkWarningTests
     [Fact]
     public void GenuinelyOff_KeepsTheOriginalWording()
     {
-        // The load-bearing negative: with NO suppressing decision the cause really IS mergeOnSuccess, and
-        // the shipped text stays exactly as it was — this change adds a case, it does not replace one.
+        // The load-bearing negative: with NO suppressing decision the cause really IS mergeOnSuccess, and the
+        // banner says so without inventing an interlock. #710 added the setting's source to this wording.
         string rendered = Render(
             SuppressedReport(suppressing: null, mergeOnSuccess: false, source: MergeOnSuccessSource.Config),
             terminalGatePassed: true, planDirectory: Path.Combine("repo", "27-operator-visibility"));
@@ -285,6 +286,8 @@ public sealed class UndeliveredWorkWarningTests
     [InlineData(false, MergeOnSuccessSource.Flag, true, "partial", "mergeOnSuccess is off (set by --no-merge-on-success)")]
     [InlineData(false, MergeOnSuccessSource.Flag, false, "partial-hook-hold", "mergeOnSuccess is off (set by --no-merge-on-success)")]
     [InlineData(false, MergeOnSuccessSource.Flag, true, "partial-refused", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.FlagAndConfig, false, "none", "mergeOnSuccess is off (set by --no-merge-on-success and \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData(false, MergeOnSuccessSource.FlagAndConfig, true, "none", "mergeOnSuccess is off (set by --no-merge-on-success and \"mergeOnSuccess\": false in guardrails.json)")]
     public void TheBannerAndDeliveryReason_NameTheSameCause(
         bool mergeOnSuccess, MergeOnSuccessSource source, bool withDecision, string waves, string settingClause)
     {
@@ -348,6 +351,29 @@ public sealed class UndeliveredWorkWarningTests
         if (waves is "partial-hook-hold" or "partial-refused")
         {
             Assert.Contains("held: wave-03-build", reason, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Nothing catches an exception this late in a run. The banner call has no catch, and <c>DescribeDelivery</c>'s
+    /// catch covers only IO, access and JSON failures, so a throw on an unexpected setting source would turn a
+    /// finished run into a harness error. An unrecognized source renders as unknown on both surfaces instead: a true
+    /// statement, with no guess at which input it was.
+    /// </summary>
+    [Fact]
+    public void AnUnrecognizedSettingSource_RendersAsUnknown_OnBothSurfaces_AndNeverThrows()
+    {
+        const string planDirectory = "/repo/docs/plans/40-in-flight-resource-supply";
+        RunReport report = SuppressedReport(
+            BestGuessAt("12-implement-events-endpoint"), mergeOnSuccess: false, source: (MergeOnSuccessSource)99);
+
+        string banner = Render(report, terminalGatePassed: true, planDirectory);
+        string reason = RunCommand.DescribeDelivery(report, terminalGatePassed: true, planDirectory).Reason!;
+
+        foreach (string surface in new[] { banner, reason })
+        {
+            Assert.Contains("mergeOnSuccess is off (source unknown)", surface, StringComparison.Ordinal);
+            Assert.DoesNotContain("set by", surface, StringComparison.Ordinal);
         }
     }
 

@@ -247,6 +247,12 @@ public sealed class PartialDeliveryReportTests
         {
             Tasks = [Green("01-a")],
             WhollyGreenButUndelivered = true,
+
+            // A reachable state (#710): with no suppressing decision, only delivery resolved OFF holds a green run
+            // back, so the report says so. Left at the ON default, this banner read "mergeOnSuccess is ON (the
+            // default)" beside the off remedy, and the row still passed.
+            MergeOnSuccess = false,
+            MergeOnSuccessSource = MergeOnSuccessSource.Flag,
             WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
             {
                 ["wave-02-build"] = DeliveredRecord("wave-02-build"),
@@ -257,6 +263,7 @@ public sealed class PartialDeliveryReportTests
         RunCommand.RenderUndeliveredWorkWarning(report, terminalGatePassed: true, PlanDir, sw);
 
         Assert.Contains("wave-02-build", sw.ToString(), StringComparison.Ordinal);
+        Assert.Contains("mergeOnSuccess is off (set by --no-merge-on-success)", sw.ToString(), StringComparison.Ordinal);
     }
 
     /// <summary>

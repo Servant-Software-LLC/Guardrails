@@ -264,13 +264,7 @@ public static class RunCommand
 
         // #340 delivery tri-state (SSOT §2/§5.3, precedence: CLI flag → guardrails.json → the true
         // default). --merge-on-success forces ON, --no-merge-on-success forces OFF; neither leaves the
-        // config-resolved value (which itself now defaults ON). Whether the effective value came PURELY
-        // from the default (no flag AND no config key) is captured HERE, before the override is applied,
-        // so the end-of-run notice can distinguish "delivered because of the new default" from an explicit
-        // opt-in — the config's raw key-presence lives on MergeOnSuccessExplicit (null = omitted).
-        bool deliveryFromDefaultOnly =
-            mergeOnSuccessOverride is null && probe.Plan.Config.MergeOnSuccessExplicit is null;
-
+        // config-resolved value (which itself now defaults ON).
         if (mergeOnSuccessOverride is { } mergeForced)
         {
             probe = probe with
@@ -282,8 +276,11 @@ public static class RunCommand
                         MergeOnSuccess = mergeForced,
 
                         // #710: the flag is the input that decided the setting, and both undelivered-work surfaces
-                        // name it. The loader can only ever record guardrails.json or the default.
-                        MergeOnSuccessSource = MergeOnSuccessSource.Flag,
+                        // name it. When guardrails.json's key already held the same value, both inputs are named:
+                        // an operator who drops the flag on the next resume is still held by the file.
+                        MergeOnSuccessSource = probe.Plan.Config.MergeOnSuccessExplicit == mergeForced
+                            ? MergeOnSuccessSource.FlagAndConfig
+                            : MergeOnSuccessSource.Flag,
 
                         // #597: --merge-on-success is ALSO the operator override of the autonomous-mode
                         // delivery interlock (SSOT §5.3), and until now it reached only the config layer.
@@ -297,6 +294,11 @@ public static class RunCommand
                 }
             };
         }
+
+        // Whether delivery was decided PURELY by the default (no flag AND no config key), so the end-of-run notice
+        // can tell "delivered because of the new default" from an explicit opt-in. #710: read from the same resolved
+        // source the undelivered-work surfaces name, so the two records cannot drift apart.
+        bool deliveryFromDefaultOnly = probe.Plan.Config.MergeOnSuccessSource == MergeOnSuccessSource.Default;
 
         // --autonomy <value> sets the unified autonomy policy for this run (SSOT §2.1), overriding
         // guardrails.json; --reprocess-drift is its legacy alias for `auto`. Parse --autonomy first, then let
@@ -2243,18 +2245,14 @@ public static class RunCommand
                         : "no separate plan branch was in play (serial mode), so there was nothing pending delivery — "
                           + "the work is already in your checkout";
 
-    /// <summary>WHY a wholly-green worktree run's verified work was held back on the plan branch (issue #710).</summary>
-    private enum UndeliveredCause
-    {
-        /// <summary><c>mergeOnSuccess</c> resolved off, and no suppressing machine decision was recorded.</summary>
-        DeliveryOff,
-
-        /// <summary><c>mergeOnSuccess</c> resolved on, and the #361 autonomous-mode interlock held the work.</summary>
-        Interlock,
-
-        /// <summary>Both at once: delivery was off, AND a decision the interlock holds on was recorded.</summary>
-        DeliveryOffAndInterlock
-    }
+    /// <summary>
+    /// WHY a wholly-green worktree run's verified work was held back on the plan branch (issue #710): the setting
+    /// resolved off, the #361 interlock held it on a recorded decision, or both. <see cref="Interlock"/> is null
+    /// exactly when the setting alone is the cause, so the three shapes are the only three.
+    /// </summary>
+    /// <param name="DeliveryOff">The setting held the work back, alone or beside the interlock.</param>
+    /// <param name="Interlock">The suppressing decision when the interlock held the work back too; otherwise null.</param>
+    private readonly record struct UndeliveredCause(bool DeliveryOff, DecisionEntry? Interlock);
 
     /// <summary>
     /// Derive WHY <see cref="RunReport.WhollyGreenButUndelivered"/> held the work back (issue #710), ONCE, from both
@@ -2275,9 +2273,8 @@ public static class RunCommand
     /// </para>
     /// </summary>
     private static UndeliveredCause UndeliveredCauseOf(RunReport report) =>
-        report.DeliverySuppressingDecision is null ? UndeliveredCause.DeliveryOff
-        : report.MergeOnSuccess ? UndeliveredCause.Interlock
-        : UndeliveredCause.DeliveryOffAndInterlock;
+        new(DeliveryOff: report.DeliverySuppressingDecision is null || !report.MergeOnSuccess,
+            Interlock: report.DeliverySuppressingDecision);
 
     /// <summary>
     /// The resolved setting and the input that decided it (issue #710), such as
@@ -2286,15 +2283,19 @@ public static class RunCommand
     /// </summary>
     private static string MergeOnSuccessClause(RunReport report)
     {
+        string flag = report.MergeOnSuccess ? "--merge-on-success" : "--no-merge-on-success";
+        string config = $"\"mergeOnSuccess\": {(report.MergeOnSuccess ? "true" : "false")} in guardrails.json";
+
+        // A source this code does not know renders as unknown instead of throwing. Nothing catches an exception at
+        // the end of a run (the banner has no catch, and DescribeDelivery's covers only IO, access and JSON), and a
+        // finished run must never become a harness error.
         string source = report.MergeOnSuccessSource switch
         {
-            MergeOnSuccessSource.Flag =>
-                report.MergeOnSuccess ? "set by --merge-on-success" : "set by --no-merge-on-success",
-            MergeOnSuccessSource.Config =>
-                $"set by \"mergeOnSuccess\": {(report.MergeOnSuccess ? "true" : "false")} in guardrails.json",
             MergeOnSuccessSource.Default => "the default",
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(report), report.MergeOnSuccessSource, "Unhandled mergeOnSuccess source.")
+            MergeOnSuccessSource.Config => $"set by {config}",
+            MergeOnSuccessSource.Flag => $"set by {flag}",
+            MergeOnSuccessSource.FlagAndConfig => $"set by {flag} and {config}",
+            _ => "source unknown"
         };
 
         return $"mergeOnSuccess is {(report.MergeOnSuccess ? "ON" : "off")} ({source})";
@@ -2310,28 +2311,27 @@ public static class RunCommand
     /// </summary>
     private static string UndeliveredReason(RunReport report, string planBranch)
     {
+        UndeliveredCause cause = UndeliveredCauseOf(report);
+        string setting = MergeOnSuccessClause(report);
         string stranded =
             $"The verified work is sitting on '{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it.";
 
-        return UndeliveredCauseOf(report) switch
+        if (cause.Interlock is not { } decision)
         {
-            UndeliveredCause.DeliveryOff =>
-                $"{MergeOnSuccessClause(report)}, so this wholly-green run's verified work is sitting on "
-                + $"'{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
-            UndeliveredCause.Interlock =>
-                "delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
-                + $"{DecisionPhrase(report.DeliverySuppressingDecision!)}, so machine-decided work is not "
-                + $"auto-delivered; {MergeOnSuccessClause(report)}. {stranded} Judge the decision (decisions[]), then "
-                + "re-run with --merge-on-success to override, or merge the branch by hand",
-            UndeliveredCause.DeliveryOffAndInterlock =>
-                "delivery was held back for two reasons, either of which alone would have held it: "
-                + $"{MergeOnSuccessClause(report)}, and the autonomous-mode interlock (#361) — this run recorded "
-                + $"{DecisionPhrase(report.DeliverySuppressingDecision!)}, so machine-decided work is not "
-                + $"auto-delivered. {stranded} Judge the decision (decisions[]) first, then re-run with "
-                + "--merge-on-success, which both turns delivery on and overrides the interlock, or merge the branch "
-                + "by hand",
-            _ => throw new ArgumentOutOfRangeException(nameof(report), "Unhandled undelivered cause.")
-        };
+            return $"{setting}, so this wholly-green run's verified work is sitting on '{planBranch}' and NOT on your "
+                   + "checkout; a later --fresh or 'reset -y' destroys it";
+        }
+
+        return cause.DeliveryOff
+            ? "delivery was held back for two reasons, either of which alone would have held it: "
+              + $"{setting}, and the autonomous-mode interlock (#361) — this run recorded {DecisionPhrase(decision)}, "
+              + $"so machine-decided work is not auto-delivered. {stranded} Judge the decision (decisions[]) first, "
+              + "then re-run with --merge-on-success, which both turns delivery on and overrides the interlock, or "
+              + "merge the branch by hand"
+            : "delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
+              + $"{DecisionPhrase(decision)}, so machine-decided work is not auto-delivered; {setting}. {stranded} "
+              + "Judge the decision (decisions[]), then re-run with --merge-on-success to override, or merge the "
+              + "branch by hand";
     }
 
     /// <summary>
@@ -2467,41 +2467,38 @@ public static class RunCommand
         // they found RunOutcomePolicy.SuppressesDelivery — a search someone without source access cannot even
         // start. Issue #710: and both can be true at once. The cause comes from UndeliveredCauseOf, which
         // delivery.reason renders too, and the setting clause reads the resolved value instead of assuming one.
-        switch (UndeliveredCauseOf(report))
+        // Plain branching with no throwing default, because this is the last thing a finished run prints.
+        UndeliveredCause cause = UndeliveredCauseOf(report);
+        if (cause.Interlock is not { } decision)
         {
-            case UndeliveredCause.DeliveryOff:
-                output.WriteLine($"{MergeOnSuccessClause(report)}.");
-                output.WriteLine("This fully-green run's verified work is sitting on branch");
-                output.WriteLine($"'{planBranch}', NOT on your checkout.");
-                output.WriteLine(
-                    $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
-                output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
-                break;
-
-            case UndeliveredCause.Interlock:
-                output.WriteLine($"{MergeOnSuccessClause(report)}.");
-                output.WriteLine("Delivery was held back by the autonomous-mode interlock (#361):");
-                output.WriteLine($"this run recorded {DecisionPhrase(report.DeliverySuppressingDecision!)},");
-                output.WriteLine(
-                    "so machine-decided work is never auto-delivered. The verified work is sitting on branch");
-                output.WriteLine($"'{planBranch}', NOT on your checkout.");
-                WriteJudgeTheDecisionFirst(output, planName, planBranch, "(an explicit override of the interlock)");
-                break;
-
-            case UndeliveredCause.DeliveryOffAndInterlock:
-                output.WriteLine("Delivery was held back for TWO reasons; either one alone would have held it:");
-                output.WriteLine($"  1. {MergeOnSuccessClause(report)}.");
-                output.WriteLine("  2. The autonomous-mode interlock (#361) — this run recorded");
-                output.WriteLine($"     {DecisionPhrase(report.DeliverySuppressingDecision!)},");
-                output.WriteLine("     so machine-decided work is never auto-delivered.");
-                output.WriteLine("The verified work is sitting on branch");
-                output.WriteLine($"'{planBranch}', NOT on your checkout.");
-                WriteJudgeTheDecisionFirst(
-                    output, planName, planBranch, "(turns delivery on AND overrides the interlock)");
-                break;
-
-            default:
-                throw new ArgumentOutOfRangeException(nameof(report), "Unhandled undelivered cause.");
+            output.WriteLine($"{MergeOnSuccessClause(report)}.");
+            output.WriteLine("This fully-green run's verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            output.WriteLine(
+                $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
+            output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+        }
+        else if (cause.DeliveryOff)
+        {
+            output.WriteLine("Delivery was held back for TWO reasons; either one alone would have held it:");
+            output.WriteLine($"  1. {MergeOnSuccessClause(report)}.");
+            output.WriteLine("  2. The autonomous-mode interlock (#361) — this run recorded");
+            output.WriteLine($"     {DecisionPhrase(decision)},");
+            output.WriteLine("     so machine-decided work is never auto-delivered.");
+            output.WriteLine("The verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            WriteJudgeTheDecisionFirst(
+                output, planName, planBranch, "(turns delivery on AND overrides the interlock)");
+        }
+        else
+        {
+            output.WriteLine($"{MergeOnSuccessClause(report)}.");
+            output.WriteLine("Delivery was held back by the autonomous-mode interlock (#361):");
+            output.WriteLine($"this run recorded {DecisionPhrase(decision)},");
+            output.WriteLine(
+                "so machine-decided work is never auto-delivered. The verified work is sitting on branch");
+            output.WriteLine($"'{planBranch}', NOT on your checkout.");
+            WriteJudgeTheDecisionFirst(output, planName, planBranch, "(an explicit override of the interlock)");
         }
 
         // Issue #576. The instruction above — "merge '<planBranch>' into your branch yourself" — is the

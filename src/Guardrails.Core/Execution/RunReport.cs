@@ -303,7 +303,9 @@ public sealed record RunReport
 
     /// <summary>
     /// True when this run drained WHOLLY GREEN (the DAG) but the completed work was NOT delivered to the
-    /// user's branch because <c>mergeOnSuccess</c> resolved <b>false</b> (issue #340). The verified work
+    /// user's branch because delivery resolved <b>off</b> (issue #340): <c>mergeOnSuccess</c> false, the #361
+    /// interlock held it, or both (#597/#710; <see cref="MergeOnSuccess"/> and
+    /// <see cref="DeliverySuppressingDecision"/> say which). The verified work
     /// is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
     /// <c>--fresh</c>/<c>reset -y</c> away from destruction. Set by the Scheduler's <c>Finalize</c> ONLY
     /// when a real, SEPARATE plan branch exists (worktree mode: a worktree provider AND an integration
@@ -372,10 +374,10 @@ public sealed record RunReport
     public bool MergeOnSuccess { get; init; } = true;
 
     /// <summary>
-    /// WHICH input decided <see cref="MergeOnSuccess"/>: the CLI flag, <c>guardrails.json</c>, or the default
-    /// (issue #710; <see cref="Model.RunConfig.MergeOnSuccessSource"/>). Both undelivered surfaces name it, so an
-    /// operator told the setting is off is also told where to change it. Stamped beside
-    /// <see cref="MergeOnSuccess"/>.
+    /// WHICH input decided <see cref="MergeOnSuccess"/>: the CLI flag, <c>guardrails.json</c>, both when they set
+    /// the same value, or the default (issue #710; <see cref="Model.RunConfig.MergeOnSuccessSource"/>). Both
+    /// undelivered surfaces name it, so an operator told the setting is off is also told every place to change it.
+    /// Stamped beside <see cref="MergeOnSuccess"/>.
     /// </summary>
     public Model.MergeOnSuccessSource MergeOnSuccessSource { get; init; }
 

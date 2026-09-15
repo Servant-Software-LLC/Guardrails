@@ -435,8 +435,9 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
   leave the verified work on the plan branch for manual review/merge. **CLI precedence** (highest
   wins): `--merge-on-success` / `--no-merge-on-success` (a nullable override) → `guardrails.json`
   `mergeOnSuccess` → the `true` default; passing both flags is a usage error. The input that won is recorded
-  as `RunConfig.MergeOnSuccessSource` (`Flag` | `Config` | `Default`) and carried onto `RunReport`, so the
-  undelivered-work banner and `delivery.reason` name it (§5.3, #710). When delivery fires
+  as `RunConfig.MergeOnSuccessSource` (`Default` | `Config` | `Flag` | `FlagAndConfig`, the last when a flag and
+  the key set the same value) and carried onto `RunReport`, so the undelivered-work banner and
+  `delivery.reason` name it (§5.3, #710). When delivery fires
   purely because of the default (no config key, no flag), the CLI prints a one-time notice naming the
   branch and the opt-out. *Rationale:* the merge-back is already non-destructive (FF-or-clean-merge,
   re-verified, AI-merge withheld, halts loudly on any obstacle, and is a merge not a move so the plan
@@ -2267,8 +2268,9 @@ run drains WHOLLY green — every task succeeded, the terminal gate passed — a
 the user's branch, while the console's success output reads **identically** to a run that DID deliver. The
 verified work sits on `guardrails/<plan-name>`, one `--fresh`/`reset -y` away from silent destruction, with
 no signal it is at risk. The backstop is a **loud, unmissable end-of-run warning**: the Scheduler sets
-`RunReport.WhollyGreenButUndelivered` when the run drained wholly green (`AllSucceeded`) AND
-`mergeOnSuccess` resolved **false** (the opt-out) AND a **real, separate plan branch exists** — i.e.
+`RunReport.WhollyGreenButUndelivered` when the run drained wholly green (`AllSucceeded`) AND delivery
+resolved **off** — `mergeOnSuccess` false (the opt-out), the #361 interlock held machine-decided work, or both
+(cases (a)–(c) below, #597/#710) — AND a **real, separate plan branch exists** — i.e.
 worktree mode (a worktree provider AND an integration handle are present). It is deliberately **false** in
 serial mode (no plan branch — `integ == null`, the work is already in the shared workspace / the user's
 checkout), and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on, so this warning
@@ -2312,16 +2314,21 @@ covers two causes with two different operator responses, and both can be true at
 (b) on `RunReport.DeliverySuppressingDecision` alone. That field is set whenever such a decision exists,
 whether or not the interlock held, so neither surface could see what the setting had resolved to. `RunReport`
 therefore carries the resolved setting as `MergeOnSuccess` and the input that decided it as
-`MergeOnSuccessSource` (`Flag` | `Config` | `Default`), both stamped by the Scheduler's `BuildReport`, the one
-method every report passes through. The value comes from `RunConfig.MergeOnSuccess` and the source from
-`RunConfig.MergeOnSuccessSource`: the loader records `Config` when the key is present (whatever its value) and
-`Default` when it is omitted, and the run command records `Flag` when either delivery flag overrides the value.
-The CLI derives the case once. With no suppressing decision the setting is the only term that can hold back a
-wholly-green worktree run, so the case is (a); with one, the resolved value picks (b) or (c). The banner and
-the durable `delivery.reason` (§7) both render that one derivation, and share the setting clause
+`MergeOnSuccessSource` (`Default` | `Config` | `Flag` | `FlagAndConfig`), both stamped by the Scheduler's
+`BuildReport`, the one method every report passes through; tests pin the stamp on flat and waved plans and on
+an aborted report. The value comes from `RunConfig.MergeOnSuccess` and the source from
+`RunConfig.MergeOnSuccessSource`. The loader records `Config` when the key is present (whatever its value) and
+`Default` when it is omitted. The run command records `Flag` when either delivery flag overrides the value, or
+`FlagAndConfig` when the flag and the `guardrails.json` key set the SAME value, and the clause then names both,
+because an operator who drops the flag on the next resume is still held by the file. The run command's one-time
+delivered-by-default notice reads the same source (it fires only for `Default`), so the two records cannot drift
+apart. The CLI derives the case once. With no suppressing decision the setting is the only term that can hold
+back a wholly-green worktree run, so the case is (a); with one, the resolved value picks (b) or (c). The banner
+and the durable `delivery.reason` (§7) both render that one derivation, and share the setting clause
 (`mergeOnSuccess is ON|off (<source>)`) word for word; the clause always reads the resolved value, never the
-case. On a partially-delivered run (§14.12) both surfaces first name the waves that already delivered, then
-give the same cause for the rest.
+case. An unrecognized source value renders as `(source unknown)` instead of throwing: nothing catches an
+exception at the end of a run, and a finished run must never become a harness error. On a partially-delivered
+run (§14.12) both surfaces first name the waves that already delivered, then give the same cause for the rest.
 
 **The banner also reports PLAN-FOLDER DRIFT (issue #576).** The instruction the banner gives — *"merge
 `guardrails/<plan>` into your branch yourself"* — is itself what produces a stale repository, because the
@@ -3019,8 +3026,9 @@ naming both causes, which either alone would have held the work (issue #710: (a�
 pass; (c) the run was not wholly green; (d) serial mode, where there is no separate plan branch and the work is
 already in the checkout. (a), (a′) and (a″) state the setting in the clause they share with the console banner,
 `mergeOnSuccess is ON|off (<source>)`, where `<source>` is `set by --no-merge-on-success`,
-`set by "mergeOnSuccess": false in guardrails.json` (or `true`), or `the default` (§5.3 has the one derivation
-all three render). They are the cases that **strand work**, and the only ones that set `planBranch`; naming a
+`set by "mergeOnSuccess": false in guardrails.json` (or `true`), both joined by `and` when the flag and the file
+set the same value, or `the default` (§5.3 has the one derivation all three render). They are the cases that
+**strand work**, and the only ones that set `planBranch`; naming a
 branch in the serial case would send an operator to merge something that does not exist, which is worse than
 the silence this closed.
 
