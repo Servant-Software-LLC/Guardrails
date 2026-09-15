@@ -4,14 +4,15 @@ using Guardrails.Cli;
 namespace Guardrails.Integration.Tests.LogSite;
 
 /// <summary>
-/// Issue #713 through the whole of <c>guardrails run</c>, not only its composition seam. A real run is held
-/// mid-flight by a gated task, and its own log server's live run view is read while the run is still going.
-/// That is the moment the maintainer asked, of plan 39's run, whether the <c>attempt 1</c> values came from tasks
-/// that had completed.
+/// Issues #713 and #714 through the whole of <c>guardrails run</c>, not only its composition seam. A real run is
+/// held mid-flight by a gated task, and what the run says about its own log server is read while the run is still
+/// going: the live run view's Status column (#713), plus the offline notices on the pages it is writing and the
+/// diagram link it printed (#714). That is the moment the maintainer asked, of plan 39's run, whether the
+/// <c>attempt 1</c> values came from tasks that had completed, and whether the run was still going at all.
 /// <para>
-/// <see cref="LiveRunViewStatusTests"/> proves what <c>BuildObserverChain</c> does once it is handed the server.
-/// Only a real run proves that <c>RunCommand</c> hands it over. A seam that works in xUnit while the command never
-/// wires it is the defect this repo keeps finding at exactly this kind of boundary.
+/// <see cref="LiveRunViewStatusTests"/> and <see cref="LiveLinksTests"/> prove what <c>BuildObserverChain</c> does
+/// once it is handed the server. Only a real run proves that <c>RunCommand</c> hands it over. A seam that works in
+/// xUnit while the command never wires it is the defect this repo keeps finding at exactly this kind of boundary.
 /// </para>
 /// </summary>
 public sealed class LiveRunViewMidRunTests
@@ -25,7 +26,7 @@ public sealed class LiveRunViewMidRunTests
     private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(120);
 
     [Fact]
-    public async Task MidRun_TheLiveRunView_TellsSucceededRunningAndPendingApart()
+    public async Task MidRun_TheLiveRunViewTellsStatesApart_AndEveryLiveLinkNamesTheRunsOwnServer()
     {
         using var plan = new ScriptPlanBuilder()
             .AddTask("01-done")
@@ -41,6 +42,7 @@ public sealed class LiveRunViewMidRunTests
             ct);
 
         int exit;
+        string baseUrl = string.Empty;
         try
         {
             // 02's action is running, so its TaskStarting has fired, and with it the during-run index write: the
@@ -54,13 +56,19 @@ public sealed class LiveRunViewMidRunTests
             // port without reading console output the run is still writing.
             Match live = Regex.Match(index, "href=\"(?<base>http://127\\.0\\.0\\.1:\\d+/)tasks/02-held\"");
             Assert.True(live.Success, $"the during-run index does not link 02-held to a live server:\n{index}");
-            string baseUrl = live.Groups["base"].Value;
+            baseUrl = live.Groups["base"].Value;
 
             string html = await Http.GetStringAsync(baseUrl, ct);
 
             Assert.Equal("succeeded", LiveRunViewRows.Find(html, "01-done").Status);
             Assert.Equal("running", LiveRunViewRows.Find(html, "02-held").Status);
             Assert.Equal("pending", LiveRunViewRows.Find(html, "03-waiting").Status);
+
+            // #714: opened as files, the pages this run is writing cannot poll. Their notices must send the reader to
+            // this run's server, which is up, and not off to start another one with `guardrails logs`.
+            Assert.Contains($"<a href=\"{baseUrl}\">", OfflineNotice.In(index), StringComparison.Ordinal);
+            string diagram = File.ReadAllText(Path.Combine(logsRoot, "diagram.html"));
+            Assert.Contains($"<a href=\"{baseUrl}diagram.html\">", OfflineNotice.In(diagram), StringComparison.Ordinal);
         }
         finally
         {
@@ -70,6 +78,9 @@ public sealed class LiveRunViewMidRunTests
         }
 
         Assert.Equal(ExitCodes.Success, exit);
+
+        // #714: the diagram line the run printed at start names that same server's live copy.
+        Assert.Contains($"Live status diagram: {baseUrl}diagram.html", io.OutText, StringComparison.Ordinal);
     }
 
     /// <summary>

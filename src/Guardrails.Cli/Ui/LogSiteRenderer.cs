@@ -126,11 +126,9 @@ public static class LogSiteRenderer
     /// is worth more than a page that reloads forever and cannot say whether it is current.
     /// </para>
     /// </summary>
-    private static string LivePollScript() => $$"""
+    private static string LivePollScript(string? liveRunUrl) => $$"""
 <div id="gr-live-offline" hidden>Not live &mdash; this page was opened as a file, so it cannot poll for
-updates. It is a snapshot. To watch a run in progress, run
-<code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints &mdash; it
-serves these logs live, and works against a run already in flight.</div>
+updates. It is a snapshot. {{OfflineRemedy(liveRunUrl)}}</div>
 <div id="gr-live-paused" hidden>Live updates paused &mdash; the last <span id="gr-live-fails">0</span>
 poll attempts failed. Still retrying; this clears itself when one succeeds.</div>
 <script>
@@ -198,6 +196,21 @@ document.addEventListener('visibilitychange', () => {
 if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStartLogPoll(); }
 </script>
 """;
+
+    /// <summary>
+    /// What the offline notice tells a reader to do (issue #714). With the run's own log server up, it links that
+    /// server's live run view. The reader is looking at a snapshot only because they opened the page as a file,
+    /// and telling them to start a second server with <c>guardrails logs</c> would duplicate one that is already
+    /// running. A <c>file://</c> page cannot discover the port, but the during-run writer knows it. With no
+    /// server, <c>guardrails logs</c> is the remedy (issue #552), worded exactly as before.
+    /// </summary>
+    private static string OfflineRemedy(string? liveRunUrl) => liveRunUrl is null
+        ? """
+          To watch a run in progress, run
+          <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints &mdash; it
+          serves these logs live, and works against a run already in flight.
+          """
+        : $"This run's live view is <a href=\"{Enc(liveRunUrl)}\">{Enc(liveRunUrl)}</a>, served while the run is going.";
 
     /// <summary>
     /// The GATE-HALT banner's CSS (issue #436). Deliberately NOT part of <see cref="SharedStyle"/>: it is
@@ -401,6 +414,9 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
     /// <para><paramref name="halt"/> (issue #436) is the run's gate-halt record, when one has been made;
     /// null — the during-run default, since a gate halt is only known once it has been journaled — renders
     /// the page exactly as before.</para>
+    /// <para><paramref name="liveRunUrl"/> (issue #714) is the run's own live run view, or null when the run has
+    /// no log server. A during-run page's offline notice links it; with null the notice names
+    /// <c>guardrails logs</c>. A settled page carries no notice, so there it changes nothing.</para>
     /// </summary>
     public static string WriteIndex(
         string logsRoot,
@@ -413,11 +429,12 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         RunHalt? halt = null,
         Func<string, string?>? claimResolver = null,
         Func<string, string?>? modelResolver = null,
-        PlanGuardrailsSection? terminalGate = null)
+        PlanGuardrailsSection? terminalGate = null,
+        string? liveRunUrl = null)
     {
         string index = IndexHtml(
             logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
-            includeRefresh, halt, claimResolver, modelResolver, terminalGate);
+            includeRefresh, halt, claimResolver, modelResolver, terminalGate, liveRunUrl);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -481,7 +498,8 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         RunHalt? halt,
         Func<string, string?>? claimResolver,
         Func<string, string?>? modelResolver = null,
-        PlanGuardrailsSection? terminalGate = null)
+        PlanGuardrailsSection? terminalGate = null,
+        string? liveRunUrl = null)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
@@ -508,7 +526,7 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         // The during-run page updates IN PLACE (issue #543 — see LivePollScript) instead of reloading the
         // whole document every 2s. Both the script and its CSS come from this one conditional, so the
         // FINAL settled page carries no trace of the poll and keeps its exact pre-#543 bytes.
-        string livePoll = includeRefresh ? LivePollScript() : string.Empty;
+        string livePoll = includeRefresh ? LivePollScript(liveRunUrl) : string.Empty;
         string livePollStyle = includeRefresh ? LivePollStyle : string.Empty;
 
         string note = includeRefresh
@@ -1117,10 +1135,11 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         bool includeRefresh,
         RunHalt? halt = null,
         Func<string, string?>? claimResolver = null,
-        PhasePanel? phase = null)
+        PhasePanel? phase = null,
+        string? liveRunUrl = null)
     {
         string html = WaveIndexHtml(
-            logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver, phase);
+            logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver, phase, liveRunUrl);
         string waveDir = Path.Combine(logsRoot, wave.Dir);
         Directory.CreateDirectory(waveDir); // the wave folder may not exist yet (all tasks still pending)
         string indexPath = Path.Combine(waveDir, "index.html");
@@ -1137,7 +1156,8 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         bool includeRefresh,
         RunHalt? halt,
         Func<string, string?>? claimResolver,
-        PhasePanel? phase)
+        PhasePanel? phase,
+        string? liveRunUrl)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in wave.Tasks)
@@ -1154,8 +1174,9 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         }
 
         // Same in-place poll as the plan index (issue #543 — see LivePollScript); the wave page had the
-        // identical 2s whole-document reload and the identical never-stops defect.
-        string livePoll = includeRefresh ? LivePollScript() : string.Empty;
+        // identical 2s whole-document reload and the identical never-stops defect. Its offline notice links the
+        // run's live view too (issue #714).
+        string livePoll = includeRefresh ? LivePollScript(liveRunUrl) : string.Empty;
         string livePollStyle = includeRefresh ? LivePollStyle : string.Empty;
 
         string note = includeRefresh

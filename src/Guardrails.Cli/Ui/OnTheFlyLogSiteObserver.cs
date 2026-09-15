@@ -37,6 +37,10 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     private readonly string _runId;
     private readonly Func<string, string?>? _liveUrlForTask;
 
+    // The run's live run view (its log server's root URL), or null when there is no server (issue #714). The
+    // during-run pages' offline notices link it, since a page opened as a file cannot discover the port.
+    private readonly string? _liveRunUrl;
+
     // The plan this site renders. MUTABLE since #404 and read/written only under _gate: a wave the run
     // LOADED as an empty JIT stub acquires its real tasks at the barrier, and until it does, a spliced task
     // is never a row on the plan index (_tasks), its wave page renders the run-start zero-task WaveNode
@@ -110,13 +114,18 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// <c>&lt;waveDir&gt;/index.html</c> (issue #380) is rewritten alongside the plan index on every event,
     /// and the plan index gains a wave drill-down nav. Empty ⇒ no wave index, plan index unchanged.
     /// </param>
+    /// <param name="liveRunUrl">
+    /// The run's live run view (its log server's root URL), or null when no server is up (issue #714). Every
+    /// during-run page's offline notice links it; with null the notice names <c>guardrails logs</c> instead.
+    /// </param>
     public OnTheFlyLogSiteObserver(
         IRunObserver inner,
         string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? liveUrlForTask,
-        IReadOnlyList<WaveNode>? waves = null)
+        IReadOnlyList<WaveNode>? waves = null,
+        string? liveRunUrl = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _logsRoot = logsRoot;
@@ -126,6 +135,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         _wavesByDir = _waves.ToDictionary(w => w.Dir, StringComparer.Ordinal);
         _tasksById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
         _liveUrlForTask = liveUrlForTask;
+        _liveRunUrl = liveRunUrl;
         _statusByTask = tasks.ToDictionary(
             t => t.Id, _ => LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending), StringComparer.Ordinal);
     }
@@ -133,7 +143,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// <summary>
     /// Write the initial all-pending index at run start (every task pending, plain text), so the "all
     /// tasks" page exists and is browsable the moment the run begins. Best-effort. Delegates to the
-    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, IReadOnlyList{WaveNode})"/>.
+    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, IReadOnlyList{WaveNode}, string?)"/>.
     /// </summary>
     public void WriteInitialIndex()
     {
@@ -148,7 +158,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
             waves = _waves;
         }
 
-        WriteInitialIndex(_logsRoot, _runId, tasks, _liveUrlForTask, waves);
+        WriteInitialIndex(_logsRoot, _runId, tasks, _liveUrlForTask, waves, _liveRunUrl);
     }
 
     /// <summary>
@@ -166,12 +176,15 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// so the static signature matches the instance's link-resolution surface for callers.</param>
     /// <param name="waves">The plan's waves (issue #380), or null/empty for a FLAT plan — each wave's own
     /// all-pending <c>&lt;waveDir&gt;/index.html</c> is seeded too so a wave page is browsable from run start.</param>
+    /// <param name="liveRunUrl">The run's live run view, or null when no server is up (issue #714). The live-table
+    /// branch writes this page before any observer exists, so the offline notice's link has to come in here.</param>
     public static void WriteInitialIndex(
         string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? liveUrlForTask,
-        IReadOnlyList<WaveNode>? waves = null)
+        IReadOnlyList<WaveNode>? waves = null,
+        string? liveRunUrl = null)
     {
         _ = liveUrlForTask; // no task is running at the all-pending start, so no live link is resolved yet
         string pending = LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending);
@@ -183,7 +196,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
             statusResolver: _ => pending,
             linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
             includeRefresh: true,
-            waves: waveList));
+            waves: waveList,
+            liveRunUrl: liveRunUrl));
 
         // Seed each wave's own all-pending index (issue #380) so a wave page exists from run start. A wave
         // with no tasks leads with the PENDING phase panel (issue #469) — before it, an unauthored wave's
@@ -198,7 +212,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 statusResolver: _ => pending,
                 linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
                 includeRefresh: true,
-                phase: LogSiteRenderer.BreakdownPanel(logsRoot, w, decisions: null)));
+                phase: LogSiteRenderer.BreakdownPanel(logsRoot, w, decisions: null),
+                liveRunUrl: liveRunUrl));
         }
     }
 
@@ -524,7 +539,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 includeRefresh: true,
                 halt: null,
                 claimResolver: ClaimOf,
-                phase: panel));
+                phase: panel,
+                liveRunUrl: _liveRunUrl));
         }
     }
 
@@ -580,7 +596,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 includeRefresh: true,
                 waves: _waves,
                 claimResolver: ClaimOf,
-                terminalGate: gate));
+                terminalGate: gate,
+                liveRunUrl: _liveRunUrl));
 
             // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
             // waved run's per-wave drill-down refreshes as the wave progresses. A wave whose breakdown
@@ -611,7 +628,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                     includeRefresh: true,
                     halt: null,
                     claimResolver: ClaimOf,
-                    phase: phase));
+                    phase: phase,
+                    liveRunUrl: _liveRunUrl));
             }
         }
     }

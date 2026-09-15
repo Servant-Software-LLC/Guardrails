@@ -702,10 +702,10 @@ public static class RunCommand
                     // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
                     // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
                     // So both static writes + their links must precede the live region.
-                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
+                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves, logServer?.BaseUrl);
                     PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
-                    OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
-                    PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
+                    OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed, logServer?.DiagramUrl);
+                    PrintDiagramLink(logsRoot, logServer, io); // status diagram link at run START (#714: the live copy when served)
 
                     await using var liveObserver = new LiveRunObserver(
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
@@ -716,10 +716,10 @@ public static class RunCommand
                 else
                 {
                     diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail, logServer);
-                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
+                    OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves, logServer?.BaseUrl);
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
-                    PrintDiagramLink(logsRoot, io);
+                    PrintDiagramLink(logsRoot, logServer, io);
                     (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -2972,14 +2972,19 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// Print a clickable <c>file://</c> link to the run's live status diagram
-    /// (<c>logs/&lt;runId&gt;/diagram.html</c>, issue #219) — the during-run refreshing page at run start,
-    /// the durable settled page at run end. Same OSC 8 / plain-path gate as
-    /// <see cref="PrintStaticIndexLink"/>. No-op when the diagram does not exist (nothing was rendered).
-    /// It is the SAME DAG as the plan-root <c>diagram.html</c> (same <c>source-sha256</c>, same
-    /// click-throughs) — only with the live status overlay (SSOT §10.1).
+    /// Print the run-start link to the run's live status diagram (<c>logs/&lt;runId&gt;/diagram.html</c>, issue
+    /// #219). No-op when the diagram does not exist (nothing was rendered). It is the SAME DAG as the plan-root
+    /// <c>diagram.html</c> (same <c>source-sha256</c>, same click-throughs), only with the live status overlay
+    /// (SSOT §10.1).
+    ///
+    /// <para><b>Which copy (issue #714).</b> With the log server up, the line is that server's http URL for the
+    /// diagram, a page that polls itself in place (#523). It used to be the file path, labeled "live" all the
+    /// same, and a page opened as a file cannot poll: it opened on its own "not live" notice and kept it through a
+    /// refresh, so a healthy run read as a dead one. With no server the file is the only copy, so it is still
+    /// printed, labeled for what it is: a snapshot. That form uses the same OSC 8 / <c>file://</c> gate as
+    /// <see cref="PrintStaticIndexLink"/>.</para>
     /// </summary>
-    private static void PrintDiagramLink(string logsRoot, IConsoleIo io)
+    private static void PrintDiagramLink(string logsRoot, LogServer? logServer, IConsoleIo io)
     {
         string diagramPath = Path.GetFullPath(Path.Combine(logsRoot, "diagram.html"));
         if (!File.Exists(diagramPath))
@@ -2987,8 +2992,14 @@ public static class RunCommand
             return;
         }
 
+        if (logServer is not null)
+        {
+            io.Out.WriteLine($"Live status diagram: {logServer.DiagramUrl}");
+            return;
+        }
+
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
-        io.Out.WriteLine($"Live status diagram: {Hyperlink(diagramPath, linkable)}");
+        io.Out.WriteLine($"Status diagram (snapshot, not live): {Hyperlink(diagramPath, linkable)}");
     }
 
     /// <summary>
@@ -3025,13 +3036,14 @@ public static class RunCommand
     /// nothing (the plan-34 §3 swallow hazard), so the compiler forces both call sites to state their
     /// answer explicitly.
     ///
-    /// <para><paramref name="logServer"/> (issue #713) is the run's live log server, or null when none was
-    /// started. The chain hands it the log-site observer's status map, the one the during-run index is rendered
-    /// from, as the source of the live run view's Status column, so those two pages cannot disagree. It has no
-    /// default for the same reason as <paramref name="onRow"/>: a call site that dropped it would leave that
-    /// column reading <c>unknown</c> for the whole run. It travels beside <paramref name="logUrlForTask"/>, which
-    /// production derives from the same server, because the six-argument shape takes a task-URL resolver and no
-    /// server.</para>
+    /// <para><paramref name="logServer"/> is the run's live log server, or null when none was started. The chain
+    /// hands it the log-site observer's status map, the one the during-run index is rendered from, as the source
+    /// of the live run view's Status column (issue #713), so those two pages cannot disagree. In turn it hands
+    /// both during-run writers the server's URLs (issue #714), so a page opened as a file links the live copy in
+    /// its offline notice. It has no default for the same reason as <paramref name="onRow"/>: a call site that
+    /// dropped it would leave that column reading <c>unknown</c>, and those notices naming the wrong remedy, for
+    /// the whole run. It travels beside <paramref name="logUrlForTask"/>, which production derives from the same
+    /// server, because the six-argument shape takes a task-URL resolver and no server.</para>
     /// </summary>
     public static OnTheFlyDiagramObserver BuildObserverChain(
         IRunObserver inner,
@@ -3046,9 +3058,10 @@ public static class RunCommand
     {
         var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
         var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
-        var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
+        var siteObserver = new OnTheFlyLogSiteObserver(
+            observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves, logServer?.BaseUrl);
         logServer?.UseTaskStatusSource(siteObserver.StatusSnapshot);
-        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
+        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed, logServer?.DiagramUrl);
     }
 
     /// <summary>
