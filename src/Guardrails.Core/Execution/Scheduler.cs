@@ -904,7 +904,8 @@ public sealed class Scheduler
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
-                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.EntryGateFailed, entry.Failed);
+                WaveHalt gateHalt = BuildGateHalt(
+                    wave, WaveHaltKind.EntryGateFailed, entry.Failed, (_journal as Journal.RunJournal)?.Document);
                 RecordGateHalt(Journal.RunHaltKind.WaveEntryGateFailed, wave.Dir, gateHalt, entry);
                 RunReport entryHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                     with { WaveHalt = gateHalt };
@@ -961,7 +962,8 @@ public sealed class Scheduler
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
-                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, exit.Failed);
+                WaveHalt gateHalt = BuildGateHalt(
+                    wave, WaveHaltKind.ExitGateFailed, exit.Failed, (_journal as Journal.RunJournal)?.Document);
                 RecordGateHalt(Journal.RunHaltKind.WaveExitGateFailed, wave.Dir, gateHalt, exit);
                 RunReport exitHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                     with { WaveHalt = gateHalt };
@@ -2977,16 +2979,52 @@ public sealed class Scheduler
             WaveDirectory = wave.Directory
         };
 
-    private static WaveHalt BuildGateHalt(WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed)
+    /// <summary>
+    /// Design 39 §1c "How a refresh is recorded" / §5: appends <see cref="Journal.UnauthoredContentNote"/>'s
+    /// headline suffix and detail lines — naming every refresh/supply on the run so far — AFTER everything
+    /// else this halt already says. <paramref name="disclosure"/> is task 08's trial-merge disclosure text
+    /// for a failed trial-tree gate (kept intact and in place, ahead of the suffix); null for a plain
+    /// entry/exit gate failure. <paramref name="document"/> is the journal's document (null for a fake,
+    /// non-<see cref="Journal.RunJournal"/> journal, or when this static method is reached with none to
+    /// give) — a run with neither <c>refreshed[]</c> nor <c>supplied[]</c> renders byte-identically to
+    /// before this method took the parameter, disclosure included.
+    /// </summary>
+    private static WaveHalt BuildGateHalt(
+        WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed,
+        Journal.JournalDocument? document, string? disclosure = null)
     {
         string gate = kind == WaveHaltKind.EntryGateFailed ? "entry preflight" : "exit gate";
         string names = failed.Count == 0 ? "(no per-check detail)" : string.Join(", ", failed.Select(f => f.Name));
+        string headline = $"Wave '{wave.Dir}' {gate} FAILED: {names}";
+        if (!string.IsNullOrEmpty(disclosure))
+        {
+            headline += disclosure;
+        }
+
+        string detail = string.Join("\n", failed.Select(f => $"{f.Name} — {f.Reason ?? "failed"}"));
+
+        if (document is not null)
+        {
+            if (Journal.UnauthoredContentNote.HeadlineSuffix(document) is { } suffix)
+            {
+                headline += suffix;
+            }
+
+            IReadOnlyList<string> detailLines = Journal.UnauthoredContentNote.DetailLines(document);
+            if (detailLines.Count > 0)
+            {
+                detail = detail.Length > 0
+                    ? detail + "\n" + string.Join("\n", detailLines)
+                    : string.Join("\n", detailLines);
+            }
+        }
+
         return new WaveHalt
         {
             WaveDir = wave.Dir,
             Kind = kind,
-            Headline = $"Wave '{wave.Dir}' {gate} FAILED: {names}",
-            Detail = string.Join("\n", failed.Select(f => $"{f.Name} — {f.Reason ?? "failed"}")),
+            Headline = headline,
+            Detail = detail,
             FailedGates = failed
         };
     }
@@ -3147,6 +3185,23 @@ public sealed class Scheduler
                     Covers = coveredWaves
                 };
                 SettleDelivery(wave, settled2, announce: priorDelivered is null);
+
+                // Design 39 §1c "How a refresh is recorded": read the trigger from the TRIAL, never from
+                // MergeOnSuccessResult (review round 4 "d39-refresh-record") — an AlreadyDelivered trial
+                // whose UserTipWasAncestor is false means the user's branch still carries commits the plan
+                // branch lacks (a resume after a crash between the promotion and the refresh/marker), and the
+                // refresh is owed regardless of whether this settle restored a prior record or announced a
+                // fresh one.
+                if (!trial.UserTipWasAncestor)
+                {
+                    RunReport? refreshAbort = RefreshPlanBranchAfterDelivery(
+                        plan, wave, integ, trial, settled, directoryOwner, ct);
+                    if (refreshAbort is not null)
+                    {
+                        return refreshAbort;
+                    }
+                }
+
                 return null; // the trial's tree is already on the user's branch — nothing to gate or promote.
             }
 
@@ -3161,15 +3216,16 @@ public sealed class Scheduler
                 // Compose the FULL headline — trial disclosure included — BEFORE calling RecordGateHalt
                 // (review round 5 "d39-trial-gate-failure"): RecordGateHalt copies it verbatim into
                 // run.json's halt.headline, which the log-site banner reads, so a disclosure appended
-                // afterward would reach only the console.
-                WaveHalt baseHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, trialGate.Failed);
+                // afterward would reach only the console. The disclosure is threaded INTO BuildGateHalt
+                // (design 39 §1c/§5, review round 5 "d39-trial-gate-failure") so any unauthored-content
+                // suffix lands AFTER it, never between the failing checks and the disclosure.
                 string userTip10 = ShortSha10(trial.UserTip);
                 string planTip10 = ShortSha10(planTipAtBarrier);
-                WaveHalt composedHalt = baseHalt with
-                {
-                    Headline = $"{baseHalt.Headline} — the trial merge with the user's branch at {userTip10} "
-                               + $"(unauthored commits {planTip10}..{userTip10}) failed this gate; nothing delivered"
-                };
+                string disclosure = $" — the trial merge with the user's branch at {userTip10} "
+                           + $"(unauthored commits {planTip10}..{userTip10}) failed this gate; nothing delivered";
+                WaveHalt composedHalt = BuildGateHalt(
+                    wave, WaveHaltKind.ExitGateFailed, trialGate.Failed,
+                    (_journal as Journal.RunJournal)?.Document, disclosure);
 
                 string failedChecks = string.Join(", ", trialGate.Failed.Select(f => f.Name));
                 SettleDelivery(wave, new Journal.WaveDeliveredRecord
@@ -3209,6 +3265,19 @@ public sealed class Scheduler
                     Detail = verdict.ForcedPastDecision ? SuppressingDecisionDetail(suppressingDecision!) : null,
                     Covers = coveredWaves
                 }, announce: true);
+
+                // Design 39 §1c "How a refresh is recorded": PromoteTrialDelivery is ALWAYS a fast-forward
+                // to the trial ref (review round 4 "d39-refresh-record") — the trigger is the trial's own
+                // ancestry, not this result. A quiet UserTipWasAncestor delivery has nothing to refresh.
+                if (!trial.UserTipWasAncestor)
+                {
+                    RunReport? refreshAbort = RefreshPlanBranchAfterDelivery(
+                        plan, wave, integ, trial, settled, directoryOwner, ct);
+                    if (refreshAbort is not null)
+                    {
+                        return refreshAbort;
+                    }
+                }
             }
             else
             {
@@ -3232,6 +3301,140 @@ public sealed class Scheduler
             provider.DiscardTrialDelivery(integ, wave.Dir);
         }
     }
+
+    /// <summary>
+    /// Design 39 §1c "How a refresh is recorded (post-plan-40 refinement)": a barrier delivery that just
+    /// settled DELIVERED whose trial was NOT built from an ancestor of the user's tip means the user's
+    /// branch carries commits the plan branch lacks — <paramref name="trial"/>.Commit (the user's tip
+    /// AFTER promotion) is merged back onto the plan branch, in the integration worktree, so every later
+    /// wave's gates run against a tree that actually reflects the user's branch. Called ONLY by
+    /// <see cref="AttemptBarrierDeliveryAsync"/>, immediately after the settle, and BEFORE the wave's
+    /// completion-marker commit (§1/§4): a crash between the two would otherwise resume past a wave whose
+    /// refresh never happened.
+    /// <para>
+    /// Merges the SHA, never the branch name, with <c>--no-ff --no-verify</c> — the plan-branch tip from
+    /// BEFORE this call is always the first parent (a plain <c>git merge &lt;sha&gt;</c> in a worktree
+    /// checked out on the plan branch never fast-forwards the plan branch onto the delivered commit), the
+    /// user's tip the second. The commit message carries <c>Refreshed-From:</c> / <c>Guardrails-Run:</c> —
+    /// never <c>Supplied-By:</c>, because nothing was supplied. The record is written via
+    /// <see cref="Journal.RunJournal.RecordRefreshed"/> ONLY after the commit exists, and only when the
+    /// journal is the real <see cref="Journal.RunJournal"/> (the same <c>_journal is Journal.RunJournal</c>
+    /// cast <see cref="SettleDelivery"/> and the shipped supply drain use).
+    /// </para>
+    /// <para>
+    /// <b>#150 fault path, never an exception escaping RunAsync.</b> The upstream already contains
+    /// everything the plan branch delivered, so the merge is conflict-free by construction; if git fails
+    /// anyway (review round 5), this writes NO record and returns the honest-halt <see cref="RunReport"/>
+    /// with <see cref="RunReport.Abort"/> set, for the caller to return immediately — no wave marker, no
+    /// continuing on the stale base. The untracked paths that blocked the merge are computed the same way
+    /// <see cref="Journal.RefreshedRecord"/>'s own <c>Paths</c> are (never by parsing git's own,
+    /// locale-dependent error prose): the untracked files in the integration worktree, intersected with the
+    /// paths the merge would have brought in.
+    /// </para>
+    /// </summary>
+    private RunReport? RefreshPlanBranchAfterDelivery(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle integ, TrialDelivery trial,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        if (trial.Commit is not { Length: > 0 } upstreamSha)
+        {
+            return null; // defensive: Commit is null only on a Refusal, which never reaches this method.
+        }
+
+        string integrationPath = integ.IntegrationWorktreePath;
+        string planTipBeforeRefresh = GitCaptureLine(integrationPath, "rev-parse", "HEAD");
+
+        string message = $"Refreshed-From: {integ.OriginalBranch}\nGuardrails-Run: {_journal.RunId}";
+        (int exitCode, _) = RunGitInDir(
+            integrationPath, "merge", "--no-ff", "--no-verify", "-m", message, upstreamSha);
+
+        if (exitCode != 0)
+        {
+            // Best-effort: leave no half-finished merge behind. Never touches the untracked file that
+            // blocked it — deleting or overwriting it to force the merge through is exactly what this
+            // fault path exists to refuse.
+            RunGitInDir(integrationPath, "merge", "--abort");
+
+            IReadOnlyList<string> untracked = GitCaptureLines(integrationPath, "ls-files", "--others", "--exclude-standard");
+            IReadOnlyList<string> incoming = GitCaptureLines(integrationPath, "diff", "--name-only", planTipBeforeRefresh, upstreamSha);
+            List<string> blocking = untracked.Intersect(incoming, StringComparer.Ordinal)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+            var fault = new InvalidOperationException(
+                blocking.Count > 0
+                    ? $"the post-delivery refresh of {ShortSha10(upstreamSha)} onto the plan branch for wave "
+                      + $"'{wave.Dir}' failed: untracked path(s) in the integration worktree block the merge: "
+                      + string.Join(", ", blocking)
+                    : $"the post-delivery refresh of {ShortSha10(upstreamSha)} onto the plan branch for wave "
+                      + $"'{wave.Dir}' failed (git merge exited nonzero)");
+
+            RunReport abortReport = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+                with { Abort = BuildAbort(fault) };
+            if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+            return abortReport;
+        }
+
+        string refreshCommit = GitCaptureLine(integrationPath, "rev-parse", "HEAD");
+        IReadOnlyList<string> paths = GitCaptureLines(integrationPath, "diff", "--name-only", $"{refreshCommit}^1", refreshCommit)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        if (_journal is Journal.RunJournal runJournal)
+        {
+            runJournal.RecordRefreshed(new Journal.RefreshedRecord
+            {
+                At = DateTimeOffset.UtcNow,
+                Commit = refreshCommit,
+                From = integ.OriginalBranch,
+                Upstream = upstreamSha,
+                DeliveredWave = wave.Dir,
+                Paths = paths
+            });
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <c>git &lt;args&gt;</c> in <paramref name="workingDir"/>, returning its exit code and raw stdout
+    /// without throwing — the refresh merge (<see cref="RefreshPlanBranchAfterDelivery"/>) needs the exit
+    /// code to DECIDE the #150 fault path rather than have it thrown at it, unlike
+    /// <see cref="GitFastForwardOnly"/>'s always-throws shape. Stderr is drained (never returned or parsed):
+    /// git localizes it, so a blocking-path list built from its prose would silently go empty under a
+    /// non-English locale (design 39 §1c).
+    /// </summary>
+    private static (int ExitCode, string Stdout) RunGitInDir(string workingDir, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        foreach (string arg in args) psi.ArgumentList.Add(arg);
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        return (proc.ExitCode, stdout);
+    }
+
+    /// <summary>The single trimmed line a read-only git query returns (e.g. <c>rev-parse</c>).</summary>
+    private static string GitCaptureLine(string workingDir, params string[] args) =>
+        RunGitInDir(workingDir, args).Stdout.Trim();
+
+    /// <summary>Every non-empty line a read-only git query returns (e.g. <c>ls-files</c>/<c>diff --name-only</c>).</summary>
+    private static IReadOnlyList<string> GitCaptureLines(string workingDir, params string[] args) =>
+        RunGitInDir(workingDir, args).Stdout
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim('\r'))
+            .Where(s => s.Length > 0)
+            .ToList();
 
     /// <summary>
     /// Write <paramref name="record"/> as this wave's OWN <c>waves.&lt;dir&gt;.delivered</c> journal entry
