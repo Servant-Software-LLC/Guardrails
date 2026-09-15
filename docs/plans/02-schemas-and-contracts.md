@@ -1267,6 +1267,16 @@ re-hashes every file. A CRLF-committed file under `core.autocrlf=true`, or an ex
 `core.filemode=false`, reads as changed there and nowhere else; plan 40's salvage held exactly that churn and
 nothing of the agent's work.
 
+**The attempt that runs after the scope widens is pointed at the kept work (#707 review).**
+`DependencyContextBuilder.BuildPriorAttempts` finds each prior attempt's `out-of-scope.patch` and reads the paths
+it touches from its `diff --git` headers. The capture passes `--no-renames`, so each header names a single path
+twice. When the ENFORCED scope of the attempt being composed now covers at least one of those paths — because the
+scope was widened, as the halt asked — the composed prompt gains `## Out-of-scope work an earlier attempt left is
+now in scope`. That section names the most recent such patch and lists only the paths the scope now covers, as
+work to recover rather than re-author. It says it supersedes the earlier feedback's "not for you", which was true
+under the scope that attempt ran with, and that any path in the patch still outside the scope stays off-limits.
+While no kept path is in scope, the copy is never mentioned to the agent at all.
+
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
 A task whose deliverable lives under `.claude/` cannot write it directly: the Claude Code
@@ -4557,8 +4567,10 @@ logs/<runId>/<task-id>/attempt-N/
 ├── out-of-scope.patch       # #705: applyable diff of a write-scope violation's OFFENDING paths vs taskBase,
                               #   captured from the check's staged index BEFORE the scoped revert destroys
                               #   them; for a HUMAN deciding whether writeScope should grow — never applied by
-                              #   the harness, never offered to a retry as salvage; named in feedback.md;
-                              #   absent when there was no violation or the best-effort capture failed
+                              #   the harness, never offered to a retry as salvage; named in feedback.md; once a
+                              #   widened scope covers its paths, the next attempt's composed prompt offers those
+                              #   paths to recover (§3.4); absent when there was no violation or the best-effort
+                              #   capture failed
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
 
@@ -5142,7 +5154,9 @@ inert hook. See §9.4 for the mechanism this condition gates.
   mode only: `## Write scope (harness-enforced)`, the ENFORCED scope rendered from the array the write-scope
   check gates on — #706, §3.4), previous-attempt feedback (actions,
   attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
-  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **staging-outputs
+  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **recoverable out-of-scope work** (actions, worktree mode, only when the
+  enforced scope now covers a path an earlier attempt's `out-of-scope.patch` touched — #705/#707 review, §3.4),
+  **staging-outputs
   contract** (actions, when `stagingOutputs` declared, §3.5: the absolute `GUARDRAILS_STAGING_DIR` and
   the `from→to` map embedded verbatim — "write here; the harness moves it to `.claude/`; do not write
   `.claude/` directly", since agents read instructions, not env vars), verdict

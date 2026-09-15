@@ -256,7 +256,12 @@ public static class WriteScopeCheck
             // so the batches' patches concatenate into one applyable patch.
             for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
             {
-                var args = new List<string> { "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", taskBase, "--" };
+                // --no-renames: each file header then names ONE path twice, which is how the next attempt's composer
+                // reads back which paths a kept copy touches (#707 review W4).
+                var args = new List<string>
+                {
+                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
+                };
                 args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
                 batches.Add(RunGit(repoPath, [.. args]));
             }
