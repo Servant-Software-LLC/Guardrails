@@ -81,7 +81,10 @@ public static class RunOutcomePolicy
     /// <returns>The first suppressing entry whose wave is covered (or unattributed), else null.</returns>
     public static DecisionEntry? SuppressingDecisionForDelivery(
         IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
-        throw new NotImplementedException();
+        decisions.FirstOrDefault(d =>
+            (d.Decision == DecisionTokens.ProceededBestGuess ||
+             d.Decision == DecisionTokens.ProceededUnreviewed) &&
+            (d.Wave is null || coveredWaves.Contains(d.Wave)));
 
     /// <summary>
     /// True when <see cref="SuppressingDecisionForDelivery"/> finds a decision that holds this delivery —
@@ -93,7 +96,7 @@ public static class RunOutcomePolicy
     /// <returns>Whether this delivery must be held.</returns>
     public static bool SuppressesDelivery(
         IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
-        throw new NotImplementedException();
+        SuppressingDecisionForDelivery(decisions, coveredWaves) is not null;
 
     /// <summary>
     /// The number of <see cref="DecisionTokens.ProceededUnreviewed"/> decisions the run recorded (doc 12 §5.2
