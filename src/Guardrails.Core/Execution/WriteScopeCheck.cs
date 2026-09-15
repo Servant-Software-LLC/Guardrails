@@ -60,6 +60,7 @@ public static class WriteScopeCheck
             return new WriteScopeCheckResult
             {
                 Passed = false,
+                Scope = scope,
                 OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }]
             };
         }
@@ -93,6 +94,7 @@ public static class WriteScopeCheck
         return new WriteScopeCheckResult
         {
             Passed = offending.Count == 0,
+            Scope = scope,
             OffendingPaths = offending
         };
     }
@@ -336,6 +338,13 @@ public sealed record WriteScopeCheckResult
 {
     /// <summary>True when every changed path is within the declared write-scope.</summary>
     public bool Passed { get; init; }
+
+    /// <summary>
+    /// The scope globs this check ENFORCED — the array it was handed, with a null scope already coalesced
+    /// to empty (#389). Carried on the result so anything that tells the agent what it may write reads
+    /// the rule the verdict was actually computed against, never a second copy of it (issue #706).
+    /// </summary>
+    public required IReadOnlyList<string> Scope { get; init; }
 
     /// <summary>Changed paths that fall outside the declared write-scope. Empty when <see cref="Passed"/>.</summary>
     public IReadOnlyList<WriteScopeOffense> OffendingPaths { get; init; } = [];

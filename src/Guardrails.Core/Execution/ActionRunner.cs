@@ -60,7 +60,8 @@ internal sealed class ActionRunner
         double maxTurnsMultiplier,
         TierResolution? route,
         CancellationToken cancellationToken,
-        string? worktreeRoot = null)
+        string? worktreeRoot = null,
+        IReadOnlyList<string>? enforcedWriteScope = null)
     {
         if (task.Action.Kind != ActionKind.Prompt)
         {
@@ -80,7 +81,8 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot,
+            enforcedWriteScope).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -108,7 +110,8 @@ internal sealed class ActionRunner
         double maxTurnsMultiplier,
         TierResolution? route,
         CancellationToken cancellationToken,
-        string? worktreeRoot)
+        string? worktreeRoot,
+        IReadOnlyList<string>? enforcedWriteScope)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
         PromptFile promptFile = PromptExecutionSupport.LoadPromptFile(task.Action.Path);
@@ -142,9 +145,14 @@ internal sealed class ActionRunner
         // was provisioned (the executor passes null otherwise). The output-contract path embedded in
         // the prompt TEXT is the STAGING path (#266) so it matches what the agent is actually told to
         // write to via GUARDRAILS_STATE_OUT below.
+        //
+        // #706: `enforcedWriteScope` is the array the executor's write-scope check will gate this attempt on
+        // (resolved once, by the executor, for both uses) — rendered as a harness-generated section so the
+        // agent is shown its scope instead of relying on a hand-copied paragraph. Null in serial mode.
         string composed = PromptComposer.ComposeAction(
             promptFile.Body, snapshotPath, stagingStateOutPath, previousFeedbackPath, dependencies, priorAttempts,
-            stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode, injectedHumanAnswer);
+            stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode, injectedHumanAnswer,
+            enforcedWriteScope);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(

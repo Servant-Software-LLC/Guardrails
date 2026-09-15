@@ -15,6 +15,9 @@ namespace Guardrails.Core.Prompts;
 /// <item>(actions) <c>## Context from completed dependency tasks</c> — transcript/fragment pointers
 ///   for the transitive <c>dependsOn</c> closure (issue #26 Gap 4); present on every attempt.</item>
 /// <item>(actions) <c>## Output contract</c> — write a JSON fragment to STATE_OUT; the needsHuman escape.</item>
+/// <item>(actions, worktree mode only) <c>## Write scope (harness-enforced)</c> — the ENFORCED write scope
+///   (declared <c>writeScope</c> + implicit staging destinations), rendered from the array the write-scope
+///   check gates on, never from author prose (issue #706).</item>
 /// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
 ///   plus pointers to ALL prior attempts' transcript/feedback (issue #26 Gaps 2 &amp; 3).</item>
 /// <item>(guardrails) <c>## Verdict contract</c> — verifier instructions + the verdict file path.</item>
@@ -62,7 +65,8 @@ public static class PromptComposer
         string? stagingDir = null,
         IReadOnlyList<StagingOutput>? stagingOutputs = null,
         bool isWorktreeMode = false,
-        string? injectedHumanAnswer = null)
+        string? injectedHumanAnswer = null,
+        IReadOnlyList<string>? writeScope = null)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
@@ -70,6 +74,7 @@ public static class PromptComposer
         AppendDependencyContext(text, dependencies);
         AppendOutputContract(text, stateOutPath);
         AppendStagingOutputs(text, stagingDir, stagingOutputs);
+        AppendWriteScope(text, writeScope);
         AppendPreviousAttempt(text, feedbackPath, priorAttempts);
         AppendInjectedHumanAnswer(text, injectedHumanAnswer);
         AppendWorktreeSafety(text, isWorktreeMode);
@@ -199,6 +204,51 @@ public static class PromptComposer
         text.Append('\n');
         text.Append("Do NOT attempt to write under `.claude/` directly — it will be refused. Stage, and the\n");
         text.Append("harness delivers.\n");
+    }
+
+    /// <summary>
+    /// The write-scope section (issue #706), emitted ONLY when the executor hands over the ENFORCED scope —
+    /// worktree mode, where the write-scope check runs (SSOT §3.4). It is generated from the very array that
+    /// check gates on: the declared <c>writeScope</c> plus the implicit <c>stagingOutputs</c> destinations.
+    /// Before this, the only statement of scope an agent ever saw was author-written prose, and in plans 39
+    /// and 40 that prose read "Write only to the path(s) listed above" in 48 prompts that listed nothing;
+    /// task 20 of plan 40 spent four attempts against a scope it could not see. Rendering the enforced array
+    /// makes the source of truth the rule itself, which a hand-copied paragraph can never be. An EMPTY scope
+    /// (a deliberate "writes nothing", #389) is stated in words: a heading over no bullets would read as a
+    /// rendering fault.
+    /// </summary>
+    private static void AppendWriteScope(StringBuilder text, IReadOnlyList<string>? writeScope)
+    {
+        if (writeScope is null)
+        {
+            return;
+        }
+
+        text.Append("\n## Write scope (harness-enforced)\n\n");
+        if (writeScope.Count == 0)
+        {
+            text.Append("This task's `writeScope` is EMPTY: it may not add, modify or delete ANY file in the\n");
+            text.Append("repository. Its only output is the state fragment described above.\n\n");
+        }
+        else
+        {
+            text.Append("This task may add, modify or delete ONLY these workspace-relative paths — its declared\n");
+            text.Append("`writeScope`, plus any destination the harness delivers for it:\n\n");
+            foreach (string entry in writeScope)
+            {
+                text.Append("- `").Append(entry).Append("`\n");
+            }
+
+            text.Append('\n');
+            text.Append("An entry that ends in `/`, or whose last segment has no file extension, is a directory and\n");
+            text.Append("covers everything beneath it; `*` matches within one path segment, `**` across any number.\n\n");
+        }
+
+        text.Append("When you finish, the harness diffs every file you changed against this task's base commit.\n");
+        text.Append("A change to any path this scope does not cover FAILS the attempt, and that path is reverted.\n");
+        text.Append("If the task cannot be done without changing a path it does not cover, do not write it. Write\n");
+        text.Append("`{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`\n");
+        text.Append("to the state-out path instead, so a human can widen the scope in `task.json`.\n");
     }
 
     /// <summary>

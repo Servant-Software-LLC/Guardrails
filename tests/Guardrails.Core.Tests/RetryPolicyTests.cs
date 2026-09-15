@@ -270,7 +270,7 @@ public sealed class RetryPolicyTests
         var salvage = new SalvageRef("refs/guardrails/04-impl/attempt-1", " src/a.cs | 2 +", Attempt: 1, PatchPath: "/p.patch");
 
         string feedback = RetryPolicy.ForWriteScopeViolation(
-            PromptTask("04-impl"), attempt: 2, offenses, fileWritesRolledBack: true, salvageRef: salvage);
+            PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**"), fileWritesRolledBack: true, salvageRef: salvage);
 
         Assert.Contains("outside.txt", feedback);
         Assert.DoesNotContain("in-scope changes are preserved", feedback); // the false claim is gone
@@ -285,7 +285,7 @@ public sealed class RetryPolicyTests
         // persists, so the original accurate claim stays.
         var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 2, offenses);
+        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**"));
 
         Assert.Contains("in-scope changes are preserved", feedback);
         Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
@@ -354,7 +354,7 @@ public sealed class RetryPolicyTests
         // also drop the agent-oriented wording (issue #264).
         var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(Task("10-gitignore"), attempt: 2, offenses);
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("10-gitignore"), attempt: 2, Violation(offenses, ".gitignore"));
 
         Assert.Contains("deterministic `script` action", feedback);
         Assert.DoesNotContain("Do NOT start over", feedback);
@@ -685,7 +685,7 @@ public sealed class RetryPolicyTests
             new() { Path = "old/Gone.cs", Status = 'D' }
         };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 2, offenses);
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 2, Violation(offenses, "src/**"));
 
         Assert.Contains("`outside.txt` (A: new/untracked", feedback);
         Assert.Contains("`config/settings.json` (M: modified", feedback);
@@ -705,7 +705,7 @@ public sealed class RetryPolicyTests
             Preview = new WriteScopeOffensePreview { SizeBytes = 42, TextPreview = "out of scope cruft" }
         };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, [offense]);
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, Violation([offense], "src/**"));
 
         Assert.Contains("42 byte(s) before revert", feedback);
         Assert.Contains("out of scope cruft", feedback);
@@ -718,8 +718,65 @@ public sealed class RetryPolicyTests
         // feedback must not fabricate a "byte(s) before revert" section for one.
         var offense = new WriteScopeOffense { Path = "config/settings.json", Status = 'M' };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, [offense]);
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, Violation([offense], "src/**"));
 
         Assert.DoesNotContain("byte(s) before revert", feedback);
     }
+
+    // ── #706 the violation feedback shows what the task MAY write, not only what it wrote ─────────
+
+    [Fact]
+    public void WriteScopeViolation_ListsTheEnforcedAllowedPaths_AfterTheOffendingOnes()
+    {
+        // #706: plan 40's task 20 was told "ensure you only write to paths covered by this task's writeScope"
+        // on every retry and was never once shown those paths. The feedback must carry the ENFORCED list —
+        // every entry, none invented — after the offending path, so a stray write reads differently from a
+        // scope the plan got wrong.
+        var offenses = new List<WriteScopeOffense>
+        {
+            new() { Path = "src/Guardrails.Core/Execution/OverwatchDecision.cs", Status = 'M' }
+        };
+        string[] scope = ["src/Guardrails.Core/Execution/Overwatch.cs", "tests/Guardrails.Core.Tests/Supply/**"];
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, scope));
+
+        int offending = feedback.IndexOf("`src/Guardrails.Core/Execution/OverwatchDecision.cs`", StringComparison.Ordinal);
+        int allowedBlock = feedback.IndexOf(AllowedPathsLead, StringComparison.Ordinal);
+        Assert.True(offending >= 0, "the offending path must still be named:\n" + feedback);
+        Assert.True(allowedBlock > offending, "the allowed paths must be listed AFTER the offending path:\n" + feedback);
+        Assert.Equal(scope, BulletPathsAfter(feedback, AllowedPathsLead));
+    }
+
+    [Fact]
+    public void WriteScopeViolation_EmptyScope_SaysNothingIsAllowed_NotAnEmptyList()
+    {
+        // Control against a silently empty rendering: `writeScope: []` is a deliberate "writes nothing"
+        // declaration (#389). A lead-in followed by zero bullets reads as a rendering bug, so the feedback
+        // must SAY the scope is empty instead.
+        var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 1, Violation(offenses));
+
+        Assert.DoesNotContain(AllowedPathsLead, feedback);
+        Assert.Contains("writeScope is EMPTY", feedback);
+    }
+
+    /// <summary>The lead-in line the allowed-path list follows (#706).</summary>
+    private const string AllowedPathsLead = "This task's writeScope allows changes ONLY to:";
+
+    /// <summary>The backticked paths of the bullet run that immediately follows <paramref name="lead"/>.</summary>
+    private static List<string> BulletPathsAfter(string text, string lead)
+    {
+        string after = text[(text.IndexOf(lead, StringComparison.Ordinal) + lead.Length)..];
+        return after.Replace("\r\n", "\n").Split('\n')
+            .SkipWhile(line => line.Length == 0)
+            .TakeWhile(line => line.StartsWith("- `", StringComparison.Ordinal))
+            .Select(line => line[3..line.IndexOf('`', 3)])
+            .ToList();
+    }
+
+    /// <summary>A failed <see cref="WriteScopeCheckResult"/> for <paramref name="offenses"/> under <paramref name="scope"/>.</summary>
+    private static WriteScopeCheckResult Violation(IReadOnlyList<WriteScopeOffense> offenses, params string[] scope) =>
+        new() { Passed = false, Scope = scope, OffendingPaths = offenses };
 }
