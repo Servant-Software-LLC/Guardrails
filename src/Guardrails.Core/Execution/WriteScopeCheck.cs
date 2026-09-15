@@ -234,6 +234,45 @@ public static class WriteScopeCheck
     }
 
     /// <summary>
+    /// Issue #705: KEEP the out-of-scope bytes. <see cref="ScopedRevert"/> destroys every offending change, which is
+    /// right when the out-of-scope write is collateral and exactly wrong when it IS the deliverable — the shape of
+    /// every plan scope gap. Plan 40's task 20 lost a working implementation this way on two attempts running.
+    /// Call it after <see cref="Check"/> and strictly before <see cref="ScopedRevert"/>: it diffs the INDEX that
+    /// <see cref="Check"/> just staged against <paramref name="taskBase"/>, limited to the offending paths, so the
+    /// patch holds exactly the bytes the verdict judged — added, modified and deleted paths alike, and none of the
+    /// in-scope work. <c>--binary</c> keeps a binary change applyable, <c>--no-color</c> keeps a user's color config
+    /// out of the bytes, and <c>--literal-pathspecs</c> makes a file name containing a glob character name that file.
+    /// Returns "" (never throws) when nothing is offending or git fails: the copy is best-effort and must never fail
+    /// the attempt or stand in the way of the revert. The WS_2 git-error sentinel is not a path and is skipped.
+    /// </summary>
+    public static string CaptureOffendingPatch(
+        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    {
+        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
+        var batches = new List<string>();
+        try
+        {
+            // Batched so a very large offending set cannot overflow a child's command line. The paths are disjoint,
+            // so the batches' patches concatenate into one applyable patch.
+            for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+            {
+                var args = new List<string> { "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", taskBase, "--" };
+                args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
+                batches.Add(RunGit(repoPath, [.. args]));
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return "";
+        }
+
+        return string.Concat(batches);
+    }
+
+    /// <summary>How many paths one <see cref="CaptureOffendingPatch"/> git child is handed.</summary>
+    private const int PatchPathBatchSize = 100;
+
+    /// <summary>
     /// Restore each path in <paramref name="offendingPaths"/> to its <paramref name="taskBase"/>
     /// state, leaving all in-scope WIP (staged or unstaged) untouched. No-op when
     /// <paramref name="offendingPaths"/> is empty.

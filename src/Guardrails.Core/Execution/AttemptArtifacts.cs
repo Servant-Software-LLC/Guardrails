@@ -94,7 +94,24 @@ internal static class AttemptArtifacts
     /// caller then falls back to the git ref alone. Best-effort: an IO failure returns null rather than
     /// aborting the retry loop.
     /// </summary>
-    public static string? WriteSalvagePatch(string logDir, string patch)
+    public static string? WriteSalvagePatch(string logDir, string patch) =>
+        WritePatch(logDir, "prior-attempt.patch", patch);
+
+    /// <summary>
+    /// Write <c>out-of-scope.patch</c> (issue #705): a write-scope violation's offending changes, captured before the
+    /// scoped revert destroyed them. It sits beside <c>prior-attempt.patch</c> in the attempt's own log dir, never in
+    /// the segment worktree, and it is never offered to a retry as salvage: it is for the human deciding whether the
+    /// task's scope should grow. Returns the path written, or null when <paramref name="patch"/> is empty — so an
+    /// empty file never stands in for kept work — or when the write fails.
+    /// </summary>
+    public static string? WriteOutOfScopePatch(string logDir, string patch) =>
+        WritePatch(logDir, "out-of-scope.patch", patch);
+
+    /// <summary>
+    /// The one best-effort patch writer behind <see cref="WriteSalvagePatch"/> and <see cref="WriteOutOfScopePatch"/>:
+    /// null for an empty patch or an IO failure, never an exception that could abort the retry loop.
+    /// </summary>
+    private static string? WritePatch(string logDir, string fileName, string patch)
     {
         if (string.IsNullOrEmpty(patch))
         {
@@ -104,7 +121,7 @@ internal static class AttemptArtifacts
         try
         {
             Directory.CreateDirectory(logDir);
-            string path = Path.Combine(logDir, "prior-attempt.patch");
+            string path = Path.Combine(logDir, fileName);
             AtomicFile.WriteAllText(path, patch);
             return path;
         }
