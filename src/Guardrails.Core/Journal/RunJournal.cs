@@ -480,14 +480,18 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// §1c "How a refresh is recorded" / §5) — the write path for every post-delivery refresh merge.
     /// Additive — the section stays absent until the first refresh, matching <see cref="RecordSupplied"/>
     /// (never <c>null</c> noise, and a second refresh appends rather than replacing the first).
-    /// <para>
-    /// STUB (task 24): throws until task 25 wires the write. Task 25's tests pin that this method must
-    /// APPEND (never replace), must PERSIST to disk, and must leave <see cref="JournalDocument.Supplied"/>
-    /// untouched.
-    /// </para>
     /// </summary>
-    public void RecordRefreshed(RefreshedRecord record) =>
-        throw new NotImplementedException();
+    public void RecordRefreshed(RefreshedRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        lock (_gate)
+        {
+            var refreshed = new List<RefreshedRecord>(_document.Refreshed ?? []) { record };
+            _document = _document with { Refreshed = refreshed };
+            Persist();
+        }
+    }
 
     /// <summary>
     /// Allocate the next durably-MONOTONIC, never-reused escalation <c>seq</c> for this run (doc 12 §7.1,
