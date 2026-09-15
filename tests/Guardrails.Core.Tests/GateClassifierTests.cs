@@ -36,7 +36,7 @@ public sealed class GateClassifierTests
         // §4.1: a permission wall (#266 / #86 / #104) already halts unconditionally — no best-guess
         // fixes a missing granted path. Build a genuine halt decision via the shipped tracker.
         var tracker = new PermissionWallTracker();
-        tracker.Observe([".claude/skills/certify-knowledge/SKILL.md"]);
+        tracker.Observe(1, [".claude/skills/certify-knowledge/SKILL.md"]);
         PermissionWallDecision decision = tracker.ShouldHalt();
         Assert.True(decision.Halt);   // precondition: this IS a wall
 
