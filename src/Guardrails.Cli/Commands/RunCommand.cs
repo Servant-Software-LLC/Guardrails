@@ -2135,10 +2135,7 @@ public static class RunCommand
         ArgumentNullException.ThrowIfNull(report);
         ArgumentNullException.ThrowIfNull(output);
 
-        IReadOnlyList<string> delivered = report.WaveDeliveries
-            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
-            .Select(kv => kv.Key)
-            .ToList();
+        IReadOnlyList<(string Wave, string DeliveredBy)> delivered = BarrierDeliveredWaves(report);
 
         if (delivered.Count == 0)
         {
@@ -2167,7 +2164,10 @@ public static class RunCommand
 
         output.WriteLine();
         output.WriteLine("WAVE DELIVERY REPORT (design 39 §4):");
-        output.WriteLine($"  Delivered at their own barrier: {string.Join(", ", delivered)}.");
+        output.WriteLine(
+            "  Delivered at their own barrier: "
+            + string.Join(", ", delivered.Select(d => d.Wave == d.DeliveredBy ? d.Wave : $"{d.Wave} (carried by {d.DeliveredBy})"))
+            + ".");
 
         // Final adversarial pass (review round 5): a rejecting hook holds every later delivery to run end
         // instead of halting, and the durable record correctly reads delivered/Merged once the run-end merge
@@ -2232,8 +2232,12 @@ public static class RunCommand
             .Where(id => id.IndexOf('/') > 0)
             .Select(id => id[..id.IndexOf('/')]);
 
+        // A task-less wave the run halted at (the JIT checkpoint) has no task id to name it by; its halt does.
+        string[] haltedWave = report.WaveHalt is { WaveDir: { } halted } ? [halted] : [];
+
         return report.WaveDeliveries.Keys
             .Concat(wavesWithTasks)
+            .Concat(haltedWave)
             .Where(w => !carried.Contains(w))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(w => w, StringComparer.Ordinal)
@@ -2246,11 +2250,16 @@ public static class RunCommand
     /// holds no wave-level cause to name:
     /// <list type="bullet">
     ///   <item>a non-delivered barrier record's own status: a refusal's outcome token, else <c>suppressed</c>;</item>
+    ///   <item>otherwise, when the run STOPPED rather than halting at a wave, that run-level cause first —
+    ///     <c>cancelled</c>, <c>aborted</c> or <c>definition drift</c> — for every held wave it left behind, one
+    ///     that was mid-flight included;</item>
     ///   <item>the wave's tasks that need a human, or that hit a provider limit (<c>rate-limited</c>);</item>
-    ///   <item><c>not reached</c> when every task was blocked or never started.</item>
+    ///   <item><c>not reached</c> only when the barrier block marked every task blocked (SSOT §7: not reached means
+    ///     pending or blocked). A cancelled task never reads as not reached; with no other cause it reads
+    ///     <c>not finished</c>.</item>
     /// </list>
-    /// A wave whose tasks all passed (the final wave behind a failed terminal gate, or a withheld run-end
-    /// merge) gets no reason: its cause is run-level, and the run's own verdict names it.
+    /// A wave whose tasks all passed on a run that did not stop (the final wave behind a failed terminal gate, or
+    /// a withheld run-end merge) gets no reason: that cause is run-level, and the run's own verdict names it.
     /// </summary>
     private static string HeldWaveReason(RunReport report, string waveDir)
     {
@@ -2276,6 +2285,11 @@ public static class RunCommand
         string[] rateLimited = [.. tasks.Where(t => t.Outcome == TaskOutcome.RateLimited).Select(t => t.TaskId[prefix.Length..])];
 
         var reasons = new List<string>();
+        if (RunStopCause(report) is { } stopCause)
+        {
+            reasons.Add(stopCause);
+        }
+
         if (needsHuman.Length > 0)
         {
             reasons.Add($"{string.Join(", ", needsHuman)} needs-human");
@@ -2286,14 +2300,48 @@ public static class RunCommand
             reasons.Add($"{string.Join(", ", rateLimited)} rate-limited");
         }
 
-        if (reasons.Count == 0 && tasks.Count > 0
-            && tasks.All(t => t.Outcome is TaskOutcome.Blocked or TaskOutcome.Cancelled))
+        // Only the barrier block marks every task of a wave Blocked (Scheduler.BlockLaterWaves): a Blocked task
+        // otherwise needs a non-green predecessor in its own wave, which is named above, because a dependsOn
+        // across waves is invalid (GR2034).
+        if (reasons.Count == 0 && tasks.Count > 0 && tasks.All(t => t.Outcome == TaskOutcome.Blocked))
         {
             reasons.Add("not reached");
         }
 
+        if (reasons.Count == 0 && tasks.Any(t => t.Outcome == TaskOutcome.Cancelled))
+        {
+            reasons.Add("not finished");
+        }
+
         return reasons.Count == 0 ? "" : $" ({string.Join("; ", reasons)})";
     }
+
+    /// <summary>
+    /// W1: why the run STOPPED short of delivering, when it stopped rather than halting at a wave — cancelled,
+    /// aborted by an infrastructure fault, or halted on definition drift — or null.
+    /// </summary>
+    private static string? RunStopCause(RunReport report) =>
+        report.Cancelled ? "cancelled"
+        : report.Abort is not null ? "aborted"
+        : report.DefinitionDrift is not null ? "definition drift"
+        : null;
+
+    /// <summary>
+    /// Design 39 §4: every wave whose work a barrier delivery put on the user's branch, in ordinal order, each paired
+    /// with the wave that delivered it — itself, or the later delivery point that CARRIED it (the wave is in that
+    /// record's <c>covers</c>). Shared by <see cref="RenderWaveDeliveryReport"/>, <see cref="DescribeDelivery"/> and
+    /// <see cref="RenderUndeliveredWorkWarning"/>, so every surface lists the same delivered set.
+    /// </summary>
+    private static IReadOnlyList<(string Wave, string DeliveredBy)> BarrierDeliveredWaves(RunReport report) =>
+    [
+        .. report.WaveDeliveries
+            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
+            .SelectMany(kv => kv.Value.Covers.Append(kv.Key).Select(w => (Wave: w, DeliveredBy: kv.Key)))
+            .OrderBy(p => string.Equals(p.Wave, p.DeliveredBy, StringComparison.Ordinal) ? 0 : 1) // a wave's own delivery wins
+            .GroupBy(p => p.Wave, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .OrderBy(p => p.Wave, StringComparer.Ordinal)
+    ];
 
     /// <summary>
     /// Derive the durable delivery record (SSOT §7 <c>delivery</c>, issue #542) from the finished run — the
@@ -2342,10 +2390,7 @@ public static class RunCommand
         // wave after the last delivery point (review round 5, d39-hooks-untracked-tooling), exactly as a
         // flat plan's does — which is why this is gated on the run-end outcome, not on WaveDeliveries alone.
         bool runEndLanded = report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
-        IReadOnlyList<string> deliveredWaves = report.WaveDeliveries
-            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
-            .Select(kv => kv.Key)
-            .ToList();
+        IReadOnlyList<string> deliveredWaves = [.. BarrierDeliveredWaves(report).Select(d => d.Wave)];
 
         if (!runEndLanded && deliveredWaves.Count > 0)
         {
@@ -2639,10 +2684,7 @@ public static class RunCommand
         // Design 39 §4: a wave already delivered at its own barrier stays a true fact even when the run-end
         // delivery that would have carried the rest was held — naming it here keeps the "NOT on your
         // checkout" line below honest about only the work that is STILL held.
-        IReadOnlyList<string> alreadyDeliveredWaves = report.WaveDeliveries
-            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
-            .Select(kv => kv.Key)
-            .ToList();
+        IReadOnlyList<string> alreadyDeliveredWaves = [.. BarrierDeliveredWaves(report).Select(d => d.Wave)];
         if (alreadyDeliveredWaves.Count > 0)
         {
             output.WriteLine(

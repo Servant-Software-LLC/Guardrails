@@ -396,7 +396,7 @@ public sealed class PartialDeliveryReportTests
                 new TaskResult { TaskId = "wave-02-mid/01-b", Outcome = TaskOutcome.GuardrailFailed, Summary = "guardrail(s) failed" },
                 new TaskResult { TaskId = "wave-02-mid/02-c", Outcome = TaskOutcome.Blocked, Summary = "a dependency did not succeed" },
                 new TaskResult { TaskId = "wave-03-tail/01-d", Outcome = TaskOutcome.Blocked, Summary = "not started — halted at wave 'wave-02-mid' barrier (SSOT §14.4)" },
-                new TaskResult { TaskId = "wave-03-tail/02-e", Outcome = TaskOutcome.Cancelled, Summary = "not started (run cancelled)" },
+                new TaskResult { TaskId = "wave-03-tail/02-e", Outcome = TaskOutcome.Blocked, Summary = "not started — halted at wave 'wave-02-mid' barrier (SSOT §14.4)" },
             ],
             WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
             {
@@ -455,6 +455,146 @@ public sealed class PartialDeliveryReportTests
         string output = RenderReport(report);
 
         Assert.Contains("Held on the plan branch: wave-02-final.", output, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // W1: "not reached" is reserved for a wave the barrier block marked blocked (SSOT §7: not reached means
+    // pending or blocked). A run that STOPPED — cancelled, aborted, or halted on definition drift — names that
+    // run-level cause first, including for a wave that was mid-flight when it stopped.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static RunReport HeldAfterWaveOne(params TaskResult[] wave2Tasks) => new()
+    {
+        Tasks = [Green("wave-01-deliver/01-a"), .. wave2Tasks],
+        WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+        {
+            ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+        },
+    };
+
+    private static TaskResult CancelledTask(string id, string summary) =>
+        new() { TaskId = id, Outcome = TaskOutcome.Cancelled, Summary = summary };
+
+    [Fact]
+    public void TheReport_ForAWaveCancelledMidAttempt_SaysCancelled_NotNotReached()
+    {
+        RunReport report = HeldAfterWaveOne(
+            CancelledTask("wave-02-final/01-b", "cancelled mid-attempt; journaled pending")) with { Cancelled = true };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held on the plan branch: wave-02-final (cancelled).", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("not reached", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReport_ForAMixedWaveOnACancelledRun_NamesTheCancel()
+    {
+        RunReport report = HeldAfterWaveOne(
+            Green("wave-02-final/01-b"),
+            CancelledTask("wave-02-final/02-c", "cancelled mid-attempt; journaled pending")) with { Cancelled = true };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held on the plan branch: wave-02-final (cancelled).", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReport_ForAnAbortedRun_SaysAborted_NotNotReached()
+    {
+        RunReport report = HeldAfterWaveOne(CancelledTask("wave-02-final/01-b", "not started (run cancelled)")) with
+        {
+            Abort = new RunAbort { Headline = "git failed", Remedy = "fix git, then resume", Detail = "InvalidOperationException" }
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held on the plan branch: wave-02-final (aborted).", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("not reached", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReport_ForADefinitionDriftHalt_SaysDefinitionDrift()
+    {
+        RunReport report = HeldAfterWaveOne(CancelledTask("wave-02-final/01-b", "not started (run cancelled)")) with
+        {
+            DefinitionDrift = new DefinitionDriftReport
+            {
+                Tasks = [new DriftedTask { TaskId = "wave-01-deliver/01-a", OldHash = "sha256:a", NewHash = "sha256:b", DiffCommand = "git diff" }]
+            }
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held on the plan branch: wave-02-final (definition drift).", output, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // N2: a wave a later barrier delivery CARRIED (it is in that record's covers) is on the user's branch, so the
+    // report and delivery.reason list it as delivered; and a task-less wave the run halted at is held, so
+    // delivery.reason names it just as the console does.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static RunReport CarriedWaveThenTaskFailure() => new()
+    {
+        Tasks =
+        [
+            Green("wave-01-scaffold/01-a"),
+            Green("wave-02-deliver/01-b"),
+            new TaskResult { TaskId = "wave-03-final/01-c", Outcome = TaskOutcome.NeedsHuman, Summary = "needs human" },
+        ],
+        WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+        {
+            ["wave-02-deliver"] = DeliveredRecord("wave-01-scaffold", "wave-02-deliver"),
+        },
+    };
+
+    [Fact]
+    public void TheReport_ListsAWaveCarriedByALaterBarrierDelivery_AsDelivered()
+    {
+        string output = RenderReport(CarriedWaveThenTaskFailure());
+
+        Assert.Contains(
+            "Delivered at their own barrier: wave-01-scaffold (carried by wave-02-deliver), wave-02-deliver.",
+            output, StringComparison.Ordinal);
+        Assert.Contains("Held on the plan branch: wave-03-final (01-c needs-human).", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DescribeDelivery_ListsAWaveCarriedByALaterBarrierDelivery_AsDelivered()
+    {
+        DeliverySection d = RunCommand.DescribeDelivery(CarriedWaveThenTaskFailure(), terminalGatePassed: true, PlanDir);
+
+        Assert.Equal(DeliveryOutcome.PartiallyDelivered, d.Outcome);
+        Assert.NotNull(d.Reason);
+        Assert.Contains("wave-01-scaffold", d.Reason!, StringComparison.Ordinal);
+        Assert.Contains("wave-02-deliver", d.Reason!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DescribeDelivery_NamesATaskLessWaveTheRunHaltedAt_AsTheConsoleDoes()
+    {
+        var report = new RunReport
+        {
+            Tasks = [Green("wave-01-deliver/01-a")],
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+            },
+            WaveHalt = new WaveHalt
+            {
+                WaveDir = "wave-02-jit",
+                Kind = WaveHaltKind.NextWaveUnauthored,
+                Headline = "wave-02-jit is unauthored",
+            },
+        };
+
+        string console = RenderReport(report);
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.Contains("Held (the run halted here): wave-02-jit.", console, StringComparison.Ordinal);
+        Assert.NotNull(d.Reason);
+        Assert.Contains("wave-02-jit", d.Reason!, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
