@@ -614,9 +614,12 @@ public sealed class ExecutedDefinitionDivergenceTests : IDisposable
             "the run must stay wholly green; outcomes: "
             + string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
-        Assert.False(string.IsNullOrEmpty(report.DeliveredToBranch),
+        // The run-end merge's own outcome, not RunReport.DeliveredToBranch: design 39 §4 also sets that field
+        // for a barrier delivery, so it no longer means "the run-end merge landed".
+        Assert.True(report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged,
             "the run must still DELIVER — mergeOnSuccess is ON by default and AllSucceeded is the single "
-            + "predicate that gates the merge-back (§6.5). A green run that stops delivering is Risk 3.");
+            + "predicate that gates the merge-back (§6.5). A green run that stops delivering is Risk 3. "
+            + $"Run-end merge outcome: {report.MergeOnSuccessOutcome?.ToString() ?? "none"}.");
     }
 
     /// <summary>

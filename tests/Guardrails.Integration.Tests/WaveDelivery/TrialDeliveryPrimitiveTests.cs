@@ -754,6 +754,13 @@ public sealed class TrialDeliveryPrimitiveTests
 
         Assert.Equal(MergeOnSuccessResult.FastForwarded, result);
         Assert.Equal(trial.Commit, repo.HeadSha());
+
+        // The promotion lands in the user's CHECKOUT, not only on the branch ref. A ref-only move (update-ref)
+        // passes both asserts above while the trial's files are missing from disk and staged as deletions.
+        Assert.True(File.Exists(Path.Combine(repo.RepoPath, "plan.txt")),
+            "the promoted trial's plan.txt is not in the user's checkout: the branch moved but the working tree did not.");
+        string trackedStatus = TempGitRepo.Git(repo.RepoPath, "status", "--porcelain", "--untracked-files=no").Trim();
+        Assert.True(trackedStatus.Length == 0, $"the user's checkout has tracked changes after the promotion:\n{trackedStatus}");
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════

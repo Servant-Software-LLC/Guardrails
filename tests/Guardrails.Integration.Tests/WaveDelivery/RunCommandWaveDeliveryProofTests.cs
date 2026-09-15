@@ -311,6 +311,79 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
+    // The checkout, not only the ref. A promotion that moved the branch ref without updating the index and
+    // working tree (update-ref instead of merge --ff-only) passed every ref-reading check above while the user's
+    // checkout showed wave1.txt as a staged deletion. `--untracked-files=no`: the fixture's plan folder is
+    // untracked inside the repository.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task BarrierDelivery_LandsInTheUsersCheckout_NotOnlyOnTheBranchRef()
+    {
+        ScenarioRun run = await _runs.BarrierDeliveryAsync();
+
+        Assert.True(run.Wave1FileInCheckout, "wave1.txt is not in the user's checkout after delivery.\n" + run.Describe());
+        Assert.True(run.TrackedStatus.Trim().Length == 0,
+            $"the user's checkout has tracked changes after delivery:\n{run.TrackedStatus}\n{run.Describe()}");
+    }
+
+    [Fact]
+    public async Task ExitGatePartial_TheBarrierDeliveryLandsInTheUsersCheckout_NotOnlyOnTheBranchRef()
+    {
+        ScenarioRun run = await _runs.ExitGatePartialAsync();
+
+        Assert.True(run.Wave1FileInCheckout, "wave1.txt is not in the user's checkout after the barrier delivery.\n" + run.Describe());
+        Assert.True(run.TrackedStatus.Trim().Length == 0,
+            $"the user's checkout has tracked changes after the barrier delivery:\n{run.TrackedStatus}\n{run.Describe()}");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // B1 through the real run command: every process re-pins the delivery target from HEAD, so a resume on
+    // another branch — or on a detached HEAD — must not rename the branch wave 1's barrier delivery landed on.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AResumeOnAnotherBranch_KeepsDeliveredToBranchNamingTheBranchTheBarrierLandedOn()
+    {
+        using var repo = new TempGitRepo();
+        string userBranch = repo.CurrentBranch();
+        string planDir = CreateTwoWavePlan(
+            repo, userBranch, wave1Delivers: true, Wave2Failure.Task,
+            Path.Combine(repo.Root, "tip-during-wave1.txt"), Path.Combine(repo.Root, "tip-during-wave2.txt"));
+
+        (int exit1, string output1) = await RunCliAsync("run", planDir, "--no-ui", "--no-log-server");
+        Assert.True(exit1 == ExitCodes.TaskFailed, $"run 1: expected exit {ExitCodes.TaskFailed}, got {exit1}.\n{output1}");
+        Assert.True(repo.HasFile(userBranch, "wave1.txt"), "run 1: wave 1 did not deliver at its barrier.\n" + output1);
+        Assert.Equal(userBranch, PartialDeliveredToBranch(planDir));
+
+        repo.Switch("-c", "spike");
+        (int exit2, string output2) = await RunCliAsync("run", planDir, "--no-ui", "--no-log-server");
+        Assert.True(exit2 == ExitCodes.TaskFailed, $"run 2 (resumed on 'spike'): expected exit {ExitCodes.TaskFailed}, got {exit2}.\n{output2}");
+        Assert.Equal(userBranch, PartialDeliveredToBranch(planDir));
+
+        repo.Switch("--detach");
+        (int exit3, string output3) = await RunCliAsync("run", planDir, "--no-ui", "--no-log-server");
+        Assert.True(exit3 == ExitCodes.TaskFailed, $"run 3 (resumed on a detached HEAD): expected exit {ExitCodes.TaskFailed}, got {exit3}.\n{output3}");
+        Assert.Equal(userBranch, PartialDeliveredToBranch(planDir));
+    }
+
+    private static async Task<(int Exit, string Output)> RunCliAsync(params string[] args)
+    {
+        var io = new StringConsoleIo();
+        int exit = await CommandFactory.BuildRootCommand(io).Parse(args)
+            .InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
+        return (exit, io.OutText);
+    }
+
+    private static string PartialDeliveredToBranch(string planDir)
+    {
+        using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(RunJournal.PathFor(planDir)));
+        JsonElement delivery = Json.Prop(doc.RootElement.Clone(), "delivery", "run.json");
+        Assert.Equal("partially-delivered", Json.String(delivery, "outcome", "delivery"));
+        return Json.String(delivery, "deliveredToBranch", "delivery");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     // Regression controls.
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -461,6 +534,8 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         public required string FinalTip { get; init; }
         public required IReadOnlyList<string> UserBranchReflog { get; init; }
         public required IReadOnlyList<string> BranchesNotMergedIntoUserBranch { get; init; }
+        public required bool Wave1FileInCheckout { get; init; }
+        public required string TrackedStatus { get; init; }
 
         /// <summary>Ref updates of the user's branch during the run — its reflog minus the fixture's own initial commit.</summary>
         public int UserBranchMoves => UserBranchReflog.Count - 1;
@@ -525,7 +600,9 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
                     RunJson = runJson.RootElement.Clone(),
                     FinalTip = repo.TipOf(userBranch),
                     UserBranchReflog = repo.BranchReflog(userBranch),
-                    BranchesNotMergedIntoUserBranch = repo.BranchesNotMergedInto(userBranch)
+                    BranchesNotMergedIntoUserBranch = repo.BranchesNotMergedInto(userBranch),
+                    Wave1FileInCheckout = File.Exists(Path.Combine(repo.RepoPath, "wave1.txt")),
+                    TrackedStatus = repo.TrackedStatus()
                 };
             }
             catch
@@ -736,8 +813,18 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         public bool IsAncestor(string ancestor, string descendant) =>
             TryGit("merge-base", "--is-ancestor", ancestor, descendant) == 0;
 
+        /// <summary>
+        /// One line per reflog ENTRY of <paramref name="branch"/>: <c>%gd</c> (the entry's own selector) leads every
+        /// line, so an entry whose subject is empty still counts — counting subjects dropped those.
+        /// </summary>
         public IReadOnlyList<string> BranchReflog(string branch) =>
-            Lines(Git("reflog", "show", "--format=%gs", "refs/heads/" + branch));
+            Lines(Git("reflog", "show", "--format=%gd %gs", "refs/heads/" + branch));
+
+        /// <summary>Tracked changes in the user's checkout; the fixture's plan folder is untracked, so it is excluded.</summary>
+        public string TrackedStatus() => Git("status", "--porcelain", "--untracked-files=no");
+
+        /// <summary><c>git switch</c> in the user's checkout, e.g. <c>-c spike</c> or <c>--detach</c>.</summary>
+        public void Switch(params string[] args) => _ = Git(["switch", .. args]);
 
         public IReadOnlyList<string> BranchesNotMergedInto(string branch) =>
             Lines(Git("branch", "--format=%(refname:short)", "--no-merged", branch));
