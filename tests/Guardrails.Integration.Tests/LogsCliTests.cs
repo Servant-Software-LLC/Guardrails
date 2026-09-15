@@ -187,8 +187,13 @@ public sealed class LogsCliTests
                 () => InvokeAsync(stop, "logs", planDir, "--no-open", "--port", port.ToString(CultureInfo.InvariantCulture)),
                 ct);
 
+            // A bound on the wait, not an assertion about speed (#714 review, N5): a server that never answers must
+            // fail this test where it happens, rather than spin until the test host gives up on the whole class.
+            TimeSpan readyBudget = TimeSpan.FromSeconds(90);
+            DateTime deadline = DateTime.UtcNow + readyBudget;
             while (!serving.IsCompleted)
             {
+                Assert.True(DateTime.UtcNow < deadline, $"guardrails logs did not answer on {baseUrl} within {readyBudget}");
                 try
                 {
                     using HttpResponseMessage response = await Http.GetAsync(baseUrl, ct);

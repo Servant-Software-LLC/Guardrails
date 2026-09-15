@@ -10,9 +10,10 @@ namespace Guardrails.Integration.Tests.LogSite;
 /// diagram link it printed (#714). That is the moment the maintainer asked, of plan 39's run, whether the
 /// <c>attempt 1</c> values came from tasks that had completed, and whether the run was still going at all.
 /// <para>
-/// <see cref="LiveRunViewStatusTests"/> and <see cref="LiveLinksTests"/> prove what <c>BuildObserverChain</c> does
-/// once it is handed the server. Only a real run proves that <c>RunCommand</c> hands it over. A seam that works in
-/// xUnit while the command never wires it is the defect this repo keeps finding at exactly this kind of boundary.
+/// <see cref="LiveRunViewStatusTests"/>, <see cref="LiveLinksTests"/> and <see cref="RunSurfacesTests"/> prove what
+/// the composition does when handed the server. Only a real run proves that <c>RunCommand</c> hands it over. A seam
+/// that works in xUnit while the command never wires it is the defect this repo keeps finding at exactly this kind
+/// of boundary.
 /// </para>
 /// </summary>
 public sealed class LiveRunViewMidRunTests
@@ -24,6 +25,9 @@ public sealed class LiveRunViewMidRunTests
     /// instead of hanging it; nothing here asserts how fast anything is.
     /// </summary>
     private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(120);
+
+    /// <summary>The longest the released run may take to finish, for the same reason.</summary>
+    private static readonly TimeSpan FinishBudget = TimeSpan.FromMinutes(5);
 
     [Fact]
     public async Task MidRun_TheLiveRunViewTellsStatesApart_AndEveryLiveLinkNamesTheRunsOwnServer()
@@ -65,16 +69,21 @@ public sealed class LiveRunViewMidRunTests
             Assert.Equal("pending", LiveRunViewRows.Find(html, "03-waiting").Status);
 
             // #714: opened as files, the pages this run is writing cannot poll. Their notices must send the reader to
-            // this run's server, which is up, and not off to start another one with `guardrails logs`.
-            Assert.Contains($"<a href=\"{baseUrl}\">", OfflineNotice.In(index), StringComparison.Ordinal);
-            string diagram = File.ReadAllText(Path.Combine(logsRoot, "diagram.html"));
-            Assert.Contains($"<a href=\"{baseUrl}diagram.html\">", OfflineNotice.In(diagram), StringComparison.Ordinal);
+            // this run's server, which is up, and still name `guardrails logs` for a reader whose run has ended.
+            string indexNotice = OfflineNotice.In(index);
+            Assert.Contains($"<a href=\"{baseUrl}\">", indexNotice, StringComparison.Ordinal);
+            Assert.Contains("guardrails logs", indexNotice, StringComparison.Ordinal);
+
+            string diagramNotice = OfflineNotice.In(File.ReadAllText(Path.Combine(logsRoot, "diagram.html")));
+            Assert.Contains($"<a href=\"{baseUrl}diagram.html\">", diagramNotice, StringComparison.Ordinal);
+            Assert.Contains("guardrails logs", diagramNotice, StringComparison.Ordinal);
         }
         finally
         {
-            // Always let the run finish before the fixture's folders are deleted underneath it.
+            // Always let the run finish before the fixture's folders are deleted underneath it — but never wait for
+            // it forever: a run that cannot finish must fail this test, not hang the suite (#714 review, N5).
             gate.Release();
-            exit = await run;
+            exit = await run.WaitAsync(FinishBudget, ct);
         }
 
         Assert.Equal(ExitCodes.Success, exit);
@@ -99,18 +108,24 @@ public sealed class LiveRunViewMidRunTests
 
         public string ActionScript() => OperatingSystem.IsWindows()
             ? $$"""
-               New-Item -ItemType File -Force -Path '{{Started}}' | Out-Null
-               while (-not (Test-Path -LiteralPath '{{Released}}')) { Start-Sleep -Milliseconds 50 }
+               New-Item -ItemType File -Force -Path {{PowerShellLiteral(Started)}} | Out-Null
+               while (-not (Test-Path -LiteralPath {{PowerShellLiteral(Released)}})) { Start-Sleep -Milliseconds 50 }
                Write-Output 'released'
                exit 0
                """
             : $$"""
                #!/usr/bin/env bash
-               touch '{{Started}}'
-               while [ ! -f '{{Released}}' ]; do sleep 0.05; done
+               touch {{ShellLiteral(Started)}}
+               while [ ! -f {{ShellLiteral(Released)}} ]; do sleep 0.05; done
                echo released
                exit 0
                """;
+
+        /// <summary>A PowerShell single-quoted literal: a quote inside the path is doubled (#714 review, N5).</summary>
+        private static string PowerShellLiteral(string path) => "'" + path.Replace("'", "''", StringComparison.Ordinal) + "'";
+
+        /// <summary>A POSIX shell single-quoted literal: a quote inside the path ends, escapes and reopens it.</summary>
+        private static string ShellLiteral(string path) => "'" + path.Replace("'", @"'\''", StringComparison.Ordinal) + "'";
 
         public async Task WaitUntilStartedAsync(Task<int> run)
         {
