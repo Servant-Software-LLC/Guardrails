@@ -324,6 +324,24 @@ public sealed class ObserverProjection : IRunObserver
         _inner.WaveFinished(wave, status, skipped);
     }
 
+    public void WaveDelivered(WaveNode wave, Journal.WaveDeliveredRecord delivery)
+    {
+        var covers = new JsonArray();
+        foreach (string coveredWave in delivery.Covers)
+        {
+            covers.Add(JsonValue.Create(coveredWave));
+        }
+
+        Append(new JsonObject
+        {
+            ["member"] = "WaveDelivered",
+            ["waveDir"] = wave.Dir,
+            ["commit"] = delivery.Commit,
+            ["covers"] = covers
+        });
+        _inner.WaveDelivered(wave, delivery);
+    }
+
     public void WaveGateFinished(
         WaveNode wave, bool isEntryGate, IReadOnlyList<Journal.PlanPreflightCheck> checks)
     {
