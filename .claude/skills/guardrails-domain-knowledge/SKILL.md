@@ -443,7 +443,8 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   salvage -- regardless of `isFinal` -- because the escalating attempt's tree is never reset in place,
   only ORPHANED (a resume forks a fresh segment; nothing hands the old tree back), so the guard is
   `IsRealGitSegment`, not `WorktreeWillReset`. The staged set on this path is **filtered to the task's
-  `writeScope`** via `PreserveAttemptToRef`'s new `restrictToScope` parameter (`RestrictStagedSetToScope`)
+  enforced scope** (`writeScope` plus `stagingOutputs` destinations) via `PreserveAttemptToRef`'s new
+  `restrictToScope` parameter (`RestrictStagedSetToScope`)
   -- the protected-artifact suppression above is structurally inapplicable here (`failed`
   is empty; no guardrail ran). A **per-task retention cap** (`GitWorktreeProvider.SalvageRefRetentionPerTask`,
   `5`) bounds the refs an endlessly-escalating task accumulates. The feedback framing never claims a rollback.
@@ -464,9 +465,11 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   attempt (outcome `write-scope-violation`) instead of retrying when (1) an offending path was ALSO written out
   of scope on an earlier attempt, or (2) on any attempt, EVERY offending path was last committed by a transitive
   `dependsOn` ancestor (its `Guardrails-Task:` trailer plus a matching `Guardrails-Task-Hash:`) AND the attempt
-  changed nothing inside its own scope. The in-scope condition keeps an implement task that merely touched a
-  protected upstream test file on the ordinary retry path. The halt names each path, the `task.json`, and the
-  one-line `writeScope` entry to add. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
+  changed nothing inside its own scope, and no offending path is a test file (`TestPathConvention`). The in-scope
+  and test conditions keep an implement task that merely touched a protected upstream test on the ordinary retry
+  path; when the repeat rule halts on a test, the halt leads with "keeps editing a test" and offers widening the
+  scope only second. Otherwise the halt names each path, the `task.json`, and the one-line `writeScope` entry to
+  add. Its salvage is taken only with in-scope work, filtered to the enforced scope. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
   `doomed` verdict stays advisory (SSOT section 3.4).
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**

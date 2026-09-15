@@ -875,13 +875,29 @@ public static class RetryPolicy
         string? outOfScopePatchPath = null)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
+        IReadOnlyList<string> tests = RepeatedTests(gap);
         var text = new StringBuilder();
-        text.AppendLine($"# Task '{task.Id}' needs a human: its writeScope does not cover what it keeps changing");
+        text.AppendLine(tests.Count > 0
+            ? $"# Task '{task.Id}' needs a human: it keeps editing a test outside its writeScope"
+            : $"# Task '{task.Id}' needs a human: its writeScope does not cover what it keeps changing");
         text.AppendLine();
         text.AppendLine($"Task: {task.Description}");
         text.AppendLine();
-        text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying: a retry is handed");
-        text.AppendLine("the same writeScope, so it cannot change a path that scope does not cover.");
+        if (tests.Count > 0)
+        {
+            // Review W1: a repeated TEST is not a scope the plan forgot. Lead with the test; widening the scope is
+            // the less likely remedy and comes after it.
+            text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying. The agent keeps editing");
+            text.AppendLine($"{string.Join(", ", tests.Select(p => $"`{p}`"))}, a test file outside this task's writeScope, written on an earlier");
+            text.AppendLine("attempt too. Tests are normally authored by an upstream task and protected by the plan's TDD split,");
+            text.AppendLine("so the likely problem is this task's prompt or approach, not its scope.");
+        }
+        else
+        {
+            text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying: a retry is handed");
+            text.AppendLine("the same writeScope, so it cannot change a path that scope does not cover.");
+        }
+
         if (gap.UpstreamAuthorByPath.Count > 0)
         {
             text.AppendLine();
@@ -890,7 +906,7 @@ public static class RetryPolicy
             text.AppendLine("example, a stub an upstream task created that no downstream task is allowed to write.");
         }
 
-        if (gap.RepeatedPaths.Count > 0)
+        if (gap.RepeatedPaths.Count > 0 && tests.Count == 0)
         {
             text.AppendLine();
             text.AppendLine("A path marked below was written outside this task's writeScope on an earlier attempt as");
@@ -905,6 +921,25 @@ public static class RetryPolicy
         text.AppendLine();
         AppendAllowedScope(text, scopeCheck.Scope);
         text.AppendLine();
+        if (tests.Count > 0)
+        {
+            text.AppendLine("## Most likely: keep this task off the test");
+            text.AppendLine();
+            text.AppendLine("Tighten this task's prompt so it changes the implementation, not the test, then resume the run.");
+            text.AppendLine("If the test itself is wrong, fix it in the task that authors it.");
+            text.AppendLine();
+            text.AppendLine("## Less likely: this task must own the test");
+            text.AppendLine();
+            text.AppendLine($"Only then, add it to `writeScope` in `{TaskJsonPath(task)}`:");
+            text.AppendLine();
+            text.AppendLine($"    {JsonEntries(paths)}");
+            text.AppendLine();
+            text.AppendLine("and resume the run. The task starts again with a fresh retry budget.");
+            AppendKeptOutOfScopeCopy(text, outOfScopePatchPath);
+            AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
+            return text.ToString();
+        }
+
         text.AppendLine("## If this task genuinely has to change it");
         text.AppendLine();
         text.AppendLine($"Add it to `writeScope` in `{TaskJsonPath(task)}`, a one-line change:");
@@ -912,13 +947,7 @@ public static class RetryPolicy
         text.AppendLine($"    {JsonEntries(paths)}");
         text.AppendLine();
         text.AppendLine("then resume the run. The task starts again with a fresh retry budget.");
-        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
-        {
-            // #705: this is the reader the kept out-of-scope work is for.
-            text.AppendLine();
-            text.AppendLine($"The change this attempt made there was kept before the revert, at `{keptCopy.Replace('\\', '/')}`,");
-            text.AppendLine("so widening the scope does not mean losing that work.");
-        }
+        AppendKeptOutOfScopeCopy(text, outOfScopePatchPath);
         text.AppendLine();
         text.AppendLine("## If it does not");
         text.AppendLine();
@@ -936,6 +965,15 @@ public static class RetryPolicy
     /// </summary>
     public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap)
     {
+        if (RepeatedTests(gap) is { Count: > 0 } tests)
+        {
+            // Review W1: the summary is what a human acts on first, so for a test it never names widening the
+            // scope as the fix.
+            return $"needs human: the agent keeps editing {string.Join(", ", tests)}, a test file outside this task's " +
+                   "writeScope — tests are normally authored upstream and protected by the plan's TDD split, so the " +
+                   "likely fix is this task's prompt; widening its writeScope is the less likely alternative";
+        }
+
         IReadOnlyList<string> paths = GapPaths(gap);
         string why = gap.UpstreamAuthorByPath.Count > 0
             ? "probable plan scope gap: this attempt changed nothing inside its writeScope, and everything it did " +
@@ -948,6 +986,32 @@ public static class RetryPolicy
         string pronoun = paths.Count == 1 ? "it" : "them";
         return $"needs human: {why}; if this task must change {pronoun}, add {JsonEntries(paths)} to writeScope in " +
                TaskJsonPath(task);
+    }
+
+    /// <summary>
+    /// The repeated paths that are TEST files, on a halt that is not a plan scope gap (review W1): the case the
+    /// halt must lead with a protected test instead of with widening the scope. A plan-gap halt never holds a test
+    /// path — the first-occurrence rule refuses one.
+    /// </summary>
+    private static IReadOnlyList<string> RepeatedTests(WriteScopeGap gap) =>
+        gap.UpstreamAuthorByPath.Count > 0
+            ? []
+            : gap.RepeatedPaths
+                .Where(TestPathConvention.LooksLikeTestPath)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+    /// <summary>#705: the kept out-of-scope copy, named for the human the halt asks — the reader it is for.</summary>
+    private static void AppendKeptOutOfScopeCopy(StringBuilder text, string? outOfScopePatchPath)
+    {
+        if (outOfScopePatchPath is not { Length: > 0 } keptCopy)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine($"The change this attempt made there was kept before the revert, at `{keptCopy.Replace('\\', '/')}`,");
+        text.AppendLine("so widening the scope does not mean losing that work.");
     }
 
     /// <summary>Every path a scope-gap halt is about, in ordinal order.</summary>
