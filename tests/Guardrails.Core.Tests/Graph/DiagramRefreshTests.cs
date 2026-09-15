@@ -222,13 +222,15 @@ public sealed class DiagramRefreshTests
     }
 
     /// <summary>
-    /// Issue #714. When the run has its own log server, the file-view notice must send the reader to the copy that
-    /// server is ALREADY serving live, instead of telling them to start a second one with <c>guardrails logs</c>.
-    /// A page opened from a <c>file://</c> url cannot discover the port, but the during-run writer knows it and
-    /// writes it in.
+    /// Issue #714, as its review corrected it. When the run has its own log server, the file-view notice must first
+    /// link the copy that server is ALREADY serving live, since telling the reader to start a second server with
+    /// <c>guardrails logs</c> during a healthy run duplicates one that is up. A page opened from a <c>file://</c> url
+    /// cannot discover the port, but the during-run writer knows it and writes it in. The notice must still name
+    /// <c>guardrails logs</c> as the fallback: a hard-killed run leaves this page linking a server that is gone, or a
+    /// port a later run has reused.
     /// </summary>
     [Fact]
-    public void FileViewFallback_WithTheRunsLogServer_LinksItsLiveDiagram_InsteadOfNamingGuardrailsLogs()
+    public void FileViewFallback_WithTheRunsLogServer_LinksItsLiveDiagram_AndKeepsGuardrailsLogsAsTheFallback()
     {
         const string liveDiagram = "http://127.0.0.1:58523/diagram.html";
         string html = HtmlDiagramRenderer.Render(
@@ -236,7 +238,10 @@ public sealed class DiagramRefreshTests
 
         string notice = OfflineNotice(html);
         Assert.Contains($"<a href=\"{liveDiagram}\">{liveDiagram}</a>", notice, StringComparison.Ordinal);
-        Assert.DoesNotContain("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.True(
+            notice.IndexOf(liveDiagram, StringComparison.Ordinal) < notice.IndexOf("guardrails logs", StringComparison.Ordinal),
+            "the live link must come first, with guardrails logs as the fallback after it");
     }
 
     /// <summary>

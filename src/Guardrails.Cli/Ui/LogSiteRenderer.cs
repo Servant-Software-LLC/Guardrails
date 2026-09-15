@@ -198,11 +198,13 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
 """;
 
     /// <summary>
-    /// What the offline notice tells a reader to do (issue #714). With the run's own log server up, it links that
-    /// server's live run view. The reader is looking at a snapshot only because they opened the page as a file,
-    /// and telling them to start a second server with <c>guardrails logs</c> would duplicate one that is already
-    /// running. A <c>file://</c> page cannot discover the port, but the during-run writer knows it. With no
-    /// server, <c>guardrails logs</c> is the remedy (issue #552), worded exactly as before.
+    /// What the offline notice tells a reader to do (issue #714). With the run's own log server up, it first links
+    /// that server's live run view: the reader is looking at a snapshot only because they opened the page as a file,
+    /// and during a healthy run a second server would duplicate one that is already up. It still names
+    /// <c>guardrails logs</c> as the fallback (#714 review), because a hard-killed run leaves this page linking a
+    /// server that is gone, or a port a later run has reused, and the live link alone would leave that reader with
+    /// no remedy. A <c>file://</c> page cannot discover the port, but the during-run writer knows it. With no
+    /// server, <c>guardrails logs</c> is the whole remedy (issue #552), worded exactly as before.
     /// </summary>
     private static string OfflineRemedy(string? liveRunUrl) => liveRunUrl is null
         ? """
@@ -210,7 +212,9 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
           <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints &mdash; it
           serves these logs live, and works against a run already in flight.
           """
-        : $"This run's live view is <a href=\"{Enc(liveRunUrl)}\">{Enc(liveRunUrl)}</a>, served while the run is going.";
+        : $"This run's live view is <a href=\"{Enc(liveRunUrl)}\">{Enc(liveRunUrl)}</a> while the run is going. "
+          + "If that does not answer, or shows a different run, the run has ended: run "
+          + "<code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open the URL it prints.";
 
     /// <summary>
     /// The GATE-HALT banner's CSS (issue #436). Deliberately NOT part of <see cref="SharedStyle"/>: it is

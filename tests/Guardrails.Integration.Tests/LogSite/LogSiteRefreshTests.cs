@@ -329,29 +329,35 @@ public sealed class LogSiteRefreshTests
     }
 
     /// <summary>
-    /// Issue #714. When the run has its own log server, the file-view notice must send the reader to that server
-    /// instead of telling them to start a second one with <c>guardrails logs</c>. That advice is right only for a run
-    /// with no server. During a run that has one, it sends the operator off to duplicate a server that is already up.
+    /// Issue #714, as its review corrected it. When the run has its own log server, the file-view notice must link that
+    /// server first: during a healthy run, sending the reader to start a second server with <c>guardrails logs</c>
+    /// duplicates one that is already up. It must still name <c>guardrails logs</c> as the fallback, though. A
+    /// hard-killed run (taskkill /F, a power loss) leaves its during-run pages linking a server that is gone, and a
+    /// later server can reuse the port and answer for a different run. With the live link alone, that reader is left
+    /// with no remedy at all, which is the #552 rationale above.
     /// </summary>
     [Fact]
-    public void OfflineNotice_WithTheRunsLogServer_LinksItsLiveView_InsteadOfNamingGuardrailsLogs()
+    public void OfflineNotice_WithTheRunsLogServer_LinksItsLiveView_AndKeepsGuardrailsLogsAsTheFallback()
     {
         const string liveRun = "http://127.0.0.1:58523/";
         string notice = OfflineNotice.In(Index(live: true, liveRunUrl: liveRun));
 
         Assert.Contains($"<a href=\"{liveRun}\">{liveRun}</a>", notice, StringComparison.Ordinal);
-        Assert.DoesNotContain("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.True(
+            notice.IndexOf(liveRun, StringComparison.Ordinal) < notice.IndexOf("guardrails logs", StringComparison.Ordinal),
+            "the live link must come first, with guardrails logs as the fallback after it");
     }
 
     /// <summary>The wave page renders its notice through a separate method: the sibling surface a fix misses.</summary>
     [Fact]
-    public void TheWavePagesOfflineNotice_LinksTheRunsLogServerToo()
+    public void TheWavePagesOfflineNotice_LinksTheRunsLogServer_AndKeepsTheFallbackToo()
     {
         const string liveRun = "http://127.0.0.1:58523/";
         string notice = OfflineNotice.In(WaveIndex(live: true, liveRunUrl: liveRun));
 
         Assert.Contains($"<a href=\"{liveRun}\">{liveRun}</a>", notice, StringComparison.Ordinal);
-        Assert.DoesNotContain("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
     }
 
     /// <summary>With no server, <c>guardrails logs</c> stays the remedy, and nothing links a server that does not exist.</summary>

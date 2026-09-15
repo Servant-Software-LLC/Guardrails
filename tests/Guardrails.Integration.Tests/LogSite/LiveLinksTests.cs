@@ -15,7 +15,7 @@ namespace Guardrails.Integration.Tests.LogSite;
 public sealed class LiveLinksTests
 {
     [Fact]
-    public async Task WithTheRunsLogServer_BothOfflineNotices_LinkThatServersLivePages()
+    public async Task WithTheRunsLogServer_BothOfflineNotices_LinkThatServersLivePages_AndKeepTheFallback()
     {
         using var site = new Site();
         await using LogServer server = site.StartServer();
@@ -23,13 +23,14 @@ public sealed class LiveLinksTests
 
         chain.TaskStarting(site.AlphaTask); // any event rewrites both during-run pages
 
+        // The live link first; `guardrails logs` still named for a reader whose run has since ended (#714 review).
         string indexNotice = OfflineNotice.In(site.Read("index.html"));
         Assert.Contains($"<a href=\"{server.BaseUrl}\">{server.BaseUrl}</a>", indexNotice, StringComparison.Ordinal);
-        Assert.DoesNotContain("guardrails logs", indexNotice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", indexNotice, StringComparison.Ordinal);
 
         string diagramNotice = OfflineNotice.In(site.Read("diagram.html"));
         Assert.Contains($"<a href=\"{server.DiagramUrl}\">{server.DiagramUrl}</a>", diagramNotice, StringComparison.Ordinal);
-        Assert.DoesNotContain("guardrails logs", diagramNotice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", diagramNotice, StringComparison.Ordinal);
     }
 
     [Fact]
