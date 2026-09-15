@@ -58,7 +58,26 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// does not yet mention as <c>pending</c>. The returned journal is persisted (so a fresh
     /// run.json exists immediately, and resume normalization is durable).
     /// </summary>
-    public static RunJournal LoadOrCreate(PlanDefinition plan)
+    public static RunJournal LoadOrCreate(PlanDefinition plan) => Load(plan, claim: false, owner: null);
+
+    /// <summary>
+    /// <c>guardrails run</c>'s own load (issue #704, SSOT §7 <c>owner</c>): exactly <see cref="LoadOrCreate"/>, with the
+    /// run's claim IN the same write — the persisted document's owner is <paramref name="owner"/>, replacing any previous
+    /// owner and its recorded end.
+    /// <para>
+    /// <b>Why the claim is not a separate write.</b> A separate claim could fail on its own and be swallowed, and on a
+    /// resume that leaves the PREVIOUS owner standing — possibly with its end recorded. Every Scheduler write then carries
+    /// that stale owner forward, so <c>status</c> reads ENDED or EXITED for a live run. Folded into the load, the claim
+    /// lands exactly when the journal does, or the run fails loudly on the load itself.
+    /// </para>
+    /// <para>
+    /// A null <paramref name="owner"/> is a run that could not read its own identity. It still CLEARS the previous owner:
+    /// naming nobody reads UNKNOWN, which is true, where leaving the previous run's verdict would be read as this one's.
+    /// </para>
+    /// </summary>
+    public static RunJournal LoadOrCreateForRun(PlanDefinition plan, RunOwner? owner) => Load(plan, claim: true, owner);
+
+    private static RunJournal Load(PlanDefinition plan, bool claim, RunOwner? owner)
     {
         string journalPath = PathFor(plan.PlanDirectory);
         string currentHash = Journal.PlanHash.Compute(plan);
@@ -70,7 +89,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
                 RunId = NewRunId(),
                 PlanHash = currentHash,
                 NextMergeSequence = 1,
-                Tasks = SeedPendingTasks(plan, existing: null)
+                Tasks = SeedPendingTasks(plan, existing: null),
+                Owner = owner
             };
             var journal = new RunJournal(journalPath, fresh);
             journal.Persist();
@@ -88,7 +108,11 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             // reaching green, so a halt carried over from the previous one would be read as current. Clear
             // it; a gate that fails again re-records it (the per-gate planPreflights/planGuardrails/waves
             // markers are NOT cleared — those are the durable per-phase record resume reasons about).
-            Halt = null
+            Halt = null,
+            // Issue #704: only `guardrails run`'s own load claims the journal, and its claim REPLACES the previous owner
+            // and that owner's recorded end — a resume is a new process. Every other load (the Scheduler's own, a reset,
+            // a supply) carries the owner forward untouched, or its first write would erase the run's claim.
+            Owner = claim ? owner : loaded.Owner
         };
 
         var resumedJournal = new RunJournal(journalPath, resumed)
@@ -686,37 +710,20 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
-    /// Record WHICH PROCESS owns this run (SSOT §7 <c>owner</c>, issue #704) — called by <c>guardrails run</c> at
-    /// run START, beside <see cref="RecordEnvironment"/> and for the same ordering reason: BEFORE the Scheduler's
-    /// own, later <see cref="LoadOrCreate"/>, which then carries the section forward from disk.
+    /// Record that <paramref name="owner"/> — the owner <see cref="LoadOrCreateForRun"/> claimed — reached the END of
+    /// its run (SSOT §7 <c>owner.finishedAt</c>, issue #704), whatever its outcome.
     /// <para>
-    /// REPLACES any previous owner, including one that recorded its end: a resume is a new process claiming the
-    /// same journal, and the previous run's <see cref="RunOwner.FinishedAt"/> describes a process that no longer
-    /// owns anything. Re-reads from disk first, like <see cref="RecordDelivery"/>.
-    /// </para>
-    /// </summary>
-    public void RecordOwner(RunOwner owner)
-    {
-        ArgumentNullException.ThrowIfNull(owner);
-
-        lock (_gate)
-        {
-            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
-            _document = current with { Owner = owner };
-            Persist();
-        }
-    }
-
-    /// <summary>
-    /// Record that <paramref name="owner"/> reached the END of its run (SSOT §7 <c>owner.finishedAt</c>, issue
-    /// #704) — the last journal write a run makes, whatever its outcome.
-    /// <para>
-    /// A no-op unless the journal's recorded owner IS <paramref name="owner"/> (same pid, same start time): a run
-    /// another process has since claimed must not be marked finished on that process's behalf, or <c>status</c>
-    /// would call a live run over. Also a no-op when <c>run.json</c> no longer exists — a run's last write must
-    /// never recreate a journal someone deleted underneath it. Re-reads from disk first, like
-    /// <see cref="RecordDelivery"/>: this is called from the CLI's instance, long after the Scheduler's own
-    /// instance settled every task.
+    /// A no-op unless the journal's recorded owner IS <paramref name="owner"/>, exactly as claimed and not yet ended:
+    /// <list type="bullet">
+    /// <item>a run another process has since claimed must not be marked ended on that process's behalf, or
+    ///   <c>status</c> would call a live run over;</item>
+    /// <item>an end already recorded is kept — the first record is taken when the run's verdict settles, and the
+    ///   method-exit backstop must not move it later;</item>
+    /// <item>and a missing <c>run.json</c> stays missing — a run's last write must never recreate a journal someone
+    ///   deleted underneath it.</item>
+    /// </list>
+    /// Re-reads from disk first, like <see cref="RecordDelivery"/>: this is called from the CLI's instance, long after
+    /// the Scheduler's own instance settled every task.
     /// </para>
     /// </summary>
     public void RecordOwnerFinished(RunOwner owner, DateTimeOffset finishedAt)
@@ -731,9 +738,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             }
 
             JournalDocument current = Read(_journalPath);
-            if (current.Owner is not { } recorded
-                || recorded.Pid != owner.Pid
-                || recorded.ProcessStartedAt != owner.ProcessStartedAt)
+            if (current.Owner is not { FinishedAt: null } recorded || recorded != owner)
             {
                 return;
             }

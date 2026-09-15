@@ -187,14 +187,18 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   UTF-8 (no BOM) in `ProcessRunner` (stdout/stderr decode + stdin encode) — never
   rely on `Console.OutputEncoding`, which is the Windows OEM code page and corrupts
   non-ASCII in the logs (#55, SSOT §5.1).
-- **Process identity across processes (pid + start time, #704)**: `Process.StartTime` is identical for every
+- **Process identity across processes (pid + start identity, #704)**: `Process.StartTime` is identical for every
   reader on Windows and macOS (the kernel stores the creation time), but on Linux .NET RECONSTRUCTS it per
   reading process as `CLOCK_REALTIME_COARSE − CLOCK_BOOTTIME` plus ticks-since-boot, so two processes reading
-  the same pid disagree by milliseconds and by any wall-clock step between their reads. Ask liveness through
-  `IProcessProbe` — `SystemProcessProbe` compares exactly on Windows/macOS and within one minute on Linux — and
-  inject a fake in tests (never a real sleep or a killed process). Do not copy the exact-ticks comparison in
-  `WorktreeReclaim.IsLockedByLiveProcess`: it predates this and, on Linux, cannot match a lock written by a
-  different process.
+  the same pid disagree — by milliseconds, and by hours in a WSL2/VM/devcontainer guest whose wall clock steps on
+  wake. No tolerance fixes that, so on Linux compare what the kernel stores: `/proc/<pid>/stat` field 22 (count
+  fields from the LAST `)` — the process name may contain spaces and parentheses) plus
+  `/proc/sys/kernel/random/boot_id`. Ask liveness through `IProcessProbe` (`SystemProcessProbe`: exact on every OS,
+  and three-valued — `CannotTell` when the start identity is unreadable, never a guess), keep the comparisons pure
+  (`CompareLinux` / `CompareStartTime` take the kernel's text or value, so every OS tests every branch), inject a
+  fake in tests, and prove cross-process agreement by running the shipped CLI as a child process
+  (`CrossProcessLivenessTests`). Do not copy the exact-ticks comparison in `WorktreeReclaim.IsLockedByLiveProcess`:
+  it predates this and, on Linux, cannot match a lock written by a different process (#724).
 - **Merge-sequence protocol**: `journal.ReserveMergeSequence()` BEFORE
   `stateManager.MergeFragment(...)`; pass the reserved value to `RecordAttempt`.
 - **Recorded action outcome → guardrails** (`TaskExecutor`): a guardrail gets the action's

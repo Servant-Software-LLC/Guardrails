@@ -18,19 +18,24 @@ namespace Guardrails.Integration.Tests;
 /// </para>
 /// <para>
 /// <b>Live, reported as leftover.</b> On a run that was alive and between attempts, the same command listed the
-/// in-flight task under "A resume will RE-RUN these — the status above is the last run's outcome", describing
-/// live work as state a resume would discard.
+/// in-flight task under "A resume will RE-RUN these — the status above is the last run's outcome", describing live
+/// work as state a resume would discard.
 /// </para>
 /// <para>
 /// These tests drive the REAL command. Liveness comes from a fake process table where the test must control the
-/// answer, and from the production table where the test's own process is the owner — never from sleep, suspend,
-/// or timing.
+/// answer, and from the production table where the test's own process is the owner — never from sleep, suspend, or
+/// timing.
 /// </para>
 /// </summary>
 public sealed class StatusRunLivenessTests
 {
     /// <summary>The 39-character id that overflowed plan 40's status table (issue #704, second comment).</summary>
     private const string LongId = "19-author-tests-overwatcher-autoresolve";
+
+    private const string RunId = "2026-09-13T04-15-59Z-a1b2";
+
+    private static readonly DateTimeOffset AnyStart =
+        new DateTimeOffset(2026, 9, 13, 4, 15, 59, TimeSpan.Zero).AddTicks(8_123_456);
 
     private static async Task<string> StatusAsync(string planDir, IProcessProbe? processProbe = null)
     {
@@ -59,7 +64,7 @@ public sealed class StatusRunLivenessTests
         var owner = new RunOwner { Pid = pid, ProcessStartedAt = processStartedAt, Host = RunLiveness.ThisHost() };
         var document = new JournalDocument
         {
-            RunId = "2026-09-13T04-15-59Z-a1b2",
+            RunId = RunId,
             PlanHash = "sha256:test",
             Tasks = new Dictionary<string, TaskJournalEntry>(StringComparer.Ordinal)
             {
@@ -85,15 +90,12 @@ public sealed class StatusRunLivenessTests
     private static string Row(string output, string taskId) =>
         Lines(output).First(line => line.StartsWith($"  {taskId} ", StringComparison.Ordinal));
 
-    private static readonly DateTimeOffset AnyStart =
-        new DateTimeOffset(2026, 9, 13, 4, 15, 59, TimeSpan.Zero).AddTicks(8_123_456);
-
-    // ── The two misreport directions ─────────────────────────────────────────────────────────────
+    // ── The two misreport directions, and the third answer ───────────────────────────────────────
 
     /// <summary>
     /// The reboot occurrence. The owner is gone, so the run is not in progress, and its <c>running</c> task is not
     /// either: the table must not print the word that asserts it is, and the resume prediction must say what that
-    /// task actually is.
+    /// task actually is — without a closing sentence that contradicts the list it closes.
     /// </summary>
     [Fact]
     public async Task ADeadRun_IsReportedExited_AndItsRunningTaskIsNotShownAsInProgress()
@@ -101,7 +103,7 @@ public sealed class StatusRunLivenessTests
         using StatePlanBuilder plan = TwoTaskPlan();
         WriteJournalMidAttempt(plan, pid: 14168, AnyStart);
 
-        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(running: false));
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.NotRunning));
 
         Assert.Contains("Run state: EXITED WITHOUT FINISHING", output, StringComparison.Ordinal);
         Assert.DoesNotContain("Run state: RUNNING", output, StringComparison.Ordinal);
@@ -112,11 +114,14 @@ public sealed class StatusRunLivenessTests
 
         Assert.Contains("A resume will RE-RUN these", output, StringComparison.Ordinal);
         Assert.Contains("02-second (interrupted)", output, StringComparison.Ordinal);
+        Assert.Contains(
+            "Only 'succeeded' survives a resume; every task listed above becomes pending.", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("running all become pending", output, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The live occurrence. The owner is alive, so its in-flight task IS in flight: shown as <c>running</c>, and
-    /// not listed as leftover state that a resume will discard.
+    /// The live occurrence. The owner is alive, so its in-flight task IS in flight: shown as <c>running</c>, and not
+    /// listed as leftover state that a resume will discard.
     /// </summary>
     [Fact]
     public async Task ALiveRun_IsReportedRunning_AndItsInFlightTaskIsNotCalledLeftoverState()
@@ -124,7 +129,7 @@ public sealed class StatusRunLivenessTests
         using StatePlanBuilder plan = TwoTaskPlan();
         WriteJournalMidAttempt(plan, pid: 14168, AnyStart);
 
-        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(running: true));
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.Running));
 
         Assert.Contains("Run state: RUNNING", output, StringComparison.Ordinal);
         Assert.DoesNotContain("EXITED WITHOUT FINISHING", output, StringComparison.Ordinal);
@@ -135,19 +140,37 @@ public sealed class StatusRunLivenessTests
     }
 
     /// <summary>
-    /// The control. Without it, a status that never consulted the process table and printed one fixed verdict
-    /// would pass one of the two tests above. The table must be asked, once, about the recorded pid AND start time.
+    /// The process table cannot say (an unreadable start time, say). That is UNKNOWN, not EXITED: no resume command,
+    /// and the journal's own word stands in the table because nothing disproves it.
+    /// </summary>
+    [Fact]
+    public async Task AnOwnerThatCannotBeChecked_IsUnknown_AndTheJournalsWordStands()
+    {
+        using StatePlanBuilder plan = TwoTaskPlan();
+        WriteJournalMidAttempt(plan, pid: 14168, AnyStart);
+
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.CannotTell));
+
+        Assert.Contains("Run state: UNKNOWN — owner process 14168 could not be checked from here", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("EXITED WITHOUT FINISHING", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Resume with", output, StringComparison.Ordinal);
+        Assert.Contains(" running ", Row(output, "02-second"), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The control. Without it, a status that never consulted the process table and printed one fixed verdict would
+    /// pass one of the tests above. The table must be asked, once, about the recorded owner.
     /// </summary>
     [Fact]
     public async Task Status_AsksTheProcessTableAboutTheRecordedOwner()
     {
         using StatePlanBuilder plan = TwoTaskPlan();
         RunOwner owner = WriteJournalMidAttempt(plan, pid: 14168, AnyStart);
-        var table = new FakeProcessTable(running: true);
+        var table = new FakeProcessTable(ProcessCheck.Running);
 
         await StatusAsync(plan.PlanDir, table);
 
-        Assert.Equal((owner.Pid, owner.ProcessStartedAt), Assert.Single(table.Asked));
+        Assert.Equal(owner, Assert.Single(table.Asked));
     }
 
     /// <summary>
@@ -158,13 +181,21 @@ public sealed class StatusRunLivenessTests
     public async Task TheProductionProcessTable_TellsALiveOwnerFromAGoneOne()
     {
         using StatePlanBuilder plan = TwoTaskPlan();
-        RunOwner self = RunLiveness.OwnerForThisProcess();
+        RunOwner self = RunLiveness.OwnerForThisProcess()!;
 
-        WriteJournalMidAttempt(plan, self.Pid, self.ProcessStartedAt);
+        WriteJournal(plan, self);
         Assert.Contains("Run state: RUNNING", await StatusAsync(plan.PlanDir), StringComparison.Ordinal);
 
-        WriteJournalMidAttempt(plan, pid: 999_999_999, self.ProcessStartedAt);
+        WriteJournal(plan, self with { Pid = 999_999_999 });
         Assert.Contains("Run state: EXITED WITHOUT FINISHING", await StatusAsync(plan.PlanDir), StringComparison.Ordinal);
+    }
+
+    private static void WriteJournal(StatePlanBuilder plan, RunOwner owner)
+    {
+        WriteJournalMidAttempt(plan, owner.Pid, owner.ProcessStartedAt);
+        string path = RunJournal.PathFor(plan.PlanDir);
+        JournalDocument document = JournalReader.Read(path) with { Owner = owner };
+        File.WriteAllText(path, JsonSerializer.Serialize(document, JournalJson.Options));
     }
 
     // ── What a real run records ──────────────────────────────────────────────────────────────────
@@ -175,7 +206,7 @@ public sealed class StatusRunLivenessTests
     /// without a recorded end the verdict would be RUNNING.
     /// </summary>
     [Fact]
-    public async Task AfterAGreenRun_TheJournalNamesItsOwnerAndItsEnd_AndStatusSaysFinished()
+    public async Task AfterAGreenRun_TheJournalNamesItsOwnerAndItsEnd_AndStatusSaysEndedWithTheOutcome()
     {
         using var plan = new StatePlanBuilder().AddTask("01-first");
         Assert.Equal(ExitCodes.Success, (await RunAsync("run", plan.PlanDir, "--no-log-server")).Exit);
@@ -185,15 +216,17 @@ public sealed class StatusRunLivenessTests
         Assert.Equal(Environment.ProcessId, owner!.Pid);
         Assert.NotNull(owner.FinishedAt);
 
-        Assert.Contains("Run state: FINISHED", await StatusAsync(plan.PlanDir), StringComparison.Ordinal);
+        string output = await StatusAsync(plan.PlanDir);
+        Assert.Contains("Run state: ENDED at ", output, StringComparison.Ordinal);
+        Assert.Contains(" — all 1 task(s) succeeded; nothing is running.", output, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// A halted run finished too — it stopped by its own decision — and its table is then a last outcome, so the
-    /// #639 resume prediction still prints for it.
+    /// A halted run ended too — by its own decision — and the line says WHERE it stopped, because the operator is
+    /// told to read this line first. Its table is then a last outcome, so the #639 resume prediction still prints.
     /// </summary>
     [Fact]
-    public async Task AfterAHaltedRun_StatusSaysFinished_AndStillPredictsTheResume()
+    public async Task AfterAHaltedRun_StatusSaysEndedAtTheHaltedTask_AndStillPredictsTheResume()
     {
         using var plan = new StatePlanBuilder()
             .AddTask("01-first", guardrailBody: StatePlanBuilder.Fail("not yet"))
@@ -202,15 +235,56 @@ public sealed class StatusRunLivenessTests
 
         string output = await StatusAsync(plan.PlanDir);
 
-        Assert.Contains("Run state: FINISHED", output, StringComparison.Ordinal);
+        Assert.Contains("Run state: ENDED at ", output, StringComparison.Ordinal);
+        Assert.Contains(" — halted at 01-first (needs-human); nothing is running.", output, StringComparison.Ordinal);
         Assert.Contains("A resume will RE-RUN these", output, StringComparison.Ordinal);
         Assert.Contains("02-second (blocked)", output, StringComparison.Ordinal);
     }
 
+    // ── Last activity: display-only, and newest of three sources ─────────────────────────────────
+
+    /// <summary>
+    /// <c>run.json</c> moves only at task transitions, so on a long attempt its age says nothing about whether the run
+    /// is moving. The line reads the newest of the journal, the run's event stream, and the RUNNING task's newest
+    /// attempt logs — and never a settled task's logs, which are not this run making progress.
+    /// </summary>
+    [Fact]
+    public async Task TheLastActivity_IsTheNewestOfTheJournalTheEventStreamAndTheRunningAttemptsLogs()
+    {
+        using StatePlanBuilder plan = TwoTaskPlan();
+        WriteJournalMidAttempt(plan, pid: 14168, AnyStart);
+
+        string runLogs = Path.Combine(plan.PlanDir, "logs", RunId);
+        string events = Touch(Path.Combine(runLogs, "events.jsonl"));
+        string runningAttemptStream = Touch(Path.Combine(runLogs, "02-second", "attempt-1", "claude-stream.jsonl"));
+        string settledTaskLog = Touch(Path.Combine(runLogs, "01-first", "attempt-1", "stdout.log"));
+
+        File.SetLastWriteTimeUtc(RunJournal.PathFor(plan.PlanDir), At(0));
+        File.SetLastWriteTimeUtc(events, At(10));
+        File.SetLastWriteTimeUtc(runningAttemptStream, At(16, 3));
+        File.SetLastWriteTimeUtc(settledTaskLog, At(50));
+
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.Running));
+        Assert.Contains("Last activity 2026-09-13T00:16:03Z", output, StringComparison.Ordinal);
+
+        File.SetLastWriteTimeUtc(runningAttemptStream, At(5));
+        output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.Running));
+        Assert.Contains("Last activity 2026-09-13T00:10:00Z", output, StringComparison.Ordinal);
+
+        static DateTime At(int minute, int second = 0) => new(2026, 9, 13, 0, minute, second, DateTimeKind.Utc);
+    }
+
+    private static string Touch(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, string.Empty);
+        return path;
+    }
+
     // ── The rendered line ────────────────────────────────────────────────────────────────────────
 
-    private static readonly DateTimeOffset LastWrite = new(2026, 9, 13, 0, 16, 3, TimeSpan.Zero);
-    private static readonly DateTimeOffset Now = LastWrite.AddMinutes(13).AddSeconds(49);
+    private static readonly DateTimeOffset LastActivity = new(2026, 9, 13, 0, 16, 3, TimeSpan.Zero);
+    private static readonly DateTimeOffset Now = LastActivity.AddMinutes(13).AddSeconds(49);
 
     private static RunOwner LineOwner(DateTimeOffset? finishedAt = null) => new()
     {
@@ -220,12 +294,17 @@ public sealed class StatusRunLivenessTests
         FinishedAt = finishedAt
     };
 
+    private static string Line(RunLivenessState state, RunOwner? owner, string folder = "plans/40", string endedSummary = "") =>
+        StatusCommand.LivenessLine(state, owner, endedSummary, LastActivity, Now, folder);
+
+    /// <summary>A live run gets the next step for the one case "alive" does not cover: alive and stuck (#722).</summary>
     [Fact]
-    public void TheLine_ForARunningRun()
+    public void TheLine_ForARunningRun_NamesTheNextStepIfItIsNotProgressing()
     {
         Assert.Equal(
-            "Run state: RUNNING — owner process 14168 is alive. Last journal write 2026-09-13T00:16:03Z (13m49s ago).",
-            StatusCommand.LivenessLine(RunLivenessState.Running, LineOwner(), LastWrite, Now, "plans/40"));
+            "Run state: RUNNING — owner process 14168 is alive. Last activity 2026-09-13T00:16:03Z (13m49s ago). "
+            + "If it is not progressing, stop process 14168, then resume with: guardrails run plans/40",
+            Line(RunLivenessState.Running, LineOwner()));
     }
 
     [Fact]
@@ -233,8 +312,8 @@ public sealed class StatusRunLivenessTests
     {
         Assert.Equal(
             "Run state: EXITED WITHOUT FINISHING — owner process 14168 is gone and never recorded an end, so nothing "
-            + "is running. Last journal write 2026-09-13T00:16:03Z (13m49s ago). Resume with: guardrails run plans/40",
-            StatusCommand.LivenessLine(RunLivenessState.ExitedWithoutFinishing, LineOwner(), LastWrite, Now, "plans/40"));
+            + "is running. Last activity 2026-09-13T00:16:03Z (13m49s ago). Resume with: guardrails run plans/40",
+            Line(RunLivenessState.ExitedWithoutFinishing, LineOwner()));
     }
 
     /// <summary>The resume command exists to be pasted, so a folder containing a space arrives quoted.</summary>
@@ -243,18 +322,20 @@ public sealed class StatusRunLivenessTests
     {
         Assert.EndsWith(
             "Resume with: guardrails run \"C:\\Dev AI\\plans\\40\"",
-            StatusCommand.LivenessLine(RunLivenessState.ExitedWithoutFinishing, LineOwner(), LastWrite, Now, "C:\\Dev AI\\plans\\40"),
+            Line(RunLivenessState.ExitedWithoutFinishing, LineOwner(), folder: "C:\\Dev AI\\plans\\40"),
             StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TheLine_ForAFinishedRun()
+    public void TheLine_ForAnEndedRun_CarriesTheOutcome()
     {
         Assert.Equal(
-            "Run state: FINISHED — owner process 14168 recorded its end at 2026-09-13T05:02:11Z; nothing is running.",
-            StatusCommand.LivenessLine(
-                RunLivenessState.Finished, LineOwner(new DateTimeOffset(2026, 9, 13, 5, 2, 11, TimeSpan.Zero)),
-                LastWrite, Now, "plans/40"));
+            "Run state: ENDED at 2026-09-13T05:02:11Z — halted at 18-implement-resume-shorthand (needs-human); "
+            + "nothing is running.",
+            Line(
+                RunLivenessState.Ended,
+                LineOwner(new DateTimeOffset(2026, 9, 13, 5, 2, 11, TimeSpan.Zero)),
+                endedSummary: "halted at 18-implement-resume-shorthand (needs-human)"));
     }
 
     [Fact]
@@ -262,17 +343,180 @@ public sealed class StatusRunLivenessTests
     {
         Assert.Equal(
             "Run state: UNKNOWN — owner process 14168 ran on host 'BUILD-BOX', and its liveness can only be checked "
-            + "there. Last journal write 2026-09-13T00:16:03Z (13m49s ago).",
-            StatusCommand.LivenessLine(RunLivenessState.OnAnotherHost, LineOwner(), LastWrite, Now, "plans/40"));
+            + "there. Last activity 2026-09-13T00:16:03Z (13m49s ago).",
+            Line(RunLivenessState.OnAnotherHost, LineOwner()));
+    }
+
+    [Fact]
+    public void TheLine_ForAnOwnerThatCannotBeChecked()
+    {
+        Assert.Equal(
+            "Run state: UNKNOWN — owner process 14168 could not be checked from here, so a live run and a dead one "
+            + "look the same. Last activity 2026-09-13T00:16:03Z (13m49s ago).",
+            Line(RunLivenessState.CannotCheck, LineOwner()));
     }
 
     [Fact]
     public void TheLine_ForAJournalThatNamesNoOwner()
     {
         Assert.Equal(
-            "Run state: UNKNOWN — this journal names no owner process (it predates #704), so a live run and a dead "
-            + "one look the same here. Last journal write 2026-09-13T00:16:03Z (13m49s ago).",
-            StatusCommand.LivenessLine(RunLivenessState.NotRecorded, owner: null, LastWrite, Now, "plans/40"));
+            "Run state: UNKNOWN — this journal names no owner process (it predates #704, or its run could not read "
+            + "its own identity), so a live run and a dead one look the same here. Last activity "
+            + "2026-09-13T00:16:03Z (13m49s ago).",
+            Line(RunLivenessState.NotRecorded, owner: null));
+    }
+
+    // ── The ENDED outcome, from what the journal already records ─────────────────────────────────
+
+    private static readonly string[] Ids = ["01-first", "02-second"];
+    private static readonly DateTimeOffset T = new(2026, 9, 13, 5, 2, 11, TimeSpan.Zero);
+
+    private static TaskJournalEntry Entry(JournalTaskStatus status, AttemptOutcome? lastAttempt = null) => new()
+    {
+        Status = status,
+        Attempts = lastAttempt is { } outcome
+            ? [new AttemptRecord { Attempt = 1, StartedAt = T, EndedAt = T, Outcome = outcome, LogDir = "logs/r/t/attempt-1" }]
+            : []
+    };
+
+    private static JournalDocument Journal(
+        (string Id, TaskJournalEntry Entry)[] tasks, DeliverySection? delivery = null, RunHalt? halt = null) => new()
+    {
+        RunId = RunId,
+        PlanHash = "sha256:test",
+        Tasks = tasks.ToDictionary(task => task.Id, task => task.Entry, StringComparer.Ordinal),
+        Delivery = delivery,
+        Halt = halt
+    };
+
+    /// <summary>A gate halt settles no task, so the gate's own headline is the outcome — ahead of anything in the table.</summary>
+    [Fact]
+    public void EndedSummary_AGateHalt_NamesTheGate()
+    {
+        var halt = new RunHalt
+        {
+            Kind = RunHaltKind.PlanPreflightFailed,
+            HaltedAt = T,
+            Headline = "Full Flight Checks FAILED: 01-baseline"
+        };
+
+        Assert.Equal(
+            "halted: Full Flight Checks FAILED: 01-baseline",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Pending)), ("02-second", Entry(JournalTaskStatus.NeedsHuman))], halt: halt)));
+    }
+
+    [Fact]
+    public void EndedSummary_ATaskThatNeedsAHuman_NamesTheTask()
+    {
+        Assert.Equal(
+            "halted at 02-second (needs-human)",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.NeedsHuman))])));
+    }
+
+    [Fact]
+    public void EndedSummary_SeveralHaltedTasks_NamesTheFirstInPlanOrder_AndCountsTheRest()
+    {
+        Assert.Equal(
+            "halted at 01-first (failed) and 1 more",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("02-second", Entry(JournalTaskStatus.NeedsHuman)), ("01-first", Entry(JournalTaskStatus.Failed))])));
+    }
+
+    /// <summary>A task still <c>running</c> under a run that recorded its end was cut off by a fault that unwound mid-attempt.</summary>
+    [Fact]
+    public void EndedSummary_ATaskStillMarkedRunning_WasInterrupted()
+    {
+        Assert.Equal(
+            "interrupted at 02-second",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Running))])));
+    }
+
+    [Fact]
+    public void EndedSummary_ACancelledAttempt_IsCancelled()
+    {
+        Assert.Equal(
+            "cancelled",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([
+                    ("01-first", Entry(JournalTaskStatus.Succeeded)),
+                    ("02-second", Entry(JournalTaskStatus.Pending, AttemptOutcome.Cancelled))])));
+    }
+
+    [Fact]
+    public void EndedSummary_WhollyGreenAndDelivered_NamesTheBranch()
+    {
+        var delivery = new DeliverySection
+        {
+            Delivered = true,
+            Outcome = DeliveryOutcome.FastForwarded,
+            DeliveredToBranch = "master"
+        };
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, delivered to master",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Succeeded))], delivery)));
+    }
+
+    /// <summary>Green but stranded is the outcome that loses work to a later <c>--fresh</c>, so the line names where the work is.</summary>
+    [Fact]
+    public void EndedSummary_WhollyGreenButNotDelivered_NamesWhereTheWorkIs()
+    {
+        var delivery = new DeliverySection
+        {
+            Delivered = false,
+            Outcome = DeliveryOutcome.NotAttempted,
+            Reason = "mergeOnSuccess resolved off",
+            PlanBranch = "guardrails/plan"
+        };
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, NOT delivered — the work is on guardrails/plan",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Succeeded))], delivery)));
+    }
+
+    [Fact]
+    public void EndedSummary_WhollyGreenButTheMergeWasRefused_NamesTheRefusal()
+    {
+        var delivery = new DeliverySection { Delivered = false, Outcome = DeliveryOutcome.Conflict };
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, not delivered (conflict)",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Succeeded))], delivery)));
+    }
+
+    [Fact]
+    public void EndedSummary_WhollyGreenWithNothingToDeliver()
+    {
+        Assert.Equal(
+            "all 2 task(s) succeeded",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Succeeded))])));
+    }
+
+    /// <summary>A run that stopped without halting a task — a declined drift prompt, a MAX_PATH preflight — says how far it got.</summary>
+    [Fact]
+    public void EndedSummary_StoppedBeforeFinishing_SaysHowFarItGot()
+    {
+        Assert.Equal(
+            "stopped with 1 of 2 task(s) succeeded",
+            StatusCommand.EndedSummary(
+                Ids,
+                Journal([("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Pending))])));
     }
 
     // ── The TASK column ──────────────────────────────────────────────────────────────────────────
@@ -316,14 +560,14 @@ public sealed class StatusRunLivenessTests
         }
     }
 
-    private sealed class FakeProcessTable(bool running) : IProcessProbe
+    private sealed class FakeProcessTable(ProcessCheck answer) : IProcessProbe
     {
-        public List<(int Pid, DateTimeOffset StartedAt)> Asked { get; } = [];
+        public List<RunOwner> Asked { get; } = [];
 
-        public bool IsRunning(int pid, DateTimeOffset startedAt)
+        public ProcessCheck Check(RunOwner owner)
         {
-            Asked.Add((pid, startedAt));
-            return running;
+            Asked.Add(owner);
+            return answer;
         }
     }
 }
