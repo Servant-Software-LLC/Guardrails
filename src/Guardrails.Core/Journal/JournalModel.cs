@@ -86,6 +86,26 @@ public sealed record JournalDocument
     public IReadOnlyList<SuppliedRecord>? Supplied { get; init; }
 
     /// <summary>
+    /// OPTIONAL provenance record of every post-delivery refresh merge — the plan branch pulled back onto
+    /// the user's branch after a non-fast-forward barrier delivery (design 39 §1c "How a refresh is
+    /// recorded" / §5, SSOT §7 top-level <c>refreshed[]</c>). A sibling of <see cref="Supplied"/>, never a
+    /// <c>kind</c> on <see cref="Journal.SuppliedRecord"/>: a refresh has no caller for <c>by</c> and no
+    /// honest <c>bytes</c> for a merge. <see cref="Journal.UnauthoredContentNote"/> is the one reader that
+    /// answers "what is in this tree that no task authored?" across BOTH sections. Additive and
+    /// backward-compatible on the same terms as <see cref="Supplied"/>: absent (never <c>null</c> noise) on
+    /// a run that never refreshed, which is the overwhelming majority.
+    /// <para>
+    /// This property is the STUB half of task <c>24-author-tests-refresh-provenance</c> — an honest,
+    /// working container, the exact shape of <see cref="Supplied"/> beside it. Its element type,
+    /// <see cref="Journal.RefreshedRecord"/>, is the half that is NOT yet implemented; see that type's
+    /// remarks. A document that never sets this property round-trips through <see cref="JournalJson"/>
+    /// unchanged whether or not <see cref="Journal.RefreshedRecord"/> has been filled in.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<RefreshedRecord>? Refreshed { get; init; }
+
+    /// <summary>
     /// OPTIONAL cumulative OVERHEAD prompt spend (SSOT §7/§9.2, issues #269/#314) that is NOT a task
     /// attempt — the three harness-internal prompt-spend sources that fire BETWEEN (or outside) a task's
     /// attempts, so charging them as synthetic <see cref="AttemptRecord"/>s would corrupt attempt

@@ -476,6 +476,20 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Append a provenance record to the durable, top-level <c>refreshed[]</c> journal section (design 39
+    /// §1c "How a refresh is recorded" / §5) — the write path for every post-delivery refresh merge.
+    /// Additive — the section stays absent until the first refresh, matching <see cref="RecordSupplied"/>
+    /// (never <c>null</c> noise, and a second refresh appends rather than replacing the first).
+    /// <para>
+    /// STUB (task 24): throws until task 25 wires the write. Task 25's tests pin that this method must
+    /// APPEND (never replace), must PERSIST to disk, and must leave <see cref="JournalDocument.Supplied"/>
+    /// untouched.
+    /// </para>
+    /// </summary>
+    public void RecordRefreshed(RefreshedRecord record) =>
+        throw new NotImplementedException();
+
+    /// <summary>
     /// Allocate the next durably-MONOTONIC, never-reused escalation <c>seq</c> for this run (doc 12 §7.1,
     /// Finding 5) — the run-level counter <see cref="Execution.FileEscalationSink"/> stamps onto each
     /// <c>logs/&lt;runId&gt;/escalations/&lt;seq&gt;-&lt;gate&gt;.json</c> record and the returned
