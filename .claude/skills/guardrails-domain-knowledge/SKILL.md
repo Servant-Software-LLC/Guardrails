@@ -423,7 +423,9 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   genuine no-op attempt (empty diff) is not offered a stash. **A write-scope violation is stashed only when
   the attempt changed something IN scope (#705)**: its out-of-scope bytes are kept instead as
   `out-of-scope.patch`, captured before the scoped revert, for a human, and never applied or offered as
-  salvage. (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
+  salvage while the scope excludes it. Once a widened scope covers its paths, the next attempt's composed prompt
+  gains "Out-of-scope work an earlier attempt left is now in scope", offering exactly those paths to recover and
+  superseding the earlier "not for you" (#707 review W4). (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
   non-empty snapshot is not evidence of in-scope work.) **Two suppress-the-stash exceptions:**
   (1) **fragment-rejection** paths (invalid-fragment / foreign-key) keep the #162 re-author disclosure,
   not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** is suppressed AT

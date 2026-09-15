@@ -298,6 +298,37 @@ public sealed class WriteScopeRunTests
         Assert.DoesNotContain("partial in-scope work", File.ReadAllText(outOfScope));
     }
 
+    [Fact]
+    public async Task AfterAHumanWidensTheScope_TheResumedAttemptIsPointedAtTheKeptWork_Issue705()
+    {
+        // #707 review W4 — #705's second audience. The halt kept the working implementation as out-of-scope.patch
+        // for the human who widens the scope, and for the attempt that runs after they do. Here the human does
+        // exactly what the halt asked, and the resumed attempt must be pointed at that work instead of re-authoring
+        // it from scratch (plan 40's resumed attempt had to dig it out of a raw claude-stream.jsonl).
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"], DependsOn: ["01-author"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", taskId == "01-author" ? "stub" : "RESOLVE-BODY"));
+
+        (RunReport halted, _) = await RunWorktreeAsync(planDir, repo, agent);
+        Assert.Equal(TaskOutcome.NeedsHuman, halted.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        string keptCopy = Path.Combine(AttemptDir(planDir, "02-implement", 1), "out-of-scope.patch");
+        Assert.True(File.Exists(keptCopy), "precondition: the halt kept the out-of-scope work");
+
+        // The human widens 02-implement's writeScope — the one-line task.json fix — and resumes the run.
+        WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs", "src/Stub.cs"], DependsOn: ["01-author"]));
+        (RunReport resumed, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, resumed.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        string composed = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 2), "composed-prompt.md"));
+        Assert.Contains("## Out-of-scope work an earlier attempt left is now in scope", composed);
+        Assert.Contains(keptCopy.Replace('\\', '/'), composed);
+    }
+
     // ── #707 review: the halt's salvage, test files, and "every offending path" ─────────────────
 
     [Fact]
