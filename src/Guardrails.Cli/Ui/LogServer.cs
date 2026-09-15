@@ -1386,9 +1386,11 @@ __STYLE__
 __ROWS__
 </tbody>
 </table>
-<p class="muted">"Status" is the run's own word for each task, the same one the static index shows;
-"Latest attempt" is the newest attempt directory on disk. For the full picture (guardrail results,
-sources, diagrams) open the durable static index, which works with or without this server:</p>
+<p class="muted">"Status" is the harness's own word for each task: under a run, the same one that run's
+during-run index shows &mdash; a task a resume found already done reads "skipped", and a cancelled run's
+unstarted tasks read "cancelled"; under <code>guardrails logs</code>, the journal's word. "Latest attempt"
+is the newest attempt directory on disk. For the full picture (guardrail results, sources, diagrams) open
+the durable static index, which works with or without this server:</p>
 <pre>__INDEX_PATH__</pre>
 <p class="muted">That one is a file path rather than a link because a browser blocks
 <code>http://</code> &rarr; <code>file://</code>.</p>
