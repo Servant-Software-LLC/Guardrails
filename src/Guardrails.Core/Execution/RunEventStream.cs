@@ -265,6 +265,14 @@ public sealed class RunEventStream : IRunObserver
     public void WaveFinished(Model.WaveNode wave, Journal.WaveStatus status, bool skipped) =>
         _inner.WaveFinished(wave, status, skipped);
 
+    /// <summary>
+    /// Forwards only — DECIDED (design 39 §5): a delivery's durable, machine-readable record is
+    /// <c>run.json</c>'s <c>waves.&lt;dir&gt;.delivered</c>, persisted before this event is raised, and
+    /// <c>events.jsonl</c> gains no <c>wave-delivered</c> kind.
+    /// </summary>
+    public void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery) =>
+        _inner.WaveDelivered(wave, delivery);
+
     /// <inheritdoc/>
     public void WaveGateFinished(
         Model.WaveNode wave, bool isEntryGate, IReadOnlyList<Journal.PlanPreflightCheck> checks) =>
