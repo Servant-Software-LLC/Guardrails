@@ -352,9 +352,9 @@ public sealed class TaskExecutor : ITaskExecutor
             // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
             // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9), the
             // permission-wall halt (issues #86 / #104 / #325 / #708: a #86 repeated-refusal halt on an
-            // attempt whose action failed, or an outcome-aware structural .claude/ halt on a non-converged
-            // attempt), and the §6.2 no-route settle (#201) that never launched an attempt at all, all of
-            // which surface as TaskOutcome.NeedsHuman.
+            // attempt whose action failed or, for a write path, whose guardrails failed, or an outcome-aware
+            // structural .claude/ halt on a non-converged attempt), and the §6.2 no-route settle (#201) that
+            // never launched an attempt at all, all of which surface as TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
@@ -997,15 +997,17 @@ public sealed class TaskExecutor : ITaskExecutor
         // (The #321 observe-filter that dropped .claude/ paths whenever a needsHarnessWrite was present is GONE —
         // subsumed by the outcome-aware halt below.) Then compute the wall verdict ONCE. WHERE that
         // verdict is consulted is outcome-aware:
-        //   • #86 REPEATED (a path or command refused across ≥2 attempts): consulted only on an attempt whose
-        //     ACTION FAILED (the action-failed site below). #708 moved it there from an EAGER check that ran
-        //     before the outcome was known, and so pre-empted a CONVERGED attempt: plan 40's task 21 finished
-        //     its deliverable on attempt 2, but a self-check command it was not granted had been refused on
-        //     attempts 1 and 2, so attempt 2 settled permission-denied and its guardrail never ran. An attempt
-        //     whose action SUCCEEDED is settled by its guardrails: a pass is green, and a failure is an ordinary
-        //     guardrail-failed retry that carries the repeated refusal as secondary context. The budget #86
-        //     protects is the one an agent burns while STUCK at the wall, and that agent's action fails (turns,
-        //     clock, error), so the halt still fires there.
+        //   • #86 REPEATED (a path or command refused across ≥2 attempts): consulted at the attempt's OUTCOME.
+        //     #708 moved it there from an EAGER check that ran before the outcome was known, and so pre-empted a
+        //     CONVERGED attempt: plan 40's task 21 finished its deliverable on attempt 2, but a self-check command
+        //     it was not granted had been refused on attempts 1 and 2, so attempt 2 settled permission-denied and
+        //     its guardrail never ran. Now:
+        //       - the ACTION FAILED: halt (the action-failed site below), for paths and commands alike. That is
+        //         the budget #86 protects, the one an agent burns while STUCK at the wall;
+        //       - the action succeeded and the guardrails PASS: green, whatever was refused;
+        //       - the action succeeded and a guardrail FAILED: a repeated WRITE PATH halts, since a retry would be
+        //         refused the same write, and a repeated COMMAND is an ordinary guardrail-failed retry carrying
+        //         it as secondary context (the guardrail-failed site below).
         //   • #104/#325 STRUCTURAL (a .claude/ path): consulted only on an attempt that did NOT converge
         //     — the action failed OR the guardrails failed (the two sites below). A CONVERGED attempt
         //     (guardrails pass) goes GREEN regardless of a .claude/ refusal the agent recovered from in
@@ -1052,9 +1054,9 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             // #86 (#708): a path or command refused across ≥2 attempts, on an attempt that could not finish, is a
             // wall a retry would only re-hit. Settle needs-human NOW instead of burning the rest of the budget.
-            // This is the only site the repeat settles: an attempt whose action succeeded goes on to its
-            // guardrails (see the observation comment above). Still AFTER the transient-pause check, so a
-            // rate-limited attempt PAUSES and re-runs the SAME attempt rather than halting. Checked BEFORE the
+            // An attempt whose action succeeded goes on to its guardrails instead, and a repeated write path
+            // settles it only if they fail (see the observation comment above). Still AFTER the transient-pause
+            // check, so a rate-limited attempt PAUSES and re-runs the SAME attempt rather than halting. Checked BEFORE the
             // structural wall, with a REPEATED-ONLY decision, so the feedback/summary wording stays "repeated"
             // (not "structural") even when a .claude/ read-source wall coexists this attempt.
             if (wall.HasRepeated)
@@ -1487,11 +1489,16 @@ public sealed class TaskExecutor : ITaskExecutor
         if (guardrails.AnyFailed)
         {
             IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
+            IReadOnlyList<FailedGuardrail> failedList = failed
+                .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
+                .ToList();
+            string failedNames = string.Join(", ", failed.Select(g => g.Name));
+            string primaryBody = string.Join("\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
 
-            // #708: a path or command refused across ≥2 attempts does not settle an attempt whose action
-            // succeeded; the guardrails just did. The refusal rides along as SECONDARY context in the summary and
-            // the feedback, so a human sees it and the next attempt stops reaching for a call that will be
-            // refused again. Both are empty when nothing repeated.
+            // #708: a COMMAND refused across ≥2 attempts does not settle an attempt whose action succeeded; the
+            // guardrails just did. It rides along as SECONDARY context in the summary and the feedback, so a human
+            // sees it and the next attempt stops reaching for a call that will be refused again. (A repeated WRITE
+            // PATH halts below instead.) Both are empty when nothing repeated.
             string repeatedRefusalSummary = wall.HasRepeated
                 ? $"; secondary context: {RetryPolicy.RepeatedRefusals(wall)}"
                 : string.Empty;
@@ -1506,20 +1513,14 @@ public sealed class TaskExecutor : ITaskExecutor
             // ship). Report the TRUE primary cause instead: outcome `guardrail-failed` with
             // failedGuardrails[] populated, the .claude/ wall disclosed as SECONDARY context (it explains
             // the staging/recovery detour and, when the failure is a MISSING .claude/ deliverable, is the
-            // likely reason). wall.StructuralPaths carries the structural wall; a repeated refusal, which no
-            // longer settles an attempt whose action succeeded (#708), is appended as its own secondary context.
+            // likely reason). wall.StructuralPaths carries the structural wall; any repeated refusal is appended as
+            // its own context (#708).
             if (wall.HasStructural)
             {
-                IReadOnlyList<FailedGuardrail> failedList = failed
-                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
-                    .ToList();
-                string failedNames = string.Join(", ", failed.Select(g => g.Name));
                 string wallPaths = string.Join(", ", wall.StructuralPaths);
                 string summary =
                     $"guardrail(s) failed: {failedNames} — needs human; a .claude/ write was blocked this " +
                     $"attempt ({wallPaths}), which may be why (see feedback){repeatedRefusalSummary}";
-                string primaryBody = string.Join(
-                    "\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
                 string wallFeedback = RetryPolicy.ForStructuralWallHalt(
                     task, "A guardrail failed", primaryBody, wall.StructuralPaths) + repeatedRefusalFeedback;
                 // #339 N1: mirror the canonical guardrail-failed sibling below — a guardrail that TIMED OUT
@@ -1540,6 +1541,25 @@ public sealed class TaskExecutor : ITaskExecutor
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
                     summary, wallFeedback, guardrails.Results, failedList, wall, provenance: provenance,
+                    segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                    harnessWrite: harnessWriteRecord);
+            }
+
+            // #708: the guardrails failed AND a WRITE PATH was refused on this attempt and an earlier one. Halt
+            // needs-human on this attempt, exactly where the structural wall above halts. Nothing grants the write
+            // between attempts, so a retry would be refused it again and fail the same guardrail: the budget #86
+            // protects. A repeated COMMAND does not halt here: it is an auxiliary route (plan 40's refused
+            // self-check) and retries below with its secondary context. Reported like the #329 halt above, through
+            // the same record: the guardrail failure that ran leads, as guardrail-failed or timeout with
+            // failedGuardrails[] populated, and the wall follows in #86's path wording.
+            if (wall.RepeatedPaths.Count > 0)
+            {
+                return _journaler.StructuralWallHalt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                    guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
+                    $"guardrail(s) failed: {failedNames} — needs human; {RetryPolicy.RepeatedRefusals(wall)} (see feedback)",
+                    RetryPolicy.ForRepeatedPathWallHalt(task, primaryBody, wall),
+                    guardrails.Results, failedList, provenance: provenance,
                     segments: AttemptJournaler.SegmentsFor(action, guardrails),
                     harnessWrite: harnessWriteRecord);
             }
@@ -1572,9 +1592,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     Outcome = TaskOutcome.GuardrailFailed,
                     ActionExitCode = action.ExitCode,
                     Guardrails = guardrails.Results,
-                    Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}{repeatedRefusalSummary}"
+                    Summary = $"guardrail(s) failed: {failedNames}{repeatedRefusalSummary}"
                 },
-                failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
+                failedList,
                 // Plan 30 §2: the guardrail-failed path is the one the survivorship finding is ABOUT —
                 // ten of plan 27's twenty-three attempts settled here carrying nothing attributable.
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,

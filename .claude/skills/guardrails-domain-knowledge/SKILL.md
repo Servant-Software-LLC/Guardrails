@@ -872,13 +872,15 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   a guardrail that genuinely RAN and FAILED is reported `guardrail-failed` with `failedGuardrails[]`
   populated (the `.claude/` wall carried as SECONDARY context in the summary/`feedback.md`), NOT
   `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
-  action-failed #104 first-attempt wall, or the #86 repeat -- stays `permission-denied`. The halt
-  DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. **The #86 repeat
-  settles only an attempt whose ACTION FAILED (#708):** a path or command refused on 2+ attempts no longer
-  pre-empts an attempt whose action succeeded -- its guardrails run, a pass is green, and a failure is an
-  ordinary `guardrail-failed` retry carrying the refusal as secondary context. The runner also reports which
-  refused targets are COMMANDS (`RefusedCommands`): a command is never the structural `.claude/` wall, and
-  halt text names it a command, never a write path. **MANY FILES IN ONE
+  action-failed #104 first-attempt wall, or the #86 repeat on an action-failed attempt -- stays
+  `permission-denied`. The halt DECISION is unchanged; only the reported outcome/message/`failedGuardrails`
+  differ. **The #86 repeat is settled at the attempt's outcome (#708):** a path or command refused on 2+
+  attempts halts an attempt whose ACTION FAILED (`permission-denied`); an attempt whose action succeeded runs
+  its guardrails, and a pass is green; if a guardrail fails, a repeated WRITE PATH halts needs-human there
+  (reported `guardrail-failed` with `failedGuardrails[]`, like the structural halt), while repeated COMMANDS
+  alone are an ordinary `guardrail-failed` retry carrying the refusal as secondary context. The runner also
+  reports which refused targets are COMMANDS (`RefusedCommands`): a command is never the structural `.claude/`
+  wall, and halt text names it a command, never a write path. **MANY FILES IN ONE
   ATTEMPT (#445, the CARDINALITY dimension):** the key's value may be a single entry object OR an ARRAY of
   them (`{ "needsHarnessWrite": [ {...}, {...} ] }`), additive and backward-compatible. It exists because a
   SINGULAR request made a task whose deliverable spans 2+ `.claude/` files **unable to converge at all** --

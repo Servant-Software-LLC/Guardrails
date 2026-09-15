@@ -645,35 +645,77 @@ public sealed class PromptRunnerReliabilityTests
     }
 
     [Fact]
-    public async Task RepeatedRefusal_OnAnAttemptWhoseGuardrailFails_IsNotGreen_AndTheRefusalIsSecondaryContext()
+    public async Task RepeatedCommand_OnAnAttemptWhoseGuardrailFails_Retries_WithTheRefusalAsSecondaryContext()
     {
-        // The control for the deferral. A succeeded action is settled by its guardrails, so a FAILING guardrail fails
-        // the attempt, as guardrail-failed rather than permission-denied. A change that dropped the halt by going
-        // straight to green, without running the guardrails, would settle this task green.
+        // #708's own case: a refused optional self-check. A succeeded action is settled by its guardrails, so a FAILING
+        // guardrail fails the attempt, as guardrail-failed rather than permission-denied, and a refused COMMAND does not
+        // halt it: the retry runs. This is also the control for the deferral, since a change that dropped the halt by
+        // going straight to green, without running the guardrails, would settle this task green.
         const string selfCheck = "echo \"EXIT:$?\"";
         var observer = new PauseRecordingObserver();
         var runner = new SequencingRunner(
             Refusing(MaxTurns(), selfCheck, isCommand: true), Refusing(Success(), selfCheck, isCommand: true));
 
-        (RunReport report, TaskJournalEntry entry, _) = await RunOneTaskAsync(
-            runner, observer, defaultRetries: 1, keepRoot: true, guardrailPasses: false);
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) = await RunOneTaskAsync(
+            runner, observer, defaultRetries: 2, keepRoot: true, guardrailPasses: false);
 
         try
         {
             TaskResult task = Assert.Single(report.Tasks);
             Assert.False(task.IsGreen);
-            Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);   // the budget of two ran out
+            Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);   // the budget of three ran out
+            Assert.Equal(
+                new[] { AttemptOutcome.MaxTurns, AttemptOutcome.GuardrailFailed, AttemptOutcome.GuardrailFailed },
+                entry.Attempts.Select(a => a.Outcome));
+            Assert.Equal(3, used.Calls);
+            Assert.Equal("01-fail", Assert.Single(entry.Attempts[1].FailedGuardrails).Name);
+            Assert.Equal(2, observer.GuardrailsFinished);
 
-            AttemptRecord second = entry.Attempts[1];
-            Assert.Equal(AttemptOutcome.GuardrailFailed, second.Outcome);
-            Assert.Equal("01-fail", Assert.Single(second.FailedGuardrails).Name);
-            Assert.Equal(1, observer.GuardrailsFinished);
-
-            // Secondary context, in the summary and in the feedback the next attempt would read.
+            // Secondary context, in the summary and in the feedback the retry read.
             Assert.Contains($"secondary context: command repeatedly refused (permission wall) — {selfCheck}", task.Summary);
-            string feedback = File.ReadAllText(Path.Combine(_lastPlanRoot!, second.LogDir, "feedback.md"));
+            string feedback = File.ReadAllText(Path.Combine(_lastPlanRoot!, entry.Attempts[1].LogDir, "feedback.md"));
             Assert.Contains("## Secondary context", feedback);
             Assert.Contains($"- command: `{selfCheck}`", feedback);
+        }
+        finally
+        {
+            try { Directory.Delete(_lastPlanRoot!, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RepeatedWritePath_OnAnAttemptWhoseGuardrailFails_HaltsNeedsHuman_OnThatAttempt()
+    {
+        // The same shape with a refused WRITE PATH, which is not a route the agent can do without: nothing grants the
+        // write between attempts, so a retry would be refused it again and fail the same guardrail. That is the budget
+        // #86 protects, so this attempt halts on the repeat, as #86 did, and reports the guardrail failure that ran
+        // before the wall (#329).
+        const string lockedPath = "src/locked/Protected.cs";
+        var observer = new PauseRecordingObserver();
+        var runner = new SequencingRunner(
+            Refusing(MaxTurns(), lockedPath, isCommand: false), Refusing(Success(), lockedPath, isCommand: false));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) = await RunOneTaskAsync(
+            runner, observer, defaultRetries: 2, keepRoot: true, guardrailPasses: false);
+
+        try
+        {
+            TaskResult task = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+            Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+            // Settled on attempt 2: the third budgeted attempt was not spent on a write nothing will grant.
+            Assert.Equal(new[] { AttemptOutcome.MaxTurns, AttemptOutcome.GuardrailFailed }, entry.Attempts.Select(a => a.Outcome));
+            Assert.Equal(2, used.Calls);
+            Assert.Equal("01-fail", Assert.Single(entry.Attempts[1].FailedGuardrails).Name);
+            Assert.Equal(1, observer.GuardrailsFinished);
+            Assert.Equal(
+                $"guardrail(s) failed: 01-fail — needs human; write repeatedly refused (permission wall) — {lockedPath} (see feedback)",
+                task.Summary);
+
+            string feedback = File.ReadAllText(Path.Combine(_lastPlanRoot!, entry.Attempts[1].LogDir, "feedback.md"));
+            Assert.Contains("## A guardrail failed", feedback);
+            Assert.Contains("## Repeatedly-refused path(s)", feedback);
+            Assert.Contains($"- `{lockedPath}`", feedback);
         }
         finally
         {

@@ -24,8 +24,8 @@ namespace Guardrails.Core.Execution;
 /// <para>The tracker is per-task and stateful: <see cref="Observe"/> is called once per attempt with
 /// that attempt's refused targets; <see cref="ShouldHalt"/> reports whether — given everything observed
 /// so far — a wall stands, and which targets are the wall. Which attempts a wall may SETTLE is the
-/// executor's decision: a structural wall only one that did not converge (#325), a repeated wall only one
-/// whose action failed (#708).</para>
+/// executor's decision: a structural wall or a repeated path only one that did not converge (#325 / #708),
+/// and a repeated command only one whose action failed (#708).</para>
 /// </summary>
 public sealed class PermissionWallTracker
 {

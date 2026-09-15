@@ -167,8 +167,8 @@ public sealed record PromptResult
     /// quarantine (<see cref="ClaudePermissionScanner"/>) mines these from the runner's tool-result events;
     /// the harness (<c>TaskExecutor</c> via <c>PermissionWallTracker</c>) routes on these lists only, never
     /// on a vendor-specific denial string. A wall on a <c>.claude/</c> path (a known-structural runtime
-    /// restriction) settles an attempt that did not converge (#325); a target refused again on a later
-    /// attempt settles that attempt only when its action failed (#708).
+    /// restriction) settles an attempt that did not converge (#325). A target refused again on a later attempt
+    /// settles that attempt when its action failed, and a repeated write path also when its guardrails failed (#708).
     /// </summary>
     public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
 
