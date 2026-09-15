@@ -1,8 +1,9 @@
 {
-  "description": "Author failing tests for DeliverAndCleanup fired at a wave barrier, gated on that wave Exit being green",
+  "description": "Author failing tests for delivery fired at a wave barrier through the trial-delivery primitive, gated on that wave's Exit being green",
   "dependsOn": [
     "02-implement-wave-delivers-flag",
-    "06-implement-wave-scoped-interlock"
+    "06-implement-wave-scoped-interlock",
+    "31-implement-trial-delivery-primitive"
   ],
   "stableId": "q6v1ny",
   "writeScope": [

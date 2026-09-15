@@ -1,4 +1,8 @@
 using System.Text.RegularExpressions;
+using Guardrails.Core.Model;
+using YamlDotNet.Core;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace Guardrails.Core.Loading;
 
@@ -76,5 +80,75 @@ public static class WaveFolder
         planRoot = parent;
         waveDir = name;
         return true;
+    }
+
+    private static readonly IDeserializer Yaml = new DeserializerBuilder()
+        .WithNamingConvention(HyphenatedNamingConvention.Instance)
+        .IgnoreUnmatchedProperties()
+        .Build();
+
+    /// <summary>
+    /// Parse the DECLARED <c>delivers</c> flag (design 39 §1b/§3) from <paramref name="waveDirectory"/>'s
+    /// OPTIONAL <see cref="WaveNode.BriefFileName"/> YAML front matter — NOT a new per-wave manifest (SSOT
+    /// §14.1 has none in v1). No <c>brief.md</c>, a brief with no front matter, a front matter with no
+    /// <c>delivers</c> key, or malformed YAML all yield <c>false</c> — the never-weaker default an
+    /// already-waved plan relies on (a garbled brief is treated as unset, not an error, the same lenient
+    /// posture as <see cref="Prompts.SkillFrontmatter"/>).
+    /// </summary>
+    public static bool ReadDeliversFlag(string waveDirectory)
+    {
+        string briefPath = Path.Combine(waveDirectory, WaveNode.BriefFileName);
+        if (!File.Exists(briefPath))
+        {
+            return false;
+        }
+
+        string? yaml = ExtractFrontMatterYaml(File.ReadAllText(briefPath));
+        if (string.IsNullOrWhiteSpace(yaml))
+        {
+            return false;
+        }
+
+        try
+        {
+            RawWaveBrief? raw = Yaml.Deserialize<RawWaveBrief>(yaml);
+            return raw?.Delivers ?? false;
+        }
+        catch (YamlException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Return the YAML between the leading <c>---</c> fences (the same convention as
+    /// <see cref="Prompts.SkillFrontmatter"/>), or <c>null</c> if the content has no opening fence or no
+    /// closing fence.
+    /// </summary>
+    private static string? ExtractFrontMatterYaml(string content)
+    {
+        string normalized = content.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = normalized.Split('\n');
+
+        if (lines.Length == 0 || lines[0].Trim() != "---")
+        {
+            return null;
+        }
+
+        for (int i = 1; i < lines.Length; i++)
+        {
+            if (lines[i].Trim() == "---")
+            {
+                return string.Join("\n", lines[1..i]);
+            }
+        }
+
+        return null; // opening fence with no close
+    }
+
+    /// <summary>The slice of a wave brief's frontmatter we read: just the <c>delivers</c> key.</summary>
+    private sealed class RawWaveBrief
+    {
+        public bool Delivers { get; set; }
     }
 }

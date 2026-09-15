@@ -1,0 +1,13 @@
+{
+  "description": "Author failing Integration tests + default-bodied stubs for the trial-delivery primitive: CreateTrialDelivery (the user's hooks run), PromoteTrialDelivery (#588/#448 re-checked, fast-forward only) and DiscardTrialDelivery",
+  "dependsOn": [],
+  "stableId": "y8e3tq",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/WaveDelivery/TrialDeliveryPrimitiveTests.cs",
+    "src/Guardrails.Core/Execution/IWorktreeProvider.cs",
+    "src/Guardrails.Core/Execution/TrialDelivery.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

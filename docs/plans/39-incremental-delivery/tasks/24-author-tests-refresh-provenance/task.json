@@ -1,0 +1,14 @@
+{
+  "description": "Author failing tests + stubs for the run.json refreshed[] record and the one reader of unauthored content",
+  "dependsOn": [
+    "10-implement-wave-delivered-journal"
+  ],
+  "stableId": "x3r8vk",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/WaveDelivery/RefreshProvenanceTests.cs",
+    "src/Guardrails.Core/Journal/RefreshedRecord.cs",
+    "src/Guardrails.Core/Journal/UnauthoredContentNote.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
+  ]
+}

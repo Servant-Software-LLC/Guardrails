@@ -904,7 +904,8 @@ public sealed class Scheduler
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
-                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.EntryGateFailed, entry.Failed);
+                WaveHalt gateHalt = BuildGateHalt(
+                    wave, WaveHaltKind.EntryGateFailed, entry.Failed, (_journal as Journal.RunJournal)?.Document);
                 RecordGateHalt(Journal.RunHaltKind.WaveEntryGateFailed, wave.Dir, gateHalt, entry);
                 RunReport entryHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                     with { WaveHalt = gateHalt };
@@ -961,12 +962,30 @@ public sealed class Scheduler
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
-                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, exit.Failed);
+                WaveHalt gateHalt = BuildGateHalt(
+                    wave, WaveHaltKind.ExitGateFailed, exit.Failed, (_journal as Journal.RunJournal)?.Document);
                 RecordGateHalt(Journal.RunHaltKind.WaveExitGateFailed, wave.Dir, gateHalt, exit);
                 RunReport exitHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                     with { WaveHalt = gateHalt };
                 if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
                 return exitHalt;
+            }
+
+            // 6b. Wave-barrier delivery (design 39 §1/§3): a wave that IS a delivery point (task 02's
+            // WaveNode.IsDeliveryPoint — Delivers AND at least one exit-gate check) delivers HERE, through
+            // the trial-delivery primitive, gated on this SAME exit check but against the tree the delivery
+            // would actually produce. The plan's FINAL wave never barrier-delivers, whatever its
+            // IsDeliveryPoint says: it always defers to Finalize's run-end delivery (§3), which already
+            // waits for a plan-level <plan>/guardrails/ terminal gate (#457).
+            if (wave.IsDeliveryPoint && i != waves.Count - 1)
+            {
+                RunReport? barrierHalt = await AttemptBarrierDeliveryAsync(
+                        plan, waves, i, wave, integ, settled, directoryOwner, cancellationToken)
+                    .ConfigureAwait(false);
+                if (barrierHalt is not null)
+                {
+                    return barrierHalt;
+                }
             }
 
             // 7. Wave-completion marker commit (decision E) + journal the wave complete (SSOT §14.5).
@@ -1166,11 +1185,6 @@ public sealed class Scheduler
         IReadOnlyList<DecisionEntry> decisions =
             (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
         DecisionEntry? suppressingDecision = RunOutcomePolicy.SuppressingDecision(decisions);
-        bool operatorForcedDelivery = plan.Config.MergeOnSuccessForcedByOperator;
-        bool deliverySuppressedByDecision = suppressingDecision is not null && !operatorForcedDelivery;
-
-        // The effective delivery gate: mergeOnSuccess enabled AND not suppressed by a machine decision.
-        bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
 
         // Deliver the completed plan branch to the user's branch when every task succeeded and delivery
         // resolved on. AI-merge is withheld: a conflict halts with the plan branch intact.
@@ -1186,13 +1200,23 @@ public sealed class Scheduler
         // journal/halt/artifact writing that belongs behind the CLI seam. So DELIVERY moves instead of
         // the gate: hold it back, flag it on the report, and let the CLI complete it via
         // CompleteDeferredDelivery once — and only once — the gate has PASSED.
+        //
+        // The decision itself is the ONE DecideDelivery both this run-end path and a wave barrier
+        // (AttemptBarrierDeliveryAsync) call (design 39 §1/§3, review 2026-09-13) — never a copy that can
+        // drift. Finalize passes the run-scoped suppressing decision and the finished report's
+        // AllSucceeded (which already folds every "so far" term a barrier has to assemble by hand), and
+        // passes false for the barrier-only hook-rejection hold: a run-end delivery merges in the user's
+        // own checkout and never builds a trial, so an earlier trial's HookRejected does not apply to it.
         bool terminalGateVerdictPending = plan.PlanGuardrails.Count > 0;
-        bool deliverable = report.AllSucceeded && deliver && _worktreeProvider != null && integ != null;
+        DeliveryVerdict verdict = DecideDelivery(
+            plan, suppressingDecision, report.AllSucceeded, hookRejectedEarlierInRun: false, _worktreeProvider, integ);
+        bool deliver = verdict.Deliver;
+        bool deliverable = verdict.Deliverable;
 
         // #597: the override only "fired" when it actually unlocked a delivery that the interlock would
         // otherwise have held. Flagging it on a run that had nothing to deliver would announce a bypass
         // that never happened.
-        bool deliveryForcedPastDecision = suppressingDecision is not null && operatorForcedDelivery && deliverable;
+        bool deliveryForcedPastDecision = verdict.ForcedPastDecision;
 
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
@@ -1258,6 +1282,53 @@ public sealed class Scheduler
             DeliveryPendingTerminalGate = deliveryPendingTerminalGate,
             UnreviewedWaveCount = RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions)
         };
+    }
+
+    /// <summary>The verdict of <see cref="DecideDelivery"/>: whether delivery resolved on at all, whether THIS delivery may proceed, and whether an operator override had to fire for it to.</summary>
+    private readonly record struct DeliveryVerdict(bool Deliver, bool Deliverable, bool ForcedPastDecision);
+
+    /// <summary>
+    /// The ONE delivery decision (design 39 §1/§3, review 2026-09-13): whether a delivery — at a wave's own
+    /// barrier (<see cref="AttemptBarrierDeliveryAsync"/>) or at run end (<see cref="Finalize"/>) — may
+    /// proceed. Shared by both call sites so the answer and its evidence can never drift apart (the #597
+    /// lesson). Carries every term that withholds delivery today:
+    /// <list type="bullet">
+    ///   <item><c>plan.Config.MergeOnSuccess</c> (#340).</item>
+    ///   <item>The #361 machine-decision interlock — <paramref name="suppressingDecision"/>, liftable ONLY
+    ///     by <c>plan.Config.MergeOnSuccessForcedByOperator</c> (the <c>--merge-on-success</c> flag, #597).
+    ///     The caller decides WHICH decision to pass: <see cref="Finalize"/> uses the run-scoped
+    ///     <see cref="RunOutcomePolicy.SuppressingDecision(IEnumerable{DecisionEntry})"/>; a barrier uses
+    ///     the wave-scoped <see cref="RunOutcomePolicy.SuppressingDecisionForDelivery"/> over the waves it
+    ///     covers.</item>
+    ///   <item>Every conjunct of <see cref="RunReport.AllSucceeded"/> — folded by each caller into
+    ///     <paramref name="allSucceededSoFar"/>: <see cref="Finalize"/> passes the finished report's
+    ///     <c>AllSucceeded</c> (no drift, no wave halt, not aborted, every task green, no #556 divergence);
+    ///     a barrier passes the SAME terms evaluated over the run SO FAR (never
+    ///     <c>BuildReport(...).AllSucceeded</c> — that marks every not-yet-started task <c>Cancelled</c>,
+    ///     which would be false at every barrier before the last).</item>
+    ///   <item>The serial guard — <paramref name="worktreeProvider"/> and <paramref name="integ"/> both
+    ///     non-null (no plan branch to deliver in serial mode).</item>
+    ///   <item><paramref name="hookRejectedEarlierInRun"/> (review round 5 "d39-hooks-untracked-tooling") —
+    ///     a barrier-only term: once a trial in this run came back <c>HookRejected</c>, every later barrier
+    ///     delivery is held. <see cref="Finalize"/> always passes <c>false</c>: its run-end merge runs in
+    ///     the user's own checkout and never builds a trial, so an earlier trial's hook rejection does not
+    ///     apply to it.</item>
+    /// </list>
+    /// </summary>
+    private static DeliveryVerdict DecideDelivery(
+        PlanDefinition plan, DecisionEntry? suppressingDecision, bool allSucceededSoFar,
+        bool hookRejectedEarlierInRun, IWorktreeProvider? worktreeProvider, IntegrationHandle? integ)
+    {
+        bool operatorForcedDelivery = plan.Config.MergeOnSuccessForcedByOperator;
+        bool deliverySuppressedByDecision = suppressingDecision is not null && !operatorForcedDelivery;
+        bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
+        bool deliverable = allSucceededSoFar
+            && deliver
+            && !hookRejectedEarlierInRun
+            && worktreeProvider != null
+            && integ != null;
+        bool forcedPastDecision = suppressingDecision is not null && operatorForcedDelivery && deliverable;
+        return new DeliveryVerdict(deliver, deliverable, forcedPastDecision);
     }
 
     /// <summary>
@@ -1452,14 +1523,19 @@ public sealed class Scheduler
     /// including, per issue #432, every check's result and WHERE its captured stdout/stderr landed.
     /// </summary>
     private async Task<GateOutcome> RunWaveExitGateAsync(
-        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
+        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct,
+        string? workspaceOverride = null)
     {
         if (wave.Guardrails.Count == 0)
         {
             return GateOutcome.Pass;
         }
 
-        string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        // Design 39 §1 (review round 4 "d39-trial-delivery-primitive"): a wave-barrier delivery re-runs
+        // THIS SAME gate against a trial merge's worktree — the tree the delivery would actually produce —
+        // rather than duplicating the evaluation. workspaceOverride carries that path; every other caller
+        // passes null and gets today's plan-branch-integration-worktree behavior unchanged.
+        string workspace = workspaceOverride ?? integ?.IntegrationWorktreePath ?? plan.Workspace;
         (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.GuardrailsFolder);
         ReVerifyResult result = _reVerifier is not null
             ? await _reVerifier
@@ -1851,7 +1927,8 @@ public sealed class Scheduler
                 subject: wave.Dir, boundary: "wave",
                 question: $"Wave '{wave.Dir}' is unauthored — the next-wave JIT breakdown checkpoint.",
                 definitionHash: Journal.WaveDefinitionHash.Compute(wave),
-                criticalityGate: CriticalityGate.WaveCheckpoint, cancellationToken).ConfigureAwait(false);
+                criticalityGate: CriticalityGate.WaveCheckpoint, cancellationToken,
+                waveDir: wave.Dir).ConfigureAwait(false);
         }
 
         // Honest-halt. An interactive DECLINE reads as prompted-declined; everything else (halt policy, a
@@ -2301,7 +2378,8 @@ public sealed class Scheduler
                      + "pass was skipped, and that skip is indelible. The harness never marks a wave reviewed "
                      + "on a human's behalf.",
             At = DateTimeOffset.UtcNow,
-            Gate = "review-gate"
+            Gate = "review-gate",
+            Wave = waveDir
         };
         _journal.RecordDecision(entry);
         _observer.DecisionRecorded(entry);
@@ -2901,16 +2979,52 @@ public sealed class Scheduler
             WaveDirectory = wave.Directory
         };
 
-    private static WaveHalt BuildGateHalt(WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed)
+    /// <summary>
+    /// Design 39 §1c "How a refresh is recorded" / §5: appends <see cref="Journal.UnauthoredContentNote"/>'s
+    /// headline suffix and detail lines — naming every refresh/supply on the run so far — AFTER everything
+    /// else this halt already says. <paramref name="disclosure"/> is task 08's trial-merge disclosure text
+    /// for a failed trial-tree gate (kept intact and in place, ahead of the suffix); null for a plain
+    /// entry/exit gate failure. <paramref name="document"/> is the journal's document (null for a fake,
+    /// non-<see cref="Journal.RunJournal"/> journal, or when this static method is reached with none to
+    /// give) — a run with neither <c>refreshed[]</c> nor <c>supplied[]</c> renders byte-identically to
+    /// before this method took the parameter, disclosure included.
+    /// </summary>
+    private static WaveHalt BuildGateHalt(
+        WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed,
+        Journal.JournalDocument? document, string? disclosure = null)
     {
         string gate = kind == WaveHaltKind.EntryGateFailed ? "entry preflight" : "exit gate";
         string names = failed.Count == 0 ? "(no per-check detail)" : string.Join(", ", failed.Select(f => f.Name));
+        string headline = $"Wave '{wave.Dir}' {gate} FAILED: {names}";
+        if (!string.IsNullOrEmpty(disclosure))
+        {
+            headline += disclosure;
+        }
+
+        string detail = string.Join("\n", failed.Select(f => $"{f.Name} — {f.Reason ?? "failed"}"));
+
+        if (document is not null)
+        {
+            if (Journal.UnauthoredContentNote.HeadlineSuffix(document) is { } suffix)
+            {
+                headline += suffix;
+            }
+
+            IReadOnlyList<string> detailLines = Journal.UnauthoredContentNote.DetailLines(document);
+            if (detailLines.Count > 0)
+            {
+                detail = detail.Length > 0
+                    ? detail + "\n" + string.Join("\n", detailLines)
+                    : string.Join("\n", detailLines);
+            }
+        }
+
         return new WaveHalt
         {
             WaveDir = wave.Dir,
             Kind = kind,
-            Headline = $"Wave '{wave.Dir}' {gate} FAILED: {names}",
-            Detail = string.Join("\n", failed.Select(f => $"{f.Name} — {f.Reason ?? "failed"}")),
+            Headline = headline,
+            Detail = detail,
             FailedGates = failed
         };
     }
@@ -2934,6 +3048,577 @@ public sealed class Scheduler
                 .ToList(),
             LogDir = outcome.RelativeLogDir
         });
+
+    /// <summary>
+    /// Design 39 §1/§3: at a wave that IS a delivery point (<see cref="WaveNode.IsDeliveryPoint"/>) and is
+    /// NOT the plan's final wave, decide whether this wave's work may deliver NOW, at its own barrier —
+    /// and if so, run it through the trial-delivery primitive (task 31): build a trial merge, gate the
+    /// TREE IT WOULD PRODUCE (never the plan branch alone), and promote only on green.
+    /// <para>
+    /// Design 39 §4/§5: also journals <c>waves.&lt;dir&gt;.delivered</c> around the attempt — <c>running</c>
+    /// before the trial is built, then the settled <c>delivered</c>/<c>refused</c>/<c>suppressed</c> record
+    /// — and raises <see cref="IRunObserver.WaveDelivered"/> once the settled record is a fresh
+    /// <c>delivered</c> one. A wave that is not deliverable because delivery resolved off entirely
+    /// (<c>mergeOnSuccess</c> false) or #556 withheld it writes NO record; a wave held by the wave-scoped
+    /// interlock or by an earlier hook rejection writes an already-settled <c>suppressed</c> record.
+    /// </para>
+    /// <para>
+    /// Returns a halt <see cref="RunReport"/> ONLY when the trial-tree gate genuinely failed — a real
+    /// exit-gate failure on the tree this delivery would have landed (review round 5
+    /// "d39-trial-gate-failure"); the caller must return it immediately, exactly like the existing
+    /// exit-gate-failure halt, so no wave-completion marker is ever written for a wave whose delivery
+    /// failed its own gate. Returns null in every other case (delivered, held by the shared decision,
+    /// hook-rejected, already-delivered): the wave simply falls through to its completion-marker commit.
+    /// </para>
+    /// </summary>
+    private async Task<RunReport?> AttemptBarrierDeliveryAsync(
+        PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        if (_worktreeProvider is not { } provider || integ is null)
+        {
+            return null; // serial mode: no plan branch to build a trial from.
+        }
+
+        IReadOnlyList<string> coveredWaves = CoveredWavesForDelivery(waves, waveIndex);
+        IReadOnlyList<DecisionEntry> decisions = (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
+        DecisionEntry? suppressingDecision = RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves);
+
+        // Design 39 §5, review round 5 "d39-hooks-untracked-tooling": read from the journal, not a
+        // sticky in-process flag — a resume forgets a flag but never forgets a persisted record.
+        WaveNode? hookRejectingWave = EarlierHookRejectedWave(waves, waveIndex);
+        bool hookRejectedEarlierInRun = hookRejectingWave is not null;
+
+        // "Every task green" and "no divergence", both read over the run SO FAR (never
+        // BuildReport(...).AllSucceeded — it marks every not-yet-started task Cancelled, which would make
+        // this false at every barrier before the last).
+        bool allSucceededSoFar = settled.Values.All(r => r.IsGreen) && ExecutedDefinitionDivergenceSnapshot() is null;
+
+        DeliveryVerdict verdict = DecideDelivery(
+            plan, suppressingDecision, allSucceededSoFar, hookRejectedEarlierInRun, _worktreeProvider, integ);
+        if (!verdict.Deliverable)
+        {
+            // Write a record only for the two HOLDS (design 39 §4); mergeOnSuccess off, #556 withholding
+            // it so far, or the serial guard (already excluded above) write nothing — the wave's work
+            // simply rides along to the next delivery point, or to Finalize at run end.
+            if (allSucceededSoFar && plan.Config.MergeOnSuccess)
+            {
+                if (suppressingDecision is not null && !plan.Config.MergeOnSuccessForcedByOperator)
+                {
+                    SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                    {
+                        Status = Journal.WaveDeliveryStatus.Suppressed,
+                        StartedAt = DateTimeOffset.UtcNow,
+                        At = DateTimeOffset.UtcNow,
+                        Detail = SuppressingDecisionDetail(suppressingDecision),
+                        Covers = coveredWaves
+                    }, announce: false);
+                }
+                else if (hookRejectingWave is not null)
+                {
+                    SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                    {
+                        Status = Journal.WaveDeliveryStatus.Suppressed,
+                        StartedAt = DateTimeOffset.UtcNow,
+                        At = DateTimeOffset.UtcNow,
+                        Detail = HookRejectionHoldDetail(hookRejectingWave),
+                        Covers = coveredWaves
+                    }, announce: false);
+                }
+            }
+
+            return null; // held — ride along to the next delivery point, or to Finalize at run end.
+        }
+
+        // First capture the wave's prior record IF it already reads delivered (a resume after a crash that
+        // followed the settled write, or a rewound wave running again) — BEFORE the running write below
+        // overwrites it (design 39 §4/§5).
+        Journal.WaveDeliveredRecord? priorDelivered =
+            _journal.WaveEntryOf(wave.Dir)?.Delivered is { Status: Journal.WaveDeliveryStatus.Delivered } pd
+                ? pd
+                : null;
+
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        SettleDelivery(wave, new Journal.WaveDeliveredRecord
+        {
+            Status = Journal.WaveDeliveryStatus.Running,
+            StartedAt = startedAt,
+            Covers = coveredWaves
+        }, announce: false);
+
+        string planTipAtBarrier = provider.CurrentPlanBranchTip(integ);
+        TrialDelivery trial = provider.CreateTrialDelivery(integ, wave.Dir, ct);
+        try
+        {
+            if (trial.Refusal is { } refusal)
+            {
+                // A HookRejected refusal holds every LATER barrier delivery too (round 5) — via the journal
+                // lookup above on the next barrier, not a sticky in-process flag, so a resume sees the same
+                // hold; it never halts (task 08/29, design 39 §1c/§4 review round 5 "d39-hooks-untracked-tooling").
+                // Every OTHER refusal from CreateTrialDelivery — a real Conflict, the only other shape it
+                // returns — is not transient: every later wave would hit the identical refusal, so it HALTS
+                // the run at this wave instead of merely holding it (design 39 §1c/§4).
+                Journal.DeliveryOutcome outcome = ToDeliveryOutcome(refusal);
+                SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                {
+                    Status = Journal.WaveDeliveryStatus.Refused,
+                    StartedAt = startedAt,
+                    At = DateTimeOffset.UtcNow,
+                    Outcome = outcome,
+                    Detail = trial.RefusalDetail,
+                    Covers = coveredWaves
+                }, announce: false);
+
+                if (refusal == MergeOnSuccessResult.HookRejected)
+                {
+                    return null;
+                }
+
+                RunReport conflictHalt = HaltForDeliveryRefusal(
+                    plan, waves, waveIndex, wave, integ, outcome, trial.RefusalDetail, settled, directoryOwner, ct);
+                return conflictHalt;
+            }
+
+            if (trial.AlreadyDelivered)
+            {
+                // A pure resume: the delivery landed and was recorded before the crash — restore the prior
+                // record VERBATIM (same At/Commit) and raise no event, it was already announced. Without a
+                // prior record, this is a crash between the fast-forward and the settled write: a fresh
+                // delivered record, announced once (design 39 §4/§5).
+                Journal.WaveDeliveredRecord settled2 = priorDelivered ?? new Journal.WaveDeliveredRecord
+                {
+                    Status = Journal.WaveDeliveryStatus.Delivered,
+                    StartedAt = startedAt,
+                    At = DateTimeOffset.UtcNow,
+                    Outcome = Journal.DeliveryOutcome.FastForwarded,
+                    Commit = trial.Commit,
+                    Covers = coveredWaves
+                };
+                SettleDelivery(wave, settled2, announce: priorDelivered is null);
+
+                // Design 39 §1c "How a refresh is recorded": read the trigger from the TRIAL, never from
+                // MergeOnSuccessResult (review round 4 "d39-refresh-record") — an AlreadyDelivered trial
+                // whose UserTipWasAncestor is false means the user's branch still carries commits the plan
+                // branch lacks (a resume after a crash between the promotion and the refresh/marker), and the
+                // refresh is owed regardless of whether this settle restored a prior record or announced a
+                // fresh one.
+                if (!trial.UserTipWasAncestor)
+                {
+                    RunReport? refreshAbort = RefreshPlanBranchAfterDelivery(
+                        plan, wave, integ, trial, settled, directoryOwner, ct);
+                    if (refreshAbort is not null)
+                    {
+                        return refreshAbort;
+                    }
+                }
+
+                return null; // the trial's tree is already on the user's branch — nothing to gate or promote.
+            }
+
+            GateOutcome trialGate = trial.UserTipWasAncestor
+                // The trial IS the plan-branch tip: the exit gate that already ran against the integration
+                // worktree above (this SAME wave's step 6) already evaluated this exact tree.
+                ? GateOutcome.Pass
+                : await RunWaveExitGateAsync(plan, wave, integ, ct, trial.WorktreePath).ConfigureAwait(false);
+
+            if (!trialGate.Passed)
+            {
+                // Compose the FULL headline — trial disclosure included — BEFORE calling RecordGateHalt
+                // (review round 5 "d39-trial-gate-failure"): RecordGateHalt copies it verbatim into
+                // run.json's halt.headline, which the log-site banner reads, so a disclosure appended
+                // afterward would reach only the console. The disclosure is threaded INTO BuildGateHalt
+                // (design 39 §1c/§5, review round 5 "d39-trial-gate-failure") so any unauthored-content
+                // suffix lands AFTER it, never between the failing checks and the disclosure.
+                string userTip10 = ShortSha10(trial.UserTip);
+                string planTip10 = ShortSha10(planTipAtBarrier);
+                string disclosure = $" — the trial merge with the user's branch at {userTip10} "
+                           + $"(unauthored commits {planTip10}..{userTip10}) failed this gate; nothing delivered";
+                WaveHalt composedHalt = BuildGateHalt(
+                    wave, WaveHaltKind.ExitGateFailed, trialGate.Failed,
+                    (_journal as Journal.RunJournal)?.Document, disclosure);
+
+                string failedChecks = string.Join(", ", trialGate.Failed.Select(f => f.Name));
+                SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                {
+                    Status = Journal.WaveDeliveryStatus.Refused,
+                    StartedAt = startedAt,
+                    At = DateTimeOffset.UtcNow,
+                    Outcome = Journal.DeliveryOutcome.TrialGateFailed,
+                    Detail = $"{failedChecks} failed against the trial merge with the user's branch at "
+                             + $"{trial.UserTip} (git log {planTip10}..{userTip10} lists the unauthored "
+                             + "commits it carried)",
+                    Covers = coveredWaves
+                }, announce: false);
+
+                _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+                BlockLaterWaves(waves, waveIndex, wave, settled);
+                _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                RecordGateHalt(Journal.RunHaltKind.WaveExitGateFailed, wave.Dir, composedHalt, trialGate);
+                RunReport halt = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+                    with { WaveHalt = composedHalt };
+                if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return halt;
+            }
+
+            MergeOnSuccessResult promoted = provider.PromoteTrialDelivery(integ, trial, ct);
+            if (promoted == MergeOnSuccessResult.FastForwarded)
+            {
+                // #597: name the decision an operator override lifted for THIS delivery, so run.json keeps
+                // the trace — only when the override actually had to fire (verdict.ForcedPastDecision).
+                SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                {
+                    Status = Journal.WaveDeliveryStatus.Delivered,
+                    StartedAt = startedAt,
+                    At = DateTimeOffset.UtcNow,
+                    Outcome = Journal.DeliveryOutcome.FastForwarded,
+                    Commit = trial.Commit,
+                    Detail = verdict.ForcedPastDecision ? SuppressingDecisionDetail(suppressingDecision!) : null,
+                    Covers = coveredWaves
+                }, announce: true);
+
+                // Design 39 §1c "How a refresh is recorded": PromoteTrialDelivery is ALWAYS a fast-forward
+                // to the trial ref (review round 4 "d39-refresh-record") — the trigger is the trial's own
+                // ancestry, not this result. A quiet UserTipWasAncestor delivery has nothing to refresh.
+                if (!trial.UserTipWasAncestor)
+                {
+                    RunReport? refreshAbort = RefreshPlanBranchAfterDelivery(
+                        plan, wave, integ, trial, settled, directoryOwner, ct);
+                    if (refreshAbort is not null)
+                    {
+                        return refreshAbort;
+                    }
+                }
+            }
+            else
+            {
+                // #588 (BranchMoved) / #448 (DirtyWorkingTree): neither is transient — every later wave's
+                // promotion would hit the identical refusal — so this HALTS the run at this wave instead of
+                // merely holding it (design 39 §1c/§4, narrowed round 5 from the HookRejected hold above).
+                Journal.DeliveryOutcome outcome = ToDeliveryOutcome(promoted);
+                SettleDelivery(wave, new Journal.WaveDeliveredRecord
+                {
+                    Status = Journal.WaveDeliveryStatus.Refused,
+                    StartedAt = startedAt,
+                    At = DateTimeOffset.UtcNow,
+                    Outcome = outcome,
+                    Detail = provider.LastMergeOnSuccessDetail,
+                    Covers = coveredWaves
+                }, announce: false);
+
+                return HaltForDeliveryRefusal(
+                    plan, waves, waveIndex, wave, integ, outcome, provider.LastMergeOnSuccessDetail, settled,
+                    directoryOwner, ct);
+            }
+
+            return null;
+        }
+        finally
+        {
+            // Always discard (design 39 §1 step 5): a thrown gate must leave no trial ref and no trial
+            // worktree behind either.
+            provider.DiscardTrialDelivery(integ, wave.Dir);
+        }
+    }
+
+    /// <summary>
+    /// Design 39 §1c "How a refresh is recorded (post-plan-40 refinement)": a barrier delivery that just
+    /// settled DELIVERED whose trial was NOT built from an ancestor of the user's tip means the user's
+    /// branch carries commits the plan branch lacks — <paramref name="trial"/>.Commit (the user's tip
+    /// AFTER promotion) is merged back onto the plan branch, in the integration worktree, so every later
+    /// wave's gates run against a tree that actually reflects the user's branch. Called ONLY by
+    /// <see cref="AttemptBarrierDeliveryAsync"/>, immediately after the settle, and BEFORE the wave's
+    /// completion-marker commit (§1/§4): a crash between the two would otherwise resume past a wave whose
+    /// refresh never happened.
+    /// <para>
+    /// Merges the SHA, never the branch name, with <c>--no-ff --no-verify</c> — the plan-branch tip from
+    /// BEFORE this call is always the first parent (a plain <c>git merge &lt;sha&gt;</c> in a worktree
+    /// checked out on the plan branch never fast-forwards the plan branch onto the delivered commit), the
+    /// user's tip the second. The commit message carries <c>Refreshed-From:</c> / <c>Guardrails-Run:</c> —
+    /// never <c>Supplied-By:</c>, because nothing was supplied. The record is written via
+    /// <see cref="Journal.RunJournal.RecordRefreshed"/> ONLY after the commit exists, and only when the
+    /// journal is the real <see cref="Journal.RunJournal"/> (the same <c>_journal is Journal.RunJournal</c>
+    /// cast <see cref="SettleDelivery"/> and the shipped supply drain use).
+    /// </para>
+    /// <para>
+    /// <b>#150 fault path, never an exception escaping RunAsync.</b> The upstream already contains
+    /// everything the plan branch delivered, so the merge is conflict-free by construction; if git fails
+    /// anyway (review round 5), this writes NO record and returns the honest-halt <see cref="RunReport"/>
+    /// with <see cref="RunReport.Abort"/> set, for the caller to return immediately — no wave marker, no
+    /// continuing on the stale base. The untracked paths that blocked the merge are computed the same way
+    /// <see cref="Journal.RefreshedRecord"/>'s own <c>Paths</c> are (never by parsing git's own,
+    /// locale-dependent error prose): the untracked files in the integration worktree, intersected with the
+    /// paths the merge would have brought in.
+    /// </para>
+    /// </summary>
+    private RunReport? RefreshPlanBranchAfterDelivery(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle integ, TrialDelivery trial,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        if (trial.Commit is not { Length: > 0 } upstreamSha)
+        {
+            return null; // defensive: Commit is null only on a Refusal, which never reaches this method.
+        }
+
+        string integrationPath = integ.IntegrationWorktreePath;
+        string planTipBeforeRefresh = GitCaptureLine(integrationPath, "rev-parse", "HEAD");
+
+        string message = $"Refreshed-From: {integ.OriginalBranch}\nGuardrails-Run: {_journal.RunId}";
+        (int exitCode, _) = RunGitInDir(
+            integrationPath, "merge", "--no-ff", "--no-verify", "-m", message, upstreamSha);
+
+        if (exitCode != 0)
+        {
+            // Best-effort: leave no half-finished merge behind. Never touches the untracked file that
+            // blocked it — deleting or overwriting it to force the merge through is exactly what this
+            // fault path exists to refuse.
+            RunGitInDir(integrationPath, "merge", "--abort");
+
+            IReadOnlyList<string> untracked = GitCaptureLines(integrationPath, "ls-files", "--others", "--exclude-standard");
+            IReadOnlyList<string> incoming = GitCaptureLines(integrationPath, "diff", "--name-only", planTipBeforeRefresh, upstreamSha);
+            List<string> blocking = untracked.Intersect(incoming, StringComparer.Ordinal)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+            var fault = new InvalidOperationException(
+                blocking.Count > 0
+                    ? $"the post-delivery refresh of {ShortSha10(upstreamSha)} onto the plan branch for wave "
+                      + $"'{wave.Dir}' failed: untracked path(s) in the integration worktree block the merge: "
+                      + string.Join(", ", blocking)
+                    : $"the post-delivery refresh of {ShortSha10(upstreamSha)} onto the plan branch for wave "
+                      + $"'{wave.Dir}' failed (git merge exited nonzero)");
+
+            RunReport abortReport = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+                with { Abort = BuildAbort(fault) };
+            if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+            return abortReport;
+        }
+
+        string refreshCommit = GitCaptureLine(integrationPath, "rev-parse", "HEAD");
+        IReadOnlyList<string> paths = GitCaptureLines(integrationPath, "diff", "--name-only", $"{refreshCommit}^1", refreshCommit)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        if (_journal is Journal.RunJournal runJournal)
+        {
+            runJournal.RecordRefreshed(new Journal.RefreshedRecord
+            {
+                At = DateTimeOffset.UtcNow,
+                Commit = refreshCommit,
+                From = integ.OriginalBranch,
+                Upstream = upstreamSha,
+                DeliveredWave = wave.Dir,
+                Paths = paths
+            });
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// <c>git &lt;args&gt;</c> in <paramref name="workingDir"/>, returning its exit code and raw stdout
+    /// without throwing — the refresh merge (<see cref="RefreshPlanBranchAfterDelivery"/>) needs the exit
+    /// code to DECIDE the #150 fault path rather than have it thrown at it, unlike
+    /// <see cref="GitFastForwardOnly"/>'s always-throws shape. Stderr is drained (never returned or parsed):
+    /// git localizes it, so a blocking-path list built from its prose would silently go empty under a
+    /// non-English locale (design 39 §1c).
+    /// </summary>
+    private static (int ExitCode, string Stdout) RunGitInDir(string workingDir, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        foreach (string arg in args) psi.ArgumentList.Add(arg);
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        return (proc.ExitCode, stdout);
+    }
+
+    /// <summary>The single trimmed line a read-only git query returns (e.g. <c>rev-parse</c>).</summary>
+    private static string GitCaptureLine(string workingDir, params string[] args) =>
+        RunGitInDir(workingDir, args).Stdout.Trim();
+
+    /// <summary>Every non-empty line a read-only git query returns (e.g. <c>ls-files</c>/<c>diff --name-only</c>).</summary>
+    private static IReadOnlyList<string> GitCaptureLines(string workingDir, params string[] args) =>
+        RunGitInDir(workingDir, args).Stdout
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim('\r'))
+            .Where(s => s.Length > 0)
+            .ToList();
+
+    /// <summary>
+    /// Write <paramref name="record"/> as this wave's OWN <c>waves.&lt;dir&gt;.delivered</c> journal entry
+    /// (design 39 §4/§5), then — only when <paramref name="announce"/> — raise
+    /// <see cref="IRunObserver.WaveDelivered"/> with the SAME instance, after the write returns. Written
+    /// only when the journal is the real <see cref="Journal.RunJournal"/> (the <c>if (_journal is
+    /// Journal.RunJournal runJournal)</c> pattern <see cref="RecordDefinitionHashAtSettle"/> already uses)
+    /// — a unit-test fake journal models no durable document and records nothing.
+    /// </summary>
+    private void SettleDelivery(WaveNode wave, Journal.WaveDeliveredRecord record, bool announce)
+    {
+        if (_journal is Journal.RunJournal runJournal)
+        {
+            runJournal.RecordWaveDelivery(wave.Dir, record);
+        }
+
+        if (announce)
+        {
+            _observer.WaveDelivered(wave, record);
+        }
+    }
+
+    /// <summary>The <see cref="DeliveryOutcome"/> member of the same name as <paramref name="result"/> (both enums already exist; design 39 §4).</summary>
+    private static Journal.DeliveryOutcome ToDeliveryOutcome(MergeOnSuccessResult result) => result switch
+    {
+        MergeOnSuccessResult.FastForwarded => Journal.DeliveryOutcome.FastForwarded,
+        MergeOnSuccessResult.Merged => Journal.DeliveryOutcome.Merged,
+        MergeOnSuccessResult.Conflict => Journal.DeliveryOutcome.Conflict,
+        MergeOnSuccessResult.DirtyWorkingTree => Journal.DeliveryOutcome.DirtyWorkingTree,
+        MergeOnSuccessResult.HookRejected => Journal.DeliveryOutcome.HookRejected,
+        MergeOnSuccessResult.BranchMoved => Journal.DeliveryOutcome.BranchMoved,
+        _ => throw new ArgumentOutOfRangeException(nameof(result), result, "unhandled MergeOnSuccessResult")
+    };
+
+    /// <summary>A suppressed record's <c>Detail</c> naming the interlock decision it was held by: its token and its subject (design 39 §4).</summary>
+    private static string SuppressingDecisionDetail(DecisionEntry decision) => $"{decision.Decision} ({decision.Subject})";
+
+    /// <summary>A suppressed record's <c>Detail</c> naming the earlier wave whose trial came back hook-rejected (design 39 §4/§5, review round 5).</summary>
+    private static string HookRejectionHoldDetail(WaveNode rejectingWave) =>
+        $"{rejectingWave.Dir}: {Journal.JournalJson.DeliveryOutcomeToken(Journal.DeliveryOutcome.HookRejected)}";
+
+    /// <summary>
+    /// Design 39 §1c/§4 (round 4, narrowed round 5): a delivery refusal that is NOT transient — a
+    /// <c>conflict</c>, <c>branch-moved</c> or <c>dirty-working-tree</c> outcome — halts the run at
+    /// <paramref name="wave"/> under <see cref="WaveHaltKind.DeliveryRefused"/>, because every later wave
+    /// would hit the identical refusal. The caller has already journaled the settled <c>refused</c> record
+    /// (design 39 §4/§5) before reaching here; this only builds and records the HALT itself — the wave
+    /// marker, decision entry and report, mirroring the shape of the trial-tree-gate halt right above it,
+    /// but WITHOUT <see cref="RecordGateHalt"/>: <c>run.json</c>'s <c>halt</c> section is scoped to gates
+    /// (#432) and a delivery refusal is not one — every check on this wave PASSED.
+    /// </summary>
+    private RunReport HaltForDeliveryRefusal(
+        PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle integ,
+        Journal.DeliveryOutcome outcome, string? detail, Dictionary<string, TaskResult> settled,
+        Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        string token = Journal.JournalJson.DeliveryOutcomeToken(outcome);
+        string headline = $"Wave '{wave.Dir}' delivery REFUSED ({token}): {detail}";
+
+        var halt = new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.DeliveryRefused,
+            Headline = headline,
+            Detail = DeliveryRefusedRemedyDetail(outcome, detail, integ.OriginalBranch)
+        };
+
+        _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+        BlockLaterWaves(waves, waveIndex, wave, settled);
+        _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+
+        var decision = new DecisionEntry
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(plan.Config.AutonomyPolicy),
+            Decision = DecisionTokens.Halted,
+            Gate = "delivery-refused",
+            Subject = wave.Dir,
+            Wave = wave.Dir,
+            Headline = headline
+        };
+        _journal.RecordDecision(decision);
+        _observer.DecisionRecorded(decision);
+
+        RunReport halted = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+            with { WaveHalt = halt };
+        if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+        return halted;
+    }
+
+    /// <summary>
+    /// The halt's remedy line (design 39 §1c/§4 review round 5): a <c>branch-moved</c> refusal has TWO
+    /// causes under the one <c>branch-moved</c> token, and the remedy differs by which one the provider's
+    /// detail names. Keyed on the shared <c>run started on</c> prefix (never one ending — a detached HEAD's
+    /// ending differs from a switched-checkout's, and both need the SAME "check out again" remedy) and on
+    /// the <c>after the trial was built</c> suffix (which also covers a rewound branch): the checkout is
+    /// still on the pinned branch there, so the fix is simply to resume — telling the operator to check
+    /// anything out would be actively wrong. A <c>conflict</c> or <c>dirty-working-tree</c> refusal names no
+    /// single remedy action here (resolving either is content-specific); its own detail already says what
+    /// blocked it, so the halt just tells the operator to resume once it is resolved.
+    /// </summary>
+    private static string DeliveryRefusedRemedyDetail(
+        Journal.DeliveryOutcome outcome, string? detail, string originalBranch)
+    {
+        if (outcome == Journal.DeliveryOutcome.BranchMoved && detail is not null)
+        {
+            if (detail.StartsWith("run started on", StringComparison.Ordinal))
+            {
+                return $"check out '{originalBranch}' again, then resume.";
+            }
+
+            if (detail.Contains("after the trial was built", StringComparison.Ordinal))
+            {
+                return "The change is already on the plan side of the next trial — resume.";
+            }
+        }
+
+        return "Resolve the condition named above, then resume.";
+    }
+
+    /// <summary>
+    /// The nearest wave before <paramref name="waveIndex"/>, in plan order, whose <c>delivered</c> record
+    /// reads <c>refused</c> with outcome <c>hook-rejected</c> — read from the journal (design 39 §5, review
+    /// round 5 "d39-hooks-untracked-tooling"), never a sticky in-process flag, so a resume holds every later
+    /// barrier delivery exactly as the original run would have.
+    /// </summary>
+    private WaveNode? EarlierHookRejectedWave(IReadOnlyList<WaveNode> waves, int waveIndex)
+    {
+        for (int j = 0; j < waveIndex; j++)
+        {
+            if (_journal.WaveEntryOf(waves[j].Dir)?.Delivered is
+                { Status: Journal.WaveDeliveryStatus.Refused, Outcome: Journal.DeliveryOutcome.HookRejected })
+            {
+                return waves[j];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The set of wave dirs a delivery at <c>waves[waveIndex]</c>'s barrier carries (design 39 §4, review
+    /// round 4 "d39-interlock-ride-along"): every wave since the last wave whose <c>delivered</c> record
+    /// reads <c>delivered</c>, this one included — read from the JOURNAL, never in-memory plan structure,
+    /// so a resume (which discards in-memory state) still starts the walk after the last wave whose work
+    /// actually reached the user's branch. A refused or suppressed earlier delivery does not end the walk:
+    /// its work is still not on the user's branch, so THIS delivery carries it too.
+    /// </summary>
+    private IReadOnlyList<string> CoveredWavesForDelivery(IReadOnlyList<WaveNode> waves, int waveIndex)
+    {
+        var covered = new List<string> { waves[waveIndex].Dir };
+        for (int j = waveIndex - 1; j >= 0; j--)
+        {
+            if (_journal.WaveEntryOf(waves[j].Dir)?.Delivered is { Status: Journal.WaveDeliveryStatus.Delivered })
+            {
+                break;
+            }
+
+            covered.Insert(0, waves[j].Dir);
+        }
+
+        return covered;
+    }
+
+    /// <summary>Shorten a raw git sha for display (unlike <see cref="ShortHash"/>, which strips a <c>sha256:</c> prefix).</summary>
+    private static string ShortSha10(string sha) => sha.Length <= 10 ? sha : sha[..10];
 
     private static IReadOnlyDictionary<string, PlanBranchWaveRecord> WithWaveMarker(
         IReadOnlyDictionary<string, PlanBranchWaveRecord> map, string waveDir, PlanBranchWaveRecord record)
@@ -3483,14 +4168,15 @@ public sealed class Scheduler
                 await ClassifyAndActAsync(
                     GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
                     question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
-                    ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind).ConfigureAwait(false);
+                    ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind, waveDir: task.WaveDir)
+                    .ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.RateLimited)
             {
                 await ClassifyAndActAsync(
                     GateSignal.PromptFailure(Prompts.PromptFailureKind.Transient), gate: "blocker",
                     subject: task.Id, boundary: "task", question: null, definitionHash: definitionHash,
-                    criticalityGate: CriticalityGate.NeedsHuman, ct).ConfigureAwait(false);
+                    criticalityGate: CriticalityGate.NeedsHuman, ct, waveDir: task.WaveDir).ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.Succeeded && result.ResolvedTransient is { } resolved)
             {
@@ -3524,13 +4210,13 @@ public sealed class Scheduler
     private async Task ClassifyAndActAsync(
         GateSignal signal, string gate, string subject, string boundary, string? question,
         string definitionHash, CriticalityGate criticalityGate, CancellationToken ct,
-        IReadOnlyList<string>? options = null, string? kind = null)
+        IReadOnlyList<string>? options = null, string? kind = null, string? waveDir = null)
     {
         options ??= [];
         switch (GateClassifier.Classify(signal))
         {
             case GateClass.JudgmentCall:
-                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, options, kind, ct)
+                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, options, kind, waveDir, ct)
                     .ConfigureAwait(false);
                 break;
 
@@ -3552,7 +4238,8 @@ public sealed class Scheduler
     /// </summary>
     private async Task ActOnJudgmentCallAsync(
         string gate, string subject, string boundary, string? question, string definitionHash,
-        CriticalityGate criticalityGate, IReadOnlyList<string> options, string? kind, CancellationToken ct)
+        CriticalityGate criticalityGate, IReadOnlyList<string> options, string? kind, string? waveDir,
+        CancellationToken ct)
     {
         if (_criticalityJudge is null)
         {
@@ -3606,7 +4293,8 @@ public sealed class Scheduler
             Criticality = criticality,
             Confidence = confidence,
             Threshold = threshold,
-            BestGuess = decision.BestGuess
+            BestGuess = decision.BestGuess,
+            Wave = waveDir
         };
         _journal.RecordDecision(entry);
         _observer.DecisionRecorded(entry);
@@ -4931,12 +5619,26 @@ public sealed class Scheduler
         // The #556 divergence rides the same seam and for a sharper reason: it is what makes AllSucceeded
         // false, so a report built anywhere that missed it would be a report that DELIVERS a run the gate
         // already found a divergence in.
+        //
+        // WaveDeliveries rides the SAME seam for the SAME reason (design 39 §4/§5): a wave gate or barrier
+        // halt returns before Finalize, so stamping it only there would drop every earlier delivery off a
+        // halted run's report.
+        var waveDeliveries = new Dictionary<string, Journal.WaveDeliveredRecord>(StringComparer.Ordinal);
+        foreach (WaveNode wave in plan.Waves)
+        {
+            if (_journal.WaveEntryOf(wave.Dir)?.Delivered is { } delivered)
+            {
+                waveDeliveries[wave.Dir] = delivered;
+            }
+        }
+
         return new RunReport
         {
             Tasks = results,
             Cancelled = cancelled,
             Observations = PlanEditObservationsSnapshot(),
-            ExecutedDefinitionDivergence = ExecutedDefinitionDivergenceSnapshot()
+            ExecutedDefinitionDivergence = ExecutedDefinitionDivergenceSnapshot(),
+            WaveDeliveries = waveDeliveries
         };
     }
 

@@ -12,11 +12,30 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
+# Event_CarriesTheWaveTheCommitAndWhatItCovered was removed (review 2026-09-13, B5): a payload-shape test
+# of a record handed to a no-op default passes on the stub. Task 28 pins which record the Scheduler raises.
 $pinned = @(
-    'Event_CarriesTheWaveTheCommitAndWhatItCovered',
     'EveryCoreDecorator_ForwardsTheEvent',
-    'ADecoratorThatDropsTheEvent_IsCaught'
+    # C-N5 (review of 1a809bce): ObserverProjection declares no WaveDelivered on this base, so the call
+    # resolves to the interface's no-op default and no observer.jsonl line is appended.
+    'ObserverProjection_AppendsTheDeliveryToObserverJsonl'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13) — ADecoratorThatDropsTheEvent_IsCaught.
+#   STRUCTURAL REASON: the negative control never touches production forwarding. It drives the sweep's
+#   detection against a TEST-LOCAL decorator that swallows the event, so a correct test is green on
+#   arrival and must stay green; what it guards against is a sweep that stops catching a dropper.
+#   Pinning it red would force a test coupled to the missing forwarding, which task 12 cannot then
+#   turn green without editing tests.
+#   It is asserted to EXIST below, and task 12's forward census requires it to be observed Passed.
+#
+# DECLARED RED-CENSUS EXEMPTION (review of 1a809bce, C-N5) — RunEventStream_AppendsNoEventsRowForADelivery.
+#   STRUCTURAL REASON: it asserts an ABSENCE. On this base RunEventStream declares no WaveDelivered, so the
+#   call resolves to the interface's no-op default and no events.jsonl row can exist; a correct test is
+#   green on arrival. What it guards against is task 12 inventing a `wave-delivered` kind, which was
+#   decided against: the durable record of a delivery is run.json's waves.<dir>.delivered.
+#   It is asserted to EXIST below, and task 12's forward census requires it to be observed Passed.
+$mustExist = @('ADecoratorThatDropsTheEvent_IsCaught', 'RunEventStream_AppendsNoEventsRowForADelivery')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -49,6 +68,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how a
+    # never-weaker guarantee quietly stops being asserted anywhere.
+    foreach ($name in $mustExist) {
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
     }
 

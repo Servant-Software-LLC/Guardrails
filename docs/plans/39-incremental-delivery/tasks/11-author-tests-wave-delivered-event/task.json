@@ -1,7 +1,7 @@
 {
-  "description": "Author failing tests + the IRunObserver.WaveDelivered member for the delivery announcement",
+  "description": "Author failing tests + the IRunObserver.WaveDelivered(WaveNode, WaveDeliveredRecord) member for the delivery announcement",
   "dependsOn": [
-    "02-implement-wave-delivers-flag"
+    "09-author-tests-wave-delivered-journal"
   ],
   "stableId": "c7y4hj",
   "writeScope": [

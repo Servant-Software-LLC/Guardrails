@@ -1,12 +1,13 @@
 {
-  "description": "Author failing tests + the DecisionEntry.Wave stub for the #361/#340 interlock scoped PER WAVE",
+  "description": "Author failing tests + the DecisionEntry.Wave and RunOutcomePolicy stubs for the #361/#340 interlock scoped to the waves a delivery carries",
   "dependsOn": [
     "02-implement-wave-delivers-flag"
   ],
   "stableId": "k4c8we",
   "writeScope": [
     "tests/Guardrails.Core.Tests/WaveDelivery/WaveScopedInterlockTests.cs",
-    "src/Guardrails.Core/Execution/DecisionEntry.cs"
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Execution/RunOutcomePolicy.cs"
   ],
   "action": {
     "maxTurns": 75

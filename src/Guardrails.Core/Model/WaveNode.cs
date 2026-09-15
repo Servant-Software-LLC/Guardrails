@@ -77,4 +77,22 @@ public sealed record WaveNode
     /// (§5.4 names it), which is the one place that name and its contents pull apart.</para>
     /// </summary>
     public string? DefinitionHashAtLoad { get; init; }
+
+    /// <summary>
+    /// The wave's DECLARED <c>delivers: true</c>, from its brief.md front matter (design 39 §1b/§3).
+    /// Default false. Set ONCE by the loader (<see cref="Loading.WaveFolder.ReadDeliversFlag"/>) from the
+    /// same read that captures <see cref="DefinitionHashAtLoad"/> — never re-read from disk later, so a
+    /// mid-run brief.md edit cannot change delivery on a run whose wave definition was pinned at load
+    /// (§5.4). This is the DECLARED flag and nothing else: a <c>delivers: true</c> wave with no exit gate
+    /// still reports true here (GR2079 warns about exactly that wave).
+    /// </summary>
+    public bool Delivers { get; init; }
+
+    /// <summary>
+    /// True only when the wave delivers at its barrier: <see cref="Delivers"/> AND at least one exit-gate
+    /// check in <see cref="Guardrails"/>. Computed from the node rather than stored, so it can never
+    /// disagree with what the loader set — an empty exit gate trivially passes (<c>RunWaveExitGateAsync</c>
+    /// returns <c>Pass</c>), so a gate-less wave must never be a delivery point whatever its flag says.
+    /// </summary>
+    public bool IsDeliveryPoint => Delivers && Guardrails.Count > 0;
 }

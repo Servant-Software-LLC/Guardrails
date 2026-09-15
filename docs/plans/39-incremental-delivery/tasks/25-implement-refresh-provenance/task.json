@@ -1,0 +1,13 @@
+{
+  "description": "Implement refreshed[], RunJournal.RecordRefreshed and UnauthoredContentNote so the authored tests pass",
+  "dependsOn": [
+    "24-author-tests-refresh-provenance"
+  ],
+  "stableId": "s5d2jm",
+  "writeScope": [
+    "src/Guardrails.Core/Journal/RefreshedRecord.cs",
+    "src/Guardrails.Core/Journal/UnauthoredContentNote.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
+  ]
+}

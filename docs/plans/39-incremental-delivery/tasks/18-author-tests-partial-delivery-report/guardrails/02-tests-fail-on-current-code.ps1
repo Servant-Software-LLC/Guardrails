@@ -16,14 +16,57 @@ $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
     'TheReportPointsAtGitBranchNoMerged',
-    'AFailedWaveDoesNotChangeTheExitCode'
+    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered',
+    # Review of 1a809bce (2026-09-13). Each is red on this task's base, measured by grep: nothing in
+    # RunCommand.cs reads RunReport.WaveDeliveries until task 19, so DescribeDelivery returns
+    # NotAttempted for a held run-end delivery (RunCommand.cs:2113-2142) and the refusal's own token for
+    # a refused one (:2070-2096); the banner names no wave (:2168-2215); DeliveryOutcomeToken's discard
+    # arm throws JsonException on the new member (JournalJson.cs:83); and PrintWaveHalt's label switch
+    # has no DeliveryRefused arm, so it prints the generic 'WAVE HALT' (RunCommand.cs:1757-1767). No
+    # task between master and this one writes RunCommand.cs or JournalJson.cs.
+    'DescribeDelivery_AGreenRunWhoseRunEndDeliveryWasHeld_IsPartiallyDelivered',
+    'DescribeDelivery_ARefusedRunEndMergeAfterAWaveDelivered_IsPartiallyDelivered',
+    'TheUndeliveredWorkBanner_NamesTheWavesThatAlreadyDelivered',
+    'PartiallyDelivered_RoundTripsThroughTheJournal',
+    'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt',
+    # Review round 5 (d39-barrier-terminal-gate), red on base by grep: with terminalGatePassed false and no
+    # merge outcome, DescribeDelivery returns NotAttempted with the terminal-gate reason (RunCommand.cs:2128-
+    # 2129), naming no delivered wave; and RunCommand returns on a failed terminal gate (:829-834) before
+    # journal.RecordDelivery (:847), so the reloaded journal's Delivery is null.
+    'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning',
+    # Final adversarial pass (WEAK-2): red on base because RenderWaveDeliveryReport is this task's own throwing
+    # stub; nothing on the base renders a hook hold, so the green, delivered run says nothing about it.
+    'TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFullyDeliveredRunReadsAsTodayDoes.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('AFullyDeliveredRunReadsAsTodayDoes')
+# DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the report.
+#   AFullyDeliveredRunReadsAsTodayDoes (review 2026-09-11).
+#     STRUCTURAL REASON: a plan that marks no wave prints exactly today's output on current code by
+#     definition, so a correct test of "reads as today does" is green on arrival.
+#   AFailedWaveDoesNotChangeTheExitCode (review 2026-09-13).
+#     STRUCTURAL REASON: a run with a failed wave already exits 2 (ExitCodes.TaskFailed) on current
+#     code, and the report must not change that, so a correct test is green on arrival. Pinning it
+#     red rewards only a wrongly-failing test that task 19 (it cannot edit tests) could never turn
+#     green.
+#   DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered (review of 1a809bce, 2026-09-13).
+#     STRUCTURAL REASON: on current code DescribeDelivery returns a run-end merge that landed as
+#     delivered/fast-forwarded from MergeOnSuccessOutcome alone (RunCommand.cs:2070-2096) and never reads
+#     WaveDeliveries, so a correct test is green on arrival. It exists to stop task 19 from counting the
+#     waves the run-end merge carried, which have no per-wave delivered key, as held.
+#   DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered (review round 5,
+#   d39-hooks-untracked-tooling).
+#     STRUCTURAL REASON: on current code DescribeDelivery returns a landed run-end merge as delivered/merged
+#     from MergeOnSuccessOutcome alone (RunCommand.cs:2070-2096), whatever WaveDeliveries holds, so a correct
+#     test is green on arrival. It exists to stop task 19 from counting a refused hook-rejected or a
+#     suppressed barrier record as held once the run-end merge carried those waves.
+#   Each is asserted to EXIST below, and task 19's forward census requires each Passed.
+$mustExist = @(
+    'AFullyDeliveredRunReadsAsTodayDoes',
+    'AFailedWaveDoesNotChangeTheExitCode',
+    'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered',
+    'DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -63,7 +106,7 @@ try {
     # is never written is not "green because correct" — it is absent, and absence is how a
     # never-weaker guarantee quietly stops being asserted anywhere.
     foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }

@@ -230,6 +230,23 @@ public interface IRunObserver
     void WaveFinished(Model.WaveNode wave, Journal.WaveStatus status, bool skipped) { }
 
     /// <summary>
+    /// A wave's barrier delivery settled to <c>delivered</c> (design 39 §4/§5 "Wiring and halts"): its work
+    /// reached the user's branch. The Scheduler writes <c>waves.&lt;dir&gt;.delivered</c> around every
+    /// barrier delivery and raises this ONLY for a <paramref name="delivery"/> whose
+    /// <see cref="Journal.WaveDeliveredRecord.Status"/> is <c>delivered</c>, and only AFTER that record is
+    /// persisted — an observer must never see a result the journal does not already hold. A <c>refused</c>
+    /// or <c>suppressed</c> delivery raises nothing here: a <c>conflict</c>/<c>branch-moved</c>/
+    /// <c>dirty-working-tree</c> refusal halts instead (<c>WaveHaltKind.DeliveryRefused</c>), a
+    /// <c>trial-gate-failed</c> one halts as an exit-gate failure, and a <c>hook-rejected</c> one holds.
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must still
+    /// forward it EXPLICITLY (the <c>ObserverForwardingSweepTests</c> contract): an unforwarded call
+    /// resolves to this empty body and the delivery is swallowed silently, in every mode (the
+    /// <see cref="VerifierAdvisoryFound"/> / <see cref="WaveGateFinished"/> lesson).</para>
+    /// </summary>
+    void WaveDelivered(Model.WaveNode wave, Journal.WaveDeliveredRecord delivery) { }
+
+    /// <summary>
     /// A wave's ENTRY gate (<paramref name="isEntryGate"/> true — its <c>preflights/</c>) or EXIT gate
     /// (false — its <c>guardrails/</c>) finished, carrying every check's result in the wave's own order
     /// (issue #513). Default no-op.

@@ -81,20 +81,61 @@ delivery gate asserts over what lands.
 **DECIDED (review, 2026-09-11): a TRIAL MERGE on a scratch ref.** The first draft said only *"the check is
 cheap once the merge is performed first"*, which read as *merge onto the user's branch, then gate* — and
 that is not safe. It contradicts §3's *"gated on that wave's `Exit` being green"* (the gate would run
-after the write it is supposed to authorise), it contradicts the #588 requirement that the operator's
+after the write it is supposed to authorize), it contradicts the #588 requirement that the operator's
 checkout is not modified, and the only way back from a red gate is the un-merge §1a says the interlock
 **cannot** do. The order is therefore:
 
-1. Merge the plan branch onto a throwaway ref — `refs/guardrails/trial/<waveDir>` — never onto the
+1. Decide whether this barrier delivers at all, with the same predicate run-end delivery uses:
+   `mergeOnSuccess`, the §1a interlock and its `--merge-on-success` override, the serial guard, and #556 (no task
+   definition edited mid-run). A held delivery builds no trial and runs no hook. *(Review round 5: the first build consulted the interlock only
+   after the trial, and ignored `--no-merge-on-success` and serial mode at a barrier.)*
+2. Merge the plan branch onto a throwaway ref — `refs/guardrails/trial/<waveDir>` — never onto the
    user's branch.
-2. Run the wave's `Exit` gate against THAT tree. It is the tree the delivery would produce, so §1's
+3. Run the wave's `Exit` gate against THAT tree. It is the tree the delivery would produce, so §1's
    requirement is met exactly.
-3. Consult the interlock (§1a) **before** any write the operator can see.
 4. On green, fast-forward the user's branch to the trial ref. On red, delete the ref; the user's branch
    never moved, and there is nothing to un-merge.
 
 The scratch ref is a harness-owned ref under `refs/guardrails/`, not a branch, so it never appears in the
 operator's `git branch` output and needs no cleanup beyond the delete.
+
+**The trial-delivery primitive — DECIDED (review round 4, `d39-trial-delivery-primitive`).** No
+`IWorktreeProvider` member built a trial ref or promoted one, and the three checks an operator relies on at
+delivery were private to `GitWorktreeProvider.MergePlanBranchIntoUserBranch`: the #588 moved-HEAD refusal
+(`:422`), the #448 dirty-tree intersection (`:435`), and the #149 rule that the merge commit landing on the
+user's branch runs their hooks (`:474`). The promotion in step 4 is always a fast-forward, which runs no commit
+hook, so reusing only the promotion would make `HookRejected` unreachable for waved delivery. The provider
+therefore gains three members:
+
+- `CreateTrialDelivery` builds `refs/guardrails/trial/<waveDir>`, checking four cases in order:
+  - The user's tip equals the plan tip (`AlreadyDelivered`, with the user's tip counted as an ancestor). This is a
+    resume right after a quiet-case promotion landed. Nothing is merged, promoted or gated, and no refresh is owed.
+  - The user's tip is a strict ancestor of the plan tip (the quiet case). The trial ref IS the plan tip.
+  - The plan tip is a strict ancestor of the user's tip (`AlreadyDelivered`). This is a resume after a promotion
+    that built a merge commit landed, or a user who merged the plan branch themselves. The trial is the user's tip.
+    Nothing is merged or promoted, and no trial-tree gate runs, because the delivery already landed; the §1c
+    refresh is still owed.
+  - Otherwise it creates the merge commit in a harness-owned worktree (`WorktreePath`, kept for the trial-tree
+    gate) WITH the user's hooks, resolved from their hooks directory (`git rev-parse --git-path hooks`, made
+    absolute). *(Review round 5 measured that a harness worktree silently skips a relative `core.hooksPath`,
+    husky's layout. Round 4's rationale said the worktree mattered only for a hook reading untracked files, which
+    was wrong.)*
+
+  It reports whether the user's tip was an ancestor, which is the §1c refresh trigger. It returns a `conflict`
+  refusal (naming the conflicting paths) or a `hook-rejected` refusal when no trial can be built.
+- `PromoteTrialDelivery` runs the #588 check and the #448 intersection against the trial ref, then
+  fast-forwards the user's branch to it. It returns `branch-moved` for two causes, each with its own detail and
+  remedy: the checkout switched to another branch (check it out again, then resume), or the user's branch
+  advanced or was rewound after the trial was built (resume; the next trial includes the change). It never
+  falls back to a real merge.
+- `DiscardTrialDelivery` deletes the trial ref and removes the trial worktree.
+
+All three keep throwing default bodies on `IWorktreeProvider`, so a test double that forgets one fails loudly
+instead of recording a delivery that never happened.
+
+In the quiet case the trial ref IS the plan tip, so the exit gate that already ran on the integration worktree
+is the gate on the delivered tree and does not run twice. Only a user branch that moved needs the trial
+worktree and a second gate run.
 
 ---
 
@@ -110,7 +151,9 @@ A **shared-prerequisite wave** has no standalone value. Delivering it alone puts
 branch with no consumer — a PR nobody can review on its merits and a state nothing exercises.
 
 **So ordering and delivery are separate properties.** A wave is always an ordering unit; only some waves are
-delivery points.
+delivery points. In code the two readings are separate members (review round 5): `WaveNode.Delivers` is the
+flag as declared, and `WaveNode.IsDeliveryPoint` is `Delivers` on a wave that also has an exit gate. A wave with
+no `guardrails/` exit gate never delivers, whatever its flag says, and GR2079 warns about it.
 
 ```yaml
 # wave-NN-<slug>/brief.md — YAML front matter, at the top of the file
@@ -121,10 +164,17 @@ delivers: true      # default FALSE
 
 **Where the flag lives, and why it is NOT a new file (review, 2026-09-11).** The first draft said "the
 wave's own manifest". **There is no wave manifest** — SSOT §14.1 is explicit that v1 has *"ONE shared run
-config (no per-wave config in v1)"*, and the obvious guess is actively destructive:
-`WaveFolder.TryResolveWaveTarget` treats *"a directory that carries its own `guardrails.json`"* as **a plan
-in its own right, NEVER a wave**, so dropping a config into `wave-NN/` silently un-waves the plan. The flag
-therefore goes in the front matter of the **existing optional `brief.md`** (SSOT §14.10). Two things fall
+config (no per-wave config in v1)"*, and the obvious guess fails silently. A `guardrails.json` dropped into
+`wave-NN/` is **ignored by the plan's loader**: the plan stays waved, `validate` says nothing, and a flag
+written there is never read, so it looks as if it worked. Only a verb pointed at that wave directory itself
+notices the file. `WaveFolder.TryResolveWaveTarget` treats *"a directory that carries its own
+`guardrails.json`"* as a plan in its own right, so `validate`, `plan-hash` and `mark-reviewed` aimed at the
+wave load it as a separate flat plan instead of reporting GR1010 (a wave folder is not a loadable plan).
+*(Corrected at review, 2026-09-13: this paragraph said the stray file "silently un-waves the plan". Measured
+with `guardrails` 1.19.0 on a copy of `examples/waved-hello`: `validate <plan>` prints the same two per-wave
+diagnostics with and without the file, and only `validate <plan>/wave-01-scaffold` changes, from GR1010 to
+"plan is valid".)* The flag therefore goes in the front matter of the **existing optional `brief.md`** (SSOT
+§14.10). Two things fall
 out for free, and they are the reason this beats a new `wave.json`: the loader needs no change to its wave
 DETECTION predicate, and `WaveDefinitionHash` **already folds `brief.md`** (`Compute` → `GateDefinitionOf`),
 so flipping `delivers` on a completed wave re-stales that wave's marker and trips drift exactly as SSOT
@@ -206,6 +256,13 @@ in the same change.
 This is a **precondition, not a follow-up**: no wave may deliver early until the interlock is re-scoped, or
 the feature becomes the way #361 is escaped.
 
+**Ride-along — DECIDED (review round 4, `d39-interlock-ride-along`).** A delivery carries every wave since
+the last delivery (§1b), so "no suppressing decision recorded during that wave", read literally, is too narrow.
+If wave 02 records a `proceeded-best-guess` and is held, a clean wave 03's delivery still carries wave 02's
+commits onto the user's branch. The interlock therefore scopes the check to the delivery's `covers` list, every wave it
+carries: once a wave is held, every later delivery is held too until run end, unless the operator overrides
+with `--merge-on-success`.
+
 This is not a nicety. #361's entire point is that a machine-shaped result does not auto-deliver, and a
 feature that delivers earlier must not become the way that rule is escaped. **A design that reuses an
 existing safety interlock inherits the obligation to re-derive its scope**, and this one changes from
@@ -280,6 +337,97 @@ with the refresh as a second provenance kind — and a wave-gate failure over a 
 say *"this tree includes a refresh from `<branch>` at `<sha>`"* rather than blaming the wave. Neither design
 can retrofit it: in both cases the information exists only at the instant of the commit.
 
+### How a refresh is recorded (post-plan-40 refinement)
+
+> **Status: confirmed in review round 4 (`d39-refresh-record`), with the refresh trigger read from the trial
+> merge's own ancestry result.** Written 2026-09-13, after plan 40 (#373, PR #711) shipped the `supplied[]`
+> record the paragraph above could only anticipate. It decides what "built once" means now that one of the
+> two records exists.
+
+**DECIDED (architect; confirmed in review round 4): a sibling `refreshed[]` section, NOT a `kind` on `supplied[]`.** What is
+built once is the provenance *contract* and its *reader*, not the record type:
+
+- **One contract.** Both sections are optional, append-only, top-level `run.json` sections, absent (never null)
+  when empty, written only after their commit exists. Both commits carry a trailer derived from the record
+  plus `Guardrails-Run: <runId>` (the journal's run id).
+- **One reader.** `UnauthoredContentNote` is the only code that answers *"what is in this tree that no task
+  authored?"*, and it reads BOTH sections. A consumer that reads one of them is the defect this rule exists to
+  prevent.
+
+**Why not a `kind` on the shipped record.** Plan 40 shipped a *supplier*-shaped record, and each field that
+makes it one is wrong for a refresh. `by` names who called `guardrails supply` (`operator` | `overwatcher` |
+`task:<folder>`); a refresh has no caller — the harness performs it and the content comes from a branch. The
+trailer `Supplied-By: <by>` is derived from `by`, so it would be a false statement on a refresh commit. `bytes`
+has no honest value for a merge, which deletes as well as adds. SSOT §7 defines the entry grain as *"one entry
+per DRAIN of the staging tree"*, and a refresh has no staging tree. A `kind` would make every field's meaning
+depend on another field — the internally inconsistent record #538 removed from `guardrail-failed` — and every
+existing `supplied[]` reader would silently count a refresh as a supply. (The shape is unreleased — no tag
+contains `5b2b0bbf` — so this rejection rests on semantics, not on compatibility.)
+
+**The record.**
+
+```jsonc
+"refreshed": [
+  {
+    "at": "2026-09-13T10:02:11+00:00",
+    "commit": "7e1d…",                    // the refresh merge commit on the plan branch
+    "from": "master",                     // the delivery target pinned at run start (IntegrationHandle.OriginalBranch)
+    "upstream": "4c9a…",                  // the sha of <from> that was merged — <commit>^2
+    "deliveredWave": "wave-02-issue-510", // the wave whose non-fast-forward delivery triggered it
+    "paths": ["src/Teammate.cs"]          // git diff --name-only <commit>^1 <commit>, forward-slash, ordinal-sorted
+  }
+]
+```
+
+The write path is `RunJournal.RecordRefreshed(RefreshedRecord)`, mirroring `RecordSupplied` (null-check, lock,
+append, persist).
+
+**The commit, and why its shape is load-bearing.** The refresh is a `git merge --no-ff --no-verify` of the
+`upstream` **sha** (never the branch name, so the record names exactly what was merged even if the branch moves
+in between) in the integration worktree, with the message `Refreshed-From: <from>` / `Guardrails-Run: <runId>`
+— the same shape as the supply drain commit.
+
+1. **Its first parent is the plan branch's pre-refresh tip.** A fast-forward of the plan branch onto the
+   delivered commit would be cheaper, but whether it keeps the spine intact depends on that commit's parent
+   order, which §1 does not fix. If its first parent is the user's tip, earlier waves' task commits leave the
+   plan branch's `--first-parent` spine, and `SafeSuffixEvaluator` answers a later rewind with "nothing to
+   rewind" while those commits are still in the tree. With `--no-ff`, the user's commits sit on merge lineage,
+   and a rewind across the refresh is refused — the honest floor.
+2. **The trailer is written.** It keeps the refresh attributable from git alone if the process dies between
+   the commit and the journal write, and it travels to the user's branch with the next delivery, where
+   `git log` is the only provenance a teammate has. It is `Refreshed-From:`, never `Supplied-By:` — nothing was
+   supplied.
+
+The upstream already contains everything the plan branch delivered, so the merge is conflict-free by
+construction. A refresh that fails anyway is an infrastructure fault — an honest halt through the #150 path,
+no record written — never a silent continue on the stale base this section set out to remove.
+
+**The trigger, corrected for §1's trial merge.** *"Refresh only when the delivery was not a fast-forward"*
+cannot be read off the delivery's last step: under §1 the promotion is ALWAYS a fast-forward to
+`refs/guardrails/trial/<waveDir>`, so a check on it would never refresh. The discriminator is ancestry at
+delivery time — refresh iff the user's branch tip was NOT an ancestor of the plan-branch tip, which is exactly
+when the trial merge had to create a merge commit. The trial merge already has to know this to choose between
+a fast-forward trial and a merge commit, so the refresh reads that fact from the trial result
+(`d39-trial-delivery-primitive`) rather than probing again. That keeps what the `d39-post-delivery-refresh`
+answer relied on, a trigger that costs nothing in the quiet case; only the signal moved, from the promotion's
+result to the trial merge's.
+
+**The gate halt names it — in scope for v1.** A record nothing reads at the moment of failure does not stop a
+wave being blamed. The seam is `Scheduler.BuildGateHalt`, which already builds BOTH the wave entry-preflight
+and exit-gate halts. It appends `UnauthoredContentNote`'s headline suffix — every `supplied[]` and
+`refreshed[]` record, oldest first, a refresh as `refresh from '<from>' at <upstream, 10 chars>` and a supply
+as `supplied by <by> at <commit, 10 chars>` — plus one detail line per record. The failing check names stay
+first: the disclosure is added, never substituted. The headline already flows through `RecordGateHalt` into
+`run.json`'s `halt.headline` and from there into the log-site banner, so console, journal and log site carry it
+with no `RunHalt` schema change and no CLI change. A run with neither section renders byte-identically to today.
+It names every record in the run, not only those since the last passing gate: every one of them IS in the
+tree, so the sentence stays true; narrowing the window needs the gated commit recorded and is a later
+refinement.
+
+**Not in v1:** a live observer line for the refresh (`WaveDelivered` already marks the moment); the disclosure
+at the plan-level terminal gate (a CLI phase) or in task retry feedback; and `SafeSuffixEvaluator`'s refusal
+wording, which still calls any trailer-less commit "a human hand-fix?" — refresh and supply commits included.
+
 ---
 
 ### The compensating control already exists: the wave ENTRY preflight (round 3)
@@ -318,9 +466,28 @@ checked, silently. The asymmetry is already in the model and points the other wa
 *"always re-evaluated on the current HEAD"* (SSOT §14.6); entry is not. This proposal lands on the side that
 skips.
 
-So the entry gate has to distinguish the two baseline kinds — **a positive baseline re-evaluates; a negative
-one keeps skip-once.** That is the whole change, and it is the only place in this design where the harness
-must grow a new distinction rather than reuse one.
+So the entry gate would have to distinguish the two baseline kinds, a positive baseline re-evaluating and a
+negative one keeping skip-once. *(Superseded: review round 4 dropped this change; see the next paragraph.)*
+
+**REOPENED, then DECIDED (review round 4, `d39-entry-baseline-kind`): skip-once stays for every entry check,
+and no baseline kind is declared.** The three paragraphs above assume a run
+can reach a passed entry marker whose tree a delivery has since changed. Checked against `RunWavedAsync`, no
+run reaches that state:
+
+- A delivery and its refresh run at the delivering wave's own barrier, before the next wave's entry gate runs
+  for the first time.
+- A resume skips completed waves and re-delivers nothing.
+- A refused delivery leaves its wave incomplete (§4), so a resume re-attempts it after that wave's exit gate,
+  still before the next wave's entry gate.
+- Every rewind or reset that re-runs a wave clears the entry markers of that wave and every later one
+  (`ResetWaveToPending`, `Scheduler.cs:1606-1613`).
+
+So skip-once never skips a check over a tree a delivery changed, and task 14's
+`AnEntryGateFailureOverARefreshedTree_NamesTheRefresh` already fails if a refresh ever lands after the next
+wave's entry gate. Re-evaluating EVERY entry check instead is ruled out by SSOT §14.6: many entry checks are
+negative baselines, true only at the wave's start, and would false-red existing waved plans on every resume.
+What stays true is point (2) below: the capability is worth nothing unless the preflight is emitted, and
+GR2078 (a post-delivery wave with no entry preflight) cannot tell a positive preflight from a negative one.
 
 **(2) A wave with no authored preflights returns `Pass` immediately** (`:1394`). The capability is worth
 nothing unless the check is emitted, so this is a `plan-breakdown` rule as much as a harness one: **a wave
@@ -370,7 +537,7 @@ this section exists to prevent, reappearing because the control against it was o
 > real; a wave barrier destroys cross-wave parallelism, SSOT §14 C5).
 
 Plan 25's three chains are **independent**. They can run in parallel today. Putting them in three waves
-**serialises them**, and that is a real loss.
+**serializes them**, and that is a real loss.
 
 **DECIDED (review): the loss is accepted, and the wave barrier STAYS.** The reviewer's words:
 
@@ -395,7 +562,7 @@ internal parallelism. What goes is parallelism *across issues*.
 
 | reason to wave | why |
 |---|---|
-| *(existing)* the stage is **undesignable up front** — downstream tasks reference artifacts an upstream stage materialises | JIT breakdown at the barrier |
+| *(existing)* the stage is **undesignable up front** — downstream tasks reference artifacts an upstream stage materializes | JIT breakdown at the barrier |
 | ***(new)*** the stage is a **delivery unit** — you want it on your branch before the rest of the plan finishes | delivery granularity |
 
 Both are coarse ordering; the second buys delivery instead of authorability. The doctrine sentence changes
@@ -407,7 +574,7 @@ as good a reason as authorability."* So `plan-breakdown`'s wave/flat fork gains 
 first-class reason to wave, and the doctrine sentence is reworded from *"do not wave a flat plan"* to *"do
 not wave a flat plan **for parallelism** — wave it when you want the stages delivered separately."*
 
-The cost stands and is accepted: waving independent chains serialises them. What is bought is that a
+The cost stands and is accepted: waving independent chains serializes them. What is bought is that a
 failure in one stage no longer strands the finished work of the others.
 
 ---
@@ -417,8 +584,9 @@ failure in one stage no longer strands the finished work of the others.
 Much smaller than the first draft:
 
 - **The delivery path becomes callable at a wave barrier**, gated on that wave's `Exit` being green
-  against the TRIAL MERGE (§1) — not only at run end. The run-end call stays for the last wave and for
-  every flat plan. **The entry point is `Scheduler.Finalize` → `DeliverToUserBranch` →
+  against the TRIAL MERGE (§1) — not only at run end. The plan's final wave never delivers at its barrier:
+  it always delivers through the run-end call, after the #457 terminal gate passes (review round 5,
+  `d39-barrier-terminal-gate`), and so does every flat plan. **The entry point is `Scheduler.Finalize` → `DeliverToUserBranch` →
   `IWorktreeProvider.MergePlanBranchIntoUserBranch`** — corrected at review, 2026-09-11: there is no method
   called `DeliverAndCleanup` anywhere in the tree (`grep -rn DeliverAndCleanup src/ tests/` exits 1). The
   name entered at charter review and propagated; grep `Scheduler.cs` for `DeliverToUserBranch` rather than
@@ -441,10 +609,102 @@ A partially-delivered run is a **new run outcome** and must render as neither of
 
 ```jsonc
 "waves": {
-  "wave-01-issue-510":  { "status": "succeeded", "delivered": { "at": "…", "commit": "…" } },
-  "wave-03-observer":   { "status": "failed",    "delivered": null }
+  "wave-01-shared-dto": { "status": "completed" },            // delivers: false, so no "delivered" key
+  "wave-02-issue-510":  { "status": "completed",
+    "delivered": { "status": "delivered", "startedAt": "…", "at": "…", "commit": "…",
+                   "outcome": "fast-forwarded", "covers": ["wave-01-shared-dto", "wave-02-issue-510"] } },
+  "wave-03-issue-511":  { "status": "needs-human",
+    "delivered": { "status": "refused", "startedAt": "…", "at": "…", "outcome": "branch-moved",
+                   "detail": "run started on 'master'; HEAD is now 'spike'", "covers": ["wave-03-issue-511"] } }
 }
 ```
+
+**The record, pinned at review (2026-09-13; round 5 changed when `running` is written).** §5 required the
+delivery to be journaled `status: running` before the merge but never said where that status lives, and this
+example used `succeeded`/`failed`, which are not wave status tokens. Every record carries `startedAt` and
+`covers`, and ends in one of three settled states:
+
+- `delivered`, with `commit` (the user's branch tip after promotion). A delivery forced past a suppressing
+  decision with `--merge-on-success` names that decision and its subject in `detail`.
+- `refused`, with `outcome` and `detail`. The outcome is:
+  - `conflict` or `hook-rejected` when the trial merge could not be built (review round 4,
+    `d39-trial-delivery-primitive`);
+  - `trial-gate-failed` when the wave's exit gate failed on the trial tree (review round 5), with `detail` naming
+    the failing checks, the user's tip, and the range `git log <plan-tip-sha>..<user-tip-sha>`;
+  - `branch-moved` or `dirty-working-tree` when the promotion refused.
+- `suppressed`, when the §1a interlock held it, with `detail` naming the decision and its subject, or when an earlier
+  `hook-rejected` refusal in the run held it, with `detail` naming that rejection.
+
+`status: "running"` is journaled when a barrier delivery begins: after §1 step 1 lets it proceed, and before
+`CreateTrialDelivery` runs the user's hooks (#625). It is then replaced by `delivered` or `refused`, and
+nullable fields are omitted rather than written as null. *(Round 5 moved it earlier. The first build journaled
+it only before `PromoteTrialDelivery`, which left the hook run and the second gate run unrecorded.)*
+
+- A delivery the interlock holds runs nothing, so its `suppressed` record is written already settled.
+- On a resume whose delivery already landed (the trial reports `AlreadyDelivered`), a prior `delivered` record
+  is restored unchanged and no second `WaveDelivered` event is raised. With no prior record, `delivered` is
+  written then. One narrow exception is accepted in v1: after a crash between the refresh commit and the wave
+  marker, the resume takes the quiet case. It fast-forwards the user's branch onto the refresh commit, which the
+  next delivery would carry anyway, rewrites the record's `commit`, and announces the delivery a second time.
+- A rewind (drift resolution, or `guardrails reset <plan> <wave>`) keeps the wave's `delivered` record, because its
+  commits are already on the user's branch. If the re-run reaches its barrier and delivers again, the new record
+  replaces the old one (review round 5, `d39-rewind-delivered-wave`). A re-run that is refused or held instead also
+  replaces it, while the earlier delivery's commits stay on the user's branch. If the run then stops before its
+  run-end merge, the report can call that work held, which is an accepted v1 limitation.
+- `covers` lists every wave the delivery carries, computed from the journal so a resume computes the same set.
+- A wave with no delivery of its own has no `delivered` key. That happens when it is not a delivery point, never
+  reached its barrier, failed its exit gate, had delivery resolved off (`--no-merge-on-success`, a serial run), or
+  had its delivery withheld by #556 (a task definition edited mid-run), or is the plan's final wave, which delivers at
+  run end. Its work reached the user's branch only if
+  a later barrier delivery carried it (it is in that record's `covers`) or the run-end delivery landed (`run.json`'s
+  top-level `delivery`). A serial run has no plan branch at all; its work is already in the checkout. Otherwise the report reads the wave's own
+  status to say whether it is *held* or *not reached*. *(Round 5: the first wording said a missing key always
+  meant "not on the user's branch", which is false for every wave the run-end delivery carries.)*
+
+**A refused wave delivery halts the run at that wave — DECIDED (architect, extending
+`d39-branchmoved-midrun`; narrowed in review round 5).** The answered question covered `branch-moved`. A
+`conflict` repeats at every later delivery for the same reason, and `dirty-working-tree` needs an operator action
+before anything can land. So those three refusals halt with their own `WaveHaltKind.DeliveryRefused`, which never
+reuses `ExitGateFailed`, whose console label would say a gate failed over a wave whose every check passed. Two
+refusals do not halt that way:
+
+- **`trial-gate-failed` halts as an exit-gate failure** (review round 5, `d39-trial-gate-failure`). A gate really
+  did fail, on the tree the delivery would produce, so the halt goes through the existing exit-gate path: `run.json`'s
+  `halt` section, the gate logs and the log-site banner. The wave's recorded exit reads failed, and its gate logs
+  hold the trial run's output. The headline says the gate failed on the merge with the user's branch, and names the
+  user's tip and `git log <plan-tip-sha>..<user-tip-sha>`.
+- **`hook-rejected` does not halt** (review round 5, `d39-hooks-untracked-tooling`). A hook that needs untracked
+  tooling, such as husky with lint-staged needing `node_modules`, fails in the harness-owned trial worktree even
+  though it would pass in the user's checkout. So the rejected delivery and every later barrier delivery are held,
+  each later one recorded `suppressed` with a detail naming the rejection, and the run continues. The run-end merge
+  runs the user's hooks in the user's own checkout, as today, and a genuine rejection still stops it there. The
+  end-of-run report names the held waves and the hook's output, so a run that ends delivered still says that
+  incremental delivery was held.
+
+The wave's marker commit and `completed` status are written only after its delivery settles, so a resume
+re-attempts a halted delivery at that wave's barrier instead of silently postponing it to the next delivery point.
+The durable record is the wave's `delivered` entry. The top-level `halt` section stays scoped to gates (#432),
+which is how an end-of-run refusal is recorded today.
+
+**`run.json`'s top-level `delivery` on a partial run — DECIDED (review round 4, `d39-partial-delivery-record`).**
+`RunCommand.DescribeDelivery` (`RunCommand.cs:2045-2097`) derives it only from the end-of-run merge, and a
+wave gate or barrier halt returns before `Finalize` (`Scheduler.cs:907-912`, `946-954`, `964-969`). So when
+wave 02 delivers and wave 03 halts, the #542 record says `delivered: false`, `not-attempted`, "the run was not
+wholly green", while wave 02 is on the user's branch. The record gains a new outcome, `partially-delivered`,
+with `delivered: false`: `delivered` stays true only when all verified work reached the user's branch, so a
+consumer keyed on it never treats held work as shipped. `deliveredToBranch` and `planBranch` are both set, and
+`reason` names the delivered and held waves. The source is a `RunReport.WaveDeliveries` map stamped from the
+journal in `BuildReport`, the one method every report passes through, halted or not. The record is written even
+when the plan-level terminal gate fails after earlier waves delivered at their barriers (review round 5,
+`d39-barrier-terminal-gate`). A run whose run-end merge landed after `hook-rejected` holds reads delivered, not
+partially-delivered, because that merge carried the held waves.
+
+**Not in v1:** a log-site banner for a refused delivery. The log site's halt banner reads only `halt`, so a
+refusal at a barrier, like an end-of-run refusal today, is visible on the console and in `run.json` but not
+on the log site. Round 5 narrowed the gap: the halt also records a `decisions[]` entry (boundary `wave`,
+decision `halted`, gate `delivery-refused`), which the console and `observer.jsonl` show. The log site's decision
+panel shows only breakdown gates, so the log site still does not. A failed trial-tree gate is the exception: it
+halts through `halt`, so the log site shows it.
 
 ```
 DELIVERED to your branch: wave-01-issue-510, wave-02-issue-511 (2 of 4 waves)
@@ -465,9 +725,18 @@ Three requirements, each earned by a defect already shipped here:
 
 ## 5. Seams and contracts touched
 
-**Schema** — a wave manifest gains `delivers` (bool, default false); `run.json`'s `waves.<dir>` gains
-`delivered` (`{at, commit, covers: ["<wave>", …]}` or null — `covers` names the non-delivering waves that
-rode along, so the report can say what a merge actually carried). No new folder.
+**Schema** — a wave's `brief.md` front matter gains `delivers` (bool, default false; §1b); `run.json`'s `waves.<dir>` gains
+`delivered`, the §4 record (`status`, `startedAt`, `at`, `commit`, `outcome`, `detail`, `covers`), absent until
+the wave's delivery begins. `covers` names every wave the delivery carries, ending with the delivering wave, so
+the report can say what a merge actually carried. No new folder.
+
+**Provenance** *(post-plan-40 refinement, confirmed in review round 4 — §1c "How a refresh is recorded")* —
+`run.json` gains `refreshed[]` (`at`, `commit`, `from`, `upstream`, `deliveredWave`, `paths`), a sibling of
+plan 40's `supplied[]`, which is unchanged; `RunJournal.RecordRefreshed` is its write path. The refresh commit
+is `--no-ff` with the plan-branch tip as first parent and carries `Refreshed-From: <from>` /
+`Guardrails-Run: <runId>`. `UnauthoredContentNote` is the single reader of both sections, and
+`Scheduler.BuildGateHalt` appends its disclosure to wave entry-gate and exit-gate halt headlines. No new
+diagnostic, no new observer event, no `RunHalt` schema change.
 
 **New diagnostics** — TWO, not four (corrected at review: this line said "one" while §1c's DECIDED
 answer had already added the second). **GR2079**, a WARNING when a wave sets `delivers: true` and carries
@@ -475,9 +744,24 @@ no `guardrails/` exit gate, so an author learns that wave cannot deliver rather 
 absence from the report; and **GR2078**, a WARNING when a wave that FOLLOWS a delivery point carries no
 entry preflight (§1c). Both are warnings and neither moves the exit code.
 
-**Harness** — the `Finalize` → `DeliverToUserBranch` path callable at the barrier (against the §1 trial merge); `IRunObserver.WaveDelivered`, forwarded through
-every decorator (the `ObserverForwardingSweepTests` contract); the delivery journaled with `status: running`
-before the merge, per the #625 rule.
+**Harness** — barrier delivery through the §1 trial-delivery provider members (`CreateTrialDelivery`,
+`PromoteTrialDelivery`, `DiscardTrialDelivery`), decided by the one delivery predicate `Finalize` also uses,
+while the run-end `Finalize` → `DeliverToUserBranch` path stays for flat plans, for the waves after the last
+delivery point, and for the plan's final wave, which never delivers at its barrier; `IRunObserver.WaveDelivered`, forwarded through every decorator (the
+`ObserverForwardingSweepTests` contract) and projected into `observer.jsonl` (`events.jsonl` gains no delivery
+row, and `guardrails attach` does not replay deliveries in v1); the delivery journaled with `status: running`
+when the barrier delivery begins, before the trial merge runs the user's hooks, per the #625 rule (§4).
+
+**Wiring and halts (added at review, 2026-09-13).** The bullet above required the event and the journal
+write but gave neither an owner, so the first breakdown built both and wired neither (the #120 shape). The
+Scheduler writes `waves.<dir>.delivered` around every barrier delivery (§4) and raises
+`IRunObserver.WaveDelivered(WaveNode, WaveDeliveredRecord)` only for `status: delivered`, after the record is
+persisted, so an observer never sees a result the journal does not hold. `BuildReport` stamps
+`RunReport.WaveDeliveries` from the journal on every report, halted ones included. A `conflict`, `branch-moved` or
+`dirty-working-tree` refusal halts with `WaveHaltKind.DeliveryRefused` and records a `decisions[]` entry (boundary
+`wave`, decision `halted`, gate `delivery-refused`). A `trial-gate-failed` refusal halts as an exit-gate failure,
+and a `hook-rejected` one holds instead of halting (§4). No `RunHaltKind` is added. The provider members the trial merge needs are the three
+§1 names (`d39-trial-delivery-primitive`).
 
 **Skills** — `plan-breakdown`'s §0 wave/flat fork gains the second reason to wave (§2), and the Step 7
 report names which waves are delivery units.
@@ -492,7 +776,7 @@ not to wave, and only one of them (parallelism) applies here. If the reviewer th
 outweighs delivery granularity, the answer is to reject this and keep #525 open rather than to build the
 first draft's parallel-group machinery — which had all the same problems *plus* a new schema.
 
-**"A wave barrier is a synchronisation point, so per-wave delivery makes runs slower AND more complex."**
+**"A wave barrier is a synchronization point, so per-wave delivery makes runs slower AND more complex."**
 Slower, yes, for a plan that would otherwise run its chains concurrently. More complex, no — this is
 strictly less machinery than today's plan-wide-only delivery plus the first draft's proposal.
 
@@ -510,14 +794,14 @@ made that visible.
 **"You reused an interlock without re-scoping it."** Draft 2 did, for about an hour — §1a exists because
 reading `Finalize` to check the reuse was feasible turned up the #361 machine-decision gate, which is
 run-scoped and would have been silently defeated for every early-delivered wave. It is the same class of
-error as draft 1: taking an existing mechanism and assuming its shape carries over. The cheap defence is
+error as draft 1: taking an existing mechanism and assuming its shape carries over. The cheap defense is
 the one that caught it — read the code you are claiming to reuse.
 
 **What I got wrong in draft 1, since it is the useful part.** I designed a parallel-group delivery model
 without asking whether the ordered-stage model already had the seam. Every piece I invented —
 `deliveryGroups`, `deliveryGates/`, `deliverAfter`, the cross-group collision lint — has a wave equivalent
 that already ships, is already validated, and is already journaled. The reviewer found it with one
-question. The lesson generalises past this design: **when a feature needs "a subset of the plan, a gate
+question. The lesson generalizes past this design: **when a feature needs "a subset of the plan, a gate
 over it, and an order", check the wave model before inventing a second one.**
 
 ---

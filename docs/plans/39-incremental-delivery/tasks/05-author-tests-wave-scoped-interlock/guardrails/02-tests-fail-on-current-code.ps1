@@ -16,12 +16,17 @@ $pinned = @(
     'AWaveWithNoSuppressingDecision_Delivers',
     'AWaveWithASuppressingDecision_DoesNotDeliver',
     'ADecisionInALaterWave_DoesNotRetroactivelySuppressAnEarlierDelivery',
-    'ADecisionInAnEarlierWave_DoesNotSuppressALaterCleanWave',
-    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject'
+    'ADecisionInAnEarlierDeliveredWave_DoesNotSuppressALaterCleanWave',
+    'AHeldWavesWorkRidingAlong_HoldsTheLaterDelivery',
+    'TheWaveAttributionIsRecordedOnTheDecision_NotParsedFromSubject',
+    'TheSchedulersProceededUnreviewedDecision_RecordsItsWave'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — TheOperatorOverrideStillLiftsTheInterlock.
-#   STRUCTURAL REASON: 
+#   STRUCTURAL REASON: the operator override already wins on CURRENT code: --merge-on-success delivers
+#   past a suppressing decision today (#361/#597, RunReport.DeliveryForcedPastDecision). Wave scoping
+#   changes WHICH decisions suppress, never whether the override lifts them, so a correct test is green
+#   on the base; it pins that the override survives the change.
 #   Each is asserted to EXIST below, and the paired implement task's forward census
 #   requires each to be observed Passed.
 $mustExist = @('TheOperatorOverrideStillLiftsTheInterlock')
@@ -64,7 +69,7 @@ try {
     # is never written is not "green because correct" — it is absent, and absence is how a
     # never-weaker guarantee quietly stops being asserted anywhere.
     foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }

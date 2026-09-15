@@ -2020,4 +2020,252 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         proc.WaitForExit();
         return (stdout, stderr, proc.ExitCode);
     }
+
+    // --- Trial delivery primitive (design 39 §1, review round 4 "d39-trial-delivery-primitive") ---
+
+    /// <inheritdoc />
+    public TrialDelivery CreateTrialDelivery(IntegrationHandle integ, string waveDir, CancellationToken ct)
+    {
+        string trialRef = TrialRefName(waveDir);
+        string userTip = Git("rev-parse", integ.OriginalBranch).Trim();
+        string planTip = Git("rev-parse", integ.PlanBranchName).Trim();
+
+        // A crashed earlier attempt for this waveDir may have left its ref and/or worktree behind;
+        // DiscardTrialDelivery already removes both, ignoring either being absent.
+        DiscardTrialDelivery(integ, waveDir);
+
+        // Equal tips FIRST (review 2026-09-13): a resume right after a quiet-case promotion landed.
+        // Taking the quiet case below would re-announce a delivery that already landed, and after a
+        // switched checkout would wrongly refuse it as BranchMoved.
+        if (string.Equals(userTip, planTip, StringComparison.Ordinal))
+        {
+            Git("update-ref", trialRef, planTip);
+            return new TrialDelivery
+            {
+                WaveDir = waveDir,
+                TrialRef = trialRef,
+                Commit = planTip,
+                UserTip = userTip,
+                UserTipWasAncestor = true,
+                AlreadyDelivered = true
+            };
+        }
+
+        // The quiet case: the user's tip is a strict ancestor of the plan tip.
+        if (IsAncestor(userTip, planTip))
+        {
+            Git("update-ref", trialRef, planTip);
+            return new TrialDelivery
+            {
+                WaveDir = waveDir,
+                TrialRef = trialRef,
+                Commit = planTip,
+                UserTip = userTip,
+                UserTipWasAncestor = true
+            };
+        }
+
+        // Already delivered: the plan tip is a strict ancestor of the user's tip (a resume after a
+        // merge-commit promotion landed, or the user merged the plan branch themselves). Never fall
+        // through to the merge below — `git merge` reports "Already up to date" and `git commit` fails
+        // with "nothing to commit", which would misread as a hook rejection (review 2026-09-13, measured).
+        if (IsAncestor(planTip, userTip))
+        {
+            Git("update-ref", trialRef, userTip);
+            return new TrialDelivery
+            {
+                WaveDir = waveDir,
+                TrialRef = trialRef,
+                Commit = userTip,
+                UserTip = userTip,
+                UserTipWasAncestor = false,
+                AlreadyDelivered = true
+            };
+        }
+
+        return BuildTrialMergeCommit(waveDir, trialRef, userTip, planTip);
+    }
+
+    /// <summary>
+    /// The tips genuinely diverged: build the merge commit in a harness-owned, DETACHED worktree —
+    /// never the user's checkout, never the integration worktree (which is on the plan branch). The
+    /// merge commit's first parent is the user's tip (checked out via <c>--detach</c>) and its second
+    /// parent is the plan tip, matching the shape <see cref="MergePlanBranchIntoUserBranch"/> leaves on
+    /// the user's real branch.
+    /// </summary>
+    private TrialDelivery BuildTrialMergeCommit(string waveDir, string trialRef, string userTip, string planTip)
+    {
+        string trialWorktreePath = TrialWorktreePath(waveDir);
+        Directory.CreateDirectory(Path.GetDirectoryName(trialWorktreePath)!);
+        Git("worktree", "add", "--detach", trialWorktreePath, userTip);
+
+        var (_, mergeExit) = TryGitIn(trialWorktreePath, "merge", "--no-commit", planTip);
+        if (mergeExit != 0)
+        {
+            var (_, mergeHeadExit) = TryGitIn(trialWorktreePath, "rev-parse", "MERGE_HEAD");
+            if (mergeHeadExit != 0)
+            {
+                throw new InvalidOperationException(
+                    $"git merge --no-commit {planTip} (in {trialWorktreePath}) failed unexpectedly.");
+            }
+
+            string detail = ConflictingPaths(trialWorktreePath);
+            TryGitIn(trialWorktreePath, "merge", "--abort");
+            RemoveTrialWorktree(trialWorktreePath);
+            return RefusedTrial(waveDir, trialRef, userTip, MergeOnSuccessResult.Conflict, detail);
+        }
+
+        // Commit WITHOUT --no-verify — the whole point is to run the hooks the user's own checkout
+        // would run (issue #149). A harness worktree resolves a RELATIVE core.hooksPath against
+        // ITSELF, so the absolute path resolved in the user's real repo is passed explicitly.
+        string hooksPath = ResolveUserHooksPath();
+        var (_, stderr, commitExit) = TryGitInWithStderr(
+            trialWorktreePath, "-c", $"core.hooksPath={hooksPath}", "commit", "--no-edit");
+        if (commitExit != 0)
+        {
+            TryGitIn(trialWorktreePath, "merge", "--abort");
+            RemoveTrialWorktree(trialWorktreePath);
+            return RefusedTrial(waveDir, trialRef, userTip, MergeOnSuccessResult.HookRejected, stderr.Trim());
+        }
+
+        string mergeCommit = GitIn(trialWorktreePath, "rev-parse", "HEAD").Trim();
+        Git("update-ref", trialRef, mergeCommit);
+        return new TrialDelivery
+        {
+            WaveDir = waveDir,
+            TrialRef = trialRef,
+            Commit = mergeCommit,
+            UserTip = userTip,
+            UserTipWasAncestor = false,
+            WorktreePath = trialWorktreePath
+        };
+    }
+
+    /// <summary>
+    /// The hooks directory the USER'S checkout would use, resolved in the user's real repo
+    /// (<c>git rev-parse --git-path hooks</c>, which honors a configured <c>core.hooksPath</c> — the
+    /// same lookup husky's own installer relies on) and made absolute against the user's repo root.
+    /// Forward-slashed so the value is unambiguous as a <c>-c core.hooksPath=</c> argument on Windows,
+    /// where a raw backslash could otherwise be misread as an escape by git's config-value parser.
+    /// </summary>
+    private string ResolveUserHooksPath()
+    {
+        string hooksPath = Git("rev-parse", "--git-path", "hooks").Trim();
+        return Path.GetFullPath(Path.Combine(_repoPath, hooksPath)).Replace('\\', '/');
+    }
+
+    /// <summary>The conflicting paths (<c>git diff --name-only --diff-filter=U</c>), ordinal-sorted and newline-separated.</summary>
+    private static string ConflictingPaths(string trialWorktreePath)
+    {
+        var (stdout, _) = TryGitIn(trialWorktreePath, "diff", "--name-only", "--diff-filter=U");
+        IReadOnlyList<string> paths = stdout
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToArray();
+        return string.Join("\n", Sorted(paths));
+    }
+
+    private static TrialDelivery RefusedTrial(
+        string waveDir, string trialRef, string userTip, MergeOnSuccessResult refusal, string detail) =>
+        new()
+        {
+            WaveDir = waveDir,
+            TrialRef = trialRef,
+            UserTip = userTip,
+            UserTipWasAncestor = false,
+            Refusal = refusal,
+            RefusalDetail = detail
+        };
+
+    /// <summary>True when <paramref name="ancestor"/> is a (non-strict) ancestor of <paramref name="descendant"/>.</summary>
+    private bool IsAncestor(string ancestor, string descendant)
+    {
+        var (_, exit) = TryGitIn(_repoPath, "merge-base", "--is-ancestor", ancestor, descendant);
+        return exit == 0;
+    }
+
+    /// <inheritdoc />
+    public MergeOnSuccessResult PromoteTrialDelivery(IntegrationHandle integ, TrialDelivery trial, CancellationToken ct)
+    {
+        // A refused trial and an already-delivered trial both touch nothing (their tree is either
+        // nonexistent or already on the user's branch) — checked BEFORE resetting the detail channel.
+        if (trial.Refusal is { } refusal)
+        {
+            return refusal;
+        }
+
+        if (trial.AlreadyDelivered)
+        {
+            return MergeOnSuccessResult.FastForwarded;
+        }
+
+        LastMergeOnSuccessDetail = null;
+
+        // #588, checked first: a switched checkout is refused before any other gate reasons about it.
+        if (HeadMovedDetail(integ.OriginalBranch) is { } moved)
+        {
+            LastMergeOnSuccessDetail = moved;
+            return MergeOnSuccessResult.BranchMoved;
+        }
+
+        // The user's branch must still point at the tip the trial was built from — comparing the SHA
+        // itself, never the result of --ff-only: after a rewind the fast-forward to the trial commit
+        // SUCCEEDS and would silently re-land the commit the user dropped.
+        string currentUserTip = Git("rev-parse", integ.OriginalBranch).Trim();
+        if (!string.Equals(currentUserTip, trial.UserTip, StringComparison.Ordinal))
+        {
+            LastMergeOnSuccessDetail =
+                $"'{integ.OriginalBranch}' moved from {trial.UserTip[..10]} to {currentUserTip[..10]} after the trial was built";
+            return MergeOnSuccessResult.BranchMoved;
+        }
+
+        // #448, computed against the TRIAL REF (not the plan branch) — the intersection the
+        // fast-forward below would actually update.
+        if (BlockingDirtyPaths(trial.TrialRef) is { } blocking)
+        {
+            LastMergeOnSuccessDetail = blocking.Count > 0 ? string.Join("\n", blocking) : null;
+            return MergeOnSuccessResult.DirtyWorkingTree;
+        }
+
+        // The gate already authorized the trial's tree; never fall back to a real merge on --ff-only
+        // failure the way MergePlanBranchIntoUserBranch does — nothing else may land here.
+        Git("merge", "--ff-only", trial.TrialRef);
+        return MergeOnSuccessResult.FastForwarded;
+    }
+
+    /// <inheritdoc />
+    public void DiscardTrialDelivery(IntegrationHandle integ, string waveDir)
+    {
+        string trialRef = TrialRefName(waveDir);
+        try { Git("update-ref", "-d", trialRef); } catch (InvalidOperationException) { /* ignore a missing ref */ }
+
+        RemoveTrialWorktree(TrialWorktreePath(waveDir));
+        try { Git("worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// Remove the trial worktree at <paramref name="trialWorktreePath"/>, ignoring one that is already
+    /// gone — mirrors the <see cref="Discard"/> / <see cref="PruneStaleSegmentBranches"/> idiom (issue
+    /// #109: sweep any tree git left on disk after a Windows read-only loose object refused deletion).
+    /// </summary>
+    private void RemoveTrialWorktree(string trialWorktreePath)
+    {
+        try { Git("worktree", "remove", "--force", trialWorktreePath); }
+        catch (InvalidOperationException) { /* already gone / not registered */ }
+        SafeDelete.DeleteDirectory(trialWorktreePath);
+    }
+
+    /// <summary>
+    /// <c>refs/guardrails/trial/&lt;waveDir&gt;</c> — the ref a wave's trial delivery is built onto.
+    /// </summary>
+    private static string TrialRefName(string waveDir) => $"refs/guardrails/trial/{waveDir}";
+
+    /// <summary>
+    /// The harness-owned trial worktree location for <paramref name="waveDir"/>. Deliberately scoped
+    /// by <c>waveDir</c> alone, NOT the run id: <see cref="_worktreeRoot"/> is stable per PLAN (issue
+    /// #383, <see cref="SchedulerFactory.WorktreeRootFor"/>) across resumes, so a fresh run computes the
+    /// exact same path a crashed earlier attempt used and can find/remove it without knowing its runId.
+    /// </summary>
+    private string TrialWorktreePath(string waveDir) => Path.Combine(_worktreeRoot, "_trial", waveDir);
 }

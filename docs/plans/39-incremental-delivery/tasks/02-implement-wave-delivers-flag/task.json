@@ -6,6 +6,7 @@
   "stableId": "w5n3qd",
   "writeScope": [
     "src/Guardrails.Core/Model/WaveNode.cs",
-    "src/Guardrails.Core/Loading/WaveFolder.cs"
+    "src/Guardrails.Core/Loading/WaveFolder.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs"
   ]
 }

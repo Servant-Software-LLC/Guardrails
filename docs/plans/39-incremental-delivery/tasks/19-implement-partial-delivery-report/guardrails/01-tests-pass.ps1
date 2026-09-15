@@ -1,12 +1,19 @@
 # catches: an implementation that does not satisfy the tests authored upstream — and, via the
 #          zero-match guard, a filter that silently selects nothing (which exits 0 and would certify
 #          the task on an empty set, #455).
+#          The filter also re-runs DeliveryRecordTests and UndeliveredWorkWarningTests (review of
+#          1a809bce, 2026-09-13): this task changes DescribeDelivery's precedence and the banner, and a
+#          change that breaks a FLAT plan's record or banner would otherwise surface only at the plan's
+#          terminal gate, where no task may edit tests. Because those two classes always match, the
+#          zero-match guard below cannot see a missing PartialDeliveryReportTests; the forward census
+#          (02) can, and does.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter "FullyQualifiedName~PartialDeliveryReportTests" 2>&1 | Out-String
+$filter = 'FullyQualifiedName~PartialDeliveryReportTests|FullyQualifiedName~DeliveryRecordTests|FullyQualifiedName~UndeliveredWorkWarningTests'
+$out = & dotnet test "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj" -c Debug --nologo --filter $filter 2>&1 | Out-String
 $code = $LASTEXITCODE
 
 Write-Output $out
@@ -38,7 +45,7 @@ $failed = 0
 if ($out -match 'Passed:\s+(\d+)') { $passed = [int]$Matches[1] }
 if ($out -match 'Failed:\s+(\d+)') { $failed = [int]$Matches[1] }
 if (($passed + $failed) -lt 1) {
-    Write-Output "ZERO-MATCH: the filter 'FullyQualifiedName~PartialDeliveryReportTests' executed no tests — that exits 0 and would certify this task on an empty set."
+    Write-Output "ZERO-MATCH: the filter '$filter' executed no tests — that exits 0 and would certify this task on an empty set."
     exit 1
 }
 

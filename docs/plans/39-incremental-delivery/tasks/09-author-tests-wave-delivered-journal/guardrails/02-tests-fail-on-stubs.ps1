@@ -15,10 +15,33 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'Delivered_RoundTripsThroughTheJournalJson',
     'Delivered_CarriesAtCommitAndCovers',
-    'Covers_NamesTheNonDeliveringWavesThatRodeAlong',
-    'ANonDeliveredWave_RecordsDeliveredNull',
-    'TheDeliveryIsJournaledRunning_BeforeTheMerge'
+    'EveryStatusToken_RoundTrips',
+    'RecordWaveDelivery_ReplacesTheRecordAndPersists',
+    # A-N1 (review of 1a809bce): JournalJson.Options writes nulls, so a running record without
+    # [JsonIgnore(WhenWritingNull)] on At/Commit/Outcome/Detail carries four null keys. Red on this base
+    # because the stub's getters throw when the serializer reads them.
+    'ARunningRecord_WritesNoSettledKeys',
+    # Lead follow-up to the review of 1a809bce: the trial-tree gate's refusal outcome. Red on this base
+    # because JournalJson.DeliveryOutcomeToken's discard arm throws on the unregistered member.
+    'TheTrialGateFailedOutcome_RoundTrips',
+    # Review round 5, d39-rewind-delivered-wave: a rewind keeps the delivered record. Red on this base
+    # because ResetWaveToPending replaces the whole entry with a bare pending one (RunJournal.cs,
+    # `UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending })`); RecordWaveDelivery
+    # also throws here. After task 10 only a preserving reset turns it green.
+    'ResettingADeliveredWave_KeepsItsDeliveryRecord'
 )
+
+# DECLARED RED-CENSUS EXEMPTION (review 2026-09-13, B5 restructure) — AWaveEntryWithoutADelivery_OmitsTheKey.
+#   STRUCTURAL REASON: green on the stub by construction. The stub's `Delivered` property on
+#   WaveJournalEntry is a WORKING nullable container carrying [JsonIgnore(WhenWritingNull)], the same
+#   attribute as the Entry/Exit markers beside it (src/Guardrails.Core/Journal/JournalModel.cs), so an
+#   entry that never set it serializes with no "delivered" key before WaveDeliveredRecord is implemented.
+#   Pinning it red would force a test coupled to the stubbed record, which task 10 cannot then turn
+#   green without editing tests.
+#   It is asserted to EXIST below, and task 10's forward census requires it to be observed Passed.
+#   (Covers_NamesTheNonDeliveringWavesThatRodeAlong and TheDeliveryIsJournaledRunning_BeforeTheMerge
+#   moved to task 28, which drives the real Scheduler: this task's files cannot produce either.)
+$mustExist = @('AWaveEntryWithoutADelivery_OmitsTheKey')
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -51,6 +74,16 @@ try {
         }
         elseif ($node.outcome -ne 'Failed') {
             $failures += "[$name] outcome was '$($node.outcome)', expected 'Failed'. A behaviour that passes against the stubs is not TDD red — it is hollow or already implemented."
+        }
+    }
+
+    # The DECLARED exemptions are exempt from the RED requirement, not from EXISTING. A test that
+    # is never written is not "green because correct" — it is absent, and absence is how a
+    # never-weaker guarantee quietly stops being asserted anywhere.
+    foreach ($name in $mustExist) {
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        if (-not $node) {
+            $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }
     }
 

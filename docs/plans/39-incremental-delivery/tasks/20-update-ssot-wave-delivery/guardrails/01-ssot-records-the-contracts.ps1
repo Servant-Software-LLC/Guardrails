@@ -5,7 +5,9 @@
 #          with '"delivers"', measured 0.
 #          MEASURED: 'covers' was already present 28x in docs/plans/02-schemas-and-contracts.md — green on
 #          arrival and therefore toothless, hidden behind its siblings' failure. Replaced
-#          with 'covers: [', measured 0.
+#          with 'covers: [', measured 0 — but 'covers: [' can never match the JSON form the SSOT
+#          records a run.json field in, so a correct edit stayed red (review 2026-09-13). Replaced
+#          again with '"covers": [', measured 0.
 #          required-present clause, so every one has teeth.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -57,8 +59,8 @@ if ($doc -notmatch [regex]::Escape('WaveDelivered')) {
     $failures += "MISSING 'WaveDelivered' in $subject — the observer event is not recorded"
 }
 
-if ($doc -notmatch [regex]::Escape('covers: [')) {
-    $failures += "MISSING 'covers: [' in $subject — the covers[] field is not recorded, so a reader cannot tell what a merge carried"
+if ($doc -notmatch [regex]::Escape('"covers": [')) {
+    $failures += 'MISSING ''"covers": ['' in ' + $subject + ' — the delivery record''s covers list is not recorded in its JSON form, so a reader cannot tell what a merge carried'
 }
 
 if ($doc -notmatch [regex]::Escape('GR2079')) {
@@ -69,8 +71,161 @@ if ($doc -notmatch [regex]::Escape('refs/guardrails/trial/')) {
     $failures += "MISSING 'refs/guardrails/trial/' in $subject — the trial-merge ref is not recorded. §1 DECIDED that a delivering wave gates against a TRIAL MERGE on a scratch ref and only promotes on green; that changes §14.3's exit-gate contract and a reader cannot infer it"
 }
 
-if ($doc -match [regex]::Escape('should take **`GR2078`**')) {
-    $failures += "STALE TEXT STILL PRESENT: 'should take **`GR2078`**' in $subject — the registry ladder still says an unrelated new code should take GR2078. This plan TAKES GR2078 and GR2079, so that sentence is now false and must read GR2080. A positive clause cannot catch this - only requiring the stale text to be GONE proves the correction happened rather than being appended beside it"
+# NEGATIVE: the registry ladder's stale "an unrelated new code should take GR2078". This plan TAKES
+# GR2078 and GR2079, so that claim is now false and must name GR2080. Anchored on MEANING, not on
+# formatting (#470, review W3): bold, backticks and line wraps are ignored, and "the next free code is
+# GR2078" is the same claim in other words. MEASURED at 9598c1d7: exactly 1 match in the subject (the
+# ladder sentence); 0 against a rewrite naming GR2080.
+$staleNextCode = @(
+    '(?i)\b(?:should|would|will|must)\s+(?:take|use|get|claim)\s+[*_`\s]*GR2078\b',
+    '(?i)\bnext\s+free\s+(?:code\s+)?(?:is\s+)?[*_`\s]*GR2078\b'
+)
+foreach ($p in $staleNextCode) {
+    if ($doc -match $p) {
+        $failures += "STALE CLAIM STILL PRESENT in $subject — '$($Matches[0])': the registry ladder still says a new code should take GR2078. This plan TAKES GR2078 and GR2079, so the next free code is GR2080. A positive clause cannot catch this - only requiring the stale claim to be GONE proves the correction happened rather than being appended beside it"
+        break
+    }
+}
+
+# Post-plan-40 refinement (design 39 §1c, "How a refresh is recorded"). Each token below MEASURED 0 in the
+# comment-stripped subject, with the strip above, on branch plan-breakdown/39-post-40-adjust (2026-09-13)
+# before it was added here.
+if ($doc -notmatch [regex]::Escape('"refreshed": [')) {
+    $failures += 'MISSING ''"refreshed": ['' in ' + $subject + ' — the refreshed[] provenance section is not recorded in §7, so a reader cannot find what a refresh admitted into the tree'
+}
+
+if ($doc -notmatch [regex]::Escape('Refreshed-From:')) {
+    $failures += 'MISSING ''Refreshed-From:'' in ' + $subject + ' — the refresh commit''s trailer is not recorded in §5.3'
+}
+
+if ($doc -notmatch [regex]::Escape('"deliveredWave"')) {
+    $failures += 'MISSING ''"deliveredWave"'' in ' + $subject + ' — the refreshed[] record''s deliveredWave field is not recorded, so a reader cannot tell which delivery triggered a refresh'
+}
+
+if ($doc -notmatch [regex]::Escape('"upstream"')) {
+    $failures += 'MISSING ''"upstream"'' in ' + $subject + ' — the refreshed[] record''s upstream field is not recorded, so a reader cannot tell which sha was merged'
+}
+
+if ($doc -notmatch [regex]::Escape('--no-ff')) {
+    $failures += 'MISSING ''--no-ff'' in ' + $subject + ' — the refresh commit''s shape is not recorded in §5.3; without --no-ff and the plan tip as first parent, a later rewind can miss earlier task commits'
+}
+
+if ($doc -notmatch [regex]::Escape('UnauthoredContentNote')) {
+    $failures += 'MISSING ''UnauthoredContentNote'' in ' + $subject + ' — the single-reader rule is not recorded, so nothing says which code may read supplied[] and refreshed[]'
+}
+
+if ($doc -notmatch [regex]::Escape('refresh from ''')) {
+    $failures += 'MISSING ''refresh from '''' in ' + $subject + ' — the gate-halt disclosure is not recorded in §14.3'
+}
+
+# The pinned delivery record (design 39 §4) and the review-round-4 answers (2026-09-13). Each token below
+# MEASURED 0 in the comment-stripped subject, with the strip above, on branch plan-breakdown/39-post-40-adjust
+# at cb0a7857 before it was added here. ('"running"' and '"startedAt"' were rejected: each is already
+# present 2x, so neither would have teeth.)
+if ($doc -notmatch [regex]::Escape('"refused"')) {
+    $failures += 'MISSING ''"refused"'' in ' + $subject + ' — the delivery record''s refused status is not recorded, so a reader cannot tell a refused delivery from one not reached'
+}
+
+if ($doc -notmatch [regex]::Escape('"suppressed"')) {
+    $failures += 'MISSING ''"suppressed"'' in ' + $subject + ' — the delivery record''s suppressed status is not recorded, so a delivery the interlock held reads as missing'
+}
+
+if ($doc -notmatch [regex]::Escape('DeliveryRefused')) {
+    $failures += 'MISSING ''DeliveryRefused'' in ' + $subject + ' — the refused-delivery halt kind is not recorded, so a refusal reads as a gate failure over a wave whose every check passed'
+}
+
+if ($doc -notmatch [regex]::Escape('partially-delivered')) {
+    $failures += 'MISSING ''partially-delivered'' in ' + $subject + ' — the #542 delivery record''s outcome for a partly delivered run is not recorded, so an unattended consumer cannot tell held work from shipped work'
+}
+
+if ($doc -notmatch [regex]::Escape('any wave it carries')) {
+    $failures += 'MISSING ''any wave it carries'' in ' + $subject + ' — the ride-along interlock rule is not recorded, so nothing says a clean wave''s delivery is held when it carries a held wave''s machine-decided commits'
+}
+
+if ($doc -notmatch [regex]::Escape('hook-checked')) {
+    $failures += 'MISSING ''hook-checked'' in ' + $subject + ' — the trial merge commit running the user''s git hooks (#149) is not recorded, so nothing says the commit that lands on the user''s branch was hook-checked'
+}
+
+# Review of 1a809bce (2026-09-13), both lenses. Each clause below MEASURED 0 in the comment-stripped
+# subject, with the strip above, on branch plan-breakdown/39-post-40-adjust before it was added here. The
+# last three are SENTENCE clauses (#470): 'GR2078' (1x), '"running"' (2x), 'startedAt' (7x) and
+# 'branch-moved' are already present on their own, so none is read as a bare token. No token claims an
+# events.jsonl delivery kind: the lead decided events.jsonl gains none.
+if ($doc -notmatch [regex]::Escape('WaveDeliveries')) {
+    $failures += 'MISSING ''WaveDeliveries'' in ' + $subject + ' — RunReport.WaveDeliveries, the one source the delivery record and the partial-delivery report read, is not recorded'
+}
+
+if ($doc -notmatch [regex]::Escape('"wave":')) {
+    $failures += 'MISSING ''"wave":'' in ' + $subject + ' — the decisions[] entry''s new wave field is not recorded in its JSON form, so a reader of the shared decisions[] surface cannot tell which wave a suppressing decision holds'
+}
+
+if ($doc -notmatch [regex]::Escape('delivery-refused')) {
+    $failures += 'MISSING ''delivery-refused'' in ' + $subject + ' — the decisions[] gate a refused delivery records is not recorded, so nothing says where a refusal shows beyond the console'
+}
+
+if ($doc -notmatch [regex]::Escape('after the trial was built')) {
+    $failures += 'MISSING ''after the trial was built'' in ' + $subject + ' — branch-moved''s second cause (the user''s branch advanced while the gate ran) is not recorded, so a reader takes every branch-moved for a switched checkout and applies the wrong remedy'
+}
+
+if ($doc -notmatch [regex]::Escape('trial-gate-failed')) {
+    $failures += 'MISSING ''trial-gate-failed'' in ' + $subject + ' — the refused outcome a failed trial-tree gate records is not listed, so a reader cannot tell a gate that failed on the merge with the user''s commits from any other refusal'
+}
+
+if ($doc -notmatch [regex]::Escape('core.hooksPath')) {
+    $failures += 'MISSING ''core.hooksPath'' in ' + $subject + ' — the rule that the trial merge commit runs hooks from the user''s resolved hooks directory is not recorded; a relative core.hooksPath (husky''s layout) is silently skipped in a harness-owned worktree'
+}
+
+$flat = $doc -replace '\s+', ' '
+$sentences = [regex]::Split($flat, '(?<=[.!?])\s+')
+
+# GR2078 stated in the same sentence as what it warns about. The negative clause above removes the code's
+# only current mention, so a bare 'GR2078' in a list would satisfy a token clause without recording the
+# contract.
+$gr2078 = @($sentences | Where-Object { $_ -match '\bGR2078\b' -and $_ -match '(?i)\bpreflights?\b' })
+if ($gr2078.Count -eq 0) {
+    $failures += "MISSING a GR2078 registry sentence in $subject — no sentence names GR2078 together with the entry preflight it warns about (a wave that follows a delivery point carries no entry preflight)"
+}
+
+# 'running' is written when a barrier delivery BEGINS, before the trial merge runs the user's hooks.
+$runningBegins = @($sentences | Where-Object { $_ -match '(?i)\brunning\b' -and $_ -match '(?i)\b(?:begins?|starts?)\b' -and $_ -match '(?i)\bdeliver' })
+if ($runningBegins.Count -eq 0) {
+    $failures += "MISSING when the running record is written in $subject — no sentence says a barrier delivery writes running when it begins. Written only before the fast-forward, the longest stretch of a delivery (building the trial merge, which runs the user's hooks) leaves no record (#625)"
+}
+
+# branch-moved's first cause, stated as meaning: a checkout switched to another branch.
+$switched = @($sentences | Where-Object { $_ -match '(?i)branch-moved|BranchMoved' -and $_ -match '(?i)\bswitch|checked\s+out|another\s+branch' })
+if ($switched.Count -eq 0) {
+    $failures += "MISSING branch-moved's switched-checkout cause in $subject — no sentence ties branch-moved to a checkout switched to another branch, whose remedy (check the branch out again, then resume) differs from the advanced-branch cause"
+}
+
+# NEGATIVE: a branch-named trial-gate-failed range (verification of the review fixes, 2026-09-14). The detail
+# names the user's commits the trial merged as a SHA-keyed range, git log <plan-tip-sha>..<user-tip-sha>; a
+# range keyed on the plan branch's NAME lists different commits as soon as either branch moves. Read as a
+# `git log` range starting at a plan-branch placeholder, or a plan-branch placeholder ranging to the user's or
+# your tip, so the unrelated #576 probe `git rev-list --count <planBranch>..HEAD` already in this subject does
+# not trip it (the broad form, any '<planBranch>..', measured 1 match there for that reason). MEASURED on
+# master with the strip above: 0 matches.
+$branchRange = '(?i)(?:git\s+log\s+[`"'']?<?\s*plan[-_ ]?branch\s*>?\s*\.\.|<?\bplan[-_ ]?branch\s*>?\s*\.\.\s*<?\s*(?:user|your))'
+if ($doc -match $branchRange) {
+    $failures += "BRANCH-NAMED RANGE PRESENT in ${subject}: '$($Matches[0])' — a trial-gate-failed detail names the user's commits as the sha-keyed range git log <plan-tip-sha>..<user-tip-sha>. A range keyed on the plan branch's name lists different commits once either branch moves, and the plan branch moves again at the next task"
+}
+
+# Review round 5, answered 2026-09-14. MEASURED on master with the strip above: 0 sentences for each clause
+# below. 'node_modules' was REJECTED as a token (already present 4x in this subject), and 'last wave' alone is
+# present 6x, so both rules are SENTENCE clauses (#470).
+# d39-barrier-terminal-gate: the plan's final wave never delivers at its barrier; it delivers at run end, after
+# the plan-level terminal gate (#457).
+$runEndOnly = '(?i)(?:run-end|\brun\s+end\b|end\s+of\s+the\s+run|\brun\s+ends\b)'
+$finalWaveRule = @($sentences | Where-Object { $_ -match '(?i)\b(?:final|last)\s+wave\b' -and $_ -match $runEndOnly -and $_ -match '(?i)terminal\s+gate|#457|plan-level\s+(?:guardrails|gate|checks?)' })
+if ($finalWaveRule.Count -eq 0) {
+    $failures += "MISSING the final-wave rule in $subject — no sentence says the plan's final wave delivers at run end, after the plan-level terminal gate (#457). Without it a reader expects the final wave to deliver at its own barrier, ahead of a terminal gate that can still fail"
+}
+
+# d39-hooks-untracked-tooling: a rejecting hook holds that delivery and every later barrier delivery to run end
+# instead of halting.
+$holdRule = @($sentences | Where-Object { $_ -match '(?i)hook-rejected|\bhooks?\b(?!-)' -and $_ -match '(?i)\bheld\b|\bholds?\b|\bwaits?\b|\bwaiting\b' -and $_ -match $runEndOnly })
+if ($holdRule.Count -eq 0) {
+    $failures += "MISSING the hook hold rule in $subject — no sentence says a rejecting hook holds that delivery and every later barrier delivery to run end, where the run-end merge runs the user's hooks in the user's checkout. Without it a reader expects hook-rejected to halt the run"
 }
 
 if ($failures.Count -gt 0) {

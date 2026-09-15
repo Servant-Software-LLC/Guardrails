@@ -1,5 +1,5 @@
 {
-  "description": "Make DeliverAndCleanup callable at a wave barrier so the authored tests pass",
+  "description": "Deliver at a delivering wave's barrier through the trial-delivery primitive, gating the trial tree, so the authored tests pass",
   "dependsOn": [
     "07-author-tests-deliver-at-wave-barrier"
   ],

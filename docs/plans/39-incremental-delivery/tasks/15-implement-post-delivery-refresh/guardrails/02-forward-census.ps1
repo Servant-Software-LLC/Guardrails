@@ -15,7 +15,12 @@ $pinned = @(
     'AFastForwardDelivery_DoesNotRefresh',
     'ANonFastForwardDelivery_RefreshesThePlanBranch',
     'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
-    'TheRefreshIsRecordedAsProvenance'
+    'TheRefreshIsRecordedAsProvenance',
+    'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
+    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
+    'TheRefreshLandsBeforeTheWaveMarker',
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns',
+    'AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

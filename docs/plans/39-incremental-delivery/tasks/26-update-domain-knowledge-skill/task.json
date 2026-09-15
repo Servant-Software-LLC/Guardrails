@@ -1,0 +1,13 @@
+{
+  "description": "Record plan 39's wave-delivery model in guardrails-domain-knowledge (the surface an AGENT reads): per-wave delivery, waves.<dir>.delivered, the observer event, GR2078/GR2079, the wave-scoped interlock, the post-delivery refresh and refreshed[]",
+  "dependsOn": [
+    "20-update-ssot-wave-delivery"
+  ],
+  "stableId": "o6w9fb",
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

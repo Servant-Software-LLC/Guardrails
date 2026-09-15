@@ -157,9 +157,14 @@ guardrails run <plan>/ --no-merge-on-success    # green run -> left on the plan 
 ```
 
 Use `--no-merge-on-success` whenever you want to inspect before anything lands — a first run of a
-freshly authored plan, a demo, or a plan that edits the repo you are working in. Nothing is merged
-on a run that does **not** reach green: a needs-human halt, a failed gate, or a cancellation leaves
-your branch untouched either way.
+freshly authored plan, a demo, or a plan that edits the repo you are working in; on a waved plan
+(below) it also stops every delivery point from delivering, not only the run-end merge, and a task
+definition edited mid-run blocks a delivery point's delivery the same way it blocks the run-end
+merge (#556). Nothing is merged before a plan's first delivery point is reached: a needs-human
+halt, a failed gate, or a cancellation before that leaves your branch exactly as it was, whether
+the plan is flat (one delivery point, at the end) or waved. Once a wave **has** delivered, though,
+that work is already on your branch and stays there no matter what a later wave does — see the
+partial-delivery report, below.
 
 To make a plan never auto-deliver, set it in the plan instead of remembering the flag every time —
 `"mergeOnSuccess": false` in its `guardrails.json`. Precedence, highest first: the CLI flag
@@ -167,6 +172,92 @@ To make a plan never auto-deliver, set it in the plan instead of remembering the
 
 The AI-merge is still withheld at the boundary: the harness merges its own task branches, and hands
 you anything it cannot resolve rather than guessing.
+
+**Per-wave delivery.** A wave opts in by setting `delivers: true` in its `brief.md` YAML front
+matter (default `false`):
+
+```yaml
+---
+delivers: true
+---
+```
+
+A delivering wave is a **delivery point**: once its exit gate passes, the plan branch as it
+stands — this wave plus every non-delivering wave before it — merges into your branch right there,
+at that wave's barrier, instead of waiting for the run to finish. **The plan's final wave is the
+exception**: it always delivers at the end of the run, after the plan-level terminal gate
+(`<plan>/guardrails/`) passes, so work never lands on your branch ahead of a terminal gate that
+then fails. Earlier waves deliver before that gate can even run, so if it fails after they
+delivered, `run.json` records the run `partially-delivered` (below). A plan that marks no wave
+`delivers` behaves exactly as it does today — one merge at run end.
+
+There is no per-wave config file for this: `brief.md` is the only place the flag can live. A
+`guardrails.json` dropped inside a wave directory is silently ignored — the plan stays waved and
+`validate` does not warn — so an operator who guesses that file gets no delivery and no error.
+
+**The interlock is wave-scoped, and a held wave's work rides along.** A `proceeded-best-guess` or
+`proceeded-unreviewed` decision — the same judgment calls that hold back an unattended run's
+end-of-run delivery — is now checked at every delivery point, against every wave that delivery
+carries. A delivery is held when ANY wave it carries recorded such a decision, not only the
+delivering wave, so once a wave is held every later delivery is held too until the run ends,
+unless you force delivery past that decision with `--merge-on-success`.
+
+**A refused delivery halts the run at that wave**, instead of going on to later waves whose
+delivery would be refused the same way. A delivery is refused when your checkout has moved to
+another branch, your branch gained commits after the trial merge was built (you kept working while
+the gate ran), the merge conflicts, or your working tree has changes the merge would overwrite.
+Deliveries that already landed stay on your branch, and your checkout itself is never touched. The
+wave is not marked complete until its delivery settles, so resuming after you fix the cause
+re-attempts that wave's delivery. The two branch causes need different remedies: a checkout
+switched to another branch needs that branch checked out again before you resume, while a branch
+that simply advanced after the trial was built needs only a resume, since the next trial includes
+your new commits. `run.json` records the refusal in `decisions[]` as `delivery-refused`, which the
+console shows; the log site, though, shows only the wave as needs-human — there is no log-site
+panel for a refused delivery in this version.
+
+**A failed exit gate on the trial merge halts like any other failed exit gate.** When the wave's
+exit gate fails on the trial merge with your new commits, the run halts exactly as it does for any
+failed exit gate — the halt banner, `run.json`'s `halt` section, and the gate logs — and the
+headline says the gate failed on the merge with your branch, naming your branch's tip and a
+`git log <plan-tip-sha>..<your-tip-sha>` range so you can see exactly which of your commits it
+merged; it is sha-keyed, so it stays accurate even after either branch moves again. `run.json`
+records that wave's delivery outcome as `trial-gate-failed`.
+
+**A rejecting git hook holds delivery instead of halting the run.** If your git hook rejects the
+trial merge commit, this delivery and every later one wait for the end of the run, where the final
+merge runs your hooks in your own checkout. A hook that needs untracked tooling, such as
+`node_modules` for husky with lint-staged, can fail in the harness's trial worktree and pass in
+yours — that is why the hold, not a halt. If that final merge lands, the run is delivered.
+`--merge-on-success` does **not** lift this hold: the override is for a delivery a suppressing
+decision held, not one a rejecting hook held. The end-of-run report names the wave whose hook
+rejected the merge, the hook's message, and every wave held alongside it, so even a green,
+delivered run still tells you incremental delivery was held back along the way.
+
+**The merge commit runs your git hooks.** A delivering wave's exit gate runs against a trial
+merge, and when your branch has moved on, that merge commit is created with your git hooks,
+exactly as today's run-end merge commit already is. Hooks installed under a relative
+`core.hooksPath` — the way husky installs them — run too.
+
+**The partial-delivery report.** When an earlier wave has delivered and a later one fails, the run
+prints which waves landed on your branch and which are held on the plan branch, before the
+verdict — the exit code does not change, so a run with a failed wave is still a failed run.
+`git branch --no-merged`, already your check for whether a run shipped, stays the confirmation.
+`run.json`'s delivery record says the same thing in machine-readable form: its outcome is
+`partially-delivered` with `delivered: false`, because `delivered` is only ever `true` when every
+bit of verified work reached your branch. The one case that still reads fully `delivered`: a run
+whose final merge lands after a rejecting hook held every delivery — that merge carries every held
+wave along with it.
+
+**The post-delivery refresh.** If your branch moved on its own between deliveries, the harness
+merges that motion back into the plan branch right after delivering, so later waves build on your
+new commits instead of an increasingly stale base. That admits content no task in the plan
+authored, so `run.json` records it in `refreshed[]`, and if a later gate then fails over that tree,
+the failure names the refresh rather than blaming the wave that did nothing wrong.
+
+**Two new `validate` warnings.** `GR2078` fires when a wave right after a delivery point carries no
+entry preflight of its own. `GR2079` fires when a wave sets `delivers: true` but carries no exit
+gate, so it can never actually become a delivery point. Both are warnings — neither moves the exit
+code.
 
 ### Running unattended
 

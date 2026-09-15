@@ -85,6 +85,15 @@ public sealed record DecisionEntry
     /// <summary>On an <see cref="DecisionTokens.AnswerInjected"/> entry: the free-text author string the answer declared (unauthenticated self-report, §7.7); null otherwise.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? AnsweredBy { get; init; }
+
+    // --- Wave-scoped delivery interlock (issue #361/#340, design 39 §1a review 2026-09-11) -------------
+    // Additive and OPTIONAL like the block above: §1a's premise that a wave attribution could be read off
+    // Subject was false (Subject's meaning varies by Boundary — a wave dir, a task id, or a comma-joined
+    // drift list), so the wave-scoped interlock needs a fact recorded here, not one parsed out of Subject.
+
+    /// <summary>The wave directory this decision concerned; null when it concerned no single wave.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Wave { get; init; }
 }
 
 /// <summary>

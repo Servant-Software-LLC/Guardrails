@@ -1,0 +1,14 @@
+{
+  "description": "Wire the wave delivery record, the WaveDelivered event and RunReport.WaveDeliveries into the Scheduler's barrier delivery and BuildReport so the authored tests pass",
+  "dependsOn": [
+    "28-author-tests-wave-delivery-wiring"
+  ],
+  "stableId": "h2m8tv",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

@@ -59,6 +59,46 @@ public static class RunOutcomePolicy
             d.Decision == DecisionTokens.ProceededUnreviewed);
 
     /// <summary>
+    /// The delivery-scoped counterpart of <see cref="SuppressingDecision"/> (design 39 §1a/§1b, review round
+    /// 4 <c>d39-interlock-ride-along</c>): a delivery carries every wave since the previous delivery point
+    /// (this one included), so the check takes the SET of waves the delivery covers rather than one wave or
+    /// the whole run.
+    /// <para>
+    /// Returns the FIRST <see cref="DecisionTokens.ProceededBestGuess"/> / <see cref="DecisionTokens.ProceededUnreviewed"/>
+    /// decision whose <see cref="DecisionEntry.Wave"/> is one of <paramref name="coveredWaves"/> — or whose
+    /// <see cref="DecisionEntry.Wave"/> is <c>null</c>, because a suppressing decision recorded outside any
+    /// wave holds EVERY delivery (the check fails closed rather than leaking one past an unattributed
+    /// decision) — else <c>null</c>.
+    /// </para>
+    /// <para>
+    /// NOT a replacement for <see cref="SuppressingDecision"/>: the run-end interlock (<c>Finalize</c>) stays
+    /// on the single-argument, run-scoped pair. This one exists for the barrier delivery, whose covered-wave
+    /// set task 08 supplies.
+    /// </para>
+    /// </summary>
+    /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
+    /// <param name="coveredWaves">The waves this delivery carries (every wave since the previous delivery point, inclusive).</param>
+    /// <returns>The first suppressing entry whose wave is covered (or unattributed), else null.</returns>
+    public static DecisionEntry? SuppressingDecisionForDelivery(
+        IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
+        decisions.FirstOrDefault(d =>
+            (d.Decision == DecisionTokens.ProceededBestGuess ||
+             d.Decision == DecisionTokens.ProceededUnreviewed) &&
+            (d.Wave is null || coveredWaves.Contains(d.Wave)));
+
+    /// <summary>
+    /// True when <see cref="SuppressingDecisionForDelivery"/> finds a decision that holds this delivery —
+    /// defined in terms of the entry, exactly like <see cref="SuppressesDelivery(IEnumerable{DecisionEntry})"/>,
+    /// so the verdict and its evidence cannot drift apart (#597).
+    /// </summary>
+    /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
+    /// <param name="coveredWaves">The waves this delivery carries (every wave since the previous delivery point, inclusive).</param>
+    /// <returns>Whether this delivery must be held.</returns>
+    public static bool SuppressesDelivery(
+        IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
+        SuppressingDecisionForDelivery(decisions, coveredWaves) is not null;
+
+    /// <summary>
     /// The number of <see cref="DecisionTokens.ProceededUnreviewed"/> decisions the run recorded (doc 12 §5.2
     /// Option P / §7.1) — the "ran with N unreviewed waves" flag and the distinct-exit trigger. Zero when the
     /// run proceeded unreviewed nowhere (including a run that best-guessed but was never unreviewed).

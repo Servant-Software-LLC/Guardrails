@@ -15,11 +15,18 @@ $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 $pinned = @(
     'ANonFastForwardDelivery_RefreshesThePlanBranch',
     'AfterARefresh_TheNextWaveBuildsOnTheUsersNewCommits',
-    'TheRefreshIsRecordedAsProvenance'
+    'TheRefreshIsRecordedAsProvenance',
+    'AnEntryGateFailureOverARefreshedTree_NamesTheRefresh',
+    'AnExitGateFailureOverARefreshedTree_NamesTheRefresh',
+    'TheRefreshLandsBeforeTheWaveMarker',
+    'AFailedRefresh_AbortsWithNoRecord_AndNoLaterWaveRuns',
+    'AnAlreadyDeliveredTrial_StillRefreshesThePlanBranch'
 )
 
 # DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — AFastForwardDelivery_DoesNotRefresh.
-#   STRUCTURAL REASON: 
+#   STRUCTURAL REASON: a correct implementation leaves it GREEN. In the quiet case the user's branch did
+#   not move, so there is nothing to refresh, and the current code does not refresh either - it passes
+#   on current code by construction, and demanding it be red would force a hollow failure.
 #   Each is asserted to EXIST below, and the paired implement task's forward census
 #   requires each to be observed Passed.
 $mustExist = @('AFastForwardDelivery_DoesNotRefresh')
@@ -62,7 +69,7 @@ try {
     # is never written is not "green because correct" — it is absent, and absence is how a
     # never-weaker guarantee quietly stops being asserted anywhere.
     foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }

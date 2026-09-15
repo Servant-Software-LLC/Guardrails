@@ -16,14 +16,38 @@ $pinned = @(
     'ADeliveryHittingBranchMoved_HaltsTheRunAtThatWave',
     'LaterWavesDoNotRun_AfterABranchMovedHalt',
     'TheHaltNamesThePinnedTargetAndTheCurrentHead',
-    'AlreadyDeliveredWavesStayDelivered'
+    'TheHaltKindIsDeliveryRefused_NotAGateFailure',
+    'TheRefusalIsDurable_OnTheWaveNotInHalt',
+    'AConflictingWaveDelivery_AlsoHaltsAtThatWave',
+    'AResumeAfterARefusedDelivery_ReattemptsItAtThatWave',
+    'TheHaltNamesBothTips_WhenTheUsersBranchAdvancedAfterTheTrial',
+    'ARefusedDelivery_RecordsAHaltedDecision'
 )
 
-# DECLARED RED-CENSUS EXEMPTION (review 2026-09-11) — TheUsersCheckoutIsNotModified.
-#   STRUCTURAL REASON: 
-#   Each is asserted to EXIST below, and the paired implement task's forward census
-#   requires each to be observed Passed.
-$mustExist = @('TheUsersCheckoutIsNotModified')
+# DECLARED RED-CENSUS EXEMPTIONS — the never-weaker halves of the halt.
+#   TheUsersCheckoutIsNotModified (review 2026-09-11; restated for round 4, 2026-09-13).
+#     STRUCTURAL REASON: the #588 refusal never checks the pinned branch back out — at run end
+#     MergePlanBranchIntoUserBranch returns BranchMoved, and at a barrier task 31's promotion re-check
+#     refuses before the fast-forward — so on this task's base (after tasks 29 and 31) a correct test
+#     of this guarantee is green by construction.
+#   AlreadyDeliveredWavesStayDelivered (review 2026-09-13).
+#     STRUCTURAL REASON: nothing on this task's base unwinds a merge that landed on the user's branch —
+#     a refused delivery rewrites no branch — so a test of this never-unwind guarantee is green
+#     on arrival. Its red half (that the earlier wave delivered at all) belongs to task 07's suite,
+#     not this one; pinning it red here rewards only a wrongly-failing test that task 17 (it cannot
+#     edit tests) could never turn green.
+#   AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries (review round 5, d39-hooks-untracked-tooling).
+#     STRUCTURAL REASON: a hook rejection is the one refusal that must NOT halt. On this task's base (after
+#     tasks 08 and 29) nothing halts on any refusal yet, task 08 holds every later barrier delivery after a
+#     hook rejection, task 29 records it refused / hook-rejected, and the run-end delivery lands, so a
+#     correct test is green on arrival. Its teeth are task 17's forward census: a task 17 that halts on
+#     hook-rejected turns it red there.
+#   Each is asserted to EXIST below, and task 17's forward census requires each Passed.
+$mustExist = @(
+    'TheUsersCheckoutIsNotModified',
+    'AlreadyDeliveredWavesStayDelivered',
+    'AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries'
+)
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $results -Force | Out-Null
@@ -63,7 +87,7 @@ try {
     # is never written is not "green because correct" — it is absent, and absence is how a
     # never-weaker guarantee quietly stops being asserted anywhere.
     foreach ($name in $mustExist) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (a correct implementation leaves it green), NOT exempt from existing. Write it."
         }

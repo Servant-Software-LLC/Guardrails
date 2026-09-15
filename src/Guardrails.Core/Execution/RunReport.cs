@@ -477,6 +477,20 @@ public sealed record RunReport
 
     /// <summary>True when a task settled against a definition that had moved (see <see cref="ExecutedDefinitionDivergence"/>).</summary>
     public bool HasExecutedDefinitionDivergence => ExecutedDefinitionDivergence is not null;
+
+    /// <summary>
+    /// Every wave's OWN barrier-delivery result this run recorded, keyed by wave directory (design 39
+    /// §4/§5) — the report's copy of <c>run.json</c>'s <c>waves.&lt;dir&gt;.delivered</c>. A wave with no
+    /// entry here either was never a delivery point, never reached its barrier, or held its delivery with
+    /// no record (delivery resolved off, or a #556 divergence withheld it) — the JOURNAL, not this map
+    /// alone, says whether its work is on the user's branch (see <see cref="Journal.WaveDeliveredRecord"/>).
+    /// Stamped by <see cref="Scheduler.BuildReport"/> — the one method every report passes through, halted
+    /// or not — from <c>run.json</c>, so a wave-gate or barrier halt still carries every earlier delivery.
+    /// Defaults empty; MUST NOT throw — hundreds of tests construct and print <see cref="RunReport"/>, and
+    /// a throwing getter would break every one of them.
+    /// </summary>
+    public IReadOnlyDictionary<string, Journal.WaveDeliveredRecord> WaveDeliveries { get; init; } =
+        new Dictionary<string, Journal.WaveDeliveredRecord>();
 }
 
 /// <summary>The kind of wave-boundary halt a WAVED run stopped at (SSOT §14, #254 M2b).</summary>
@@ -493,6 +507,17 @@ public enum WaveHaltKind
 
     /// <summary>A wave's EXIT/terminal gate failed (§14.3) on the merged HEAD-so-far.</summary>
     ExitGateFailed,
+
+    /// <summary>
+    /// A wave's barrier delivery (design 39 §1/§3) was REFUSED — a moved branch (#588), a real conflict, or
+    /// a dirty working tree (#448) — and the refusal HALTS the run at this wave (design 39 §1c/§4, review
+    /// round 4, narrowed round 5): the condition is not transient, so every later wave would hit the
+    /// identical refusal. Distinct from <see cref="ExitGateFailed"/> — every check on this wave PASSED; what
+    /// failed is landing the work on the user's branch. The one refusal that does NOT halt here is a
+    /// hook-rejected trial, which holds this and every later delivery to run end instead (the merge there
+    /// runs in the user's own checkout, where the rejecting hook's own tooling is present).
+    /// </summary>
+    DeliveryRefused,
 
     /// <summary>
     /// Between-wave auto-breakdown (#360 Phase 1, SSOT §14.4/§14.10; doc 11 §9) against a wave's

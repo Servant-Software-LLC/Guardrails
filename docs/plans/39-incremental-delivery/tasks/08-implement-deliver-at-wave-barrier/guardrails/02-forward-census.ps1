@@ -17,7 +17,17 @@ $pinned = @(
     'AWaveWhoseExitGateFails_DoesNotDeliver',
     'TheGateRunsAgainstTheMergedTree_NotThePlanBranchAlone',
     'APlanMarkingNoWave_StillMergesOnceAtRunEnd',
-    'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved'
+    'AFailedExitGateAfterTheTrialMerge_LeavesTheUsersBranchUnmoved',
+    'AFailedTrialGate_LeavesThePlanBranchUnmoved',
+    'TheTrialRefIsDeleted_AfterEitherOutcome',
+    'TheOperatorOverride_LiftsABarrierSuppression',
+    'ABarrierDelivery_WithMergeOnSuccessOff_NeverPromotes',
+    'ADeliversWaveWithNoExitGate_DoesNotDeliverAtItsBarrier',
+    'ADivergedTaskDefinition_BlocksTheBarrierDelivery',
+    'TheFinalWave_DeliversAtRunEnd_NotAtItsBarrier',
+    'TheFinalWave_WithNoPlanLevelGate_StillDeliversAtRunEnd',
+    'AFailedTrialTreeGate_HaltsAsAnExitGateFailure_NamingTheTrialMerge',
+    'AHookRejectedTrial_HoldsEveryLaterBarrierDelivery'
 )
 
 $results = Join-Path $env:TEMP ("gr39-census-" + [guid]::NewGuid().ToString('N'))

@@ -40,8 +40,14 @@ Four changes:
   and accepted.
 - **A wave that follows a delivery point gets a positive-baseline ENTRY preflight** over the touched
   areas, on the same `$baselineArea` machinery Step 5 already has. Teach the EMISSION RULE, not just
-  the diagnostic: `validate` warns **GR2078** when one is missing, but the skill's job is to make
-  breakdowns emit one in the first place.
+  the diagnostic, and say why it must be POSITIVE. Every entry check is skip-once: it is evaluated when
+  its wave starts, and nothing re-evaluates it after a later delivery. A delivery and its refresh land at
+  the delivering wave's own barrier, before the next wave's entry gate runs, so that entry preflight is
+  the one moment the next wave's baseline is checked against the refreshed tree. `validate` warns
+  **GR2078** when a post-delivery wave has no entry preflight at all, but GR2078 is satisfied by ANY
+  preflight, including a negative check that only asserts the wave's own work is not there yet. Only
+  this skill's emission rule and `/guardrails-review` make it a positive baseline, so the skill has to
+  say so.
 - **`validate` also warns `GR2079`** when a wave sets `delivers: true` and carries no `guardrails/`
   exit gate — no gate, no delivery, and an author should learn that here rather than from the
   absence of that wave from the report.
@@ -50,7 +56,9 @@ Four changes:
   a wave marked `delivers` out of habit is the failure mode this report exists to surface.
 
 The flag itself is `delivers: true` in the wave's **`brief.md` YAML front matter** — there is no
-per-wave manifest, and a `guardrails.json` in a wave directory un-waves the plan.
+per-wave manifest. A `guardrails.json` dropped into a wave directory is silently IGNORED: the plan stays
+waved and `validate` does not warn, so an author who guesses that file gets no delivery and no error.
+Teach `brief.md` by name.
 
 ## Your deliverable is under `.claude/` — use needsHarnessWrite, do NOT write directly
 
@@ -70,9 +78,11 @@ wave-delivery doctrine (#525)", "edits": [{"old": "<verbatim anchor>", "new": "<
 Each `old` must occur EXACTLY ONCE — copy it out of the file rather than retyping, and include enough
 context to be unique.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside them. An
+**Scope boundary (harness-enforced):** Write only to `.claude/skills/plan-breakdown/`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
 out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
 missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
 state-out path and stop.
+
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done.
 

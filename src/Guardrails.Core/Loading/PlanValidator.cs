@@ -125,6 +125,8 @@ public sealed class PlanValidator
         ValidateInterpreters(plan, diagnostics);
         ValidateIntendedWaves(plan, diagnostics);
         ValidateWaveBreakdownIntent(plan, diagnostics);
+        ValidateDeliveringWaveMissingExitGate(plan, diagnostics);
+        ValidatePostDeliveryWaveMissingEntryPreflight(plan, diagnostics);
 
         return diagnostics;
     }
@@ -3862,6 +3864,59 @@ public sealed class PlanValidator
                 + "was cut off before finishing; the valid prefix is preserved and the JIT checkpoint resumes "
                 + $"it on the next 'guardrails run'. If the wave is finished as-is, correct or delete "
                 + $"'{wave.Dir}/state/{BreakdownIntent.FileName}' to record the intent that actually holds."));
+        }
+    }
+
+    /// <summary>
+    /// GR2079 (design 39 §5, issue #360's incremental-delivery follow-on) — a wave that declares
+    /// <c>delivers: true</c> (<see cref="WaveNode.Delivers"/>) but carries no <c>guardrails/</c> exit gate
+    /// at all, so it never actually delivers at its barrier: an empty exit gate trivially passes, which is
+    /// exactly what makes <see cref="WaveNode.IsDeliveryPoint"/> false for it. Reads the DECLARED flag, not
+    /// <c>IsDeliveryPoint</c>, on purpose — this is the check that names the gap between the two.
+    /// </summary>
+    private static void ValidateDeliveringWaveMissingExitGate(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (WaveNode wave in plan.Waves)
+        {
+            if (!wave.Delivers || wave.Guardrails.Count > 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Warning(DiagnosticCodes.DeliveringWaveMissingExitGate, wave.Directory,
+                $"Wave '{wave.Dir}' declares \"delivers\": true but has no 'guardrails/' exit gate at all, " +
+                "so it never actually delivers at its barrier — an empty exit gate trivially passes, which " +
+                "is not the same as a real re-verification. Add at least one 'guardrails/' check to this " +
+                "wave, or remove the delivers flag if it is not meant to be a delivery point."));
+        }
+    }
+
+    /// <summary>
+    /// GR2078 (design 39 §1c, issue #360's incremental-delivery follow-on) — a wave that follows a real
+    /// delivery point (the immediately preceding wave with <see cref="WaveNode.IsDeliveryPoint"/> true) but
+    /// declares no ENTRY preflight of its own. That earlier wave handed this one an incrementally delivered
+    /// workspace, not the run's own baseline, and an entry preflight is how a wave states what it expects
+    /// of the workspace it is actually given. A <c>delivers: true</c> wave with no exit gate never reaches
+    /// <c>IsDeliveryPoint</c>, so nothing following IT can trip this check (GR2079 names that gap instead).
+    /// </summary>
+    private static void ValidatePostDeliveryWaveMissingEntryPreflight(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        for (int i = 1; i < plan.Waves.Count; i++)
+        {
+            WaveNode previous = plan.Waves[i - 1];
+            WaveNode current = plan.Waves[i];
+
+            if (!previous.IsDeliveryPoint || current.Preflights.Count > 0)
+            {
+                continue;
+            }
+
+            diagnostics.Add(Warning(DiagnosticCodes.PostDeliveryWaveMissingEntryPreflight, current.Directory,
+                $"Wave '{current.Dir}' follows delivery point '{previous.Dir}' (\"delivers\": true with a " +
+                "real 'guardrails/' exit gate) but declares no 'preflights/' entry gate of its own, so it " +
+                "starts from an incrementally delivered workspace with nothing stating what it expects of " +
+                "it. Add a 'preflights/' check to this wave, or accept that it makes no assumptions about " +
+                "the workspace it is handed."));
         }
     }
 

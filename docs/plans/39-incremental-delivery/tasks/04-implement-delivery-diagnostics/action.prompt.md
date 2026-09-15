@@ -28,11 +28,29 @@ Both are **WARNINGS**. Neither moves the exit code. The design records why: an E
 that are correct-but-unguarded, and #181's worth-it gate exists because a FALSE baseline is worse than
 none.
 
+**Which member each check reads (review, 2026-09-13).**
+- `GR2079` reads `WaveNode.Delivers`, the declared flag: it names a wave that sets `delivers: true` and
+  has no exit gate.
+- `GR2078` fires for a wave with no entry preflight that follows a delivery point, meaning an earlier
+  wave whose `WaveNode.IsDeliveryPoint` is true.
+
+**Emit both through `Warning(DiagnosticCodes.<Name>, …)`, naming the constant inline at the call,** the
+way the validator's existing warnings do (for example `Warning(DiagnosticCodes.TieringInert, …)`).
+`DiagnosticCatalogueTests.EverySeverityMarkerMatchesWhatTheSourceTreeActuallyDoes` finds a code's
+severity by scanning `src/` for `Warning(DiagnosticCodes.<Name>` or `Error(DiagnosticCodes.<Name>`, or
+for a `Code = DiagnosticCodes.<Name>, … Severity = …` initializer. Task 03 gave both codes a
+`GRxxxx (WARNING) — ` doc-comment marker before any emission site existed, so that test is red on your
+base. A call site the scan can see turns it green; a code passed through a variable reads as emitted
+nowhere. This task's tests-pass guardrail runs `DiagnosticCatalogueTests` alongside
+`WaveDeliveryDiagnosticsTests`. Keep both markers `(WARNING)`.
+
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside them. An
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, and `src/Guardrails.Core/Loading/DiagnosticCatalogue.cs`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
 out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
 missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
 state-out path and stop.
+
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.
 

@@ -1,5 +1,5 @@
 {
-  "description": "Implement the delivered journal record (both converter directions) and the RunJournal write path its caller uses",
+  "description": "Implement the wave delivery record, its WaveDeliveryStatus token converter in both directions, and RunJournal.RecordWaveDelivery",
   "dependsOn": [
     "09-author-tests-wave-delivered-journal"
   ],
@@ -7,6 +7,7 @@
   "writeScope": [
     "src/Guardrails.Core/Journal/WaveDeliveredRecord.cs",
     "src/Guardrails.Core/Journal/JournalModel.cs",
-    "src/Guardrails.Core/Journal/RunJournal.cs"
+    "src/Guardrails.Core/Journal/RunJournal.cs",
+    "src/Guardrails.Core/Journal/JournalJson.cs"
   ]
 }

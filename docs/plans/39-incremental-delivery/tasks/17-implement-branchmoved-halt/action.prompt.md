@@ -22,16 +22,73 @@
 
 ## Task
 
-Make `BranchMovedHaltTests` pass. Design 39 §1c.
+Make `BranchMovedHaltTests` pass. Design 39 §1c and §4 (round 4, narrowed in round 5).
+
+**A refused wave delivery halts the run at that wave** — a `conflict`, `branch-moved` or
+`dirty-working-tree` outcome, and no other — under `WaveHaltKind.DeliveryRefused`. A halting refusal
+reaches the barrier by one of two routes, and the halt must cover both:
+
+- **The trial could not be built.** `CreateTrialDelivery` returned a `TrialDelivery` whose `Refusal` is
+  `Conflict`; no gate ran and nothing was promoted. The detail is `trial.RefusalDetail`.
+- **The promotion refused.** `PromoteTrialDelivery` returned `BranchMoved` or `DirtyWorkingTree`, with the
+  detail on the provider's `LastMergeOnSuccessDetail`. `BranchMoved` here covers both a switched checkout
+  and the user's branch advancing after the trial was built, so the detail, not the token, says which.
+
+**Never halt on these two (review round 5):**
+- **`hook-rejected`** (`d39-hooks-untracked-tooling`). Task 08 holds this and every later barrier delivery
+  to run end, where the merge runs the user's hooks in their own checkout, and task 29 records the
+  rejection. The run continues. `AHookRejectedTrial_DoesNotHaltTheRun_AndHoldsLaterDeliveries` pins this,
+  and this task's forward census requires it Passed.
+- **`trial-gate-failed`** (`d39-trial-gate-failure`). Task 08 raises a failed trial-tree gate as an
+  `ExitGateFailed` halt through `BuildGateHalt`, with a trial disclosure. It is not a delivery refusal, and
+  this task adds nothing for it.
+
+Then:
+
+- The halt headline reads `Wave '<dir>' delivery REFUSED (<outcome token>): <detail>`, where the token
+  is `JournalJson.DeliveryOutcomeToken(outcome)` and the detail comes from whichever route refused.
+- `BranchMoved` has two causes under one token, `branch-moved`, and the provider's detail says which. Pick
+  the remedy for the halt's `Detail` from that detail:
+  - **The checkout is no longer on the pinned branch:** the #588 check's detail starts with `run started on`,
+    and its ending varies: `HEAD is now '<other>'`, `HEAD is now detached (no branch checked out)`, or
+    `the current branch could not be read`. Key on the shared `run started on` prefix, never on one ending,
+    or a detached HEAD is told to resume and is refused again. The halt's `Detail` says to
+    `check out '<branch>' again`, then resume.
+  - **The branch moved after the trial was built:** the detail reads
+    `'<branch>' moved from <sha10> to <sha10> after the trial was built`. Key on the
+    `after the trial was built` suffix, which also covers a branch rewound under the trial. The halt's
+    `Detail` says to resume, because the next trial includes the change. It must not say to check anything
+    out.
+- An `AlreadyDelivered` trial is not a refusal: task 29 settles it as `delivered`. Never halt on it.
+- **Record the halt as a decision too (review 2026-09-13).** At the halt, append one `DecisionEntry`
+  through `_journal.RecordDecision` and raise `_observer.DecisionRecorded`, as the Scheduler's other
+  decision sites do. Set:
+  - `Boundary = "wave"`;
+  - `Policy = AutonomyPolicies.Token(_plan.Config.AutonomyPolicy)`, as `ExecutedDefinitionDivergenceDecision` sets it;
+  - `Decision = DecisionTokens.Halted`;
+  - `Gate = "delivery-refused"`;
+  - `Subject` and `Wave`, both the refused wave's directory;
+  - `Headline`, the halt headline.
+
+  Build it in `Scheduler.cs`, and do not edit `DecisionEntry.cs`. `halted` changes no delivery or exit
+  code: `RunOutcomePolicy` suppresses delivery only on `proceeded-best-guess` and `proceeded-unreviewed`.
+- Later waves do not run.
+- The refused wave writes NO completed marker and NO completed status; it settles needs-human, so a
+  resume re-attempts its delivery at that wave.
+- Task 29 already records the refusal as `refused` on `waves.<dir>.delivered`. Do not write a second
+  delivery record; this task owns the HALT and its decision entry.
+- Do not add a `RunHaltKind`, and do not write run.json's `halt` section — it is scoped to gates
+  (#432). Do not touch `JournalJson.cs`, `RunHalt.cs` or the CLI.
 
 Do not unwind deliveries that already landed, and do not check the pinned branch back out — #588's
 safe direction is to refuse and leave the operator's checkout untouched.
 
 Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
 
-**Scope boundary (harness-enforced):** Write only to the path(s) listed above. After this
-task completes, the harness runs a `git diff` membership check and rejects any edit outside them. An
-out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
-missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
-state-out path and stop.
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Execution/Scheduler.cs` and
+`src/Guardrails.Core/Execution/RunReport.cs`. After this task completes, the harness runs a `git diff`
+membership check and rejects any edit outside these paths. An out-of-scope edit fails the task
+immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another file,
+do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
 
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green. Two classes are exceptions. Both are already green on your base, and this task's guardrail re-runs them because you edit the code they drive: task 28's `WaveDeliveryWiringTests` drive the barrier delivery, and task 07's `WaveBarrierDeliveryTests` pin task 08's trial-gate halt, which sits beside the refusal halt you add. Keep both green: a refusal check that turns a failed trial-tree gate into `DeliveryRefused` breaks them.

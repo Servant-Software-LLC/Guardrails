@@ -476,6 +476,24 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Append a provenance record to the durable, top-level <c>refreshed[]</c> journal section (design 39
+    /// §1c "How a refresh is recorded" / §5) — the write path for every post-delivery refresh merge.
+    /// Additive — the section stays absent until the first refresh, matching <see cref="RecordSupplied"/>
+    /// (never <c>null</c> noise, and a second refresh appends rather than replacing the first).
+    /// </summary>
+    public void RecordRefreshed(RefreshedRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        lock (_gate)
+        {
+            var refreshed = new List<RefreshedRecord>(_document.Refreshed ?? []) { record };
+            _document = _document with { Refreshed = refreshed };
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Allocate the next durably-MONOTONIC, never-reused escalation <c>seq</c> for this run (doc 12 §7.1,
     /// Finding 5) — the run-level counter <see cref="Execution.FileEscalationSink"/> stamps onto each
     /// <c>logs/&lt;runId&gt;/escalations/&lt;seq&gt;-&lt;gate&gt;.json</c> record and the returned
@@ -730,20 +748,41 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Record this wave's OWN barrier-delivery result (design 39 §4/§5) — REPLACES whatever record the wave
+    /// already carries, since <c>status: running</c> is written first and then superseded by the settled
+    /// <c>delivered</c>/<c>refused</c>/<c>suppressed</c> record for the same delivery. Does not touch the
+    /// wave's <see cref="WaveJournalEntry.Status"/> or its entry/exit markers.
+    /// </summary>
+    public void RecordWaveDelivery(string waveDir, WaveDeliveredRecord record)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with { Delivered = record });
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Reset a wave to <see cref="WaveStatus.Pending"/>, clearing its completion hash, marker sha, and
     /// entry/exit markers — the wave half of a wave-drift resolution / wave-scoped reset (SSOT §14.6/§14.8).
     /// The wave's TASKS are reset separately via <see cref="ResetTaskToPending"/>.
+    /// <para>
+    /// Deliberately KEEPS <see cref="WaveJournalEntry.Delivered"/> unchanged (review round 5,
+    /// <c>d39-rewind-delivered-wave</c>): a delivery cannot be undone — its commits are already on the
+    /// user's branch — so a reset that forgot the record would make already-shipped work read as held.
+    /// </para>
     /// </summary>
     public void ResetWaveToPending(string waveDir)
     {
         lock (_gate)
         {
-            if (_document.Waves is not { } waves || !waves.ContainsKey(waveDir))
+            if (_document.Waves is not { } waves || !waves.TryGetValue(waveDir, out WaveJournalEntry? existing))
             {
                 return;
             }
 
-            UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending });
+            UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending, Delivered = existing.Delivered });
             Persist();
         }
     }

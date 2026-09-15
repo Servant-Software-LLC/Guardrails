@@ -1,0 +1,55 @@
+## Harness contract (do not remove)
+- Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in
+  the appended sections; write ONLY new/changed keys as a JSON object to
+  GUARDRAILS_STATE_OUT.
+- Write everything you publish under your task's FOLDER NAME as the single top-level
+  key — the name of the directory this task.json lives in (e.g. `25-implement-refresh-provenance`), NOT the
+  stableId. The harness REJECTS a fragment keyed by anything else (every attempt), so:
+  `{ "25-implement-refresh-provenance": { "someKey": "someValue" } }`.
+- EXCEPTION — the CONTROL KEYS `needsHarnessWrite` and `needsHuman` are TOP-LEVEL
+  SIBLINGS of your folder-name key, never nested inside it.
+- If a previous-attempt feedback section is appended, this is a RETRY: fix those
+  specific failures; do not start over.
+- Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
+  code — or reword a document away from its own conventions — to match a check's pattern.
+- If you cannot proceed without a human decision, write
+  {"needsHuman": {"question": "<question>", "kind": "blocked-work"}} to the
+  state-out path and stop. If instead a guardrail reports something ABSENT that you can
+  see is PRESENT, that guardrail is defective: use "kind": "defective-guardrail" and
+  quote (a) the guardrail's exact claim and (b) the file:line that refutes it. If you
+  cannot produce BOTH quotes it is not a defective guardrail — retry the work, or
+  escalate as "blocked-work". Difficulty is never "defective-guardrail".
+
+## Task
+
+Fill real logic over the stubs so `RefreshProvenanceTests` passes. Design 39 §1c ("How a refresh is
+recorded") and §5.
+
+- **`RefreshedRecord`** — plain `required` auto-properties, exactly like the shipped
+  `SuppliedRecord`. `JournalJson` is reflection-based, so no custom converter is needed. Check that the
+  round-trip test really exercises the READ path: a record that only serializes passes its own write
+  test and kills the next run on the read (#625).
+- **`RunJournal.RecordRefreshed`** — mirror `RecordSupplied`: null check, take the journal lock,
+  APPEND to `Refreshed` (never replace), persist. The section stays absent until the first refresh.
+- **`UnauthoredContentNote`** — PURE: no IO, no git, no clock. It reads `supplied[]` and `refreshed[]`
+  from the document it is given, merges them oldest-first by `At`, and renders each record as
+  `refresh from '<from>' at <upstream, at most 10 characters>` or
+  `supplied by <by> at <commit, at most 10 characters>`. `HeadlineSuffix` returns `null` when both
+  sections are absent or empty, and `DetailLines` then returns an empty list — a run with no unauthored
+  content must keep a byte-identical halt headline.
+
+Do NOT touch `SuppliedRecord.cs`. A refresh is not a supply, and the design rejected a `kind` field on
+that record.
+
+Every non-test file task 24 stubbed is inside this task's scope (#707), so a correct implementation
+never needs a file outside it.
+
+Do NOT edit the authored tests; emit {"needsHuman": "<why>"} if one is genuinely wrong.
+
+**Scope boundary (harness-enforced):** Write only to `src/Guardrails.Core/Journal/RefreshedRecord.cs`, `src/Guardrails.Core/Journal/UnauthoredContentNote.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, and `src/Guardrails.Core/Journal/RunJournal.cs`. After this
+task completes, the harness runs a `git diff` membership check and rejects any edit outside these paths. An
+out-of-scope edit fails the task immediately and consumes a retry. If you hit a compile error caused by a
+missing symbol in another file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the
+state-out path and stop.
+
+**The harness runs this task's guardrails itself when you finish.** Do not try to run the guardrail scripts yourself: the shell they need is not granted to you, and a call refused on two attempts can halt the task even after the work is done. Tests authored by OTHER tasks may legitimately fail on your base until their own implementing task lands; only this task's tests are yours to turn green.

@@ -859,7 +859,13 @@ public sealed class PlanLoader
                 // folds this with each task's capture; nothing recomputes it from disk later. Unlike the
                 // task pin this needs no post-construction `with`, because the gate surface is addressed by
                 // the wave DIRECTORY and nothing on the node.
-                DefinitionHashAtLoad = WaveDefinitionHash.GateDefinitionOf(path)
+                DefinitionHashAtLoad = WaveDefinitionHash.GateDefinitionOf(path),
+
+                // Design 39 §1b/§3: the DECLARED delivers flag, parsed from the SAME brief.md read above
+                // pins DefinitionHashAtLoad. Set once, here, at load — never re-read from disk later, so a
+                // mid-run brief.md edit cannot change delivery on a run whose wave definition was pinned at
+                // load (§5.4).
+                Delivers = WaveFolder.ReadDeliversFlag(path)
             });
         }
 

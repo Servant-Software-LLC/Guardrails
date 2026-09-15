@@ -15,6 +15,17 @@ $pinned = @(
     'TheReportNamesDeliveredAndHeldWavesSeparately',
     'TheReportIsPrintedBeforeTheVerdict',
     'TheReportPointsAtGitBranchNoMerged',
+    'DescribeDelivery_APartialDelivery_IsPartiallyDelivered',
+    'DescribeDelivery_AGreenRunWhoseRunEndDeliveryWasHeld_IsPartiallyDelivered',
+    'DescribeDelivery_ARefusedRunEndMergeAfterAWaveDelivered_IsPartiallyDelivered',
+    'TheUndeliveredWorkBanner_NamesTheWavesThatAlreadyDelivered',
+    'PartiallyDelivered_RoundTripsThroughTheJournal',
+    'ADeliveryRefusedHalt_PrintsItsOwnLabel_NotTheGenericWaveHalt',
+    'DescribeDelivery_ARunEndDeliveryAfterABarrierDelivery_IsDelivered',
+    'DescribeDelivery_AHookRejectionHeldDeliveriesThenTheRunEndMergeLanded_IsDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_StillRecordsPartiallyDelivered',
+    'ATerminalGateFailureAfterAWaveDelivered_WritesTheDeliveryRecordBeforeReturning',
+    'TheReportNamesAHookHold_EvenWhenTheRunEndMergeLanded',
     'AFailedWaveDoesNotChangeTheExitCode',
     'AFullyDeliveredRunReadsAsTodayDoes'
 )
@@ -37,9 +48,9 @@ try {
     }
 
     [xml]$doc = Get-Content -Raw -LiteralPath $trx.FullName
-    $results_nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
+    $nodes = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_ })
 
-    if ($results_nodes.Count -lt 1) {
+    if ($nodes.Count -lt 1) {
         # The zero-match hole (#455/#248): with nothing executed the TRX carries no <Results>
         # element, so the dotted navigation yields $null and @($null).Count is 1 — an unfiltered
         # .Count check would evaluate 1 -lt 1 and never fire. Hence the Where-Object above.
@@ -49,7 +60,7 @@ try {
 
     $failures = @()
     foreach ($name in $pinned) {
-        $node = $results_nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
+        $node = $nodes | Where-Object { $_.testName -like ("*" + $name + "*") } | Select-Object -First 1
         if (-not $node) {
             $failures += "[$name] NOT FOUND in the TRX — the prompt pins this behaviour to a test of that name; it was never executed."
         }

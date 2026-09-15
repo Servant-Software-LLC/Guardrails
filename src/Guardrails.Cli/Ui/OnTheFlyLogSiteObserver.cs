@@ -310,6 +310,13 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
         _inner.SuppliedResourcesCommitted(paths, commit);
 
+    // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
+    // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
+    // lesson again). This observer does not ACT on it: a wave's delivery is not a log-site artifact, so it
+    // forwards and nothing else.
+    public void WaveDelivered(WaveNode wave, WaveDeliveredRecord delivery) =>
+        _inner.WaveDelivered(wave, delivery);
+
     // --- the JIT breakdown phase (issue #469) -----------------------------------------------
 
     // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these

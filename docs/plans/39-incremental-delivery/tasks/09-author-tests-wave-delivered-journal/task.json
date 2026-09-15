@@ -1,5 +1,5 @@
 {
-  "description": "Author failing tests + stubs for run.json waves.<dir>.delivered, including the status:running write before the merge",
+  "description": "Author failing tests + stubs for run.json waves.<dir>.delivered: the pinned record, its status tokens, and the RecordWaveDelivery write path",
   "dependsOn": [
     "02-implement-wave-delivers-flag"
   ],
@@ -7,6 +7,7 @@
   "writeScope": [
     "tests/Guardrails.Core.Tests/WaveDelivery/WaveDeliveredJournalTests.cs",
     "src/Guardrails.Core/Journal/WaveDeliveredRecord.cs",
-    "src/Guardrails.Core/Journal/JournalModel.cs"
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
   ]
 }

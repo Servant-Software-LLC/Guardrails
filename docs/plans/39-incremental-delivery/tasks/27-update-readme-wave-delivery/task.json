@@ -1,0 +1,10 @@
+{
+  "description": "Document per-wave delivery in the README: the brief.md delivers flag, the wave-scoped interlock, the partial-delivery report, the post-delivery refresh and refreshed[], and GR2078/GR2079",
+  "dependsOn": [
+    "20-update-ssot-wave-delivery"
+  ],
+  "stableId": "x3r8vd",
+  "writeScope": [
+    "README.md"
+  ]
+}
