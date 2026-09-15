@@ -70,22 +70,28 @@ public sealed class LogServerTests
     }
 
     [Fact]
-    public async Task Root_MarksATaskWithNoAttemptDirectoryAsNotStarted()
+    public async Task Root_WithNoStatusSource_SaysUnknown_NeverTheAttemptNumber()
     {
-        // The state column is derived from the filesystem, not from a journal read — this page must never
-        // be a second reader that can disagree with the one the operator is watching. A task the harness
-        // has not reached has no attempt directory, and saying "not started" is the honest reading of that.
+        // #713: the Status column is the harness's word for each task, handed to this server by whoever holds
+        // it: the run's in-process site observer, or the journal `guardrails logs` reads. A server nobody wired
+        // must say it does not know. It must never fall back to "the highest attempt-N directory on disk",
+        // which is how a finished task, a running task and a failed one all came to read "attempt 1".
         using var temp = new TempPlan();
-        await using LogServer server = Start(temp.Dir, [Task("09-never-ran", "Not reached")]);
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First task")]);
 
         string html = await GetStringAsync(server.BaseUrl);
 
-        // Asserted on the ROW, not merely on the page. The first version of this checked
-        // Assert.Contains("not started", html) and a mutation that reported every unstarted task as
-        // "running" SURVIVED it — the phrase also occurred in the page's own explanatory sentence, so the
-        // test was reading the prose beside the table rather than the table. The prose was reworded and the
-        // assertion moved onto the cell.
-        Assert.Contains("<td><span class=\"muted\">not started</span></td>", html, StringComparison.Ordinal);
+        // Asserted on the ROW, not merely on the page. An earlier root-page test checked
+        // Assert.Contains("not started", html), and a mutation that reported every unstarted task as "running"
+        // SURVIVED it: the phrase also occurred in the page's own explanatory sentence, so the test was reading
+        // the prose beside the table rather than the table. The attempt number is still shown, in its own
+        // column, and nowhere else in the row.
+        Assert.Contains(
+            "<tr><td><a href=\"/tasks/01-alpha\">01-alpha</a></td>"
+            + "<td class=\"status\" data-status=\"unknown\">unknown</td><td>attempt 1</td></tr>",
+            html,
+            StringComparison.Ordinal);
     }
 
     [Fact]

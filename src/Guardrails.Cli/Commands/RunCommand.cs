@@ -739,12 +739,12 @@ public static class RunCommand
                     await using var liveObserver = new LiveRunObserver(
                         probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                         probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
+                    diagramObserver = BuildObserverChain(liveObserver, logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail, logServer);
                     (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail);
+                    diagramObserver = BuildObserverChain(new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan, logUrlForTask, diagramSeed, onRow, onEventDetail, logServer);
                     OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                     PrintStaticIndexLink(logsRoot, io);
                     diagramObserver.WriteInitialDiagram();
@@ -3264,14 +3264,14 @@ public static class RunCommand
         Func<string, string?>? logUrlForTask,
         JournalDocument? diagramSeed)
     {
-        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed, onRow: null, includeDetail: false);
+        return BuildObserverChain(inner, logsRoot, runId, plan, logUrlForTask, diagramSeed, onRow: null, includeDetail: false, logServer: null);
     }
 
     /// <summary>
     /// #585 layer 3 (design doc 36 §3.1) overload: adds <paramref name="onRow"/> (the webhook dispatcher's
     /// <c>Emit</c>, or null when no <c>--on-event</c> URL is configured) and <paramref name="includeDetail"/>
     /// (<c>--on-event-detail</c>), and is the one that actually builds the chain — the six-argument overload
-    /// above delegates to this one with <c>onRow: null, includeDetail: false</c>. A NEW overload rather than
+    /// above delegates to this one with <c>onRow: null, includeDetail: false, logServer: null</c>. A NEW overload rather than
     /// two parameters added onto the six-argument member: <c>RunCommandObserverWiringTests</c>,
     /// <c>RunFinishedExitPathTests</c> and <c>ObserverForwardingSweepTests</c> (plan 34, predating this
     /// plan) call the six-argument shape directly and sit outside this task's write scope, so widening
@@ -3280,6 +3280,14 @@ public static class RunCommand
     /// with NO default value: a defaulted parameter would let a production call site silently deliver
     /// nothing (the plan-34 §3 swallow hazard), so the compiler forces both call sites to state their
     /// answer explicitly.
+    ///
+    /// <para><paramref name="logServer"/> (issue #713) is the run's live log server, or null when none was
+    /// started. The chain hands it the log-site observer's status map, the one the during-run index is rendered
+    /// from, as the source of the live run view's Status column, so those two pages cannot disagree. It has no
+    /// default for the same reason as <paramref name="onRow"/>: a call site that dropped it would leave that
+    /// column reading <c>unknown</c> for the whole run. It travels beside <paramref name="logUrlForTask"/>, which
+    /// production derives from the same server, because the six-argument shape takes a task-URL resolver and no
+    /// server.</para>
     /// </summary>
     public static OnTheFlyDiagramObserver BuildObserverChain(
         IRunObserver inner,
@@ -3289,11 +3297,13 @@ public static class RunCommand
         Func<string, string?>? logUrlForTask,
         JournalDocument? diagramSeed,
         Action<EventDelivery>? onRow,
-        bool includeDetail)
+        bool includeDetail,
+        LogServer? logServer)
     {
         var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
         var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
         var siteObserver = new OnTheFlyLogSiteObserver(observerProjection, logsRoot, runId, plan.Tasks, logUrlForTask, plan.Waves);
+        logServer?.UseTaskStatusSource(siteObserver.StatusSnapshot);
         return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed);
     }
 

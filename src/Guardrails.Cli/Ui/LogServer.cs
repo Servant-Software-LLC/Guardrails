@@ -16,15 +16,16 @@ namespace Guardrails.Cli.Ui;
 ///
 /// The CANONICAL "all tasks" page is the static index file (<c>logs/&lt;runId&gt;/index.html</c>,
 /// rendered by <see cref="LogSiteRenderer"/>) — durable and server-independent. This live server is
-/// the active-only TAILING backend reached BY clicking a running task from that static index, so it
-/// no longer serves its own all-tasks landing: <c>GET /</c> is a pointer note at the static index's
-/// PATH (a browser can't follow <c>http→file</c>, so the path is shown as text), and the per-task
-/// page is an active-task DEADEND (no "all tasks" link — the user hits Back) (issue #143).
+/// the TAILING backend reached BY clicking a running task from that static index. Its <c>GET /</c> is the
+/// transient live run view, which names the static index's PATH (a browser can't follow <c>http→file</c>,
+/// so the path is shown as text), and the per-task page is an active-task DEADEND (no "all tasks" link —
+/// the user hits Back) (issues #143, #573).
 ///
 /// Routes:
 /// <list type="bullet">
-///   <item><c>GET /</c> — a small pointer note directing the user to the canonical static index file
-///     (this server only tails active tasks; it cannot link to <c>file://</c>).</item>
+///   <item><c>GET /</c> — the live run view (issues #573, #713): every task with its status word and its
+///     latest attempt, each linked to its live tail, plus the static index file's path. The status comes
+///     from the source wired by <see cref="UseTaskStatusSource"/>.</item>
 ///   <item><c>GET /diagram.html</c> — the live status diagram <c>logs/&lt;runId&gt;/diagram.html</c>
 ///     (issue #522), which <see cref="OnTheFlyDiagramObserver"/> keeps written to that exact path; a
 ///     404 when the run has not written one yet.</item>
@@ -257,6 +258,27 @@ public sealed class LogServer : IAsyncDisposable
     /// <summary>The log page URL for a task, or null if the id is unknown.</summary>
     public string? UrlForTask(string taskId) =>
         _taskIds.Contains(taskId) ? $"{_baseUrl}tasks/{Uri.EscapeDataString(taskId)}" : null;
+
+    // #713: set once by UseTaskStatusSource after the server has started, then read by request threads.
+    private volatile Func<IReadOnlyDictionary<string, string>>? _taskStatuses;
+
+    /// <summary>
+    /// Give the live run view (<c>GET /</c>) the source of its Status column: a snapshot of each task's status
+    /// word, keyed by task id, in the static index's vocabulary (issue #713). The server never decides a task's
+    /// status itself. It used to read the column off the filesystem as "the highest <c>attempt-N</c> directory",
+    /// and because an attempt directory is created when the attempt STARTS, a succeeded task, a running task and
+    /// a failed one all read <c>attempt 1</c>.
+    ///
+    /// <para><c>guardrails run</c> wires the in-process map the during-run static index is rendered from
+    /// (<see cref="OnTheFlyLogSiteObserver.StatusSnapshot"/>), so those two pages cannot disagree, and this page
+    /// never becomes a second reader of the journal the harness is writing. <c>guardrails logs</c>, which runs no
+    /// harness, wires the journal it already reads. Until a source is wired every row says <c>unknown</c>.</para>
+    ///
+    /// <para>Called after <see cref="TryStart"/>, because the run composes its observer chain around this
+    /// server's URLs, so the chain cannot exist yet when the server starts. The source is read once per page
+    /// load, on a request thread.</para>
+    /// </summary>
+    public void UseTaskStatusSource(Func<IReadOnlyDictionary<string, string>> statuses) => _taskStatuses = statuses;
 
     /// <summary>
     /// Start a loopback log server for <paramref name="planDirectory"/>'s tasks. Best-effort: if
@@ -1153,13 +1175,16 @@ public sealed class LogServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// One row per task: its id linked to the live tail this server serves, plus what the attempt
-    /// directories on disk actually show. Deliberately derived from the filesystem rather than from a
-    /// journal read — the journal is written by the running harness and this page must never be a second
-    /// reader that can disagree with the one the operator is watching.
+    /// One row per task: its id linked to the live tail this server serves, its status word, and its latest
+    /// attempt. The status comes from the source wired by <see cref="UseTaskStatusSource"/> (issue #713), read
+    /// as ONE snapshot for the whole page so every row describes the same moment. It is rendered in the static
+    /// index's own cell shape, so the shared <c>.status[data-status=…]</c> colors apply. The attempt number is
+    /// detail beside the status and never stands in for it: an attempt directory exists from the moment the
+    /// attempt starts, so it cannot say how the attempt ended.
     /// </summary>
     private string TaskRowsHtml()
     {
+        IReadOnlyDictionary<string, string>? statuses = _taskStatuses?.Invoke();
         var rows = new StringBuilder();
 
         foreach (TaskNode task in _tasks)
@@ -1167,17 +1192,19 @@ public sealed class LogServer : IAsyncDisposable
             string id = WebUtility.HtmlEncode(task.Id);
             string href = "/tasks/" + Uri.EscapeDataString(task.Id);
 
-            string? attemptDir = ResolveAttemptDir(task.Id, null, out int? attempt);
-            string state = attemptDir is null
-                ? "<span class=\"muted\">not started</span>"
-                : $"attempt {attempt}";
+            // "unknown" is the static index's own word for a status it cannot resolve, and it is the honest
+            // reading for an unwired server or a task the source does not list.
+            string status = WebUtility.HtmlEncode(
+                statuses is not null && statuses.TryGetValue(task.Id, out string? word) ? word : "unknown");
+            string attempt = ResolveAttemptDir(task.Id, null, out int? number) is null ? "—" : $"attempt {number}";
 
-            rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td><td>")
-                .Append(state).AppendLine("</td></tr>");
+            rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td>")
+                .Append("<td class=\"status\" data-status=\"").Append(status).Append("\">").Append(status).Append("</td>")
+                .Append("<td>").Append(attempt).AppendLine("</td></tr>");
         }
 
         return rows.Length == 0
-            ? "<tr><td colspan=\"2\" class=\"muted\">This run declares no tasks yet.</td></tr>"
+            ? "<tr><td colspan=\"3\" class=\"muted\">This run declares no tasks yet.</td></tr>"
             : rows.ToString();
     }
 
@@ -1322,14 +1349,14 @@ __STYLE__
 <h1>Guardrails run — task logs</h1>
 <p>Every task in this run. Click one to follow its live log; the page refreshes on its own.</p>
 <table>
-<thead><tr><th>Task</th><th>State</th></tr></thead>
+<thead><tr><th>Task</th><th>Status</th><th>Latest attempt</th></tr></thead>
 <tbody>
 __ROWS__
 </tbody>
 </table>
-<p class="muted">"State" is what the attempt directories on disk show right now; a task the harness
-has not reached yet has none. For the full picture (guardrail results, sources, diagrams) open the
-durable static index, which works with or without this server:</p>
+<p class="muted">"Status" is the run's own word for each task, the same one the static index shows;
+"Latest attempt" is the newest attempt directory on disk. For the full picture (guardrail results,
+sources, diagrams) open the durable static index, which works with or without this server:</p>
 <pre>__INDEX_PATH__</pre>
 <p class="muted">That one is a file path rather than a link because a browser blocks
 <code>http://</code> &rarr; <code>file://</code>.</p>

@@ -540,6 +540,20 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     }
 
     /// <summary>
+    /// Every task's current status word, keyed by task id: a copy of the map the during-run index is rendered
+    /// from, taken under the same lock (issue #713). The run's live server reads its root page's Status column
+    /// here (wired by <c>RunCommand.BuildObserverChain</c>), so that page and this index cannot disagree. There
+    /// is one map, and both pages render from it.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> StatusSnapshot()
+    {
+        lock (_gate)
+        {
+            return new Dictionary<string, string>(_statusByTask, StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>
     /// Rewrite the during-run index (with refresh) from the current status map. Holds the lock for the
     /// whole render so the status snapshot and the link choice are consistent (the renderer writes
     /// atomically). The link resolver: a RUNNING task → the live URL when a server is up (else plain),

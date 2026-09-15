@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Diagnostics;
+using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Journal;
 
@@ -81,8 +82,8 @@ public static class LogsCommand
             return ExitCodes.Success;
         }
 
-        // Read-only snapshot of the journal — the landing page shows each task's status as it
-        // stands on disk (works after a run, or mid-run from another terminal).
+        // Read-only snapshot of the journal, which the static site below is rendered from — each task's
+        // status as it stands on disk (works after a run, or mid-run from another terminal).
         JournalDocument document = JournalReader.Read(journalPath);
 
         // --export: render the durable static site (SSOT §12.3) and exit — no server, no blocking.
@@ -110,6 +111,13 @@ public static class LogsCommand
         {
             return ExitCodes.HarnessError; // TryStart already explained why
         }
+
+        // #713: the live run view's Status column. This process runs no harness, so it has no in-process status
+        // map to share the way `guardrails run` shares its own. The journal is this command's only word on each
+        // task, and the static index above was rendered from it. It is read again on every page load rather than
+        // taken from `document`: this command attaches to runs still in flight (#552), the page reloads itself,
+        // and a startup snapshot would go on calling a task that has since finished "running".
+        server.UseTaskStatusSource(() => JournalStatuses(journalPath));
 
         await using (server.ConfigureAwait(false))
         {
@@ -149,6 +157,25 @@ public static class LogsCommand
 
             output.WriteLine("Log viewer stopped.");
             return ExitCodes.Success;
+        }
+    }
+
+    /// <summary>
+    /// Each task's status word from the journal as it stands on disk now, in the static index's vocabulary
+    /// (issue #713). A read that fails returns no statuses, so that one page load says <c>unknown</c> and the
+    /// next one recovers: the harness replaces <c>run.json</c> atomically, but a read can still land on the
+    /// replace.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> JournalStatuses(string journalPath)
+    {
+        try
+        {
+            return JournalReader.Read(journalPath).Tasks.ToDictionary(
+                entry => entry.Key, entry => LogSiteRenderer.StatusText(entry.Value.Status), StringComparer.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
         }
     }
 
