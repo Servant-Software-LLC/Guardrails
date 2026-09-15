@@ -1128,8 +1128,8 @@ validated plan never reaches the check with a null scope, but the check nonethel
 to an EMPTY one in worktree mode (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
 any write is offending — rather than passing. **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
-the deleted path must be in scope. The declared scope is also injected into the action prompt
-(advisory) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
+the deleted path must be in scope. The ENFORCED scope is rendered into the action prompt and the violation
+feedback (issue #706, below) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
 workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020**, warning;
 `plan-breakdown` emits a real surface or `[]`, never a vacuous `**`). **TDD test-protection:** a
 test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
@@ -1175,6 +1175,20 @@ When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
 authorize), not the pre-move staging writes — the surface the check protects (what reaches the
 commit) is unchanged and still fully gated.
+
+**The agent is shown the scope it is judged by (issue #706).** The executor resolves the ENFORCED scope once
+per attempt — the declared `writeScope` (a null coalesced to `[]`, #389) plus the implicit `stagingOutputs`
+destinations (`<to>**` for a directory `to`, plus `.guardrails-staging/**`) — and reads it twice: it is the
+array the check gates on, and it is rendered into the composed action prompt as a harness-generated
+`## Write scope (harness-enforced)` section (§9) listing every entry as a backticked bullet. A violation's
+`feedback.md` lists the same entries after the offending paths, under the line
+`This task's writeScope allows changes ONLY to:`, read off `WriteScopeCheckResult.Scope` (the array the verdict
+was computed against); for a prompt action it then names the `needsHuman` route for a path the task cannot do
+without. Both surfaces come from the enforced array, never from author prose, so neither can drift from the
+verdict — before this the only statement of scope an agent saw was a hand-copied paragraph, and plans 39 and
+40 shipped 48 prompts whose paragraph read "Write only to the path(s) listed above" and listed nothing. An
+EMPTY scope is stated in words (`writeScope` is EMPTY) on both surfaces, never rendered as a heading or lead-in
+over no entries. Serial mode renders no section: no check runs there, so "harness-enforced" would be false.
 
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
@@ -4910,7 +4924,9 @@ inert hook. See §9.4 for the mechanism this condition gates.
 - The composed prompt (§8 `composed-prompt.md`) = body + appended harness sections:
   shared state (inlined ≤ 16 KB, else by path), **dependency context** (actions: pointers to
   the transitive `dependsOn` closure's `transcript.md` + contributed `fragment.json`, present
-  on every attempt — #26 Gap 4), output contract (actions), previous-attempt feedback (actions,
+  on every attempt — #26 Gap 4), output contract (actions), **write-scope section** (actions, worktree
+  mode only: `## Write scope (harness-enforced)`, the ENFORCED scope rendered from the array the write-scope
+  check gates on — #706, §3.4), previous-attempt feedback (actions,
   attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
   and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **staging-outputs
   contract** (actions, when `stagingOutputs` declared, §3.5: the absolute `GUARDRAILS_STAGING_DIR` and

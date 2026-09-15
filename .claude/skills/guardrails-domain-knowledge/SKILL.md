@@ -400,7 +400,11 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 
 - Attempt = snapshot -> run action (failed action skips guardrails) -> **write-scope check**
   (if `writeScope` set: deterministic read-only git diff membership test in the segment worktree;
-  violation = retry with feedback naming out-of-scope paths) -> run guardrails (`failFast` default)
+  violation = retry with feedback naming the out-of-scope paths AND listing the allowed ones) -> run
+  guardrails (`failFast` default). **The agent sees its scope (#706):** in worktree mode the ENFORCED scope
+  (`writeScope` + implicit staging destinations -- the array the check gates on) is rendered into the
+  composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
+  boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
