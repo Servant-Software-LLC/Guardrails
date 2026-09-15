@@ -29,8 +29,12 @@ namespace Guardrails.Core.Execution;
 /// </summary>
 public sealed class PermissionWallTracker
 {
-    /// <summary>How many attempts each distinct refused target has appeared on (insertion-ordered).</summary>
-    private readonly Dictionary<string, int> _attemptsByTarget = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The attempt numbers each distinct refused target was refused on (insertion-ordered). A SET of numbers, not a count (#708):
+    /// a transient pause re-runs an attempt under the same number, and the wall is observed before the pause check, so a count
+    /// made one attempt a "repeat" on its own.
+    /// </summary>
+    private readonly Dictionary<string, HashSet<int>> _attemptsByTarget = new(StringComparer.Ordinal);
     private readonly List<string> _order = new();
 
     /// <summary>
@@ -41,7 +45,7 @@ public sealed class PermissionWallTracker
     private readonly HashSet<string> _commands = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Did the MOST RECENTLY observed attempt refuse anything at all? (#534)
+    /// What the MOST RECENTLY observed attempt refused (#534 / #708).
     ///
     /// <para>
     /// Both halt rules below are about a wall the agent <i>cannot get past</i>. Neither is about a wall it
@@ -67,8 +71,14 @@ public sealed class PermissionWallTracker
     /// structural <c>.claude/</c> wall is detected on the attempt that hits it, and a repeated path halts
     /// on the attempt that re-hits it — in both cases the current attempt is, by construction, not clean.
     /// </para>
+    /// <para>
+    /// #708 made that last sentence literal: only a target THIS attempt refused can be its wall. Before, the guard asked only
+    /// whether the attempt refused ANYTHING, so a path refused on attempts 1 and 2 was still "repeated" on an attempt 3 that
+    /// refused a single unrelated command, and attempt 3 could halt "write repeatedly refused" naming a path it never touched.
+    /// The set is replaced on every observation, so an attempt a transient pause re-ran is judged on the run that settles it.
+    /// </para>
     /// </summary>
-    private bool _lastAttemptRefusedSomething;
+    private HashSet<string> _refusedThisAttempt = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The number of attempts a NON-structural path must be refused on before it triggers an early
@@ -77,21 +87,22 @@ public sealed class PermissionWallTracker
     public const int RepeatThreshold = 2;
 
     /// <summary>
-    /// Record one attempt's refused targets. Each distinct target increments its attempt count by at
-    /// most one per call (a single attempt that refuses the same target many times counts as one attempt
+    /// Record one attempt's refused targets. Each distinct target counts each attempt number at
+    /// most once (a single attempt that refuses the same target many times counts as one attempt
     /// for the repeat rule — the per-attempt repetition is already a wall the agent could not clear,
     /// but the cross-ATTEMPT count is the budget-burn signal #86 targets).
     /// </summary>
+    /// <param name="attempt">The attempt's number. Observing the same number again (a transient re-run) adds no attempt to any count.</param>
     /// <param name="blockedWritePaths">Every target the runner reported refused this attempt, paths and commands alike.</param>
     /// <param name="refusedCommands">
     /// The entries of <paramref name="blockedWritePaths"/> the runner attributed to a refused COMMAND (#708). An entry
     /// named here is never a structural <c>.claude/</c> path, and is kept verbatim rather than quote-trimmed.
     /// </param>
-    public void Observe(IReadOnlyList<string>? blockedWritePaths, IReadOnlyList<string>? refusedCommands = null)
+    public void Observe(int attempt, IReadOnlyList<string>? blockedWritePaths, IReadOnlyList<string>? refusedCommands = null)
     {
-        // Set BEFORE the early return: "this attempt refused nothing" is the fact #534 turns on, and it is
+        // Replaced BEFORE the early return: "this attempt refused nothing" is the fact #534 turns on, and it is
         // exactly the case the early return used to discard.
-        _lastAttemptRefusedSomething = false;
+        _refusedThisAttempt = new HashSet<string>(StringComparer.Ordinal);
 
         if (blockedWritePaths is null || blockedWritePaths.Count == 0)
         {
@@ -109,22 +120,21 @@ public sealed class PermissionWallTracker
                 continue;
             }
 
-            _lastAttemptRefusedSomething = true;
+            _refusedThisAttempt.Add(target);
 
             if (isCommand)
             {
                 _commands.Add(target);
             }
 
-            if (_attemptsByTarget.TryGetValue(target, out int count))
+            if (!_attemptsByTarget.TryGetValue(target, out HashSet<int>? attempts))
             {
-                _attemptsByTarget[target] = count + 1;
-            }
-            else
-            {
-                _attemptsByTarget[target] = 1;
+                attempts = new HashSet<int>();
+                _attemptsByTarget[target] = attempts;
                 _order.Add(target);
             }
+
+            attempts.Add(attempt);
         }
     }
 
@@ -139,7 +149,7 @@ public sealed class PermissionWallTracker
         // #534: an attempt that refused NOTHING is not standing at a wall, whatever its predecessors hit.
         // Evaluating the accumulated history against a clean attempt is what killed a task that had already
         // recovered — and discarded the deliverable it recovered with.
-        if (!_lastAttemptRefusedSomething)
+        if (_refusedThisAttempt.Count == 0)
         {
             return new PermissionWallDecision(Halt: false, StructuralPaths: [], RepeatedPaths: [], RepeatedCommands: []);
         }
@@ -150,7 +160,13 @@ public sealed class PermissionWallTracker
 
         foreach (string target in _order)
         {
-            bool repeated = _attemptsByTarget[target] >= RepeatThreshold;
+            // #708: a target an earlier attempt refused, but this one did not, is not this attempt's wall.
+            if (!_refusedThisAttempt.Contains(target))
+            {
+                continue;
+            }
+
+            bool repeated = _attemptsByTarget[target].Count >= RepeatThreshold;
             if (_commands.Contains(target))
             {
                 // #708: a refused command that names a .claude/ path is still a command, not the structural write wall.

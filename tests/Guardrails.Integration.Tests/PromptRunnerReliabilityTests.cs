@@ -742,4 +742,24 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Equal(2, used.Calls);
         Assert.Equal($"needs human: command repeatedly refused (permission wall) — {grep}", task.Summary);
     }
+
+    [Fact]
+    public async Task AnAttemptThatPausedAndReran_CountsItsRefusalOnce_SoItIsNotARepeatOnItsOwn()
+    {
+        // #708 W5: the wall is observed before the transient-pause check, so an attempt that a rate limit paused and re-ran under
+        // the same number was observed twice. One attempt then counted as two, and attempt 1 settled permission-denied as a
+        // REPEATED wall before any second attempt existed.
+        const string lockedPath = "src/locked/Protected.cs";
+        var runner = new SequencingRunner(
+            Refusing(Transient("overloaded"), lockedPath, isCommand: false),   // attempt 1, paused
+            Refusing(Blocked(), lockedPath, isCommand: false));               // attempt 1 re-run, then attempt 2
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+        // Attempt 1 retried; the repeat is attempt 2's.
+        Assert.Equal(new[] { AttemptOutcome.ActionFailed, AttemptOutcome.PermissionDenied }, entry.Attempts.Select(a => a.Outcome));
+        Assert.Equal(3, used.Calls);
+    }
 }

@@ -1022,7 +1022,7 @@ public sealed class TaskExecutor : ITaskExecutor
         //     the .claude/ wall as secondary context), because a guardrail genuinely ran and failed; only
         //     the action-failed site (no guardrail reached — the pure #104 first-attempt wall) still
         //     reports `permission-denied`.
-        permissionWalls.Observe(action.BlockedWritePaths, action.RefusedCommands);
+        permissionWalls.Observe(attemptNumber, action.BlockedWritePaths, action.RefusedCommands);
         PermissionWallDecision wall = permissionWalls.ShouldHalt();
 
         // --- transient pause (issue #115): a retryable infra condition (429/503/529, overloaded,
