@@ -2125,7 +2125,7 @@ whatever `HEAD` **currently** is. Those two are now reconciled: **before merging
 `BranchMoved`, carrying "run started on `<original>`; HEAD is now `<current>`" through the same
 `RunReport.MergeOnSuccessDetail` channel `HookRejected` and `DirtyWorkingTree` use, so the CLI names both
 branches plus the plan branch the verified work is on. This merge adds no `DeliveredToBranch` of its own
-(it stays **null** unless an earlier wave's barrier delivery already landed, §14.12), and the
+(it stays **null** unless a barrier delivery this run process settled already landed, §14.12), and the
 "delivered to `<branch>`" line keys on the run-end merge landing, so it correctly does not print. A **detached** `HEAD` (the idiom prints the
 literal `HEAD`) and an unreadable `HEAD` take the same path — neither is provably the pinned branch, and
 this gate FAILS CLOSED exactly as the dirty-tree gate below does. This check runs FIRST, ahead of the dirty-path
@@ -2916,7 +2916,9 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                       // and absent in serial mode where nothing is stranded
     // "deliveredToBranch": "master"  // present whenever any delivery LANDED on the user's branch: the
                                       // run-end merge, or a wave's barrier delivery (§14.12) — so a
-                                      // partially-delivered run carries it too; absent when nothing landed
+                                      // partially-delivered run carries it too; a resume that delivered
+                                      // nothing itself keeps the branch already recorded; absent when
+                                      // nothing landed
     // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
                                       // (branch-moved, #588) the branch pinned at start + the current HEAD
     // "forcedPastDecision": {        // #597 — present ONLY when --merge-on-success overrode the #361
@@ -3061,7 +3063,11 @@ run-end delivery itself would otherwise have recorded: when an earlier wave deli
 and the run-end merge is then held (the §1a interlock) or refused (conflict, hook-rejected, …), the record
 still reads `partially-delivered`, with `reason` naming the holding decision or the refusal's token — never
 `not-attempted` or a bare refusal outcome, both of which would read as "nothing shipped" when part of it
-did. The source is `RunReport.WaveDeliveries`, stamped from the journal in `BuildReport` on EVERY report,
+did. Both branches are named: `planBranch` is the branch still holding the rest, and `deliveredToBranch` is
+the branch the barrier deliveries landed on. That branch comes only from a delivery the run's own process
+settled. Every process re-pins its delivery target from `HEAD`, so a resume that delivers nothing itself (after
+a `git switch`, or on a detached `HEAD`) records no branch of its own and keeps the one the delivering process
+recorded; the literal `HEAD` is never recorded. The source is `RunReport.WaveDeliveries`, stamped from the journal in `BuildReport` on EVERY report,
 halted ones included, so a plan-level terminal-gate failure after earlier waves delivered still gets this
 record written — before the CLI's terminal-gate halt returns. The one case that reads `delivered`, not
 `partially-delivered`: a rejecting hook held every barrier delivery and the run-end merge then landed —
