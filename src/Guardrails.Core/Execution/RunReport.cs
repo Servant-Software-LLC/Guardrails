@@ -477,6 +477,15 @@ public sealed record RunReport
 
     /// <summary>True when a task settled against a definition that had moved (see <see cref="ExecutedDefinitionDivergence"/>).</summary>
     public bool HasExecutedDefinitionDivergence => ExecutedDefinitionDivergence is not null;
+
+    /// <summary>
+    /// Every wave's OWN barrier-delivery result this run recorded, keyed by wave directory (design 39
+    /// §4/§5) — the report's copy of <c>run.json</c>'s <c>waves.&lt;dir&gt;.delivered</c>. Empty until the
+    /// Scheduler fills it (task 29); MUST NOT throw — hundreds of tests construct and print
+    /// <see cref="RunReport"/>, and a throwing getter would break every one of them.
+    /// </summary>
+    public IReadOnlyDictionary<string, Journal.WaveDeliveredRecord> WaveDeliveries { get; init; } =
+        new Dictionary<string, Journal.WaveDeliveredRecord>();
 }
 
 /// <summary>The kind of wave-boundary halt a WAVED run stopped at (SSOT §14, #254 M2b).</summary>
