@@ -298,7 +298,15 @@ public enum DeliveryOutcome
     /// The checkout was no longer on the branch the run pinned as its delivery target, so nothing was
     /// merged (issue #588). Includes a detached HEAD and an unreadable HEAD.
     /// </summary>
-    BranchMoved
+    BranchMoved,
+
+    /// <summary>
+    /// The wave's exit gate failed on the trial merge with the user's branch (design 39 §4), so nothing was
+    /// promoted. Written only on a wave's <c>delivered</c> record (<see cref="WaveDeliveredRecord.Outcome"/>)
+    /// — never on <c>run.json</c>'s top-level <see cref="DeliverySection.Outcome"/>, which is the run-end
+    /// merge and has no trial-gate step.
+    /// </summary>
+    TrialGateFailed
 }
 
 /// <summary>
@@ -346,6 +354,17 @@ public sealed record WaveJournalEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public PlanGuardrailsSection? Exit { get; init; }
+
+    /// <summary>
+    /// This wave's OWN barrier-delivery record (design 39 §4, issue #525's incremental-delivery follow-on) —
+    /// absent when the wave is not a delivery point, has not reached its barrier yet, or had delivery
+    /// resolved off. <see cref="RunJournal.RecordWaveDelivery"/> is the one write path, and it REPLACES
+    /// whatever record it is given rather than appending. A rewind (<see cref="RunJournal.ResetWaveToPending"/>)
+    /// deliberately does NOT clear this field: a delivery cannot be undone, and its commits are already on
+    /// the user's branch, so forgetting the record here would make already-shipped work look held.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WaveDeliveredRecord? Delivered { get; init; }
 }
 
 /// <summary>
