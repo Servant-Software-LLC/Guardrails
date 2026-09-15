@@ -195,6 +195,13 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
     /// row pinning it (<c>PartialDeliveryReportTests.DescribeDelivery_APartialDelivery_IsPartiallyDelivered</c>)
     /// hand-builds a <c>RunReport</c> with <c>DeliveredToBranch</c> already filled in; this one reads what a
     /// real run wrote.
+    /// <para>
+    /// <b>Red on purpose: an open product gap, not a regression.</b> <c>RunCommand.DescribePartialDelivery</c>
+    /// copies <c>RunReport.DeliveredToBranch</c>, which only the run-end merge sets (<c>Scheduler.Finalize</c>,
+    /// <c>Scheduler.CompleteDeferredDelivery</c>); <c>BuildReport</c> never stamps it for a barrier delivery.
+    /// SSOT §7 still describes the key as "present only when delivery actually ran and succeeded", so the
+    /// contract needs a decision before the fix, which also touches every other reader of that field.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task ExitGatePartial_RunJsonNamesThePlanBranchAndTheBranchItDeliveredTo()

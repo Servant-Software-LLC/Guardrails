@@ -2062,7 +2062,13 @@ public static class RunCommand
         IReadOnlyList<KeyValuePair<string, WaveDeliveredRecord>> hookHolds = report.WaveDeliveries
             .Where(kv => kv.Value.Status == WaveDeliveryStatus.Refused && kv.Value.Outcome == DeliveryOutcome.HookRejected)
             .ToList();
-        bool anyHeld = report.WaveDeliveries.Values.Any(r => r.Status != WaveDeliveryStatus.Delivered)
+        // Held = anything the run-end merge did not carry to the user's branch. `!runEndLanded` is the SAME
+        // partial-delivery predicate DescribeDelivery uses. Without it, a later wave whose TASK needed a human
+        // read as "nothing held" — the Scheduler's hard-barrier return sets no WaveHalt, and the plan's final
+        // wave never carries a barrier record — so a partially-delivered run printed no report at all.
+        bool runEndLanded = report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
+        bool anyHeld = !runEndLanded
+                       || report.WaveDeliveries.Values.Any(r => r.Status != WaveDeliveryStatus.Delivered)
                        || report.WaveHalt is not null;
 
         // Silent on an ordinary run where every delivering wave simply delivered and nothing was ever held
@@ -2072,8 +2078,6 @@ public static class RunCommand
         {
             return;
         }
-
-        bool runEndLanded = report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
 
         output.WriteLine();
         output.WriteLine("WAVE DELIVERY REPORT (design 39 §4):");
@@ -2103,7 +2107,50 @@ public static class RunCommand
             output.WriteLine($"  Held (the run halted here): {haltedWaveDir}.");
         }
 
+        // Design 39 §4 names every held wave, not only the one a halt stopped at: a wave whose task needed a
+        // human, the final wave behind a failed terminal gate, a wave the run never reached.
+        if (!runEndLanded)
+        {
+            List<string> alsoHeld = HeldWaves(report)
+                .Where(w => !string.Equals(w, report.WaveHalt?.WaveDir, StringComparison.Ordinal))
+                .ToList();
+            if (alsoHeld.Count > 0)
+            {
+                output.WriteLine($"  Held on the plan branch: {string.Join(", ", alsoHeld)}.");
+            }
+        }
+
         output.WriteLine("  Confirm on disk: git branch --no-merged <your-branch> (run from inside the repo).");
+    }
+
+    /// <summary>
+    /// Design 39 §4: the waves whose verified work did NOT reach the user's branch, for a run whose run-end
+    /// merge did not land — every wave with a barrier record, and every wave with a reported task, that no
+    /// <c>delivered</c> record's <c>covers</c> carries. That is a refused or suppressed barrier, the plan's final
+    /// wave (it only ever delivers at run end), a wave a task failure or a halt stopped, and a wave never
+    /// reached. Waved task ids are wave-qualified (<c>&lt;wave-dir&gt;/&lt;task&gt;</c>, SSOT §14.2); an
+    /// unqualified id names no wave. Ordinal order. Shared by <see cref="RenderWaveDeliveryReport"/> and
+    /// <see cref="DescribePartialDelivery"/>, so the console and <c>run.json</c> name the same held set.
+    /// </summary>
+    private static IReadOnlyList<string> HeldWaves(RunReport report)
+    {
+        var carried = new HashSet<string>(
+            report.WaveDeliveries.Values
+                .Where(r => r.Status == WaveDeliveryStatus.Delivered)
+                .SelectMany(r => r.Covers),
+            StringComparer.Ordinal);
+
+        IEnumerable<string> wavesWithTasks = report.Tasks
+            .Select(t => t.TaskId)
+            .Where(id => id.IndexOf('/') > 0)
+            .Select(id => id[..id.IndexOf('/')]);
+
+        return report.WaveDeliveries.Keys
+            .Concat(wavesWithTasks)
+            .Where(w => !carried.Contains(w))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(w => w, StringComparer.Ordinal)
+            .ToList();
     }
 
     /// <summary>
@@ -2349,10 +2396,9 @@ public static class RunCommand
         RunReport report, bool terminalGatePassed, string planBranch,
         IReadOnlyList<string> deliveredWaves, ForcedDeliveryRecord? forcedPastDecision)
     {
-        IReadOnlyList<string> heldWaves = report.WaveDeliveries
-            .Where(kv => kv.Value.Status != WaveDeliveryStatus.Delivered)
-            .Select(kv => kv.Key)
-            .ToList();
+        // Design 39 §4: "reason names the delivered and held waves" — every held wave, not only those with a
+        // non-delivered barrier record (the final wave, and a wave a task failure stopped, never carry one).
+        IReadOnlyList<string> heldWaves = HeldWaves(report);
 
         // When the run-end merge RAN and was refused, name its own refusal token (precedence: this
         // overrides what would otherwise have been that refusal's own Outcome). Otherwise reuse the exact

@@ -304,6 +304,74 @@ public sealed class PartialDeliveryReportTests
         Assert.Null(d.Reason);
     }
 
+    /// <summary>
+    /// Design 39 §4's own example: a later wave's TASK needs a human after an earlier wave delivered at its
+    /// barrier. The Scheduler's hard-barrier return sets no <see cref="RunReport.WaveHalt"/>, and the plan's
+    /// final wave carries no barrier record, so "held" can only be read from the run-end merge not landing.
+    /// Found through the real <c>run</c> path by <see cref="RunCommandWaveDeliveryProofTests"/>, where the
+    /// report printed nothing and <c>delivery.reason</c> named only the delivered wave.
+    /// </summary>
+    private static RunReport LaterWaveTaskFailureReport() => new()
+    {
+        Tasks =
+        [
+            Green("wave-01-deliver/01-write"),
+            new TaskResult { TaskId = "wave-02-final/01-write", Outcome = TaskOutcome.NeedsHuman, Summary = "guardrail(s) failed" },
+        ],
+        WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+        {
+            ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+        },
+    };
+
+    [Fact]
+    public void TheReport_ForALaterWavesTaskFailure_NamesTheDeliveredAndTheHeldWave()
+    {
+        var sw = new StringWriter();
+        RunCommand.RenderWaveDeliveryReport(LaterWaveTaskFailureReport(), sw);
+        string output = sw.ToString();
+
+        Assert.Contains("Delivered at their own barrier: wave-01-deliver.", output, StringComparison.Ordinal);
+        Assert.Contains("Held on the plan branch: wave-02-final.", output, StringComparison.Ordinal);
+        Assert.Contains("git branch --no-merged", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DescribeDelivery_ALaterWavesTaskFailure_ReasonNamesTheDeliveredAndTheHeldWave()
+    {
+        DeliverySection d = RunCommand.DescribeDelivery(LaterWaveTaskFailureReport(), terminalGatePassed: true, PlanDir);
+
+        Assert.Equal(DeliveryOutcome.PartiallyDelivered, d.Outcome);
+        Assert.False(d.Delivered);
+        Assert.NotNull(d.Reason);
+        Assert.Contains("wave-01-deliver", d.Reason!, StringComparison.Ordinal);
+        Assert.Contains("wave-02-final", d.Reason!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The control for the two rows above: once the run-end merge landed after a barrier delivery, nothing is
+    /// held, and the report stays silent — a renderer that printed on every waved run would fail here.
+    /// </summary>
+    [Fact]
+    public void TheReport_ForAWhollyDeliveredWavedRun_StaysSilent()
+    {
+        var report = new RunReport
+        {
+            Tasks = [Green("wave-01-deliver/01-write"), Green("wave-02-final/01-write")],
+            MergeOnSuccessOutcome = MergeOnSuccessResult.FastForwarded,
+            DeliveredToBranch = "master",
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+            },
+        };
+
+        var sw = new StringWriter();
+        RunCommand.RenderWaveDeliveryReport(report, sw);
+
+        Assert.Equal("", sw.ToString());
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // PrintWaveHalt — the DeliveryRefused halt's own label, over a StringConsoleIo.
     // ─────────────────────────────────────────────────────────────────────────────────────────
