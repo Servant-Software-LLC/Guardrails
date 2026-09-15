@@ -81,6 +81,7 @@ public static class JournalJson
         DeliveryOutcome.HookRejected => "hook-rejected",
         DeliveryOutcome.BranchMoved => "branch-moved",
         DeliveryOutcome.TrialGateFailed => "trial-gate-failed",
+        DeliveryOutcome.PartiallyDelivered => "partially-delivered",
         _ => throw new JsonException($"Unhandled delivery outcome '{outcome}'.")
     };
 
@@ -245,6 +246,7 @@ public static class JournalJson
                 "hook-rejected" => DeliveryOutcome.HookRejected,
                 "branch-moved" => DeliveryOutcome.BranchMoved,
                 "trial-gate-failed" => DeliveryOutcome.TrialGateFailed,
+                "partially-delivered" => DeliveryOutcome.PartiallyDelivered,
                 _ => throw new JsonException($"Unknown delivery outcome '{value}'.")
             };
         }

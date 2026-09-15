@@ -336,10 +336,9 @@ public enum DeliveryOutcome
     /// a barrier already delivered) and every DELIVERED outcome above (<see cref="DeliverySection.Delivered"/>
     /// stays <c>false</c> here, because a consumer keyed on it must never treat held work as shipped).
     /// <para>
-    /// Written only on <c>run.json</c>'s top-level <see cref="DeliverySection.Outcome"/> — task 19 owns the
-    /// <c>partially-delivered</c> token this member serializes to; until that lands, writing or reading this
-    /// member through <see cref="JournalJson"/> throws (see <see cref="Guardrails.Core.Journal.JournalJson"/>'s
-    /// converter, which is unaware of it by design — no other test in this suite serializes it).
+    /// Written only on <c>run.json</c>'s top-level <see cref="DeliverySection.Outcome"/> — never on a wave's
+    /// own <see cref="WaveDeliveredRecord.Outcome"/>, which names its own refusal/delivery instead. Serializes
+    /// to the <c>partially-delivered</c> token in both directions via <see cref="JournalJson"/>'s converter.
     /// </para>
     /// </summary>
     PartiallyDelivered

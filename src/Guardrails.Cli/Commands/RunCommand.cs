@@ -802,6 +802,13 @@ public static class RunCommand
                     // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
                     diagramObserver.WriteFinalStatic();
 
+                    // Design 39 §4: the end-of-run wave-delivery report, printed BEFORE Finish renders the
+                    // run's verdict (the #340 mergeOnSuccess banner's own defect was printing AFTER the green
+                    // summary, where a real operator read straight past it) — so a partially-delivered run's
+                    // evidence is on screen before the WAVE HALT / summary that follows it. A no-op when
+                    // nothing delivered incrementally and nothing was held.
+                    RenderWaveDeliveryReport(report, io.Out);
+
                     int exitCode = Finish(report, probe.Plan, runId, io, telemetry); // also writes the durable final log site
                     finalSitesSettled = true; // both final pages are now settled on the normal path
 
@@ -826,18 +833,16 @@ public static class RunCommand
                     // run ended — including the terminal-gate-failure early return.
                     RenderPlanEditWarning(report, io.Out);
 
-                    if (report.AllSucceeded && planGuardrailsPassed is false)
-                    {
-                        PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
-                        resolvedExitCode = ExitCodes.TaskFailed; // overrides Finish's own (greener) verdict — never read that instead.
-                        return ExitCodes.TaskFailed;
-                    }
-
                     // Issue #542: journal the delivery outcome BEFORE rendering the banner, so the durable
                     // record exists even if the console is never read (or never seen at all — #496's unattended
-                    // pipeline has no console). Written here, at the end, because delivery only fully resolves
-                    // once the terminal gate's verdict is in (the DeliveryPendingTerminalGate path). Best-effort:
-                    // a journal write must never flip a run's verdict this late.
+                    // pipeline has no console). Best-effort: a journal write must never flip a run's verdict
+                    // this late.
+                    //
+                    // Design 39 §4 (review round 5, d39-barrier-terminal-gate): placed AHEAD of the
+                    // terminal-gate-failure early return just below, not after it — a run whose earlier waves
+                    // already delivered at their own barrier still needs a durable partially-delivered record
+                    // even when the plan's final wave never reaches the user's branch, and the early return
+                    // used to skip this write entirely, leaving that run with NO delivery record at all.
                     try
                     {
                         // `is not false` rather than `?? true`: the parameter is consumed as "did the terminal
@@ -853,6 +858,13 @@ public static class RunCommand
                         // JsonException is in scope because RecordDelivery re-reads the journal from disk before
                         // writing (so it cannot clobber the run it is describing) — a corrupt journal must not
                         // turn a finished run into a harness error at the very last step.
+                    }
+
+                    if (report.AllSucceeded && planGuardrailsPassed is false)
+                    {
+                        PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
+                        resolvedExitCode = ExitCodes.TaskFailed; // overrides Finish's own (greener) verdict — never read that instead.
+                        return ExitCodes.TaskFailed;
                     }
 
                     // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
@@ -1760,6 +1772,7 @@ public static class RunCommand
             WaveHaltKind.WaveDrift => "WAVE DRIFT",
             WaveHaltKind.EntryGateFailed => "WAVE ENTRY GATE FAILED",
             WaveHaltKind.ExitGateFailed => "WAVE EXIT GATE FAILED",
+            WaveHaltKind.DeliveryRefused => "WAVE DELIVERY REFUSED",
             WaveHaltKind.BreakdownComplete => "WAVE BREAKDOWN COMPLETE",
             WaveHaltKind.BreakdownFailed => "WAVE BREAKDOWN FAILED",
             WaveHaltKind.BreakdownIncomplete => "WAVE BREAKDOWN INCOMPLETE",
@@ -2014,19 +2027,78 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// Render the issue #340 loud "work not delivered" warning: a run drained WHOLLY GREEN — the DAG AND
-    /// the terminal gate (<paramref name="terminalGatePassed"/>) — but delivery did NOT happen because
-    /// <c>mergeOnSuccess</c> resolved off (<see cref="RunReport.WhollyGreenButUndelivered"/>). The verified
-    /// work is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
-    /// <c>--fresh</c>/<c>reset -y</c> away from destruction. It is rendered as a bannered block so a run
-    /// that did NOT deliver can never read as an ordinary success. No warning fires for a DELIVERED run
-    /// (delivery requires <c>mergeOnSuccess</c> on, which forces the flag false), a non-green run, a
-    /// serial/<c>runOnCurrentBranch</c> run (no separate plan branch ⇒ the flag is false — the work is
-    /// already in the checkout), or a run whose terminal gate FAILED (<paramref name="terminalGatePassed"/>
-    /// false — that path already halts exit 2). Pure (writes only to <paramref name="output"/>) and public
-    /// + unit-tested with a <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same
-    /// rationale as <see cref="Hyperlink"/>).
+    /// Render the end-of-run wave-delivery report (design 39 §4) — which waves already delivered at their
+    /// own barrier, which are still held (and why), and where <c>git branch --no-merged</c> confirms it on
+    /// disk — printed BEFORE the run's verdict so a partially-delivered run can never be read straight past
+    /// (the #340 <c>mergeOnSuccess</c> banner's own defect, printed AFTER the green summary). Also names a
+    /// hook-rejected hold even on a run whose run-end merge later landed everything (final adversarial
+    /// pass, review round 5): report text only — it never changes <see cref="DescribeDelivery"/>'s
+    /// <c>Delivered</c>/<c>Outcome</c>/<c>Reason</c>. Silent when nothing delivered incrementally and
+    /// nothing was ever held. Pure, and public + unit-tested for the same reason
+    /// <see cref="RenderUndeliveredWorkWarning"/> is — the Cli assembly ships no <c>InternalsVisibleTo</c>.
     /// </summary>
+    public static void RenderWaveDeliveryReport(RunReport report, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(output);
+
+        IReadOnlyList<string> delivered = report.WaveDeliveries
+            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        if (delivered.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyList<KeyValuePair<string, WaveDeliveredRecord>> hookHolds = report.WaveDeliveries
+            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Refused && kv.Value.Outcome == DeliveryOutcome.HookRejected)
+            .ToList();
+        bool anyHeld = report.WaveDeliveries.Values.Any(r => r.Status != WaveDeliveryStatus.Delivered)
+                       || report.WaveHalt is not null;
+
+        // Silent on an ordinary run where every delivering wave simply delivered and nothing was ever held
+        // back — the whole point of this report is to surface incremental delivery an operator could
+        // otherwise read straight past (design 39 §4), not to narrate a boring green multi-wave run.
+        if (!anyHeld && hookHolds.Count == 0)
+        {
+            return;
+        }
+
+        bool runEndLanded = report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
+
+        output.WriteLine();
+        output.WriteLine("WAVE DELIVERY REPORT (design 39 §4):");
+        output.WriteLine($"  Delivered at their own barrier: {string.Join(", ", delivered)}.");
+
+        // Final adversarial pass (review round 5): a rejecting hook holds every later delivery to run end
+        // instead of halting, and the durable record correctly reads delivered/Merged once the run-end merge
+        // lands — so this line is the ONLY surface an operator ever learns incremental delivery was held
+        // back at all. Report text only: DescribeDelivery's Delivered/Outcome/Reason never change here.
+        foreach ((string waveDir, WaveDeliveredRecord record) in hookHolds)
+        {
+            IReadOnlyList<string> ridingAlong = report.WaveDeliveries
+                .Where(kv => kv.Value.Status == WaveDeliveryStatus.Suppressed)
+                .Select(kv => kv.Key)
+                .ToList();
+            string heldWaves = ridingAlong.Count > 0 ? $"{waveDir}, {string.Join(", ", ridingAlong)}" : waveDir;
+            string landedNote = runEndLanded
+                ? $"the held wave(s) ({heldWaves}) delivered together at run end"
+                : $"the held wave(s) ({heldWaves}) are still on the plan branch";
+            output.WriteLine(
+                $"  Incremental delivery was held from {waveDir}: your git hook rejected the trial merge "
+                + $"commit ({record.Detail}); {landedNote}.");
+        }
+
+        if (report.WaveHalt is { WaveDir: { } haltedWaveDir })
+        {
+            output.WriteLine($"  Held (the run halted here): {haltedWaveDir}.");
+        }
+
+        output.WriteLine("  Confirm on disk: git branch --no-merged <your-branch> (run from inside the repo).");
+    }
+
     /// <summary>
     /// Derive the durable delivery record (SSOT §7 <c>delivery</c>, issue #542) from the finished run — the
     /// machine-readable, on-disk counterpart of <see cref="RenderUndeliveredWorkWarning"/>'s banner.
@@ -2042,17 +2114,6 @@ public static class RunCommand
     /// the Cli assembly ships no <c>InternalsVisibleTo</c>.
     /// </para>
     /// </summary>
-    /// <summary>
-    /// Render the end-of-run wave-delivery report (design 39 §4) — which waves already delivered and which
-    /// are still held, and where <c>git branch --no-merged</c> confirms it — printed BEFORE the run's verdict
-    /// so a partially-delivered run can never be read straight past (the #340 <c>mergeOnSuccess</c> banner's
-    /// own defect, printed AFTER the green summary). STUB: task 19 implements this and calls it before the
-    /// verdict is printed. Pure, and public + unit-tested for the same reason
-    /// <see cref="RenderUndeliveredWorkWarning"/> is — the Cli assembly ships no <c>InternalsVisibleTo</c>.
-    /// </summary>
-    public static void RenderWaveDeliveryReport(RunReport report, TextWriter output) =>
-        throw new NotImplementedException();
-
     public static DeliverySection DescribeDelivery(
         RunReport report, bool terminalGatePassed, string planDirectory)
     {
@@ -2077,20 +2138,29 @@ public static class RunCommand
                 }
                 : null;
 
+        // Design 39 §4 precedence (review round 4, d39-partial-delivery-record): partially-delivered wins
+        // whenever verified work both LANDED (a wave delivered at its own barrier) and is still HELD (the
+        // run-end delivery did not land) — decided before every never-attempted reason below and before a
+        // refused run-end merge's own outcome, so a barrier delivery is never described as undelivered. A
+        // wave with no `delivered` key is NOT held when the run-end merge landed: that merge carried every
+        // wave after the last delivery point (review round 5, d39-hooks-untracked-tooling), exactly as a
+        // flat plan's does — which is why this is gated on the run-end outcome, not on WaveDeliveries alone.
+        bool runEndLanded = report.MergeOnSuccessOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
+        IReadOnlyList<string> deliveredWaves = report.WaveDeliveries
+            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        if (!runEndLanded && deliveredWaves.Count > 0)
+        {
+            return DescribePartialDelivery(report, terminalGatePassed, planBranch, deliveredWaves, forcedPastDecision);
+        }
+
         // The merge-back RAN: its own result is the whole story, success or refusal.
         if (report.MergeOnSuccessOutcome is { } outcome)
         {
             bool delivered = outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged;
-            DeliveryOutcome token = outcome switch
-            {
-                MergeOnSuccessResult.FastForwarded => DeliveryOutcome.FastForwarded,
-                MergeOnSuccessResult.Merged => DeliveryOutcome.Merged,
-                MergeOnSuccessResult.Conflict => DeliveryOutcome.Conflict,
-                MergeOnSuccessResult.DirtyWorkingTree => DeliveryOutcome.DirtyWorkingTree,
-                MergeOnSuccessResult.HookRejected => DeliveryOutcome.HookRejected,
-                MergeOnSuccessResult.BranchMoved => DeliveryOutcome.BranchMoved,
-                _ => DeliveryOutcome.NotAttempted
-            };
+            DeliveryOutcome token = MapMergeOutcome(outcome);
 
             return new DeliverySection
             {
@@ -2107,9 +2177,42 @@ public static class RunCommand
             };
         }
 
-        // The merge-back never ran. WHY is the part a later reader cannot reconstruct, and the ordering here
-        // matters: the undelivered flag is the case that strands work, so it is reported ahead of the
-        // reasons that merely mean there was nothing to deliver.
+        return new DeliverySection
+        {
+            Delivered = false,
+            Outcome = DeliveryOutcome.NotAttempted,
+            Reason = NeverRanReason(report, terminalGatePassed, planBranch),
+            PlanBranch = report.WhollyGreenButUndelivered ? planBranch : null,
+            ForcedPastDecision = forcedPastDecision,
+        };
+    }
+
+    /// <summary>
+    /// Map a <see cref="MergeOnSuccessResult"/> (the run-end merge's own outcome) to the durable
+    /// <see cref="DeliveryOutcome"/> token — shared by <see cref="DescribeDelivery"/>'s ordinary merge-ran
+    /// branch and <see cref="DescribePartialDelivery"/> below, which both need to name the SAME refusal
+    /// token for the same underlying result.
+    /// </summary>
+    private static DeliveryOutcome MapMergeOutcome(MergeOnSuccessResult outcome) => outcome switch
+    {
+        MergeOnSuccessResult.FastForwarded => DeliveryOutcome.FastForwarded,
+        MergeOnSuccessResult.Merged => DeliveryOutcome.Merged,
+        MergeOnSuccessResult.Conflict => DeliveryOutcome.Conflict,
+        MergeOnSuccessResult.DirtyWorkingTree => DeliveryOutcome.DirtyWorkingTree,
+        MergeOnSuccessResult.HookRejected => DeliveryOutcome.HookRejected,
+        MergeOnSuccessResult.BranchMoved => DeliveryOutcome.BranchMoved,
+        _ => DeliveryOutcome.NotAttempted
+    };
+
+    /// <summary>
+    /// WHY the end-of-run merge-back never even ran, in words (the durable form of what the console banner
+    /// says) — shared by <see cref="DescribeDelivery"/>'s ordinary never-ran branch and
+    /// <see cref="DescribePartialDelivery"/> below, which reuses the SAME cascade to explain why the rest of
+    /// a partially-delivered run is still held.
+    /// </summary>
+    private static string NeverRanReason(RunReport report, bool terminalGatePassed, string planBranch) =>
+        // The undelivered flag is the case that strands work, so it is reported ahead of the reasons that
+        // merely mean there was nothing to deliver.
         // Issue #556 (plan 32 §6.5 correction 2): the divergence case needs its OWN reason and gets it ahead
         // of the generic non-green one, which would otherwise write "the run was not wholly green" into
         // run.json for a run whose tasks{} shows every task `succeeded` — a record that contradicts the
@@ -2121,7 +2224,7 @@ public static class RunCommand
         // a wrong cause written into the one file an unattended pipeline (#496) can read, which is worse
         // than none. Name the decision AND the task it came from, so the record answers the question the
         // console banner answers.
-        string reason = report.WhollyGreenButUndelivered
+        report.WhollyGreenButUndelivered
             ? report.DeliverySuppressingDecision is { } suppressing
                 ? $"delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
                   + $"'{suppressing.Decision}' at '{suppressing.Subject}' ({suppressing.Boundary} boundary), so "
@@ -2143,12 +2246,44 @@ public static class RunCommand
                         : "no separate plan branch was in play (serial mode), so there was nothing pending delivery — "
                           + "the work is already in your checkout";
 
+    /// <summary>
+    /// Design 39 §4 (review round 4, d39-partial-delivery-record): SOME of this run's verified work reached
+    /// the user's branch at a wave's own barrier while the rest is still held. Never described as delivered
+    /// (<see cref="DeliverySection.Delivered"/> stays false — a consumer keyed on it must never treat held
+    /// work as shipped) and never described as undelivered (that would contradict the branch's own git
+    /// history for the waves that already landed). Names the delivered waves and reuses the SAME reason text
+    /// an ordinary (no-barrier-delivery) run would carry for whatever cause is holding the rest — a refused
+    /// run-end merge names its own refusal token, an interlock suppression names the decision/subject/
+    /// boundary, a failed terminal gate says so — so a reader who already knows that vocabulary reads the
+    /// same words, just now also told what already shipped.
+    /// </summary>
+    private static DeliverySection DescribePartialDelivery(
+        RunReport report, bool terminalGatePassed, string planBranch,
+        IReadOnlyList<string> deliveredWaves, ForcedDeliveryRecord? forcedPastDecision)
+    {
+        IReadOnlyList<string> heldWaves = report.WaveDeliveries
+            .Where(kv => kv.Value.Status != WaveDeliveryStatus.Delivered)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        // When the run-end merge RAN and was refused, name its own refusal token (precedence: this
+        // overrides what would otherwise have been that refusal's own Outcome). Otherwise reuse the exact
+        // never-ran cascade — the interlock sentence, the divergence sentence, or the terminal-gate sentence
+        // — so the "why held" text matches what an ordinary run would say for the same cause.
+        string whyHeld = report.MergeOnSuccessOutcome is { } outcome
+            ? $"the end-of-run merge to your branch was refused ({JournalJson.DeliveryOutcomeToken(MapMergeOutcome(outcome))})"
+            : NeverRanReason(report, terminalGatePassed, planBranch);
+
+        string heldSuffix = heldWaves.Count > 0 ? $"; held: {string.Join(", ", heldWaves)}" : "";
+
         return new DeliverySection
         {
             Delivered = false,
-            Outcome = DeliveryOutcome.NotAttempted,
-            Reason = reason,
-            PlanBranch = report.WhollyGreenButUndelivered ? planBranch : null,
+            Outcome = DeliveryOutcome.PartiallyDelivered,
+            Reason = $"delivered: {string.Join(", ", deliveredWaves)}{heldSuffix} — {whyHeld}",
+            PlanBranch = planBranch,
+            DeliveredToBranch = report.DeliveredToBranch,
+            Detail = report.MergeOnSuccessDetail,
             ForcedPastDecision = forcedPastDecision,
         };
     }
@@ -2176,6 +2311,20 @@ public static class RunCommand
         }
     }
 
+    /// <summary>
+    /// Render the issue #340 loud "work not delivered" warning: a run drained WHOLLY GREEN — the DAG AND
+    /// the terminal gate (<paramref name="terminalGatePassed"/>) — but delivery did NOT happen because
+    /// <c>mergeOnSuccess</c> resolved off (<see cref="RunReport.WhollyGreenButUndelivered"/>). The verified
+    /// work is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
+    /// <c>--fresh</c>/<c>reset -y</c> away from destruction. It is rendered as a bannered block so a run
+    /// that did NOT deliver can never read as an ordinary success. No warning fires for a DELIVERED run
+    /// (delivery requires <c>mergeOnSuccess</c> on, which forces the flag false), a non-green run, a
+    /// serial/<c>runOnCurrentBranch</c> run (no separate plan branch ⇒ the flag is false — the work is
+    /// already in the checkout), or a run whose terminal gate FAILED (<paramref name="terminalGatePassed"/>
+    /// false — that path already halts exit 2). Pure (writes only to <paramref name="output"/>) and public
+    /// + unit-tested with a <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same
+    /// rationale as <see cref="Hyperlink"/>).
+    /// </summary>
     public static void RenderUndeliveredWorkWarning(
         RunReport report, bool terminalGatePassed, string planDirectory, TextWriter output,
         int? planFolderCommitsNotOnPlanBranch = null)
@@ -2193,6 +2342,20 @@ public static class RunCommand
         output.WriteLine();
         output.WriteLine(rule);
         output.WriteLine("*** WORK NOT DELIVERED ***");
+
+        // Design 39 §4: a wave already delivered at its own barrier stays a true fact even when the run-end
+        // delivery that would have carried the rest was held — naming it here keeps the "NOT on your
+        // checkout" line below honest about only the work that is STILL held.
+        IReadOnlyList<string> alreadyDeliveredWaves = report.WaveDeliveries
+            .Where(kv => kv.Value.Status == WaveDeliveryStatus.Delivered)
+            .Select(kv => kv.Key)
+            .ToList();
+        if (alreadyDeliveredWaves.Count > 0)
+        {
+            output.WriteLine(
+                $"Already delivered to your branch, at their own barrier: {string.Join(", ", alreadyDeliveredWaves)}.");
+            output.WriteLine("The rest is still held:");
+        }
 
         // Issue #597: TWO causes, two operator responses. Naming the wrong one cost a measured operator
         // three dead ends (guardrails.json → the default in source → whether the default had changed since
