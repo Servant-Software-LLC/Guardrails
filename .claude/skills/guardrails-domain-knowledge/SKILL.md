@@ -420,7 +420,11 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   scope guard**: salvage now fires for **EVERY non-final worktree failure** -- guardrail-fail, action-fail,
   timeout, max-turns, output-cap, write-scope -- NOT only the two non-logic budget-exhaustion outcomes,
   because the retry agent (informed by the per-guardrail verdicts, below) decides how much to reuse. A
-  genuine no-op attempt (empty diff) is not offered a stash. **Two suppress-the-stash exceptions:**
+  genuine no-op attempt (empty diff) is not offered a stash. **A write-scope violation is stashed only when
+  the attempt changed something IN scope (#705)**: its out-of-scope bytes are kept instead as
+  `out-of-scope.patch`, captured before the scoped revert, for a human, and never applied or offered as
+  salvage. (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
+  non-empty snapshot is not evidence of in-scope work.) **Two suppress-the-stash exceptions:**
   (1) **fragment-rejection** paths (invalid-fragment / foreign-key) keep the #162 re-author disclosure,
   not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** is suppressed AT
   CREATION (no ref, no patch) so a gamed edit is genuinely unrecoverable via salvage -- keyed off a robust
@@ -449,7 +453,8 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   re-author. The PROMPT-action retry header is now chosen by what actually happened to the on-disk work:
   **Persisted** (serial/final -- "keep what already works", still true), **rolled-back-but-stashed**
   (worktree + salvage -- "SAVED, recover from the salvage section"), or **rolled-back-and-lost** (worktree,
-  salvage off -- "not recoverable, re-author"). This fixes the #167 gap where the guardrail-fail/action-fail
+  salvage off -- "not recoverable, re-author"). A write-scope violation that changed nothing in scope gets
+  its own line ("None of your previous attempt's work was kept for you"), never SAVED (#705). This fixes the #167 gap where the guardrail-fail/action-fail
   (and write-scope) headers falsely claimed "keep what already works" while the reset had discarded the
   writes. Serial mode is unchanged (writes persist across attempts -> the "keep what works" wording is
   already accurate, and no stash is needed).

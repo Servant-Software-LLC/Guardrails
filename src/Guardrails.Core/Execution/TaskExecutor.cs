@@ -1331,6 +1331,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
             if (!scopeCheck.Passed)
             {
+                // #705: KEEP the out-of-scope bytes before the revert below destroys them.
+                string? outOfScopePatchPath = AttemptArtifacts.WriteOutOfScopePatch(
+                    logDir,
+                    WriteScopeCheck.CaptureOffendingPatch(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths));
+
                 // Scoped revert: restore only the out-of-scope paths to taskBase state.
                 WriteScopeCheck.ScopedRevert(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths);
 
@@ -1355,7 +1360,8 @@ public sealed class TaskExecutor : ITaskExecutor
                     SalvageRef? gapSalvage = TryStashEscalatingAttempt(task, worktree, attemptNumber);
                     return _journaler.FailedAttempt(
                         task, attemptNumber, startedAt, relativeLogDir, logDir,
-                        RetryPolicy.ForWriteScopeGapHalt(task, attemptNumber, scopeCheck, scopeGap, gapSalvage),
+                        RetryPolicy.ForWriteScopeGapHalt(
+                            task, attemptNumber, scopeCheck, scopeGap, gapSalvage, outOfScopePatchPath),
                         // This attempt IS the final one: the harness has decided no further attempt can help, so the
                         // journal settles the task needs-human now rather than after the budget runs out.
                         isFinal: true,
@@ -1376,12 +1382,17 @@ public sealed class TaskExecutor : ITaskExecutor
                 // #306: STASH the (now out-of-scope-reverted) attempt so the retry can recover the good
                 // IN-SCOPE work instead of re-authoring — and so the feedback stops falsely claiming the
                 // in-scope changes "are preserved" when the F2 reset is about to discard them too.
-                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
-                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
+                // #705: ONLY when the check saw an in-scope change. With none, the revert already took every
+                // change the agent made, so there is nothing in scope to stash. A snapshot here would not be
+                // empty anyway — its fresh index re-reads line endings and file modes the segment's own index
+                // does not — and plan 40's retry was told that churn was its "SAVED" work.
+                (bool fileWritesRolledBack, SalvageRef? salvageRef) = scopeCheck.InScopePaths.Count > 0
+                    ? StashIfRollingBack(task, worktree, attemptNumber, isFinal)
+                    : (WorktreeWillReset(worktree, isFinal), null);
 
                 string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
                 string feedback = RetryPolicy.ForWriteScopeViolation(
-                    task, attemptNumber, scopeCheck, fileWritesRolledBack, salvageRef);
+                    task, attemptNumber, scopeCheck, fileWritesRolledBack, salvageRef, outOfScopePatchPath);
                 AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     // #538: the write-scope check runs BEFORE the task's guardrails, so none had run when

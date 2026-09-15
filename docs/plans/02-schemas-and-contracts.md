@@ -880,7 +880,8 @@ supersedes that: agentic looping needs the artifact BACK — the retry agent, in
 **per-guardrail verdicts** (§8: which checks already passed, which failed and why), is the one reasoning
 about the failure and decides how much to reuse. So salvage now fires for **guardrail-fail, action-fail,
 timeout, max-turns, output-cap, and write-scope** — every path where a non-final worktree attempt is
-about to be reset. The clean-slate reset stays the DEFAULT starting point (avoids compounding a corrupt
+about to be reset (a write-scope violation only when the attempt changed something INSIDE its scope; its
+out-of-scope bytes are kept separately as `out-of-scope.patch` — #705, §3.4). The clean-slate reset stays the DEFAULT starting point (avoids compounding a corrupt
 partial state); the stash is opt-in for the agent. A genuine no-op attempt (empty diff vs `taskBase`) is
 NOT offered a stash (nothing to salvage). **Two documented exceptions, both suppressing the stash:**
 (1) the **fragment-rejection** paths (invalid-fragment / foreign-key, §6.2) keep their #162 re-author
@@ -1219,6 +1220,26 @@ salvage (§3.2). The `TaskResult.Summary` carries the stable `needs human: ` pre
 fix. **Script** actions are excluded: they cannot self-correct, and their reproduction is the #264 short-circuit's
 domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
 diagnose this halt.
+
+**Out-of-scope work stays recoverable, and salvage says only what is true (issue #705).** The scoped revert
+destroys the offending bytes, which is exactly wrong when the out-of-scope write IS the deliverable — and every
+plan scope gap looks like that. So before the revert the harness writes `out-of-scope.patch` (§8) into the
+attempt's log dir. It is a `git diff --cached --binary` of the offending paths against `taskBase`, taken from the
+index the check just staged: added, modified and deleted paths alike, in-scope paths excluded. The capture is
+best-effort and never leaves an empty file. It exists for the human deciding whether `writeScope` should grow:
+the harness never applies it and never offers it to a retry as salvage. The violation feedback names it as a
+human's copy, "not for you", because re-applying it fails the same check, and the #707 halt names it too.
+
+The retry salvage (§3.2) for a write-scope violation is taken only when the attempt changed something INSIDE its
+scope (`WriteScopeCheckResult.InScopePaths` is non-empty). With no in-scope change there is nothing in scope to
+save, so no ref and no `prior-attempt.patch` are written. The feedback header says so — "None of your previous
+attempt's work was kept for you … there is no in-scope work to recover" — instead of "SAVED, not lost", and on a
+final attempt it likewise claims nothing preserved. `RetryPolicy.ForWriteScopeViolation` enforces the same rule
+itself: it neither claims nor offers salvage for a violation with no in-scope change, whatever snapshot it is
+handed. The snapshot alone cannot answer the question, because it stages into a fresh throwaway index that
+re-hashes every file. A CRLF-committed file under `core.autocrlf=true`, or an executable bit under
+`core.filemode=false`, reads as changed there and nowhere else; plan 40's salvage held exactly that churn and
+nothing of the agent's work.
 
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
@@ -4379,7 +4400,13 @@ logs/<runId>/<task-id>/attempt-N/
                               #   whose tree was never rolled back, only ORPHANED; the escalation form is
                               #   scope-filtered to writeScope, the retry form is not. The NEXT attempt's
                               #   feedback.md (retry) or the escalation record + composed prompt (escalation)
-                              #   points at it (`git apply`); absent on a no-op/serial attempt
+                              #   points at it (`git apply`); absent on a no-op/serial attempt, and on a
+                              #   write-scope violation that changed nothing INSIDE the scope (#705, §3.4)
+├── out-of-scope.patch       # #705: applyable diff of a write-scope violation's OFFENDING paths vs taskBase,
+                              #   captured from the check's staged index BEFORE the scoped revert destroys
+                              #   them; for a HUMAN deciding whether writeScope should grow — never applied by
+                              #   the harness, never offered to a retry as salvage; named in feedback.md;
+                              #   absent when there was no violation or the best-effort capture failed
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
 
@@ -4524,6 +4551,10 @@ what already works" even though the worktree reset had discarded the writes):
   was SAVED, not lost. Recover the parts that already work from '## Prior attempt work is salvageable'
   below, then make ONLY the change needed"); or **rolled-back-and-lost** (worktree non-final, salvage
   off/failed: "…rolled back to a clean base and are NOT recoverable. Re-author from scratch").
+- A PROMPT action's **write-scope violation with no in-scope change** gets its own line whatever the
+  disposition — "None of your previous attempt's work was kept for you: every change it made was OUTSIDE this
+  task's writeScope … there is no in-scope work to recover" — and never the stashed wording, because nothing in
+  scope existed to stash (#705, §3.4).
 
 **Per-guardrail verdict ledger (issue #306).** A guardrail-failure `feedback.md` also carries a "## Prior
 attempt: guardrail verdicts" ledger — every guardrail that ran, marked `✅` (passed, do not break) or `❌`
