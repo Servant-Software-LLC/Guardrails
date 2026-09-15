@@ -65,7 +65,7 @@ public static class TelemetryFailureClassifier
     private const string FeedbackFileName = "feedback.md";
 
     /// <summary>
-    /// <c>RetryPolicy.ForWriteScopeViolation</c> (<c>RetryPolicy.cs:572</c>). Covers all THREE wording
+    /// <c>RetryPolicy.ForWriteScopeViolation</c> (<c>RetryPolicy.cs:572</c>). Covers all FOUR wording
     /// generations of this feedback, because each generation changed only the body beneath the marker:
     /// <list type="bullet">
     /// <item><b>G1</b> — <c>fa3f500</c> (2026-06-21, plan 08 / #123): marker, a bare <c>- `path`</c> list,
@@ -80,6 +80,9 @@ public static class TelemetryFailureClassifier
     /// <item><b>G3</b> — <c>40639d8</c> (2026-07-08, #306/#310): adds the <c>fileWritesRolledBack</c>
     /// closing paragraph and a trailing <c>## Prior attempt work is salvageable</c> section. Body only;
     /// no sample on disk.</item>
+    /// <item><b>G4</b> — issues #706 / #705 (2026-09-15): the body gains the enforced allowed-path list, a pointer
+    /// to the kept <c>out-of-scope.patch</c>, and a header that claims no salvage when nothing in scope changed. The
+    /// #707 needs-human halt keeps the same marker over its own body. Body only; no sample on disk.</item>
     /// </list>
     /// A future generation that RENAMES the heading is not covered and will read as
     /// <see cref="GuardrailFailureKind.Undifferentiated"/> — deliberately. This list is how a reader tells

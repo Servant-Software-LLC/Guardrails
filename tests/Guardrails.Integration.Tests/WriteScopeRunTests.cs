@@ -168,6 +168,12 @@ public sealed class WriteScopeRunTests
         string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 1), "feedback.md"));
         Assert.Contains("`01-author`", halt);
         Assert.Contains("\"src/Stub.cs\"", halt);
+
+        // #705: the halt is where a human widens the scope, so the work the revert took is kept for them.
+        string outOfScope = Path.Combine(AttemptDir(planDir, "02-implement", 1), "out-of-scope.patch");
+        Assert.True(File.Exists(outOfScope), "the out-of-scope work must be kept for the human the halt asks");
+        Assert.Contains("implemented", File.ReadAllText(outOfScope));
+        Assert.Contains(outOfScope.Replace('\\', '/'), halt);
     }
 
     [Fact]
@@ -218,6 +224,92 @@ public sealed class WriteScopeRunTests
         Assert.True(sawTheStub(), "not vacuous: 02-implement must MODIFY a committed src/Stub.cs, not add one");
         Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
         Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+    }
+
+    // ── #705: out-of-scope work stays recoverable, and salvage says only what is true ──────────
+
+    [Fact]
+    public async Task OutOfScopeWork_IsKeptAsAPatch_AndTheFeedbackNeverClaimsItWasSaved_Issue705()
+    {
+        // Plan 40, reproduced. Attempt 1 puts ALL of its work in a file outside the scope. The revert takes it, yet
+        // the salvage snapshot taken afterwards is not empty: that snapshot stages into a fresh throwaway index,
+        // which re-hashes every file, so a CRLF-committed file under core.autocrlf reads as changed there and
+        // nowhere else. The feedback then said "SAVED, not lost" over a patch of line-ending churn. The seeded lock
+        // file recreates exactly that condition, on every OS.
+        using var repo = new TempGitRepo();
+        repo.Commit("src/Stub.cs", "stub");
+        repo.Commit("data/packages.lock.json", "{\r\n  \"version\": 1\r\n}\r\n");
+        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "true");
+        AssertASnapshotOfTheUntouchedTreeIsNotEmpty(repo); // not vacuous: plan 40's salvage condition is present
+
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 1, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent((_, call, invocation) =>
+            WriteFile(invocation.WorkingDirectory,
+                call == 1 ? "src/Stub.cs" : "src/Impl.cs",
+                call == 1 ? "RESOLVE-BODY: the working implementation" : "implemented in scope"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        string attempt1 = AttemptDir(planDir, "01-implement", 1);
+
+        // Item 1: the working implementation survives the revert, as a patch beside the attempt's other artifacts.
+        string outOfScope = Path.Combine(attempt1, "out-of-scope.patch");
+        Assert.True(File.Exists(outOfScope), "the out-of-scope bytes must be kept before the revert destroys them");
+        Assert.Contains("RESOLVE-BODY: the working implementation", File.ReadAllText(outOfScope));
+
+        // Item 2: nothing in scope changed, so nothing is offered as salvage and nothing is claimed saved.
+        string feedback = File.ReadAllText(Path.Combine(attempt1, "feedback.md"));
+        Assert.DoesNotContain("SAVED, not lost", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        Assert.False(File.Exists(Path.Combine(attempt1, "prior-attempt.patch")),
+            "a snapshot holding no in-scope work must not be offered as salvage");
+        Assert.Contains(outOfScope.Replace('\\', '/'), feedback);
+    }
+
+    [Fact]
+    public async Task InScopeWorkBesideAStrayWrite_IsStillSaved_AndOnlyTheStrayIsKeptAsOutOfScope_Issue705()
+    {
+        // CONTROL: in-scope work in a violating attempt is still salvaged and still offered, and the out-of-scope
+        // copy holds the stray write only — never the in-scope work the retry may recover.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 1, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent((_, call, invocation) =>
+        {
+            WriteFile(invocation.WorkingDirectory, "src/Impl.cs", call == 1 ? "partial in-scope work" : "finished");
+            if (call == 1)
+            {
+                WriteFile(invocation.WorkingDirectory, "docs/notes.md", "a stray note");
+            }
+        });
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        string attempt1 = AttemptDir(planDir, "01-implement", 1);
+        string feedback = File.ReadAllText(Path.Combine(attempt1, "feedback.md"));
+        Assert.Contains("SAVED, not lost", feedback);
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("partial in-scope work", File.ReadAllText(Path.Combine(attempt1, "prior-attempt.patch")));
+
+        string outOfScope = Path.Combine(attempt1, "out-of-scope.patch");
+        Assert.True(File.Exists(outOfScope), "the stray write must be kept as out-of-scope work");
+        Assert.Contains("a stray note", File.ReadAllText(outOfScope));
+        Assert.DoesNotContain("partial in-scope work", File.ReadAllText(outOfScope));
+    }
+
+    /// <summary>
+    /// The precondition that made plan 40's salvage lie: a salvage snapshot of a tree nobody has touched is NOT
+    /// empty. Taken before the plan folder is written, so the only thing it can show is the seeded lock file.
+    /// </summary>
+    private static void AssertASnapshotOfTheUntouchedTreeIsNotEmpty(TempGitRepo repo)
+    {
+        const string probeRef = "refs/guardrails/probe/attempt-1";
+        string head = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
+        GitWorktreeProvider.PreserveAttemptToRef(repo.RepoPath, probeRef);
+        string stat = GitWorktreeProvider.DiffStatAgainstBase(repo.RepoPath, head, probeRef);
+        TempGitRepo.Git(repo.RepoPath, "update-ref", "-d", probeRef);
+        Assert.Contains("data/packages.lock.json", stat);
     }
 
     /// <summary>

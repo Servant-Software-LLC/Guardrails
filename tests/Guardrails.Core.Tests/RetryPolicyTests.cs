@@ -270,7 +270,8 @@ public sealed class RetryPolicyTests
         var salvage = new SalvageRef("refs/guardrails/04-impl/attempt-1", " src/a.cs | 2 +", Attempt: 1, PatchPath: "/p.patch");
 
         string feedback = RetryPolicy.ForWriteScopeViolation(
-            PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**"), fileWritesRolledBack: true, salvageRef: salvage);
+            PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**") with { InScopePaths = ["src/a.cs"] },
+            fileWritesRolledBack: true, salvageRef: salvage);
 
         Assert.Contains("outside.txt", feedback);
         Assert.DoesNotContain("in-scope changes are preserved", feedback); // the false claim is gone
@@ -285,7 +286,8 @@ public sealed class RetryPolicyTests
         // persists, so the original accurate claim stays.
         var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
 
-        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**"));
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("04-impl"), attempt: 2, Violation(offenses, "src/**") with { InScopePaths = ["src/a.cs"] });
 
         Assert.Contains("in-scope changes are preserved", feedback);
         Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
@@ -820,6 +822,99 @@ public sealed class RetryPolicyTests
         }
 
         Assert.Contains("01-author", RetryPolicy.WriteScopeGapSummary(PromptTask("02-implement"), upstream));
+    }
+
+    // ── #705 salvage says only what is true, and out-of-scope work is kept for a human ───────────
+
+    [Fact]
+    public void WriteScopeViolation_NoInScopeWork_NeverClaimsSaved_EvenWhenHandedASnapshot()
+    {
+        // #705: plan 40's task 20 put ALL of its work in a file outside its writeScope. The revert took that work,
+        // the snapshot taken afterwards held only lock-file churn, and the feedback still opened with "that work
+        // was SAVED, not lost" over a patch with nothing of the agent's in it. With no in-scope change there is
+        // nothing in scope to save, whatever snapshot a caller hands over.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+        var churnOnly = new SalvageRef(
+            "refs/guardrails/20-implement/attempt-1", " src/Guardrails.Cli/packages.lock.json | 58 +--",
+            Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, "src/Guardrails.Core/Execution/Overwatch.cs"),
+            fileWritesRolledBack: true, salvageRef: churnOnly);
+
+        Assert.DoesNotContain("SAVED, not lost", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("no in-scope work", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_InScopeWorkBesideAStrayWrite_StillSaysSaved_AndOffersIt()
+    {
+        // CONTROL: the honest header must not become a blanket one. An attempt that changed files inside its scope
+        // AND strayed outside it left in-scope work in the snapshot, and the retry is still pointed at it.
+        var offenses = new List<WriteScopeOffense> { new() { Path = "docs/notes.md", Status = 'A' } };
+        var salvage = new SalvageRef("refs/guardrails/04-impl/attempt-1", " src/a.cs | 2 +", Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("04-impl"), attempt: 1, Violation(offenses, "src/**") with { InScopePaths = ["src/a.cs"] },
+            fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("SAVED, not lost", feedback);
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_NoInScopeWork_OnTheFinalAttempt_ClaimsNothingPreserved()
+    {
+        // The same fact under the other disposition: no reset follows a final attempt, but with nothing changed in
+        // scope there is nothing preserved to keep.
+        var offenses = new List<WriteScopeOffense> { new() { Path = "docs/notes.md", Status = 'A' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 3, Violation(offenses, "src/**"));
+
+        Assert.DoesNotContain("in-scope changes are preserved", feedback);
+        Assert.DoesNotContain("Do NOT start over", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_NamesTheOutOfScopeCopy_AsAHumansCopy_NotTheAgents()
+    {
+        // #705 item 1: the out-of-scope bytes are copied before the revert. The retry must never apply them —
+        // re-applying fails the same check — so the feedback names the copy and says whose it is.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, "src/**"), fileWritesRolledBack: true,
+            outOfScopePatchPath: @"C:\logs\20-implement\attempt-1\out-of-scope.patch");
+
+        Assert.Contains("`C:/logs/20-implement/attempt-1/out-of-scope.patch`", feedback);
+        Assert.Contains("not for you", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_WithoutAnOutOfScopeCopy_NamesNone()
+    {
+        // CONTROL: the capture is best-effort, and a copy that was never written must not be announced.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, "src/**"), fileWritesRolledBack: true);
+
+        Assert.DoesNotContain("out-of-scope.patch", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeGapHalt_NamesTheKeptOutOfScopeCopy()
+    {
+        // The halt is where a human decides whether to widen the scope — the moment the kept work matters most.
+        var offenses = new List<WriteScopeOffense> { new() { Path = DecisionPath, Status = 'M' } };
+        var gap = new WriteScopeGap([], new Dictionary<string, string> { [DecisionPath] = "19-author" });
+
+        string feedback = RetryPolicy.ForWriteScopeGapHalt(
+            PromptTask("20-implement"), attempt: 1, Violation(offenses, "src/**"), gap,
+            outOfScopePatchPath: "/logs/20-implement/attempt-1/out-of-scope.patch");
+
+        Assert.Contains("`/logs/20-implement/attempt-1/out-of-scope.patch`", feedback);
     }
 
     /// <summary>The lead-in line the allowed-path list follows (#706).</summary>
