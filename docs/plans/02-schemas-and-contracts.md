@@ -917,7 +917,9 @@ suppression is structurally inapplicable here** — it keys off the failed-guard
 residual as the retry path (a protected file *inside* the task's own `writeScope` is still stashed, caught
 if re-gamed by the deterministic per-attempt re-check). **The feedback wording on this path must not claim
 a rollback** — nothing was rolled back; the honest framing states the tree is orphaned and the ref/patch
-are the only durable copies.
+are the only durable copies. The **write-scope-gap halt** (§3.4, issue #707) reuses this preservation unchanged:
+it too returns before the F2 reset, so its in-scope work is preserved the same way (scope-filtered, and no ref
+when nothing in scope changed) and offered in its `feedback.md` under the neutral prior-attempt framing.
 
 **Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
 record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
@@ -1186,6 +1188,34 @@ verdict — before this the only statement of scope an agent saw was a hand-copi
 40 shipped 48 prompts whose paragraph read "Write only to the path(s) listed above" and listed nothing. An
 EMPTY scope is stated in words (`writeScope` is EMPTY) on both surfaces, never rendered as a heading or lead-in
 over no entries. Serial mode renders no section: no check runs there, so "harness-enforced" would be false.
+
+**A write-scope gap the PLAN caused halts `needs-human` instead of retrying (issue #707).** Every retry is
+handed the same scope, so no retry can clear a gap in it; plan 40's task 20 spent four attempts, two overwatch
+diagnoses and a best-guess on a one-line `task.json` fix. For a **prompt** action, the harness settles the task
+`needs-human` on the violating attempt when either deterministic rule holds. The attempt is journaled with its
+true outcome, `write-scope-violation`, and task status `needs-human`.
+1. **Repeat.** An offending path was ALSO written out of scope on an earlier attempt of this task. It is tracked
+   per task within one execution, keyed on the path alone, with the git-error sentinel excluded: the write-scope
+   analogue of the §9.3 #86 repeat rule, and a separate record from it.
+2. **Upstream author, first occurrence.** EVERY offending path is a modify or a delete whose most recent commit
+   reachable from `taskBase` carries a `Guardrails-Task:` trailer naming a transitive `dependsOn` ancestor and a
+   `Guardrails-Task-Hash:` equal to that ancestor's definition hash as this run loaded it (read from the commit's
+   last trailer block, the resume pre-pass's attribution rule), AND the attempt changed NOTHING inside its own
+   scope (`WriteScopeCheckResult.InScopePaths` is empty). The in-scope condition is load-bearing. An
+   ancestor-authored path alone cannot tell a stub the plan forgot to hand this task from a test file the plan
+   deliberately withheld from it — the TDD split protects tests with exactly this check — so an attempt that did
+   real in-scope work and also touched an upstream file is retried, and rule 1 bounds that at one extra attempt.
+   The hash condition keeps a commit made under some other definition of that id from counting. It is defense
+   in depth: such a trailer reachable from the run's base is normally settled first by the plan-branch
+   reconcile (§7.2), before any attempt runs.
+
+The halt's `feedback.md` keeps the `## Write-scope violation` marker. It names each path with its evidence (the
+upstream author, or the earlier attempt), lists the allowed scope, and gives the absolute `task.json` path and the
+exact JSON entry to add to `writeScope`. Because no reset follows a halt, it also appends the attempt's in-scope
+salvage (§3.2). The `TaskResult.Summary` carries the stable `needs human: ` prefix, the path, and the same one-line
+fix. **Script** actions are excluded: they cannot self-correct, and their reproduction is the #264 short-circuit's
+domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
+diagnose this halt.
 
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
@@ -5632,7 +5662,10 @@ judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager
 - the **no-op-deadlock (#174/#182)** or **deterministic-`script` (#264)** short-circuit about to fire;
 - the **permission-wall** early halt (§9.3 / #266) — may fire even on attempt 1;
 - the **write-scope-violation loop** and **max-turns** exhaustion (both are guardrail-class failures at
-  attempt ≥ 2, so they are covered by the eager trigger);
+  attempt ≥ 2, so they are covered by the eager trigger). A prompt action's REPEATED offending path, or a
+  first-attempt upstream-authored scope gap, no longer reaches that consult: it settles `needs-human`
+  deterministically first (§3.4, #707). A `doomed` classification at the eager trigger stays ADVISORY — it
+  never grants, and it never halts on its own;
 - **terminal exhaustion → `needs-human`** (§9.2.1).
 
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so

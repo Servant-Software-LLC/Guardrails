@@ -287,7 +287,12 @@ public sealed class Overwatch
             return NonGrant(task, attempt, triggerToken, floor, proposal.Diagnosis, "permission-wall");
         }
 
-        // A doomed diagnosis halts regardless of tier — never grant more attempts to a structurally doomed task.
+        // A doomed diagnosis never GRANTS more attempts, at any tier. Whether it HALTS is the boundary's call, not the
+        // tier's: NonGrant halts at a deterministic floor, but at the eager attempt ≥ 2 trigger the verdict is
+        // ADVISORY and the loop keeps retrying — a prompt may propose, only a deterministic gate may certify. (#707:
+        // this comment used to say "halts regardless of tier", and plan 40's task 20 launched its next attempt one
+        // second after an advisory `doomed`. The deterministic halt for that repeated write-scope violation now lives
+        // in TaskExecutor.)
         if (proposal.Classification == OverwatchClassification.Doomed)
         {
             return NonGrant(task, attempt, triggerToken, floor, proposal.Diagnosis, "doomed");
