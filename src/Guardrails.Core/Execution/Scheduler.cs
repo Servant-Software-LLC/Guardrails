@@ -1851,7 +1851,8 @@ public sealed class Scheduler
                 subject: wave.Dir, boundary: "wave",
                 question: $"Wave '{wave.Dir}' is unauthored — the next-wave JIT breakdown checkpoint.",
                 definitionHash: Journal.WaveDefinitionHash.Compute(wave),
-                criticalityGate: CriticalityGate.WaveCheckpoint, cancellationToken).ConfigureAwait(false);
+                criticalityGate: CriticalityGate.WaveCheckpoint, cancellationToken,
+                waveDir: wave.Dir).ConfigureAwait(false);
         }
 
         // Honest-halt. An interactive DECLINE reads as prompted-declined; everything else (halt policy, a
@@ -2301,7 +2302,8 @@ public sealed class Scheduler
                      + "pass was skipped, and that skip is indelible. The harness never marks a wave reviewed "
                      + "on a human's behalf.",
             At = DateTimeOffset.UtcNow,
-            Gate = "review-gate"
+            Gate = "review-gate",
+            Wave = waveDir
         };
         _journal.RecordDecision(entry);
         _observer.DecisionRecorded(entry);
@@ -3483,14 +3485,15 @@ public sealed class Scheduler
                 await ClassifyAndActAsync(
                     GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
                     question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
-                    ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind).ConfigureAwait(false);
+                    ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind, waveDir: task.WaveDir)
+                    .ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.RateLimited)
             {
                 await ClassifyAndActAsync(
                     GateSignal.PromptFailure(Prompts.PromptFailureKind.Transient), gate: "blocker",
                     subject: task.Id, boundary: "task", question: null, definitionHash: definitionHash,
-                    criticalityGate: CriticalityGate.NeedsHuman, ct).ConfigureAwait(false);
+                    criticalityGate: CriticalityGate.NeedsHuman, ct, waveDir: task.WaveDir).ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.Succeeded && result.ResolvedTransient is { } resolved)
             {
@@ -3524,13 +3527,13 @@ public sealed class Scheduler
     private async Task ClassifyAndActAsync(
         GateSignal signal, string gate, string subject, string boundary, string? question,
         string definitionHash, CriticalityGate criticalityGate, CancellationToken ct,
-        IReadOnlyList<string>? options = null, string? kind = null)
+        IReadOnlyList<string>? options = null, string? kind = null, string? waveDir = null)
     {
         options ??= [];
         switch (GateClassifier.Classify(signal))
         {
             case GateClass.JudgmentCall:
-                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, options, kind, ct)
+                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, options, kind, waveDir, ct)
                     .ConfigureAwait(false);
                 break;
 
@@ -3552,7 +3555,8 @@ public sealed class Scheduler
     /// </summary>
     private async Task ActOnJudgmentCallAsync(
         string gate, string subject, string boundary, string? question, string definitionHash,
-        CriticalityGate criticalityGate, IReadOnlyList<string> options, string? kind, CancellationToken ct)
+        CriticalityGate criticalityGate, IReadOnlyList<string> options, string? kind, string? waveDir,
+        CancellationToken ct)
     {
         if (_criticalityJudge is null)
         {
@@ -3606,7 +3610,8 @@ public sealed class Scheduler
             Criticality = criticality,
             Confidence = confidence,
             Threshold = threshold,
-            BestGuess = decision.BestGuess
+            BestGuess = decision.BestGuess,
+            Wave = waveDir
         };
         _journal.RecordDecision(entry);
         _observer.DecisionRecorded(entry);
