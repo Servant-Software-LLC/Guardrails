@@ -220,4 +220,45 @@ public sealed class DiagramRefreshTests
 
         Assert.Equal(Source, embeddedSource);
     }
+
+    /// <summary>
+    /// Issue #714. When the run has its own log server, the file-view notice must send the reader to the copy that
+    /// server is ALREADY serving live, instead of telling them to start a second one with <c>guardrails logs</c>.
+    /// A page opened from a <c>file://</c> url cannot discover the port, but the during-run writer knows it and
+    /// writes it in.
+    /// </summary>
+    [Fact]
+    public void FileViewFallback_WithTheRunsLogServer_LinksItsLiveDiagram_InsteadOfNamingGuardrailsLogs()
+    {
+        const string liveDiagram = "http://127.0.0.1:58523/diagram.html";
+        string html = HtmlDiagramRenderer.Render(
+            Source, Hash, OneTarget, SomeStatus, duringRun: true, liveDiagramUrl: liveDiagram);
+
+        string notice = OfflineNotice(html);
+        Assert.Contains($"<a href=\"{liveDiagram}\">{liveDiagram}</a>", notice, StringComparison.Ordinal);
+        Assert.DoesNotContain("guardrails logs", notice, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other half of #714: with no server, <c>guardrails logs</c> stays the remedy, and the notice must not
+    /// link a server that does not exist.
+    /// </summary>
+    [Fact]
+    public void FileViewFallback_WithoutALogServer_KeepsGuardrailsLogs_AndLinksNoServer()
+    {
+        string notice = OfflineNotice(HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true));
+
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.DoesNotContain("http://", notice, StringComparison.Ordinal);
+    }
+
+    /// <summary>The <c>#gr-live-offline</c> element's content, from its id attribute to its closing tag.</summary>
+    private static string OfflineNotice(string html)
+    {
+        int start = html.IndexOf("id=\"gr-live-offline\"", StringComparison.Ordinal);
+        Assert.True(start >= 0, "expected the offline notice on the page");
+        int end = html.IndexOf("</div>", start, StringComparison.Ordinal);
+        Assert.True(end > start, "expected the offline notice to be a closed element");
+        return html[start..end];
+    }
 }

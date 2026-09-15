@@ -255,6 +255,13 @@ public sealed class LogServer : IAsyncDisposable
     /// <summary>The base URL the server is listening on, e.g. <c>http://localhost:54321/</c>.</summary>
     public string BaseUrl => _baseUrl;
 
+    /// <summary>
+    /// The live status diagram's URL on this server (<c>GET /diagram.html</c>, issue #522), e.g.
+    /// <c>http://127.0.0.1:54321/diagram.html</c>. Whenever the server is up, the run prints this rather than
+    /// the diagram's file path, and its during-run pages point a reader who opened them as files here (issue #714).
+    /// </summary>
+    public string DiagramUrl => $"{_baseUrl}diagram.html";
+
     /// <summary>The log page URL for a task, or null if the id is unknown.</summary>
     public string? UrlForTask(string taskId) =>
         _taskIds.Contains(taskId) ? $"{_baseUrl}tasks/{Uri.EscapeDataString(taskId)}" : null;

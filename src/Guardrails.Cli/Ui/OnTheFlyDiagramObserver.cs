@@ -12,7 +12,7 @@ namespace Guardrails.Cli.Ui;
 /// the sibling of <see cref="OnTheFlyLogSiteObserver"/> for the DAG diagram. It WRAPS the real
 /// observer (the log-site decorator, then the live <see cref="LiveRunObserver"/> or
 /// <see cref="ConsoleRunObserver"/>), forwards every event verbatim, and AFTER forwarding re-renders
-/// the diagram from an in-memory node-id → status map through <see cref="HtmlDiagramRenderer.Render(string, string, System.Collections.Generic.IReadOnlyDictionary{string, string}, System.Collections.Generic.IReadOnlyDictionary{string, string}, bool)"/>:
+/// the diagram from an in-memory node-id → status map through <see cref="HtmlDiagramRenderer.Render(string, string, System.Collections.Generic.IReadOnlyDictionary{string, string}, System.Collections.Generic.IReadOnlyDictionary{string, string}, bool, string)"/>:
 /// <list type="bullet">
 ///   <item><see cref="TaskStarting"/> flips a task container to <c>running</c> (a spinner badge).</item>
 ///   <item><see cref="GuardrailFinished"/> settles the guardrail LEAF <c>(task.Id, result.Name)</c> to
@@ -83,6 +83,10 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     private readonly IReadOnlyDictionary<string, string> _taskFolderTargets;
     private readonly DiagramStatusNodes _nodes;
 
+    // Where the run's log server serves this diagram live, or null when there is no server (issue #714). The
+    // during-run page's offline notice links it, since a page opened as a file cannot discover the port.
+    private readonly string? _liveDiagramUrl;
+
     // node id -> status token. Mutated and projected under one lock — events arrive from concurrent M4
     // workers, and the render reads the whole map, so the two must not race.
     private readonly object _gate = new();
@@ -92,8 +96,14 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree the diagram is written into.</param>
     /// <param name="plan">The plan whose DAG is drawn (source, hash, targets, and the status-node surface are derived from it).</param>
     /// <param name="journalForSeed">The freshly-read journal for resume seeding, or null for a fresh run (every node pending).</param>
+    /// <param name="liveDiagramUrl">
+    /// Where the run's log server serves this diagram live, or null when no server is up (issue #714). The
+    /// during-run page's offline notice links it. The settled page does not, because its server stops as it is
+    /// written.
+    /// </param>
     public OnTheFlyDiagramObserver(
-        IRunObserver inner, string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed)
+        IRunObserver inner, string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed,
+        string? liveDiagramUrl = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _diagramPath = Path.Combine(logsRoot, DiagramFileName);
@@ -102,16 +112,18 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
         _taskFolderTargets = MermaidRenderer.TaskFolderTargets(plan);
         _nodes = MermaidRenderer.StatusNodes(plan);
         _statusByNodeId = BuildSeedMap(_nodes, plan, journalForSeed);
+        _liveDiagramUrl = liveDiagramUrl;
     }
 
     /// <summary>
     /// Write the initial (seeded) during-run diagram WITHOUT an observer instance — so the live path can
     /// write it, and print its link, BEFORE constructing <see cref="LiveRunObserver"/> (whose ctor starts
     /// the Spectre <c>AnsiConsole.Live</c> region; any console write into an active Live region corrupts
-    /// the table, #145). Mirrors <see cref="OnTheFlyLogSiteObserver.WriteInitialIndex(string, string, System.Collections.Generic.IReadOnlyList{TaskNode}, System.Func{string, string})"/>.
-    /// Best-effort.
+    /// the table, #145). Mirrors <see cref="OnTheFlyLogSiteObserver.WriteInitialIndex(string, string, System.Collections.Generic.IReadOnlyList{TaskNode}, System.Func{string, string}, System.Collections.Generic.IReadOnlyList{WaveNode}, string)"/>.
+    /// Best-effort. <paramref name="liveDiagramUrl"/> is the run's live copy, for the offline notice (issue #714).
     /// </summary>
-    public static void WriteInitialDiagram(string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed)
+    public static void WriteInitialDiagram(
+        string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed, string? liveDiagramUrl = null)
     {
         DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
         Dictionary<string, string> seed = BuildSeedMap(nodes, plan, journalForSeed);
@@ -120,7 +132,7 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
         IReadOnlyDictionary<string, string> targets = MermaidRenderer.TaskFolderTargets(plan);
         TryRender(() => AtomicFile.WriteAllText(
             Path.Combine(logsRoot, DiagramFileName),
-            HtmlDiagramRenderer.Render(source, hash, targets, seed, duringRun: true)));
+            HtmlDiagramRenderer.Render(source, hash, targets, seed, duringRun: true, liveDiagramUrl)));
     }
 
     /// <summary>
@@ -427,9 +439,12 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
             }
         }
 
+        // #714: only the during-run page links the live copy. The settled page is written as the server stops and
+        // carries no poll that could ever reveal the notice, so a URL in it could only be a dead link.
+        string? liveDiagramUrl = duringRun ? _liveDiagramUrl : null;
         TryRender(() => AtomicFile.WriteAllText(
             _diagramPath,
-            HtmlDiagramRenderer.Render(_interactiveSource, _sourceHash, _taskFolderTargets, snapshot, duringRun)));
+            HtmlDiagramRenderer.Render(_interactiveSource, _sourceHash, _taskFolderTargets, snapshot, duringRun, liveDiagramUrl)));
     }
 
     /// <summary>
