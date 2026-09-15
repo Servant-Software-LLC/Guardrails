@@ -509,6 +509,17 @@ public enum WaveHaltKind
     ExitGateFailed,
 
     /// <summary>
+    /// A wave's barrier delivery (design 39 §1/§3) was REFUSED — a moved branch (#588), a real conflict, or
+    /// a dirty working tree (#448) — and the refusal HALTS the run at this wave (design 39 §1c/§4, review
+    /// round 4, narrowed round 5): the condition is not transient, so every later wave would hit the
+    /// identical refusal. Distinct from <see cref="ExitGateFailed"/> — every check on this wave PASSED; what
+    /// failed is landing the work on the user's branch. The one refusal that does NOT halt here is a
+    /// hook-rejected trial, which holds this and every later delivery to run end instead (the merge there
+    /// runs in the user's own checkout, where the rejecting hook's own tooling is present).
+    /// </summary>
+    DeliveryRefused,
+
+    /// <summary>
     /// Between-wave auto-breakdown (#360 Phase 1, SSOT §14.4/§14.10; doc 11 §9) against a wave's
     /// <c>brief.md</c> was invoked (autonomyPolicy <c>auto</c>, or a <c>prompt</c> approval) and its output
     /// PASSED the deterministic <c>guardrails validate</c> gate; the run HALTS for the human review gate
