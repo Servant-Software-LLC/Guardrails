@@ -298,6 +298,128 @@ public sealed class WriteScopeRunTests
         Assert.DoesNotContain("partial in-scope work", File.ReadAllText(outOfScope));
     }
 
+    // ── #707 review: the halt's salvage, test files, and "every offending path" ─────────────────
+
+    [Fact]
+    public async Task PlanScopeGapHalt_WithNoInScopeWork_LeavesNoSalvage_EvenWithChurnInsideTheScope_Issue707()
+    {
+        // Review B1. The halt path stashed unconditionally, so with a CRLF lock file INSIDE the scope a halt
+        // with no in-scope work still minted a ref and a prior-attempt.patch of pure line-ending churn — and
+        // told the resumed attempt that work was "left behind". #705 again, on the one path #705 did not gate.
+        using var repo = new TempGitRepo();
+        repo.Commit("data/packages.lock.json", "{\r\n  \"version\": 1\r\n}\r\n");
+        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "true");
+        AssertASnapshotOfTheUntouchedTreeIsNotEmpty(repo); // not vacuous: a snapshot here WOULD hold churn
+
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs", "data/**"], DependsOn: ["01-author"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", taskId == "01-author" ? "stub" : "implemented"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        Assert.Single(JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts);
+        string attempt1 = AttemptDir(planDir, "02-implement", 1);
+        Assert.Equal("", TempGitRepo.Git(repo.RepoPath, "for-each-ref", "--format=%(refname)", "refs/guardrails/02-implement/").Trim());
+        Assert.False(File.Exists(Path.Combine(attempt1, "prior-attempt.patch")),
+            "a halt with no in-scope work must not leave a salvage patch");
+        Assert.DoesNotContain("## Prior attempt work is salvageable", File.ReadAllText(Path.Combine(attempt1, "feedback.md")));
+    }
+
+    [Fact]
+    public async Task WriteScopeGapHalt_KeepsTheStagedDeliverable_InItsSalvage_Issue707()
+    {
+        // Review N4. The halt's salvage was filtered to task.json's writeScope, not the ENFORCED scope, so a
+        // staging task's in-scope deliverable — moved into its .claude/ destination before the check — was
+        // dropped from the only durable copy of the orphaned tree.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 2,
+            new TaskSpec("01-skill", ["src/Impl.cs"], StagingTo: ".claude/skills/demo/"));
+        var agent = new ScriptedAgent((_, call, invocation) =>
+        {
+            WriteFile(invocation.Environment["GUARDRAILS_STAGING_DIR"], "skill/SKILL.md", $"staged deliverable {call}");
+            WriteFile(invocation.WorkingDirectory, "docs/notes.md", "a stray note");
+        });
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+        Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-skill"].Attempts.Count);
+        string salvage = Path.Combine(AttemptDir(planDir, "01-skill", 2), "prior-attempt.patch");
+        Assert.True(File.Exists(salvage), "the halt must preserve the staged deliverable it had in scope");
+        Assert.Contains("staged deliverable 2", File.ReadAllText(salvage));
+    }
+
+    [Fact]
+    public async Task UpstreamAuthoredTestFile_IsRetriedFirst_AndTheRepeatHaltLeadsWithTheTest_Issue707()
+    {
+        // Review W1. In a correctly split TDD plan the stub is in the implementing task's scope, so the only
+        // upstream-authored file a first-occurrence halt can still fire on is a TEST — and "probable plan scope
+        // gap … add tests/… to writeScope" is exactly the wrong advice for it. A test path never takes that rule;
+        // when the repeat rule halts on one, the halt leads with the test and offers widening only second.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author-tests", ["tests/StubTests.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"], DependsOn: ["01-author-tests"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+            WriteFile(invocation.WorkingDirectory, "tests/StubTests.cs",
+                taskId == "01-author-tests" ? "a failing test" : "a weakened test"));
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        TaskResult implement = report.Tasks.Single(t => t.TaskId == "02-implement");
+        Assert.Equal(TaskOutcome.NeedsHuman, implement.Outcome);
+        Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+        Assert.Contains("keeps editing tests/StubTests.cs", implement.Summary);
+        Assert.Contains("TDD", implement.Summary);
+        Assert.DoesNotContain("probable plan scope gap", implement.Summary);
+        Assert.DoesNotContain("\"tests/StubTests.cs\"", implement.Summary); // widening is never the summary's fix
+
+        string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "02-implement", 2), "feedback.md"));
+        int leadsWithTheTest = halt.IndexOf("keeps editing", StringComparison.Ordinal);
+        int wideningOffered = halt.IndexOf("\"tests/StubTests.cs\"", StringComparison.Ordinal);
+        Assert.True(leadsWithTheTest >= 0 && wideningOffered > leadsWithTheTest,
+            "the halt must lead with the test and offer widening the scope only after it:\n" + halt);
+    }
+
+    [Theory]
+    [InlineData("a committed file no task authored")]
+    [InlineData("a brand-new file")]
+    public async Task PlanScopeGapRule_RequiresEveryOffendingPathToBeUpstreamAuthored_Issue707(string secondPath)
+    {
+        // Review W3. The first-occurrence rule is "EVERY offending path was last committed by an upstream task".
+        // One upstream-authored modify beside ONE path that does not qualify must be retried, not halted. A row
+        // per branch that disqualifies a path, so neither can be loosened to "any path" without a red test.
+        bool seeded = secondPath == "a committed file no task authored";
+        using var repo = new TempGitRepo();
+        if (seeded)
+        {
+            repo.Commit("src/Seeded.cs", "seeded by hand");
+        }
+
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3,
+            new TaskSpec("01-author", ["src/Stub.cs"]),
+            new TaskSpec("02-implement", ["src/Impl.cs"], DependsOn: ["01-author"]));
+        var agent = new ScriptedAgent((taskId, _, invocation) =>
+        {
+            if (taskId == "01-author")
+            {
+                WriteFile(invocation.WorkingDirectory, "src/Stub.cs", "stub");
+                return;
+            }
+
+            WriteFile(invocation.WorkingDirectory, "src/Stub.cs", "implemented");
+            WriteFile(invocation.WorkingDirectory, seeded ? "src/Seeded.cs" : "docs/new.md", "the second path");
+        });
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-implement").Outcome);
+        Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
+    }
+
     /// <summary>
     /// The precondition that made plan 40's salvage lie: a salvage snapshot of a tree nobody has touched is NOT
     /// empty. Taken before the plan folder is written, so the only thing it can show is the seeded lock file.
