@@ -838,6 +838,16 @@ public sealed class TaskExecutor : ITaskExecutor
         // containment boundary (WorktreeContainmentHook), on top of the write-scope CHECK's post-hoc
         // diff (the INNER boundary, unaffected). Null in serial mode: no isolated tree to contain to.
         string? worktreeRootForHook = IsRealGitSegment(worktree) ? worktree.WorktreePath : null;
+        // #706: the ENFORCED write scope, resolved ONCE and read twice — rendered into the composed prompt by
+        // the action runner, and handed to the write-scope check after the action. It is the declared
+        // writeScope plus the implicit stagingOutputs destinations (SSOT §3.4/§3.5), i.e. exactly the array
+        // the check gates on, so the agent is shown the rule it will be judged by rather than an author's
+        // copy of it (in plan 40 that copy named no path at all). #389: a null scope coalesces to [] so the
+        // staging destinations still fold in. Null in serial mode, where no check runs and a section headed
+        // "harness-enforced" would be false.
+        IReadOnlyList<string>? enforcedWriteScope = IsRealGitSegment(worktree)
+            ? WithImplicitStagingScope(task.WriteScope ?? [], task.StagingOutputs)
+            : null;
         // `route` is the SAME object the provenance above was built from (#201): the model recorded and
         // the model run are one resolution, read twice.
         //
@@ -850,7 +860,8 @@ public sealed class TaskExecutor : ITaskExecutor
         var actionClock = Stopwatch.StartNew();
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRootForHook,
+            enforcedWriteScope).ConfigureAwait(false);
         actionClock.Stop();
 
         // The local is REASSIGNED, exactly as `provenance` is below: ActionRun is immutable and a `with`
@@ -1302,19 +1313,14 @@ public sealed class TaskExecutor : ITaskExecutor
         // TaskBase); skipped for FakeWorktreeProvider segments. #389: it runs for a NULL scope too
         // (fail-closed) — writeScope is REQUIRED (GR2041), so a validated plan never reaches here with
         // null, but if one did, a null scope coalesces to [] (writes nothing) and any write is caught.
-        if (IsRealGitSegment(worktree))
+        // #706: gated on the SAME per-attempt resolution the composed prompt rendered (non-null exactly when
+        // this is a real git segment). The stagingOutputs 'to' destinations are IMPLICITLY in-scope
+        // (SSOT §3.4/§3.5): the check sees the post-move surface, so the real .claude/ paths the move produced
+        // must be authorized without the task also listing them in writeScope.
+        if (enforcedWriteScope is { } enforcedScope)
         {
-            // #389: coalesce a null scope to [] here so WithImplicitStagingScope still folds in any
-            // stagingOutputs destinations; WriteScopeCheck.Check performs the same fail-closed coalesce.
-            IReadOnlyList<string> declaredScope = task.WriteScope ?? [];
-
-            // The stagingOutputs 'to' destinations are IMPLICITLY in-scope (SSOT §3.4/§3.5): a staging
-            // task must NOT have to also list its .claude/ destinations in writeScope. The check sees
-            // the post-move surface, so the real .claude/ paths the move produced must be authorized.
-            IReadOnlyList<string> scopeGlobs = WithImplicitStagingScope(declaredScope, task.StagingOutputs);
-
             WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(
-                worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
+                worktree.WorktreePath, worktree.TaskBase, enforcedScope);
 
             if (!scopeCheck.Passed)
             {
@@ -1329,7 +1335,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
                 string feedback = RetryPolicy.ForWriteScopeViolation(
-                    task, attemptNumber, scopeCheck.OffendingPaths, fileWritesRolledBack, salvageRef);
+                    task, attemptNumber, scopeCheck, fileWritesRolledBack, salvageRef);
                 AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     // #538: the write-scope check runs BEFORE the task's guardrails, so none had run when

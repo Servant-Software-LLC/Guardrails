@@ -711,8 +711,10 @@ public static class RetryPolicy
 
     /// <summary>
     /// Compose feedback for an attempt rejected by the write-scope check (plan 08 §2/§3.4).
-    /// Names each offending path so the agent removes the out-of-scope change on retry. The
-    /// harness has already performed a scoped revert of the offending paths before calling this.
+    /// Names each offending path so the agent removes the out-of-scope change on retry, and (issue #706)
+    /// lists the scope the check ENFORCED — read off <paramref name="scopeCheck"/> itself, so the allowed
+    /// list is the verdict's own rule and can never be a second copy of it. The harness has already
+    /// performed a scoped revert of the offending paths before calling this.
     /// </summary>
     /// <remarks>
     /// Issue #253: each path is labelled with its raw git change-status (A/M/D) so a human debugging
@@ -736,7 +738,7 @@ public static class RetryPolicy
     /// Appends the salvage-adoption section. Null in serial mode or when salvage is off.
     /// </param>
     public static string ForWriteScopeViolation(
-        TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths,
+        TaskNode task, int attempt, WriteScopeCheckResult scopeCheck,
         bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
@@ -744,7 +746,7 @@ public static class RetryPolicy
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
-        foreach (WriteScopeOffense offense in offendingPaths)
+        foreach (WriteScopeOffense offense in scopeCheck.OffendingPaths)
         {
             text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)})");
             if (offense.Preview is { } preview)
@@ -760,24 +762,58 @@ public static class RetryPolicy
         }
 
         text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
         if (fileWritesRolledBack)
         {
             // Worktree mode: the out-of-scope paths were scoped-reverted, then the WHOLE attempt is reset
             // to taskBase before the next one — so the in-scope work is NOT on disk either. It is stashed
             // (see the salvage section) when salvage is on. Do not claim it "is preserved".
             text.AppendLine("The out-of-scope path(s) above were reverted, and the whole attempt is then reset to a");
-            text.AppendLine("clean base before your retry. On retry, ensure you only write to paths covered by this");
-            text.AppendLine("task's writeScope (SSOT §3.4, plan 08 §2).");
+            text.AppendLine("clean base before your retry. On retry, write only to paths the writeScope above");
+            text.AppendLine("covers (SSOT §3.4, plan 08 §2).");
         }
         else
         {
             text.AppendLine("The harness has already reverted those files to their pre-attempt state. Your");
-            text.AppendLine("in-scope changes are preserved. On retry, ensure you only write to paths covered");
-            text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
+            text.AppendLine("in-scope changes are preserved. On retry, write only to paths the writeScope above");
+            text.AppendLine("covers (SSOT §3.4, plan 08 §2).");
+        }
+
+        if (task.Action.Kind == ActionKind.Prompt)
+        {
+            // #706: the one move that ends a scope gap the PLAN caused is a question to a human. Plan 40's
+            // task 20 found it only on its fourth attempt, having never been told the door existed.
+            text.AppendLine();
+            text.AppendLine("If this task cannot be done without changing a path outside that scope, do not write it again.");
+            text.AppendLine("Write `{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead, so a human can widen the writeScope in task.json.");
         }
 
         AppendSalvageSection(text, salvageRef);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// The ALLOWED half of a write-scope violation (issue #706): the scope the check actually enforced, read
+    /// off its own result and listed beside the offending paths, so a reader can tell a stray write from a
+    /// scope the plan got wrong. Before this the feedback said "ensure you only write to paths covered by this
+    /// task's writeScope" and never named one. An empty scope is stated in words rather than rendered as a
+    /// lead-in over no bullets.
+    /// </summary>
+    private static void AppendAllowedScope(StringBuilder text, IReadOnlyList<string> scope)
+    {
+        if (scope.Count == 0)
+        {
+            text.AppendLine("This task's writeScope is EMPTY: it may not change any file in the repository.");
+            return;
+        }
+
+        text.AppendLine("This task's writeScope allows changes ONLY to:");
+        foreach (string entry in scope)
+        {
+            text.AppendLine($"- `{entry}`");
+        }
     }
 
     /// <summary>Human-readable label for a <see cref="WriteScopeOffense.Status"/> letter.</summary>
