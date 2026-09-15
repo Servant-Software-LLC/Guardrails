@@ -7,32 +7,26 @@ namespace Guardrails.Core.Journal;
 /// THIS wave's barrier delivery reach the user's branch, and if not, why not. A wave that is not a delivery
 /// point, or has not reached its barrier yet, carries no <see cref="WaveJournalEntry.Delivered"/> at all
 /// (see that member's remarks).
-/// <para>
-/// STUB (task 09): every getter throws <see cref="NotImplementedException"/> until task 10 implements the
-/// record for real; the <c>init</c> accessors are real so a caller can build one with object-initializer
-/// syntax before the type is otherwise usable, matching the pattern <see cref="Model.WaveNode.Delivers"/>
-/// used for the same reason.
-/// </para>
 /// </summary>
 public sealed record WaveDeliveredRecord
 {
     /// <summary>Where this delivery stands: <c>running</c>, <c>delivered</c>, <c>refused</c> or <c>suppressed</c>.</summary>
-    public required WaveDeliveryStatus Status { get => throw new NotImplementedException(); init { } }
+    public required WaveDeliveryStatus Status { get; init; }
 
     /// <summary>
     /// When the barrier reached this delivery — written the moment the delivery is allowed to proceed,
     /// before the trial merge runs the user's hooks (#625). A <c>suppressed</c> record is written already
     /// settled, so this is still the moment the interlock held it.
     /// </summary>
-    public required DateTimeOffset StartedAt { get => throw new NotImplementedException(); init { } }
+    public required DateTimeOffset StartedAt { get; init; }
 
     /// <summary>When the delivery settled. Absent (no key at all) while <see cref="Status"/> is <c>running</c>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public DateTimeOffset? At { get => throw new NotImplementedException(); init { } }
+    public DateTimeOffset? At { get; init; }
 
     /// <summary>The user's branch tip after promotion. Only set when <see cref="Status"/> is <c>delivered</c>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Commit { get => throw new NotImplementedException(); init { } }
+    public string? Commit { get; init; }
 
     /// <summary>
     /// <c>fast-forwarded</c> when delivered; a refusal token
@@ -40,17 +34,17 @@ public sealed record WaveDeliveredRecord
     /// when refused. Absent while <see cref="Status"/> is <c>running</c> or <c>suppressed</c>.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public DeliveryOutcome? Outcome { get => throw new NotImplementedException(); init { } }
+    public DeliveryOutcome? Outcome { get; init; }
 
     /// <summary>
     /// The refusal detail; on <c>suppressed</c>, the suppressing decision and its subject; on a delivery
     /// <c>--merge-on-success</c> forced past a held decision, the decision it overrode.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Detail { get => throw new NotImplementedException(); init { } }
+    public string? Detail { get; init; }
 
     /// <summary>Every wave this delivery carries, in order, ending with this one.</summary>
-    public required IReadOnlyList<string> Covers { get => throw new NotImplementedException(); init { } }
+    public required IReadOnlyList<string> Covers { get; init; }
 }
 
 /// <summary>The wave delivery lifecycle (design 39 §4, <c>waves.&lt;dir&gt;.delivered.status</c>).</summary>
