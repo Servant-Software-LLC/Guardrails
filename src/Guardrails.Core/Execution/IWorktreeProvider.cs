@@ -250,4 +250,68 @@ public interface IWorktreeProvider
     /// </summary>
     IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
         new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+
+    // --- Trial delivery primitive (design 39 §1, review round 4 "d39-trial-delivery-primitive") ---
+
+    /// <summary>
+    /// Build the trial merge for a wave's delivery gate: merge the plan branch onto
+    /// <c>refs/guardrails/trial/&lt;waveDir&gt;</c> from the user's branch tip
+    /// (<see cref="IntegrationHandle.OriginalBranch"/>), WITHOUT touching the user's checkout. Checks
+    /// four cases in order:
+    /// <list type="number">
+    ///   <item>The user's tip EQUALS the plan tip (a resume right after a quiet-case promotion
+    ///     landed): the ref points at that commit; <see cref="TrialDelivery.AlreadyDelivered"/> and
+    ///     <see cref="TrialDelivery.UserTipWasAncestor"/> are both true. No merge commit, no hook, no
+    ///     worktree.</item>
+    ///   <item>The user's tip is a STRICT ancestor of the plan tip (the quiet case): the ref points at
+    ///     the plan tip; <see cref="TrialDelivery.UserTipWasAncestor"/> true,
+    ///     <see cref="TrialDelivery.AlreadyDelivered"/> false. No merge commit, no hook, no
+    ///     worktree.</item>
+    ///   <item>The plan tip is a STRICT ancestor of the user's tip (already delivered by a landed
+    ///     merge-commit promotion, or the user merged the plan branch themselves): the ref points at
+    ///     the user's tip; <see cref="TrialDelivery.AlreadyDelivered"/> true,
+    ///     <see cref="TrialDelivery.UserTipWasAncestor"/> false. No merge commit, no hook, no
+    ///     worktree.</item>
+    ///   <item>Otherwise: create, in a HARNESS-OWNED worktree, a merge commit whose first parent is
+    ///     the user's tip and second parent is the plan tip, WITHOUT <c>--no-verify</c> — running the
+    ///     hooks the user's own checkout would run (issue #149), including hooks under a RELATIVE
+    ///     <c>core.hooksPath</c>. The worktree stays checked out at the new commit so the Scheduler
+    ///     can run the wave's exit gate there.</item>
+    /// </list>
+    /// A rejecting hook or a real conflict yields <see cref="TrialDelivery.Refusal"/> =
+    /// <see cref="MergeOnSuccessResult.HookRejected"/> / <see cref="MergeOnSuccessResult.Conflict"/>,
+    /// with <see cref="TrialDelivery.Commit"/> null and no trial ref or worktree left behind.
+    /// </summary>
+    TrialDelivery CreateTrialDelivery(IntegrationHandle integ, string waveDir, CancellationToken ct) =>
+        throw new NotImplementedException();
+
+    /// <summary>
+    /// Promote a trial built by <see cref="CreateTrialDelivery"/> onto the user's real branch. A
+    /// trial carrying a <see cref="TrialDelivery.Refusal"/> is returned unchanged and nothing is
+    /// touched; an <see cref="TrialDelivery.AlreadyDelivered"/> trial returns
+    /// <see cref="MergeOnSuccessResult.FastForwarded"/> and nothing is touched either. Otherwise,
+    /// checked in order (each detail written to <see cref="LastMergeOnSuccessDetail"/>):
+    /// <list type="number">
+    ///   <item>Issue #588 — the checkout is still on <see cref="IntegrationHandle.OriginalBranch"/>;
+    ///     otherwise <see cref="MergeOnSuccessResult.BranchMoved"/>, naming both branches.</item>
+    ///   <item>The user's branch still points at <see cref="TrialDelivery.UserTip"/>; otherwise
+    ///     <see cref="MergeOnSuccessResult.BranchMoved"/>, naming the branch and the two tips
+    ///     (advanced or rewound).</item>
+    ///   <item>Issue #448 — no tracked dirt the fast-forward would overwrite; otherwise
+    ///     <see cref="MergeOnSuccessResult.DirtyWorkingTree"/>, naming the blocking paths.</item>
+    /// </list>
+    /// Only then does it fast-forward the user's branch to the trial commit and return
+    /// <see cref="MergeOnSuccessResult.FastForwarded"/>. Never creates a commit, never falls back to
+    /// a real merge, and never forces.
+    /// </summary>
+    MergeOnSuccessResult PromoteTrialDelivery(IntegrationHandle integ, TrialDelivery trial, CancellationToken ct) =>
+        throw new NotImplementedException();
+
+    /// <summary>
+    /// Delete the trial ref <c>refs/guardrails/trial/&lt;waveDir&gt;</c> and remove the trial's
+    /// worktree (if any) built by <see cref="CreateTrialDelivery"/>. Does not throw when there is
+    /// neither — a refused or already-discarded trial left nothing behind.
+    /// </summary>
+    void DiscardTrialDelivery(IntegrationHandle integ, string waveDir) =>
+        throw new NotImplementedException();
 }
