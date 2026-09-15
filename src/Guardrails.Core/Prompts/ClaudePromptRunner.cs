@@ -273,6 +273,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Error,
                     BlockedWritePaths = permissionScanner.BlockedWritePaths,
+                    RefusedCommands = permissionScanner.RefusedCommands,
                     Summary =
                         $"aborted after {abortThreshold} consecutive permission-denied tool calls — " +
                         $"the prompt has no granted tool for what it was asked to do{refused}"
@@ -312,6 +313,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 FailureKind = failureKind,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner.BlockedWritePaths,
+                RefusedCommands = permissionScanner.RefusedCommands,
                 Summary = summary
             };
         }

@@ -184,4 +184,61 @@ public sealed class PermissionWallTrackerTests
         Assert.True(decision.Halt);
         Assert.Equal(new[] { ".claude/x.md", "src/a/One.cs" }, decision.AllPaths);
     }
+
+    // ── #708: a refused COMMAND is a wall key, never a write path ─────────────────────────────────────
+
+    /// <summary>
+    /// Issue #708. The runner's refused-target list carries refused Bash COMMANDS as well as write paths, and the
+    /// tracker read every key as a path. So a command that merely names a <c>.claude/</c> path — a <c>grep</c> the
+    /// task was not granted — became the STRUCTURAL <c>.claude/</c> write wall, which settles on its first refusal.
+    /// The runner reports which keys are commands, so the tracker tells them apart without guessing from shape.
+    /// </summary>
+    [Fact]
+    public void ARefusedCommandThatNamesAClaudePath_IsNotTheStructuralWriteWall()
+    {
+        const string grep = "grep -rn needsHarnessWrite /repo/.claude/skills";
+        var tracker = new PermissionWallTracker();
+
+        tracker.Observe([grep], refusedCommands: [grep]);   // attempt 1
+
+        PermissionWallDecision decision = tracker.ShouldHalt();
+        Assert.Empty(decision.StructuralPaths);
+        Assert.False(decision.Halt, "a command refused on one attempt is not a wall yet, whatever path it mentions");
+    }
+
+    [Fact]
+    public void ACommandRefusedOnTwoAttempts_IsARepeatedCommand_Verbatim_NotARepeatedPath()
+    {
+        const string selfCheck = "echo \"EXIT:$?\"";
+        var tracker = new PermissionWallTracker();
+
+        tracker.Observe([selfCheck], refusedCommands: [selfCheck]);   // attempt 1
+        tracker.Observe([selfCheck], refusedCommands: [selfCheck]);   // attempt 2
+
+        PermissionWallDecision decision = tracker.ShouldHalt();
+        Assert.True(decision.HasRepeated);
+        Assert.Empty(decision.RepeatedPaths);
+        // Closing quote included: trimming quotes off a command the way a path is normalized is what reported plan
+        // 40's `echo "EXIT:$?"` as `echo "EXIT:$?`.
+        Assert.Equal(new[] { selfCheck }, decision.RepeatedCommands);
+    }
+
+    /// <summary>
+    /// The control: naming the commands must not turn the paths beside them into commands, or the structural and
+    /// repeated-path rules would silently stop seeing real write walls.
+    /// </summary>
+    [Fact]
+    public void PathsRefusedBesideACommand_AreStillPaths()
+    {
+        const string command = "pwsh -NoProfile -File guardrails/01-check.ps1";
+        var tracker = new PermissionWallTracker();
+
+        tracker.Observe(["src/locked/Protected.cs", ".claude/agents/x.md", command], refusedCommands: [command]);
+        tracker.Observe(["src/locked/Protected.cs", command], refusedCommands: [command]);
+
+        PermissionWallDecision decision = tracker.ShouldHalt();
+        Assert.Equal(new[] { ".claude/agents/x.md" }, decision.StructuralPaths);
+        Assert.Equal(new[] { "src/locked/Protected.cs" }, decision.RepeatedPaths);
+        Assert.Equal(new[] { command }, decision.RepeatedCommands);
+    }
 }

@@ -181,4 +181,78 @@ public sealed class ClaudePermissionScannerBashRefusalTests
             BashToolUse("git log --oneline -1"),
             ToolResult("a1b2c3d docs: describe how the approval prompt works", isError: false)));
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // (d) #708: a refused COMMAND is reported as a command, by the route that attributed it.
+    // ---------------------------------------------------------------------------------------------
+
+    private static ClaudePermissionScanner.Scanner ScanFully(params string[] streamLines)
+    {
+        var scanner = new ClaudePermissionScanner.Scanner();
+        foreach (string line in streamLines)
+        {
+            scanner.Feed(line);
+        }
+
+        return scanner;
+    }
+
+    [Fact]
+    public void RefusedBashCommand_IsReportedAsACommand()
+    {
+        ClaudePermissionScanner.Scanner scanner = ScanFully(BashToolUse(RefusedCommand), ToolResult(BareApprovalRefusal));
+
+        Assert.Equal(new[] { RefusedCommand }, scanner.RefusedCommands);
+    }
+
+    [Fact]
+    public void RefusedPartOfACompoundCommand_IsReportedVerbatim_ClosingQuoteIncluded()
+    {
+        // Plan 40, task 20: the runtime refused the `echo "EXIT:$?"` half of a chained `ls`, and the wall was reported
+        // as `echo "EXIT:$?` because the quote trim meant for a path had eaten the closing quote.
+        const string part = "echo \"EXIT:$?\"";
+        ClaudePermissionScanner.Scanner scanner = ScanFully(
+            BashToolUse("ls docs/plans; " + part),
+            ToolResult("This Bash command contains multiple operations. The following part requires approval: " + part));
+
+        Assert.Equal(new[] { part }, scanner.BlockedWritePaths);
+        Assert.Equal(new[] { part }, scanner.RefusedCommands);
+    }
+
+    [Fact]
+    public void BashRefusalThatNamesAPath_IsReportedAsAPath_NotACommand()
+    {
+        // The #325 shape, and why the kind comes from what the REFUSAL names rather than from the tool: Claude Code
+        // refuses a Bash `cp` that only READS a .claude/ file as "requested permissions to write to <path>". That key
+        // is a path, and it must stay one or the structural .claude/ rule stops seeing it.
+        const string claudePath = @"C:\repo\.claude\commands\traverse-repo.md";
+        ClaudePermissionScanner.Scanner scanner = ScanFully(
+            BashToolUse("cp \".claude/commands/traverse-repo.md\" staging/"),
+            ToolResult($"Claude requested permissions to write to {claudePath}, but you haven't granted it yet."));
+
+        Assert.Equal(new[] { claudePath }, scanner.BlockedWritePaths);
+        Assert.Empty(scanner.RefusedCommands);
+    }
+
+    [Fact]
+    public void TargetlessRefusalOfAWriteTool_IsReportedAsAPath_NotACommand()
+    {
+        // The tool_use fallback attributes by the input it read: a file_path is a path, even right after a Bash call.
+        string editToolUse = JsonSerializer.Serialize(new
+        {
+            type = "assistant",
+            message = new
+            {
+                content = new object[] { new { type = "tool_use", name = "Edit", input = new { file_path = "src/Locked.cs" } } },
+            },
+        });
+
+        ClaudePermissionScanner.Scanner scanner = ScanFully(
+            BashToolUse("git status"),
+            editToolUse,
+            ToolResult("Claude requested permission to use Edit, but you haven't granted it yet."));
+
+        Assert.Equal(new[] { "src/Locked.cs" }, scanner.BlockedWritePaths);
+        Assert.Empty(scanner.RefusedCommands);
+    }
 }
