@@ -621,12 +621,18 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 
   CLI, so nobody is sent to `git status` to find what blocked a green run. `Conflict`/`HookRejected` are
   untouched.
-  **Green-but-undelivered warning (#340):** the backstop for the OPT-OUT case. When the user opts OUT
-  (`mergeOnSuccess` resolved false) a wholly-green run can deliver NOTHING while the console reads like a
-  delivering run — the verified work sits on `guardrails/<plan-name>` one `--fresh`/`reset -y` from
-  destruction. The Scheduler sets `RunReport.WhollyGreenButUndelivered` (wholly green + `mergeOnSuccess`
-  false + a real separate plan branch — worktree mode, i.e. `integ != null`; suppressed in SERIAL mode
-  only, where there is no plan branch). It is **NOT** suppressed for `runOnCurrentBranch` (#345): that flag
+  **Green-but-undelivered warning (#340):** the backstop for a green run whose delivery resolved OFF. Such a
+  run can deliver NOTHING while the console reads like a delivering run — the verified work sits on
+  `guardrails/<plan-name>` one `--fresh`/`reset -y` from destruction. The Scheduler sets
+  `RunReport.WhollyGreenButUndelivered` (wholly green + delivery resolved off + a real separate plan branch —
+  worktree mode, i.e. `integ != null`; suppressed in SERIAL mode only, where there is no plan branch).
+  Delivery resolves off for two causes, and both can hold at once (#597/#710): `mergeOnSuccess` false (the
+  opt-out), or the #361 interlock holding machine-decided work. The banner and `run.json`'s
+  `delivery.reason` derive the cause ONCE, from `RunReport.MergeOnSuccess` (the resolved value),
+  `RunReport.MergeOnSuccessSource` (`Default` | `Config` | `Flag` | `FlagAndConfig`, stamped by
+  `Scheduler.BuildReport` on every report) and `RunReport.DeliverySuppressingDecision`. Both name the setting
+  and its source (e.g. `mergeOnSuccess is off (set by --no-merge-on-success)`), then the interlock when it is a
+  cause too. It is **NOT** suppressed for `runOnCurrentBranch` (#345): that flag
   is an **unwired stub** (loader/warning-path only, NOT wired into `GitWorktreeProvider`), so a worktree-mode
   opt-out run there still forks a separate `guardrails/<plan>` branch and genuinely strands work — the
   warning must fire (else the exact #340 incident, uncovered). The CLI prints a **loud end-of-run warning**

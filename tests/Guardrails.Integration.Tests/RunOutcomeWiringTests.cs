@@ -171,6 +171,150 @@ public sealed class RunOutcomeWiringTests
                  && d.GetProperty("decision").GetString() == "proceeded-unreviewed");
     }
 
+    /// <summary>
+    /// Issue #710, through the REAL <c>run</c> command: the run the issue was filed from. Delivery was turned off with
+    /// <c>--no-merge-on-success</c> on a run that ALSO recorded a suppressing decision, so both causes were true.
+    ///
+    /// <para><b>The defect this pins.</b> #597 chose between its two causes on the decision alone. The end-of-run
+    /// banner therefore said "mergeOnSuccess is ON" and named only the interlock, and <c>run.json</c>'s
+    /// <c>delivery.reason</c> recorded the same false fact. Neither surface could see what the setting had resolved
+    /// to.</para>
+    ///
+    /// <para><b>Why this runs end to end.</b> It is the control against a resolved-setting field that exists but is
+    /// never populated. <c>RunReport.MergeOnSuccess</c> defaults to <c>true</c>, so if the Scheduler never stamped
+    /// it, this run would render "on, held by the interlock", which is #710 exactly. If the run command never
+    /// recorded the flag as the source, the banner would not name <c>--no-merge-on-success</c>. A hand-built
+    /// <c>RunReport</c> cannot catch either.</para>
+    /// </summary>
+    [Fact]
+    public async Task ProceedUnreviewed_Run_WithNoMergeOnSuccessFlag_NamesBothCauses_AndNeverClaimsTheSettingIsOn()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+
+        string planDir = CreateProceedUnreviewedPlan(repo.RepoPath);
+
+        (_, string output) = await RunViaCliAsync(
+            "run", planDir, "--no-ui", "--no-log-server", "--no-merge-on-success");
+
+        Assert.Equal(initialHead, repo.HeadSha()); // nothing was delivered
+
+        // ── The console banner ────────────────────────────────────────────────────────────────────────────
+        Assert.Contains("WORK NOT DELIVERED", output, StringComparison.Ordinal);
+        Assert.Contains("Delivery was held back for TWO reasons", output, StringComparison.Ordinal);
+        Assert.Contains("  1. mergeOnSuccess is off (set by --no-merge-on-success).", output, StringComparison.Ordinal);
+        Assert.Contains("'proceeded-unreviewed' at 'wave-02-build' (wave boundary)", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("mergeOnSuccess is ON", output, StringComparison.Ordinal);
+
+        // ── The durable record, read as raw JSON for the reason the forced-delivery test above gives ─────────
+        using JsonDocument runJson = JsonDocument.Parse(File.ReadAllText(RunJournal.PathFor(planDir)));
+        JsonElement delivery = runJson.RootElement.GetProperty("delivery");
+        Assert.False(delivery.GetProperty("delivered").GetBoolean());
+        Assert.Equal("not-attempted", delivery.GetProperty("outcome").GetString());
+        Assert.Equal("guardrails/plan", delivery.GetProperty("planBranch").GetString());
+        Assert.False(delivery.TryGetProperty("forcedPastDecision", out _));
+
+        string reason = delivery.GetProperty("reason").GetString()!;
+        Assert.Contains("two reasons", reason, StringComparison.Ordinal);
+        Assert.Contains("mergeOnSuccess is off (set by --no-merge-on-success)", reason, StringComparison.Ordinal);
+        Assert.Contains("'proceeded-unreviewed' at 'wave-02-build' (wave boundary)", reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("mergeOnSuccess is ON", reason, StringComparison.Ordinal);
+
+        // The decision both surfaces name is really in decisions[]: the fixture reached the interlock.
+        Assert.Contains(
+            runJson.RootElement.GetProperty("decisions").EnumerateArray(),
+            d => d.GetProperty("subject").GetString() == "wave-02-build"
+                 && d.GetProperty("decision").GetString() == "proceeded-unreviewed");
+    }
+
+    /// <summary>
+    /// Issue #710: the setting's SOURCE, named on both surfaces through the real run path. The default row is the
+    /// #597 case (the interlock alone, with <c>mergeOnSuccess</c> genuinely on). The <c>guardrails.json</c> row
+    /// turns delivery off from the manifest, so both causes are true again and the banner must name the file
+    /// rather than a flag nobody passed. The last two rows cover a flag and the file together: when they AGREE,
+    /// both are named, because an operator who drops the flag on the next resume is still held by the file; when
+    /// they disagree, only the flag is, because it overrode the file. Each expected clause ends at its closing
+    /// parenthesis, so no row can pass on another row's wording.
+    /// </summary>
+    [Theory]
+    [InlineData(null, null, "mergeOnSuccess is ON (the default)")]
+    [InlineData(null, false, "mergeOnSuccess is off (set by \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData("--no-merge-on-success", false, "mergeOnSuccess is off (set by --no-merge-on-success and \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData("--no-merge-on-success", true, "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    public async Task ProceedUnreviewed_Run_NamesWhereTheDeliverySettingCameFrom_OnBothSurfaces(
+        string? flag, bool? mergeOnSuccessKey, string settingClause)
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateProceedUnreviewedPlan(repo.RepoPath, mergeOnSuccessKey);
+
+        (_, string output) = await RunViaCliAsync(RunArgs(planDir, flag));
+
+        Assert.Contains("WORK NOT DELIVERED", output, StringComparison.Ordinal);
+        Assert.Contains(settingClause, output, StringComparison.Ordinal);
+
+        using JsonDocument runJson = JsonDocument.Parse(File.ReadAllText(RunJournal.PathFor(planDir)));
+        string reason = runJson.RootElement.GetProperty("delivery").GetProperty("reason").GetString()!;
+        Assert.Contains(settingClause, reason, StringComparison.Ordinal);
+        Assert.Contains("'proceeded-unreviewed' at 'wave-02-build' (wave boundary)", reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The #340 one-time "delivered by default" notice, through the real run path. RunCommand's
+    /// <c>deliveryFromDefaultOnly</c> is now derived from <c>MergeOnSuccessSource</c> (issue #710), and until this
+    /// test the notice's derivation had no end-to-end coverage: its render tests pass the bool in by hand. Every row
+    /// delivers (the user's branch advances), so a row without the notice is silent because the default did not
+    /// decide delivery, never because nothing was delivered.
+    /// </summary>
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(null, true, false)]
+    [InlineData("--merge-on-success", null, false)]
+    [InlineData("--merge-on-success", true, false)]
+    public async Task AGreenFlatRun_PrintsTheDeliveredByDefaultNotice_OnlyWhenTheDefaultDecidedDelivery(
+        string? flag, bool? mergeOnSuccessKey, bool expectNotice)
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string planDir = CreateGreenFlatPlan(repo.RepoPath, mergeOnSuccessKey);
+
+        (int exit, string output) = await RunViaCliAsync(RunArgs(planDir, flag));
+
+        Assert.Equal(0, exit);
+        Assert.NotEqual(initialHead, repo.HeadSha());
+        Assert.Equal(expectNotice, output.Contains("mergeOnSuccess now defaults on", StringComparison.Ordinal));
+    }
+
+    private static string[] RunArgs(string planDir, string? flag) =>
+        flag is null
+            ? new[] { "run", planDir, "--no-ui", "--no-log-server" }
+            : new[] { "run", planDir, "--no-ui", "--no-log-server", flag };
+
+    /// <summary>A FLAT, wholly-green, worktree-mode plan at <c>&lt;repoPath&gt;/plan</c>: one script task and no decision.</summary>
+    private static string CreateGreenFlatPlan(string repoPath, bool? mergeOnSuccessKey)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            $$"""
+            {
+              "version": 1,
+              {{MergeOnSuccessLine(mergeOnSuccessKey)}}
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        WriteGreenScriptTask(Path.Combine(planDir, "tasks", "01-config"));
+        return planDir;
+    }
+
+    /// <summary>The optional <c>"mergeOnSuccess"</c> line for a fixture's <c>guardrails.json</c>; empty when the key is omitted.</summary>
+    private static string MergeOnSuccessLine(bool? mergeOnSuccessKey) =>
+        mergeOnSuccessKey is { } key ? $"\"mergeOnSuccess\": {(key ? "true" : "false")}," : "";
+
     // ── The #120 driver: the REAL `run` command in-process (never `new Scheduler(...)`) ───────────────
 
     private static async Task<(int ExitCode, string Output)> RunViaCliAsync(params string[] args)
@@ -196,7 +340,7 @@ public sealed class RunOutcomeWiringTests
     /// <c>promptRunners</c> so the real <c>SchedulerFactory</c> builds the breakdown invoker over it — NO real
     /// Claude process.
     /// </summary>
-    private static string CreateProceedUnreviewedPlan(string repoPath)
+    private static string CreateProceedUnreviewedPlan(string repoPath, bool? mergeOnSuccessKey = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "state"));
@@ -207,14 +351,16 @@ public sealed class RunOutcomeWiringTests
         string breakdownCli = WriteFakeBreakdownCli(repoPath);
         string breakdownCmd = breakdownCli.Replace("\\", "\\\\"); // JSON-escape backslashes in the command path
 
-        // mergeOnSuccess is OMITTED (defaults ON, #340) — so delivery is suppressed PURELY by the
-        // proceeded-unreviewed decision (RunOutcomePolicy.SuppressesDelivery), the faithful §1 delivery-gating
-        // test. review-gate proceed-unreviewed at the DEFAULT dial is NOT a GR2040 compound (that needs
-        // critical). autonomyPolicy auto so the JIT checkpoint auto-invokes the breakdown.
+        // mergeOnSuccess is OMITTED unless a caller passes mergeOnSuccessKey (defaults ON, #340) — so by default
+        // delivery is suppressed PURELY by the proceeded-unreviewed decision (RunOutcomePolicy.SuppressesDelivery),
+        // the faithful §1 delivery-gating test. #710 passes the key to prove guardrails.json is named as the source
+        // when it is the input that decided the setting. review-gate proceed-unreviewed at the DEFAULT dial is NOT
+        // a GR2040 compound (that needs critical). autonomyPolicy auto so the JIT checkpoint auto-invokes the breakdown.
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
             $$"""
             {
               "version": 1,
+              {{MergeOnSuccessLine(mergeOnSuccessKey)}}
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,

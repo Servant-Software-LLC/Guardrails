@@ -1,5 +1,7 @@
 using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Journal;
+using Guardrails.Core.Model;
 
 namespace Guardrails.Integration.Tests;
 
@@ -22,7 +24,12 @@ public sealed class UndeliveredWorkWarningTests
                 new TaskResult { TaskId = "01-do-thing", Outcome = TaskOutcome.Succeeded, Summary = "ok" }
             ],
             MergeOnSuccessOutcome = mergeOutcome,
-            WhollyGreenButUndelivered = whollyGreenButUndelivered
+            WhollyGreenButUndelivered = whollyGreenButUndelivered,
+
+            // An undelivered report with no suppressing decision is the #340 opt-out. Since #710 the banner
+            // renders the resolved setting rather than assuming it, so the fixture states the opt-out it stands for.
+            MergeOnSuccess = !whollyGreenButUndelivered,
+            MergeOnSuccessSource = whollyGreenButUndelivered ? MergeOnSuccessSource.Flag : MergeOnSuccessSource.Default
         };
 
     private static string Render(
@@ -97,12 +104,13 @@ public sealed class UndeliveredWorkWarningTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // Issue #597 — the banner's TWO causes. WhollyGreenButUndelivered covers both "mergeOnSuccess is
+    // Issue #597 — the banner's two causes. WhollyGreenButUndelivered covers both "mergeOnSuccess is
     // genuinely off" and "the #361 autonomous-mode interlock held the work back", and the banner used to
     // render only the first. On a suppression-by-decision run BOTH halves of that text were false:
     // mergeOnSuccess was ON (the #340 default), and the recommended --merge-on-success could not lift the
     // interlock. The measured operator burned three dead ends (guardrails.json → the default in source →
-    // the release history) before finding the real cause in RunOutcomePolicy.
+    // the release history) before finding the real cause in RunOutcomePolicy. Issue #710 then found the two
+    // causes can hold at once, which makes three cases; the #710 section below pins all three.
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     private static DecisionEntry BestGuessAt(string subject) => new()
@@ -114,11 +122,14 @@ public sealed class UndeliveredWorkWarningTests
         Headline = "best-guessed at the needs-human gate"
     };
 
-    private static RunReport SuppressedReport(DecisionEntry? suppressing) =>
+    private static RunReport SuppressedReport(
+        DecisionEntry? suppressing, bool mergeOnSuccess = true, MergeOnSuccessSource source = MergeOnSuccessSource.Default) =>
         new()
         {
             Tasks = [new TaskResult { TaskId = "01-do-thing", Outcome = TaskOutcome.Succeeded, Summary = "ok" }],
             WhollyGreenButUndelivered = true,
+            MergeOnSuccess = mergeOnSuccess,
+            MergeOnSuccessSource = source,
             DeliverySuppressingDecision = suppressing
         };
 
@@ -148,16 +159,222 @@ public sealed class UndeliveredWorkWarningTests
     [Fact]
     public void GenuinelyOff_KeepsTheOriginalWording()
     {
-        // The load-bearing negative: with NO suppressing decision the cause really IS mergeOnSuccess, and
-        // the shipped text stays exactly as it was — this change adds a case, it does not replace one.
+        // The load-bearing negative: with NO suppressing decision the cause really IS mergeOnSuccess, and the
+        // banner says so without inventing an interlock. #710 added the setting's source to this wording.
         string rendered = Render(
-            SuppressedReport(suppressing: null),
+            SuppressedReport(suppressing: null, mergeOnSuccess: false, source: MergeOnSuccessSource.Config),
             terminalGatePassed: true, planDirectory: Path.Combine("repo", "27-operator-visibility"));
 
         Assert.Contains(Marker, rendered);
         Assert.Contains("mergeOnSuccess is off", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("interlock", rendered, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--merge-on-success", rendered, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Issue #710 — the cause comes from BOTH facts. #597 chose between its two causes on the decision alone, and
+    // the decision is recorded whether or not the interlock held. So a run resumed with --no-merge-on-success
+    // that had also recorded a proceeded-best-guess printed "mergeOnSuccess is ON" and named only the interlock
+    // (plan 40, run 2026-09-11T21-32-30Z-5d7e, where both causes were true). The first three rows pin the
+    // rendered text whole; the theory pins that the banner and delivery.reason name the same cause.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private const string Rule = "==============================================================================";
+
+    private static string Banner(params string[] causeLines) =>
+        string.Concat(
+            new[] { "", Rule, Marker }
+                .Concat(causeLines)
+                .Concat(["A later --fresh or 'reset -y' will DESTROY this undelivered work.", Rule])
+                .Select(line => line + Environment.NewLine));
+
+    [Fact]
+    public void OffWithADecision_NamesBothCauses_AndNeverClaimsTheSettingIsOn()
+    {
+        string rendered = Render(
+            SuppressedReport(
+                BestGuessAt("20-implement-overwatcher-autoresolve"), mergeOnSuccess: false, source: MergeOnSuccessSource.Flag),
+            terminalGatePassed: true, planDirectory: Path.Combine("repo", "40-in-flight-resource-supply"));
+
+        Assert.Equal(
+            Banner(
+                "Delivery was held back for TWO reasons; either one alone would have held it:",
+                "  1. mergeOnSuccess is off (set by --no-merge-on-success).",
+                "  2. The autonomous-mode interlock (#361) — this run recorded",
+                "     'proceeded-best-guess' at '20-implement-overwatcher-autoresolve' (task boundary),",
+                "     so machine-decided work is never auto-delivered.",
+                "The verified work is sitting on branch",
+                "'guardrails/40-in-flight-resource-supply', NOT on your checkout.",
+                "JUDGE THE DECISION FIRST — run.json → decisions[]. A best-guess that a later attempt",
+                "superseded is stale; one that shaped the result you are looking at is not. Then either:",
+                "  guardrails run 40-in-flight-resource-supply --merge-on-success   (turns delivery on AND overrides the interlock)",
+                "  or merge 'guardrails/40-in-flight-resource-supply' into your branch yourself."),
+            rendered);
+
+        // The false statement the issue was filed for, asserted absent on its own, so a later re-wording of the pin
+        // above cannot quietly bring it back.
+        Assert.DoesNotContain("mergeOnSuccess is ON", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OnWithADecision_NamesTheInterlock_AndThatTheSettingIsOnByDefault()
+    {
+        string rendered = Render(
+            SuppressedReport(BestGuessAt("12-implement-events-endpoint")),
+            terminalGatePassed: true, planDirectory: Path.Combine("repo", "35-event-vocabulary"));
+
+        Assert.Equal(
+            Banner(
+                "mergeOnSuccess is ON (the default).",
+                "Delivery was held back by the autonomous-mode interlock (#361):",
+                "this run recorded 'proceeded-best-guess' at '12-implement-events-endpoint' (task boundary),",
+                "so machine-decided work is never auto-delivered. The verified work is sitting on branch",
+                "'guardrails/35-event-vocabulary', NOT on your checkout.",
+                "JUDGE THE DECISION FIRST — run.json → decisions[]. A best-guess that a later attempt",
+                "superseded is stale; one that shaped the result you are looking at is not. Then either:",
+                "  guardrails run 35-event-vocabulary --merge-on-success   (an explicit override of the interlock)",
+                "  or merge 'guardrails/35-event-vocabulary' into your branch yourself."),
+            rendered);
+    }
+
+    [Fact]
+    public void OffWithoutADecision_NamesTheFlagThatTurnedItOff()
+    {
+        string rendered = Render(
+            SuppressedReport(suppressing: null, mergeOnSuccess: false, source: MergeOnSuccessSource.Flag),
+            terminalGatePassed: true, planDirectory: Path.Combine("repo", "27-operator-visibility"));
+
+        Assert.Equal(
+            Banner(
+                "mergeOnSuccess is off (set by --no-merge-on-success).",
+                "This fully-green run's verified work is sitting on branch",
+                "'guardrails/27-operator-visibility', NOT on your checkout.",
+                "Deliver it before it is lost:  guardrails run 27-operator-visibility --merge-on-success",
+                "                               (or merge 'guardrails/27-operator-visibility' into your branch yourself)."),
+            rendered);
+    }
+
+    private static WaveDeliveredRecord WaveRecord(
+        WaveDeliveryStatus status, DeliveryOutcome? outcome = null, string? detail = null) => new()
+        {
+            Status = status,
+            StartedAt = DateTimeOffset.UnixEpoch,
+            At = DateTimeOffset.UnixEpoch,
+            Commit = status == WaveDeliveryStatus.Delivered ? "deadbeef" : null,
+            Outcome = outcome,
+            Detail = detail,
+            Covers = ["wave-02-build"],
+        };
+
+    /// <summary>
+    /// Both surfaces, every cause, every source a cause can carry, and the waved shapes that reach the same
+    /// derivation (design 39 §4): a partial delivery, one whose later wave a rejecting hook held, and one whose later
+    /// wave's delivery was refused. The last two are the resume case: an earlier run left those records in
+    /// <c>run.json</c>, and this run passed <c>--no-merge-on-success</c>. The surfaces word things differently (the
+    /// banner has room for remedies, the record is one sentence), so this does not compare them to each other. It
+    /// requires each to state the SAME setting clause and the same decision, and neither to state the opposite of
+    /// the resolved value.
+    /// </summary>
+    [Theory]
+    [InlineData(false, MergeOnSuccessSource.Flag, false, "none", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.Config, false, "none", "mergeOnSuccess is off (set by \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData(true, MergeOnSuccessSource.Default, true, "none", "mergeOnSuccess is ON (the default)")]
+    [InlineData(true, MergeOnSuccessSource.Config, true, "none", "mergeOnSuccess is ON (set by \"mergeOnSuccess\": true in guardrails.json)")]
+    [InlineData(false, MergeOnSuccessSource.Flag, true, "none", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.Config, true, "none", "mergeOnSuccess is off (set by \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData(true, MergeOnSuccessSource.Default, true, "partial", "mergeOnSuccess is ON (the default)")]
+    [InlineData(false, MergeOnSuccessSource.Flag, true, "partial", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.Flag, false, "partial-hook-hold", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.Flag, true, "partial-refused", "mergeOnSuccess is off (set by --no-merge-on-success)")]
+    [InlineData(false, MergeOnSuccessSource.FlagAndConfig, false, "none", "mergeOnSuccess is off (set by --no-merge-on-success and \"mergeOnSuccess\": false in guardrails.json)")]
+    [InlineData(false, MergeOnSuccessSource.FlagAndConfig, true, "none", "mergeOnSuccess is off (set by --no-merge-on-success and \"mergeOnSuccess\": false in guardrails.json)")]
+    public void TheBannerAndDeliveryReason_NameTheSameCause(
+        bool mergeOnSuccess, MergeOnSuccessSource source, bool withDecision, string waves, string settingClause)
+    {
+        const string planDirectory = "/repo/docs/plans/40-in-flight-resource-supply";
+        const string decisionPhrase = "'proceeded-best-guess' at '12-implement-events-endpoint' (task boundary)";
+
+        var waveDeliveries = new Dictionary<string, WaveDeliveredRecord>();
+        if (waves != "none")
+        {
+            waveDeliveries["wave-02-build"] = WaveRecord(WaveDeliveryStatus.Delivered);
+        }
+
+        if (waves == "partial-hook-hold")
+        {
+            waveDeliveries["wave-03-build"] =
+                WaveRecord(WaveDeliveryStatus.Refused, DeliveryOutcome.HookRejected, "pre-commit hook exited 1");
+            waveDeliveries["wave-04-ride"] =
+                WaveRecord(WaveDeliveryStatus.Suppressed, detail: "held by wave-03-build: hook-rejected");
+        }
+        else if (waves == "partial-refused")
+        {
+            waveDeliveries["wave-03-build"] = WaveRecord(
+                WaveDeliveryStatus.Refused, DeliveryOutcome.BranchMoved, "run started on 'master'; HEAD is now 'spike'");
+        }
+
+        RunReport report = SuppressedReport(
+            withDecision ? BestGuessAt("12-implement-events-endpoint") : null, mergeOnSuccess, source) with
+        {
+            WaveDeliveries = waveDeliveries
+        };
+
+        string banner = Render(report, terminalGatePassed: true, planDirectory);
+        string reason = RunCommand.DescribeDelivery(report, terminalGatePassed: true, planDirectory).Reason!;
+
+        foreach (string surface in new[] { banner, reason })
+        {
+            Assert.Contains(settingClause, surface, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                mergeOnSuccess ? "mergeOnSuccess is off" : "mergeOnSuccess is ON", surface, StringComparison.Ordinal);
+
+            if (withDecision)
+            {
+                Assert.Contains(decisionPhrase, surface, StringComparison.Ordinal);
+                Assert.Contains("interlock", surface, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.DoesNotContain("interlock", surface, StringComparison.OrdinalIgnoreCase);
+            }
+
+            // Two causes are named exactly when two were true.
+            Assert.Equal(
+                !mergeOnSuccess && withDecision, surface.Contains("two reasons", StringComparison.OrdinalIgnoreCase));
+
+            if (waves != "none")
+            {
+                Assert.Contains("wave-02-build", surface, StringComparison.Ordinal);
+            }
+        }
+
+        if (waves is "partial-hook-hold" or "partial-refused")
+        {
+            Assert.Contains("held: wave-03-build", reason, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Nothing catches an exception this late in a run. The banner call has no catch, and <c>DescribeDelivery</c>'s
+    /// catch covers only IO, access and JSON failures, so a throw on an unexpected setting source would turn a
+    /// finished run into a harness error. An unrecognized source renders as unknown on both surfaces instead: a true
+    /// statement, with no guess at which input it was.
+    /// </summary>
+    [Fact]
+    public void AnUnrecognizedSettingSource_RendersAsUnknown_OnBothSurfaces_AndNeverThrows()
+    {
+        const string planDirectory = "/repo/docs/plans/40-in-flight-resource-supply";
+        RunReport report = SuppressedReport(
+            BestGuessAt("12-implement-events-endpoint"), mergeOnSuccess: false, source: (MergeOnSuccessSource)99);
+
+        string banner = Render(report, terminalGatePassed: true, planDirectory);
+        string reason = RunCommand.DescribeDelivery(report, terminalGatePassed: true, planDirectory).Reason!;
+
+        foreach (string surface in new[] { banner, reason })
+        {
+            Assert.Contains("mergeOnSuccess is off (source unknown)", surface, StringComparison.Ordinal);
+            Assert.DoesNotContain("set by", surface, StringComparison.Ordinal);
+        }
     }
 
     // ── The override's own notice: delivery that WENT AHEAD past a machine decision ────────────

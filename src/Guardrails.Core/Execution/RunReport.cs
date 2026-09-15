@@ -303,7 +303,9 @@ public sealed record RunReport
 
     /// <summary>
     /// True when this run drained WHOLLY GREEN (the DAG) but the completed work was NOT delivered to the
-    /// user's branch because <c>mergeOnSuccess</c> resolved <b>false</b> (issue #340). The verified work
+    /// user's branch because delivery resolved <b>off</b> (issue #340): <c>mergeOnSuccess</c> false, the #361
+    /// interlock held it, or both (#597/#710; <see cref="MergeOnSuccess"/> and
+    /// <see cref="DeliverySuppressingDecision"/> say which). The verified work
     /// is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
     /// <c>--fresh</c>/<c>reset -y</c> away from destruction. Set by the Scheduler's <c>Finalize</c> ONLY
     /// when a real, SEPARATE plan branch exists (worktree mode: a worktree provider AND an integration
@@ -350,6 +352,34 @@ public sealed record RunReport
     /// operator should see recorded, not a silent success.
     /// </summary>
     public bool DeliveryForcedPastDecision { get; init; }
+
+    /// <summary>
+    /// The RESOLVED <c>mergeOnSuccess</c> setting this run ran under: <see cref="Model.RunConfig.MergeOnSuccess"/>
+    /// after any CLI flag was applied (issue #710). With <see cref="DeliverySuppressingDecision"/> it is one of
+    /// the two facts that say WHY <see cref="WhollyGreenButUndelivered"/> held the work back: the setting was
+    /// off, the autonomous-mode interlock held it, or both at once.
+    /// <para>
+    /// <b>The defect this closes.</b> #597 split the undelivered banner and <c>delivery.reason</c> into two
+    /// causes but chose between them on the decision alone, and the decision is, by its own contract, set
+    /// whether or not the interlock held. A run resumed with <c>--no-merge-on-success</c> that had recorded a
+    /// <c>proceeded-best-guess</c> therefore printed "mergeOnSuccess is ON" and wrote the same claim into
+    /// <c>run.json</c>. Both statements were false, and neither surface had the resolved value to check.
+    /// </para>
+    /// <para>
+    /// Stamped by the Scheduler's <c>BuildReport</c>, the one method every report passes through, so no report
+    /// path can leave it unset. Defaults to <c>true</c>, the #340 default, as
+    /// <see cref="Model.RunConfig.MergeOnSuccess"/> does.
+    /// </para>
+    /// </summary>
+    public bool MergeOnSuccess { get; init; } = true;
+
+    /// <summary>
+    /// WHICH input decided <see cref="MergeOnSuccess"/>: the CLI flag, <c>guardrails.json</c>, both when they set
+    /// the same value, or the default (issue #710; <see cref="Model.RunConfig.MergeOnSuccessSource"/>). Both
+    /// undelivered surfaces name it, so an operator told the setting is off is also told every place to change it.
+    /// Stamped beside <see cref="MergeOnSuccess"/>.
+    /// </summary>
+    public Model.MergeOnSuccessSource MergeOnSuccessSource { get; init; }
 
     /// <summary>
     /// True when this run drained wholly green with delivery resolved ON, but the delivery was HELD BACK

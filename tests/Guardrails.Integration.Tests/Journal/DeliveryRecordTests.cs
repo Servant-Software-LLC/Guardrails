@@ -2,6 +2,7 @@ using System.Text.Json;
 using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Model;
 
 namespace Guardrails.Integration.Tests.Journal;
 
@@ -55,14 +56,20 @@ public sealed class DeliveryRecordTests
     [Fact]
     public void AGreenRunThatDidNotDeliver_RecordsNotDelivered_AndNamesTheBranchHoldingTheWork()
     {
+        // #710: the fixture states the opt-out it stands for, since the record now renders the resolved setting.
         DeliverySection d = RunCommand.DescribeDelivery(
-            Report(whollyGreenButUndelivered: true), terminalGatePassed: true, PlanDir);
+            Report(whollyGreenButUndelivered: true) with
+            {
+                MergeOnSuccess = false,
+                MergeOnSuccessSource = MergeOnSuccessSource.Flag
+            },
+            terminalGatePassed: true, PlanDir);
 
         Assert.False(d.Delivered);
         Assert.Equal(DeliveryOutcome.NotAttempted, d.Outcome);
         Assert.Equal(PlanBranch, d.PlanBranch);
         Assert.NotNull(d.Reason);
-        Assert.Contains("mergeOnSuccess resolved off", d.Reason, StringComparison.Ordinal);
+        Assert.Contains("mergeOnSuccess is off (set by --no-merge-on-success)", d.Reason, StringComparison.Ordinal);
         Assert.Contains(PlanBranch, d.Reason, StringComparison.Ordinal);
     }
 
@@ -98,10 +105,135 @@ public sealed class DeliveryRecordTests
         Assert.Contains("proceeded-best-guess", d.Reason!, StringComparison.Ordinal);
         Assert.Contains("12-implement-events-endpoint", d.Reason!, StringComparison.Ordinal);
         Assert.Contains("interlock", d.Reason!, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("mergeOnSuccess resolved off", d.Reason!, StringComparison.Ordinal);
+        // #710 re-worded the setting clause the record shares with the banner; the false cause stays absent in it.
+        Assert.DoesNotContain("mergeOnSuccess is off", d.Reason!, StringComparison.Ordinal);
 
         // The interlock HELD, so no override fired — the audit object must be absent.
         Assert.Null(d.ForcedPastDecision);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Issue #710 — the cause as the durable record states it. #597's split chose on the decision alone, so a run
+    // resumed with --no-merge-on-success that had also recorded a proceeded-best-guess wrote "mergeOnSuccess itself
+    // is ON" into this record: a false fact, in the one file an unattended pipeline (#496) reads. Pinned whole,
+    // because a reader of this field reads the whole sentence. UndeliveredWorkWarningTests pins the banner, and its
+    // theory pins that the two surfaces name the same cause.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static DecisionEntry BestGuessAt(string subject) => new()
+    {
+        Boundary = "task",
+        Policy = "auto",
+        Decision = DecisionTokens.ProceededBestGuess,
+        Subject = subject,
+        Headline = "best-guessed at the needs-human gate"
+    };
+
+    [Fact]
+    public void AGreenRunTurnedOffThatAlsoRecordedADecision_RecordsBothCauses_AndNeverClaimsTheSettingIsOn()
+    {
+        RunReport report = Report(whollyGreenButUndelivered: true) with
+        {
+            MergeOnSuccess = false,
+            MergeOnSuccessSource = MergeOnSuccessSource.Flag,
+            DeliverySuppressingDecision = BestGuessAt("20-implement-overwatcher-autoresolve")
+        };
+
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.False(d.Delivered);
+        Assert.Equal(DeliveryOutcome.NotAttempted, d.Outcome);
+        Assert.Equal(PlanBranch, d.PlanBranch);
+        Assert.Equal(
+            "delivery was held back for two reasons, either of which alone would have held it: "
+            + "mergeOnSuccess is off (set by --no-merge-on-success), and the autonomous-mode interlock (#361) — "
+            + "this run recorded 'proceeded-best-guess' at '20-implement-overwatcher-autoresolve' (task boundary), "
+            + "so machine-decided work is not auto-delivered. The verified work is sitting on "
+            + "'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it. "
+            + "Judge the decision (decisions[]) first, then re-run with --merge-on-success, which both turns delivery "
+            + "on and overrides the interlock, or merge the branch by hand",
+            d.Reason);
+        Assert.DoesNotContain("is ON", d.Reason!, StringComparison.Ordinal);
+
+        // No override fired, so the audit object stays absent.
+        Assert.Null(d.ForcedPastDecision);
+    }
+
+    [Fact]
+    public void AGreenRunHeldByTheInterlock_RecordsThatTheSettingIsOnByDefault()
+    {
+        RunReport report = Report(whollyGreenButUndelivered: true) with
+        {
+            MergeOnSuccess = true,
+            MergeOnSuccessSource = MergeOnSuccessSource.Default,
+            DeliverySuppressingDecision = BestGuessAt("12-implement-events-endpoint")
+        };
+
+        Assert.Equal(
+            "delivery was suppressed by the autonomous-mode interlock (#361) — this run recorded "
+            + "'proceeded-best-guess' at '12-implement-events-endpoint' (task boundary), so machine-decided work is "
+            + "not auto-delivered; mergeOnSuccess is ON (the default). The verified work is sitting on "
+            + "'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it. "
+            + "Judge the decision (decisions[]), then re-run with --merge-on-success to override, or merge the branch "
+            + "by hand",
+            RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir).Reason);
+    }
+
+    [Fact]
+    public void AGreenRunTurnedOffByGuardrailsJson_RecordsThatInput_NotTheFlag()
+    {
+        RunReport report = Report(whollyGreenButUndelivered: true) with
+        {
+            MergeOnSuccess = false,
+            MergeOnSuccessSource = MergeOnSuccessSource.Config
+        };
+
+        Assert.Equal(
+            "mergeOnSuccess is off (set by \"mergeOnSuccess\": false in guardrails.json), so this wholly-green run's "
+            + "verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later "
+            + "--fresh or 'reset -y' destroys it",
+            RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir).Reason);
+    }
+
+    /// <summary>
+    /// The waved shape of the same run (design 39 §4): an earlier run delivered wave-02 at its own barrier, and this
+    /// resume passed <c>--no-merge-on-success</c>. The record reads <c>partially-delivered</c>, and the rest is held
+    /// for both causes, named in the same words the flat run above uses.
+    /// </summary>
+    [Fact]
+    public void APartialDeliveryTurnedOffThatAlsoRecordedADecision_NamesBothCauses_AfterTheDeliveredWave()
+    {
+        RunReport report = Report(whollyGreenButUndelivered: true) with
+        {
+            MergeOnSuccess = false,
+            MergeOnSuccessSource = MergeOnSuccessSource.Flag,
+            DeliverySuppressingDecision = BestGuessAt("wave-03-build/01-compile"),
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-02-build"] = new()
+                {
+                    Status = WaveDeliveryStatus.Delivered,
+                    StartedAt = DateTimeOffset.UnixEpoch,
+                    At = DateTimeOffset.UnixEpoch,
+                    Commit = "deadbeef",
+                    Covers = ["wave-02-build"],
+                },
+            },
+        };
+
+        DeliverySection d = RunCommand.DescribeDelivery(report, terminalGatePassed: true, PlanDir);
+
+        Assert.Equal(DeliveryOutcome.PartiallyDelivered, d.Outcome);
+        Assert.False(d.Delivered);
+        Assert.Equal(
+            "delivered: wave-02-build — delivery was held back for two reasons, either of which alone would have held "
+            + "it: mergeOnSuccess is off (set by --no-merge-on-success), and the autonomous-mode interlock (#361) — "
+            + "this run recorded 'proceeded-best-guess' at 'wave-03-build/01-compile' (task boundary), so "
+            + "machine-decided work is not auto-delivered. The verified work is sitting on "
+            + "'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it. "
+            + "Judge the decision (decisions[]) first, then re-run with --merge-on-success, which both turns delivery "
+            + "on and overrides the interlock, or merge the branch by hand",
+            d.Reason);
     }
 
     /// <summary>

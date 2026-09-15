@@ -161,6 +161,27 @@ public sealed record RunConfig
     public bool? MergeOnSuccessExplicit { get; init; }
 
     /// <summary>
+    /// WHICH input decided <see cref="MergeOnSuccess"/> (issue #710): the CLI flag, <c>guardrails.json</c>, or
+    /// the #340 default — the SSOT §2 precedence order. <c>PlanLoader</c> records <c>Config</c> or
+    /// <c>Default</c>. The run command upgrades it to <c>Flag</c> when <c>--merge-on-success</c> or
+    /// <c>--no-merge-on-success</c> overrides the value, or to <c>FlagAndConfig</c> when the flag sets the value
+    /// the <c>guardrails.json</c> key already had, so both places are named.
+    /// <para>
+    /// <b>The defect this closes.</b> A run resumed with <c>--no-merge-on-success</c> that had also recorded a
+    /// <c>proceeded-best-guess</c> printed "mergeOnSuccess is ON" and named only the autonomous-mode
+    /// interlock, in the end-of-run banner and in <c>run.json</c>'s <c>delivery.reason</c> alike. Both
+    /// surfaces branched on the decision, and neither could see what the setting had resolved to. The
+    /// Scheduler carries this and <see cref="MergeOnSuccess"/> onto <see cref="Execution.RunReport"/>, so both
+    /// surfaces state the setting as it resolved and name the input that set it.
+    /// </para>
+    /// <para>
+    /// Not the question <see cref="MergeOnSuccessExplicit"/> answers: that one records what the MANIFEST said,
+    /// whether or not a flag then overrode it; this one records which input WON.
+    /// </para>
+    /// </summary>
+    public MergeOnSuccessSource MergeOnSuccessSource { get; init; }
+
+    /// <summary>
     /// The OPERATOR OVERRIDE of the autonomous-mode delivery interlock (SSOT §5.3, issues #361/#597): true
     /// only when the CLI <c>--merge-on-success</c> flag was typed for THIS run. It is <b>not</b> a
     /// <c>guardrails.json</c> field and no loader ever sets it — the manifest cannot reach it, by design.
@@ -270,4 +291,27 @@ public sealed record RunConfig
     /// </summary>
     public IReadOnlyDictionary<string, PromptRunnerConfig> PromptRunners { get; init; } =
         new Dictionary<string, PromptRunnerConfig>();
+}
+
+/// <summary>
+/// Where a run's resolved <see cref="RunConfig.MergeOnSuccess"/> came from (issue #710). The first three follow the
+/// SSOT §2 precedence order, lowest first; <see cref="FlagAndConfig"/> is <see cref="Flag"/> when the file agreed.
+/// The zero value is <see cref="Default"/>, matching <see cref="RunConfig.MergeOnSuccess"/>'s own <c>true</c> default.
+/// </summary>
+public enum MergeOnSuccessSource
+{
+    /// <summary>Neither a CLI flag nor a <c>guardrails.json</c> key: the #340 default, which is ON.</summary>
+    Default,
+
+    /// <summary>The <c>mergeOnSuccess</c> key in <c>guardrails.json</c>.</summary>
+    Config,
+
+    /// <summary><c>--merge-on-success</c> or <c>--no-merge-on-success</c>, passed for this run.</summary>
+    Flag,
+
+    /// <summary>
+    /// A CLI flag AND the <c>guardrails.json</c> key, set to the same value. Both are named, because an operator
+    /// who drops the flag on the next resume is still held by the file.
+    /// </summary>
+    FlagAndConfig
 }
