@@ -13,29 +13,30 @@ namespace Guardrails.Core.Journal;
 /// this tree that no task authored?".
 /// </para>
 /// <para>
-/// STUB (task 24): every getter throws <see cref="NotImplementedException"/> until task 25 implements the
-/// record for real; the <c>init</c> accessors are real so a caller can build one with object-initializer
-/// syntax before the type is otherwise usable, matching the pattern <see cref="WaveDeliveredRecord"/> used
-/// for the same reason.
+/// Plain auto-implemented properties — <see cref="JournalJson"/> is reflection-based (no source-gen
+/// context to register against) and every field here is a primitive or a list of strings, so the default
+/// <c>System.Text.Json</c> reflection reader/writer round-trips it in both directions without a custom
+/// converter, exactly like <see cref="SuppliedRecord"/>. Appended to <see cref="JournalDocument.Refreshed"/>
+/// by <see cref="RunJournal.RecordRefreshed"/>.
 /// </para>
 /// </summary>
 public sealed record RefreshedRecord
 {
     /// <summary>UTC time the refresh commit was made (ISO-8601).</summary>
-    public required DateTimeOffset At { get => throw new NotImplementedException(); init { } }
+    public required DateTimeOffset At { get; init; }
 
     /// <summary>The refresh merge commit on the plan branch.</summary>
-    public required string Commit { get => throw new NotImplementedException(); init { } }
+    public required string Commit { get; init; }
 
     /// <summary>The user's branch that was merged in — the delivery target pinned at run start.</summary>
-    public required string From { get => throw new NotImplementedException(); init { } }
+    public required string From { get; init; }
 
     /// <summary>The sha that was merged — the refresh commit's second parent.</summary>
-    public required string Upstream { get => throw new NotImplementedException(); init { } }
+    public required string Upstream { get; init; }
 
     /// <summary>The wave whose non-fast-forward delivery triggered this refresh.</summary>
-    public required string DeliveredWave { get => throw new NotImplementedException(); init { } }
+    public required string DeliveredWave { get; init; }
 
     /// <summary>The paths the refresh changed, forward-slash, ordinal-sorted.</summary>
-    public required IReadOnlyList<string> Paths { get => throw new NotImplementedException(); init { } }
+    public required IReadOnlyList<string> Paths { get; init; }
 }

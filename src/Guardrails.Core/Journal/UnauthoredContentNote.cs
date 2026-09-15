@@ -10,10 +10,6 @@ namespace Guardrails.Core.Journal;
 /// headline (§5), so console, journal and log site all carry the same disclosure with no <c>RunHalt</c>
 /// schema change. A run with neither section renders byte-identically to today.
 /// </para>
-/// <para>
-/// STUB (task 24): both members throw <see cref="NotImplementedException"/> until task 25 implements this
-/// reader for real.
-/// </para>
 /// </summary>
 public static class UnauthoredContentNote
 {
@@ -23,8 +19,53 @@ public static class UnauthoredContentNote
     /// <c>supplied by &lt;by&gt; at &lt;commit, 10 chars&gt;</c> — or <c>null</c> when neither section has an
     /// entry, so a run with no unauthored content keeps a byte-identical halt headline.
     /// </summary>
-    public static string? HeadlineSuffix(JournalDocument document) => throw new NotImplementedException();
+    public static string? HeadlineSuffix(JournalDocument document)
+    {
+        List<object> entries = MergedEntries(document);
+        if (entries.Count == 0)
+        {
+            return null;
+        }
+
+        return " — unauthored content: " + string.Join("; ", entries.Select(RenderHeadlineFragment));
+    }
 
     /// <summary>One detail line per record across both sections, oldest first.</summary>
-    public static IReadOnlyList<string> DetailLines(JournalDocument document) => throw new NotImplementedException();
+    public static IReadOnlyList<string> DetailLines(JournalDocument document) =>
+        MergedEntries(document).Select(RenderDetailLine).ToList();
+
+    private static List<object> MergedEntries(JournalDocument document)
+    {
+        var entries = new List<(DateTimeOffset At, object Record)>();
+
+        foreach (SuppliedRecord record in document.Supplied ?? [])
+        {
+            entries.Add((record.At, record));
+        }
+
+        foreach (RefreshedRecord record in document.Refreshed ?? [])
+        {
+            entries.Add((record.At, record));
+        }
+
+        return entries.OrderBy(e => e.At).Select(e => e.Record).ToList();
+    }
+
+    private static string RenderHeadlineFragment(object record) => record switch
+    {
+        RefreshedRecord r => $"refresh from '{r.From}' at {Truncate(r.Upstream)}",
+        SuppliedRecord s => $"supplied by {s.By} at {Truncate(s.Commit)}",
+        _ => throw new InvalidOperationException($"unexpected unauthored-content record type {record.GetType()}")
+    };
+
+    private static string RenderDetailLine(object record) => record switch
+    {
+        RefreshedRecord r =>
+            $"refresh from '{r.From}' merged {r.Upstream} as {r.Commit} onto wave '{r.DeliveredWave}' ({string.Join(", ", r.Paths)})",
+        SuppliedRecord s =>
+            $"supplied by {s.By} at {s.Commit} ({s.Bytes} bytes: {string.Join(", ", s.Paths)})",
+        _ => throw new InvalidOperationException($"unexpected unauthored-content record type {record.GetType()}")
+    };
+
+    private static string Truncate(string sha) => sha.Length <= 10 ? sha : sha[..10];
 }
