@@ -75,18 +75,26 @@ public interface IWorktreeProvider
     MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct);
 
     /// <summary>
-    /// Free-text detail captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/> call
-    /// for the halts that carry one; null otherwise. Read by the Scheduler immediately after the
-    /// merge call to populate <see cref="RunReport.MergeOnSuccessDetail"/>. Default null for fake
-    /// providers that have no real git hooks or working tree.
+    /// Free-text detail captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/> or
+    /// <see cref="PromoteTrialDelivery"/> call for the halts that carry one; null otherwise. Read by
+    /// the Scheduler immediately after the call to populate <see cref="RunReport.MergeOnSuccessDetail"/>.
+    /// Default null for fake providers that have no real git hooks or working tree.
     /// <list type="bullet">
     ///   <item><see cref="MergeOnSuccessResult.HookRejected"/> — the git hook's stderr (#149/#150).</item>
     ///   <item><see cref="MergeOnSuccessResult.DirtyWorkingTree"/> — the newline-separated, ordinal-sorted
     ///     TRACKED paths whose uncommitted changes blocked the merge (#448), so the CLI can name them
     ///     instead of sending the user to <c>git status</c>. Null when none could be enumerated.</item>
-    ///   <item><see cref="MergeOnSuccessResult.BranchMoved"/> — the branch the run started on and the one
-    ///     HEAD is on now (#588), so the CLI can name both instead of reporting a delivery to a branch
-    ///     the work never reached.</item>
+    ///   <item><see cref="MergeOnSuccessResult.BranchMoved"/> — TWO distinct causes:
+    ///     <list type="number">
+    ///       <item>The checkout is on a DIFFERENT branch than the one the run started on (#588) — the
+    ///         branch the run started on and the one HEAD is on now, so the CLI can name both instead of
+    ///         reporting a delivery to a branch the work never reached. Remedy: the operator checks the
+    ///         original branch out again, then re-runs.</item>
+    ///       <item><see cref="PromoteTrialDelivery"/> only — the SAME branch moved after the trial was
+    ///         built: the branch name and the two tips (the one the trial was built from, then the tip
+    ///         now). Remedy: the operator resumes, and the next trial includes their new commits.</item>
+    ///     </list>
+    ///   </item>
     /// </list>
     /// </summary>
     string? LastMergeOnSuccessDetail => null;
@@ -293,10 +301,12 @@ public interface IWorktreeProvider
     /// checked in order (each detail written to <see cref="LastMergeOnSuccessDetail"/>):
     /// <list type="number">
     ///   <item>Issue #588 — the checkout is still on <see cref="IntegrationHandle.OriginalBranch"/>;
-    ///     otherwise <see cref="MergeOnSuccessResult.BranchMoved"/>, naming both branches.</item>
+    ///     otherwise <see cref="MergeOnSuccessResult.BranchMoved"/>, naming both branches. Remedy: the
+    ///     operator checks the original branch out again, then re-runs.</item>
     ///   <item>The user's branch still points at <see cref="TrialDelivery.UserTip"/>; otherwise
     ///     <see cref="MergeOnSuccessResult.BranchMoved"/>, naming the branch and the two tips
-    ///     (advanced or rewound).</item>
+    ///     (advanced or rewound). Remedy: the operator resumes, and the next trial includes their new
+    ///     commits.</item>
     ///   <item>Issue #448 — no tracked dirt the fast-forward would overwrite; otherwise
     ///     <see cref="MergeOnSuccessResult.DirtyWorkingTree"/>, naming the blocking paths.</item>
     /// </list>
