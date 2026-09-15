@@ -243,9 +243,14 @@ public static class PromptComposer
                 text.Append("- `").Append(entry).Append("`\n");
             }
 
+            // The agent's only statement of the matcher, so it states WriteScope.IsInScope's rules exactly (#707
+            // review N1): `**` takes ONE or more whole segments, never zero, and a bare dotfile entry also matches the
+            // file itself (#262). PromptComposerTests proves each example against the real matcher.
             text.Append('\n');
             text.Append("An entry that ends in `/`, or whose last segment has no file extension, is a directory and\n");
-            text.Append("covers everything beneath it; `*` matches within one path segment, `**` across any number.\n\n");
+            text.Append("covers everything beneath it; a bare dotfile entry such as `.gitignore` also covers that exact\n");
+            text.Append("file. `*` matches within one path segment. `**` matches ONE or more whole segments, never zero,\n");
+            text.Append("so `src/**/Foo.cs` does not cover `src/Foo.cs`.\n\n");
         }
 
         text.Append("When you finish, the harness diffs every file you changed against this task's base commit.\n");

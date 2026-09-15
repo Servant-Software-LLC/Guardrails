@@ -141,6 +141,31 @@ public sealed class PromptComposerTests : IDisposable
         Assert.DoesNotContain("## Write scope", composed);
     }
 
+    [Fact]
+    public void Action_WriteScopeSection_StatesTheMatchRulesTheCheckApplies()
+    {
+        // #706 review N1: the section's one sentence on HOW an entry matches is the agent's only statement of the
+        // matcher, so it must describe WriteScope.IsInScope rather than a looser glob dialect. It said `**` matches
+        // "across any number" of segments, which reads as zero or more — but the matcher's `**` takes ONE or more,
+        // so `src/**/Foo.cs` does not cover `src/Foo.cs` — and it never mentioned that a bare dotfile entry such as
+        // `.gitignore` covers that exact file (#262). The rows are first proven against the real matcher, so this
+        // test fails if the wording and the matcher ever disagree, not merely if the wording changes.
+        Assert.False(Guardrails.Core.Execution.WriteScope.IsInScope("src/Foo.cs", ["src/**/Foo.cs"]));
+        Assert.True(Guardrails.Core.Execution.WriteScope.IsInScope("src/a/Foo.cs", ["src/**/Foo.cs"]));
+        Assert.True(Guardrails.Core.Execution.WriteScope.IsInScope(".gitignore", [".gitignore"]));
+
+        // The scope names neither example, so every mention below comes from the rules sentence, not a bullet.
+        string composed = PromptComposer.ComposeAction(
+            "Implement it.", WriteState("{}"), Path.Combine(_dir, "o.json"), feedbackPath: null,
+            isWorktreeMode: true, writeScope: ["src/Impl.cs"]);
+
+        string section = SectionBody(composed, WriteScopeHeading);
+        Assert.Contains("ONE or more", section);
+        Assert.DoesNotContain("any number", section);
+        Assert.Contains("`src/**/Foo.cs` does not cover `src/Foo.cs`", section);
+        Assert.Contains("`.gitignore`", section);
+    }
+
     /// <summary>The text under <paramref name="heading"/>, up to the next <c>## </c> heading; fails when absent.</summary>
     private static string SectionBody(string composed, string heading)
     {
