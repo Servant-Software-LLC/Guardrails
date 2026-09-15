@@ -176,13 +176,25 @@ and only then does `guardrails run` execute it.
    explicit "Wave 0..N" / "Stage 1..N" / "Phase 1..N" headings whose later stages say **"builds on
    Stage N-1's output"**, reference **real file paths / signatures a prior stage produces**, or are
    **undesignable up front** because their evidence points at artifacts that don't exist until an
-   upstream stage runs. If yes → `$waved = true`: the breakdown emits the **nested layout** (Step 9),
-   not the flat `tasks/` layout. If the plan is a single stage / a plain feature (no staged milestones
-   whose downstream tasks depend on upstream *materialization*) → `$waved = false`: the flat layout
-   (Steps 1–8), **unchanged**. **Do NOT wave a flat plan** — fine-grained parallelism is a task DAG
-   inside ONE wave, not multiple waves (waves are the COARSE ordering for stages whose downstream
-   tasks can't be authored until the upstream is real; a wave barrier destroys cross-wave parallelism,
-   SSOT §14 C5). When `$waved`, Steps 1–8 still run — **once per wave** — but Step 9 governs the
+   upstream stage runs.
+
+   There is a **second, independent reason to wave (#525): delivery.** Does the plan call for one or
+   more chains of work to **ship separately** rather than all landing together at the end? A chain the
+   plan wants delivered on its own is authored as a wave that sets `delivers: true` in its own
+   `brief.md` (§9.2) — the wave boundary here exists to carry a delivery point, not to wait on
+   materialization, so this reason applies even when nothing downstream is undesignable yet.
+
+   If EITHER reason holds → `$waved = true`: the breakdown emits the **nested layout** (Step 9), not
+   the flat `tasks/` layout. If NEITHER holds (a single stage / a plain feature — no staged milestones
+   whose downstream tasks depend on upstream *materialization*, and nothing that must ship ahead of the
+   rest) → `$waved = false`: the flat layout (Steps 1–8), **unchanged**. **Do NOT wave a flat plan for parallelism** — fine-grained parallelism is a task DAG
+   inside ONE wave, not multiple waves. Waving **costs parallelism**: independent chains placed into
+   separate waves are SERIALISED by the hard wave barrier instead of running concurrently (waves are
+   the COARSE ordering for stages whose downstream tasks can't be authored until the upstream is real,
+   or for a chain that must ship on its own; a wave barrier destroys cross-wave parallelism, SSOT §14
+   C5). That cost is worth paying only for one of the two reasons above — never merely to parallelize
+   work a same-wave task DAG could already run concurrently — and it is a cost weighed and accepted
+   each time a plan waves. When `$waved`, Steps 1–8 still run — **once per wave** — but Step 9 governs the
    layout, the wave gates, the wave-qualified identity, and the JIT staged-breakdown mode; read it
    before proceeding.
 9. **Detect whether model tiering is CONFIGURED — set `$tiering`. Default: NOT configured (#225).**
@@ -3890,6 +3902,33 @@ applies **inside each wave, unchanged**. What's *new* is the two wave-boundary f
     whole-build / whole-suite checks **LOCAL** wherever they live. The LAST wave's exit gate is the one
     place a whole-suite `tests-pass` LOCAL check belongs (it runs on the fully-merged HEAD) — the exact
     role the flat plan's terminal `<plan>/guardrails/` folder plays.
+- **Delivery: the `delivers` flag marks a wave a delivery point (#525).** Set `delivers: true` in
+  **that wave's own `brief.md` YAML front matter** — there is no separate per-wave manifest, and this
+  is a wave-level flag, never a task-level one. **A `guardrails.json` dropped into a wave directory is
+  NOT the mechanism and is silently IGNORED**: the plan stays waved and `validate` raises nothing, so
+  an author who guesses that file gets no delivery and no error — teach `brief.md` by name. Setting the
+  flag alone is not sufficient: a wave only becomes an actual delivery point once it ALSO carries a
+  real wave EXIT gate (a non-empty `<wave>/guardrails/`, above) — `delivers: true` over an empty
+  `guardrails/` means no gate, no delivery. **`validate` warns `GR2079`** (`DeliveringWaveMissingExitGate`)
+  in exactly that case, so the author learns it here, at authoring time, instead of from that wave's
+  silent absence from a later delivery report.
+- **A wave that follows a delivery point gets a POSITIVE-baseline entry preflight (#525).** This is
+  the SAME `$baselineArea` machinery Step 5 already has for the flat-plan brownfield baseline (#181),
+  applied at the wave boundary and made MANDATORY rather than merely typical (§9.4): when the wave
+  immediately before this one is a delivery point, this wave's `<wave>/preflights/` entry check MUST
+  assert the touched `$baselineArea`'s existing tests still PASS — a **positive** baseline — not a
+  negative "my own work isn't here yet" check. **Why positive, and why it matters:** every entry
+  preflight is **skip-once** — the harness evaluates it ONCE, when its wave starts, and nothing
+  re-evaluates it afterward. A delivery and its refresh land at the DELIVERING wave's own barrier,
+  before the NEXT wave's entry gate runs — so that next wave's entry preflight is the ONE moment
+  anything checks the refreshed, delivered tree against a baseline. Skip it, or satisfy it with a
+  negative check, and the refresh is never verified by anything. **`validate` warns `GR2078`**
+  (`PostDeliveryWaveMissingEntryPreflight`) when a post-delivery wave has no entry preflight AT ALL —
+  but GR2078 is satisfied by ANY preflight file, including a negative one that proves nothing about
+  the refreshed tree. `validate` cannot distinguish a positive baseline from a negative one; **only
+  this emission rule, and the `/guardrails-review` pass that checks it, make the post-delivery entry
+  check a positive baseline** — say so explicitly, because a green `validate` sitting next to a
+  negative check reads as safe and is not.
 
 ### 9.2a Declare the decomposition BEFORE authoring — `state/breakdown-intent.json` (#385/#402)
 
@@ -3972,7 +4011,9 @@ Everything else in this skill still holds — inside each wave. The ones that vi
 - **Per-wave baseline (#181).** The brownfield green-start baseline is authored **per wave that touches
   a brownfield area** — and for wave ≥ 2 it typically merges into the wave ENTRY gate (§9.2), which is
   already "the prior wave materialized + the area is green". Don't emit a plan-root baseline that
-  duplicates a wave entry gate.
+  duplicates a wave entry gate. **When the wave immediately before this one is a delivery point (#525),
+  that merge stops being merely typical and becomes REQUIRED, and the check must be POSITIVE** — §9.2's
+  delivery bullets carry the emission rule, the reason, and `GR2078`.
 - **Per-wave author-time smoke-test (#302, Step 7.0d).** EXECUTE every runnable script guardrail you
   generate in **any** wave's four folders — task-level AND the wave entry/exit gates — against a
   hand-written valid + invalid sample. A wave entry gate that "checks the prior wave materialized" is
@@ -4100,7 +4141,10 @@ authority for every path/signature the new wave references.
   the wave list with each wave's entry gate (what materialized artifacts it asserts) and exit gate
   (the terminal check — **always LOCAL**: a wave-root `scope:"integration"` tag is INERT, GR2059/#459,
   because the per-union set is the task folders plus the PLAN root only; state where any genuine
-  union invariant was placed instead, i.e. `<plan>/guardrails/`); per wave, the ordinary task
+  union invariant was placed instead, i.e. `<plan>/guardrails/`); **which waves are delivery points and
+  WHY** (`delivers: true`, and the one-clause reason that chain ships separately — a wave marked
+  `delivers` out of habit, with no reason to ship early, is exactly the failure mode this line exists
+  to surface); per wave, the ordinary task
   table; **which waves were authored up front vs left as JIT stubs**, and for each stub the documented
   JIT workflow (§9.5) so the human knows what happens at that checkpoint. On a JIT
   re-invocation (step 3), also state that the freshly-authored wave's **one-ahead stub `wave-(K+2)` was
