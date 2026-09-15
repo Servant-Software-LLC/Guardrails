@@ -108,6 +108,7 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         JsonElement delivery = Json.Prop(run.RunJson, "delivery", "run.json");
         Assert.True(Json.Bool(delivery, "delivered", "delivery"), $"delivery:\n{delivery}");
         Assert.Equal("fast-forwarded", Json.String(delivery, "outcome", "delivery"));
+        Assert.Equal(run.UserBranch, Json.String(delivery, "deliveredToBranch", "delivery"));
     }
 
     [Fact]
@@ -129,6 +130,10 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         // The partial-delivery report is for a run where a later wave fails (README "The partial-delivery
         // report"); a wholly delivered run announces its deliveries and prints no such report.
         Assert.DoesNotContain("WAVE DELIVERY REPORT", run.Output, StringComparison.Ordinal);
+
+        // #340's delivered-by-default notice speaks for the run-end delivery. This fixture sets neither the
+        // mergeOnSuccess key nor a flag, so it fires here — the control for its absence on a partial run.
+        Assert.Contains($"delivered to {run.UserBranch} (mergeOnSuccess now defaults on", run.Output, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -187,6 +192,10 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         int verdictAt = run.Output.IndexOf("WAVE EXIT GATE FAILED:", StringComparison.Ordinal);
         Assert.True(verdictAt >= 0, $"the wave exit-gate verdict was not printed:\n{run.Output}");
         Assert.True(reportAt < verdictAt, $"the delivery report must print before the verdict:\n{run.Output}");
+
+        // Wave 1 landed on the user's branch, but the run-end delivery did not: #340's delivered-by-default
+        // notice speaks for the run-end delivery, so it must not print on a partial run.
+        Assert.DoesNotContain("mergeOnSuccess now defaults on", run.Output, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -195,13 +204,6 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
     /// row pinning it (<c>PartialDeliveryReportTests.DescribeDelivery_APartialDelivery_IsPartiallyDelivered</c>)
     /// hand-builds a <c>RunReport</c> with <c>DeliveredToBranch</c> already filled in; this one reads what a
     /// real run wrote.
-    /// <para>
-    /// <b>Red on purpose: an open product gap, not a regression.</b> <c>RunCommand.DescribePartialDelivery</c>
-    /// copies <c>RunReport.DeliveredToBranch</c>, which only the run-end merge sets (<c>Scheduler.Finalize</c>,
-    /// <c>Scheduler.CompleteDeferredDelivery</c>); <c>BuildReport</c> never stamps it for a barrier delivery.
-    /// SSOT §7 still describes the key as "present only when delivery actually ran and succeeded", so the
-    /// contract needs a decision before the fix, which also touches every other reader of that field.
-    /// </para>
     /// </summary>
     [Fact]
     public async Task ExitGatePartial_RunJsonNamesThePlanBranchAndTheBranchItDeliveredTo()
@@ -259,6 +261,17 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         JsonElement delivery = Json.Prop(run.RunJson, "delivery", "run.json");
         Assert.Equal("partially-delivered", Json.String(delivery, "outcome", "delivery"));
         Assert.False(Json.Bool(delivery, "delivered", "delivery"), $"delivery:\n{delivery}");
+    }
+
+    /// <summary>Design 39 §4: "<c>deliveredToBranch</c> and <c>planBranch</c> are both set" — on this path too.</summary>
+    [Fact]
+    public async Task TaskFailurePartial_RunJsonNamesThePlanBranchAndTheBranchItDeliveredTo()
+    {
+        ScenarioRun run = await _runs.TaskFailurePartialAsync();
+
+        JsonElement delivery = Json.Prop(run.RunJson, "delivery", "run.json");
+        Assert.Equal(PlanBranch, Json.String(delivery, "planBranch", "delivery"));
+        Assert.Equal(run.UserBranch, Json.String(delivery, "deliveredToBranch", "delivery"));
     }
 
     /// <summary>Design 39 §4: "<c>reason</c> names the delivered and held waves."</summary>
@@ -354,6 +367,10 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
         JsonElement delivery = Json.Prop(run.RunJson, "delivery", "run.json");
         Assert.False(Json.Bool(delivery, "delivered", "delivery"), $"delivery:\n{delivery}");
         Assert.Equal("not-attempted", Json.String(delivery, "outcome", "delivery"));
+
+        // Control: this plan HAS a delivery point, but nothing landed on the user's branch, so no branch is named.
+        Assert.False(delivery.TryGetProperty("deliveredToBranch", out _),
+            $"nothing reached the user's branch, yet delivery names a branch it delivered to:\n{delivery}");
 
         Assert.DoesNotContain("[delivered]", run.Output, StringComparison.Ordinal);
         Assert.Contains("WORK NOT DELIVERED", run.Output, StringComparison.Ordinal);

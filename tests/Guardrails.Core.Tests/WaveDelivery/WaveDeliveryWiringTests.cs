@@ -226,8 +226,11 @@ public sealed class WaveDeliveryWiringTests
         public void Discard(WorktreeHandle handle) => _inner.Discard(handle);
         public void PruneOrphans(IReadOnlyCollection<string> liveTaskIds, IntegrationHandle integ) =>
             _inner.PruneOrphans(liveTaskIds, integ);
+        /// <summary>What the run-end merge returns, when a row configures it; null keeps the recorder's fast-forward.</summary>
+        public MergeOnSuccessResult? RunEndMergeResult { get; set; }
+
         public MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct) =>
-            _inner.MergePlanBranchIntoUserBranch(integ, ct);
+            RunEndMergeResult ?? _inner.MergePlanBranchIntoUserBranch(integ, ct);
         public string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct) =>
             _inner.CommitWaveMarker(integ, waveDir, waveHash, ct);
     }
@@ -976,5 +979,144 @@ public sealed class WaveDeliveryWiringTests
         Assert.Contains("hook-rejected", wave2.Detail ?? "", StringComparison.Ordinal);
 
         Assert.Empty(observer2.Calls);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Design 39 §4: RunReport.DeliveredToBranch names the branch a barrier delivery landed on, on a run
+    // whose run-end merge did not land — and stays null when nothing landed at all. DescribeDelivery copies
+    // it into run.json's delivery.deliveredToBranch. RecordingWorktreeProvider pins the user's branch as "main".
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static void AssertWaveDelivered(RunReport report, string waveDir) =>
+        Assert.True(
+            report.WaveDeliveries.TryGetValue(waveDir, out WaveDeliveredRecord? record)
+            && record.Status == WaveDeliveryStatus.Delivered,
+            $"expected {waveDir} to have delivered at its barrier; WaveDeliveries: "
+            + string.Join("; ", report.WaveDeliveries.Select(kv => $"{kv.Key}:{kv.Value.Status}")));
+
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ABarrierDelivery_NamesTheBranchItLandedOn_WhenALaterWaveHalts()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip);
+        var exec = new WaveFakeExecutor(failIds: ["wave-99-tail/01-t"]);
+
+        RunReport report = await NewScheduler(plan, exec, journal, provider).RunAsync(plan, Ct);
+
+        Assert.False(report.AllSucceeded);
+        AssertWaveDelivered(report, "wave-01-deliver");
+        Assert.Null(report.MergeOnSuccessOutcome); // the run-end merge never ran
+        Assert.Equal("main", report.DeliveredToBranch);
+    }
+
+    /// <summary>Control: a barrier record exists, but it is a refusal, so nothing landed and no branch is named.</summary>
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ARefusedBarrierDelivery_NamesNoBranch()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip);
+        provider.PromoteBuilders["wave-01-deliver"] = _ => (MergeOnSuccessResult.BranchMoved, "the user moved branches mid-run");
+        var exec = new WaveFakeExecutor();
+
+        RunReport report = await NewScheduler(plan, exec, journal, provider).RunAsync(plan, Ct);
+
+        Assert.True(report.WaveDeliveries.TryGetValue("wave-01-deliver", out WaveDeliveredRecord? record));
+        Assert.Equal(WaveDeliveryStatus.Refused, record!.Status);
+        Assert.Null(report.DeliveredToBranch);
+    }
+
+    /// <summary>Control: the plan HAS a delivery point, but its task failed before the barrier, so no delivery ran.</summary>
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ADeliveryPointThatNeverReachedItsBarrier_NamesNoBranch()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip);
+        var exec = new WaveFakeExecutor(failIds: ["wave-01-deliver/01-a"]);
+
+        RunReport report = await NewScheduler(plan, exec, journal, provider).RunAsync(plan, Ct);
+
+        Assert.False(report.AllSucceeded);
+        Assert.Equal(0, provider.CreateTrialDeliveryCalls);
+        Assert.Empty(report.WaveDeliveries);
+        Assert.Null(report.DeliveredToBranch);
+    }
+
+    /// <summary>
+    /// Finalize's run-end stamp computes the branch from the run-end merge alone; a refused run-end merge must
+    /// not erase the branch an earlier barrier delivery already landed on.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ARefusedRunEndMerge_KeepsTheBranchABarrierDeliveryLandedOn()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip) { RunEndMergeResult = MergeOnSuccessResult.Conflict };
+        var exec = new WaveFakeExecutor();
+
+        RunReport report = await NewScheduler(plan, exec, journal, provider).RunAsync(plan, Ct);
+
+        Assert.True(report.AllSucceeded, string.Join("; ", report.Tasks.Select(t => $"{t.TaskId}:{t.Outcome}")));
+        AssertWaveDelivered(report, "wave-01-deliver");
+        Assert.Equal(MergeOnSuccessResult.Conflict, report.MergeOnSuccessOutcome);
+        Assert.Equal("main", report.DeliveredToBranch);
+    }
+
+    /// <summary>
+    /// The terminal-gate deferral (#457): Finalize holds the run-end merge back and must not erase the barrier
+    /// branch while it waits; CompleteDeferredDelivery's own stamp must not erase it when the merge is refused.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "WaveDelivery")]
+    public async Task ADeferredRunEndMerge_KeepsTheBranchABarrierDeliveryLandedOn_ThroughBothStamps()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-deliver", "01-a");
+        MakeDelivering(b, "wave-01-deliver");
+        b.Task("wave-99-tail", "01-t");
+        b.PlanGuardrail("01-terminal.sh", "exit 0\n");
+        PlanDefinition plan = Load(b);
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var provider = new DeliveryTestProvider(journal, PlanTip) { RunEndMergeResult = MergeOnSuccessResult.Conflict };
+        var exec = new WaveFakeExecutor();
+        Scheduler scheduler = NewScheduler(plan, exec, journal, provider);
+
+        RunReport deferred = await scheduler.RunAsync(plan, Ct);
+
+        Assert.True(deferred.DeliveryPendingTerminalGate, "the plan-level terminal gate should have deferred the run-end merge.");
+        AssertWaveDelivered(deferred, "wave-01-deliver");
+        Assert.Equal("main", deferred.DeliveredToBranch);
+
+        RunReport completed = scheduler.CompleteDeferredDelivery(deferred, Ct);
+
+        Assert.Equal(MergeOnSuccessResult.Conflict, completed.MergeOnSuccessOutcome);
+        Assert.Equal("main", completed.DeliveredToBranch);
     }
 }

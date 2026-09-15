@@ -2839,22 +2839,28 @@ public static class RunCommand
 
     /// <summary>
     /// Render the issue #340 one-time "delivered by default" notice: a single line, printed at run end
-    /// ONLY when the end-of-run delivery actually RAN and succeeded (<see cref="RunReport.DeliveredToBranch"/>
-    /// is non-null — an FF or clean merge) AND it fired PURELY because of the new default
+    /// ONLY when the end-of-run delivery actually RAN and succeeded (<see cref="RunReport.MergeOnSuccessOutcome"/>
+    /// is an FF or clean merge, and <see cref="RunReport.DeliveredToBranch"/> names the branch) AND it fired
+    /// PURELY because of the new default
     /// (<paramref name="deliveryFromDefaultOnly"/> — neither the <c>mergeOnSuccess</c> config key nor a CLI
     /// flag was set). This makes the breaking default change observable and self-documenting: it names the
     /// branch the work landed on and the two opt-out surfaces. It is the delivered-case complement of
     /// <see cref="RenderUndeliveredWorkWarning"/> and the two NEVER fire together (that warning requires
     /// delivery OFF; this requires delivery to have run). Silent for an explicit opt-in (config <c>true</c>
-    /// or <c>--merge-on-success</c>), for any run that did not deliver (opt-out, serial, non-green), and for a
-    /// halted delivery. Pure (writes only to <paramref name="output"/>) and public + unit-tested with a
-    /// <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same rationale as
-    /// <see cref="Hyperlink"/>).
+    /// or <c>--merge-on-success</c>), for any run that did not deliver (opt-out, serial, non-green), for a
+    /// halted delivery, and for a partially-delivered run. Pure (writes only to <paramref name="output"/>) and
+    /// public + unit-tested with a <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo
+    /// (same rationale as <see cref="Hyperlink"/>).
     /// </summary>
     public static void RenderDeliveredByDefaultNotice(
         RunReport report, bool deliveryFromDefaultOnly, TextWriter output)
     {
-        if (!deliveryFromDefaultOnly || report.DeliveredToBranch is not { Length: > 0 } branch)
+        // Keyed on the RUN-END merge landing, never on DeliveredToBranch alone: design 39 §4 also sets that
+        // field when only an earlier wave's barrier delivery landed, and a partially-delivered run must not be
+        // told its work was delivered.
+        if (!deliveryFromDefaultOnly
+            || report.MergeOnSuccessOutcome is not (MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged)
+            || report.DeliveredToBranch is not { Length: > 0 } branch)
         {
             return;
         }

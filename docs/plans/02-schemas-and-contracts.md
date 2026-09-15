@@ -2124,8 +2124,9 @@ whatever `HEAD` **currently** is. Those two are now reconciled: **before merging
 `git rev-parse --abbrev-ref HEAD` and, if it is not the pinned branch, **merges nothing** and returns
 `BranchMoved`, carrying "run started on `<original>`; HEAD is now `<current>`" through the same
 `RunReport.MergeOnSuccessDetail` channel `HookRejected` and `DirtyWorkingTree` use, so the CLI names both
-branches plus the plan branch the verified work is on. `DeliveredToBranch` stays **null**, so the
-"delivered to `<branch>`" line correctly does not print. A **detached** `HEAD` (the idiom prints the
+branches plus the plan branch the verified work is on. This merge adds no `DeliveredToBranch` of its own
+(it stays **null** unless an earlier wave's barrier delivery already landed, §14.12), and the
+"delivered to `<branch>`" line keys on the run-end merge landing, so it correctly does not print. A **detached** `HEAD` (the idiom prints the
 literal `HEAD`) and an unreadable `HEAD` take the same path — neither is provably the pinned branch, and
 this gate FAILS CLOSED exactly as the dirty-tree gate below does. This check runs FIRST, ahead of the dirty-path
 intersection and the merge-shape probe, both of which are computed against `HEAD` and would otherwise
@@ -2913,7 +2914,9 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                       // interlock would ALSO have held names both causes (§5.3 case c)
     "planBranch": "guardrails/27-operator-visibility"  // the branch to merge by hand; absent when delivered,
                                       // and absent in serial mode where nothing is stranded
-    // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
+    // "deliveredToBranch": "master"  // present whenever any delivery LANDED on the user's branch: the
+                                      // run-end merge, or a wave's barrier delivery (§14.12) — so a
+                                      // partially-delivered run carries it too; absent when nothing landed
     // "detail": "src/Thing.cs"       // a refusing outcome's carrier: hook stderr, the blocking paths, or
                                       // (branch-moved, #588) the branch pinned at start + the current HEAD
     // "forcedPastDecision": {        // #597 — present ONLY when --merge-on-success overrode the #361

@@ -94,6 +94,12 @@ public sealed class Scheduler
     // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
     private IntegrationHandle? _pendingDeliveryIntegration;
 
+    // Design 39 §4: the user's branch this run pinned as its delivery target (IntegrationHandle.OriginalBranch),
+    // kept so BuildReport can name the branch a barrier delivery landed on without holding the handle. Null in
+    // serial mode, where no delivery runs. Written once, right after the integration handle is created and
+    // before any worker starts.
+    private string? _deliveryTargetBranch;
+
     // #545 part 3 (plan 31 §5.2): the mid-run plan-folder edit watch. Constructed HERE rather than at the
     // composition root — unlike the Scheduler's other collaborators — because nothing depends on the seam
     // being injectable: the watch has no substitutable behaviour any test needs to fake, and it is built
@@ -215,6 +221,7 @@ public sealed class Scheduler
                 planName: Path.GetFileName(plan.PlanDirectory),
                 runId: runId,
                 cancellationToken);
+            _deliveryTargetBranch = integ?.OriginalBranch;
         }
         catch (Exception ex)
         {
@@ -1261,15 +1268,17 @@ public sealed class Scheduler
             EndOfRunSweep(directoryOwner, settled, integ);
         }
 
-        // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change),
-        // so the CLI's one-time "delivered by default" notice can name it. Non-null only when delivery
-        // actually ran green (FF or clean merge); null for a halted delivery, a no-delivery run, or serial.
-        // #588 depends on that restriction: BranchMoved must leave this NULL so the "delivered to X" line
-        // does not print a branch the work never reached — the exact false claim that issue was filed for.
+        // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change).
+        // The run-end merge ran green (FF or clean merge) ⇒ its own branch. Otherwise keep what BuildReport
+        // stamped: non-null only when an earlier wave's barrier delivery LANDED (design 39 §4), which really
+        // did reach that branch; null for a no-delivery run, a halted delivery with nothing landed, or serial.
+        // #588: a BranchMoved run-end merge adds no branch of its own, and the CLI's "delivered to X" notice
+        // keys on the run-end merge landing — never on this field alone — so it cannot print a branch the
+        // run-end work never reached, the exact false claim that issue was filed for.
         string? deliveredToBranch =
             mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
                 ? integ?.OriginalBranch
-                : null;
+                : report.DeliveredToBranch;
 
         return report with
         {
@@ -1362,7 +1371,7 @@ public sealed class Scheduler
             DeliveredToBranch =
                 outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
                     ? integ.OriginalBranch
-                    : null,
+                    : report.DeliveredToBranch, // design 39 §4: a refused merge keeps a barrier delivery's branch
             DeliveryPendingTerminalGate = false
         };
     }
@@ -5645,7 +5654,15 @@ public sealed class Scheduler
             // path that forgot to stamp it would read "on, held by the interlock" on a run that had delivery OFF —
             // the false statement #710 was filed for. Stamping it here leaves no path that can forget.
             MergeOnSuccess = plan.Config.MergeOnSuccess,
-            MergeOnSuccessSource = plan.Config.MergeOnSuccessSource
+            MergeOnSuccessSource = plan.Config.MergeOnSuccessSource,
+
+            // Design 39 §4: once a barrier delivery has LANDED, every report names the branch it landed on — a
+            // halted, partially-delivered run included (DescribeDelivery copies it into delivery.deliveredToBranch).
+            // Null while nothing has landed. Finalize and CompleteDeferredDelivery keep it when their own run-end
+            // merge does not land.
+            DeliveredToBranch = waveDeliveries.Values.Any(r => r.Status == Journal.WaveDeliveryStatus.Delivered)
+                ? _deliveryTargetBranch
+                : null
         };
     }
 
