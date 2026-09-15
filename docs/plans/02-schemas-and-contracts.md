@@ -7463,8 +7463,10 @@ dies when the harness stops, it is deliberately **not** part of the durable navi
   `http://` → `file://`, so the path is shown as **text**, not linked). Like the rest of the server it is
   transient; the static index remains the durable all-tasks surface.
   - **Status** is the task's status word in the static index's vocabulary (`succeeded`, `running`,
-    `needs-human`, `pending`, …), rendered in the index's own `class="status" data-status="…"` cell so the
-    shared colors apply (issue #713). The server never derives it. Under `guardrails run` it is the
+    `needs-human`, `blocked`, `failed`, `pending`, plus `skipped` for a task a resume found already done and
+    `cancelled` for one a cancelled run never started; each has its own color, #713 review), rendered in the
+    index's own `class="status" data-status="…"` cell so the shared colors apply (issue #713).
+    The server never derives it. Under `guardrails run` it is the
     in-process status map the during-run static index is rendered from, so both pages render from one map
     and the live page is never a second reader of the journal the harness is writing. That is not a promise
     that the two can never differ for a moment. A finishing task's status is set, and the index file
@@ -7646,7 +7648,10 @@ journal, re-read on every page load, because this command attaches to runs still
 startup snapshot would keep a finished task reading `running`. That makes a served tab a long-lived
 reader of `run.json` while a run is writing it, which is safe only because the harness's atomic write
 retries its final replace while another handle holds the file (issue #727). Before that retry, a page
-reloading during a run could abort the run with "Access to the path is denied".
+reloading during a run could abort the run with "Access to the path is denied". The journal is ignored
+unless its `runId` is the run being served (#713 review): the journal names whichever run wrote it last,
+so a tab left open across `run --fresh` would otherwise show the new run's statuses beside the served
+run's attempt logs, and every row reads `unknown` instead.
 
 | Flag | Default | Meaning |
 |---|---|---|

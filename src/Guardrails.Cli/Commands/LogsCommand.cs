@@ -117,7 +117,7 @@ public static class LogsCommand
         // task, and the static index above was rendered from it. It is read again on every page load rather than
         // taken from `document`: this command attaches to runs still in flight (#552), the page reloads itself,
         // and a startup snapshot would go on calling a task that has since finished "running".
-        server.StartServing(() => JournalStatuses(journalPath));
+        server.StartServing(() => JournalStatuses(journalPath, document.RunId));
 
         await using (server.ConfigureAwait(false))
         {
@@ -160,22 +160,34 @@ public static class LogsCommand
         }
     }
 
+    /// <summary>No statuses at all, so every row reads <c>unknown</c> rather than a word from somewhere else.</summary>
+    private static readonly IReadOnlyDictionary<string, string> NoStatuses =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>
     /// Each task's status word from the journal as it stands on disk now, in the static index's vocabulary
     /// (issue #713). A read that fails returns no statuses, so that one page load says <c>unknown</c> and the
     /// next one recovers: the harness replaces <c>run.json</c> atomically, but a read can still land on the
     /// replace.
+    ///
+    /// <para>A journal whose <c>runId</c> is not <paramref name="servedRunId"/> returns none either (#713 review).
+    /// This command serves one run's attempt logs, and the journal names whichever run wrote it last, so a tab left
+    /// open across <c>guardrails run --fresh</c> would otherwise show the NEW run's statuses beside the served run's
+    /// logs: two runs presented as one.</para>
     /// </summary>
-    private static IReadOnlyDictionary<string, string> JournalStatuses(string journalPath)
+    private static IReadOnlyDictionary<string, string> JournalStatuses(string journalPath, string servedRunId)
     {
         try
         {
-            return JournalReader.Read(journalPath).Tasks.ToDictionary(
-                entry => entry.Key, entry => LogSiteRenderer.StatusText(entry.Value.Status), StringComparer.Ordinal);
+            JournalDocument journal = JournalReader.Read(journalPath);
+            return string.Equals(journal.RunId, servedRunId, StringComparison.Ordinal)
+                ? journal.Tasks.ToDictionary(
+                    entry => entry.Key, entry => LogSiteRenderer.StatusText(entry.Value.Status), StringComparer.Ordinal)
+                : NoStatuses;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+            return NoStatuses;
         }
     }
 

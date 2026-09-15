@@ -57,6 +57,9 @@ public static class LogSiteRenderer
   .status[data-status="needs-human"], .status[data-status="failed"] { color: #f85149; }
   .status[data-status="running"] { color: #d29922; }
   .status[data-status="pending"], .status[data-status="blocked"], .status[data-status="unknown"] { color: #8aa0b3; }
+  /* Cancelled is its own color (#713 review): the task was stopped, which is neither a failure nor work still
+     waiting to be done, and without a rule of its own it rendered in the plain body color. */
+  .status[data-status="cancelled"] { color: #db6d28; }
   .claim { font-weight: 400; color: #8aa0b3; }
   .empty, option.empty { color: #6b7a8d; }
   pre { background: #06090d; border: 1px solid #1c2733; border-radius: 6px; padding: 1rem;

@@ -131,6 +131,44 @@ public sealed class LogsCliTests
         Assert.Equal(ExitCodes.Success, exit);
     }
 
+    [Fact]
+    public async Task Logs_LiveRunView_ReportsNothingFromAnotherRunsJournal()
+    {
+        // #713 review, N3. The per-load journal read did not check which run the journal belongs to. A tab left open on
+        // `guardrails logs` across `guardrails run --fresh` would show the NEW run's statuses beside the OLD run's
+        // attempt logs: two runs presented as one. When the journal's run id is not the run being served, the page
+        // must say it does not know.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+        Assert.Equal(ExitCodes.Success, runExit);
+
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        (Task<(int ExitCode, string Output)> serving, string baseUrl) = await StartLogsServerAsync(plan.PlanDir, stop.Token);
+
+        int exit;
+        try
+        {
+            Assert.Equal("succeeded", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+
+            // A different run now owns the journal, as it would after `run --fresh` in another terminal.
+            string journalPath = RunJournal.PathFor(plan.PlanDir);
+            JournalDocument journal = JournalReader.Read(journalPath);
+            AtomicFile.WriteAllText(
+                journalPath, JsonSerializer.Serialize(journal with { RunId = journal.RunId + "-fresh" }, JournalJson.Options));
+
+            Assert.Equal("unknown", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+        }
+        finally
+        {
+            stop.Cancel(); // the Ctrl-C signal
+            (exit, _) = await serving;
+        }
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
     /// <summary>
     /// Start <c>guardrails logs --no-open</c> serving in the background and return once its live run view
     /// answers. The port is chosen here so the test knows the URL without reading console output the command
