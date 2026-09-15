@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using TaskStatus = Guardrails.Core.Journal.TaskStatus;
@@ -5,13 +6,17 @@ using TaskStatus = Guardrails.Core.Journal.TaskStatus;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// Issue #704 — <see cref="RunJournal.RecordOwner"/> and <see cref="RunJournal.RecordOwnerFinished"/>, the two
-/// writes that let <c>guardrails status</c> tell a live run from a dead one.
+/// Issue #704 — how a run's owner reaches <c>run.json</c> and how its end is recorded: the writes that let
+/// <c>guardrails status</c> tell a live run from a dead one.
 /// <para>
-/// The hazards are the ones <see cref="RunJournalDeliveryTests"/> documents for every end-of-run write: the CLI's
-/// journal instance is stale by the time the run ends, and a careless write reverts the run it describes. Two more
-/// are specific to ownership: a run must never mark ANOTHER process's claim finished (that would call a live run
-/// over), and a resume's claim must clear the previous run's end (or a dead resume would read as finished).
+/// The claim rides <see cref="RunJournal.LoadOrCreateForRun"/>'s OWN write, so it cannot fail separately from the
+/// load: a claim that failed quietly on a resume would leave the previous owner — possibly with its end recorded — and
+/// the Scheduler would carry that stale owner through every write, so <c>status</c> would call a live run over.
+/// </para>
+/// <para>
+/// The end-of-run write has the hazards <see cref="RunJournalDeliveryTests"/> documents (the CLI's instance is stale
+/// by then) plus two of its own: a run must never mark ANOTHER process's claim ended, and must never recreate a
+/// journal deleted underneath it.
 /// </para>
 /// </summary>
 public sealed class RunJournalOwnerTests : IDisposable
@@ -36,40 +41,80 @@ public sealed class RunJournalOwnerTests : IDisposable
         Host = "LAPTOP-7"
     };
 
+    private static RunOwner? OwnerOnDisk(PlanDefinition plan) =>
+        JournalReader.Read(RunJournal.PathFor(plan.PlanDirectory)).Owner;
+
     /// <summary>
-    /// The start time is compared against the live process table, so it must come back from disk to the TICK — a
-    /// round trip that dropped sub-second precision would make every live owner on Windows look like a reused pid.
+    /// The claim is IN the load's write — nothing else has to succeed for it to be on disk — and it comes back to
+    /// the tick, because it is compared against a live process table.
     /// </summary>
     [Fact]
-    public void TheOwner_SurvivesAReload_ToTheTick()
+    public void TheRunsOwnLoad_WritesTheClaim_ToTheTick()
     {
         PlanDefinition plan = BuildPlan();
         RunOwner owner = Owner(14168);
 
-        RunJournal.LoadOrCreate(plan).RecordOwner(owner);
+        RunJournal.LoadOrCreateForRun(plan, owner);
 
-        RunOwner? reloaded = RunJournal.LoadOrCreate(plan).Document.Owner;
-        Assert.Equal(owner, reloaded);
-        Assert.Equal(owner.ProcessStartedAt.UtcTicks, reloaded!.ProcessStartedAt.UtcTicks);
+        RunOwner? onDisk = OwnerOnDisk(plan);
+        Assert.Equal(owner, onDisk);
+        Assert.Equal(owner.ProcessStartedAt.UtcTicks, onDisk!.ProcessStartedAt.UtcTicks);
     }
 
     /// <summary>
-    /// The CLI claims the run BEFORE the Scheduler opens its own instance with a second <c>LoadOrCreate</c>, and
-    /// every Scheduler write persists that instance's whole document — so the owner must be carried by that load,
-    /// or the first settled task would erase it.
+    /// A resume is a new process claiming a journal whose previous owner ended. The claim replaces that owner and
+    /// its end — otherwise a resume that then died with the machine would read as ENDED.
     /// </summary>
     [Fact]
-    public void TheSchedulersLaterLoad_CarriesTheOwnerThroughEveryWrite()
+    public void AResumesClaim_ReplacesThePreviousOwnerAndItsEnd()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal cli = RunJournal.LoadOrCreate(plan);
-        cli.RecordOwner(Owner(14168));
+        RunJournal.LoadOrCreateForRun(plan, Owner(1111)).RecordOwnerFinished(Owner(1111), DateTimeOffset.UtcNow);
+
+        RunJournal.LoadOrCreateForRun(plan, Owner(2222));
+
+        RunOwner? onDisk = OwnerOnDisk(plan);
+        Assert.Equal(2222, onDisk!.Pid);
+        Assert.Null(onDisk.FinishedAt);
+    }
+
+    /// <summary>
+    /// A run that could not read its own identity cannot name itself — but it must not leave the PREVIOUS owner
+    /// standing either, or <c>status</c> would report that stale run's verdict for this one. It clears it, so the
+    /// honest answer is UNKNOWN.
+    /// </summary>
+    [Fact]
+    public void AClaimWithoutAnIdentity_ClearsThePreviousOwner_RatherThanLeavingItsVerdict()
+    {
+        PlanDefinition plan = BuildPlan();
+        RunJournal.LoadOrCreate(plan);
+        string path = RunJournal.PathFor(plan.PlanDirectory);
+        JournalDocument stale = JournalReader.Read(path) with
+        {
+            Owner = Owner(1111) with { FinishedAt = DateTimeOffset.UtcNow }
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(stale, JournalJson.Options));
+
+        RunJournal.LoadOrCreateForRun(plan, owner: null);
+
+        Assert.Null(OwnerOnDisk(plan));
+    }
+
+    /// <summary>
+    /// Every OTHER load — the Scheduler's own, a reset, a supply — keeps the owner, and every write through such an
+    /// instance carries it. If the Scheduler's load dropped it, the first settled task would erase the claim.
+    /// </summary>
+    [Fact]
+    public void AnyOtherLoad_CarriesTheOwnerThroughEveryWrite()
+    {
+        PlanDefinition plan = BuildPlan();
+        RunJournal.LoadOrCreateForRun(plan, Owner(14168));
 
         RunJournal scheduler = RunJournal.LoadOrCreate(plan);
         scheduler.MarkRunning("01-task");
         scheduler.RecordSettle("01-task", TaskStatus.Succeeded, mergeSequence: 1);
 
-        Assert.Equal(Owner(14168), RunJournal.LoadOrCreate(plan).Document.Owner);
+        Assert.Equal(Owner(14168), OwnerOnDisk(plan));
     }
 
     /// <summary>Recording the end from the CLI's stale instance must not revert the run it is recording the end of.</summary>
@@ -77,9 +122,8 @@ public sealed class RunJournalOwnerTests : IDisposable
     public void RecordingTheEnd_FromAStaleInstance_DoesNotRevertTheRun()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal cli = RunJournal.LoadOrCreate(plan);
         RunOwner owner = Owner(14168);
-        cli.RecordOwner(owner);
+        RunJournal cli = RunJournal.LoadOrCreateForRun(plan, owner);
 
         RunJournal scheduler = RunJournal.LoadOrCreate(plan);
         scheduler.RecordSettle("01-task", TaskStatus.Succeeded, mergeSequence: 1);
@@ -93,60 +137,53 @@ public sealed class RunJournalOwnerTests : IDisposable
     }
 
     /// <summary>
-    /// A second process claimed the journal while the first was still winding down. The first one's end is not
-    /// the second one's, and stamping it would make <c>status</c> call a live run finished.
+    /// A second process claimed the journal while the first was still winding down. The first one's end is not the
+    /// second one's, and stamping it would make <c>status</c> call a live run ended.
     /// </summary>
     [Fact]
     public void RecordingTheEnd_MarksOnlyTheOwnerThatClaimedTheRun()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal first = RunJournal.LoadOrCreate(plan);
-        first.RecordOwner(Owner(1111));
-
-        RunJournal second = RunJournal.LoadOrCreate(plan);
-        second.RecordOwner(Owner(2222));
+        RunJournal first = RunJournal.LoadOrCreateForRun(plan, Owner(1111));
+        RunJournal.LoadOrCreateForRun(plan, Owner(2222));
 
         first.RecordOwnerFinished(Owner(1111), DateTimeOffset.UtcNow);
 
-        RunOwner? onDisk = RunJournal.LoadOrCreate(plan).Document.Owner;
+        RunOwner? onDisk = OwnerOnDisk(plan);
         Assert.Equal(2222, onDisk!.Pid);
         Assert.Null(onDisk.FinishedAt);
     }
 
-    /// <summary>
-    /// The same pid is not the same owner: a different start time is a different process, so an end recorded by
-    /// the pid's previous holder never lands on the current one.
-    /// </summary>
+    /// <summary>The same pid is not the same owner: a different start time is a different process.</summary>
     [Fact]
     public void RecordingTheEnd_ForTheSamePidWithADifferentStartTime_IsANoOp()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal journal = RunJournal.LoadOrCreate(plan);
         RunOwner current = Owner(14168);
-        journal.RecordOwner(current);
+        RunJournal journal = RunJournal.LoadOrCreateForRun(plan, current);
 
-        journal.RecordOwnerFinished(current with { ProcessStartedAt = current.ProcessStartedAt.AddHours(-3) }, DateTimeOffset.UtcNow);
+        journal.RecordOwnerFinished(
+            current with { ProcessStartedAt = current.ProcessStartedAt.AddHours(-3) }, DateTimeOffset.UtcNow);
 
-        Assert.Null(RunJournal.LoadOrCreate(plan).Document.Owner!.FinishedAt);
+        Assert.Null(OwnerOnDisk(plan)!.FinishedAt);
     }
 
     /// <summary>
-    /// A resume is a new process claiming a journal whose previous owner finished. If the claim kept that end, a
-    /// resume that then died with the machine would read as FINISHED — the exact misreport this issue exists for.
+    /// The end is recorded as early as it is known and then left alone: the backstop that runs at method exit must
+    /// not move it later, past a log-server drain and a worktree sweep the run's verdict never waited on.
     /// </summary>
     [Fact]
-    public void ANewClaim_ClearsThePreviousRunsEnd()
+    public void RecordingTheEndTwice_KeepsTheFirstEnd()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal journal = RunJournal.LoadOrCreate(plan);
-        journal.RecordOwner(Owner(1111));
-        journal.RecordOwnerFinished(Owner(1111), DateTimeOffset.UtcNow);
+        RunOwner owner = Owner(14168);
+        RunJournal journal = RunJournal.LoadOrCreateForRun(plan, owner);
+        DateTimeOffset first = new(2026, 9, 13, 5, 2, 11, TimeSpan.Zero);
 
-        RunJournal.LoadOrCreate(plan).RecordOwner(Owner(2222));
+        journal.RecordOwnerFinished(owner, first);
+        journal.RecordOwnerFinished(owner, first.AddMinutes(2));
 
-        RunOwner? onDisk = RunJournal.LoadOrCreate(plan).Document.Owner;
-        Assert.Equal(2222, onDisk!.Pid);
-        Assert.Null(onDisk.FinishedAt);
+        Assert.Equal(first, OwnerOnDisk(plan)!.FinishedAt);
     }
 
     /// <summary>A journal no run has claimed carries no <c>owner</c> key at all — absent, never <c>null</c> noise.</summary>
@@ -164,17 +201,19 @@ public sealed class RunJournalOwnerTests : IDisposable
     public void AClaimedRun_WritesTheWireNames_AndNoFinishedAtUntilItEnds()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal journal = RunJournal.LoadOrCreate(plan);
-        journal.RecordOwner(Owner(14168));
+        RunOwner owner = Owner(14168) with { ProcessStartTicks = 4242, BootId = "boot-a" };
+        RunJournal journal = RunJournal.LoadOrCreateForRun(plan, owner);
 
         string claimed = File.ReadAllText(RunJournal.PathFor(plan.PlanDirectory));
         Assert.Contains("\"owner\"", claimed, StringComparison.Ordinal);
         Assert.Contains("\"pid\": 14168", claimed, StringComparison.Ordinal);
         Assert.Contains("\"processStartedAt\"", claimed, StringComparison.Ordinal);
+        Assert.Contains("\"processStartTicks\": 4242", claimed, StringComparison.Ordinal);
+        Assert.Contains("\"bootId\": \"boot-a\"", claimed, StringComparison.Ordinal);
         Assert.Contains("\"host\": \"LAPTOP-7\"", claimed, StringComparison.Ordinal);
         Assert.DoesNotContain("\"finishedAt\"", claimed, StringComparison.Ordinal);
 
-        journal.RecordOwnerFinished(Owner(14168), DateTimeOffset.UtcNow);
+        journal.RecordOwnerFinished(owner, DateTimeOffset.UtcNow);
         Assert.Contains("\"finishedAt\"", File.ReadAllText(RunJournal.PathFor(plan.PlanDirectory)), StringComparison.Ordinal);
     }
 
@@ -183,8 +222,7 @@ public sealed class RunJournalOwnerTests : IDisposable
     public void RecordingTheEnd_NeverRecreatesADeletedJournal()
     {
         PlanDefinition plan = BuildPlan();
-        RunJournal journal = RunJournal.LoadOrCreate(plan);
-        journal.RecordOwner(Owner(14168));
+        RunJournal journal = RunJournal.LoadOrCreateForRun(plan, Owner(14168));
 
         File.Delete(RunJournal.PathFor(plan.PlanDirectory));
         journal.RecordOwnerFinished(Owner(14168), DateTimeOffset.UtcNow);

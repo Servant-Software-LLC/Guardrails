@@ -679,15 +679,22 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
   **Is the run ALIVE? Read `guardrails status`'s `Run state:` line, never the table (#704).** A run whose process
   died — a laptop that slept or rebooted, a killed process — leaves `run.json` exactly as a live run leaves it, so
-  `pending`/`running` rows prove nothing either way. `run.json`'s top-level `owner` (`pid` + `processStartedAt` +
-  `host`, plus `finishedAt` once the run ends by any path that unwinds) lets `status` decide from FACTS:
-  `RUNNING` (that pid, with that start time, is alive), `EXITED WITHOUT FINISHING` (gone and no recorded end —
-  resume with `guardrails run`), `FINISHED`, or `UNKNOWN` (owned on another host, or a pre-#704 journal). A dead
-  run's `running` task prints `interrupted`; a live run gets no resume footer. **Never resume a run that reads
-  RUNNING** — two processes would drive one journal. RUNNING means alive, not progressing: the line's "last
-  journal write … ago" is how you spot an alive-but-stuck owner, and it is an OBSERVATION, never a verdict. There
-  is deliberately no wall-clock stall timeout, because a suspend advances the clock and would condemn a healthy
-  run on exactly the machines this is for (SSOT §7 `owner`).
+  `pending`/`running` rows prove nothing either way. `run.json`'s top-level `owner` (`pid` + a start identity +
+  `host`, plus `finishedAt` once the run ends by any path that unwinds) lets `status` decide from FACTS, with no
+  tolerance: the start identity is the kernel-stored start time on Windows/macOS, and `/proc` start ticks + boot id
+  on Linux (the .NET wall-clock start time drifts between processes there — by hours in a WSL2/VM guest that slept).
+  The states: `RUNNING` (that exact process is alive; the line also says what to do if it is not progressing),
+  `EXITED WITHOUT FINISHING` (gone, no recorded end — resume with `guardrails run`), `ENDED at <t> — <outcome>` (the
+  outcome read from the journal: `halted at <task> (needs-human)`, `all N task(s) succeeded, delivered to <branch>`,
+  `cancelled`, …), or `UNKNOWN` (another host, an identity that cannot be read, or no owner recorded). A dead run's
+  `running` task prints `interrupted`; a live run gets no resume footer. **Never resume a run that reads RUNNING —
+  and `guardrails run` itself REFUSES to start (exit 1, naming the pid) while the journal's owner reads RUNNING on
+  this machine**, because two processes on one journal overwrite each other's claim. There is no override flag:
+  wait for that process or stop it. It does not refuse for EXITED, ENDED or UNKNOWN. RUNNING means alive, not
+  progressing: the line's "Last activity … ago" (newest of `run.json`, `events.jsonl` and the running attempt's
+  logs) is how you spot an alive-but-stuck owner (#722), and it is an OBSERVATION, never a verdict. There is
+  deliberately no wall-clock stall timeout, because a suspend advances the clock and would condemn a healthy run on
+  exactly the machines this is for (SSOT §7 `owner`).
   **Definition-drift halt (#274 Part A):** editing an already-`succeeded` task and re-running no longer
   silently reuses the stale cached segment (the pre-Part-A bug ran the OLD version -- even under `--fresh`
   before Part B). On resume, BEFORE the DAG is built, the harness recomputes each pre-settled-green task's

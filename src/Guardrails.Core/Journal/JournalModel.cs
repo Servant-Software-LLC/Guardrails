@@ -957,10 +957,10 @@ public sealed record RunEnvironment
 }
 
 /// <summary>
-/// The process that owns a run (SSOT §7 <c>owner</c>, issue #704): its pid, its OS start time, the host it runs
-/// on, and — once the run is over — when it recorded that. A pid alone is not an identity, because the OS hands
-/// a freed pid to the next process that asks; the pid AND the start time together name one process for as long
-/// as it lives, which is the same pair the #407 worktree lock records.
+/// The process that owns a run (SSOT §7 <c>owner</c>, issue #704): its pid, its start identity, the host it runs on,
+/// and — once the run is over — when it recorded that. A pid alone is not an identity, because the OS hands a freed pid
+/// to the next process that asks; the pid together with a start identity the OS fixes for the life of the process names
+/// one process. Which start identity is compared depends on the OS — see <see cref="Execution.SystemProcessProbe"/>.
 /// </summary>
 public sealed record RunOwner
 {
@@ -968,11 +968,29 @@ public sealed record RunOwner
     public required int Pid { get; init; }
 
     /// <summary>
-    /// When the owning PROCESS started, as the OS reports it (UTC) — the half that tells this process apart from a
-    /// later one handed the same pid. Deliberately not when the run started: it is compared against the live
-    /// process table, which knows nothing about runs.
+    /// When the owning PROCESS started, as .NET reports it (UTC). On Windows and macOS this IS the start identity — the
+    /// kernel stores it, and it tells this process apart from a later one handed the same pid. On Linux it is recorded
+    /// for the reader only: .NET reconstructs it from the wall clock, so it is never compared there (see
+    /// <see cref="ProcessStartTicks"/>). Deliberately not when the run started: it is checked against the live process
+    /// table, which knows nothing about runs.
     /// </summary>
     public required DateTimeOffset ProcessStartedAt { get; init; }
+
+    /// <summary>
+    /// Linux only: the kernel's own record of when the process started, in clock ticks since boot
+    /// (<c>/proc/&lt;pid&gt;/stat</c> field 22). No clock step moves it, which is why it — not
+    /// <see cref="ProcessStartedAt"/> — is the Linux start identity. Absent on every other OS.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ProcessStartTicks { get; init; }
+
+    /// <summary>
+    /// Linux only: the boot the process started in (<c>/proc/sys/kernel/random/boot_id</c>). Start ticks count from boot,
+    /// so they identify a process only within one boot — and a different boot id proves a reboot, after which nothing
+    /// from the old boot is alive. Absent on every other OS.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BootId { get; init; }
 
     /// <summary>
     /// The machine the owning process runs on. A pid means nothing on any other machine, so a <c>status</c> run

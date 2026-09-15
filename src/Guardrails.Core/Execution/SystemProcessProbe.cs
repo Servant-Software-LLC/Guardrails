@@ -1,72 +1,176 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using Guardrails.Core.Journal;
 
 namespace Guardrails.Core.Execution;
 
 /// <summary>
-/// The production <see cref="IProcessProbe"/> (issue #704): the live OS process table, read through
-/// <see cref="Process.GetProcessById(int)"/> and the process's start time — the same pid-plus-start-time identity
-/// the #407 worktree lock records.
+/// The production <see cref="IProcessProbe"/> (issue #704): whether a run's recorded owner is still in the live OS
+/// process table, decided from an identity no clock can move.
+/// <list type="bullet">
+/// <item><b>Windows and macOS</b> keep a process's creation time in the kernel's own process record, and .NET returns
+///   that stored value, so every reader sees it to the tick. The identity is the pid plus that start time, compared
+///   exactly.</item>
+/// <item><b>Linux</b> keeps only how long after boot a process started. .NET turns that into a wall-clock time by adding
+///   a boot time it computes once PER READING PROCESS as <c>CLOCK_REALTIME_COARSE</c> minus <c>CLOCK_BOOTTIME</c>
+///   (<c>SystemNative_GetBootTimeTicks</c>), so the run that recorded itself and the <c>status</c> that checks it
+///   disagree — by milliseconds normally, and by hours in a WSL2 / VM / devcontainer guest whose wall clock steps
+///   forward on wake while its boot clock never counted the host's sleep. No tolerance survives that. So on Linux the
+///   identity is what the kernel itself stores: the process's start in clock ticks since boot
+///   (<c>/proc/&lt;pid&gt;/stat</c> field 22) and the boot it started in (<c>/proc/sys/kernel/random/boot_id</c>).
+///   Both are fixed for the life of the process, so the comparison is exact — and a different boot id PROVES a
+///   reboot, after which nothing from the old boot is alive.</item>
+/// </list>
+/// Anything that cannot be decided — a start time the OS will not show (access denied), or an owner recorded without
+/// the identity this OS compares — is <see cref="ProcessCheck.CannotTell"/>, never a guess in either direction.
 /// </summary>
 public sealed class SystemProcessProbe : IProcessProbe
 {
     /// <summary>The one instance production uses; the type holds no state.</summary>
     public static SystemProcessProbe Instance { get; } = new();
 
-    /// <summary>
-    /// How far apart two readings of the SAME process's start time may be and still name that process.
-    /// <para>
-    /// <b>Zero on Windows and macOS.</b> Both keep the creation time in the kernel's own process record, and .NET
-    /// returns that stored value, so every reader sees it to the tick.
-    /// </para>
-    /// <para>
-    /// <b>Nonzero on Linux, and it has to be.</b> The kernel records only how long after boot a process started.
-    /// .NET turns that into a wall-clock time by adding a boot time it computes once PER READING PROCESS, as
-    /// <c>CLOCK_REALTIME_COARSE</c> minus <c>CLOCK_BOOTTIME</c> (<c>SystemNative_GetBootTimeTicks</c>). The run that
-    /// recorded itself and the <c>status</c> that checks it are different processes computing that boot time at
-    /// different moments, so the coarse clock's resolution (milliseconds) and any wall-clock correction in between
-    /// (an NTP step after a resume) move the answer. Exact equality would call a live Linux run dead on almost
-    /// every check.
-    /// </para>
-    /// <para>
-    /// <b>Why a minute cannot vouch for a dead run.</b> A false "running" needs a DIFFERENT process holding the
-    /// recorded pid with a start time inside this window of the owner's. Linux hands out pids in sequence, so that
-    /// takes a full lap of <c>pid_max</c> (at least 32,768) within a minute of the owner starting, with the owner
-    /// dying inside that same minute. A minute comfortably absorbs a post-resume clock correction. It does not
-    /// absorb a larger wall-clock step while the run is alive — a Linux VM whose clock is corrected by hours after
-    /// its host slept, say — and that run reads as exited: the loud direction, stated here rather than left to be
-    /// discovered.
-    /// </para>
-    /// </summary>
-    internal static readonly TimeSpan StartTimeTolerance =
-        OperatingSystem.IsLinux() ? TimeSpan.FromMinutes(1) : TimeSpan.Zero;
+    private const string LinuxBootIdPath = "/proc/sys/kernel/random/boot_id";
 
     /// <inheritdoc />
-    public bool IsRunning(int pid, DateTimeOffset startedAt)
+    public ProcessCheck Check(RunOwner owner) =>
+        OperatingSystem.IsLinux() ? CheckLinux(owner) : CheckStartTime(owner);
+
+    /// <summary>
+    /// The identity THIS process records when it claims a run, read the same way <see cref="Check"/> later reads the
+    /// process table — so the two can only differ by what the OS reports. Null when this platform will not give it:
+    /// the claim then clears the previous owner rather than naming anyone wrongly, and never crashes the run.
+    /// </summary>
+    internal static RunOwner? IdentityOfThisProcess(string? host)
     {
         try
         {
-            using Process process = Process.GetProcessById(pid);
-            return IsSameStart(StartTimeOf(process), startedAt);
+            using Process self = Process.GetCurrentProcess();
+            var owner = new RunOwner { Pid = self.Id, ProcessStartedAt = StartTimeOf(self), Host = host };
+
+            return OperatingSystem.IsLinux()
+                ? owner with
+                {
+                    ProcessStartTicks = ParseStartTicks(File.ReadAllText($"/proc/{self.Id}/stat")),
+                    BootId = ReadBootId()
+                }
+                : owner;
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
+            or Win32Exception or FormatException or NotSupportedException)
         {
-            return false; // no such process / it exited under us / its start time is unreadable — not the owner
+            return null;
+        }
+    }
+
+    /// <summary>Windows / macOS: the kernel-stored start time, compared exactly — no tolerance, because none is needed.</summary>
+    internal static ProcessCheck CompareStartTime(RunOwner recorded, DateTimeOffset observed) =>
+        observed == recorded.ProcessStartedAt ? ProcessCheck.Running : ProcessCheck.NotRunning;
+
+    /// <summary>
+    /// Linux: the recorded kernel identity against the current boot id and the pid's <c>/proc/&lt;pid&gt;/stat</c> line
+    /// (<paramref name="stat"/> is null when no process has the pid). Pure, so every case is exercised on every OS. The
+    /// wall-clock <see cref="RunOwner.ProcessStartedAt"/> is deliberately NOT consulted: it is the value a clock step
+    /// moves.
+    /// </summary>
+    internal static ProcessCheck CompareLinux(RunOwner recorded, string currentBootId, string? stat)
+    {
+        if (recorded.ProcessStartTicks is not { } recordedTicks || recorded.BootId is not { } recordedBootId)
+        {
+            return ProcessCheck.CannotTell; // recorded without the kernel identity — on another OS, say
+        }
+
+        if (!string.Equals(recordedBootId, currentBootId, StringComparison.Ordinal))
+        {
+            return ProcessCheck.NotRunning; // the machine rebooted since: nothing from that boot is alive
+        }
+
+        if (stat is null)
+        {
+            return ProcessCheck.NotRunning;
+        }
+
+        try
+        {
+            return ParseStartTicks(stat) == recordedTicks ? ProcessCheck.Running : ProcessCheck.NotRunning;
+        }
+        catch (FormatException)
+        {
+            return ProcessCheck.CannotTell;
         }
     }
 
     /// <summary>
-    /// A process's start time in the ONE shape both halves of the identity use — what a run stamps about itself
-    /// (<see cref="Journal.RunLiveness.OwnerForThisProcess"/>) and what a later check reads back — so the two can
-    /// only differ by what the OS reports, never by how this code converted it.
+    /// Field 22 (<c>starttime</c>) of a <c>/proc/&lt;pid&gt;/stat</c> line: clock ticks after boot. Field 2 is the process
+    /// name in parentheses and may itself contain spaces and parentheses, so fields are counted from the LAST
+    /// <c>)</c>: the next token is field 3, which puts field 22 at index 19.
     /// </summary>
-    internal static DateTimeOffset StartTimeOf(Process process) =>
-        new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+    internal static long ParseStartTicks(string stat)
+    {
+        int nameEnd = stat.LastIndexOf(')');
+        string[] fields = nameEnd < 0
+            ? []
+            : stat[(nameEnd + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-    /// <summary>
-    /// The start-time half of the identity: within <see cref="StartTimeTolerance"/>, inclusive. Pure, so the
-    /// tolerance is pinned as a decision on every OS rather than raced against a real clock.
-    /// </summary>
-    internal static bool IsSameStart(DateTimeOffset observed, DateTimeOffset recorded) =>
-        (observed - recorded).Duration() <= StartTimeTolerance;
+        return fields.Length > 19
+            && long.TryParse(fields[19], NumberStyles.None, CultureInfo.InvariantCulture, out long ticks)
+            ? ticks
+            : throw new FormatException("not a /proc/<pid>/stat line with a starttime field");
+    }
+
+    private static ProcessCheck CheckLinux(RunOwner owner)
+    {
+        try
+        {
+            string? stat;
+            try
+            {
+                stat = File.ReadAllText($"/proc/{owner.Pid}/stat");
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                stat = null; // no process has this pid
+            }
+
+            return CompareLinux(owner, ReadBootId(), stat);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return ProcessCheck.CannotTell;
+        }
+    }
+
+    private static ProcessCheck CheckStartTime(RunOwner owner)
+    {
+        Process process;
+        try
+        {
+            process = Process.GetProcessById(owner.Pid);
+        }
+        catch (ArgumentException)
+        {
+            return ProcessCheck.NotRunning; // no process has this pid
+        }
+
+        using (process)
+        {
+            try
+            {
+                return CompareStartTime(owner, StartTimeOf(process));
+            }
+            catch (InvalidOperationException)
+            {
+                return ProcessCheck.NotRunning; // it exited between the lookup and the read
+            }
+            catch (Exception ex) when (ex is Win32Exception or NotSupportedException)
+            {
+                return ProcessCheck.CannotTell; // something holds the pid, and its start time is not ours to read
+            }
+        }
+    }
+
+    private static string ReadBootId() => File.ReadAllText(LinuxBootIdPath).Trim();
+
+    private static DateTimeOffset StartTimeOf(Process process) =>
+        new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
 }

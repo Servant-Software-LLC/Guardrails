@@ -38,7 +38,9 @@ public sealed class RunLivenessTests
     [Fact]
     public void AnOwnerProcessStillRunning_IsRunning()
     {
-        Assert.Equal(RunLivenessState.Running, RunLiveness.Assess(Owner(), Here, new FakeProcessTable(running: true)));
+        Assert.Equal(
+            RunLivenessState.Running,
+            RunLiveness.Assess(Owner(), Here, new FakeProcessTable(ProcessCheck.Running)));
     }
 
     /// <summary>The dead-run direction: a run whose process is gone must never read as in progress.</summary>
@@ -47,26 +49,40 @@ public sealed class RunLivenessTests
     {
         Assert.Equal(
             RunLivenessState.ExitedWithoutFinishing,
-            RunLiveness.Assess(Owner(), Here, new FakeProcessTable(running: false)));
+            RunLiveness.Assess(Owner(), Here, new FakeProcessTable(ProcessCheck.NotRunning)));
     }
 
     /// <summary>
     /// The control. The same journal, two process tables: the verdicts must differ, and each table must have been
-    /// asked about exactly the pid AND start time the journal recorded — asking about the pid alone would let a
-    /// reused pid vouch for a dead run.
+    /// asked about exactly the owner the journal recorded — pid and start identity together, since asking about the
+    /// pid alone would let a reused pid vouch for a dead run.
     /// </summary>
     [Fact]
-    public void TheVerdictIsTheProcessTablesAnswer_AboutTheRecordedPidAndStartTime()
+    public void TheVerdictIsTheProcessTablesAnswer_AboutTheRecordedOwner()
     {
-        var alive = new FakeProcessTable(running: true);
-        var gone = new FakeProcessTable(running: false);
+        RunOwner owner = Owner();
+        var alive = new FakeProcessTable(ProcessCheck.Running);
+        var gone = new FakeProcessTable(ProcessCheck.NotRunning);
 
-        RunLivenessState whenAlive = RunLiveness.Assess(Owner(), Here, alive);
-        RunLivenessState whenGone = RunLiveness.Assess(Owner(), Here, gone);
+        RunLivenessState whenAlive = RunLiveness.Assess(owner, Here, alive);
+        RunLivenessState whenGone = RunLiveness.Assess(owner, Here, gone);
 
         Assert.NotEqual(whenAlive, whenGone);
-        Assert.Equal((14168, Started), Assert.Single(alive.Asked));
-        Assert.Equal((14168, Started), Assert.Single(gone.Asked));
+        Assert.Same(owner, Assert.Single(alive.Asked));
+        Assert.Same(owner, Assert.Single(gone.Asked));
+    }
+
+    /// <summary>
+    /// "Cannot tell" is not "gone". Something holds the pid and its identity is unreadable from here (access
+    /// denied), or the recorded identity is not one this OS can compare. Reporting that as exited would print a
+    /// resume command for a run that may be alive — and would let a second <c>guardrails run</c> start on top of it.
+    /// </summary>
+    [Fact]
+    public void AnOwnerTheProcessTableCannotCheck_IsCannotCheck_NotExited()
+    {
+        Assert.Equal(
+            RunLivenessState.CannotCheck,
+            RunLiveness.Assess(Owner(), Here, new FakeProcessTable(ProcessCheck.CannotTell)));
     }
 
     /// <summary>
@@ -75,23 +91,24 @@ public sealed class RunLivenessTests
     /// its run is over.
     /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ARecordedEnd_IsFinished_WithoutConsultingTheProcessTable(bool running)
+    [InlineData(ProcessCheck.Running)]
+    [InlineData(ProcessCheck.NotRunning)]
+    [InlineData(ProcessCheck.CannotTell)]
+    public void ARecordedEnd_IsEnded_WithoutConsultingTheProcessTable(ProcessCheck answer)
     {
-        var table = new FakeProcessTable(running);
+        var table = new FakeProcessTable(answer);
 
         Assert.Equal(
-            RunLivenessState.Finished,
+            RunLivenessState.Ended,
             RunLiveness.Assess(Owner(finishedAt: Started.AddHours(1)), Here, table));
         Assert.Empty(table.Asked);
     }
 
-    /// <summary>A journal older than #704 names nothing to check, and the verdict says so instead of guessing.</summary>
+    /// <summary>A journal that names no owner has nothing to check, and the verdict says so instead of guessing.</summary>
     [Fact]
     public void AJournalThatNamesNoOwner_IsNotRecorded()
     {
-        var table = new FakeProcessTable(running: true);
+        var table = new FakeProcessTable(ProcessCheck.Running);
 
         Assert.Equal(RunLivenessState.NotRecorded, RunLiveness.Assess(owner: null, Here, table));
         Assert.Empty(table.Asked);
@@ -99,28 +116,28 @@ public sealed class RunLivenessTests
 
     /// <summary>
     /// A pid is only meaningful on the machine that issued it. An owner recorded on another host that is not
-    /// running HERE is not evidence of a dead run — calling it exited could send an operator to resume a run
-    /// that is alive on the other machine.
+    /// running HERE is not evidence of a dead run — calling it exited could send an operator to resume a run that
+    /// is alive on the other machine.
     /// </summary>
     [Fact]
     public void AnOwnerOnAnotherHost_NotRunningHere_IsOnAnotherHost_NotExited()
     {
         Assert.Equal(
             RunLivenessState.OnAnotherHost,
-            RunLiveness.Assess(Owner(host: "BUILD-BOX"), Here, new FakeProcessTable(running: false)));
+            RunLiveness.Assess(Owner(host: "BUILD-BOX"), Here, new FakeProcessTable(ProcessCheck.NotRunning)));
     }
 
     /// <summary>
-    /// The host check never outranks the process table. A laptop's host name can change under a live run (macOS
-    /// renames the machine when it joins another network), and a process running here with the recorded pid and
-    /// start time IS the owner, whatever the name now says.
+    /// The host check never outranks the process table. A laptop's host name can change under a live run, and a
+    /// process running here with the recorded identity IS the owner, whatever the name now says.
     /// </summary>
     [Fact]
     public void AnOwnerWhoseHostNameChanged_ButWhichIsRunningHere_IsRunning()
     {
         Assert.Equal(
             RunLivenessState.Running,
-            RunLiveness.Assess(Owner(host: "Davids-MacBook.local"), "Davids-MacBook", new FakeProcessTable(running: true)));
+            RunLiveness.Assess(
+                Owner(host: "Davids-MacBook.local"), "Davids-MacBook", new FakeProcessTable(ProcessCheck.Running)));
     }
 
     /// <summary>Host names are not case-significant; a case-only difference is the same machine.</summary>
@@ -129,17 +146,17 @@ public sealed class RunLivenessTests
     {
         Assert.Equal(
             RunLivenessState.ExitedWithoutFinishing,
-            RunLiveness.Assess(Owner(host: "laptop-7"), Here, new FakeProcessTable(running: false)));
+            RunLiveness.Assess(Owner(host: "laptop-7"), Here, new FakeProcessTable(ProcessCheck.NotRunning)));
     }
 
-    private sealed class FakeProcessTable(bool running) : IProcessProbe
+    private sealed class FakeProcessTable(ProcessCheck answer) : IProcessProbe
     {
-        public List<(int Pid, DateTimeOffset StartedAt)> Asked { get; } = [];
+        public List<RunOwner> Asked { get; } = [];
 
-        public bool IsRunning(int pid, DateTimeOffset startedAt)
+        public ProcessCheck Check(RunOwner owner)
         {
-            Asked.Add((pid, startedAt));
-            return running;
+            Asked.Add(owner);
+            return answer;
         }
     }
 }
