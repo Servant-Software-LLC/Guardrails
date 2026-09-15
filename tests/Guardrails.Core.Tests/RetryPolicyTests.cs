@@ -824,6 +824,60 @@ public sealed class RetryPolicyTests
         Assert.Contains("01-author", RetryPolicy.WriteScopeGapSummary(PromptTask("02-implement"), upstream));
     }
 
+    // ── #708 the permission-wall halt names a refused command as a command ───────────────────────
+
+    [Fact]
+    public void PermissionWall_RepeatedCommand_IsNamedACommand_NotAPath()
+    {
+        // Plan 40, task 20: the halt listed `echo "EXIT:$?` under "Repeatedly-refused path(s)", and plan 28's refused
+        // read-only `grep` was summarized as "write repeatedly refused". Neither was a write, and neither was a path.
+        const string selfCheck = "echo \"EXIT:$?\"";
+        var wall = new PermissionWallDecision(true, [], [], [selfCheck]);
+
+        string feedback = RetryPolicy.ForPermissionWall(PromptTask("20-implement"), wall);
+
+        Assert.Contains("## Repeatedly-refused command(s)", feedback);
+        Assert.Contains($"- `{selfCheck}`", feedback);
+        Assert.Contains("allowedTools", feedback);
+        Assert.DoesNotContain("path(s)", feedback);
+        Assert.Equal(
+            $"needs human: command repeatedly refused (permission wall) — {selfCheck}",
+            RetryPolicy.PermissionWallSummary(wall));
+    }
+
+    [Fact]
+    public void PermissionWall_RepeatedPathWithASpace_IsStillNamedAPath()
+    {
+        // #534 told a command from a path by the key's SHAPE: whitespace meant a command. This repository once lived at
+        // `C:\Dev AI\Guardrails`, where that guess calls its own source files commands. The decision now says which is which.
+        const string path = @"C:\Dev AI\Guardrails\src\Locked.cs";
+        var wall = new PermissionWallDecision(true, [], [path], []);
+
+        string feedback = RetryPolicy.ForPermissionWall(PromptTask("04-impl"), wall);
+
+        Assert.Contains("REFUSED to write one or more paths", feedback);
+        Assert.Contains("## Repeatedly-refused path(s)", feedback);
+        Assert.DoesNotContain("tool calls", feedback);
+        Assert.DoesNotContain("refused COMMAND", feedback);
+        Assert.Equal($"needs human: write repeatedly refused (permission wall) — {path}", RetryPolicy.PermissionWallSummary(wall));
+    }
+
+    [Fact]
+    public void RepeatedRefusalContext_NamesEachKind_AndIsEmptyWithoutARepeat()
+    {
+        // #708: a repeat no longer settles an attempt whose action succeeded. On a guardrail failure it rides along as
+        // secondary context, so the next attempt stops reaching for a call that will be refused again.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], ["echo \"EXIT:$?\""]);
+
+        string context = RetryPolicy.ForRepeatedRefusalContext(wall);
+
+        Assert.Contains("## Secondary context", context);
+        Assert.Contains("- path: `src/locked/Protected.cs`", context);
+        Assert.Contains("- command: `echo \"EXIT:$?\"`", context);
+        Assert.Contains("needsHuman", context);
+        Assert.Empty(RetryPolicy.ForRepeatedRefusalContext(new PermissionWallDecision(true, [".claude/x.md"], [], [])));
+    }
+
     // ── #705 salvage says only what is true, and out-of-scope work is kept for a human ───────────
 
     [Fact]

@@ -523,12 +523,16 @@ internal sealed record ActionRun
     public string? ResetHint { get; init; }
 
     /// <summary>
-    /// The distinct write/edit paths the runtime refused this attempt because they are not granted
-    /// (issues #86 / #104), in first-seen order. Empty for a script action or a prompt that hit no
-    /// permission wall. The <see cref="TaskExecutor"/> feeds these to <see cref="PermissionWallTracker"/>
-    /// to decide an early <c>needs-human</c> halt instead of burning the remaining retries.
+    /// The distinct targets the runtime refused this attempt because they are not granted (issues #86 / #104),
+    /// in first-seen order: write paths, and refused commands, which <see cref="RefusedCommands"/> names. Empty
+    /// for a script action or a prompt that hit no permission wall. The <see cref="TaskExecutor"/> feeds both to
+    /// <see cref="PermissionWallTracker"/> to decide an early <c>needs-human</c> halt instead of burning the
+    /// remaining retries.
     /// </summary>
     public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
+
+    /// <summary>The entries of <see cref="BlockedWritePaths"/> that are refused commands rather than paths (#708).</summary>
+    public IReadOnlyList<string> RefusedCommands { get; init; } = [];
 
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
@@ -623,6 +627,7 @@ internal sealed record ActionRun
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,
             ResetHint = result.ResetHint,
             BlockedWritePaths = result.BlockedWritePaths,
+            RefusedCommands = result.RefusedCommands,
             FailureSummary = result.Summary
         };
     }

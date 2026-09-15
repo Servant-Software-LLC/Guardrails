@@ -32,8 +32,13 @@ namespace Guardrails.Core.Prompts;
 /// <c>Write</c>: the call never runs and the agent burns its budget working around it. Leaving
 /// <c>Bash</c> out of the tracked tool set is what let a real run refuse 86 git calls and report ZERO
 /// permission walls, so it is included here and the refused COMMAND is the attribution key. The list is
-/// still surfaced as <c>BlockedWritePaths</c>: to the runner-agnostic tracker a path and a refused
-/// command are both just opaque, stable wall keys.</para>
+/// still surfaced as <c>BlockedWritePaths</c>, and <c>RefusedCommands</c> names which of its entries are
+/// commands (#708). The tracker needs that: a command is never the structural <c>.claude/</c> write wall, and
+/// a halt that calls a refused <c>echo</c> a "path" sends the human to the wrong fix. The kind is decided by
+/// the route that attributed the entry, never guessed from its shape: a target named after
+/// <c>"…requires approval:"</c> is a command, a path embedded in the refusal is a path (a Bash <c>cp</c> of a
+/// <c>.claude/</c> file is refused as a write to that path), and the <c>tool_use</c> fallback is a command
+/// only when it read the Bash <c>command</c> input.</para>
 /// </summary>
 internal static class ClaudePermissionScanner
 {
@@ -103,7 +108,9 @@ internal static class ClaudePermissionScanner
         // Ordinal-distinct, INSERTION-ORDERED so feedback lists the walls in the order they were hit.
         private readonly List<string> _blocked = new();
         private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+        private readonly List<string> _commands = new();
         private string? _lastToolTarget;
+        private bool _lastToolTargetIsCommand;
 
         /// <summary>Feed one raw stream line (newline excluded). Non-JSON / irrelevant lines are skipped.</summary>
         public void Feed(string line)
@@ -152,6 +159,12 @@ internal static class ClaudePermissionScanner
         public IReadOnlyList<string> BlockedWritePaths => _blocked;
 
         /// <summary>
+        /// The entries of <see cref="BlockedWritePaths"/> that are refused COMMANDS rather than paths (#708), in
+        /// first-seen order. Kept verbatim: a command is not quote-trimmed the way a path is.
+        /// </summary>
+        public IReadOnlyList<string> RefusedCommands => _commands;
+
+        /// <summary>
         /// How many permission denials have arrived with NO successful tool call in between (issue #452).
         /// Distinct from <see cref="BlockedWritePaths"/>, which is DEDUPED by target and therefore cannot
         /// distinguish "one refusal the agent worked around" from "every call this run was refused" — the
@@ -178,12 +191,14 @@ internal static class ClaudePermissionScanner
                     input.ValueKind == JsonValueKind.Object)
                 {
                     // The write family names a path; Bash names a command. Either is the key a
-                    // target-less denial gets attributed to.
-                    string? target = StringProp(input, "file_path") ?? StringProp(input, "path") ??
-                                     StringProp(input, "notebook_path") ?? StringProp(input, "command");
+                    // target-less denial gets attributed to, and which one it was travels with it (#708).
+                    string? path = StringProp(input, "file_path") ?? StringProp(input, "path") ??
+                                   StringProp(input, "notebook_path");
+                    string? target = path ?? StringProp(input, "command");
                     if (!string.IsNullOrWhiteSpace(target))
                     {
                         _lastToolTarget = target;
+                        _lastToolTargetIsCommand = path is null;
                     }
                 }
             }
@@ -218,17 +233,27 @@ internal static class ClaudePermissionScanner
                 ConsecutiveDenials++;
 
                 // Prefer what the message NAMES (the refused path, or the refused part of a compound
-                // Bash command), and only then the tool_use it must have come from.
-                string? target = ExtractRefusedCommand(text) ?? ExtractPath(text) ?? _lastToolTarget;
+                // Bash command), and only then the tool_use it must have come from. #708: the route that
+                // attributed the target decides whether it is a command.
+                string? command = ExtractRefusedCommand(text);
+                string? path = command is null ? ExtractPath(text) : null;
+                string? target = command ?? path ?? _lastToolTarget;
                 if (string.IsNullOrWhiteSpace(target))
                 {
                     continue;
                 }
 
-                string normalized = target.Trim().Trim('"', '\'', '`');
+                bool isCommand = command is not null || (path is null && _lastToolTargetIsCommand);
+                // A path is quote-trimmed so its quoted and bare forms repeat together. A command keeps its quotes,
+                // or plan 40's refused `echo "EXIT:$?"` is reported as `echo "EXIT:$?`.
+                string normalized = isCommand ? target.Trim() : target.Trim().Trim('"', '\'', '`');
                 if (_seen.Add(normalized))
                 {
                     _blocked.Add(normalized);
+                    if (isCommand)
+                    {
+                        _commands.Add(normalized);
+                    }
                 }
             }
         }

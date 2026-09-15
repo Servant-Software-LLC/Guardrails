@@ -161,16 +161,23 @@ public sealed record PromptResult
     public required string Summary { get; init; }
 
     /// <summary>
-    /// The distinct file paths the runtime REFUSED to write/edit this run because the path is not on
-    /// the granted permission allow-list (issues #86 / #104), in first-seen order. Empty when no
-    /// permission wall was hit. Runner-agnostic: the CLI quarantine
-    /// (<see cref="ClaudePermissionScanner"/>) mines these from the runner's tool-result events; the
-    /// harness (<c>TaskExecutor</c> via <c>PermissionWallTracker</c>) routes on the list of paths only,
-    /// never on a vendor-specific denial string. A repeated wall on the SAME path (or any wall on a
-    /// <c>.claude/</c> path, a known-structural runtime restriction) settles the task
-    /// <c>needs-human</c> immediately instead of burning the remaining retries.
+    /// The distinct targets the runtime REFUSED this run because they are not on the granted permission
+    /// allow-list (issues #86 / #104), in first-seen order: write paths, and refused commands, which
+    /// <see cref="RefusedCommands"/> names. Empty when no permission wall was hit. Runner-agnostic: the CLI
+    /// quarantine (<see cref="ClaudePermissionScanner"/>) mines these from the runner's tool-result events;
+    /// the harness (<c>TaskExecutor</c> via <c>PermissionWallTracker</c>) routes on these lists only, never
+    /// on a vendor-specific denial string. A wall on a <c>.claude/</c> path (a known-structural runtime
+    /// restriction) settles an attempt that did not converge (#325); a target refused again on a later
+    /// attempt settles that attempt only when its action failed (#708).
     /// </summary>
     public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
+
+    /// <summary>
+    /// The entries of <see cref="BlockedWritePaths"/> that are refused COMMANDS rather than paths (#708), as the
+    /// runner attributed them. A command is never the structural <c>.claude/</c> write wall, and a halt names it
+    /// as a command. Empty for a runner that refuses no commands.
+    /// </summary>
+    public IReadOnlyList<string> RefusedCommands { get; init; } = [];
 }
 
 /// <summary>

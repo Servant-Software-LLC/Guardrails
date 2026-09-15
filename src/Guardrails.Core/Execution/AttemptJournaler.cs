@@ -660,13 +660,10 @@ internal sealed class AttemptJournaler
         AttemptSegments? segments = null)
     {
         Directory.CreateDirectory(logDir);
-        string feedback = RetryPolicy.ForPermissionWall(task, decision.StructuralPaths, decision.RepeatedPaths);
+        string feedback = RetryPolicy.ForPermissionWall(task, decision);
         AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
 
-        string paths = string.Join(", ", decision.AllPaths);
-        string summary = decision.HasStructural
-            ? $"needs human: write to .claude/ blocked by the runtime (structural) — {paths}"
-            : $"needs human: write repeatedly refused (permission wall) — {paths}";
+        string summary = RetryPolicy.PermissionWallSummary(decision);
 
         var record = new AttemptRecord
         {
