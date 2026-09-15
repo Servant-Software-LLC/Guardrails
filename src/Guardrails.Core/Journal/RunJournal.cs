@@ -732,31 +732,39 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// <summary>
     /// Record this wave's OWN barrier-delivery result (design 39 §4/§5) — REPLACES whatever record the wave
     /// already carries, since <c>status: running</c> is written first and then superseded by the settled
-    /// <c>delivered</c>/<c>refused</c>/<c>suppressed</c> record for the same delivery.
-    /// <para>
-    /// STUB (task 09): throws until task 10 wires the write. Task 10's tests pin that this method must NOT
-    /// touch the wave's <see cref="WaveJournalEntry.Status"/> or its entry/exit markers, and that
-    /// <see cref="ResetWaveToPending"/> must NOT clear the record this method wrote.
-    /// </para>
+    /// <c>delivered</c>/<c>refused</c>/<c>suppressed</c> record for the same delivery. Does not touch the
+    /// wave's <see cref="WaveJournalEntry.Status"/> or its entry/exit markers.
     /// </summary>
-    public void RecordWaveDelivery(string waveDir, WaveDeliveredRecord record) =>
-        throw new NotImplementedException();
+    public void RecordWaveDelivery(string waveDir, WaveDeliveredRecord record)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with { Delivered = record });
+            Persist();
+        }
+    }
 
     /// <summary>
     /// Reset a wave to <see cref="WaveStatus.Pending"/>, clearing its completion hash, marker sha, and
     /// entry/exit markers — the wave half of a wave-drift resolution / wave-scoped reset (SSOT §14.6/§14.8).
     /// The wave's TASKS are reset separately via <see cref="ResetTaskToPending"/>.
+    /// <para>
+    /// Deliberately KEEPS <see cref="WaveJournalEntry.Delivered"/> unchanged (review round 5,
+    /// <c>d39-rewind-delivered-wave</c>): a delivery cannot be undone — its commits are already on the
+    /// user's branch — so a reset that forgot the record would make already-shipped work read as held.
+    /// </para>
     /// </summary>
     public void ResetWaveToPending(string waveDir)
     {
         lock (_gate)
         {
-            if (_document.Waves is not { } waves || !waves.ContainsKey(waveDir))
+            if (_document.Waves is not { } waves || !waves.TryGetValue(waveDir, out WaveJournalEntry? existing))
             {
                 return;
             }
 
-            UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending });
+            UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending, Delivered = existing.Delivered });
             Persist();
         }
     }

@@ -80,7 +80,22 @@ public static class JournalJson
         DeliveryOutcome.DirtyWorkingTree => "dirty-working-tree",
         DeliveryOutcome.HookRejected => "hook-rejected",
         DeliveryOutcome.BranchMoved => "branch-moved",
+        DeliveryOutcome.TrialGateFailed => "trial-gate-failed",
         _ => throw new JsonException($"Unhandled delivery outcome '{outcome}'.")
+    };
+
+    /// <summary>
+    /// The design 39 §4 token for a <see cref="WaveDeliveryStatus"/> (e.g. <c>delivered</c>) — the single
+    /// source of truth for the kebab spelling of <c>waves.&lt;dir&gt;.delivered.status</c>, reused by the
+    /// JSON converter.
+    /// </summary>
+    public static string WaveDeliveryStatusToken(WaveDeliveryStatus status) => status switch
+    {
+        WaveDeliveryStatus.Running => "running",
+        WaveDeliveryStatus.Delivered => "delivered",
+        WaveDeliveryStatus.Refused => "refused",
+        WaveDeliveryStatus.Suppressed => "suppressed",
+        _ => throw new JsonException($"Unhandled wave delivery status '{status}'.")
     };
 
     /// <summary>
@@ -143,6 +158,7 @@ public static class JournalJson
         options.Converters.Add(new TierSourceConverter());
         options.Converters.Add(new DeliveryOutcomeConverter());
         options.Converters.Add(new HarnessWriteDispositionConverter());
+        options.Converters.Add(new WaveDeliveryStatusConverter());
         return options;
     }
 
@@ -228,12 +244,33 @@ public static class JournalJson
                 "dirty-working-tree" => DeliveryOutcome.DirtyWorkingTree,
                 "hook-rejected" => DeliveryOutcome.HookRejected,
                 "branch-moved" => DeliveryOutcome.BranchMoved,
+                "trial-gate-failed" => DeliveryOutcome.TrialGateFailed,
                 _ => throw new JsonException($"Unknown delivery outcome '{value}'.")
             };
         }
 
         public override void Write(Utf8JsonWriter writer, DeliveryOutcome value, JsonSerializerOptions options) =>
             writer.WriteStringValue(DeliveryOutcomeToken(value));
+    }
+
+    /// <summary>Maps <see cref="WaveDeliveryStatus"/> to/from the design 39 §4 <c>delivered.status</c> strings.</summary>
+    private sealed class WaveDeliveryStatusConverter : JsonConverter<WaveDeliveryStatus>
+    {
+        public override WaveDeliveryStatus Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "running" => WaveDeliveryStatus.Running,
+                "delivered" => WaveDeliveryStatus.Delivered,
+                "refused" => WaveDeliveryStatus.Refused,
+                "suppressed" => WaveDeliveryStatus.Suppressed,
+                _ => throw new JsonException($"Unknown wave delivery status '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, WaveDeliveryStatus value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(WaveDeliveryStatusToken(value));
     }
 
     /// <summary>Maps <see cref="WaveStatus"/> to/from the SSOT §7/§14 wave status strings.</summary>
