@@ -302,8 +302,7 @@ public sealed class RunCommandWaveDeliveryProofTests : IClassFixture<RunCommandW
 
         string report = RequireReport(run.Output);
         Assert.Contains($"Delivered at their own barrier: {Wave1}.", report, StringComparison.Ordinal);
-        Assert.True(report.Contains(Wave2, StringComparison.Ordinal),
-            $"the delivery report does not name the held wave '{Wave2}':\n{report}");
+        Assert.Contains($"Held on the plan branch: {Wave2} (01-write needs-human).", report, StringComparison.Ordinal);
 
         int reportAt = run.Output.IndexOf("WAVE DELIVERY REPORT", StringComparison.Ordinal);
         int verdictAt = run.Output.IndexOf($"NEEDS HUMAN: {Wave2}/01-write", StringComparison.Ordinal);

@@ -2116,7 +2116,8 @@ public static class RunCommand
                 .ToList();
             if (alsoHeld.Count > 0)
             {
-                output.WriteLine($"  Held on the plan branch: {string.Join(", ", alsoHeld)}.");
+                output.WriteLine(
+                    $"  Held on the plan branch: {string.Join(", ", alsoHeld.Select(w => w + HeldWaveReason(report, w)))}.");
             }
         }
 
@@ -2151,6 +2152,61 @@ public static class RunCommand
             .Distinct(StringComparer.Ordinal)
             .OrderBy(w => w, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// Design 39 §4's per-held-wave reason for the report — <c>wave-03-observer (09-… needs-human)</c>,
+    /// <c>wave-04-docs-sink (not reached)</c> — derived from the report alone, or <c>""</c> when the report
+    /// holds no wave-level cause to name:
+    /// <list type="bullet">
+    ///   <item>a non-delivered barrier record's own status: a refusal's outcome token, else <c>suppressed</c>;</item>
+    ///   <item>the wave's tasks that need a human, or that hit a provider limit (<c>rate-limited</c>);</item>
+    ///   <item><c>not reached</c> when every task was blocked or never started.</item>
+    /// </list>
+    /// A wave whose tasks all passed (the final wave behind a failed terminal gate, or a withheld run-end
+    /// merge) gets no reason: its cause is run-level, and the run's own verdict names it.
+    /// </summary>
+    private static string HeldWaveReason(RunReport report, string waveDir)
+    {
+        if (report.WaveDeliveries.TryGetValue(waveDir, out WaveDeliveredRecord? record)
+            && record.Status != WaveDeliveryStatus.Delivered)
+        {
+            string status = record is { Status: WaveDeliveryStatus.Refused, Outcome: { } outcome }
+                ? JournalJson.DeliveryOutcomeToken(outcome)
+                : record.Status.ToString().ToLowerInvariant();
+            return $" ({status})";
+        }
+
+        string prefix = waveDir + "/";
+        List<TaskResult> tasks = [.. report.Tasks.Where(t => t.TaskId.StartsWith(prefix, StringComparison.Ordinal))];
+
+        string[] needsHuman =
+        [
+            .. tasks
+                .Where(t => t.Outcome is TaskOutcome.NeedsHuman or TaskOutcome.GuardrailFailed
+                    or TaskOutcome.ActionFailed or TaskOutcome.InvalidFragment)
+                .Select(t => t.TaskId[prefix.Length..])
+        ];
+        string[] rateLimited = [.. tasks.Where(t => t.Outcome == TaskOutcome.RateLimited).Select(t => t.TaskId[prefix.Length..])];
+
+        var reasons = new List<string>();
+        if (needsHuman.Length > 0)
+        {
+            reasons.Add($"{string.Join(", ", needsHuman)} needs-human");
+        }
+
+        if (rateLimited.Length > 0)
+        {
+            reasons.Add($"{string.Join(", ", rateLimited)} rate-limited");
+        }
+
+        if (reasons.Count == 0 && tasks.Count > 0
+            && tasks.All(t => t.Outcome is TaskOutcome.Blocked or TaskOutcome.Cancelled))
+        {
+            reasons.Add("not reached");
+        }
+
+        return reasons.Count == 0 ? "" : $" ({string.Join("; ", reasons)})";
     }
 
     /// <summary>
