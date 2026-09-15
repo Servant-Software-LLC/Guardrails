@@ -7058,7 +7058,9 @@ never carries badges.
   (§12), whenever that server is up; and the `file://` path, labeled `Status diagram (snapshot, not
   live):`, only when there is no server (`--no-log-server`, or a start that failed). A `file://` page
   cannot poll, so before #714 the one diagram link a run with a server printed opened on its own
-  "not live" notice.
+  "not live" notice. At run end the run prints the settled page's `file://` path as `Final status
+  diagram:`, beside the static index link (#714 review): the live URL printed at start stops answering
+  with the server, so a finished run would otherwise name no diagram a reader can still open.
 - **During-run vs final (issue #523).** The during-run page no longer carries
   `<meta http-equiv="refresh">` or any other whole-document reload: the old 3s reload killed pan/zoom
   and scroll on every tick, dropped a click landing mid-reload, and re-ran `mermaid.render` on a big DAG
@@ -7070,11 +7072,12 @@ never carries badges.
   `GR_DURING_RUN` reads `false` — the terminal run state written by
   `OnTheFlyDiagramObserver.WriteFinalStatic` once the run settles — and, for a plain `file://` view that
   cannot poll itself, a failed fetch instead reveals the hidden `#gr-live-offline` notice rather than
-  failing silently forever. That notice links the copy the run's own log server is serving live
-  (`http://127.0.0.1:<port>/diagram.html`) whenever the run has a server, and names `guardrails logs
-  <plan-folder>` only when it has none (issue #714): a `file://` page cannot discover the port, but the
-  during-run writer knows it. The settled page keeps the server-less wording, because its server stops
-  as it is written. The final page, written once at run end from the observer's own in-memory
+  failing silently forever. When the run has a log server, that notice first links the copy the server is
+  serving live (`http://127.0.0.1:<port>/diagram.html`): a `file://` page cannot discover the port, but the
+  during-run writer knows it (issue #714). It still names `guardrails logs <plan-folder>` as the fallback,
+  because a hard-killed run leaves this page linking a server that is gone, or a port a later run has
+  reused; with no server that command is the whole notice. The settled page keeps the server-less wording,
+  because its server stops as it is written. The final page, written once at run end from the observer's own in-memory
   map, carries no trace of `GR_LIVE_POLL_MS` or the poll script at all — the whole block is substituted
   from one conditional template chunk, so `duringRun:false` renders a plain static page — and shows every
   node settled: a durable post-mortem.
@@ -7097,8 +7100,9 @@ never carries badges.
   from before #543 (the byte-identity goldens in `LogSiteHaltBannerTests` are the tripwire). The
   trade-off is explicit: a during-run page opened over `file://` no longer updates itself, because it
   cannot fetch itself — it shows the offline notice, which points at a surface that can actually stream:
-  the run's own live run view (`http://127.0.0.1:<port>/`) when the run has a log server, and
-  `guardrails logs <plan-folder>` only when it has none (issue #714). An honest static snapshot beats a
+  first the run's own live run view (`http://127.0.0.1:<port>/`) when the run has a log server (issue
+  #714), then `guardrails logs <plan-folder>` as the fallback for a run that has since ended; with no
+  server, that command alone. An honest static snapshot beats a
   page that reloads forever and cannot say
   whether it is current. **Settle-on-fault (issue #333):** the run-end final writes (this
   diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`, so an UNEXPECTED
@@ -7438,7 +7442,8 @@ the logs tree. Whenever this server is up, the diagram line the run prints at st
 not the file (issue #714): `Live status diagram: http://127.0.0.1:<port>/diagram.html`. A page opened as
 a file cannot poll, so the `file://` link the run used to label live opened on the page's own "not
 live" notice during a healthy run. Only a run with no server prints the `file://` path, labeled
-`Status diagram (snapshot, not live):`.
+`Status diagram (snapshot, not live):`. At run end every run also prints the settled diagram's
+`file://` path as `Final status diagram:` (§10.1), since the live URL dies with the server.
 
 **On-the-fly static site (issue #141 item 2).** Independently of the server, `run` also keeps the
 **static** log site (§12.3) up to date as the run proceeds — on **both** the live and the `--no-ui`

@@ -251,10 +251,11 @@ public static class HtmlDiagramRenderer
         """;
 
     /// <summary>
-    /// What the <c>#gr-live-offline</c> notice says (issue #714). With the run's own log server up, it links the
-    /// copy that server is ALREADY serving live, instead of sending the reader off to start a second server with
-    /// <c>guardrails logs</c>. During plan 39's run the operator saw this notice on a healthy run while the live
-    /// copy was one URL away. Without a server, the <c>guardrails logs</c> wording stands.
+    /// What the <c>#gr-live-offline</c> notice says (issue #714). With the run's own log server up, it first links the
+    /// copy that server is ALREADY serving live: during plan 39's run the operator saw this notice on a healthy run
+    /// while the live copy was one URL away. It still names <c>guardrails logs</c> as the fallback (#714 review),
+    /// because a hard-killed run leaves this page linking a server that is gone, or a port a later run has reused.
+    /// Without a server, the <c>guardrails logs</c> wording is the whole notice.
     /// </summary>
     private static string OfflineNotice(string? liveDiagramUrl)
     {
@@ -266,7 +267,10 @@ public static class HtmlDiagramRenderer
         string url = System.Net.WebUtility.HtmlEncode(liveDiagramUrl);
         return $"""
             Live status updates are unavailable on this copy &mdash; it was opened as a file, so it
-              cannot poll. This run serves it live at <a href="{url}">{url}</a> while the run is going.
+              cannot poll. This run serves it live at <a href="{url}">{url}</a> while the run is going. If that
+              does not answer, or shows a different run, the run has ended: run
+              <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
+              under the URL it prints.
             """;
     }
 

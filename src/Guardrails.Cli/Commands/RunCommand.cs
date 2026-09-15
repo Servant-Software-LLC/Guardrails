@@ -1213,8 +1213,11 @@ public static class RunCommand
 
         PrintSummary(report, planDirectory, runId, io);
 
-        // The "all tasks" static page link at run END (alongside the post-mortem logs pointer).
+        // The "all tasks" static page link at run END (alongside the post-mortem logs pointer), and the settled
+        // diagram beside it (#714 review): after a run with a server, the only diagram line printed so far was the
+        // live URL, which stopped answering when the server did.
         PrintStaticIndexLink(logsRoot, io);
+        PrintFinalDiagramLink(logsRoot, io);
 
         // Issue #556 — the executed-definition divergence halt (plan 32 §6.5). Rendered HERE, in the NORMAL
         // end-of-run path AFTER the summary, and deliberately NOT at the DefinitionDrift early return above:
@@ -2984,6 +2987,25 @@ public static class RunCommand
 
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
         io.Out.WriteLine($"Status diagram (snapshot, not live): {Hyperlink(diagramPath, linkable)}");
+    }
+
+    /// <summary>
+    /// Print the settled status diagram's file path at run end (#714 review), beside the static index link: the durable
+    /// post-mortem copy <see cref="OnTheFlyDiagramObserver.WriteFinalStatic"/> has just written. A run with a log
+    /// server printed only the diagram's live URL at start, and that URL stops answering with the server, so without
+    /// this line the finished run named no diagram a reader could still open. Same OSC 8 / <c>file://</c> gate as
+    /// <see cref="PrintStaticIndexLink"/>; a no-op when no diagram was written.
+    /// </summary>
+    private static void PrintFinalDiagramLink(string logsRoot, IConsoleIo io)
+    {
+        string diagramPath = Path.GetFullPath(Path.Combine(logsRoot, "diagram.html"));
+        if (!File.Exists(diagramPath))
+        {
+            return;
+        }
+
+        bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
+        io.Out.WriteLine($"Final status diagram: {Hyperlink(diagramPath, linkable)}");
     }
 
     /// <summary>

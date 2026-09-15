@@ -206,4 +206,26 @@ public sealed class LogServerRunGateTests
         Assert.Contains("file://", line, StringComparison.Ordinal);
         Assert.Contains($"/logs/{runId}/diagram.html", line, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Run_WithTheLogServer_EndsByNamingTheSettledDiagramFile()
+    {
+        // #714 review, N4. The run prints its live diagram URL at start, and that URL dies with the run's server.
+        // After a run with a server it was the only diagram line on screen, so the settled post-mortem diagram had no
+        // printed path at all. The run now ends by printing the file, next to the static index link.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        string runId = Path.GetFileName(Assert.Single(Directory.GetDirectories(Path.Combine(plan.PlanDir, "logs"))));
+        string[] lines = output.Split('\n');
+        int live = Array.FindIndex(lines, l => l.StartsWith("Live status diagram: http://", StringComparison.Ordinal));
+        int final = Array.FindIndex(lines, l => l.StartsWith("Final status diagram: ", StringComparison.Ordinal));
+
+        Assert.True(live >= 0, $"expected the run-start live diagram line; got:\n{output}");
+        Assert.True(final > live, $"expected a final diagram line after the live one; got:\n{output}");
+        Assert.Contains("file://", lines[final], StringComparison.Ordinal);
+        Assert.Contains($"/logs/{runId}/diagram.html", lines[final], StringComparison.Ordinal);
+    }
 }
