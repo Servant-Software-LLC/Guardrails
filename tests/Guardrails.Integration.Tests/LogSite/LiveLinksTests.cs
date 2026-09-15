@@ -124,8 +124,8 @@ public sealed class LiveLinksTests
 
         /// <summary>The chain exactly as <c>guardrails run</c> composes it, with or without its log server.</summary>
         public OnTheFlyDiagramObserver Chain(LogServer? server) => RunCommand.BuildObserverChain(
-            IRunObserver.Null, LogsRoot, RunId, Plan, server is null ? null : server.UrlForTask, diagramSeed: null,
-            onRow: null, includeDetail: false, logServer: server);
+            IRunObserver.Null, LogsRoot, RunId, Plan, logServer: server, diagramSeed: null,
+            onRow: null, includeDetail: false);
 
         public string Read(string page) => File.ReadAllText(Path.Combine(LogsRoot, page));
 

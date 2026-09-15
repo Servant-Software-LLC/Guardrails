@@ -103,7 +103,7 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     /// </param>
     public OnTheFlyDiagramObserver(
         IRunObserver inner, string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed,
-        string? liveDiagramUrl = null)
+        string? liveDiagramUrl)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _diagramPath = Path.Combine(logsRoot, DiagramFileName);
@@ -119,11 +119,11 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     /// Write the initial (seeded) during-run diagram WITHOUT an observer instance — so the live path can
     /// write it, and print its link, BEFORE constructing <see cref="LiveRunObserver"/> (whose ctor starts
     /// the Spectre <c>AnsiConsole.Live</c> region; any console write into an active Live region corrupts
-    /// the table, #145). Mirrors <see cref="OnTheFlyLogSiteObserver.WriteInitialIndex(string, string, System.Collections.Generic.IReadOnlyList{TaskNode}, System.Func{string, string}, System.Collections.Generic.IReadOnlyList{WaveNode}, string)"/>.
+    /// the table, #145). Mirrors <see cref="OnTheFlyLogSiteObserver.WriteInitialIndex(string, string, System.Collections.Generic.IReadOnlyList{TaskNode}, System.Func{string, string}, string, System.Collections.Generic.IReadOnlyList{WaveNode})"/>.
     /// Best-effort. <paramref name="liveDiagramUrl"/> is the run's live copy, for the offline notice (issue #714).
     /// </summary>
     public static void WriteInitialDiagram(
-        string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed, string? liveDiagramUrl = null)
+        string logsRoot, PlanDefinition plan, JournalDocument? journalForSeed, string? liveDiagramUrl)
     {
         DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
         Dictionary<string, string> seed = BuildSeedMap(nodes, plan, journalForSeed);

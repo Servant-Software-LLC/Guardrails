@@ -285,7 +285,7 @@ public sealed class LogSiteExportTests
                 FakeTask("02-b", "Second task"),
             };
 
-            OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, "run-initial", tasks, liveUrlForTask: null);
+            OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, "run-initial", tasks, liveUrlForTask: null, liveRunUrl: null);
 
             string indexPath = Path.Combine(logsRoot, "index.html");
             Assert.True(File.Exists(indexPath), "the static WriteInitialIndex must write index.html so the start link is not dangling");

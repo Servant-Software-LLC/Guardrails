@@ -516,7 +516,7 @@ public sealed class ModelInRowTests
                 tasks,
                 statusResolver: _ => "running",
                 linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
-                includeRefresh: true));
+                includeRefresh: true, liveRunUrl: null));
 
             Assert.DoesNotContain("<th>Model</th>", index);
 
@@ -561,7 +561,7 @@ public sealed class ModelInRowTests
 
             var logSiteInner = new RecordingRouteObserver();
             var logSiteDecorator =
-                new OnTheFlyLogSiteObserver(logSiteInner, logsRoot, "test-run", [task], liveUrlForTask: null);
+                new OnTheFlyLogSiteObserver(logSiteInner, logsRoot, "test-run", [task], liveUrlForTask: null, liveRunUrl: null);
 
             ((IRunObserver)logSiteDecorator).AttemptRouteResolved(task, 1, "sonnet", "claude-sonnet-5", "hard", "medium");
             ((IRunObserver)logSiteDecorator).AttemptRouteResolved(task, 2, "sonnet", "claude-sonnet-5", "medium", null);
@@ -576,7 +576,7 @@ public sealed class ModelInRowTests
                 Config = new RunConfig { Version = 1 },
                 Tasks = [task],
             };
-            var diagramDecorator = new OnTheFlyDiagramObserver(diagramInner, logsRoot, plan, journalForSeed: null);
+            var diagramDecorator = new OnTheFlyDiagramObserver(diagramInner, logsRoot, plan, journalForSeed: null, liveDiagramUrl: null);
 
             ((IRunObserver)diagramDecorator).AttemptRouteResolved(task, 1, "sonnet", "claude-sonnet-5", "hard", "medium");
             ((IRunObserver)diagramDecorator).AttemptRouteResolved(task, 2, "sonnet", "claude-sonnet-5", "medium", null);

@@ -380,14 +380,15 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
             // the canonical durable store for the phase — because a breakdown halt is not a RunHalt, so
             // without this the wave page is permanently a dead end: the wave name, 0/0 tasks, and an empty
             // table. Null for an ordinary authored wave, which therefore renders unchanged.
+            // A durable export has no server behind it, and its pages carry no offline notice to point at one.
             WriteWaveIndex(
-                logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false,
+                logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false, liveRunUrl: null,
                 halt: HaltForWave(journal.Halt, wave.Dir), claimResolver: claimResolver,
                 phase: BreakdownPanel(logsRoot, wave, journal.Decisions));
         }
 
         string index = IndexHtml(
-            logsRoot, journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false,
+            logsRoot, journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false, liveRunUrl: null,
             halt: journal.Halt, claimResolver: claimResolver, modelResolver: modelResolver);
 
         string indexPath = Path.Combine(logsRoot, "index.html");
@@ -425,16 +426,16 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
+        string? liveRunUrl,
         IReadOnlyList<WaveNode>? waves = null,
         RunHalt? halt = null,
         Func<string, string?>? claimResolver = null,
         Func<string, string?>? modelResolver = null,
-        PlanGuardrailsSection? terminalGate = null,
-        string? liveRunUrl = null)
+        PlanGuardrailsSection? terminalGate = null)
     {
         string index = IndexHtml(
             logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
-            includeRefresh, halt, claimResolver, modelResolver, terminalGate, liveRunUrl);
+            includeRefresh, liveRunUrl, halt, claimResolver, modelResolver, terminalGate);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -495,11 +496,11 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
+        string? liveRunUrl,
         RunHalt? halt,
         Func<string, string?>? claimResolver,
         Func<string, string?>? modelResolver = null,
-        PlanGuardrailsSection? terminalGate = null,
-        string? liveRunUrl = null)
+        PlanGuardrailsSection? terminalGate = null)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
@@ -1133,10 +1134,10 @@ if (window.location.protocol === 'file:') { grShowLogOffline(); } else { grStart
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
+        string? liveRunUrl,
         RunHalt? halt = null,
         Func<string, string?>? claimResolver = null,
-        PhasePanel? phase = null,
-        string? liveRunUrl = null)
+        PhasePanel? phase = null)
     {
         string html = WaveIndexHtml(
             logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver, phase, liveRunUrl);
