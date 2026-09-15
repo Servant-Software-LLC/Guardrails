@@ -94,6 +94,13 @@ public sealed class Scheduler
     // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
     private IntegrationHandle? _pendingDeliveryIntegration;
 
+    // Design 39 §1, review round 5 "d39-hooks-untracked-tooling": once a wave-barrier trial merge comes
+    // back HookRejected (the git hook needs untracked tooling only the user's own checkout has — a
+    // harness-owned trial worktree never carries it), EVERY later barrier delivery in this run is held,
+    // never just the rejected one. Sticky for the whole run; never consulted by Finalize's run-end
+    // delivery, which merges in the user's own checkout and never builds a trial.
+    private bool _hookRejectedTrialThisRun;
+
     // #545 part 3 (plan 31 §5.2): the mid-run plan-folder edit watch. Constructed HERE rather than at the
     // composition root — unlike the Scheduler's other collaborators — because nothing depends on the seam
     // being injectable: the watch has no substitutable behaviour any test needs to fake, and it is built
@@ -969,6 +976,23 @@ public sealed class Scheduler
                 return exitHalt;
             }
 
+            // 6b. Wave-barrier delivery (design 39 §1/§3): a wave that IS a delivery point (task 02's
+            // WaveNode.IsDeliveryPoint — Delivers AND at least one exit-gate check) delivers HERE, through
+            // the trial-delivery primitive, gated on this SAME exit check but against the tree the delivery
+            // would actually produce. The plan's FINAL wave never barrier-delivers, whatever its
+            // IsDeliveryPoint says: it always defers to Finalize's run-end delivery (§3), which already
+            // waits for a plan-level <plan>/guardrails/ terminal gate (#457).
+            if (wave.IsDeliveryPoint && i != waves.Count - 1)
+            {
+                RunReport? barrierHalt = await AttemptBarrierDeliveryAsync(
+                        plan, waves, i, wave, integ, settled, directoryOwner, cancellationToken)
+                    .ConfigureAwait(false);
+                if (barrierHalt is not null)
+                {
+                    return barrierHalt;
+                }
+            }
+
             // 7. Wave-completion marker commit (decision E) + journal the wave complete (SSOT §14.5).
             // W5 (plan 32-executed-definition-hash §5.4, #556): the wave-level WRITE of the executed
             // definition — both the journal entry and the Guardrails-Wave: marker commit — stamps the
@@ -1166,11 +1190,6 @@ public sealed class Scheduler
         IReadOnlyList<DecisionEntry> decisions =
             (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
         DecisionEntry? suppressingDecision = RunOutcomePolicy.SuppressingDecision(decisions);
-        bool operatorForcedDelivery = plan.Config.MergeOnSuccessForcedByOperator;
-        bool deliverySuppressedByDecision = suppressingDecision is not null && !operatorForcedDelivery;
-
-        // The effective delivery gate: mergeOnSuccess enabled AND not suppressed by a machine decision.
-        bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
 
         // Deliver the completed plan branch to the user's branch when every task succeeded and delivery
         // resolved on. AI-merge is withheld: a conflict halts with the plan branch intact.
@@ -1186,13 +1205,23 @@ public sealed class Scheduler
         // journal/halt/artifact writing that belongs behind the CLI seam. So DELIVERY moves instead of
         // the gate: hold it back, flag it on the report, and let the CLI complete it via
         // CompleteDeferredDelivery once — and only once — the gate has PASSED.
+        //
+        // The decision itself is the ONE DecideDelivery both this run-end path and a wave barrier
+        // (AttemptBarrierDeliveryAsync) call (design 39 §1/§3, review 2026-09-13) — never a copy that can
+        // drift. Finalize passes the run-scoped suppressing decision and the finished report's
+        // AllSucceeded (which already folds every "so far" term a barrier has to assemble by hand), and
+        // passes false for the barrier-only hook-rejection hold: a run-end delivery merges in the user's
+        // own checkout and never builds a trial, so an earlier trial's HookRejected does not apply to it.
         bool terminalGateVerdictPending = plan.PlanGuardrails.Count > 0;
-        bool deliverable = report.AllSucceeded && deliver && _worktreeProvider != null && integ != null;
+        DeliveryVerdict verdict = DecideDelivery(
+            plan, suppressingDecision, report.AllSucceeded, hookRejectedEarlierInRun: false, _worktreeProvider, integ);
+        bool deliver = verdict.Deliver;
+        bool deliverable = verdict.Deliverable;
 
         // #597: the override only "fired" when it actually unlocked a delivery that the interlock would
         // otherwise have held. Flagging it on a run that had nothing to deliver would announce a bypass
         // that never happened.
-        bool deliveryForcedPastDecision = suppressingDecision is not null && operatorForcedDelivery && deliverable;
+        bool deliveryForcedPastDecision = verdict.ForcedPastDecision;
 
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
@@ -1258,6 +1287,53 @@ public sealed class Scheduler
             DeliveryPendingTerminalGate = deliveryPendingTerminalGate,
             UnreviewedWaveCount = RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions)
         };
+    }
+
+    /// <summary>The verdict of <see cref="DecideDelivery"/>: whether delivery resolved on at all, whether THIS delivery may proceed, and whether an operator override had to fire for it to.</summary>
+    private readonly record struct DeliveryVerdict(bool Deliver, bool Deliverable, bool ForcedPastDecision);
+
+    /// <summary>
+    /// The ONE delivery decision (design 39 §1/§3, review 2026-09-13): whether a delivery — at a wave's own
+    /// barrier (<see cref="AttemptBarrierDeliveryAsync"/>) or at run end (<see cref="Finalize"/>) — may
+    /// proceed. Shared by both call sites so the answer and its evidence can never drift apart (the #597
+    /// lesson). Carries every term that withholds delivery today:
+    /// <list type="bullet">
+    ///   <item><c>plan.Config.MergeOnSuccess</c> (#340).</item>
+    ///   <item>The #361 machine-decision interlock — <paramref name="suppressingDecision"/>, liftable ONLY
+    ///     by <c>plan.Config.MergeOnSuccessForcedByOperator</c> (the <c>--merge-on-success</c> flag, #597).
+    ///     The caller decides WHICH decision to pass: <see cref="Finalize"/> uses the run-scoped
+    ///     <see cref="RunOutcomePolicy.SuppressingDecision(IEnumerable{DecisionEntry})"/>; a barrier uses
+    ///     the wave-scoped <see cref="RunOutcomePolicy.SuppressingDecisionForDelivery"/> over the waves it
+    ///     covers.</item>
+    ///   <item>Every conjunct of <see cref="RunReport.AllSucceeded"/> — folded by each caller into
+    ///     <paramref name="allSucceededSoFar"/>: <see cref="Finalize"/> passes the finished report's
+    ///     <c>AllSucceeded</c> (no drift, no wave halt, not aborted, every task green, no #556 divergence);
+    ///     a barrier passes the SAME terms evaluated over the run SO FAR (never
+    ///     <c>BuildReport(...).AllSucceeded</c> — that marks every not-yet-started task <c>Cancelled</c>,
+    ///     which would be false at every barrier before the last).</item>
+    ///   <item>The serial guard — <paramref name="worktreeProvider"/> and <paramref name="integ"/> both
+    ///     non-null (no plan branch to deliver in serial mode).</item>
+    ///   <item><paramref name="hookRejectedEarlierInRun"/> (review round 5 "d39-hooks-untracked-tooling") —
+    ///     a barrier-only term: once a trial in this run came back <c>HookRejected</c>, every later barrier
+    ///     delivery is held. <see cref="Finalize"/> always passes <c>false</c>: its run-end merge runs in
+    ///     the user's own checkout and never builds a trial, so an earlier trial's hook rejection does not
+    ///     apply to it.</item>
+    /// </list>
+    /// </summary>
+    private static DeliveryVerdict DecideDelivery(
+        PlanDefinition plan, DecisionEntry? suppressingDecision, bool allSucceededSoFar,
+        bool hookRejectedEarlierInRun, IWorktreeProvider? worktreeProvider, IntegrationHandle? integ)
+    {
+        bool operatorForcedDelivery = plan.Config.MergeOnSuccessForcedByOperator;
+        bool deliverySuppressedByDecision = suppressingDecision is not null && !operatorForcedDelivery;
+        bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
+        bool deliverable = allSucceededSoFar
+            && deliver
+            && !hookRejectedEarlierInRun
+            && worktreeProvider != null
+            && integ != null;
+        bool forcedPastDecision = suppressingDecision is not null && operatorForcedDelivery && deliverable;
+        return new DeliveryVerdict(deliver, deliverable, forcedPastDecision);
     }
 
     /// <summary>
@@ -1452,14 +1528,19 @@ public sealed class Scheduler
     /// including, per issue #432, every check's result and WHERE its captured stdout/stderr landed.
     /// </summary>
     private async Task<GateOutcome> RunWaveExitGateAsync(
-        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
+        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct,
+        string? workspaceOverride = null)
     {
         if (wave.Guardrails.Count == 0)
         {
             return GateOutcome.Pass;
         }
 
-        string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        // Design 39 §1 (review round 4 "d39-trial-delivery-primitive"): a wave-barrier delivery re-runs
+        // THIS SAME gate against a trial merge's worktree — the tree the delivery would actually produce —
+        // rather than duplicating the evaluation. workspaceOverride carries that path; every other caller
+        // passes null and gets today's plan-branch-integration-worktree behavior unchanged.
+        string workspace = workspaceOverride ?? integ?.IntegrationWorktreePath ?? plan.Workspace;
         (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.GuardrailsFolder);
         ReVerifyResult result = _reVerifier is not null
             ? await _reVerifier
@@ -2936,6 +3017,138 @@ public sealed class Scheduler
                 .ToList(),
             LogDir = outcome.RelativeLogDir
         });
+
+    /// <summary>
+    /// Design 39 §1/§3: at a wave that IS a delivery point (<see cref="WaveNode.IsDeliveryPoint"/>) and is
+    /// NOT the plan's final wave, decide whether this wave's work may deliver NOW, at its own barrier —
+    /// and if so, run it through the trial-delivery primitive (task 31): build a trial merge, gate the
+    /// TREE IT WOULD PRODUCE (never the plan branch alone), and promote only on green.
+    /// <para>
+    /// Returns a halt <see cref="RunReport"/> ONLY when the trial-tree gate genuinely failed — a real
+    /// exit-gate failure on the tree this delivery would have landed (review round 5
+    /// "d39-trial-gate-failure"); the caller must return it immediately, exactly like the existing
+    /// exit-gate-failure halt, so no wave-completion marker is ever written for a wave whose delivery
+    /// failed its own gate. Returns null in every other case (delivered, held by the shared decision,
+    /// hook-rejected, already-delivered): the wave simply falls through to its completion-marker commit.
+    /// </para>
+    /// </summary>
+    private async Task<RunReport?> AttemptBarrierDeliveryAsync(
+        PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner, CancellationToken ct)
+    {
+        if (_worktreeProvider is not { } provider || integ is null)
+        {
+            return null; // serial mode: no plan branch to build a trial from.
+        }
+
+        IReadOnlyList<string> coveredWaves = CoveredWavesForDelivery(waves, waveIndex);
+        IReadOnlyList<DecisionEntry> decisions = (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
+        DecisionEntry? suppressingDecision = RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves);
+
+        // "Every task green" and "no divergence", both read over the run SO FAR (never
+        // BuildReport(...).AllSucceeded — it marks every not-yet-started task Cancelled, which would make
+        // this false at every barrier before the last).
+        bool allSucceededSoFar = settled.Values.All(r => r.IsGreen) && ExecutedDefinitionDivergenceSnapshot() is null;
+
+        DeliveryVerdict verdict = DecideDelivery(
+            plan, suppressingDecision, allSucceededSoFar, _hookRejectedTrialThisRun, _worktreeProvider, integ);
+        if (!verdict.Deliverable)
+        {
+            return null; // held — ride along to the next delivery point, or to Finalize at run end.
+        }
+
+        string planTipAtBarrier = provider.CurrentPlanBranchTip(integ);
+        TrialDelivery trial = provider.CreateTrialDelivery(integ, wave.Dir, ct);
+        try
+        {
+            if (trial.Refusal is { } refusal)
+            {
+                if (refusal == MergeOnSuccessResult.HookRejected)
+                {
+                    // Sticky for the rest of THIS run (design 39 §1, review round 5): every later barrier
+                    // delivery is held, never just this one. --merge-on-success does not lift this hold —
+                    // the override lifts only a delivery the §1a interlock held.
+                    _hookRejectedTrialThisRun = true;
+                }
+
+                // A Conflict refusal is the halt tasks 16/17 build; fabricating that shape ahead of their
+                // own design risks disagreeing with it, so for now this delivery is simply held.
+                return null;
+            }
+
+            if (trial.AlreadyDelivered)
+            {
+                return null; // the trial's tree is already on the user's branch — nothing to gate or promote.
+            }
+
+            GateOutcome trialGate = trial.UserTipWasAncestor
+                // The trial IS the plan-branch tip: the exit gate that already ran against the integration
+                // worktree above (this SAME wave's step 6) already evaluated this exact tree.
+                ? GateOutcome.Pass
+                : await RunWaveExitGateAsync(plan, wave, integ, ct, trial.WorktreePath).ConfigureAwait(false);
+
+            if (!trialGate.Passed)
+            {
+                // Compose the FULL headline — trial disclosure included — BEFORE calling RecordGateHalt
+                // (review round 5 "d39-trial-gate-failure"): RecordGateHalt copies it verbatim into
+                // run.json's halt.headline, which the log-site banner reads, so a disclosure appended
+                // afterward would reach only the console.
+                WaveHalt baseHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, trialGate.Failed);
+                string userTip10 = ShortSha10(trial.UserTip);
+                string planTip10 = ShortSha10(planTipAtBarrier);
+                WaveHalt composedHalt = baseHalt with
+                {
+                    Headline = $"{baseHalt.Headline} — the trial merge with the user's branch at {userTip10} "
+                               + $"(unauthored commits {planTip10}..{userTip10}) failed this gate; nothing delivered"
+                };
+
+                _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+                BlockLaterWaves(waves, waveIndex, wave, settled);
+                _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                RecordGateHalt(Journal.RunHaltKind.WaveExitGateFailed, wave.Dir, composedHalt, trialGate);
+                RunReport halt = BuildReport(plan, settled, cancelled: ct.IsCancellationRequested)
+                    with { WaveHalt = composedHalt };
+                if (!ct.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return halt;
+            }
+
+            provider.PromoteTrialDelivery(integ, trial, ct);
+            return null;
+        }
+        finally
+        {
+            // Always discard (design 39 §1 step 5): a thrown gate must leave no trial ref and no trial
+            // worktree behind either.
+            provider.DiscardTrialDelivery(integ, wave.Dir);
+        }
+    }
+
+    /// <summary>
+    /// The set of wave dirs a delivery at <c>waves[waveIndex]</c>'s barrier carries (design 39 §1a/§1b,
+    /// review round 4 "d39-interlock-ride-along"): every wave since the previous delivery point, this one
+    /// included. Walking backward from <paramref name="waveIndex"/> and stopping at (excluding) the
+    /// nearest earlier <see cref="WaveNode.IsDeliveryPoint"/> wave is structurally exact — a wave becomes
+    /// a delivery-point boundary the moment it declares one, independent of whether that wave's OWN
+    /// delivery actually landed.
+    /// </summary>
+    private static IReadOnlyList<string> CoveredWavesForDelivery(IReadOnlyList<WaveNode> waves, int waveIndex)
+    {
+        var covered = new List<string> { waves[waveIndex].Dir };
+        for (int j = waveIndex - 1; j >= 0; j--)
+        {
+            if (waves[j].IsDeliveryPoint)
+            {
+                break;
+            }
+
+            covered.Insert(0, waves[j].Dir);
+        }
+
+        return covered;
+    }
+
+    /// <summary>Shorten a raw git sha for display (unlike <see cref="ShortHash"/>, which strips a <c>sha256:</c> prefix).</summary>
+    private static string ShortSha10(string sha) => sha.Length <= 10 ? sha : sha[..10];
 
     private static IReadOnlyDictionary<string, PlanBranchWaveRecord> WithWaveMarker(
         IReadOnlyDictionary<string, PlanBranchWaveRecord> map, string waveDir, PlanBranchWaveRecord record)
