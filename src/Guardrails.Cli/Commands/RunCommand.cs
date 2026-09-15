@@ -1750,7 +1750,7 @@ public static class RunCommand
     /// wave), a wave entry/exit gate failure, or a wave-drift halt under a halt/unconfirmed-prompt policy.
     /// Exit 2 (actionable), like the definition-drift halt.
     /// </summary>
-    private static void PrintWaveHalt(WaveHalt halt, IConsoleIo io)
+    public static void PrintWaveHalt(WaveHalt halt, IConsoleIo io)
     {
         TextWriter o = io.Out;
         o.WriteLine();
@@ -2042,6 +2042,17 @@ public static class RunCommand
     /// the Cli assembly ships no <c>InternalsVisibleTo</c>.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Render the end-of-run wave-delivery report (design 39 §4) — which waves already delivered and which
+    /// are still held, and where <c>git branch --no-merged</c> confirms it — printed BEFORE the run's verdict
+    /// so a partially-delivered run can never be read straight past (the #340 <c>mergeOnSuccess</c> banner's
+    /// own defect, printed AFTER the green summary). STUB: task 19 implements this and calls it before the
+    /// verdict is printed. Pure, and public + unit-tested for the same reason
+    /// <see cref="RenderUndeliveredWorkWarning"/> is — the Cli assembly ships no <c>InternalsVisibleTo</c>.
+    /// </summary>
+    public static void RenderWaveDeliveryReport(RunReport report, TextWriter output) =>
+        throw new NotImplementedException();
+
     public static DeliverySection DescribeDelivery(
         RunReport report, bool terminalGatePassed, string planDirectory)
     {

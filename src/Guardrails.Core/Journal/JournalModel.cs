@@ -326,7 +326,23 @@ public enum DeliveryOutcome
     /// — never on <c>run.json</c>'s top-level <see cref="DeliverySection.Outcome"/>, which is the run-end
     /// merge and has no trial-gate step.
     /// </summary>
-    TrialGateFailed
+    TrialGateFailed,
+
+    /// <summary>
+    /// SOME of this run's verified work reached the user's branch (one or more wave barrier deliveries),
+    /// but not all of it — a later wave's delivery was refused or held, or the run-end delivery that would
+    /// have carried the remaining waves was itself refused or withheld (design 39 §4). A NEW outcome,
+    /// deliberately distinct from both <see cref="NotAttempted"/> ("nothing reached the branch", false when
+    /// a barrier already delivered) and every DELIVERED outcome above (<see cref="DeliverySection.Delivered"/>
+    /// stays <c>false</c> here, because a consumer keyed on it must never treat held work as shipped).
+    /// <para>
+    /// Written only on <c>run.json</c>'s top-level <see cref="DeliverySection.Outcome"/> — task 19 owns the
+    /// <c>partially-delivered</c> token this member serializes to; until that lands, writing or reading this
+    /// member through <see cref="JournalJson"/> throws (see <see cref="Guardrails.Core.Journal.JournalJson"/>'s
+    /// converter, which is unaware of it by design — no other test in this suite serializes it).
+    /// </para>
+    /// </summary>
+    PartiallyDelivered
 }
 
 /// <summary>
