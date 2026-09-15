@@ -1268,7 +1268,37 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CrossTaskClauseCollision = "GR2076";
 
-    // CURRENT next-free code: GR2078. GR2076 (CrossTaskClauseCollision) is the last taken code
+    // --- per-wave delivery diagnostics (design 39 §1c/§5, issue #360's incremental-delivery
+    //     follow-on) ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// GR2078 (WARNING) — a wave FOLLOWS a delivery point but declares no ENTRY preflight of its own
+    /// (design 39 §1c). A delivery point is an earlier wave whose <see cref="Model.WaveNode.IsDeliveryPoint"/>
+    /// is true: its <c>brief.md</c> set <c>delivers: true</c> AND it carries at least one exit-gate check, so
+    /// the barrier actually merges and hands work forward rather than trivially passing an empty gate. The
+    /// wave immediately after it then starts from a workspace no earlier wave in a NON-delivering plan would
+    /// have handed it — an incremental delivery, not the run's own baseline — and an entry preflight is how
+    /// that wave states what it expects of the workspace it is actually given. A <c>delivers: true</c> wave
+    /// with no exit gate never actually delivers (<see cref="Model.WaveNode.IsDeliveryPoint"/> stays false),
+    /// so nothing follows IT as a delivery, and this code must stay silent there.
+    /// <para>A WARNING, not an error: a wave that happens to need nothing from the delivered workspace is
+    /// unguarded, not wrong, and an ERROR would fail plans that are correct-but-unguarded.</para>
+    /// </summary>
+    public const string PostDeliveryWaveMissingEntryPreflight = "GR2078";
+
+    /// <summary>
+    /// GR2079 (WARNING) — a wave sets <c>delivers: true</c> but carries no <c>guardrails/</c> exit gate, so
+    /// it cannot deliver (design 39 §5). Reads <see cref="Model.WaveNode.Delivers"/> — the DECLARED flag —
+    /// never <see cref="Model.WaveNode.IsDeliveryPoint"/>, which is false for exactly the waves this code
+    /// must name: an empty exit gate trivially passes, so a gate-less <c>delivers: true</c> wave never
+    /// reaches the barrier delivery it declared. Without this, an author learns that only by the wave's
+    /// absence from a delivery report, never told directly, just not there.
+    /// <para>A WARNING, not an error: an ERROR would fail plans that are correct-but-unguarded — the wave
+    /// may legitimately gain its exit gate later, or the author may accept run-end delivery for it.</para>
+    /// </summary>
+    public const string DeliveringWaveMissingExitGate = "GR2079";
+
+    // CURRENT next-free code: GR2080. GR2079 (DeliveringWaveMissingExitGate) is the last taken code
     // above; GR2077 is RESERVED BY NAME below (issue #587 check B) and is not free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the
     // plan — it reports the TOOL (issue #564). That is deliberate and not a precedent to widen: it
