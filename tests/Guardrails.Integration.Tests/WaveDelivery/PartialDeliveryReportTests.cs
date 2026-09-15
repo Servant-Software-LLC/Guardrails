@@ -332,7 +332,7 @@ public sealed class PartialDeliveryReportTests
         string output = sw.ToString();
 
         Assert.Contains("Delivered at their own barrier: wave-01-deliver.", output, StringComparison.Ordinal);
-        Assert.Contains("Held on the plan branch: wave-02-final.", output, StringComparison.Ordinal);
+        Assert.Contains("Held on the plan branch: wave-02-final (01-write needs-human).", output, StringComparison.Ordinal);
         Assert.Contains("git branch --no-merged", output, StringComparison.Ordinal);
     }
 
@@ -370,6 +370,91 @@ public sealed class PartialDeliveryReportTests
         RunCommand.RenderWaveDeliveryReport(report, sw);
 
         Assert.Equal("", sw.ToString());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Per-held-wave reasons (design 39 §4's sketch: "wave-03-observer (09-… needs-human), wave-04-docs-sink
+    // (not reached)"), each derived from the report alone: a non-delivered barrier record's own outcome, a
+    // task that needs a human, or a wave whose every task was blocked or never started.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static string RenderReport(RunReport report)
+    {
+        var sw = new StringWriter();
+        RunCommand.RenderWaveDeliveryReport(report, sw);
+        return sw.ToString();
+    }
+
+    [Fact]
+    public void TheReport_NamesATaskThatNeedsAHuman_AndAWaveTheRunNeverReached()
+    {
+        var report = new RunReport
+        {
+            Tasks =
+            [
+                Green("wave-01-deliver/01-a"),
+                new TaskResult { TaskId = "wave-02-mid/01-b", Outcome = TaskOutcome.GuardrailFailed, Summary = "guardrail(s) failed" },
+                new TaskResult { TaskId = "wave-02-mid/02-c", Outcome = TaskOutcome.Blocked, Summary = "a dependency did not succeed" },
+                new TaskResult { TaskId = "wave-03-tail/01-d", Outcome = TaskOutcome.Blocked, Summary = "not started — halted at wave 'wave-02-mid' barrier (SSOT §14.4)" },
+                new TaskResult { TaskId = "wave-03-tail/02-e", Outcome = TaskOutcome.Cancelled, Summary = "not started (run cancelled)" },
+            ],
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+            },
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains(
+            "Held on the plan branch: wave-02-mid (01-b needs-human), wave-03-tail (not reached).",
+            output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheReport_NamesAHeldBarrierRecordByItsOwnStatus()
+    {
+        var report = new RunReport
+        {
+            Tasks =
+            [
+                Green("wave-01-deliver/01-a"),
+                Green("wave-02-deliver/01-b"),
+                new TaskResult { TaskId = "wave-03-final/01-c", Outcome = TaskOutcome.NeedsHuman, Summary = "needs human" },
+            ],
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+                ["wave-02-deliver"] = SuppressedRecord("held by proceeded-best-guess at wave-02-deliver/01-b", "wave-02-deliver"),
+            },
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains(
+            "Held on the plan branch: wave-02-deliver (suppressed), wave-03-final (01-c needs-human).",
+            output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A held wave whose tasks all passed — the final wave behind a failed terminal gate, or a run-end merge that
+    /// was withheld — has no wave-level cause to name, so the report names the wave without inventing one.
+    /// </summary>
+    [Fact]
+    public void TheReport_NamesAHeldWaveWhoseTasksAllPassed_WithoutAReason()
+    {
+        var report = new RunReport
+        {
+            Tasks = [Green("wave-01-deliver/01-a"), Green("wave-02-final/01-b")],
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+            },
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held on the plan branch: wave-02-final.", output, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
