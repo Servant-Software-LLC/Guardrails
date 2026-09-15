@@ -1248,42 +1248,62 @@ public static class RetryPolicy
             text.AppendLine();
         }
 
-        if (decision.RepeatedPaths.Count > 0)
-        {
-            text.AppendLine("## Repeatedly-refused path(s)");
-            text.AppendLine();
-            foreach (string path in decision.RepeatedPaths)
-            {
-                text.AppendLine($"- `{path}`");
-            }
-
-            text.AppendLine();
-            text.AppendLine("The same path was refused on multiple attempts. Confirm the runner's `permissionMode`");
-            text.AppendLine("and `allowedTools` (and any `.claude/settings.json` allow-list) cover this path, then");
-            text.AppendLine("re-run — the harness will resume from here.");
-            text.AppendLine();
-        }
-
-        if (decision.RepeatedCommands.Count > 0)
-        {
-            text.AppendLine("## Repeatedly-refused command(s)");
-            text.AppendLine();
-            foreach (string command in decision.RepeatedCommands)
-            {
-                text.AppendLine($"- `{command}`");
-            }
-
-            text.AppendLine();
-            text.AppendLine("The same command was refused on multiple attempts, and this attempt did not finish. A");
-            text.AppendLine("command is not a path: grant it through the task's `allowedTools` (e.g. `Bash(python3 *)`),");
-            text.AppendLine("not through a per-path permission — and consider whether the task needs it at all. A");
-            text.AppendLine("refused AUXILIARY command is one route among several to the same end: an attempt that");
-            text.AppendLine("finishes by another route is settled by its guardrails, however often the command was");
-            text.AppendLine("refused (#708). Re-run — the harness will resume from here.");
-            text.AppendLine();
-        }
-
+        AppendRepeatedPaths(text, decision.RepeatedPaths);
+        AppendRepeatedCommands(text, decision.RepeatedCommands);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// The <c>## Repeatedly-refused path(s)</c> section in #86's own wording, shared by the action-failed halt and the
+    /// #708 repeated-path halt on a guardrail-failed attempt so the two cannot drift. Nothing when no path repeated.
+    /// </summary>
+    private static void AppendRepeatedPaths(StringBuilder text, IReadOnlyList<string> repeatedPaths)
+    {
+        if (repeatedPaths.Count == 0)
+        {
+            return;
+        }
+
+        text.AppendLine("## Repeatedly-refused path(s)");
+        text.AppendLine();
+        foreach (string path in repeatedPaths)
+        {
+            text.AppendLine($"- `{path}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The same path was refused on multiple attempts. Confirm the runner's `permissionMode`");
+        text.AppendLine("and `allowedTools` (and any `.claude/settings.json` allow-list) cover this path, then");
+        text.AppendLine("re-run — the harness will resume from here.");
+        text.AppendLine();
+    }
+
+    /// <summary>
+    /// The <c>## Repeatedly-refused command(s)</c> section (#708): a command named as a command and granted through
+    /// <c>allowedTools</c>. Shared the same way as <see cref="AppendRepeatedPaths"/>. Nothing when no command repeated.
+    /// </summary>
+    private static void AppendRepeatedCommands(StringBuilder text, IReadOnlyList<string> repeatedCommands)
+    {
+        if (repeatedCommands.Count == 0)
+        {
+            return;
+        }
+
+        text.AppendLine("## Repeatedly-refused command(s)");
+        text.AppendLine();
+        foreach (string command in repeatedCommands)
+        {
+            text.AppendLine($"- `{command}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The same command was refused on multiple attempts. A command is not a path: grant it through");
+        text.AppendLine("the task's `allowedTools` (e.g. `Bash(python3 *)`), not through a per-path permission — and");
+        text.AppendLine("consider whether the task needs it at all. A refused AUXILIARY command is one route among");
+        text.AppendLine("several to the same end: an attempt that finishes by another route is settled by its");
+        text.AppendLine("guardrails, however often the command was refused (#708). Re-run — the harness will resume");
+        text.AppendLine("from here.");
+        text.AppendLine();
     }
 
     /// <summary>
@@ -1298,8 +1318,8 @@ public static class RetryPolicy
 
     /// <summary>
     /// One line naming the repeated wall by kind (#708): <c>write repeatedly refused (permission wall) — &lt;paths&gt;</c>
-    /// and <c>command repeatedly refused (permission wall) — &lt;commands&gt;</c>, joined by <c>; </c>. Shared by the halt
-    /// summary and the secondary context a guardrail-failed attempt carries, so the two cannot disagree.
+    /// and <c>command repeatedly refused (permission wall) — &lt;commands&gt;</c>, joined by <c>; </c>. Shared by both halt
+    /// summaries and the secondary context a guardrail-failed attempt carries, so they cannot disagree.
     /// </summary>
     public static string RepeatedRefusals(PermissionWallDecision decision)
     {
@@ -1318,11 +1338,40 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// #708: the SECONDARY-context section a guardrail-failed attempt carries when a path or command was also refused
-    /// on repeated attempts. Before #708 that refusal settled the attempt permission-denied before its guardrails ran,
-    /// even when the action had finished. Now the guardrails settle an attempt whose action succeeded, and the refusal
-    /// is reported beside their verdict, so the next attempt stops reaching for a call that will be refused again.
-    /// Empty when nothing repeated.
+    /// #708: feedback for the repeated-WRITE-PATH halt on an attempt whose action SUCCEEDED and whose guardrails FAILED.
+    /// A command refused on repeated attempts does not settle such an attempt, but a refused write path does: nothing
+    /// grants the write between attempts, so a retry would be refused it again and would likely fail the same
+    /// guardrail. As in the #329 structural halt, the guardrail failure that genuinely ran leads
+    /// (<paramref name="primaryBody"/>), and the wall follows in #86's own path wording.
+    /// </summary>
+    public static string ForRepeatedPathWallHalt(TaskNode task, string primaryBody, PermissionWallDecision wall)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# Task '{task.Id}' needs a human");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine("## A guardrail failed");
+        text.AppendLine();
+        text.AppendLine(primaryBody.TrimEnd());
+        text.AppendLine();
+        text.AppendLine("The harness settled this task `needs-human` on this attempt: a write was also refused on two or");
+        text.AppendLine("more attempts (below). Nothing grants that write between attempts, so a retry would be refused it");
+        text.AppendLine("again, and the remaining retry budget was not burned. Grant the write, or remove the task's need");
+        text.AppendLine("for it, then re-run.");
+        text.AppendLine();
+        AppendRepeatedPaths(text, wall.RepeatedPaths);
+        AppendRepeatedCommands(text, wall.RepeatedCommands);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #708: the SECONDARY-context section a guardrail-failed attempt carries when a command was also refused on repeated
+    /// attempts (a repeated write path halts instead, see <see cref="ForRepeatedPathWallHalt"/>), and that the #329
+    /// structural halt appends. Before #708 that refusal settled the attempt permission-denied before its guardrails
+    /// ran, even when the action had finished. Now the guardrails settle an attempt whose action succeeded, and the
+    /// refusal is reported beside their verdict, so the next attempt stops reaching for a call that will be refused
+    /// again. Empty when nothing repeated.
     /// </summary>
     public static string ForRepeatedRefusalContext(PermissionWallDecision decision)
     {

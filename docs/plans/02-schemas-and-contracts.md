@@ -3288,11 +3288,14 @@ delivery may proceed.
   §9.3). The harness settled `needs-human` instead of burning the remaining retry budget on the identical
   wall. **The halt is OUTCOME-AWARE — two distinct shapes (§9.3):**
   - A **REPEATED refusal** (a non-`.claude/` path or a command refused across two or more attempts, #86)
-    halts on the repeat **only when that attempt's ACTION FAILED** (#708). An attempt whose action
-    SUCCEEDED is settled by its guardrails instead: a pass is `succeeded`, and a failure is an ordinary
-    `guardrail-failed` retry carrying the repeated refusal as secondary context. The halt used to fire
-    eagerly, before the outcome was known, which settled a finished, guardrail-passing attempt
-    `permission-denied` without running its guardrails.
+    is settled at the attempt's outcome (#708). An attempt whose ACTION FAILED halts on the repeat,
+    reporting `permission-denied`, for paths and commands alike. An attempt whose action SUCCEEDED is
+    settled by its guardrails: a pass is `succeeded` whatever was refused. If a guardrail fails, a repeated
+    WRITE PATH halts `needs-human` on that attempt, reported `guardrail-failed` (or `timeout`) with
+    `failedGuardrails[]` populated per the precedence rule below, and a repeated COMMAND is an ordinary
+    `guardrail-failed` retry carrying the refusal as secondary context. The halt used to fire eagerly,
+    before the outcome was known, which settled a finished, guardrail-passing attempt `permission-denied`
+    without running its guardrails.
   - A **structural `.claude/` path** (#104/#325 — the Claude Code sub-agent runtime blocks automated
     `.claude/` writes even under `acceptEdits`) halts only on an attempt that did NOT converge (the
     action failed OR the guardrails failed). A CONVERGED attempt (guardrails PASS) goes **GREEN** even
@@ -3301,10 +3304,10 @@ delivery may proceed.
 
   **Outcome PRECEDENCE on a non-converged structural halt (issue #329).** `permission-denied` is the
   reported outcome only when the wall is the honest PRIMARY cause with nothing more specific to report —
-  the #86 repeated wall (which settles only an attempt whose action failed, #708), or a structural `.claude/`
-  wall on an attempt whose ACTION FAILED (so **no
+  the #86 repeated wall, or a structural `.claude/` wall, on an attempt whose ACTION FAILED (so **no
   guardrail ran**: the classic #104 first-attempt wall). When the non-convergence is instead a **guardrail
-  that genuinely RAN and FAILED** while a structural `.claude/` wall was also present, the reported outcome
+  that genuinely RAN and FAILED** while a structural `.claude/` wall (or, since #708, a repeated write path)
+  was also present, the reported outcome
   is that guardrail failure — `guardrail-failed` with `failedGuardrails[]` populated — NOT
   `permission-denied` with an empty `failedGuardrails[]`. The halt DECISION is unchanged (still
   `needs-human` on that one attempt, the #104 fast-halt); only WHAT it reports leads with the true cause,
@@ -5879,11 +5882,11 @@ When the runner REFUSES a call because its target — a write path, or a command
 permission allow-list, retrying often cannot clear it — switching tools or re-issuing the same call hits the
 same refusal. The harness detects this **permission wall** and settles the task `needs-human` with the
 distinct `permission-denied` attempt outcome (§7), instead of spending the rest of the retry budget on
-the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issues #325 / #708):** a REPEATED refusal
-halts on the repeat only when that attempt's ACTION FAILED, and a structural `.claude/` path halts only on an
-attempt that did NOT converge — so an attempt whose action succeeded and whose guardrails pass is GREEN even
-when a refusal was reported, because the agent reached its result by another route and the deliverable
-landed. **What a non-converged structural halt REPORTS is
+the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issues #325 / #708):** a structural `.claude/`
+path and a REPEATED write path halt only on an attempt that did NOT converge (its action failed or its
+guardrails failed), and a REPEATED command only on an attempt whose ACTION FAILED — so an attempt whose action
+succeeded and whose guardrails pass is GREEN even when a refusal was reported, because the agent reached its
+result by another route and the deliverable landed. **What a non-converged structural halt REPORTS is
 in turn cause-aware (issue #329):** the `permission-denied` outcome is reported only when the wall is the
 honest primary cause (the action failed, so no guardrail ran); a guardrail that genuinely RAN and FAILED
 is reported as `guardrail-failed` with `failedGuardrails[]` populated, with the `.claude/` wall as
@@ -5942,23 +5945,34 @@ bare forms repeat together. The harness routes on these lists only — never on 
       `.claude/` wall is the honest primary cause and the attempt stays `permission-denied`. A classified
       action failure with NO `.claude/` wall present already reports its own outcome
       (`timeout`/`output-cap`/`max-turns`/`action-failed`), unchanged.
-- **Repeated same target (issues #86 / #708) — halt only when the ACTION FAILED.** Any non-`.claude/` path,
-  or any command, refused on **two or more** attempts is a blocker the agent cannot fix by retrying. On an
-  attempt whose **action failed** (error, `max-turns`, `timeout`, `output-cap` — the agent could not finish,
-  typically because it was stuck at the wall), the harness halts on the **second** attempt that re-hits the
-  SAME target, rather than spending the rest of the budget on the identical wall. It reports
-  `permission-denied`, and is checked after the transient-pause check and before the structural rule. On an
-  attempt whose **action succeeded**, the repeat settles nothing: the attempt runs its write-scope check and
-  guardrails like any other. If they pass it is **GREEN** — a refused AUXILIARY call (plan 40's task 21
-  reached for a self-check script it was not granted) is one route among several, and an attempt that
-  finishes by another route has cleared the wall. If a guardrail fails, the attempt is an ordinary
-  `guardrail-failed` retry (or, with a structural `.claude/` wall also present, the structural halt above),
-  and the repeated refusal rides along as SECONDARY context: the summary gains `; secondary context: <kind>
-  repeatedly refused (permission wall) — <targets>`, and `feedback.md` gains a `## Secondary context —
-  refused on two or more attempts` section listing each `path:` and `command:`. Before #708 this halt fired
-  EAGERLY, before the outcome was known, and settled a finished, guardrail-passing attempt
-  `permission-denied` with no guardrail run. A target refused **once** does NOT halt (the retry is given its
-  chance — a one-off block the retry clears is normal retry behavior).
+- **Repeated same target (issues #86 / #708) — settled at the attempt's OUTCOME, split by kind.** Any
+  non-`.claude/` path, or any command, refused on **two or more** attempts is a wall. Where it settles an
+  attempt depends on how the attempt ended:
+  - **The action failed** (error, `max-turns`, `timeout`, `output-cap` — the agent could not finish, typically
+    because it was stuck at the wall): the harness halts on the **second** attempt that re-hits the SAME
+    target, path or command, rather than spending the rest of the budget on the identical wall. It reports
+    `permission-denied`, checked after the transient-pause check and before the structural rule.
+  - **The action succeeded and the guardrails pass:** **GREEN**, whatever was refused. A refused AUXILIARY
+    call (plan 40's task 21 reached for a self-check script it was not granted) is one route among several,
+    and an attempt that finishes by another route has cleared the wall.
+  - **The action succeeded, a guardrail failed, and a WRITE PATH repeated:** halt `needs-human` on that
+    attempt, at the guardrail-failed site where the structural rule above halts. Nothing grants the write
+    between attempts, so a retry would be refused it again and fail the same guardrail — the budget #86
+    protects. Reported per the #329 precedence: `guardrail-failed` (or `timeout`) with `failedGuardrails[]`
+    populated. The summary is `guardrail(s) failed: <names> — needs human; write repeatedly refused
+    (permission wall) — <paths> (see feedback)`, and `feedback.md` leads with `## A guardrail failed`, then
+    `## Repeatedly-refused path(s)`. When a structural `.claude/` wall is also present, the structural halt
+    fires instead and carries the repeated refusal as context.
+  - **The action succeeded, a guardrail failed, and only COMMANDS repeated:** an ordinary `guardrail-failed`
+    retry. The repeated command rides along as SECONDARY context: the summary gains `; secondary context:
+    command repeatedly refused (permission wall) — <commands>`, and `feedback.md` gains a `## Secondary
+    context — refused on two or more attempts` section listing each `command:`.
+
+  An attempt whose action succeeded but was rejected before its guardrails ran (a staging failure, a nested
+  control key, a rejected `needsHarnessWrite`, a write-scope violation) settles as that rejection, as it does
+  with a structural wall. Before #708 this halt fired EAGERLY, before the outcome was known, and settled a
+  finished, guardrail-passing attempt `permission-denied` with no guardrail run. A target refused **once**
+  does NOT halt (the retry is given its chance — a one-off block the retry clears is normal retry behavior).
 
 **`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
 path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`

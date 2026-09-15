@@ -878,6 +878,23 @@ public sealed class RetryPolicyTests
         Assert.Empty(RetryPolicy.ForRepeatedRefusalContext(new PermissionWallDecision(true, [".claude/x.md"], [], [])));
     }
 
+    [Fact]
+    public void RepeatedPathWallHalt_LeadsWithTheGuardrailFailure_ThenNamesThePath()
+    {
+        // #708 / #329: when a repeated write wall halts an attempt whose guardrails failed, the guardrail that ran and
+        // failed leads, and the wall follows in #86's own path wording.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(PromptTask("04-impl"), "- **01-fail** — exit 1", wall);
+
+        int failure = feedback.IndexOf("## A guardrail failed", StringComparison.Ordinal);
+        int wallSection = feedback.IndexOf("## Repeatedly-refused path(s)", StringComparison.Ordinal);
+        Assert.True(failure >= 0 && wallSection > failure, "the guardrail failure that ran must lead, and the wall follow it");
+        Assert.Contains("- **01-fail** — exit 1", feedback);
+        Assert.Contains("- `src/locked/Protected.cs`", feedback);
+        Assert.Contains("cover this path", feedback);
+    }
+
     // ── #705 salvage says only what is true, and out-of-scope work is kept for a human ───────────
 
     [Fact]
