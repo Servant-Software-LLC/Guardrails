@@ -5638,7 +5638,14 @@ public sealed class Scheduler
             Cancelled = cancelled,
             Observations = PlanEditObservationsSnapshot(),
             ExecutedDefinitionDivergence = ExecutedDefinitionDivergenceSnapshot(),
-            WaveDeliveries = waveDeliveries
+            WaveDeliveries = waveDeliveries,
+
+            // #710: the resolved delivery setting rides this seam too. The undelivered-work banner and
+            // delivery.reason derive their cause from it, and RunReport.MergeOnSuccess defaults to true, so a report
+            // path that forgot to stamp it would read "on, held by the interlock" on a run that had delivery OFF —
+            // the false statement #710 was filed for. Stamping it here leaves no path that can forget.
+            MergeOnSuccess = plan.Config.MergeOnSuccess,
+            MergeOnSuccessSource = plan.Config.MergeOnSuccessSource
         };
     }
 

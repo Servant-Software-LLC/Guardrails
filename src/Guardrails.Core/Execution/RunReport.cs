@@ -352,6 +352,34 @@ public sealed record RunReport
     public bool DeliveryForcedPastDecision { get; init; }
 
     /// <summary>
+    /// The RESOLVED <c>mergeOnSuccess</c> setting this run ran under: <see cref="Model.RunConfig.MergeOnSuccess"/>
+    /// after any CLI flag was applied (issue #710). With <see cref="DeliverySuppressingDecision"/> it is one of
+    /// the two facts that say WHY <see cref="WhollyGreenButUndelivered"/> held the work back: the setting was
+    /// off, the autonomous-mode interlock held it, or both at once.
+    /// <para>
+    /// <b>The defect this closes.</b> #597 split the undelivered banner and <c>delivery.reason</c> into two
+    /// causes but chose between them on the decision alone, and the decision is, by its own contract, set
+    /// whether or not the interlock held. A run resumed with <c>--no-merge-on-success</c> that had recorded a
+    /// <c>proceeded-best-guess</c> therefore printed "mergeOnSuccess is ON" and wrote the same claim into
+    /// <c>run.json</c>. Both statements were false, and neither surface had the resolved value to check.
+    /// </para>
+    /// <para>
+    /// Stamped by the Scheduler's <c>BuildReport</c>, the one method every report passes through, so no report
+    /// path can leave it unset. Defaults to <c>true</c>, the #340 default, as
+    /// <see cref="Model.RunConfig.MergeOnSuccess"/> does.
+    /// </para>
+    /// </summary>
+    public bool MergeOnSuccess { get; init; } = true;
+
+    /// <summary>
+    /// WHICH input decided <see cref="MergeOnSuccess"/>: the CLI flag, <c>guardrails.json</c>, or the default
+    /// (issue #710; <see cref="Model.RunConfig.MergeOnSuccessSource"/>). Both undelivered surfaces name it, so an
+    /// operator told the setting is off is also told where to change it. Stamped beside
+    /// <see cref="MergeOnSuccess"/>.
+    /// </summary>
+    public Model.MergeOnSuccessSource MergeOnSuccessSource { get; init; }
+
+    /// <summary>
     /// True when this run drained wholly green with delivery resolved ON, but the delivery was HELD BACK
     /// because the plan declares a terminal gate (<c>&lt;plan&gt;/guardrails/</c>) whose verdict the
     /// Scheduler does not have (issue #457).

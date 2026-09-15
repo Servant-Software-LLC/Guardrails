@@ -434,7 +434,9 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
   user's commits. **Opt out** with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success` to
   leave the verified work on the plan branch for manual review/merge. **CLI precedence** (highest
   wins): `--merge-on-success` / `--no-merge-on-success` (a nullable override) → `guardrails.json`
-  `mergeOnSuccess` → the `true` default; passing both flags is a usage error. When delivery fires
+  `mergeOnSuccess` → the `true` default; passing both flags is a usage error. The input that won is recorded
+  as `RunConfig.MergeOnSuccessSource` (`Flag` | `Config` | `Default`) and carried onto `RunReport`, so the
+  undelivered-work banner and `delivery.reason` name it (§5.3, #710). When delivery fires
   purely because of the default (no config key, no flag), the CLI prints a one-time notice naming the
   branch and the opt-out. *Rationale:* the merge-back is already non-destructive (FF-or-clean-merge,
   re-verified, AI-merge withheld, halts loudly on any obstacle, and is a merge not a move so the plan
@@ -2283,18 +2285,43 @@ a manual merge), and the `--fresh`/`reset -y` destruction risk. A green-but-unde
 (the warning is a safety notice, not a failure); a delivered run, a non-green run, and a serial-mode run
 print no such warning.
 
-**The warning has TWO cases and must name the right one (issue #597).** `WhollyGreenButUndelivered` covers
-two causes with two different operator responses, and the banner used to render only the first: (a)
-`mergeOnSuccess` genuinely off (config `false` / `--no-merge-on-success`) — the text above; (b) the
-autonomous-mode interlock, where `mergeOnSuccess` is **ON** and a recorded `proceeded-best-guess` /
-`proceeded-unreviewed` held the work back. `RunReport.DeliverySuppressingDecision` (the entry from
-`RunOutcomePolicy.SuppressingDecision`) discriminates them, and case (b) NAMES the decision, its boundary
-and its **subject** — the task or wave the machine decided at — because the operator's first job is to judge
-whether that decision is stale (in the measured case it was: the best-guess belonged to an attempt that
-later halted, and the task was subsequently re-run to a genuine green). Saying "mergeOnSuccess is off" for
-case (b) sends a reader to `guardrails.json`, then to the default in source, then to the release history —
-three dead ends before the real cause, and unreachable at all without source access. The same split applies
-to the durable `delivery.reason` (§8), which recorded the identical wrong cause.
+**The warning has THREE cases and must name the whole cause (issues #597, #710).** `WhollyGreenButUndelivered`
+covers two causes with two different operator responses, and both can be true at once:
+
+- **(a) Delivery off.** `mergeOnSuccess` resolved **off** and no suppressing decision was recorded. The banner
+  names the setting and the input that decided it — `mergeOnSuccess is off (set by --no-merge-on-success)` or
+  `mergeOnSuccess is off (set by "mergeOnSuccess": false in guardrails.json)` — and gives `--merge-on-success`
+  or a manual merge as the remedy.
+- **(b) The interlock.** `mergeOnSuccess` resolved **on** (`the default`, or
+  `set by "mergeOnSuccess": true in guardrails.json`) and a recorded `proceeded-best-guess` /
+  `proceeded-unreviewed` held the work back. The banner NAMES the decision, its boundary and its **subject** —
+  the task or wave the machine decided at — because the operator's first job is to judge whether that decision
+  is stale (in the measured #597 case it was: the best-guess belonged to an attempt that later halted, and the
+  task was re-run to a genuine green). Saying "mergeOnSuccess is off" here sends a reader to `guardrails.json`,
+  then to the default in source, then to the release history: three dead ends before the real cause, and none
+  of them reachable without source access. The source is never `--merge-on-success` in this case, because that
+  flag lifts the interlock.
+- **(c) Both.** `mergeOnSuccess` resolved **off** AND a suppressing decision was recorded. The banner says
+  delivery was held back for **two** reasons, either of which alone would have held it; names the setting's
+  source and the decision; and says `--merge-on-success` both turns delivery on and overrides the interlock, so
+  the decision is judged first. Measured on plan 40 (#710): a run resumed with `--no-merge-on-success` after a
+  `proceeded-best-guess` rendered case (b), telling an operator who had turned delivery off that
+  "mergeOnSuccess is ON", and `delivery.reason` recorded the same false fact.
+
+**The cause is derived ONCE, from both facts, and rendered on both surfaces (#710).** #597 chose between (a) and
+(b) on `RunReport.DeliverySuppressingDecision` alone. That field is set whenever such a decision exists,
+whether or not the interlock held, so neither surface could see what the setting had resolved to. `RunReport`
+therefore carries the resolved setting as `MergeOnSuccess` and the input that decided it as
+`MergeOnSuccessSource` (`Flag` | `Config` | `Default`), both stamped by the Scheduler's `BuildReport`, the one
+method every report passes through. The value comes from `RunConfig.MergeOnSuccess` and the source from
+`RunConfig.MergeOnSuccessSource`: the loader records `Config` when the key is present (whatever its value) and
+`Default` when it is omitted, and the run command records `Flag` when either delivery flag overrides the value.
+The CLI derives the case once. With no suppressing decision the setting is the only term that can hold back a
+wholly-green worktree run, so the case is (a); with one, the resolved value picks (b) or (c). The banner and
+the durable `delivery.reason` (§7) both render that one derivation, and share the setting clause
+(`mergeOnSuccess is ON|off (<source>)`) word for word; the clause always reads the resolved value, never the
+case. On a partially-delivered run (§14.12) both surfaces first name the waves that already delivered, then
+give the same cause for the rest.
 
 **The banner also reports PLAN-FOLDER DRIFT (issue #576).** The instruction the banner gives — *"merge
 `guardrails/<plan>` into your branch yourself"* — is itself what produces a stale repository, because the
@@ -2873,7 +2900,10 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
                                       // partially-delivered (§14.12 — some wave delivered at its own
                                       // barrier while this run-end delivery was held or refused;
                                       // `delivered` stays false)
-    "reason": "mergeOnSuccess resolved off, so this wholly-green run's verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
+    "reason": "mergeOnSuccess is off (set by --no-merge-on-success), so this wholly-green run's verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it",
+                                      // #710: the setting clause names the resolved value AND the input that
+                                      // decided it (the flag, guardrails.json, or the default); a run the
+                                      // interlock would ALSO have held names both causes (§5.3 case c)
     "planBranch": "guardrails/27-operator-visibility"  // the branch to merge by hand; absent when delivered,
                                       // and absent in serial mode where nothing is stranded
     // "deliveredToBranch": "master"  // present only when delivery actually ran and succeeded
@@ -2983,11 +3013,16 @@ holds nothing they need — and in one holds everything. So `reason` separates: 
 off on a wholly-green run; (a′) delivery suppressed by the **autonomous-mode interlock** on a wholly-green
 run with `mergeOnSuccess` ON, naming the `proceeded-best-guess` / `proceeded-unreviewed` decision and its
 subject (issue #597 — writing (a)'s wording here recorded a cause that was flatly untrue, in the one file an
-unattended pipeline can read); (b) the terminal gate did not pass; (c) the run was not wholly green; (d)
-serial mode, where there is no separate plan branch and the work is already in the checkout. (a) and (a′)
-are the cases that **strand work**, and the only ones that set `planBranch`; naming a branch in the serial
-case would send an operator to merge something that does not exist, which is worse than the silence this
-closed.
+unattended pipeline can read); (a″) BOTH — `mergeOnSuccess` resolved off AND such a decision was recorded —
+naming both causes, which either alone would have held the work (issue #710: (a′)'s wording there recorded
+"mergeOnSuccess itself is ON" for a run started with `--no-merge-on-success`); (b) the terminal gate did not
+pass; (c) the run was not wholly green; (d) serial mode, where there is no separate plan branch and the work is
+already in the checkout. (a), (a′) and (a″) state the setting in the clause they share with the console banner,
+`mergeOnSuccess is ON|off (<source>)`, where `<source>` is `set by --no-merge-on-success`,
+`set by "mergeOnSuccess": false in guardrails.json` (or `true`), or `the default` (§5.3 has the one derivation
+all three render). They are the cases that **strand work**, and the only ones that set `planBranch`; naming a
+branch in the serial case would send an operator to merge something that does not exist, which is worse than
+the silence this closed.
 
 **`delivery.forcedPastDecision` — the audit trail for the one action that bypasses an interlock (#597).**
 When `--merge-on-success` overrides the §5.3 autonomous-mode suppression, the object records **that it

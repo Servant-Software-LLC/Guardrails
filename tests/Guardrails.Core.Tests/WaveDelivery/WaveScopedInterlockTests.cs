@@ -237,6 +237,42 @@ public sealed class WaveScopedInterlockTests
         Assert.Equal(Wave2, recorded!.Wave);
     }
 
+    // ── Issue #710: the report carries the resolved delivery setting beside the decision ───────────────
+    // Not a wave-scoping row: it lives here because this is the Core harness that drives the real Scheduler to a
+    // recorded suppressing decision. #597 stamped the decision and nothing else, so the CLI could not tell "the
+    // interlock held it" from "delivery was off AND the interlock would have held it" — and on the second it
+    // printed "mergeOnSuccess is ON". Both facts have to reach the report from the REAL Finalize path.
+
+    [Fact]
+    public async Task WithDeliveryTurnedOff_TheReportCarriesTheResolvedSetting_BesideTheSuppressingDecision()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlanWithStubWave2();
+        using WavePlanBuilder _ = b;
+        PlanDefinition autoPlan = AutoWithReviewGate(plan, ReviewGateDecision.ProceedUnreviewed);
+        PlanDefinition offPlan = autoPlan with
+        {
+            // Exactly what RunCommand writes for --no-merge-on-success.
+            Config = autoPlan.Config with { MergeOnSuccess = false, MergeOnSuccessSource = MergeOnSuccessSource.Flag }
+        };
+
+        var exec = new RecordingExecutor();
+        var invoker = new WaveBreakdownInvoker(new StubBreakdownRunner(AuthorValidWave));
+        RunJournal journal = RunJournal.LoadOrCreate(offPlan);
+
+        RunReport report = await NewScheduler(
+                offPlan, exec, journal, new RecordingWorktreeProvider(), invoker, Sink(b, journal))
+            .RunAsync(offPlan, Ct);
+
+        // Both causes are true on this run: the fixture reached the interlock, AND delivery was off.
+        Assert.True(report.WhollyGreenButUndelivered);
+        Assert.NotNull(report.DeliverySuppressingDecision);
+
+        // The report must say so. RunReport.MergeOnSuccess defaults to true, so a Scheduler that never stamped it
+        // would leave this run reading "on, held by the interlock" — the exact false statement #710 reported.
+        Assert.False(report.MergeOnSuccess);
+        Assert.Equal(MergeOnSuccessSource.Flag, report.MergeOnSuccessSource);
+    }
+
     // ── DECLARED EXEMPT from the red census: the operator override already wins on current code ────────
 
     [Fact]

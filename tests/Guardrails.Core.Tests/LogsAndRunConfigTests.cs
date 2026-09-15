@@ -133,6 +133,25 @@ public sealed class LogsAndRunConfigTests : IDisposable
         Assert.Equal(true, result.Plan!.Config.MergeOnSuccessExplicit);
     }
 
+    /// <summary>
+    /// Issue #710: the loader records WHICH input decided <c>mergeOnSuccess</c>, so the undelivered-work banner and
+    /// <c>delivery.reason</c> can name it. A present key is <c>guardrails.json</c> whatever its value; only an
+    /// omitted key is the default. The CLI flag is the one source the loader cannot see; the run command sets it,
+    /// and RunOutcomeWiringTests proves that end to end.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "version": 1 }""", MergeOnSuccessSource.Default)]
+    [InlineData("""{ "version": 1, "mergeOnSuccess": false }""", MergeOnSuccessSource.Config)]
+    [InlineData("""{ "version": 1, "mergeOnSuccess": true }""", MergeOnSuccessSource.Config)]
+    public void MergeOnSuccessSource_IsGuardrailsJson_WhenTheKeyIsPresent_ElseTheDefault(
+        string json, MergeOnSuccessSource expected)
+    {
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan(json));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.Equal(expected, result.Plan!.Config.MergeOnSuccessSource);
+    }
+
     [Fact]
     public void TriageAutoFile_DefaultsFalse_WhenAbsentFromConfig()
     {

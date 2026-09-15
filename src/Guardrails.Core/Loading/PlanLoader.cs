@@ -223,6 +223,9 @@ public sealed class PlanLoader
             // MergeOnSuccessExplicit for the CLI's one-time delivered-by-default notice.
             MergeOnSuccess = raw.MergeOnSuccess ?? true,
             MergeOnSuccessExplicit = raw.MergeOnSuccess,
+            // #710: WHICH input decided it, so the undelivered-work banner and delivery.reason can name it. A present
+            // key is guardrails.json whatever its value; RunCommand upgrades this to Flag when a CLI flag overrides it.
+            MergeOnSuccessSource = raw.MergeOnSuccess is null ? MergeOnSuccessSource.Default : MergeOnSuccessSource.Config,
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
             Autonomy = autonomy,
