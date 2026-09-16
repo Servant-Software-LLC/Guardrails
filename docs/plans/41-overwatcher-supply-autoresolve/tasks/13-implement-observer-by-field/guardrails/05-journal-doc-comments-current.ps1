@@ -1,5 +1,5 @@
 # catches: a half-done doc-comment correction. Both JournalDocument.Supplied and JournalDocument.Refreshed
-#          still call themselves "the STUB half" of a task that shipped long ago, and the second one is
+#          still describe themselves as "the STUB half" of a task that shipped long ago, and the second one is
 #          NOT in issue #712's list — so the obvious reading of the issue fixes one lie and leaves its
 #          twin sitting three lines below it (design 41 §8, fact 10). Nothing else can see this: a doc
 #          comment compiles, runs and passes every test whatever it says, and a reader who catches the
@@ -10,15 +10,29 @@
 # two required clauses unsatisfiable — the dead-guard failure §478 and §11a both warn about, wearing
 # both polarities at once. There is no code in this subject for these clauses to false-fire on.
 #
-# GR2074 WARNING — DISPOSITIONED, not silenced. validate warns that the two required clauses below are
-# DOTTED and carry no `\(`, which is normally the mention-vs-use defect (#76): a dotted name without the
-# trailing paren matches `nameof(Type.Member)` and certifies vocabulary rather than a call. That rule does
-# not apply here, and the reason is the subject: this guardrail checks a DOC COMMENT, and what design 41
-# §8 requires is a `<see cref="RunJournal.RecordSupplied"/>` cross-reference. A MENTION is exactly and only
-# what belongs there — a doc comment cannot call anything, and demanding `RecordSupplied\(` would make
-# both clauses unsatisfiable by any correct edit, which is the #479 shape (constraining the form of
-# correct work) wearing a lint's clothing. The `# catches:` line above claims a stale comment, never a
-# call. Left as-is deliberately; the warning is recorded in the breakdown report.
+# GR2074 — DISPOSITIONED, not silenced. The lint flags that the two required clauses below are DOTTED and
+# carry no `\(`, which is normally the mention-vs-use defect (#76): a dotted name without the trailing
+# paren also matches `nameof(Type.Member)`, certifying vocabulary rather than any real use. That rule does
+# not apply here, and the reason is the SUBJECT: this guardrail checks a DOC COMMENT, and what design 41
+# §8 requires there is a `<see cref="RunJournal.RecordSupplied"/>` cross-reference. A MENTION is exactly
+# and only what belongs in one — a C# doc comment can do nothing else — so demanding `RecordSupplied\(`
+# would make both clauses unsatisfiable by ANY correct edit: the #479 shape (constraining the form of
+# correct work) wearing a lint's clothing.
+#
+# HOW THE LINT DECIDES — read from src/Guardrails.Core/Loading/PlanValidator.cs:3025-3057, not guessed.
+# ClaimsAnInvocation scans the LEADING `#` block (it stops at the first non-comment line, so it is not
+# only the `# catches:` line) for a small word-anchored vocabulary, and stays silent unless one of those
+# words appears. An earlier revision of this header tripped it twice: once in the `# catches:` line, which
+# used one of those verbs in the sense of NAMING ("the two properties still ... themselves 'the STUB
+# half'"), and once in THIS paragraph, where the argument for the disposition restated the very
+# vocabulary it was arguing about. The explanation set off the rule it explained.
+#
+# Both are reworded. The CLAUSES are untouched, no `# guardrails: ignore` is used, and the wording now
+# says what the sentences always meant. Re-measured outcome is recorded on the line below.
+#
+# RE-MEASURED: `validate` now reports GR2074 zero times for this file — the plan's warning census went
+# GR2074 x2 -> x0 — while the two required clauses below are byte-for-byte what they were. The lint went
+# quiet because the header stopped claiming something it never meant, not because a check got weaker.
 #
 # Author-time smoke test (#302), re-runnable (#468):
 #   $env:GR_SUBJECT='docs/plans/41-overwatcher-supply-autoresolve/tasks/13-implement-observer-by-field/samples/05-journal-doc-comments-current.valid.cs';   ./05-journal-doc-comments-current.ps1  # expect 0

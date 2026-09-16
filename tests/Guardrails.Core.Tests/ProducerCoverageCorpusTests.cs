@@ -273,6 +273,19 @@ public sealed class ProducerCoverageCorpusTests : IClassFixture<CorpusWorkspaces
             "which is how those plans avoided it. THE RULE THAT FALLS OUT: a PR carrying a plan folder " +
             "registered in this table must NOT be squash-merged, or its pinned sha is destroyed by the " +
             "merge that lands it"),
+        new("docs/plans/41-overwatcher-supply-autoresolve", "519a9640", 0, 0,
+            "broken down but NOT yet run, so its pre-run commit and HEAD are the same tree. EIGHTH " +
+            "consecutive plan to trip this table, and the first where the red carried a SECOND " +
+            "consequence: this plan ships brownfield baseline preflights (#181/#182) that run the Core " +
+            "suite filtered only by 'Category!=OverwatchSupply', and THIS class declares no Category " +
+            "trait, so '!=' SELECTS it. A missing row would therefore not merely leave the folder " +
+            "unasserted - it would halt the plan on its own baseline preflight before task 01 ran, " +
+            "reported as 'the baseline is red' rather than as a missing table row, which is the " +
+            "misattribution this corpus exists to prevent. The catch-22 the earlier rows describe is " +
+            "unchanged (the row needs the breakdown commit's own sha, which cannot exist until that " +
+            "commit has been made), so this is still two commits. Plan 39's rule applies here too: the " +
+            "PR carrying this folder must NOT be squash-merged, or 519a9640 is rewritten and " +
+            "ThePreRunCommitsAreTheBreakdownCommits goes red on a sha that no longer resolves"),
         new("docs/plans/autonomous-mode-impl", "7cb0bfa", 0, 0,
             "waved, and stubbed for JIT: wave 3 is declared empty, so PlanIsClosed is false at the pre-run commit"),
         new("docs/plans/diagram-live-status-and-search", "d9c006d", 0, 0,

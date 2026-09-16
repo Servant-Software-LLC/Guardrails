@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "reviewedAt": "2026-09-16T07:55:24.3537382+00:00",
+  "planHash": "sha256:bdfa9c41e6bd0ed733beb65f7576a0b33b4adb98b8bd31258f187aa971d6e04b",
+  "attestation": {
+    "source": "review-artifact",
+    "tool": "guardrails 1.1.0",
+    "actor": "claude-opus-5 (authoring session, adversarial pass delegated)",
+    "evidence": {
+      "reportPath": "state\\reviews\\review-bdfa9c41e6bd-2026-09-16T000000Z.md",
+      "reportDigest": "sha256:f6b7dd1bd68ec85a4e966838878c52db6bffcf020112873fa6903ade8d513724"
+    }
+  }
+}
