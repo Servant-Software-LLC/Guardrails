@@ -3,7 +3,8 @@ charter-format-version: 1
 ---
 # 41 — Wiring the overwatcher's missing-resource auto-resolve
 
-Design of record for **issue #712**. Status: **DRAFT — for Charter review.** Not implemented.
+Design of record for **issue #712**. Status: **REVIEWED — the four review decisions are recorded below.**
+Nothing here is built yet.
 
 This design wires a decision that is already made. Design 40 §3 (`40-in-flight-resource-supply.md`, DECIDED
 in review as `d40-overwatcher-autoresolve`) says: *the overwatcher MAY auto-resolve a missing-resource halt,
@@ -14,6 +15,20 @@ proves the real path. It does not reopen whether to wire it. You decided that be
 
 The draft was attacked by a separate adversarial reviewer before this version. §10 lists what that review
 changed.
+
+**Four decisions were taken in review, and this document is written on them.** Each is folded into the prose
+where it applies, and each question block below carries its answer:
+
+- **`d41-supply-source`** — the file comes from the operator's checkout, as committed at the checkout's
+  `HEAD` and unmodified in the working tree (§2).
+- **`d41-candidate-scope`** — a path qualifies only when no other task in the plan may produce it: every
+  other task declares a `writeScope`, and none covers it (§2.2).
+- **`d41-below-critical`** — below `dial:critical` the overwatcher is not consulted about this halt at all;
+  the deterministic halt text is the proposal (§3.2).
+- **`d41-terminal-gate-names-supply`** — the terminal gate halt names supplied and refreshed content, in this
+  change (§6).
+
+The decisions settle the design, not the implementation. §11 hands the work off, and none of it is written.
 
 ---
 
@@ -27,12 +42,13 @@ task, without a human running `supply`, `reset` and `run`.
 Three things are missing today. Nothing lets the overwatcher propose that fix. No deterministic gate exists
 that the proposal must pass. Nothing acts on a certified fix.
 
-**The ambiguity, named.** Design 40 §3 describes the judgement as *"deciding that the file in the operator's
-checkout is the file the task should have."* Plan 40's code, its tests and #712 all read it as *"matching an
-already-staged file to the halted task."* Those are two different features. At `dial:critical` nobody is
-watching, so the staged-only reading would almost never fire. `d41-supply-source` (§2) asks you to choose.
-The rest of this document assumes its recommended answer: **the file as committed at the operator's checkout
-`HEAD`.**
+**The ambiguity, named and settled.** Design 40 §3 describes the judgement as *"deciding that the file in the
+operator's checkout is the file the task should have."* Plan 40's code, its tests and #712 all read it as
+*"matching an already-staged file to the halted task."* Those are two different features, and at
+`dial:critical` nobody is watching, so the staged-only reading would almost never fire.
+**DECIDED (review, `d41-supply-source`): the source is the operator's checkout — the file as committed at the
+checkout's `HEAD`, unmodified in the working tree.** The staging tree stays the operator's own channel, and
+this document is written on that decision throughout.
 
 ---
 
@@ -255,7 +271,7 @@ ownership, is never read as absent. It stops the whole consult with `facts-unava
 | 1 | stays inside the workspace | `WorkspaceContainment.Escapes` (GR2019's path-traversal rule for `writeScope`) | `escapes-workspace` |
 | 2 | not a protected path | not under `.claude/`, `.guardrails-staging/` or `.guardrails-agent-io/`, and no top-level segment starting `.git` | `protected-path` |
 | 3 | not under the plan folder | path containment against `plan.PlanDirectory` | `under-plan-folder` |
-| 4 | no other task in the plan is meant to produce it (the rule `d41-candidate-scope` settles) | every *other* task declares a `writeScope`, and none covers the path (`WriteScope.IsInScope`) | `plan-scope-incomplete` / `produced-by-another-task` |
+| 4 | no other task in the plan is meant to produce it (**DECIDED**, `d41-candidate-scope`) | every *other* task declares a `writeScope`, and none covers the path (`WriteScope.IsInScope`) | `plan-scope-incomplete` / `produced-by-another-task` |
 | 5 | absent from the run's base | no object at `HEAD:<path>` in the integration worktree | `present-on-run-base` |
 | 6 | no case-only twin on the run's base | no case-insensitive match in `git ls-tree -r --name-only HEAD` of the integration worktree | `case-collision` |
 | 7 | the run did not delete it | `git log --diff-filter=D --format=%H <merge-base of integration HEAD and checkout HEAD>..HEAD -- <path>` is empty | `deleted-on-run-base` |
@@ -272,7 +288,8 @@ checks are what turn it into one:
 **Why check 4 is "no *other* task."** It makes the file an input that comes from outside the plan, and it
 closes the race with a sibling task that is meant to author the file. The halted task's own scope is
 deliberately not required, because a task that *embeds* a vendored bundle declares the HTML it writes, not
-the bundle. The alternatives are in `d41-candidate-scope`.
+the bundle. **DECIDED (review, `d41-candidate-scope`).** The alternatives the review weighed are recorded in
+the question block below.
 
 A task not yet authored, in a JIT wave, cannot be consulted. If a later task does produce the path, it
 simply overwrites the file within its own scope.
@@ -281,7 +298,7 @@ The paths that pass every check are the **candidates**, and each carries the che
 at. **No candidates means no consult and no spend**, and an `observed` entry lists each path with its reason.
 
 :::question
-{"id": "d41-candidate-scope", "title": "Which ownership rule must a candidate path pass?", "mode": "single", "options": ["No other task in the plan may produce it: every other task declares a writeScope and none covers the path", "The halted task's own writeScope must cover it, as design 40 section 5a requires of a task-invoked supply", "Both: inside the halted task's writeScope, and no other task covers it", "No task in the plan, including the halted one, may produce it"], "recommended": "No other task in the plan may produce it: every other task declares a writeScope and none covers the path", "rationale": "My first draft required the halted task's own writeScope, by analogy with design 40 section 5a. The adversarial review showed that probably misses the case this exists for. Section 5a was written about an agent authoring a script it then needs; a task that embeds a vendored bundle declares the HTML it writes, not the bundle, so option 2 refuses it. It also fails open: a task with a broad scope like ** makes the check meaningless. Option 1 instead asks whether the file is an input from outside the plan. It fires whether or not the halted task owns the path, refuses when a sibling task is meant to author the file (which also removes a race), and fails closed when any other task is unscoped. The other facts are what keep it safe: the file must be committed on the branch the run started from, absent from the base, and not deleted by the run. Option 3 is the most conservative and the least likely to fire. Option 4 refuses a vendoring task that owns its own bundle, which may well have been the measured incident's task.", "target": "human"}
+{"id": "d41-candidate-scope", "title": "Which ownership rule must a candidate path pass?", "mode": "single", "options": ["No other task in the plan may produce it: every other task declares a writeScope and none covers the path", "The halted task's own writeScope must cover it, as design 40 section 5a requires of a task-invoked supply", "Both: inside the halted task's writeScope, and no other task covers it", "No task in the plan, including the halted one, may produce it"], "recommended": "No other task in the plan may produce it: every other task declares a writeScope and none covers the path", "rationale": "My first draft required the halted task's own writeScope, by analogy with design 40 section 5a. The adversarial review showed that probably misses the case this exists for. Section 5a was written about an agent authoring a script it then needs; a task that embeds a vendored bundle declares the HTML it writes, not the bundle, so option 2 refuses it. It also fails open: a task with a broad scope like ** makes the check meaningless. Option 1 instead asks whether the file is an input from outside the plan. It fires whether or not the halted task owns the path, refuses when a sibling task is meant to author the file (which also removes a race), and fails closed when any other task is unscoped. The other facts are what keep it safe: the file must be committed on the branch the run started from, absent from the base, and not deleted by the run. Option 3 is the most conservative and the least likely to fire. Option 4 refuses a vendoring task that owns its own bundle, which may well have been the measured incident's task.", "target": "human", "answer": ["No other task in the plan may produce it: every other task declares a writeScope and none covers the path"]}
 :::
 
 ### 2.3 The brief and the fix vocabulary
@@ -349,7 +366,7 @@ on that path. `Overwatch.FixKindToken` maps it to `resource-supply` instead of t
   `not-a-candidate`. The model cannot introduce a path the facts did not establish.
 
 :::question
-{"id": "d41-supply-source", "title": "Where may an overwatcher auto-resolve take the missing file from?", "mode": "single", "options": ["The operator's checkout: the file as committed at the checkout's HEAD, unmodified in the working tree", "Only a file the operator already staged with guardrails supply", "Either: an operator-staged file first, else the committed file in the checkout", "The operator's checkout working tree, committed or not"], "recommended": "The operator's checkout: the file as committed at the checkout's HEAD, unmodified in the working tree", "rationale": "Design 40 section 3, and the question you answered in its review, framed the judgement as deciding that the file in your checkout is the file the task needs. The measured incident is exactly that case: vendor/mermaid.min.js was committed to master and never staged. Plan 40's code, its tests and #712 narrowed it to a file already staged with guardrails supply. At dial:critical nobody is watching to run supply before the halt, and a file staged before the task started would already be on the base at the next task boundary. So a staged-only auto-resolve would almost never fire, which is #712's defect again: a capability that exists only in its tests. Reading the committed blob means a file mid-edit can never be supplied. The lineage facts refuse a checkout that has moved to another branch, and the source commit is recorded. Option 3 adds a second source and a second provenance case: an operator-staged file was chosen by the operator, so its record would have to say operator, not overwatcher. Option 4 would let an untracked scratch file onto the run's base.", "target": "human"}
+{"id": "d41-supply-source", "title": "Where may an overwatcher auto-resolve take the missing file from?", "mode": "single", "options": ["The operator's checkout: the file as committed at the checkout's HEAD, unmodified in the working tree", "Only a file the operator already staged with guardrails supply", "Either: an operator-staged file first, else the committed file in the checkout", "The operator's checkout working tree, committed or not"], "recommended": "The operator's checkout: the file as committed at the checkout's HEAD, unmodified in the working tree", "rationale": "Design 40 section 3, and the question you answered in its review, framed the judgement as deciding that the file in your checkout is the file the task needs. The measured incident is exactly that case: vendor/mermaid.min.js was committed to master and never staged. Plan 40's code, its tests and #712 narrowed it to a file already staged with guardrails supply. At dial:critical nobody is watching to run supply before the halt, and a file staged before the task started would already be on the base at the next task boundary. So a staged-only auto-resolve would almost never fire, which is #712's defect again: a capability that exists only in its tests. Reading the committed blob means a file mid-edit can never be supplied. The lineage facts refuse a checkout that has moved to another branch, and the source commit is recorded. Option 3 adds a second source and a second provenance case: an operator-staged file was chosen by the operator, so its record would have to say operator, not overwatcher. Option 4 would let an untracked scratch file onto the run's base.", "target": "human", "answer": ["The operator's checkout: the file as committed at the checkout's HEAD, unmodified in the working tree"]}
 :::
 
 ---
@@ -388,7 +405,11 @@ is every certified path still absent from the integration `HEAD`, with no case-o
 Only tier 0 qualifies. `autonomyPolicy: prompt` and `halt` never qualify: the factory builds no escalation
 machinery for them. Under `auto` without an `autonomy` block, the dial is inert, as doc 12 §3.2 requires. A
 per-gate `needs-human: high` under a run-wide `critical` does **not** qualify, because the operator asked for
-caution at exactly this gate (proof control C7). Below `critical`, see `d41-below-critical`.
+caution at exactly this gate (proof control C7).
+
+**DECIDED (review, `d41-below-critical`): below `critical` the overwatcher is not consulted about a
+missing-resource halt at all.** The halt text already prints the three copy-pasteable commands at every dial,
+deterministically and with no model involved, so nothing is spent where nothing can be applied.
 
 ### 3.3 Interplay with the autonomy policy
 
@@ -414,7 +435,8 @@ changed is that the file is now there. Keeping the model's words out of the next
 ### 3.4 What happens to the shipped pieces
 
 - `Resolve` is replaced by `Certify`. Its staged-tree drain and its `plan.Workspace` target are deleted.
-- `ProposedSequenceFor` is deleted, assuming the recommended answer to `d41-below-critical`.
+- `ProposedSequenceFor` is deleted per `d41-below-critical`: `RunCommand`'s halt text is the single producer
+  of those three commands.
 - **`OverwatchDecisionKind.AutoResolve` and `OverwatchDecision.AutoResolvedPaths` are deleted.**
   `OverwatchDecision` is the control-flow signal `TaskExecutor`'s retry loop reads, and the supply is a
   Scheduler action that never passes through that loop. So the answer to "which component acts on
@@ -425,7 +447,7 @@ changed is that the file is now there. Keeping the model's words out of the next
   defect.
 
 :::question
-{"id": "d41-below-critical", "title": "Below dial:critical, is the overwatcher consulted about a missing-resource halt at all?", "mode": "single", "options": ["No: the deterministic halt text already proposes the three commands, so no diagnose is spent", "Yes: consult it at every dial and append its diagnosis to the halt, never acting on it"], "recommended": "No: the deterministic halt text already proposes the three commands, so no diagnose is spent", "rationale": "Design 40 section 3 says that below critical the overwatcher proposes the supply, reset and run sequence and does not run it. Plan 40 task 25 then delivered that proposal deterministically: every blocked-work halt that names a path already prints the three copy-pasteable commands, at every dial, with no model involved. The shipped Resolve builds a second copy of the same three lines (ProposedSequenceFor) that no production path reaches. Answering No keeps one producer for one message, and spends nothing where nothing can be applied. It changes the wording of a DECIDED sentence (who proposes) but not its substance, which is why I am asking rather than assuming. Answering Yes buys a model-written diagnosis on a halt a human will read, and #709 is the cautionary case for that text reaching a human as if it were verified.", "target": "human"}
+{"id": "d41-below-critical", "title": "Below dial:critical, is the overwatcher consulted about a missing-resource halt at all?", "mode": "single", "options": ["No: the deterministic halt text already proposes the three commands, so no diagnose is spent", "Yes: consult it at every dial and append its diagnosis to the halt, never acting on it"], "recommended": "No: the deterministic halt text already proposes the three commands, so no diagnose is spent", "rationale": "Design 40 section 3 says that below critical the overwatcher proposes the supply, reset and run sequence and does not run it. Plan 40 task 25 then delivered that proposal deterministically: every blocked-work halt that names a path already prints the three copy-pasteable commands, at every dial, with no model involved. The shipped Resolve builds a second copy of the same three lines (ProposedSequenceFor) that no production path reaches. Answering No keeps one producer for one message, and spends nothing where nothing can be applied. It changes the wording of a DECIDED sentence (who proposes) but not its substance, which is why I am asking rather than assuming. Answering Yes buys a model-written diagnosis on a halt a human will read, and #709 is the cautionary case for that text reaching a human as if it were verified.", "target": "human", "answer": ["No: the deterministic halt text already proposes the three commands, so no diagnose is spent"]}
 :::
 
 ---
@@ -587,10 +609,13 @@ change.
 
 **Later gate halts.** A wave entry or exit gate halt already appends
 `— unauthored content: supplied by overwatcher at <sha10>` through `UnauthoredContentNote`, which reads `by`.
-That works with no code change. For the terminal gate, see the question below.
+That works with no code change. **DECIDED (review, `d41-terminal-gate-names-supply`): the terminal gate halt
+names supplied and refreshed content too, in this change.** `PlanGuardrailPhase` appends the same reader's
+headline suffix and detail lines, so a flat plan discloses a supply exactly as a waved one does, and a run
+that supplied nothing keeps a byte-identical halt.
 
 :::question
-{"id": "d41-terminal-gate-names-supply", "title": "Should the terminal gate's halt also name supplied and refreshed content, as the wave gate halts already do?", "mode": "single", "options": ["Yes, in this change: append UnauthoredContentNote to the terminal gate halt's headline and detail", "No: keep design 39's wave-gate-only scope and file it separately"], "recommended": "Yes, in this change: append UnauthoredContentNote to the terminal gate halt's headline and detail", "rationale": "Design 39 put the disclosure on wave entry and exit gate halts only (Scheduler.BuildGateHalt). The terminal gate halt (PlanGuardrailPhase) never names supplied[] or refreshed[], so on a flat plan no gate halt would ever mention an overwatcher supply. Yet design 40 section 3 names the terminal gate as exactly where a wrongly chosen file does its damage. The change is one call to the existing reader in one file, and a run that supplied nothing keeps a byte-identical halt. Answering No keeps this change smaller, and leaves flat plans without the disclosure until a follow-up lands.", "target": "human"}
+{"id": "d41-terminal-gate-names-supply", "title": "Should the terminal gate's halt also name supplied and refreshed content, as the wave gate halts already do?", "mode": "single", "options": ["Yes, in this change: append UnauthoredContentNote to the terminal gate halt's headline and detail", "No: keep design 39's wave-gate-only scope and file it separately"], "recommended": "Yes, in this change: append UnauthoredContentNote to the terminal gate halt's headline and detail", "rationale": "Design 39 put the disclosure on wave entry and exit gate halts only (Scheduler.BuildGateHalt). The terminal gate halt (PlanGuardrailPhase) never names supplied[] or refreshed[], so on a flat plan no gate halt would ever mention an overwatcher supply. Yet design 40 section 3 names the terminal gate as exactly where a wrongly chosen file does its damage. The change is one call to the existing reader in one file, and a run that supplied nothing keeps a byte-identical halt. Answering No keeps this change smaller, and leaves flat plans without the disclosure until a follow-up lands.", "target": "human", "answer": ["Yes, in this change: append UnauthoredContentNote to the terminal gate halt's headline and detail"]}
 :::
 
 ---
@@ -750,8 +775,8 @@ Replace the stub paragraph with:
 - **Re-arming a halted task because an operator staged a file mid-run,** at any dial. That is a separate,
   deterministic feature.
 - **Any auto-resolve below `critical`, in serial mode, or under `prompt` or `halt`.**
-- **Any source other than the one `d41-supply-source` settles:** no network fetch, other branches, other
-  repositories or untracked files.
+- **Any source other than the operator checkout's committed `HEAD`** (`d41-supply-source`): no network fetch,
+  other branches, other repositories or untracked files.
 - **A second auto-resolve for the same task in the same run**, including across a resume.
 - **Missing files detected any other way:** by a guardrail (terminal exhaustion and the short-circuit floors,
   which the dial never lowers) or by a permission wall.
@@ -836,8 +861,9 @@ lands one release after #709's false alarm."* #709 failed because an unverified 
 as an instruction. In this design no model text is acted on: the supplied path must already be a candidate
 the harness derived, and no model text reaches the next attempt. The effect is a file the operator had
 already committed, on the branch the run started from, which is not delivered without a human. If that is
-still too much, the right response is to answer `d41-supply-source` with the staged-only option and accept
-that the feature will rarely fire, not to loosen the gate.
+still too much, the answer is to narrow the source back to an operator-staged file (`d41-supply-source`
+weighed exactly that trade and chose the checkout) and accept that the feature will rarely fire, never to
+loosen the gate.
 
 ---
 
@@ -860,7 +886,7 @@ tasks). Every path is backticked and resolves under the tree, as GR2068 (a hando
 | 7 | `guardrails-harness-developer` (same task as row 8) | `src/Guardrails.Core/Execution/IRunObserver.cs`, `src/Guardrails.Core/Execution/ObserverProjection.cs`, `src/Guardrails.Core/Execution/RunEventStream.cs`, `src/Guardrails.Cli/ConsoleRunObserver.cs`, `src/Guardrails.Cli/Ui/LiveRunObserver.cs`, `src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs`, `src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs`, `src/Guardrails.Core/Journal/JournalModel.cs`, `tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs`, `tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs`, `tests/Guardrails.Integration.Tests/Supply/SuppliedObserverCliForwardingTests.cs` | 1, 5, 6 | the guards compare parameter lists; §8's doc comments and `ForcedDeliveryRecord.Decision`'s token list are corrected |
 | 8 | `guardrails-harness-developer` (same task as row 7) | `src/Guardrails.Core/Execution/Scheduler.cs`, `src/Guardrails.Core/Execution/SchedulerFactory.cs` | 1, 2, 3, 4, 5, 6 | **row 1's test class, all ten tests executed, none skipped** |
 | 9 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/RunCommand.cs` | 2, 4 | the halt text uses `MissingResourceSignal` (`SuppliedHaltTextTests` stay green); the interlock banner and `--merge-on-success` description say "machine decision" |
-| 10 | `guardrails-harness-developer` (only if `d41-terminal-gate-names-supply` is Yes) | `src/Guardrails.Cli/PlanGuardrailPhase.cs`, `tests/Guardrails.Integration.Tests/Supply/SuppliedTerminalGateHaltTests.cs` (new) | 8 | a failed terminal gate halt names `supplied by overwatcher at <sha10>`; one with no supply is byte-identical |
+| 10 | `guardrails-harness-developer` (decided, `d41-terminal-gate-names-supply`) | `src/Guardrails.Cli/PlanGuardrailPhase.cs`, `tests/Guardrails.Integration.Tests/Supply/SuppliedTerminalGateHaltTests.cs` (new) | 8 | a failed terminal gate halt names `supplied by overwatcher at <sha10>`; one with no supply is byte-identical |
 | 11 | `guardrails-architect` | `docs/plans/02-schemas-and-contracts.md`, `docs/plans/40-in-flight-resource-supply.md`, `docs/plans/12-autonomous-mode.md` | 8 | the §12 edits applied in the same change |
 | 12 | `guardrails-skill-author` | `.claude/skills/guardrails-domain-knowledge/SKILL.md` | 8 | the §12 skill bullet is present |
 
