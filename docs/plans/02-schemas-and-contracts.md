@@ -6255,10 +6255,17 @@ bare forms repeat together. The harness routes on these lists only — never on 
       It never reaches the repeat rule — the tracker files it under structural paths — so it is consulted in
       its own right. Without that, a task whose `.claude/` deliverable is staged, whose direct `.claude/` write
       was refused, and whose staging move then failed burned its whole budget with the wall named nowhere.
-      **It YIELDS to an attempt that is using a `.claude/` escape route (#321/#325):** when the attempt emitted
-      a `needsHarnessWrite` — even a malformed, nested one — the refusal it hit is the PRECONDITION for the
-      route it is taking, not an un-clearable wall, so the rejection is reported on its own and the attempt
-      retries. Halting there would pre-empt the hatch, which is the defect #321 fixed and #325 generalised.
+      **It YIELDS only to an escape route that addresses the WALLED path (#321/#325, and #708's scoping):** when
+      the attempt emitted a `needsHarnessWrite` naming that same path — or a malformed, NESTED control key, which
+      applied no request at all and so counts as the rejected case — the refusal it hit is the PRECONDITION for
+      the route it is taking, not an un-clearable wall, so the rejection is reported on its own and the attempt
+      retries. Halting there would pre-empt the hatch, which is the defect #321 fixed and #325 generalised. A
+      hatch for an UNRELATED file does NOT yield: a task hatching file A while structurally walled on file B has
+      not addressed B, and yielding there let it burn its whole budget with that wall named nowhere. The paths
+      are compared as workspace-relative spellings, not raw strings, so the hatch destination as the agent wrote
+      it and the wall path as the runtime's denial named it are judged on equal terms. The fourth site — a
+      REJECTED `needsHarnessWrite` — never consults the structural wall at all: the rejection is the reported
+      cause, and the hatch was precisely the route past the wall.
     - **A repeated in-scope path halts unless THIS ATTEMPT changed it.** In-scope is necessary but not
       sufficient for "this attempt can never converge": at these four sites no guardrail has looked for the
       deliverable yet, so a refusal of a path the agent nonetheless produced by another route says nothing about
