@@ -310,6 +310,14 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
     Any automated version must tell a USE from a MENTION (the #500 doctrine, from the opposite
     direction), which is why #520 recommends the convention now and a meta-test only if a third
     unguarded instance appears.
+- **Reproducing an IN-PROCESS flake needs in-process load, not a busy machine** (#727 review). A test
+  that goes red in the full suite and green alone is often starved of a thread-pool thread by the
+  ~2,900 other tests sharing its testhost — xunit's default parallelism runs collections concurrently,
+  and that is what the full suite exercises. Re-running it under `--filter` proves nothing: a two-test
+  run leaves the pool idle, and no amount of external CPU load can saturate a pool nothing is queuing
+  onto. Reproduce by running the suspect test INSIDE a large parallel batch (several hundred tests in
+  one testhost); and prefer a dedicated `Thread` over `Task.Run` in any test that BLOCKS its worker,
+  so the outcome cannot depend on the scheduler.
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.

@@ -43,26 +43,50 @@ public sealed class AtomicFileTests : IDisposable
         File.WriteAllText(path, "old");
 
         var retrying = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wrote = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var readerReleased = new ManualResetEventSlim();
 
         // FileShare.Read is what the journal's reader (File.ReadAllText) holds while it reads.
         var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        Task write;
-        try
+
+        // A DEDICATED thread, deliberately NOT Task.Run. The writer PARKS inside onRetry until this test drops the
+        // handle, so on the thread pool it occupies a pool thread while the rest of the assembly queues work onto that
+        // same pool (xunit runs collections in parallel). A saturated pool adds threads slowly, so the writer could
+        // fail to START within the bound below and the test would go red for a scheduling reason that has nothing to
+        // do with the retry it exists to pin — a dependency on the SCHEDULER, not on the behavior under test. A
+        // dedicated thread cannot be starved that way. Do not "simplify" this back to Task.Run.
+        var writer = new Thread(() =>
         {
-            write = Task.Run(
-                () => AtomicFile.WriteAllText(path, "new", onRetry: _ =>
+            try
+            {
+                AtomicFile.WriteAllText(path, "new", onRetry: _ =>
                 {
                     retrying.TrySetResult();
                     readerReleased.Wait(WaitBound);
-                }),
-                ct);
+                });
+                wrote.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                wrote.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "gr-727-writer",
+        };
 
-            Task first = await Task.WhenAny(retrying.Task, write).WaitAsync(WaitBound, ct);
+        try
+        {
+            writer.Start();
+
+            Task first = await Task.WhenAny(retrying.Task, wrote.Task).WaitAsync(WaitBound, ct);
             Assert.True(
                 first == retrying.Task,
-                "the replace was not retried while a reader held the target open; it failed with: "
-                + write.Exception?.GetBaseException().Message);
+                "the replace was not retried while a reader held the target open; it finished with: "
+                + (wrote.Task.IsFaulted
+                    ? wrote.Task.Exception?.GetBaseException().Message
+                    : "no failure at all — the move succeeded on the first attempt"));
         }
         finally
         {
@@ -70,7 +94,7 @@ public sealed class AtomicFileTests : IDisposable
             readerReleased.Set();
         }
 
-        await write.WaitAsync(WaitBound, ct); // rethrows if the write still failed after the reader let go
+        await wrote.Task.WaitAsync(WaitBound, ct); // rethrows if the write still failed after the reader let go
         Assert.Equal("new", File.ReadAllText(path));
     }
 
