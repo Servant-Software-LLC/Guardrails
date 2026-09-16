@@ -19,6 +19,20 @@ public static class AnswerableGates
     /// <summary>The NON-answerable review gate (§7.5): no answer kind exists that resolves it; listed here only so callers can name it.</summary>
     public const string ReviewGate = "review-gate";
 
+    /// <summary>
+    /// The NON-answerable gate every HARNESS-decided needs-human halt is filed under (#707 delta review): a
+    /// permission wall, a no-route settle, a write-scope gap, a structural <c>.claude/</c> wall, a failed task
+    /// preflight, a cost cap, an un-resolvable merge, and any other needs-human stop the harness itself decided.
+    ///
+    /// <para><b>Why a distinct gate.</b> These were filed under <see cref="NeedsHumanGate"/>, which
+    /// <see cref="IsAnswerable"/> accepts — so a firstmate answer passed every binding check and was injected
+    /// into a re-run that CANNOT succeed: no answer widens a <c>writeScope</c>, grants a blocked path, or raises
+    /// a cost cap. The run then exited <c>4</c> ("a firstmate answer unblocks this on the next resume"), when the
+    /// real remedy is a human editing <c>task.json</c> or the config. Filed here instead, such an escalation is
+    /// refused by the consumer and both pick surfaces, and the run exits <c>2</c> (actionable needs-human).</para>
+    /// </summary>
+    public const string HardBlockerGate = "hard-blocker";
+
     /// <summary>The two — and only two — gates an answer file may bind (§7.3): everything else is terminal / non-answerable.</summary>
     private static readonly HashSet<string> Gates = new(StringComparer.Ordinal)
     {

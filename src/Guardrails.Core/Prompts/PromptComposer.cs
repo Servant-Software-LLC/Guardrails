@@ -444,8 +444,12 @@ public static class PromptComposer
             return;
         }
 
-        // Most recent first (DependencyContextBuilder.BuildPriorAttempts orders them descending).
-        foreach (PriorAttemptRef attempt in priorAttempts)
+        // ONLY the most recent attempt's kept copy (#707 delta review, W4-stale). A copy is offered while no
+        // LATER attempt has run since it was captured. Once one has — typically the attempt that recovered from
+        // this very copy under the widened scope and then failed something else — the copy is STALE, and the
+        // wording below ("recover each one from its hunk in that file") is more directive than that later
+        // attempt's own salvage pointer, so an agent would discard newer work in favour of older bytes.
+        foreach (PriorAttemptRef attempt in priorAttempts.OrderByDescending(a => a.Attempt).Take(1))
         {
             if (attempt.OutOfScopePatchPath is not { } keptCopy)
             {

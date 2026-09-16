@@ -1524,7 +1524,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 return _journaler.StructuralWallHalt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                     guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
-                    summary, wallFeedback, guardrails.Results, failedList, provenance: provenance,
+                    summary, wallFeedback, guardrails.Results, failedList, wall, provenance: provenance,
                     segments: AttemptJournaler.SegmentsFor(action, guardrails),
                     harnessWrite: harnessWriteRecord);
             }

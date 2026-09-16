@@ -61,6 +61,16 @@ public enum GateSignalKind
     /// <summary>A write-scope gap the plan caused (#707): the task keeps needing a path its writeScope does not cover.</summary>
     WriteScopeGap,
 
+    /// <summary>
+    /// Any OTHER needs-human stop the HARNESS itself decided, carrying the halt's summary as its detail
+    /// (#707 delta review). The default-safe signal for a producer with no more specific kind: a failed task
+    /// preflight, a cost cap reached, an AI merge left unresolved, a post-merge re-verify rolled back, the
+    /// #174/#264 no-op/deterministic-script short-circuit. Named rather than folded into
+    /// <see cref="Unknown"/> because these are not ambiguous at all — the harness knows exactly why it
+    /// stopped; what it lacks is a per-cause signal kind.
+    /// </summary>
+    HarnessHalt,
+
     /// <summary>An infrastructure fault / honest abort (<see cref="RunAbort"/>, #150).</summary>
     InfrastructureFault,
 
@@ -128,6 +138,13 @@ public sealed record GateSignal
     /// <summary>A write-scope gap the plan caused (#707), carrying the halt's summary.</summary>
     public static GateSignal WriteScopeGap(string detail) =>
         new(GateSignalKind.WriteScopeGap) { Detail = detail };
+
+    /// <summary>
+    /// Any other needs-human stop the HARNESS decided, carrying the halt's summary (#707 delta review). The
+    /// default-safe signal for a producer with no more specific kind — see <see cref="GateSignalKind.HarnessHalt"/>.
+    /// </summary>
+    public static GateSignal HarnessHalt(string detail) =>
+        new(GateSignalKind.HarnessHalt) { Detail = detail };
 
     /// <summary>An infrastructure fault / honest abort (#150).</summary>
     public static GateSignal InfrastructureFault(RunAbort abort) =>
@@ -199,6 +216,11 @@ public static class GateClassifier
             GateSignalKind.WriteScopeGap => GateClass.HardBlockerPermanent,
             GateSignalKind.InfrastructureFault => GateClass.HardBlockerPermanent,
             GateSignalKind.PreflightFailure => GateClass.HardBlockerPermanent,
+            // #707 delta review: any OTHER needs-human stop the harness itself decided — a failed task
+            // preflight, a cost cap, an un-resolvable merge, a re-verify rollback, the #174/#264
+            // short-circuit. The harness stopped the task on a fact it already established; a judge cannot
+            // re-open that, and no best-guess clears it.
+            GateSignalKind.HarnessHalt => GateClass.HardBlockerPermanent,
 
             // (a) Judgment call — the ONLY dial-eligible class (§4 row a). An agent-emitted needsHuman is
             // an explicit design question with a best-guess. The JIT wave-checkpoint is dial-eligible only

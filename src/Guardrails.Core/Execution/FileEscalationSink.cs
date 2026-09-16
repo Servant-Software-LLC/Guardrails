@@ -90,7 +90,10 @@ public sealed class FileEscalationSink : IEscalationSink
             Id = id,
             Status = OpenStatus,
             Options = request.Options,
-            Kind = request.Kind
+            Kind = request.Kind,
+            // #707 delta review: the class the gate was acted on under, on the record itself — so a reader of
+            // escalations/*.json can tell an answerable judgment call from a hard blocker no answer resolves.
+            Classification = request.Classification
         };
         AtomicFile.WriteAllText(recordPath, JsonSerializer.Serialize(record, RecordJson));
 
@@ -162,5 +165,13 @@ public sealed class FileEscalationSink : IEscalationSink
         /// from the file) when unclassified, so a pre-#485-shaped escalation record is byte-identical.
         /// </summary>
         public string? Kind { get; init; }
+
+        /// <summary>
+        /// The deterministic class the gate was acted on under (#707 delta review) — <c>judgment-call</c> |
+        /// <c>hard-blocker-retryable</c> | <c>hard-blocker-permanent</c> — so a reader of this file can tell an
+        /// answerable judgment call from a hard blocker without inferring it from the gate name. Null (and
+        /// ABSENT via the omit-null policy) when the caller records none.
+        /// </summary>
+        public string? Classification { get; init; }
     }
 }

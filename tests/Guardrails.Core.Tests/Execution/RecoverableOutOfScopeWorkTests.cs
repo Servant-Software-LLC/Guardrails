@@ -89,9 +89,27 @@ public sealed class RecoverableOutOfScopeWorkTests : IDisposable
         Assert.DoesNotContain("## Out-of-scope work", composed);
     }
 
+    [Fact]
+    public void ALaterAttemptHasRunSinceTheCopyWasKept_ThePromptNoLongerOffersIt()
+    {
+        // The delta review's W4-stale. Attempt 1 kept the copy and a human widened the scope; attempt 2 ran
+        // under the WIDENED scope, recovered from that copy, edited further, and failed a guardrail. Attempt 3
+        // must not be sent back to the stale copy: "recover each one from its hunk in that file" is more
+        // directive than attempt 2's own salvage, so the agent would discard the newer work for older bytes.
+        // The copy is offered only while no later attempt has run since it was captured.
+        string composed = ComposeNextAttemptPrompt(
+            writeScope: ["src/Impl.cs", "src/Stub.cs"], laterAttemptRan: true);
+
+        // Not vacuous: BOTH prior attempts are rendered, so the walker did see the attempt that kept the copy.
+        Assert.Contains("Attempt 1 (", composed);
+        Assert.Contains("Attempt 2 (", composed);
+        Assert.DoesNotContain("## Out-of-scope work", composed);
+        Assert.DoesNotContain("out-of-scope.patch", composed);
+    }
+
     // ── fixture ─────────────────────────────────────────────────────────────────────────────────
 
-    private string ComposeNextAttemptPrompt(IReadOnlyList<string>? writeScope)
+    private string ComposeNextAttemptPrompt(IReadOnlyList<string>? writeScope, bool laterAttemptRan = false)
     {
         string planDir = Path.Combine(_root, "plan");
         string taskDir = Path.Combine(planDir, "tasks", TaskId);
@@ -139,11 +157,35 @@ public sealed class RecoverableOutOfScopeWorkTests : IDisposable
             },
             Guardrails.Core.Journal.TaskStatus.NeedsHuman);
 
+        // The attempt that ran AFTER the scope widened: it recovered from the copy, worked on, and failed a
+        // guardrail. It leaves its own log dir and NO out-of-scope copy of its own.
+        if (laterAttemptRan)
+        {
+            string laterRelative = $"logs/{journal.Document.RunId}/{TaskId}/attempt-2";
+            string laterLogDir = Path.Combine(planDir, "logs", journal.Document.RunId, TaskId, "attempt-2");
+            Directory.CreateDirectory(laterLogDir);
+            File.WriteAllText(Path.Combine(laterLogDir, "feedback.md"), "The guardrail 01-build failed.\n");
+            journal.RecordAttempt(
+                TaskId,
+                new AttemptRecord
+                {
+                    Attempt = 2,
+                    StartedAt = at,
+                    EndedAt = at,
+                    ActionExitCode = 0,
+                    Outcome = AttemptOutcome.GuardrailFailed,
+                    LogDir = laterRelative
+                },
+                Guardrails.Core.Journal.TaskStatus.Running);
+        }
+
+        int currentAttempt = laterAttemptRan ? 3 : 2;
         var builder = new DependencyContextBuilder(
             plan, journal, new DependencyGraph(plan.Tasks),
             new Dictionary<string, TaskNode>(StringComparer.Ordinal) { [TaskId] = task });
-        IReadOnlyList<PriorAttemptRef> priorAttempts = builder.BuildPriorAttempts(TaskId, currentAttemptNumber: 2);
-        Assert.Single(priorAttempts); // sanity: the production walker saw the attempt this fixture wrote
+        IReadOnlyList<PriorAttemptRef> priorAttempts = builder.BuildPriorAttempts(TaskId, currentAttempt);
+        // Sanity: the production walker saw every attempt this fixture wrote.
+        Assert.Equal(currentAttempt - 1, priorAttempts.Count);
 
         string stateIn = Path.Combine(_root, "state.json");
         File.WriteAllText(stateIn, "{}");
