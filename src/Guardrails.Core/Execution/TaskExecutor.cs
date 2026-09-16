@@ -150,10 +150,11 @@ public sealed class TaskExecutor : ITaskExecutor
         string? feedbackPath = null;
         TaskResult last = null!;
 
-        // Tracks permission walls across attempts (issues #86 / #104): a write the runtime refuses
-        // because the path is not granted. A .claude/ wall is structural (halts on the FIRST hit); any
-        // other path refused across repeated attempts halts on the repeat — both settle needs-human
-        // EARLY rather than burning the rest of the budget on the identical, un-retryable wall.
+        // Tracks permission walls across attempts (issues #86 / #104): a call the runtime refuses
+        // because its target is not granted. A .claude/ wall is structural (halts on the FIRST hit); any
+        // other path, or any command, refused across repeated attempts halts on the repeat — both settle
+        // needs-human EARLY rather than burning the rest of the budget on the identical, un-retryable wall.
+        // Which attempts each may settle is outcome-aware (#325 / #708): see RunAttemptAsync.
         var permissionWalls = new PermissionWallTracker();
 
         // #707: every path this task has written OUTSIDE its writeScope, across attempts. A path that recurs is a
@@ -350,10 +351,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
             // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9), the
-            // permission-wall halt (issues #86 / #104 / #325: an EAGER #86 repeated-path halt, or an
-            // outcome-aware structural .claude/ halt on a non-converged attempt), and the §6.2 no-route
-            // settle (#201) that never launched an attempt at all, all of which surface as
-            // TaskOutcome.NeedsHuman.
+            // permission-wall halt (issues #86 / #104 / #325 / #708: a #86 repeated-refusal halt on an
+            // attempt whose action failed or, for a write path, whose guardrails failed, or an outcome-aware
+            // structural .claude/ halt on a non-converged attempt), and the §6.2 no-route settle (#201) that
+            // never launched an attempt at all, all of which surface as TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
@@ -990,14 +991,23 @@ public sealed class TaskExecutor : ITaskExecutor
                 segments: AttemptJournaler.SegmentsFor(action));
         }
 
-        // --- permission wall observation (issues #86 / #104 / #325) ----------------------
-        // Feed this attempt's refused write paths to the cross-attempt tracker UNCONDITIONALLY (the #321
-        // observe-filter that dropped .claude/ paths whenever a needsHarnessWrite was present is GONE —
-        // subsumed by the outcome-aware halt below), then compute the wall verdict ONCE. WHERE that
-        // verdict is consulted is now outcome-aware:
-        //   • #86 REPEATED (below, right after the transient-pause check): a NON-.claude/ path refused
-        //     across ≥2 attempts is a genuine un-clearable wall — halt EAGERLY, without waiting for the
-        //     attempt outcome, because a retry just re-hits the same wall.
+        // --- permission wall observation (issues #86 / #104 / #325 / #708) ---------------
+        // Feed this attempt's refused targets, paths and commands alike, to the cross-attempt tracker
+        // UNCONDITIONALLY, naming which are commands: a command is never the structural .claude/ wall (#708).
+        // (The #321 observe-filter that dropped .claude/ paths whenever a needsHarnessWrite was present is GONE —
+        // subsumed by the outcome-aware halt below.) Then compute the wall verdict ONCE. WHERE that
+        // verdict is consulted is outcome-aware:
+        //   • #86 REPEATED (a path or command refused across ≥2 attempts): consulted at the attempt's OUTCOME.
+        //     #708 moved it there from an EAGER check that ran before the outcome was known, and so pre-empted a
+        //     CONVERGED attempt: plan 40's task 21 finished its deliverable on attempt 2, but a self-check command
+        //     it was not granted had been refused on attempts 1 and 2, so attempt 2 settled permission-denied and
+        //     its guardrail never ran. Now:
+        //       - the ACTION FAILED: halt (the action-failed site below), for paths and commands alike. That is
+        //         the budget #86 protects, the one an agent burns while STUCK at the wall;
+        //       - the action succeeded and the guardrails PASS: green, whatever was refused;
+        //       - the action succeeded and a guardrail FAILED: a repeated WRITE PATH halts, since a retry would be
+        //         refused the same write, and a repeated COMMAND is an ordinary guardrail-failed retry carrying
+        //         it as secondary context (the guardrail-failed site below).
         //   • #104/#325 STRUCTURAL (a .claude/ path): consulted only on an attempt that did NOT converge
         //     — the action failed OR the guardrails failed (the two sites below). A CONVERGED attempt
         //     (guardrails pass) goes GREEN regardless of a .claude/ refusal the agent recovered from in
@@ -1012,8 +1022,68 @@ public sealed class TaskExecutor : ITaskExecutor
         //     the .claude/ wall as secondary context), because a guardrail genuinely ran and failed; only
         //     the action-failed site (no guardrail reached — the pure #104 first-attempt wall) still
         //     reports `permission-denied`.
-        permissionWalls.Observe(action.BlockedWritePaths);
+        permissionWalls.Observe(attemptNumber, action.BlockedWritePaths, action.RefusedCommands);
         PermissionWallDecision wall = permissionWalls.ShouldHalt();
+
+        // #708 W6: of the repeated write PATHS, the ones INSIDE the scope this attempt is enforced against — the only
+        // ones that can be this task's deliverable, and therefore the only ones that settle an attempt whose action
+        // succeeded. A path outside that scope would be reverted by the write-scope check below however it was
+        // written, so refusing it costs the task nothing a retry cannot route around: it is auxiliary, exactly like a
+        // refused command, and it retries carrying the refusal as secondary context. In serial mode no scope is
+        // enforced, so there is nothing to ask and every path stays a wall — #86 exactly as it was.
+        //
+        // The narrowed decision is what every halt below REPORTS, so the text names the wall that caused it rather
+        // than every target the attempt was refused. Commands ride along unchanged.
+        IReadOnlyList<string> repeatedInScopePaths = wall.RepeatedPaths
+            .Where(p => RefusedPathIsInScope(p, enforcedWriteScope, effectiveWorkspace))
+            .ToList();
+
+        // WEAK-4: the four sites that settle an attempt BEFORE its guardrails run need a SECOND condition. In-scope
+        // is necessary but not sufficient for "this attempt can never converge": no guardrail has looked for the
+        // deliverable yet, so a refusal of a path THIS ATTEMPT nonetheless produced says nothing about the
+        // rejection that actually failed it — the agent reached that result by another route. Halting there would
+        // end a task a retry could have finished. The guardrail-failed site keeps the unnarrowed list: there a
+        // guardrail DID look, and failed, so a refused in-scope write is genuinely blocking.
+        //
+        // The question is asked of the attempt's own DIFF against taskBase, never of the filesystem. A segment
+        // worktree is checked out AT taskBase, so "the file exists" is true of everything the repo already
+        // contains — an upstream-authored stub, or the very file the task exists to edit — which masked the wall
+        // for the two shapes #708 was filed about. Computed LAZILY and memoized: the scan stages the index, so it
+        // must not run on an attempt where no wall is in play.
+        IReadOnlySet<string>? changedThisAttempt = null;
+        IReadOnlyList<string> PreGuardrailWallPaths()
+        {
+            if (repeatedInScopePaths.Count == 0)
+            {
+                return [];
+            }
+
+            changedThisAttempt ??= IsRealGitSegment(worktree)
+                ? WriteScopeCheck.ChangedPaths(worktree.WorktreePath, worktree.TaskBase)
+                : new HashSet<string>(StringComparer.Ordinal);
+
+            return repeatedInScopePaths
+                .Where(p => WorkspaceRelativeRefusal(p, effectiveWorkspace) is not { } relative
+                            || !changedThisAttempt.Contains(relative))
+                .ToList();
+        }
+
+        // #321/#325: whether a structural .claude/ wall may settle a PRE-GUARDRAIL rejection. It may NOT when this
+        // attempt is using a .claude/ escape route FOR THE WALLED PATH: the agent probed, was refused, and reached
+        // for the hatch, which is exactly the route the wall exists to be got past. Halting there pre-empts the
+        // hatch and re-breaks #321/#325, whose regression test pins that the settings-file carve-out DENIES the
+        // write rather than the wall halting it.
+        //
+        // Scoped to the walled path, not to "a hatch is present" (WEAK-6): a task that hatches file A while being
+        // structurally walled on an UNRELATED file B has not addressed B at all, so yielding there let it burn the
+        // whole budget with the wall named nowhere. A nested control key counts as addressing it — the request was
+        // never applied, so it is the rejected case.
+        bool hatchAddressesTheWall =
+            action.NestedControlKey is not null
+            || (action.HarnessWriteBatch is { } hatch
+                && hatch.Paths.Any(requested => wall.StructuralPaths.Any(
+                    walled => SameWorkspacePath(requested, walled, effectiveWorkspace))));
+        bool structuralMaySettle = !hatchAddressesTheWall;
 
         // --- transient pause (issue #115): a retryable infra condition (429/503/529, overloaded,
         // rate/session/usage limit). Do NOT journal a failed attempt and do NOT consume the retry
@@ -1040,25 +1110,23 @@ public sealed class TaskExecutor : ITaskExecutor
                 TransientResetHint: action.ResetHint is { Length: > 0 } ? action.ResetHint : null);
         }
 
-        // --- #86 EAGER permission-wall halt ---------------------------------------------
-        // A NON-.claude/ path refused across ≥2 attempts (RepeatedPaths) is a strong un-clearable-wall
-        // signal that need not wait for the attempt outcome — settle needs-human NOW instead of burning
-        // the rest of the budget re-hitting the identical wall. Placed AFTER the transient-pause check
-        // so a rate-limited attempt PAUSES and re-runs the SAME attempt rather than halting (a latent
-        // ordering bug the #321 early-halt had, fixed here for free). A structural .claude/ wall is
-        // deliberately NOT halted here — it defers to the two outcome sites below (only a NON-converged
-        // attempt halts on it). Pass a REPEATED-ONLY decision so the feedback/summary wording stays
-        // "repeated" (not "structural") even when a .claude/ read-source wall coexists this attempt.
-        if (wall.RepeatedPaths.Count > 0)
-        {
-            return _journaler.PermissionWall(
-                task, attemptNumber, startedAt, relativeLogDir, logDir, action,
-                new PermissionWallDecision(true, [], wall.RepeatedPaths), provenance: provenance,
-                segments: AttemptJournaler.SegmentsFor(action));
-        }
-
         if (!action.Succeeded)
         {
+            // #86 (#708): a path or command refused across ≥2 attempts, on an attempt that could not finish, is a
+            // wall a retry would only re-hit. Settle needs-human NOW instead of burning the rest of the budget.
+            // An attempt whose action succeeded goes on to its guardrails instead, and a repeated write path
+            // settles it only if they fail (see the observation comment above). Still AFTER the transient-pause
+            // check, so a rate-limited attempt PAUSES and re-runs the SAME attempt rather than halting. Checked BEFORE the
+            // structural wall, with a REPEATED-ONLY decision, so the feedback/summary wording stays "repeated"
+            // (not "structural") even when a .claude/ read-source wall coexists this attempt.
+            if (wall.HasRepeated)
+            {
+                return _journaler.PermissionWall(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                    new PermissionWallDecision(true, [], wall.RepeatedPaths, wall.RepeatedCommands),
+                    provenance: provenance, segments: AttemptJournaler.SegmentsFor(action));
+            }
+
             // #104/#325: an un-converged attempt (the action itself FAILED, so NO guardrail ran) plus a
             // structural .claude/ wall halts needs-human NOW — the .claude/ deliverable cannot have landed
             // and the agent may be stuck against a wall no retry clears (the #104 fast-halt is preserved
@@ -1066,8 +1134,8 @@ public sealed class TaskExecutor : ITaskExecutor
             // `permission-denied`: no guardrail failure is being hidden (none ran), and the reported
             // `.claude/` wall IS the honest primary cause — the classic #104 first-attempt wall. (#329
             // changes only the GUARDRAIL-failed site below, where a guardrail did run and fail.)
-            // RepeatedPaths is provably empty here (any repeat halted eagerly above), so passing the full
-            // wall yields structural-only feedback/summary wording.
+            // Nothing repeated here (a repeat settled just above), so passing the full wall yields
+            // structural-only feedback/summary wording.
             if (wall.HasStructural)
             {
                 return _journaler.PermissionWall(
@@ -1149,11 +1217,29 @@ public sealed class TaskExecutor : ITaskExecutor
             StagingMoveResult moveResult = StagingMover.Move(stagingDir, effectiveWorkspace, stagingEntries);
             if (!moveResult.Succeeded)
             {
+                // #708: this attempt did not converge — the staged deliverable was never produced — and a wall
+                // stands that no retry clears. Halt instead, reporting the staging failure as the cause and the
+                // outcome (#538/#329), and preserving exactly what the retry below would have preserved.
+                if (WallHalt(
+                        task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                        AttemptOutcome.StagingFailed,
+                        "The staging move failed",
+                        $"- {moveResult.FailureReason}",
+                        $"staging move failed: {moveResult.FailureReason}",
+                        wall, PreGuardrailWallPaths, consultStructural: structuralMaySettle, budgetRemained: !isFinal,
+                        () => StashForHalt(task, worktree, attemptNumber),
+                        provenance, AttemptJournaler.SegmentsFor(action), harnessWrite: null) is { } stagingHalt)
+                {
+                    return stagingHalt;
+                }
+
                 (bool fileWritesRolledBack, SalvageRef? salvageRef) =
                     StashIfRollingBack(task, worktree, attemptNumber, isFinal);
                 string feedback = RetryPolicy.ForStagingFailure(
                     task, attemptNumber, moveResult.FailureReason ?? "the staging move did not complete",
-                    fileWritesRolledBack, salvageRef);
+                    fileWritesRolledBack, salvageRef)
+                    // #708: a repeat that did NOT halt here is still named, so the retry stops reaching for it.
+                    + RetryPolicy.ForRepeatedRefusalContext(wall);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     // #538: the ATTEMPT outcome is the staging failure itself. TaskOutcome stays
@@ -1202,9 +1288,31 @@ public sealed class TaskExecutor : ITaskExecutor
             string nestedSummary =
                 $"{nestedControlKey.ControlKey} was nested under '{nestedControlKey.ContainingKey}' " +
                 "instead of being a top-level key — nothing was written";
+
+            // #708: same reasoning as the staging site above — the request was never applied, so this attempt did
+            // not converge, and a wall stands that no retry clears. This is the ONE halt site that preserves
+            // nothing: a rejected fragment keeps the documented fragment-rejection boundary. Staying SILENT about
+            // that is what misleads, so the feedback says the work was not preserved rather than simply omitting
+            // a salvage section, which reads as "there was nothing worth keeping".
+            if (WallHalt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                    AttemptOutcome.InvalidFragment,
+                    "The state fragment was rejected",
+                    $"- {nestedSummary}",
+                    nestedSummary,
+                    // structuralMaySettle is false here by construction: a nested control key IS a hatch attempt.
+                    wall, PreGuardrailWallPaths, consultStructural: structuralMaySettle, budgetRemained: !isFinal,
+                    salvage: () => null,
+                    provenance, AttemptJournaler.SegmentsFor(action), harnessWrite: null,
+                    workNotPreserved: true) is { } nestedHalt)
+            {
+                return nestedHalt;
+            }
+
             return _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir,
-                RetryPolicy.ForNestedControlKey(task, attemptNumber, nestedControlKey, nestedRolledBack),
+                RetryPolicy.ForNestedControlKey(task, attemptNumber, nestedControlKey, nestedRolledBack)
+                    + RetryPolicy.ForRepeatedRefusalContext(wall),
                 isFinal,
                 AttemptOutcome.InvalidFragment,
                 new TaskResult
@@ -1268,11 +1376,37 @@ public sealed class TaskExecutor : ITaskExecutor
 
             if (!writeOutcome.Succeeded)
             {
-                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
-                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
                 // For a multi-entry batch this names EVERY requested path — the failure applies to all of
                 // them (nothing was written), and the reason itself identifies the offending entry.
                 string requestedPath = harnessWriteBatch.PathForDisplay;
+                string rejectionSummary = writeOutcome switch
+                {
+                    { IsPolicyDenied: true } => $"needsHarnessWrite denied: {writeOutcome.FailureReason}",
+                    { IsNotApplied: true } => $"needsHarnessWrite not applied: {writeOutcome.FailureReason}",
+                    { WasRejected: true } => $"needsHarnessWrite rejected: {writeOutcome.FailureReason}",
+                    _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
+                };
+
+                // #708: the third pre-guardrail rejection site. Nothing was written and no guardrail ran, so this
+                // attempt did not converge — and a wall stands that no retry clears. The rejection stays the
+                // reported cause; the wall is why there is no further attempt. Preserves what the retry would have.
+                if (WallHalt(
+                        task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                        AttemptOutcome.HarnessWriteRejected,
+                        "The harness write was refused",
+                        $"- `{requestedPath}` — {writeOutcome.FailureReason}",
+                        rejectionSummary,
+                        // The batch was REJECTED, which is the other half of the yield rule: the rejection is the
+                        // reported cause, and the hatch was the route the agent was taking past the wall.
+                        wall, PreGuardrailWallPaths, consultStructural: false, budgetRemained: !isFinal,
+                        () => StashForHalt(task, worktree, attemptNumber),
+                        provenance, AttemptJournaler.SegmentsFor(action), harnessWriteRecord) is { } hatchHalt)
+                {
+                    return hatchHalt;
+                }
+
+                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
                 // #321: a permission-file DENIAL (a .claude/settings*.json) gets its own actionable
                 // feedback ("a human must author it") distinct from the generic out-of-scope rejection.
                 // #437: a NOT-APPLIED request (bad/ambiguous anchor, wrong mode for the target, an
@@ -1286,6 +1420,8 @@ public sealed class TaskExecutor : ITaskExecutor
                     { WasRejected: true } => RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
                     _ => RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
                 };
+                // #708: a repeat that did NOT halt here is still named, so the retry stops reaching for it.
+                feedback += RetryPolicy.ForRepeatedRefusalContext(wall);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     // #538: a refused harness write is not a guardrail failure — none ran. TaskOutcome
@@ -1296,13 +1432,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         TaskId = task.Id,
                         Outcome = TaskOutcome.GuardrailFailed,
                         ActionExitCode = action.ExitCode,
-                        Summary = writeOutcome switch
-                        {
-                            { IsPolicyDenied: true } => $"needsHarnessWrite denied: {writeOutcome.FailureReason}",
-                            { IsNotApplied: true } => $"needsHarnessWrite not applied: {writeOutcome.FailureReason}",
-                            { WasRejected: true } => $"needsHarnessWrite rejected: {writeOutcome.FailureReason}",
-                            _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
-                        }
+                        Summary = rejectionSummary
                     },
                     costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
                     turns: action.Turns,
@@ -1324,10 +1454,15 @@ public sealed class TaskExecutor : ITaskExecutor
         // this is a real git segment). The stagingOutputs 'to' destinations are IMPLICITLY in-scope
         // (SSOT §3.4/§3.5): the check sees the post-move surface, so the real .claude/ paths the move produced
         // must be authorized without the task also listing them in writeScope.
+        // #708 N9: the check's verdict is kept past its own block so the guardrail-failed halt below can tell an
+        // attempt that did IN-SCOPE work — whose orphaned tree is worth preserving (#554) — from one that did none,
+        // whose snapshot would be the line-ending churn #705 measured rather than work.
+        WriteScopeCheckResult? attemptScopeCheck = null;
         if (enforcedWriteScope is { } enforcedScope)
         {
             WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(
                 worktree.WorktreePath, worktree.TaskBase, enforcedScope);
+            attemptScopeCheck = scopeCheck;
 
             if (!scopeCheck.Passed)
             {
@@ -1352,6 +1487,16 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Recorded for EVERY violation, so a later attempt can recognise a repeat.
                 IReadOnlyList<string> repeatedOutOfScope =
                     RecordOutOfScopeWrites(scopeCheck.OffendingPaths, pathsWrittenOutOfScope);
+                // #708: when a write inside the scope was ALSO refused on two or more attempts, #707's halt keeps its
+                // own diagnosis — the plan's gap is what a human must fix — and names the refusal beside it, because
+                // widening the scope alone would not clear it.
+                // Evaluated here rather than lazily: the write-scope check above has already staged the index, so
+                // the changed-path scan behind this is a repeat of work already done, and #707's halt needs the
+                // answer to decide whether to name the refusal beside its own diagnosis.
+                IReadOnlyList<string> gapWallPaths = PreGuardrailWallPaths();
+                PermissionWallDecision? gapWall = gapWallPaths.Count > 0
+                    ? new PermissionWallDecision(true, [], gapWallPaths, wall.RepeatedCommands)
+                    : null;
                 if (task.Action.Kind == ActionKind.Prompt
                     && WriteScopeGapOf(task, worktree, scopeCheck, repeatedOutOfScope) is { } scopeGap)
                 {
@@ -1366,10 +1511,33 @@ public sealed class TaskExecutor : ITaskExecutor
                     return _journaler.WriteScopeGapHalt(
                         task, attemptNumber, startedAt, relativeLogDir, logDir, action,
                         RetryPolicy.ForWriteScopeGapHalt(
-                            task, attemptNumber, scopeCheck, scopeGap, gapSalvage, outOfScopePatchPath),
-                        RetryPolicy.WriteScopeGapSummary(task, scopeGap),
+                            task, attemptNumber, scopeCheck, scopeGap, gapSalvage, outOfScopePatchPath, gapWall),
+                        RetryPolicy.WriteScopeGapSummary(task, scopeGap, gapWall),
                         provenance: provenance, segments: AttemptJournaler.SegmentsFor(action),
                         harnessWrite: harnessWriteRecord);
+                }
+
+                string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
+
+                // #708: the last pre-guardrail rejection site, reached only when #707 found no plan-caused gap. The
+                // attempt still did not converge, and a wall stands that no retry clears. The violation stays the
+                // reported cause. Its in-scope work is preserved on the same #705 condition the retry path uses
+                // below, and it carries #705's OWN disclosures — the out-of-scope paths were reverted and a copy
+                // was kept, which the retry path this halt replaces already told the reader.
+                if (WallHalt(
+                        task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                        AttemptOutcome.WriteScopeViolation,
+                        "A write-scope violation",
+                        string.Join("\n", scopeCheck.OffendingPaths.Select(o => $"- `{o.Path}`")),
+                        $"write-scope violation: {offendingList}",
+                        wall, PreGuardrailWallPaths, consultStructural: structuralMaySettle, budgetRemained: !isFinal,
+                        () => scopeCheck.InScopePaths.Count > 0
+                            ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedScope)
+                            : null,
+                        provenance, AttemptJournaler.SegmentsFor(action), harnessWriteRecord,
+                        outOfScopePatchPath: outOfScopePatchPath) is { } scopeWallHalt)
+                {
+                    return scopeWallHalt;
                 }
 
                 // #306: STASH the (now out-of-scope-reverted) attempt so the retry can recover the good
@@ -1383,9 +1551,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     ? StashIfRollingBack(task, worktree, attemptNumber, isFinal)
                     : (WorktreeWillReset(worktree, isFinal), null);
 
-                string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
                 string feedback = RetryPolicy.ForWriteScopeViolation(
-                    task, attemptNumber, scopeCheck, fileWritesRolledBack, salvageRef, outOfScopePatchPath);
+                    task, attemptNumber, scopeCheck, fileWritesRolledBack, salvageRef, outOfScopePatchPath)
+                    // #708: a repeat that did NOT halt here is still named, so the retry stops reaching for it.
+                    + RetryPolicy.ForRepeatedRefusalContext(wall);
                 AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     // #538: the write-scope check runs BEFORE the task's guardrails, so none had run when
@@ -1481,6 +1650,20 @@ public sealed class TaskExecutor : ITaskExecutor
         if (guardrails.AnyFailed)
         {
             IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
+            IReadOnlyList<FailedGuardrail> failedList = failed
+                .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
+                .ToList();
+            string failedNames = string.Join(", ", failed.Select(g => g.Name));
+            string primaryBody = string.Join("\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
+
+            // #708: a COMMAND refused across ≥2 attempts does not settle an attempt whose action succeeded; the
+            // guardrails just did. It rides along as SECONDARY context in the summary and the feedback, so a human
+            // sees it and the next attempt stops reaching for a call that will be refused again. (A repeated WRITE
+            // PATH halts below instead.) Both are empty when nothing repeated.
+            string repeatedRefusalSummary = wall.HasRepeated
+                ? $"; secondary context: {RetryPolicy.RepeatedRefusals(wall)}"
+                : string.Empty;
+            string repeatedRefusalFeedback = RetryPolicy.ForRepeatedRefusalContext(wall);
 
             // #325/#329: the guardrails failed AND a structural .claude/ wall is present. #326 halts this
             // needs-human on ONE attempt (bounded 1-attempt cost — the #104 fast-halt: a .claude/ wall no
@@ -1491,22 +1674,16 @@ public sealed class TaskExecutor : ITaskExecutor
             // ship). Report the TRUE primary cause instead: outcome `guardrail-failed` with
             // failedGuardrails[] populated, the .claude/ wall disclosed as SECONDARY context (it explains
             // the staging/recovery detour and, when the failure is a MISSING .claude/ deliverable, is the
-            // likely reason). RepeatedPaths is provably empty here (any repeat halted eagerly above), so
-            // wall.StructuralPaths carries the whole wall.
+            // likely reason). wall.StructuralPaths carries the structural wall; any repeated refusal is appended as
+            // its own context (#708).
             if (wall.HasStructural)
             {
-                IReadOnlyList<FailedGuardrail> failedList = failed
-                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
-                    .ToList();
-                string failedNames = string.Join(", ", failed.Select(g => g.Name));
                 string wallPaths = string.Join(", ", wall.StructuralPaths);
                 string summary =
                     $"guardrail(s) failed: {failedNames} — needs human; a .claude/ write was blocked this " +
-                    $"attempt ({wallPaths}), which may be why (see feedback)";
-                string primaryBody = string.Join(
-                    "\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
+                    $"attempt ({wallPaths}), which may be why (see feedback){repeatedRefusalSummary}";
                 string wallFeedback = RetryPolicy.ForStructuralWallHalt(
-                    task, "A guardrail failed", primaryBody, wall.StructuralPaths);
+                    task, "A guardrail failed", primaryBody, wall.StructuralPaths) + repeatedRefusalFeedback;
                 // #339 N1: mirror the canonical guardrail-failed sibling below — a guardrail that TIMED OUT
                 // must record `timeout`, not `guardrail-failed`, even when a .claude/ wall coincided this
                 // attempt. Hard-coding GuardrailFailed dropped the timeout/guardrail-failed distinction the
@@ -1529,6 +1706,36 @@ public sealed class TaskExecutor : ITaskExecutor
                     harnessWrite: harnessWriteRecord);
             }
 
+            // #708: the guardrails failed AND a WRITE PATH INSIDE this task's enforced scope was refused on this
+            // attempt and an earlier one. Halt needs-human on this attempt, exactly where the structural wall above
+            // halts. Nothing grants the write between attempts, so a retry would be refused it again and fail the
+            // same guardrail: the budget #86 protects. Neither a repeated COMMAND nor a repeated path OUTSIDE the
+            // scope halts here — both are auxiliary routes (plan 40's refused self-check), and they retry below
+            // carrying their secondary context. Reported like the #329 halt above, through the same record: the
+            // guardrail failure that ran leads, as guardrail-failed or timeout with failedGuardrails[] populated,
+            // and the wall follows in #86's path wording.
+            if (repeatedInScopePaths.Count > 0)
+            {
+                // #708 N9: a halt resets nothing — the loop returns before the F2 reset, so the tree is ORPHANED
+                // exactly as on an agent's own needsHuman, and its in-scope work is preserved the same way (#554).
+                // Gated on the write-scope check having seen an in-scope change, because a snapshot of a tree with
+                // none is the line-ending churn #705 measured, not work worth offering anyone.
+                Func<SalvageRef?> wallSalvage = () => attemptScopeCheck is { InScopePaths.Count: > 0 }
+                    ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? [])
+                    : null;
+                // The structural branch of WallHalt is unreachable here: a structural wall already returned above.
+                return WallHalt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                    guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
+                    "A guardrail failed", primaryBody,
+                    $"guardrail(s) failed: {failedNames}",
+                    // The structural case already returned above this site, so it is never consulted here. This
+                    // site keeps the UNNARROWED list: a guardrail did look for the deliverable, and it failed.
+                    wall, () => repeatedInScopePaths, consultStructural: false, budgetRemained: !isFinal, wallSalvage,
+                    provenance, AttemptJournaler.SegmentsFor(action, guardrails), harnessWriteRecord,
+                    guardrailResults: guardrails.Results, failedGuardrails: failedList)!;
+            }
+
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
             // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
             // clean reset is still the default base; the agent chooses how much to reuse.
@@ -1547,7 +1754,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 ? TryStashFailedAttempt(task, worktree, attemptNumber)
                 : null;
             string feedback = RetryPolicy.ForGuardrailFailures(
-                task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef);
+                task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef) + repeatedRefusalFeedback;
             AttemptResult failedResult = _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                 guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
@@ -1557,9 +1764,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     Outcome = TaskOutcome.GuardrailFailed,
                     ActionExitCode = action.ExitCode,
                     Guardrails = guardrails.Results,
-                    Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}"
+                    Summary = $"guardrail(s) failed: {failedNames}{repeatedRefusalSummary}"
                 },
-                failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
+                failedList,
                 // Plan 30 §2: the guardrail-failed path is the one the survivorship finding is ABOUT —
                 // ten of plan 27's twenty-three attempts settled here carrying nothing attributable.
                 costUsd: action.CostUsd, usage: action.Usage, provenance: provenance,
@@ -1962,6 +2169,207 @@ public sealed class TaskExecutor : ITaskExecutor
         && Directory.Exists(worktree.WorktreePath)
         && !string.IsNullOrEmpty(worktree.TaskBase)
         && !worktree.TaskBase.All(c => c == '0');
+
+    /// <summary>
+    /// #708: is a refused write PATH inside the scope this attempt is ENFORCED against — the declared
+    /// <c>writeScope</c> plus the implicit staging destinations (<see cref="WithImplicitStagingScope"/>)?
+    ///
+    /// <para>Only such a path can be this task's deliverable, because the write-scope check below would reject any
+    /// other one anyway. So only such a path is a WALL. A refused path OUTSIDE the enforced scope is auxiliary,
+    /// exactly like a refused command: the attempt retries and the refusal rides along as secondary context.</para>
+    ///
+    /// <para>A null <paramref name="scope"/> is serial mode, where no write-scope check runs at all. There is no
+    /// enforced scope to ask, so every path stays a wall — the #86 rule exactly as it was.</para>
+    ///
+    /// <para>The relativization is why this exists rather than a bare <see cref="WriteScope.IsInScope"/> call: the
+    /// scanner mines its target out of the runtime's own denial message, which names the path however the refused
+    /// tool call did — absolutely as often as not — while every <c>writeScope</c> glob is workspace-relative.</para>
+    /// </summary>
+    internal static bool RefusedPathIsInScope(string path, IReadOnlyList<string>? scope, string workspace)
+    {
+        // NIT-10: containment is asked FIRST, and of every path. "No enforced scope" (serial mode) means the
+        // harness cannot say WHICH file is the deliverable — not that a path in someone else's tree became one.
+        if (WorkspaceRelativeRefusal(path, workspace) is not { } relative)
+        {
+            return false;
+        }
+
+        return scope is null || WriteScope.IsInScope(relative, scope);
+    }
+
+    /// <summary>
+    /// #708: do two spellings name the SAME workspace file? Both sides go through the same relativization the
+    /// scope test uses, so a hatch destination (workspace-relative, as the agent wrote it) and a structural wall
+    /// path (however the runtime's own denial named it) are compared on equal terms rather than as raw strings.
+    /// </summary>
+    private static bool SameWorkspacePath(string a, string b, string workspace) =>
+        WorkspaceRelativeRefusal(a, workspace) is { } left
+        && WorkspaceRelativeRefusal(b, workspace) is { } right
+        && string.Equals(left, right, RealPath.Comparison);
+
+    /// <summary>
+    /// <paramref name="path"/> as a forward-slashed path relative to <paramref name="workspace"/>, or null when it
+    /// names no file under it — blank, the workspace root itself, or anywhere outside it (which no scope can claim).
+    /// Quote-trimmed the way <see cref="PermissionWallTracker"/> normalizes a path, so a quoted refusal and its bare
+    /// form resolve alike.
+    /// <para>
+    /// <b>It must reconcile SPELLINGS, not just separators (#383 / #452).</b> <see cref="Path.GetFullPath(string)"/>
+    /// is string arithmetic: it normalises separators and collapses <c>..</c> but does NOT resolve reparse points.
+    /// The two sides here routinely spell one directory differently — the run's workspace is the short junction
+    /// <c>C:\.a\…</c> while a canonicalizing tool reports the real <c>…\worktrees\…</c> path, and on macOS the same
+    /// shape is <c>/var</c> versus <c>/private/var</c>. A lexical comparison answers "different directory" to both,
+    /// and it fails in the direction that BURNS THE BUDGET: a real in-scope wall reads as auxiliary, nothing halts,
+    /// and the run spends its retries against a wall no summary names — #708's own defect, restored. So a lexical
+    /// miss is retried over the <see cref="RealPath.Resolve"/>d spelling of both sides, which never throws and
+    /// degrades to the lexical answer. A match can therefore only ever be GAINED by resolving, never lost.
+    /// </para>
+    /// </summary>
+    private static string? WorkspaceRelativeRefusal(string path, string workspace)
+    {
+        string target = path.Trim().Trim('"', '\'', '`');
+        if (target.Length == 0)
+        {
+            return null;
+        }
+
+        string absolute;
+        try
+        {
+            absolute = Path.IsPathRooted(target) ? target : Path.Combine(Path.GetFullPath(workspace), target);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
+        {
+            // A target the OS cannot resolve as a path is not a path this task may write.
+            return null;
+        }
+
+        // Lexical first (no IO, the pre-#383 behaviour), then again over both resolved spellings.
+        return RelativeUnder(absolute, workspace)
+            ?? RelativeUnder(RealPath.Resolve(absolute), RealPath.Resolve(workspace));
+    }
+
+    /// <summary>
+    /// <paramref name="path"/> relative to <paramref name="ancestor"/>, forward-slashed, or null when it is not
+    /// strictly nested under it. Compared on a directory boundary, so a sibling such as <c>…/segment-evil</c> is
+    /// never under <c>…/segment</c>, and under <see cref="RealPath.Comparison"/>, so Windows stays case-insensitive.
+    /// </summary>
+    private static string? RelativeUnder(string path, string ancestor)
+    {
+        try
+        {
+            string p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            string a = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ancestor));
+            string prefix = a + Path.DirectorySeparatorChar;
+            return p.StartsWith(prefix, RealPath.Comparison)
+                ? p[prefix.Length..].Replace('\\', '/')
+                : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// #708: settle an attempt <c>needs-human</c> because a write INSIDE its enforced scope was refused both on this
+    /// attempt and on an earlier one. Shared by the five sites that settle an attempt whose action SUCCEEDED but
+    /// which never converged — a guardrail failure, and the four rejections that run before the guardrails — so the
+    /// halt reads the same wherever it fires and the wording has exactly one owner.
+    ///
+    /// <para>Reported per the #329 precedence, through the same record the structural <c>.claude/</c> halt uses: the
+    /// cause that genuinely fired is the reported outcome and leads both the summary and the feedback
+    /// (<paramref name="causeSummary"/> / <paramref name="primaryHeading"/>), and the wall follows it. The wall is
+    /// WHY there is no further attempt, not what went wrong.</para>
+    /// </summary>
+    private AttemptResult? WallHalt(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        ActionRun action,
+        AttemptOutcome outcome,
+        string primaryHeading,
+        string primaryBody,
+        string causeSummary,
+        PermissionWallDecision wall,
+        Func<IReadOnlyList<string>> haltingPaths,
+        bool consultStructural,
+        bool budgetRemained,
+        Func<SalvageRef?> salvage,
+        Journal.AttemptProvenance? provenance,
+        Journal.AttemptSegments? segments,
+        HarnessWriteRecord? harnessWrite,
+        bool workNotPreserved = false,
+        string? outOfScopePatchPath = null,
+        IReadOnlyList<GuardrailResult>? guardrailResults = null,
+        IReadOnlyList<FailedGuardrail>? failedGuardrails = null)
+    {
+        bool structuralStands = consultStructural && wall.HasStructural;
+
+        // #708: the NARROWED wall is what the halt reports, so the text names what actually caused it. Everything
+        // else the attempt was refused — an out-of-scope path, a command — still has to be NAMED: an operator who
+        // grants the path the halt names, re-runs, and is then ambushed by the second refusal was told half the
+        // story. Each branch below hands ForRepeatedRefusalContext the FULL decision plus what it has ALREADY
+        // listed, so the section carries exactly the refusals the halt text does not — nothing lost, nothing said
+        // twice — and disappears when that leaves nothing.
+
+        // A structural .claude/ wall outranks the repeat: it is un-clearable by construction (#104), so it settles
+        // on the FIRST attempt that hits it rather than waiting for a second. It never reaches RepeatedPaths — the
+        // tracker files it under StructuralPaths — which is why it has to be consulted here in its own right. It
+        // yields to an attempt that is using a .claude/ escape route (see `consultStructural` at the call sites).
+        if (structuralStands)
+        {
+            string wallPaths = string.Join(", ", wall.StructuralPaths);
+            return _journaler.StructuralWallHalt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, action, outcome,
+                $"{causeSummary} — needs human; a .claude/ write was blocked this attempt ({wallPaths}), " +
+                "which no retry clears (see feedback)",
+                RetryPolicy.ForStructuralWallHalt(task, primaryHeading, primaryBody, wall.StructuralPaths)
+                    + RetryPolicy.ForRepeatedRefusalContext(wall, wall.StructuralPaths),
+                guardrailResults ?? [], failedGuardrails ?? [],
+                // #707 review: the halt routes as a hard blocker off the decision it just named — here the
+                // structural `.claude/` wall, the same class the #86/#104 site carries.
+                wall,
+                provenance: provenance, segments: segments, harnessWrite: harnessWrite);
+        }
+
+        // NOTHING below is computed until a wall is known to stand. Both of these have OBSERVABLE side effects —
+        // the changed-path scan stages the index, and the stash writes a patch into the log dir that salvage
+        // discovery later probes for — so evaluating them eagerly could advertise preserved work on an attempt
+        // that went on to retry, which the retry path (on a final attempt, deliberately) would not have preserved.
+        IReadOnlyList<string> paths = haltingPaths();
+        if (paths.Count == 0)
+        {
+            return null; // no wall stands on this attempt — the caller's ordinary retry proceeds
+        }
+
+        var haltWall = new PermissionWallDecision(true, [], paths, wall.RepeatedCommands);
+        return _journaler.StructuralWallHalt(
+            task, attemptNumber, startedAt, relativeLogDir, logDir, action, outcome,
+            $"{causeSummary} — needs human; {RetryPolicy.RepeatedRefusals(haltWall)} (see feedback)",
+            RetryPolicy.ForRepeatedPathWallHalt(
+                task, primaryHeading, primaryBody, haltWall, budgetRemained, salvage(),
+                workNotPreserved, outOfScopePatchPath)
+                // The halt already lists haltWall's paths AND its commands, under their own headings.
+                + RetryPolicy.ForRepeatedRefusalContext(
+                    wall, paths.Concat(wall.RepeatedCommands).ToList()),
+            guardrailResults ?? [], failedGuardrails ?? [],
+            // #707 review: the hard-blocker signal carries the NARROWED decision, so what the escalation
+            // records is the wall this halt actually named rather than every target the attempt was refused.
+            haltWall,
+            provenance: provenance, segments: segments, harnessWrite: harnessWrite);
+    }
+
+    /// <summary>
+    /// #708: the snapshot a halt takes at a site whose RETRY would have stashed through
+    /// <see cref="StashIfRollingBack"/>. Converting a retry into a halt must not remove preservation: the halt
+    /// returns before the F2 reset, so without this the tree is orphaned with no ref and no patch and the work is
+    /// simply gone. Unfiltered, exactly like the retry path's snapshot, so precisely what the retry would have kept
+    /// is kept. The framing is the caller's (<see cref="SalvageFraming.Escalation"/>) because no reset follows.
+    /// </summary>
+    private SalvageRef? StashForHalt(TaskNode task, WorktreeHandle worktree, int attemptNumber) =>
+        IsRealGitSegment(worktree) ? TryStashFailedAttempt(task, worktree, attemptNumber) : null;
 
     /// <summary>
     /// Build the #198 per-attempt provenance the harness knows at launch: the RESOLVED ROUTE (block

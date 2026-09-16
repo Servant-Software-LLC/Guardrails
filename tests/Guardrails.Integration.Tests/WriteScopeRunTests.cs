@@ -226,6 +226,91 @@ public sealed class WriteScopeRunTests
         Assert.Equal(2, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["02-implement"].Attempts.Count);
     }
 
+    // ── #708: a repeated IN-SCOPE refused write path settles a violation instead of retrying it ─
+
+    [Fact]
+    public async Task RepeatedInScopeWall_AtAWriteScopeViolation_HaltsReportingTheViolation_Issue708()
+    {
+        // The last of the four pre-guardrail rejection sites. Each attempt writes a DIFFERENT path out of scope, so
+        // #707's own gap rule never fires and the violation would ordinarily retry — while the same IN-SCOPE path is
+        // refused every attempt. That attempt never converged, and nothing grants the write between attempts.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent(
+            (_, call, invocation) => WriteFile(invocation.WorkingDirectory, $"docs/stray-{call}.md", "work"),
+            refusedPaths: ["src/Impl.cs"]);
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("write-scope violation", task.Summary);
+        Assert.Contains("write repeatedly refused (permission wall) — src/Impl.cs", task.Summary);
+
+        TaskJournalEntry entry = JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-implement"];
+        Assert.Equal(
+            [AttemptOutcome.WriteScopeViolation, AttemptOutcome.WriteScopeViolation],
+            entry.Attempts.Select(a => a.Outcome));
+
+        string attempt2 = AttemptDir(planDir, "01-implement", 2);
+        string halt = File.ReadAllText(Path.Combine(attempt2, "feedback.md"));
+        Assert.Contains("## Repeatedly-refused path(s)", halt);
+        Assert.Contains("`src/Impl.cs`", halt);
+
+        // #705, which the retry path this halt replaces already disclosed: the out-of-scope bytes were reverted,
+        // a copy was kept, and the feedback points a human at it. A kept copy nothing names is a copy nobody finds.
+        string keptCopy = Path.Combine(attempt2, "out-of-scope.patch");
+        Assert.True(File.Exists(keptCopy), "the reverted out-of-scope work must still be kept at a halt");
+        Assert.Contains("reverted", halt);
+        Assert.Contains(keptCopy.Replace('\\', '/'), halt);
+    }
+
+    [Fact]
+    public async Task ARepeatedWallOutsideTheScope_AtAWriteScopeViolation_KeepsRetrying_Issue708()
+    {
+        // CONTROL, varying ONLY whether the refused path is inside the enforced scope. tests/Other.cs falls outside
+        // "src/Impl.cs", so it cannot be this task's deliverable: the violations retry, and the third converges.
+        using var repo = new TempGitRepo();
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent(
+            (_, call, invocation) => WriteFile(
+                invocation.WorkingDirectory,
+                call switch { 1 => "docs/a.md", 2 => "docs/b.md", _ => "src/Impl.cs" },
+                "work"),
+            refusedPaths: ["tests/Other.cs"]);
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        Assert.Equal(3, JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-implement"].Attempts.Count);
+    }
+
+    [Fact]
+    public async Task AScopeGapAndARepeatedWall_KeepTheScopeGapHalt_AndNameTheRefusedPath_Issue708()
+    {
+        // PRECEDENCE at that site: when #707's scope-gap rule also fires, its own diagnosis LEADS — the gap is what
+        // a human must fix — and the refused path is added to it rather than replacing it.
+        using var repo = new TempGitRepo();
+        repo.Commit("src/Stub.cs", "stub");
+        string planDir = WritePlan(repo.RepoPath, defaultRetries: 3, new TaskSpec("01-implement", ["src/Impl.cs"]));
+        var agent = new ScriptedAgent(
+            (_, call, invocation) => WriteFile(invocation.WorkingDirectory, "src/Stub.cs", $"implemented on call {call}"),
+            refusedPaths: ["src/Impl.cs"]);
+
+        (RunReport report, _) = await RunWorktreeAsync(planDir, repo, agent);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("write-scope gap", task.Summary);                  // #707's diagnosis still leads
+        Assert.Contains("src/Stub.cs", task.Summary);
+        Assert.Contains("write repeatedly refused (permission wall) — src/Impl.cs", task.Summary);
+
+        string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-implement", 2), "feedback.md"));
+        Assert.Contains("its writeScope does not cover what it keeps changing", halt);
+        Assert.Contains("## Repeatedly-refused path(s)", halt);
+        Assert.Contains("`src/Impl.cs`", halt);
+    }
+
     // ── #705: out-of-scope work stays recoverable, and salvage says only what is true ──────────
 
     [Fact]
@@ -529,9 +614,12 @@ public sealed class WriteScopeRunTests
     /// whose <see cref="PromptInvocation.WorkingDirectory"/> is the effective workspace, so a write there is
     /// exactly what an agent's file-editing tool would have produced. Writes no state fragment.
     /// </summary>
-    private sealed class ScriptedAgent(Action<string, int, PromptInvocation> act) : IPromptRunner
+    private sealed class ScriptedAgent(
+        Action<string, int, PromptInvocation> act, IReadOnlyList<string>? refusedPaths = null) : IPromptRunner
     {
         private readonly Action<string, int, PromptInvocation> _act = act;
+        /// <summary>#708: write paths the runtime refused this attempt, as the scanner would report them.</summary>
+        private readonly IReadOnlyList<string> _refusedPaths = refusedPaths ?? [];
         private readonly Dictionary<string, int> _calls = new(StringComparer.Ordinal);
 
         public string Name => "scripted-agent";
@@ -546,7 +634,13 @@ public sealed class WriteScopeRunTests
             }
 
             _act(taskId, call, invocation);
-            return Task.FromResult(new PromptResult { Completed = true, IsError = false, Summary = "scripted agent done" });
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "scripted agent done",
+                BlockedWritePaths = _refusedPaths
+            });
         }
     }
 

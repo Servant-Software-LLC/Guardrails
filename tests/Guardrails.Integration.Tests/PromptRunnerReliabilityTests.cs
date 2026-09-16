@@ -58,7 +58,12 @@ public sealed class PromptRunnerReliabilityTests
         public ConcurrentBag<(string Reason, TimeSpan Backoff, int PauseCount)> Pauses { get; } = new();
         public void TaskStarting(TaskNode task) { }
         public void TaskFinished(TaskResult result) { }
-        public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
+        private int _guardrailsFinished;
+
+        /// <summary>How many guardrail runs finished (#708 pins that a succeeded action's guardrails RAN).</summary>
+        public int GuardrailsFinished => _guardrailsFinished;
+
+        public void GuardrailFinished(TaskNode task, GuardrailResult result) => Interlocked.Increment(ref _guardrailsFinished);
         public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) =>
             Pauses.Add((reason, backoff, pauseCount));
     }
@@ -131,6 +136,16 @@ public sealed class PromptRunnerReliabilityTests
     };
 
     /// <summary>
+    /// <paramref name="result"/> with a permission wall on <paramref name="refused"/> (#708): a refused write path,
+    /// or, when <paramref name="isCommand"/>, a refused command, reported the way the Claude scanner reports one.
+    /// </summary>
+    private static PromptResult Refusing(PromptResult result, string refused, bool isCommand) => result with
+    {
+        BlockedWritePaths = [refused],
+        RefusedCommands = isCommand ? [refused] : []
+    };
+
+    /// <summary>
     /// Build a one-task prompt-action plan (a trivial always-pass deterministic guardrail) and run it
     /// through the real Scheduler with the given fake runner, observer, retry budget and instant
     /// transient delay. Returns the run report + the journal entry for the single task.
@@ -147,7 +162,8 @@ public sealed class PromptRunnerReliabilityTests
         IRunObserver observer,
         int defaultRetries,
         int transientPauseBudgetSeconds = 1800,
-        bool keepRoot = false)
+        bool keepRoot = false,
+        bool guardrailPasses = true)
     {
         string root = Path.Combine(Path.GetTempPath(), "gr-reliability-" + Guid.NewGuid().ToString("N"));
         if (keepRoot)
@@ -174,10 +190,14 @@ public sealed class PromptRunnerReliabilityTests
             """{ "description": "reliability task", "dependsOn": [], "action": { "path": "action.prompt.md" } }""");
         File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.\n");
 
-        // Trivial always-pass deterministic guardrail (OS-appropriate, directly spawnable).
+        // Trivial deterministic guardrail (OS-appropriate, directly spawnable): always passes, or, for #708's control,
+        // always fails.
         bool win = OperatingSystem.IsWindows();
-        string guardrailPath = Path.Combine(taskDir, "guardrails", win ? "01-ok.cmd" : "01-ok.sh");
-        File.WriteAllText(guardrailPath, win ? "@echo off\r\nexit /b 0\r\n" : "#!/usr/bin/env bash\nexit 0\n");
+        string guardrailName = guardrailPasses ? "01-ok" : "01-fail";
+        int guardrailExit = guardrailPasses ? 0 : 1;
+        string guardrailPath = Path.Combine(taskDir, "guardrails", guardrailName + (win ? ".cmd" : ".sh"));
+        File.WriteAllText(guardrailPath,
+            win ? $"@echo off\r\nexit /b {guardrailExit}\r\n" : $"#!/usr/bin/env bash\nexit {guardrailExit}\n");
         if (!win)
         {
             File.SetUnixFileMode(guardrailPath,
@@ -594,5 +614,152 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Equal(JournalTaskStatus.Succeeded, entry.Status);
         Assert.Equal(2, used.Calls);                       // 1 blocked + 1 success
         Assert.DoesNotContain(entry.Attempts, a => a.Outcome == AttemptOutcome.PermissionDenied);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #708 — a repeated refusal settles only an attempt whose ACTION FAILED; a succeeded action is settled by its
+    // guardrails
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("pwsh -NoProfile -File tasks/21-update-ssot/guardrails/01-ssot-records-the-contracts.ps1", true)]
+    [InlineData("src/locked/Protected.cs", false)]
+    public async Task RepeatedRefusal_OnAnAttemptWhoseActionSucceeded_RunsTheGuardrails_AndAPassIsGreen(string refused, bool isCommand)
+    {
+        // Plan 40, task 21: attempt 1 ran out of turns reaching for a self-check it was not granted, and attempt 2
+        // FINISHED the deliverable and reached for the same self-check once more. The eager #86 halt settled attempt 2
+        // permission-denied before its guardrail ran, a guardrail that would have passed. Only --autonomous got the
+        // finished work past it.
+        var observer = new PauseRecordingObserver();
+        var runner = new SequencingRunner(Refusing(MaxTurns(), refused, isCommand), Refusing(Success(), refused, isCommand));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, observer, defaultRetries: 2);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        Assert.Equal(JournalTaskStatus.Succeeded, entry.Status);
+        Assert.Equal(new[] { AttemptOutcome.MaxTurns, AttemptOutcome.Succeeded }, entry.Attempts.Select(a => a.Outcome));
+        // The guardrail certified the green: it ran once, on attempt 2. Attempt 1's action failed, so none ran there.
+        Assert.Equal(1, observer.GuardrailsFinished);
+        Assert.Equal(2, used.Calls);
+    }
+
+    [Fact]
+    public async Task RepeatedCommand_OnAnAttemptWhoseGuardrailFails_Retries_WithTheRefusalAsSecondaryContext()
+    {
+        // #708's own case: a refused optional self-check. A succeeded action is settled by its guardrails, so a FAILING
+        // guardrail fails the attempt, as guardrail-failed rather than permission-denied, and a refused COMMAND does not
+        // halt it: the retry runs. This is also the control for the deferral, since a change that dropped the halt by
+        // going straight to green, without running the guardrails, would settle this task green.
+        const string selfCheck = "echo \"EXIT:$?\"";
+        var observer = new PauseRecordingObserver();
+        var runner = new SequencingRunner(
+            Refusing(MaxTurns(), selfCheck, isCommand: true), Refusing(Success(), selfCheck, isCommand: true));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) = await RunOneTaskAsync(
+            runner, observer, defaultRetries: 2, keepRoot: true, guardrailPasses: false);
+
+        try
+        {
+            TaskResult task = Assert.Single(report.Tasks);
+            Assert.False(task.IsGreen);
+            Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);   // the budget of three ran out
+            Assert.Equal(
+                new[] { AttemptOutcome.MaxTurns, AttemptOutcome.GuardrailFailed, AttemptOutcome.GuardrailFailed },
+                entry.Attempts.Select(a => a.Outcome));
+            Assert.Equal(3, used.Calls);
+            Assert.Equal("01-fail", Assert.Single(entry.Attempts[1].FailedGuardrails).Name);
+            Assert.Equal(2, observer.GuardrailsFinished);
+
+            // Secondary context, in the summary and in the feedback the retry read.
+            Assert.Contains($"secondary context: command repeatedly refused (permission wall) — {selfCheck}", task.Summary);
+            string feedback = File.ReadAllText(Path.Combine(_lastPlanRoot!, entry.Attempts[1].LogDir, "feedback.md"));
+            Assert.Contains("## Secondary context", feedback);
+            Assert.Contains($"- command: `{selfCheck}`", feedback);
+        }
+        finally
+        {
+            try { Directory.Delete(_lastPlanRoot!, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RepeatedWritePath_OnAnAttemptWhoseGuardrailFails_HaltsNeedsHuman_OnThatAttempt()
+    {
+        // The same shape with a refused WRITE PATH, which is not a route the agent can do without: nothing grants the
+        // write between attempts, so a retry would be refused it again and fail the same guardrail. That is the budget
+        // #86 protects, so this attempt halts on the repeat, as #86 did, and reports the guardrail failure that ran
+        // before the wall (#329).
+        const string lockedPath = "src/locked/Protected.cs";
+        var observer = new PauseRecordingObserver();
+        var runner = new SequencingRunner(
+            Refusing(MaxTurns(), lockedPath, isCommand: false), Refusing(Success(), lockedPath, isCommand: false));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) = await RunOneTaskAsync(
+            runner, observer, defaultRetries: 2, keepRoot: true, guardrailPasses: false);
+
+        try
+        {
+            TaskResult task = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+            Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+            // Settled on attempt 2: the third budgeted attempt was not spent on a write nothing will grant.
+            Assert.Equal(new[] { AttemptOutcome.MaxTurns, AttemptOutcome.GuardrailFailed }, entry.Attempts.Select(a => a.Outcome));
+            Assert.Equal(2, used.Calls);
+            Assert.Equal("01-fail", Assert.Single(entry.Attempts[1].FailedGuardrails).Name);
+            Assert.Equal(1, observer.GuardrailsFinished);
+            Assert.Equal(
+                $"guardrail(s) failed: 01-fail — needs human; write repeatedly refused (permission wall) — {lockedPath} (see feedback)",
+                task.Summary);
+
+            string feedback = File.ReadAllText(Path.Combine(_lastPlanRoot!, entry.Attempts[1].LogDir, "feedback.md"));
+            Assert.Contains("## A guardrail failed", feedback);
+            Assert.Contains("## Repeatedly-refused path(s)", feedback);
+            Assert.Contains($"- `{lockedPath}`", feedback);
+        }
+        finally
+        {
+            try { Directory.Delete(_lastPlanRoot!, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task SameRefusedCommand_OnTwoFailedAttempts_StillHaltsOnTheRepeat_AndIsCalledACommand()
+    {
+        // #708 keeps the #86 halt where it protects the budget: an attempt that could not finish re-refused the same
+        // call. This command names a .claude/ path, which before #708 made it the STRUCTURAL write wall, settled on
+        // attempt 1 as "write to .claude/ blocked". A refused grep is not a write, so it gets its retry and then halts
+        // on the repeat, named as the command it is.
+        const string grep = "grep -rn needsHarnessWrite /repo/.claude/skills";
+        var runner = new SequencingRunner(Refusing(Blocked(), grep, isCommand: true));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Equal(new[] { AttemptOutcome.ActionFailed, AttemptOutcome.PermissionDenied }, entry.Attempts.Select(a => a.Outcome));
+        Assert.Equal(2, used.Calls);
+        Assert.Equal($"needs human: command repeatedly refused (permission wall) — {grep}", task.Summary);
+    }
+
+    [Fact]
+    public async Task AnAttemptThatPausedAndReran_CountsItsRefusalOnce_SoItIsNotARepeatOnItsOwn()
+    {
+        // #708 W5: the wall is observed before the transient-pause check, so an attempt that a rate limit paused and re-ran under
+        // the same number was observed twice. One attempt then counted as two, and attempt 1 settled permission-denied as a
+        // REPEATED wall before any second attempt existed.
+        const string lockedPath = "src/locked/Protected.cs";
+        var runner = new SequencingRunner(
+            Refusing(Transient("overloaded"), lockedPath, isCommand: false),   // attempt 1, paused
+            Refusing(Blocked(), lockedPath, isCommand: false));               // attempt 1 re-run, then attempt 2
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+        // Attempt 1 retried; the repeat is attempt 2's.
+        Assert.Equal(new[] { AttemptOutcome.ActionFailed, AttemptOutcome.PermissionDenied }, entry.Attempts.Select(a => a.Outcome));
+        Assert.Equal(3, used.Calls);
     }
 }

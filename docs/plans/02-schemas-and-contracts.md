@@ -3511,13 +3511,19 @@ delivery may proceed.
   `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
   transient pause that DOES clear is never journaled (observe-only via the `PromptPaused` event).
-- `permission-denied` — the runner refused a write/edit because the path is not on the granted
-  permission allow-list, and the wall is un-retryable (issues #86 / #104 / #325, §9.3). The harness
-  settled `needs-human` instead of burning the remaining retry budget on the identical wall. **The halt
-  is OUTCOME-AWARE — two distinct shapes (§9.3):**
-  - A **REPEATED non-`.claude/` path** (refused across two or more attempts, #86) halts **EAGERLY** on
-    the repeat — a non-`.claude/` path re-refused is a strong un-clearable-wall signal that need not wait
-    for the attempt's outcome.
+- `permission-denied` — the runner refused a call because its target (a write path, or a command) is not
+  on the granted permission allow-list, and the wall is un-retryable (issues #86 / #104 / #325 / #708,
+  §9.3). The harness settled `needs-human` instead of burning the remaining retry budget on the identical
+  wall. **The halt is OUTCOME-AWARE — two distinct shapes (§9.3):**
+  - A **REPEATED refusal** (a non-`.claude/` path or a command refused across two or more attempts, #86)
+    is settled at the attempt's outcome (#708). An attempt whose ACTION FAILED halts on the repeat,
+    reporting `permission-denied`, for paths and commands alike. An attempt whose action SUCCEEDED is
+    settled by its guardrails: a pass is `succeeded` whatever was refused. If a guardrail fails, a repeated
+    WRITE PATH halts `needs-human` on that attempt, reported `guardrail-failed` (or `timeout`) with
+    `failedGuardrails[]` populated per the precedence rule below, and a repeated COMMAND is an ordinary
+    `guardrail-failed` retry carrying the refusal as secondary context. The halt used to fire eagerly,
+    before the outcome was known, which settled a finished, guardrail-passing attempt `permission-denied`
+    without running its guardrails.
   - A **structural `.claude/` path** (#104/#325 — the Claude Code sub-agent runtime blocks automated
     `.claude/` writes even under `acceptEdits`) halts only on an attempt that did NOT converge (the
     action failed OR the guardrails failed). A CONVERGED attempt (guardrails PASS) goes **GREEN** even
@@ -3526,9 +3532,10 @@ delivery may proceed.
 
   **Outcome PRECEDENCE on a non-converged structural halt (issue #329).** `permission-denied` is the
   reported outcome only when the wall is the honest PRIMARY cause with nothing more specific to report —
-  the eager #86 repeated-wall, or a structural `.claude/` wall on an attempt whose ACTION FAILED (so **no
+  the #86 repeated wall, or a structural `.claude/` wall, on an attempt whose ACTION FAILED (so **no
   guardrail ran**: the classic #104 first-attempt wall). When the non-convergence is instead a **guardrail
-  that genuinely RAN and FAILED** while a structural `.claude/` wall was also present, the reported outcome
+  that genuinely RAN and FAILED** while a structural `.claude/` wall (or, since #708, a repeated write path)
+  was also present, the reported outcome
   is that guardrail failure — `guardrail-failed` with `failedGuardrails[]` populated — NOT
   `permission-denied` with an empty `failedGuardrails[]`. The halt DECISION is unchanged (still
   `needs-human` on that one attempt, the #104 fast-halt); only WHAT it reports leads with the true cause,
@@ -6130,16 +6137,29 @@ By default, triage only **drafts** the GH issue (title + body) into `feedback.md
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
 
-### 9.3 Permission-wall halt (issues #86 / #104 / #325 / #329)
+### 9.3 Permission-wall halt (issues #86 / #104 / #325 / #329 / #708)
 
-When the runner REFUSES a write/edit because the target path is not on the granted permission
-allow-list, retrying often cannot clear it — switching tools or re-issuing the same write hits the same
-refusal. The harness detects this **permission wall** and settles the task `needs-human` with the
+When the runner REFUSES a call because its target — a write path, or a command — is not on the granted
+permission allow-list, retrying often cannot clear it — switching tools or re-issuing the same call hits the
+same refusal. The harness detects this **permission wall** and settles the task `needs-human` with the
 distinct `permission-denied` attempt outcome (§7), instead of spending the rest of the retry budget on
-the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issue #325):** a REPEATED non-`.claude/`
-path halts EAGERLY on the repeat, but a structural `.claude/` path halts only on an attempt that did NOT
-converge — a converged attempt (guardrails pass) is GREEN even when a `.claude/` refusal was reported,
-because the agent recovered and the deliverable landed. **What a non-converged structural halt REPORTS is
+the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issues #325 / #708):** a structural `.claude/`
+path and a REPEATED write path halt only on an attempt that did NOT converge (its action failed or its
+guardrails failed), and a REPEATED command only on an attempt whose ACTION FAILED — so an attempt whose action
+succeeded and whose guardrails pass is GREEN even when a refusal was reported, because the agent reached its
+result by another route and the deliverable landed. **It is also SCOPE-AWARE (#708):** only a refused path
+INSIDE the scope the attempt is enforced against — the declared `writeScope` plus the implicit `stagingOutputs`
+destinations (§3.4/§3.5) — can be this task's deliverable, because the write-scope check would reject any other
+one anyway; so only such a path is a write wall, and a refused path outside that scope is auxiliary exactly like
+a refused command. With NO enforced scope (serial mode, where no write-scope check runs) every path INSIDE the
+workspace stays a wall; one outside it never is, scope or no scope. The comparison resolves SPELLINGS, not just
+separators: the refusal is reported however the refused tool call named it, while the workspace may be the #383
+short junction (`C:\.a\…`) or a macOS `/var` alias (#452), so a lexical miss is retried over both sides'
+symlink-resolved form. That direction matters — a lexical-only test would read a real in-scope wall as auxiliary
+and burn the budget against a wall no summary names. **Resolution is best-effort, so the reconciliation is not
+guaranteed:** `RealPath.Resolve` degrades to the literal spelling for a path it cannot resolve (it does not
+exist, it is unreadable, the link chain is circular), and the comparison then falls back to the lexical answer —
+so a refusal naming an unresolvable alias of the workspace can still read as auxiliary and retry. **What a non-converged structural halt REPORTS is
 in turn cause-aware (issue #329):** the `permission-denied` outcome is reported only when the wall is the
 honest primary cause (the action failed, so no guardrail ran); a guardrail that genuinely RAN and FAILED
 is reported as `guardrail-failed` with `failedGuardrails[]` populated, with the `.claude/` wall as
@@ -6150,13 +6170,20 @@ SOLE home of the vendor permission-denial wording, like the §9 failure classifi
 wall surfaces in the `tool_result` events of the `stream-json` stream, NOT the terminal `result`
 message — a refusal under `acceptEdits` does not make the agent report `is_error`, so the agent keeps
 trying workarounds and burns turns/retries (exactly the #86/#104 waste). The runner mines the distinct
-**refused write paths** (extracting the path the denial message embeds, falling back to the preceding
-write-family `tool_use`'s `file_path` when the message carries none) and returns them as a
-runner-agnostic list. The harness routes on the LIST of paths only — never on a vendor string.
+**refused targets** — the path the denial message embeds, or the command a Bash approval refusal names
+(`"…The following part requires approval: <command>"`), falling back to the preceding `tool_use`'s
+`file_path`/`path`/`notebook_path` or Bash `command` when the message names nothing — and returns them as a
+runner-agnostic list (`BlockedWritePaths`), plus the subset that are refused COMMANDS (`RefusedCommands`,
+#708). The kind comes from the route that attributed each target, never from its shape: a Bash `cp` of a
+`.claude/` file is refused as a write to that PATH and stays a path, while a refused `grep` is a command even
+when it names a `.claude/` directory. A command is kept verbatim; a path is quote-trimmed so its quoted and
+bare forms repeat together. The harness routes on these lists only — never on a vendor string.
 
 **Two halt rules.**
 
-- **Structural `.claude/` path (issues #104 / #325) — halt DEFERRED to the attempt's outcome.** The
+- **Structural `.claude/` path (issues #104 / #325) — halt DEFERRED to the attempt's outcome.** Only a
+  PATH can be this wall: a refused command that names a `.claude/` path is not a write, so it counts toward
+  the repeated rule below instead (#708). The
   Claude Code sub-agent runtime blocks automated writes under `.claude/` **even when `permissionMode` is
   `acceptEdits`**, so a genuinely un-recoverable `.claude/` wall no number of retries can clear must
   still halt. But the refusal alone is NOT proof the wall is un-recoverable: the wall tracker OBSERVES
@@ -6191,13 +6218,87 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
       `.claude/` wall is the honest primary cause and the attempt stays `permission-denied`. A classified
       action failure with NO `.claude/` wall present already reports its own outcome
       (`timeout`/`output-cap`/`max-turns`/`action-failed`), unchanged.
-- **Repeated same path (issue #86) — halt EAGER.** A non-`.claude/` path re-refused across attempts is a
-  strong un-clearable-wall signal that need NOT wait for the attempt's outcome, so unlike the structural
-  rule this halt fires EAGERLY (before the outcome is routed, right after the transient-pause check).
-  Any non-`.claude/` path refused on **two or more** attempts is a structural blocker the agent cannot
-  fix by retrying. The harness halts on the **second** attempt that re-hits the SAME path, rather than
-  spending the rest of the budget on the identical wall. A path refused **once** does NOT halt (the retry
-  is given its chance — a one-off block the retry clears is normal retry behaviour).
+- **Repeated same target (issues #86 / #708) — settled at the attempt's OUTCOME, split by kind.** Any
+  non-`.claude/` path, or any command, refused on **two or more** attempts is a wall. Where it settles an
+  attempt depends on how the attempt ended:
+  - **The action failed** (error, `max-turns`, `timeout`, `output-cap` — the agent could not finish, typically
+    because it was stuck at the wall): the harness halts on the **second** attempt that re-hits the SAME
+    target, path or command, rather than spending the rest of the budget on the identical wall. It reports
+    `permission-denied`, checked after the transient-pause check and before the structural rule.
+  - **The action succeeded and the guardrails pass:** **GREEN**, whatever was refused. A refused AUXILIARY
+    call (plan 40's task 21 reached for a self-check script it was not granted) is one route among several,
+    and an attempt that finishes by another route has cleared the wall.
+  - **The action succeeded, a guardrail failed, and an IN-SCOPE WRITE PATH repeated:** halt `needs-human` on
+    that attempt, at the guardrail-failed site where the structural rule above halts. Nothing grants the write
+    between attempts, so a retry would be refused it again and fail the same guardrail — the budget #86
+    protects. Reported per the #329 precedence: `guardrail-failed` (or `timeout`) with `failedGuardrails[]`
+    populated. The summary is `guardrail(s) failed: <names> — needs human; write repeatedly refused
+    (permission wall) — <paths> (see feedback)`, and `feedback.md` leads with `## A guardrail failed`, then
+    `## Repeatedly-refused path(s)`. When a structural `.claude/` wall is also present, the structural halt
+    fires instead and carries the repeated refusal as context.
+  - **The action succeeded, a guardrail failed, and only COMMANDS — or only OUT-OF-SCOPE paths — repeated:** an
+    ordinary `guardrail-failed` retry. Both are routes the agent can reach its result without, so the refusal
+    rides along as SECONDARY context: the summary gains `; secondary context: command repeatedly refused
+    (permission wall) — <commands>` (or the `write repeatedly refused` clause for a path), and `feedback.md`
+    gains a `## Secondary context — refused on two or more attempts` section listing each `path:` / `command:`.
+  - **The action succeeded, the attempt was REJECTED before its guardrails ran, and a wall stands:** halt
+    `needs-human` at that rejection site (#708). There are four — a staging-move failure (§3.5), a nested
+    control key (§6.2), a refused `needsHarnessWrite` (§9), and a write-scope violation (§3.4) — and none of
+    them converged, so a retry handed the same refusal reaches the same place. Reported per the same #329
+    precedence: the REJECTION is the attempt outcome (`staging-failed` / `invalid-fragment` /
+    `harness-write-rejected` / `write-scope-violation`, §7) and leads the summary and `feedback.md`, with the
+    wall named after it. At the write-scope site a #707 scope-gap halt keeps its OWN diagnosis and gains the
+    refused path in its summary and feedback — the plan's gap is still what a human must fix, and widening the
+    scope alone would not clear the refusal. Before #708 these four retried to exhaustion and no summary ever
+    named the wall. Three rules govern WHICH wall halts here:
+    - **A structural `.claude/` path halts on the FIRST attempt that hits it**, exactly as at the sites above.
+      It never reaches the repeat rule — the tracker files it under structural paths — so it is consulted in
+      its own right. Without that, a task whose `.claude/` deliverable is staged, whose direct `.claude/` write
+      was refused, and whose staging move then failed burned its whole budget with the wall named nowhere.
+      **It YIELDS only to an escape route that addresses the WALLED path (#321/#325, and #708's scoping):** when
+      the attempt emitted a `needsHarnessWrite` naming that same path — or a malformed, NESTED control key, which
+      applied no request at all and so counts as the rejected case — the refusal it hit is the PRECONDITION for
+      the route it is taking, not an un-clearable wall, so the rejection is reported on its own and the attempt
+      retries. Halting there would pre-empt the hatch, which is the defect #321 fixed and #325 generalised. A
+      hatch for an UNRELATED file does NOT yield: a task hatching file A while structurally walled on file B has
+      not addressed B, and yielding there let it burn its whole budget with that wall named nowhere. The paths
+      are compared as workspace-relative spellings, not raw strings, so the hatch destination as the agent wrote
+      it and the wall path as the runtime's denial named it are judged on equal terms. The fourth site — a
+      REJECTED `needsHarnessWrite` — never consults the structural wall at all: the rejection is the reported
+      cause, and the hatch was precisely the route past the wall.
+    - **A repeated in-scope path halts unless THIS ATTEMPT changed it.** In-scope is necessary but not
+      sufficient for "this attempt can never converge": at these four sites no guardrail has looked for the
+      deliverable yet, so a refusal of a path the agent nonetheless produced by another route says nothing about
+      the rejection that actually failed the attempt. The question is asked of the attempt's own diff against
+      `taskBase` — the same stage-then-diff the write-scope check uses — and NOT of the filesystem. A segment
+      worktree is checked out AT `taskBase`, so "the file exists" is true of everything the repo already
+      contains, which would mask the wall for the two commonest shapes there are: modifying an existing file,
+      and implementing against an upstream stub. The guardrail-failed site keeps the unnarrowed rule — there a
+      guardrail DID look, and failed. A git failure yields an EMPTY changed-set, so the wall stands rather than
+      being silently masked.
+    - **The halt preserves exactly what the retry it replaces would have preserved.** A halt returns before the
+      F2 reset, so the tree is ORPHANED rather than rolled back and the salvage carries the escalation framing
+      (§3.2/§9, #554). The ONE exception is the nested-control-key site, which keeps the documented
+      fragment-rejection boundary and preserves nothing — and SAYS so, because silence there reads as "there
+      was nothing worth keeping".
+
+  Before #708 this halt fired EAGERLY, before the outcome was known, and settled a finished,
+  guardrail-passing attempt `permission-denied` with no guardrail run. A target refused **once** does NOT halt
+  (the retry is given its chance — a one-off block the retry clears is normal retry behavior), and a target
+  counts only on an attempt whose LATEST observation refused it, at most once per attempt NUMBER — so an
+  attempt a transient pause re-ran under the same number cannot become a repeat on its own (#708).
+
+  **Narrowing the wall never LOSES a refusal.** A halt names the wall that caused it, and every other repeated
+  target — an out-of-scope path, a command — is carried in the same `## Secondary context — refused on two or
+  more attempts` section, at every halt AND on the retry path of all five sites. An operator who grants the path
+  a halt names, re-runs, and is then ambushed by the second refusal has been told half the story.
+
+  **Residual (#708, WEAK-4).** At the four pre-guardrail sites "in-scope, repeated, and not already written" is
+  the strongest evidence the harness holds, and it is still not PROOF that no retry could converge: no guardrail
+  has evaluated the deliverable at that point, so a task refused an in-scope path it genuinely does not need can
+  be halted one attempt early. The trade is deliberate — the measured failure is the opposite one (a whole budget
+  burned against a wall nothing named) — and the halt is fully attributed, so a human sees the refused path, the
+  rejection, and the preserved work in one read.
 
 **`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
 path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`
@@ -6215,10 +6316,16 @@ works** against current Claude Code: the `.claude/` block is unconditional regar
 (issue #273), so the `feedback.md` no longer recommends it. For any other repeated (non-`.claude/`)
 path, confirm the runner's `permissionMode` / `allowedTools` and the `.claude/settings.json` allow-list
 cover the path (which DOES still work outside `.claude/`), then re-run (the harness resumes from here).
+A repeated COMMAND gets its own `## Repeatedly-refused command(s)` section and summary clause (`command
+repeatedly refused (permission wall) — <command>`, never "write" or "path", #708): grant it through the
+task's `allowedTools` (e.g. `Bash(python3 *)`), or drop the task's reliance on it.
 
 **Residual (honest scope).** This is a **detect-and-halt-honestly** mitigation: it ends the #86/#104
-retry-budget waste and lands the human on an actionable diagnosis on the first (structural) or second
-(repeated) attempt. It does **not** itself grant `.claude/` write access — the root cause is a
+retry-budget waste and lands the human on an actionable diagnosis — on the first attempt for a structural
+`.claude/` wall, and, for a repeat, on the attempt whose OUTCOME the wall is allowed to settle (#708): never
+before that attempt has finished, and never for a refused command or a refused path outside the enforced write
+scope, both of which are routes an agent can reach its result without. It does **not** itself grant `.claude/`
+write access — the root cause is a
 Claude-Code-runtime restriction the harness cannot override from outside the sub-agent. Issue #266
 removes one further trigger of this rule structurally: the harness's own default STATE_OUT/VERDICT_OUT
 targets are never `.claude/`-nested from the sub-agent's point of view, regardless of where the plan

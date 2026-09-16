@@ -733,4 +733,71 @@ public sealed class WriteScopeCheckTests
         Assert.False(offense.IsNewFile);
         Assert.Null(offense.Preview);
     }
+
+    /// <summary>
+    /// The CONTROL for the two fail-closed rows below (#708). Without it, "the result is empty" would be
+    /// satisfied by a method that can never report anything, and the guarantee would be untested either way.
+    /// </summary>
+    [Fact]
+    public void ChangedPaths_ReportsWhatThisAttemptChanged()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("docs/ssot.md", "// the file this task exists to edit", "add base doc");
+        string taskBase = repo.HeadSha();
+
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "ssot.md"), "// this attempt's own edit");
+
+        IReadOnlySet<string> changed = WriteScopeCheck.ChangedPaths(repo.RepoPath, taskBase);
+
+        Assert.Contains("docs/ssot.md", changed);
+    }
+
+    /// <summary>
+    /// #708: <see cref="WriteScopeCheck.ChangedPaths"/> FAILS CLOSED on a git error — an empty set, so no path is
+    /// taken for "this attempt already changed it" and the pre-guardrail permission wall STANDS.
+    /// <para>
+    /// This is the assertion that makes the posture a gate rather than a docstring. The rule it feeds removes a
+    /// refused path from the halting set when the attempt changed that path itself. If an unknown answer were
+    /// reported as "changed", the refused path would be filtered out, no wall would stand, and the attempt would
+    /// retry to budget exhaustion against a wall no summary names — the exact defect #708 was filed to fix. So the
+    /// row asserts the CONSEQUENCE, not merely emptiness: the path is genuinely modified on disk (the control above
+    /// proves a healthy call reports it) and is STILL absent from the verdict.
+    /// </para>
+    /// <para>
+    /// Here git exits non-zero, because the taskBase does not exist — <c>RunGit</c>'s
+    /// <see cref="InvalidOperationException"/> branch.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ChangedPaths_WhenGitExitsNonZero_FailsClosed_SoTheWallStands()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("docs/ssot.md", "// the file this task exists to edit", "add base doc");
+
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "ssot.md"), "// this attempt's own edit");
+
+        // A well-formed sha that is not in this repository: `git diff --cached … <sha>` exits non-zero.
+        IReadOnlySet<string> changed = WriteScopeCheck.ChangedPaths(repo.RepoPath, new string('b', 40));
+
+        Assert.Empty(changed);
+        Assert.DoesNotContain("docs/ssot.md", changed);
+    }
+
+    /// <summary>
+    /// #708, the other half of the same guarantee: git cannot even be SPAWNED (a bad working directory here; git
+    /// off PATH in the field). That surfaces as a <see cref="System.ComponentModel.Win32Exception"/>, not the
+    /// non-zero-exit <see cref="InvalidOperationException"/> of the row above, so a catch narrowed to the latter
+    /// lets it escape and take out the attempt while the docstring goes on promising a fail-closed empty set.
+    /// This row is what turns that catch from prose into behaviour: narrow it and this test goes red.
+    /// </summary>
+    [Fact]
+    public void ChangedPaths_WhenGitCannotBeSpawned_FailsClosed_WithoutThrowing()
+    {
+        string absent = Path.Combine(Path.GetTempPath(), "gr-wsc-absent-" + Guid.NewGuid().ToString("N"));
+        Assert.False(Directory.Exists(absent), "the working directory must not exist for this row to mean anything");
+
+        IReadOnlySet<string> changed = WriteScopeCheck.ChangedPaths(absent, new string('b', 40));
+
+        Assert.Empty(changed);
+    }
 }

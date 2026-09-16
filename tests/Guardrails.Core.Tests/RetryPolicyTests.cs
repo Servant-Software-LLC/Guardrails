@@ -824,6 +824,173 @@ public sealed class RetryPolicyTests
         Assert.Contains("01-author", RetryPolicy.WriteScopeGapSummary(PromptTask("02-implement"), upstream));
     }
 
+    // ── #708 the permission-wall halt names a refused command as a command ───────────────────────
+
+    [Fact]
+    public void PermissionWall_RepeatedCommand_IsNamedACommand_NotAPath()
+    {
+        // Plan 40, task 20: the halt listed `echo "EXIT:$?` under "Repeatedly-refused path(s)", and plan 28's refused
+        // read-only `grep` was summarized as "write repeatedly refused". Neither was a write, and neither was a path.
+        const string selfCheck = "echo \"EXIT:$?\"";
+        var wall = new PermissionWallDecision(true, [], [], [selfCheck]);
+
+        string feedback = RetryPolicy.ForPermissionWall(PromptTask("20-implement"), wall);
+
+        Assert.Contains("## Repeatedly-refused command(s)", feedback);
+        Assert.Contains($"- `{selfCheck}`", feedback);
+        Assert.Contains("allowedTools", feedback);
+        Assert.DoesNotContain("path(s)", feedback);
+        Assert.Equal(
+            $"needs human: command repeatedly refused (permission wall) — {selfCheck}",
+            RetryPolicy.PermissionWallSummary(wall));
+    }
+
+    [Fact]
+    public void PermissionWall_RepeatedPathWithASpace_IsStillNamedAPath()
+    {
+        // #534 told a command from a path by the key's SHAPE: whitespace meant a command. This repository once lived at
+        // `C:\Dev AI\Guardrails`, where that guess calls its own source files commands. The decision now says which is which.
+        const string path = @"C:\Dev AI\Guardrails\src\Locked.cs";
+        var wall = new PermissionWallDecision(true, [], [path], []);
+
+        string feedback = RetryPolicy.ForPermissionWall(PromptTask("04-impl"), wall);
+
+        Assert.Contains("REFUSED to write one or more paths", feedback);
+        Assert.Contains("## Repeatedly-refused path(s)", feedback);
+        Assert.DoesNotContain("tool calls", feedback);
+        Assert.DoesNotContain("refused COMMAND", feedback);
+        Assert.Equal($"needs human: write repeatedly refused (permission wall) — {path}", RetryPolicy.PermissionWallSummary(wall));
+    }
+
+    [Fact]
+    public void RepeatedRefusalContext_NamesEachKind_AndIsEmptyWithoutARepeat()
+    {
+        // #708: a repeat no longer settles an attempt whose action succeeded. On a guardrail failure it rides along as
+        // secondary context, so the next attempt stops reaching for a call that will be refused again.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], ["echo \"EXIT:$?\""]);
+
+        string context = RetryPolicy.ForRepeatedRefusalContext(wall);
+
+        Assert.Contains("## Secondary context", context);
+        Assert.Contains("- path: `src/locked/Protected.cs`", context);
+        Assert.Contains("- command: `echo \"EXIT:$?\"`", context);
+        Assert.Contains("needsHuman", context);
+        Assert.Empty(RetryPolicy.ForRepeatedRefusalContext(new PermissionWallDecision(true, [".claude/x.md"], [], [])));
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_LeadsWithTheCauseThatFired_ThenNamesThePath()
+    {
+        // #708 / #329: when a repeated in-scope write wall halts an attempt, the cause that genuinely fired leads,
+        // and the wall follows in #86's own path wording.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A guardrail failed", "- **01-fail** — exit 1", wall, budgetRemained: true);
+
+        int failure = feedback.IndexOf("## A guardrail failed", StringComparison.Ordinal);
+        int wallSection = feedback.IndexOf("## Repeatedly-refused path(s)", StringComparison.Ordinal);
+        Assert.True(failure >= 0 && wallSection > failure, "the cause that fired must lead, and the wall follow it");
+        Assert.Contains("- **01-fail** — exit 1", feedback);
+        Assert.Contains("- `src/locked/Protected.cs`", feedback);
+        Assert.Contains("cover this path", feedback);
+        Assert.Contains("the remaining retry budget was not burned", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_OnAFinalAttempt_DoesNotClaimABudgetItNeverSaved()
+    {
+        // #708: this halt also fires at the four pre-guardrail rejection sites, where it can land on the LAST
+        // budgeted attempt — and there was no budget left to save. Claiming otherwise credits the harness with
+        // ending the task early when the budget ended it, which is the opposite of the diagnosis a human needs.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A write-scope violation", "- `docs/stray.md`", wall, budgetRemained: false);
+
+        Assert.Contains("## A write-scope violation", feedback);
+        Assert.Contains("This was the last budgeted attempt.", feedback);
+        Assert.DoesNotContain("the remaining retry budget was not burned", feedback);
+    }
+
+    [Fact]
+    public void RepeatedRefusalContext_OmitsWhatTheHaltAlreadyNamed()
+    {
+        // #708 review: at a halt the wall's own paths are already listed under `## Repeatedly-refused path(s)` and
+        // its commands under `## Repeatedly-refused command(s)`. Listing either again under secondary context reads
+        // as a second, different finding. The filter is at the RENDER — the caller still hands over the FULL
+        // decision, so nothing is lost; only what has demonstrably been named already is dropped.
+        var wall = new PermissionWallDecision(
+            true, [], ["docs/blocked.md", "src/Sneaky.cs"], ["echo \"EXIT:$?\""]);
+
+        string context = RetryPolicy.ForRepeatedRefusalContext(wall, ["docs/blocked.md", "echo \"EXIT:$?\""]);
+
+        Assert.Contains("- path: `src/Sneaky.cs`", context);
+        Assert.DoesNotContain("docs/blocked.md", context);
+        Assert.DoesNotContain("EXIT:$?", context);
+    }
+
+    [Fact]
+    public void RepeatedRefusalContext_IsOmittedEntirely_WhenTheHaltNamedEverything()
+    {
+        // An empty section is worse than no section: a heading with no bullets reads as a finding with its
+        // evidence missing.
+        var wall = new PermissionWallDecision(true, [], ["docs/blocked.md"], []);
+
+        Assert.Empty(RetryPolicy.ForRepeatedRefusalContext(wall, ["docs/blocked.md"]));
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_WhenNothingWasPreserved_SaysSo_RatherThanStayingSilent()
+    {
+        // #708: the nested-control-key site stays unsalvaged (the documented fragment-rejection boundary), and a
+        // halt performs no reset — so the tree is orphaned with nothing offered. Silence there reads as "there was
+        // nothing to keep"; the agent and the human both need to be told the work was not preserved.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "The state fragment was rejected", "- nested", wall,
+            budgetRemained: true, salvageRef: null, workNotPreserved: true);
+
+        Assert.Contains("was NOT preserved", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_AtAWriteScopeViolation_KeepsThe705Disclosures()
+    {
+        // #705: the revert destroys the out-of-scope bytes unless a copy is kept, and the copy is useless if
+        // nothing points a human at it. The halt must disclose both, exactly as ForWriteScopeViolation does on
+        // the retry path it replaces.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A write-scope violation", "- `docs/stray.md`", wall,
+            budgetRemained: true, salvageRef: null, outOfScopePatchPath: "/logs/out-of-scope.patch");
+
+        Assert.Contains("reverted", feedback);
+        Assert.Contains("/logs/out-of-scope.patch", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_OffersPreservedWork_AsOrphaned_NotAsRolledBack()
+    {
+        // #554 / #708: a halt performs NO reset — the loop returns before it — so the tree the attempt wrote in is
+        // ORPHANED, not rolled back. The retry path's wording here would tell a human something false about the
+        // state of that tree, which is the whole reason SalvageFraming exists.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+        var salvage = new SalvageRef(
+            "refs/guardrails/04-impl/attempt-2", " src/Impl.cs | 12 ++", Attempt: 2, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A guardrail failed", "- **01-fail** — exit 1", wall, budgetRemained: true, salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("ORPHANED", feedback);
+        Assert.Contains("refs/guardrails/04-impl/attempt-2", feedback);
+        Assert.DoesNotContain("rolled back to a clean base", feedback);
+    }
+
     // ── #705 salvage says only what is true, and out-of-scope work is kept for a human ───────────
 
     [Fact]

@@ -321,6 +321,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.
+- **A mutation proof must REBUILD — `--no-build` INVERTS its result.** `dotnet test --no-build` on
+  `Guardrails.Integration.Tests` runs against the `Guardrails.Core.dll` already sitting in that
+  project's output, so a mutation just made to Core is not in it: the test exercises UNMUTATED code
+  and the proof reports a false PASS (measured on #708). The shortcut is safe only when the source is
+  unchanged; in a mutation proof it reports the opposite of the truth.
 
 ## Dogfooding safety
 

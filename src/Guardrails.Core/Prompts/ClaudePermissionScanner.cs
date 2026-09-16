@@ -17,23 +17,31 @@ namespace Guardrails.Core.Prompts;
 /// and eventually exhausts turns/retries (exactly the #86 / #104 waste this detects). So the scanner
 /// reads the per-tool-result error text as the stream flows by.</para>
 ///
-/// <para><b>Why target extraction is from the error text, not tool-use pairing.</b> The Claude
-/// permission-denial message embeds the refused target verbatim
+/// <para><b>Target extraction: the error text first, then the call it answers.</b> The Claude
+/// permission-denial message often embeds the refused target verbatim
 /// (<c>"Claude requested permissions to write to &lt;path&gt;, but you haven't granted it yet."</c>, or
-/// <c>"…The following part requires approval: &lt;command&gt;"</c>), so it is read straight from the
-/// error rather than by pairing a <c>tool_result</c> back to its <c>tool_use</c> by id/order (which is
-/// fragile across stream shapes). When a denial carries no target — a tool-level refusal such as
-/// <c>"…to use Write…"</c>, or the bare <c>"This command requires approval"</c>, which names nothing at
-/// all — the scanner falls back to the most recent wall-capable <c>tool_use</c>'s
-/// <c>file_path</c>/<c>path</c>/<c>command</c> input, so a repeated tool-level wall is still
-/// attributable to a stable key.</para>
+/// <c>"…The following part requires approval: &lt;command&gt;"</c>), so that is read straight from the
+/// error. When a denial carries no target — a tool-level refusal such as <c>"…to use Write…"</c>, or the
+/// bare <c>"This command requires approval"</c>, which names nothing at all — it is attributed to the call
+/// it answers, paired by <c>tool_use_id</c> (#708): that call's <c>file_path</c>/<c>path</c>/<c>command</c>,
+/// or, for a tool outside the wall-capable set, the tool's own name as a command. Attributing it to the most
+/// recent call instead misfired three ways: an MCP refusal after a successful <c>Edit</c> became that edit's
+/// path, the same refusal after a Bash call that ran became that command, and a refused Bash call beside a
+/// successful <c>Edit</c> in one message became the edited path. Only a denial that cannot be paired (a
+/// stream without ids) still falls back to the most recent wall-capable call, and that fallback is cleared
+/// on every result that was not refused and on every tool outside the set, so it cannot go stale.</para>
 ///
 /// <para><b>A refused <c>Bash</c> command is a wall too.</b> It is the same failure as a refused
 /// <c>Write</c>: the call never runs and the agent burns its budget working around it. Leaving
 /// <c>Bash</c> out of the tracked tool set is what let a real run refuse 86 git calls and report ZERO
 /// permission walls, so it is included here and the refused COMMAND is the attribution key. The list is
-/// still surfaced as <c>BlockedWritePaths</c>: to the runner-agnostic tracker a path and a refused
-/// command are both just opaque, stable wall keys.</para>
+/// still surfaced as <c>BlockedWritePaths</c>, and <c>RefusedCommands</c> names which of its entries are
+/// commands (#708). The tracker needs that: a command is never the structural <c>.claude/</c> write wall, and
+/// a halt that calls a refused <c>echo</c> a "path" sends the human to the wrong fix. The kind is decided by
+/// the route that attributed the entry, never guessed from its shape: a target named after
+/// <c>"…requires approval:"</c> is a command, a path embedded in the refusal is a path (a Bash <c>cp</c> of a
+/// <c>.claude/</c> file is refused as a write to that path), and the <c>tool_use</c> fallback is a command
+/// only when it read the Bash <c>command</c> input.</para>
 /// </summary>
 internal static class ClaudePermissionScanner
 {
@@ -94,16 +102,26 @@ internal static class ClaudePermissionScanner
     /// <summary>
     /// Stateful, streaming scan of a <c>stream-json</c> log. Feed each raw line as it arrives (the
     /// same lines teed to <c>claude-stream.jsonl</c>); call <see cref="BlockedWritePaths"/> at the
-    /// end. Tracks the most recent wall-capable <c>tool_use</c>'s target (path, or Bash command) so a
-    /// denial that names nothing is still attributable. Not thread-safe (the runner's stdout callback
-    /// is serialized).
+    /// end. Pairs each <c>tool_result</c> with the <c>tool_use</c> it answers, by id, so a denial that
+    /// names nothing is attributed to the call that was refused (#708). Not thread-safe (the runner's
+    /// stdout callback is serialized).
     /// </summary>
     public sealed class Scanner
     {
         // Ordinal-distinct, INSERTION-ORDERED so feedback lists the walls in the order they were hit.
         private readonly List<string> _blocked = new();
         private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
-        private string? _lastToolTarget;
+        private readonly List<string> _commands = new();
+
+        // #708: every tool_use seen, by id, so a denial that names nothing is attributed to the call it answers.
+        private readonly Dictionary<string, ToolTarget> _toolUsesById = new(StringComparer.Ordinal);
+
+        // For a denial that cannot be paired (a stream without ids): the most recent wall-capable call, cleared wherever it
+        // could go stale.
+        private ToolTarget? _lastWallCapableCall;
+
+        /// <summary>A call's wall key, and whether that key is a command rather than a path.</summary>
+        private readonly record struct ToolTarget(string Target, bool IsCommand);
 
         /// <summary>Feed one raw stream line (newline excluded). Non-JSON / irrelevant lines are skipped.</summary>
         public void Feed(string line)
@@ -152,6 +170,12 @@ internal static class ClaudePermissionScanner
         public IReadOnlyList<string> BlockedWritePaths => _blocked;
 
         /// <summary>
+        /// The entries of <see cref="BlockedWritePaths"/> that are refused COMMANDS rather than paths (#708), in
+        /// first-seen order. Kept verbatim: a command is not quote-trimmed the way a path is.
+        /// </summary>
+        public IReadOnlyList<string> RefusedCommands => _commands;
+
+        /// <summary>
         /// How many permission denials have arrived with NO successful tool call in between (issue #452).
         /// Distinct from <see cref="BlockedWritePaths"/>, which is DEDUPED by target and therefore cannot
         /// distinguish "one refusal the agent worked around" from "every call this run was refused" — the
@@ -168,25 +192,44 @@ internal static class ClaudePermissionScanner
             {
                 if (!IsBlock(block, "tool_use") ||
                     !block.TryGetProperty("name", out JsonElement nameEl) ||
-                    nameEl.ValueKind != JsonValueKind.String ||
-                    !WallCapableTools.Contains(nameEl.GetString() ?? string.Empty))
+                    nameEl.ValueKind != JsonValueKind.String)
                 {
                     continue;
                 }
 
-                if (block.TryGetProperty("input", out JsonElement input) &&
-                    input.ValueKind == JsonValueKind.Object)
+                string name = nameEl.GetString() ?? string.Empty;
+                ToolTarget? target = TargetOf(name, block);
+                if (StringProp(block, "id") is { } id && target is { } known)
                 {
-                    // The write family names a path; Bash names a command. Either is the key a
-                    // target-less denial gets attributed to.
-                    string? target = StringProp(input, "file_path") ?? StringProp(input, "path") ??
-                                     StringProp(input, "notebook_path") ?? StringProp(input, "command");
-                    if (!string.IsNullOrWhiteSpace(target))
-                    {
-                        _lastToolTarget = target;
-                    }
+                    _toolUsesById[id] = known;
                 }
+
+                // The id-less fallback holds only a wall-capable call, and any other tool clears it (#708): a later denial that
+                // names nothing may be that tool's, and pinning it on the earlier call would invent a wall.
+                _lastWallCapableCall = WallCapableTools.Contains(name) ? target : null;
             }
+        }
+
+        /// <summary>
+        /// What a <c>tool_use</c> targets, as a wall key. The write family names a path and Bash names a command, either of which
+        /// a denial that names nothing is attributed to. A tool outside that set (an MCP tool, WebFetch, …) is a COMMAND named
+        /// after the tool (#708): whatever its input holds, it is not a path the task was refused a write to.
+        /// </summary>
+        private static ToolTarget? TargetOf(string name, JsonElement block)
+        {
+            if (!WallCapableTools.Contains(name))
+            {
+                return name.Length > 0 ? new ToolTarget(name, IsCommand: true) : null;
+            }
+
+            if (!block.TryGetProperty("input", out JsonElement input) || input.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            string? path = StringProp(input, "file_path") ?? StringProp(input, "path") ?? StringProp(input, "notebook_path");
+            string? target = path ?? StringProp(input, "command");
+            return string.IsNullOrWhiteSpace(target) ? null : new ToolTarget(target, IsCommand: path is null);
         }
 
         private void ScanToolResults(JsonElement root)
@@ -210,6 +253,8 @@ internal static class ClaudePermissionScanner
                     // CONSECUTIVE denials, never on the total, so an agent that hits one wall and then
                     // reaches for a granted tool keeps its full budget.
                     ConsecutiveDenials = 0;
+                    // #708: a call that ran also ends the id-less fallback, so a later denial is never pinned on it.
+                    _lastWallCapableCall = null;
                     continue;
                 }
 
@@ -217,18 +262,32 @@ internal static class ClaudePermissionScanner
 
                 ConsecutiveDenials++;
 
-                // Prefer what the message NAMES (the refused path, or the refused part of a compound
-                // Bash command), and only then the tool_use it must have come from.
-                string? target = ExtractRefusedCommand(text) ?? ExtractPath(text) ?? _lastToolTarget;
-                if (string.IsNullOrWhiteSpace(target))
+                // Prefer what the message NAMES (the refused path, or the refused part of a compound Bash command), then the call
+                // the denial answers, paired by tool_use_id (#708). Only a denial that cannot be paired falls back to the most
+                // recent wall-capable call. The route that attributed the target decides whether it is a command.
+                string? command = ExtractRefusedCommand(text);
+                string? path = command is null ? ExtractPath(text) : null;
+                ToolTarget? refused =
+                    command is not null ? new ToolTarget(command, IsCommand: true)
+                    : path is not null ? new ToolTarget(path, IsCommand: false)
+                    : StringProp(block, "tool_use_id") is { } toolUseId && _toolUsesById.TryGetValue(toolUseId, out ToolTarget call)
+                        ? call
+                        : _lastWallCapableCall;
+                if (refused is not { } wall || string.IsNullOrWhiteSpace(wall.Target))
                 {
                     continue;
                 }
 
-                string normalized = target.Trim().Trim('"', '\'', '`');
+                // A path is quote-trimmed so its quoted and bare forms repeat together. A command keeps its quotes,
+                // or plan 40's refused `echo "EXIT:$?"` is reported as `echo "EXIT:$?`.
+                string normalized = wall.IsCommand ? wall.Target.Trim() : wall.Target.Trim().Trim('"', '\'', '`');
                 if (_seen.Add(normalized))
                 {
                     _blocked.Add(normalized);
+                    if (wall.IsCommand)
+                    {
+                        _commands.Add(normalized);
+                    }
                 }
             }
         }

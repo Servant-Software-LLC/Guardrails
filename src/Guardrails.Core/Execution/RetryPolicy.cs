@@ -870,9 +870,14 @@ public static class RetryPolicy
     /// the violation it was. <paramref name="salvageRef"/> is the attempt's IN-SCOPE work, preserved because no
     /// reset follows a halt and the tree is orphaned (#554).
     /// </summary>
+    /// <param name="wall">
+    /// #708: a write INSIDE the scope that was also refused on two or more attempts, or null when there is none. It
+    /// is added to this halt rather than replacing it — the plan's gap is still what a human must fix, and widening
+    /// the scope alone would not clear the refusal.
+    /// </param>
     public static string ForWriteScopeGapHalt(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null,
-        string? outOfScopePatchPath = null)
+        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
         IReadOnlyList<string> tests = RepeatedTests(gap);
@@ -953,6 +958,13 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The scope is right and the agent is wrong. Tighten this task's prompt so it stays inside the");
         text.AppendLine("scope above, then resume the run.");
+        if (wall is not null)
+        {
+            text.AppendLine();
+            AppendRepeatedPaths(text, wall.RepeatedPaths);
+            AppendRepeatedCommands(text, wall.RepeatedCommands);
+        }
+
         AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
         return text.ToString();
     }
@@ -963,7 +975,11 @@ public static class RetryPolicy
     /// and the exact <c>task.json</c> fix. It keeps the stable <c>needs human: </c> prefix every harness
     /// needs-human summary carries.
     /// </summary>
-    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap)
+    /// <param name="wall">
+    /// #708: appended when a write inside the scope was ALSO refused on two or more attempts, so the one line a
+    /// reader sees carries both halves of what must change.
+    /// </param>
+    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap, PermissionWallDecision? wall = null)
     {
         if (RepeatedTests(gap) is { Count: > 0 } tests)
         {
@@ -984,8 +1000,9 @@ public static class RetryPolicy
             : $"write-scope gap: {string.Join(", ", paths)} was written outside this task's writeScope again, " +
               "after an earlier attempt's feedback named it";
         string pronoun = paths.Count == 1 ? "it" : "them";
+        string refusal = wall is null ? "" : $"; {RepeatedRefusals(wall)}";
         return $"needs human: {why}; if this task must change {pronoun}, add {JsonEntries(paths)} to writeScope in " +
-               TaskJsonPath(task);
+               TaskJsonPath(task) + refusal;
     }
 
     /// <summary>
@@ -1235,33 +1252,15 @@ public static class RetryPolicy
     /// the runtime refused a write/edit because the path is not granted, and retrying cannot clear it.
     /// This is NOT a retry-input (the task is settling <c>needs-human</c>) — it is the human's
     /// remediation note, so it names the exact blocked path(s) and the concrete fixes. A
-    /// <c>.claude/</c> wall (<paramref name="structuralPaths"/>) is called out as a known structural
-    /// restriction whose PRIMARY remedy is the <c>needsHarnessWrite</c> escape hatch (#191); the old
+    /// <c>.claude/</c> wall (<see cref="PermissionWallDecision.StructuralPaths"/>) is called out as a known
+    /// structural restriction whose PRIMARY remedy is the <c>needsHarnessWrite</c> escape hatch (#191); the old
     /// <c>.claude/settings.json</c> <c>Write(.claude/**)</c> grant is called out as RETIRED (#273 — it
     /// no longer works), with <c>stagingOutputs</c> and a session-wide <c>bypassPermissions</c> as
-    /// alternatives. Any other repeated path (<paramref name="repeatedPaths"/>) is named as an
-    /// un-retryable wall (a settings grant still works for non-<c>.claude/</c> paths).
+    /// alternatives. The repeated wall is named as an un-retryable wall, each target as what it is (#708): a
+    /// settings grant still works for a non-<c>.claude/</c> path, and a command is granted through
+    /// <c>allowedTools</c>.
     /// </summary>
-    /// <summary>
-    /// Does this wall key name a COMMAND rather than a path (#534)? The scanner uses a refused Bash
-    /// command line as its attribution key, and a command is recognisable by carrying an argument
-    /// separator that a single path does not: whitespace, a pipe, or a redirect.
-    ///
-    /// <para>
-    /// Deliberately a shape test on the key, not a re-classification of the wall. The tracker's decision is
-    /// unchanged — this only decides how to DESCRIBE what was refused, so a wrong guess costs a word in a
-    /// message and never a verdict.
-    /// </para>
-    /// </summary>
-    private static bool LooksLikeCommand(string wallKey) =>
-        wallKey.Contains(' ', StringComparison.Ordinal)
-        || wallKey.Contains('|', StringComparison.Ordinal)
-        || wallKey.Contains('>', StringComparison.Ordinal);
-
-    public static string ForPermissionWall(
-        TaskNode task,
-        IReadOnlyList<string> structuralPaths,
-        IReadOnlyList<string> repeatedPaths)
+    public static string ForPermissionWall(TaskNode task, PermissionWallDecision decision)
     {
         var text = new StringBuilder();
         text.AppendLine($"# Task '{task.Id}' hit a permission wall");
@@ -1272,31 +1271,25 @@ public static class RetryPolicy
         // let a real run refuse 86 git calls and report zero walls), but the message described every wall
         // as a refused WRITE to a PATH. For `python3 -m json.tool <file>` that is wrong three ways: it is
         // not a write, it is not a path, and "confirm permissionMode and allowedTools cover this path" is
-        // unactionable for a command line. Say which kind of thing was actually refused.
-        bool anyCommand = structuralPaths.Concat(repeatedPaths).Any(LooksLikeCommand);
+        // unactionable for a command line. Say which kind of thing was actually refused. #708: #534 guessed the
+        // kind from the key's shape (whitespace meant a command), which calls `C:\Dev AI\…` a command and a bare
+        // `pytest` a path. The runner now reports which targets are commands, so nothing is guessed.
+        bool anyCommand = decision.RepeatedCommands.Count > 0;
         text.AppendLine(anyCommand
-            ? "The runtime REFUSED one or more tool calls because they are not on the granted permission"
+            ? "The runtime REFUSED one or more tool calls because they are not on the granted"
             : "The runtime REFUSED to write one or more paths because they are not on the granted");
         text.AppendLine("permission allow-list. Retrying cannot clear a permission wall — switching tools or");
         text.AppendLine(anyCommand
             ? "re-issuing the same call hits the same refusal — so the harness escalated to you"
             : "re-issuing the same write hits the same refusal — so the harness escalated to you");
         text.AppendLine("immediately instead of burning the remaining attempts on it.");
-        if (anyCommand)
-        {
-            text.AppendLine();
-            text.AppendLine("At least one wall below is a refused COMMAND, not a path. Grant it through the task's");
-            text.AppendLine("`allowedTools` (e.g. `Bash(python3 *)`), not through a per-path permission — and consider");
-            text.AppendLine("whether the task needs it at all: a refused AUXILIARY command is one route among several");
-            text.AppendLine("to the same end, and an agent that finds another route has cleared the wall.");
-        }
         text.AppendLine();
 
-        if (structuralPaths.Count > 0)
+        if (decision.StructuralPaths.Count > 0)
         {
             text.AppendLine("## Blocked `.claude/` path(s) — a STRUCTURAL restriction");
             text.AppendLine();
-            foreach (string path in structuralPaths)
+            foreach (string path in decision.StructuralPaths)
             {
                 text.AppendLine($"- `{path}`");
             }
@@ -1336,22 +1329,223 @@ public static class RetryPolicy
             text.AppendLine();
         }
 
-        if (repeatedPaths.Count > 0)
-        {
-            text.AppendLine("## Repeatedly-refused path(s)");
-            text.AppendLine();
-            foreach (string path in repeatedPaths)
-            {
-                text.AppendLine($"- `{path}`");
-            }
+        AppendRepeatedPaths(text, decision.RepeatedPaths);
+        AppendRepeatedCommands(text, decision.RepeatedCommands);
+        return text.ToString();
+    }
 
-            text.AppendLine();
-            text.AppendLine("The same path was refused on multiple attempts. Confirm the runner's `permissionMode`");
-            text.AppendLine("and `allowedTools` (and any `.claude/settings.json` allow-list) cover this path, then");
-            text.AppendLine("re-run — the harness will resume from here.");
+    /// <summary>
+    /// The <c>## Repeatedly-refused path(s)</c> section in #86's own wording, shared by the action-failed halt and the
+    /// #708 repeated-path halt on a guardrail-failed attempt so the two cannot drift. Nothing when no path repeated.
+    /// </summary>
+    private static void AppendRepeatedPaths(StringBuilder text, IReadOnlyList<string> repeatedPaths)
+    {
+        if (repeatedPaths.Count == 0)
+        {
+            return;
+        }
+
+        text.AppendLine("## Repeatedly-refused path(s)");
+        text.AppendLine();
+        foreach (string path in repeatedPaths)
+        {
+            text.AppendLine($"- `{path}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The same path was refused on multiple attempts. Confirm the runner's `permissionMode`");
+        text.AppendLine("and `allowedTools` (and any `.claude/settings.json` allow-list) cover this path, then");
+        text.AppendLine("re-run — the harness will resume from here.");
+        text.AppendLine();
+    }
+
+    /// <summary>
+    /// The <c>## Repeatedly-refused command(s)</c> section (#708): a command named as a command and granted through
+    /// <c>allowedTools</c>. Shared the same way as <see cref="AppendRepeatedPaths"/>. Nothing when no command repeated.
+    /// </summary>
+    private static void AppendRepeatedCommands(StringBuilder text, IReadOnlyList<string> repeatedCommands)
+    {
+        if (repeatedCommands.Count == 0)
+        {
+            return;
+        }
+
+        text.AppendLine("## Repeatedly-refused command(s)");
+        text.AppendLine();
+        foreach (string command in repeatedCommands)
+        {
+            text.AppendLine($"- `{command}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The same command was refused on multiple attempts. A command is not a path: grant it through");
+        text.AppendLine("the task's `allowedTools` (e.g. `Bash(python3 *)`), not through a per-path permission — and");
+        text.AppendLine("consider whether the task needs it at all. A refused AUXILIARY command is one route among");
+        text.AppendLine("several to the same end: an attempt that finishes by another route is settled by its");
+        text.AppendLine("guardrails, however often the command was refused (#708). Re-run — the harness will resume");
+        text.AppendLine("from here.");
+        text.AppendLine();
+    }
+
+    /// <summary>
+    /// The <c>needs human: </c> summary for a permission-wall halt (issues #86 / #104). A structural wall reads as the
+    /// blocked <c>.claude/</c> write it is. A repeated wall names each target as what it is (#708), because "write
+    /// repeatedly refused" over a refused read-only <c>grep</c> sent humans looking for a write that never happened.
+    /// </summary>
+    public static string PermissionWallSummary(PermissionWallDecision decision) =>
+        decision.HasStructural
+            ? $"needs human: write to .claude/ blocked by the runtime (structural) — {string.Join(", ", decision.AllPaths)}"
+            : $"needs human: {RepeatedRefusals(decision)}";
+
+    /// <summary>
+    /// One line naming the repeated wall by kind (#708): <c>write repeatedly refused (permission wall) — &lt;paths&gt;</c>
+    /// and <c>command repeatedly refused (permission wall) — &lt;commands&gt;</c>, joined by <c>; </c>. Shared by both halt
+    /// summaries and the secondary context a guardrail-failed attempt carries, so they cannot disagree.
+    /// </summary>
+    public static string RepeatedRefusals(PermissionWallDecision decision)
+    {
+        var clauses = new List<string>();
+        if (decision.RepeatedPaths.Count > 0)
+        {
+            clauses.Add($"write repeatedly refused (permission wall) — {string.Join(", ", decision.RepeatedPaths)}");
+        }
+
+        if (decision.RepeatedCommands.Count > 0)
+        {
+            clauses.Add($"command repeatedly refused (permission wall) — {string.Join(", ", decision.RepeatedCommands)}");
+        }
+
+        return string.Join("; ", clauses);
+    }
+
+    /// <summary>
+    /// #708: feedback for the repeated-WRITE-PATH halt on an attempt whose action SUCCEEDED but which never converged
+    /// — at any of the five sites that settle such an attempt: a guardrail failure, or one of the four rejections
+    /// that run BEFORE the guardrails (a staging failure, a nested control key, a refused <c>needsHarnessWrite</c>, a
+    /// write-scope violation). A command refused on repeated attempts does not settle one of these, but a refused
+    /// write path INSIDE the task's enforced write scope does: nothing grants that write between attempts, so a
+    /// retry would be refused it again and reach the same place. As in the #329 structural halt, the cause that
+    /// genuinely fired LEADS (<paramref name="primaryHeading"/> / <paramref name="primaryBody"/>) and the wall
+    /// follows in #86's own path wording.
+    /// </summary>
+    /// <param name="budgetRemained">
+    /// Whether attempts were still budgeted when this halt fired. On the LAST one there was no budget left to save,
+    /// and saying otherwise credits the harness with ending a task early when the budget ended it (#708).
+    /// </param>
+    /// <param name="salvageRef">
+    /// The attempt's IN-SCOPE work, preserved because a halt performs no reset and leaves the tree ORPHANED — the
+    /// same disposition, and so the same <see cref="SalvageFraming.Escalation"/> wording, as an agent's own
+    /// <c>needsHuman</c> (#554).
+    /// </param>
+    /// <param name="workNotPreserved">
+    /// True where this halt deliberately preserves NOTHING — the nested-control-key site, which keeps the
+    /// documented fragment-rejection boundary (#586). A halt performs no reset, so the tree is orphaned either
+    /// way; saying nothing reads as "there was nothing worth keeping", which is a different and wrong claim.
+    /// </param>
+    /// <param name="outOfScopePatchPath">
+    /// #705: at the write-scope site the offending bytes were REVERTED and a copy kept. The retry path this halt
+    /// replaces discloses both, and a kept copy nothing points at is a copy nobody finds.
+    /// </param>
+    public static string ForRepeatedPathWallHalt(
+        TaskNode task,
+        string primaryHeading,
+        string primaryBody,
+        PermissionWallDecision wall,
+        bool budgetRemained,
+        SalvageRef? salvageRef = null,
+        bool workNotPreserved = false,
+        string? outOfScopePatchPath = null)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# Task '{task.Id}' needs a human");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine($"## {primaryHeading}");
+        text.AppendLine();
+        text.AppendLine(primaryBody.TrimEnd());
+        text.AppendLine();
+        text.AppendLine("The harness settled this task `needs-human` on this attempt: a write inside this task's own");
+        text.AppendLine("write scope was also refused on two or more attempts (below). Nothing grants that write between");
+        text.AppendLine(budgetRemained
+            ? "attempts, so a retry would be refused it again, and the remaining retry budget was not burned."
+            : "attempts, so a retry would have been refused it again. This was the last budgeted attempt.");
+        text.AppendLine("Grant the write, or remove the task's need for it, then re-run.");
+        text.AppendLine();
+
+        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
+        {
+            text.AppendLine("The out-of-scope path(s) named above were reverted to their pre-attempt state before this");
+            text.AppendLine($"halt. A copy of those changes was kept at `{keptCopy.Replace('\\', '/')}`, for the human");
+            text.AppendLine("deciding whether this task's writeScope should grow.");
             text.AppendLine();
         }
 
+        AppendRepeatedPaths(text, wall.RepeatedPaths);
+        AppendRepeatedCommands(text, wall.RepeatedCommands);
+
+        if (workNotPreserved)
+        {
+            text.AppendLine("This attempt's work was NOT preserved: a rejected state fragment is not salvaged (the");
+            text.AppendLine("documented boundary — the fragment was never applied, so there is no accepted result to");
+            text.AppendLine("build on). Re-author the fragment in the shape shown above and re-run.");
+            text.AppendLine();
+        }
+
+        AppendSalvageSection(text, salvageRef, SalvageFraming.Escalation);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// #708: the SECONDARY-context section a guardrail-failed attempt carries when a command was also refused on repeated
+    /// attempts (a repeated write path halts instead, see <see cref="ForRepeatedPathWallHalt"/>), and that the #329
+    /// structural halt appends. Before #708 that refusal settled the attempt permission-denied before its guardrails
+    /// ran, even when the action had finished. Now the guardrails settle an attempt whose action succeeded, and the
+    /// refusal is reported beside their verdict, so the next attempt stops reaching for a call that will be refused
+    /// again. Empty when nothing repeated.
+    /// </summary>
+    /// <param name="alreadyNamed">
+    /// Targets the surrounding feedback has ALREADY listed — at a halt, the wall's own paths and commands, which
+    /// appear above under their own headings. Listing one again here reads as a second, different finding. The
+    /// filter is applied at the RENDER, never at the source: every caller still hands over the FULL decision, so a
+    /// refusal can only be de-duplicated, never lost. When nothing survives the filter the whole section is
+    /// omitted — a heading with no bullets reads as a finding whose evidence went missing.
+    /// </param>
+    public static string ForRepeatedRefusalContext(
+        PermissionWallDecision decision, IReadOnlyCollection<string>? alreadyNamed = null)
+    {
+        HashSet<string>? named = alreadyNamed is { Count: > 0 }
+            ? new HashSet<string>(alreadyNamed, StringComparer.Ordinal)
+            : null;
+        List<string> paths = decision.RepeatedPaths.Where(p => named?.Contains(p) != true).ToList();
+        List<string> commands = decision.RepeatedCommands.Where(c => named?.Contains(c) != true).ToList();
+
+        if (paths.Count == 0 && commands.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine("## Secondary context — refused on two or more attempts");
+        text.AppendLine();
+        foreach (string path in paths)
+        {
+            text.AppendLine($"- path: `{path}`");
+        }
+
+        foreach (string command in commands)
+        {
+            text.AppendLine($"- command: `{command}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("These are not granted, so the same call will be refused again. They did not settle this");
+        // "the cause reported above" rather than "the guardrail verdicts above": since #708 this section is also
+        // rendered at the four pre-guardrail sites, where no guardrail ran and naming one would be false.
+        text.AppendLine("attempt; the cause reported above did. Do not spend turns on them: reach the result by a");
+        text.AppendLine("granted route and let the task's guardrails verify it. If the deliverable cannot land without");
+        text.AppendLine("one of them, write {\"needsHuman\": \"<which one, and why>\"} to GUARDRAILS_STATE_OUT and stop.");
         return text.ToString();
     }
 
