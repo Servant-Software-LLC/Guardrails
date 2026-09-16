@@ -2547,12 +2547,24 @@ public static class RunCommand
     {
         UndeliveredCause cause = UndeliveredCauseOf(report);
         string setting = MergeOnSuccessClause(report);
+
+        // Design 39 §4: on a partially-delivered run a wave ALREADY landed on the checkout, and
+        // DescribePartialDelivery prefixes this text with "delivered: <wave> — ", so the unqualified phrase would
+        // contradict its own prefix — one string saying a wave landed and then that the verified work did not. The
+        // console banner solved this with "The rest is still held:"; the record says "the rest of" here. A run with
+        // no delivered record keeps the wording byte for byte (DeliveryRecordTests pins all three arms flat).
+        bool someWaveDelivered = report.WaveDeliveries.Values.Any(r => r.Status == WaveDeliveryStatus.Delivered);
+        string strandedWork = someWaveDelivered ? "The rest of the verified work" : "The verified work";
+        string strandedRunWork = someWaveDelivered
+            ? "the rest of this wholly-green run's verified work"
+            : "this wholly-green run's verified work";
+
         string stranded =
-            $"The verified work is sitting on '{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it.";
+            $"{strandedWork} is sitting on '{planBranch}' and NOT on your checkout; a later --fresh or 'reset -y' destroys it.";
 
         if (cause.Interlock is not { } decision)
         {
-            return $"{setting}, so this wholly-green run's verified work is sitting on '{planBranch}' and NOT on your "
+            return $"{setting}, so {strandedRunWork} is sitting on '{planBranch}' and NOT on your "
                    + "checkout; a later --fresh or 'reset -y' destroys it";
         }
 
