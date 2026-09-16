@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Globalization;
+using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -97,6 +98,24 @@ public static class StatusCommand
         {
             document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry);
             PrintRow(task.Id, taskWidth, entry, liveness, output);
+        }
+
+        // #722: the one thing the journal cannot say. A task the run has DEQUEUED, whose worktree git is
+        // still running, is `pending` in the journal with no attempt directory — indistinguishable from a
+        // task the run has not reached. That is exactly how plan 40's 28-hour dead run read here. The fact
+        // lives in the event stream, so this tail-reads it and prints it as an OBSERVATION beside the
+        // verdict above — never inside it: RunLiveness.Assess takes no clock and no task state, and this
+        // block deliberately gives it nothing to take.
+        IReadOnlyList<string> waiting = WaitingOnWorktreeLines(
+            ReadEventLines(probe.Plan.PlanDirectory, document.RunId), taskWidth, DateTimeOffset.UtcNow, liveness);
+        if (waiting.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine(WaitingOnWorktreeHeader(liveness));
+            foreach (string line in waiting)
+            {
+                output.WriteLine(line);
+            }
         }
 
         // #639: what a resume would do with the rows above. Omitted entirely when nothing is affected —
@@ -341,6 +360,146 @@ public static class StatusCommand
                 return $"  {pair.Key,-32} {pauses.Count} pause(s), {waited}s waited — last: {Truncate(last, 60)}";
             })
     ];
+
+    /// <summary>
+    /// One line per task whose LAST event-stream row says it is waiting on the git that builds its worktree
+    /// (issue #722, SSOT §8.1) — empty when none is, so an ordinary run's status stays noise-free.
+    ///
+    /// <para><b>The last row PER TASK decides, not the file's last line.</b> Under parallelism another
+    /// task's rows land constantly; they say nothing about whether this one is still waiting. A waiting row
+    /// followed by that same task's own <c>task-started</c> is history, and naming it would be a false lead
+    /// during exactly the triage this exists to serve.</para>
+    ///
+    /// <para><b>An observation, and nothing more.</b> It reports what is being waited on and when that
+    /// began, and applies NO threshold: the harness cannot tell a slow git from a hung one, which is the
+    /// same reason the run-state verdict above takes no clock (#704). A reader may draw a conclusion from
+    /// the elapsed time; nothing here does.</para>
+    ///
+    /// <para>Pure — public for the same reason <see cref="LastFailureText"/> is.</para>
+    /// </summary>
+    public static IReadOnlyList<string> WaitingOnWorktreeLines(
+        IEnumerable<string> eventLines, int taskWidth, DateTimeOffset now, RunLivenessState liveness)
+    {
+        var lastByTask = new Dictionary<string, (string Kind, string? Operation, DateTimeOffset? At)>(StringComparer.Ordinal);
+        foreach (string line in eventLines)
+        {
+            if (ParseRow(line) is not { } row)
+            {
+                continue;
+            }
+
+            lastByTask[row.TaskId] = (row.Kind, row.Operation, row.At);
+        }
+
+        return
+        [
+            .. lastByTask
+                .Where(pair => string.Equals(pair.Value.Kind, RunEventStream.WaitingOnWorktreeKind, StringComparison.Ordinal))
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => WaitingLine(pair.Key, pair.Value.Operation, pair.Value.At, now, taskWidth, liveness))
+        ];
+    }
+
+    /// <summary>
+    /// The block's header, in the tense the process table supports. The same rule <see cref="StatusCell"/>
+    /// follows: the recorded fact stands, except where liveness has just disproved the PRESENT TENSE of it.
+    /// </summary>
+    public static string WaitingOnWorktreeHeader(RunLivenessState liveness) =>
+        RunIsOver(liveness)
+            ? "Was waiting on a worktree when the run stopped (observation):"
+            : "Waiting on a worktree (observation — the harness applies no time limit):";
+
+    /// <summary>
+    /// One waiting task's line. A row with no readable <c>at</c> still reports the wait — omitting the task
+    /// because its timestamp was unreadable would hide the very thing this block exists to show.
+    ///
+    /// <para><b>Tense follows liveness.</b> A run whose owner is gone is not doing anything now, so a
+    /// present-tense "creating a worktree … (3d02h ago)" beside <c>Run state: EXITED WITHOUT FINISHING</c>
+    /// would assert activity the process table has already disproved — the same class of output this
+    /// command's own <c>interrupted</c> cell exists to prevent. The fact is still worth printing: that a run
+    /// died while building a worktree is a forensic lead, so the row is kept and only its tense changes.</para>
+    /// </summary>
+    private static string WaitingLine(
+        string taskId, string? operation, DateTimeOffset? at, DateTimeOffset now, int taskWidth,
+        RunLivenessState liveness)
+    {
+        string what = string.IsNullOrEmpty(operation) ? "a worktree operation" : operation;
+        string when = (at, RunIsOver(liveness)) switch
+        {
+            ({ } started, false) => $"since {Timestamp(started)} ({BreakdownProgress.FormatClock(now - started)} ago)",
+            ({ } started, true) => $"last recorded {Timestamp(started)}",
+            (null, false) => "since an unrecorded time",
+            (null, true) => "at an unrecorded time"
+        };
+
+        return $"  {taskId.PadRight(taskWidth)} {what} — {when}";
+    }
+
+    /// <summary>
+    /// Whether the process table has established that this run is no longer going — the only two verdicts
+    /// that disprove the present tense. Every UNKNOWN verdict leaves it alone: not being able to check is
+    /// not evidence of death (#704).
+    /// </summary>
+    private static bool RunIsOver(RunLivenessState liveness) =>
+        liveness is RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended;
+
+    /// <summary>
+    /// The three fields this command reads off one <c>events.jsonl</c> line, or null when the line is not a
+    /// task-scoped row it can use. A malformed or half-written line is SKIPPED rather than fatal: the run
+    /// appends to this file while the command reads it, so a torn last line is normal, and a status command
+    /// that threw over one would fail exactly when it is most needed.
+    /// </summary>
+    private static (string Kind, string TaskId, string? Operation, DateTimeOffset? At)? ParseRow(string line)
+    {
+        if (line.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(line);
+            JsonElement row = document.RootElement;
+            if (row.ValueKind != JsonValueKind.Object
+                || row.TryGetProperty("kind", out JsonElement kind) is false || kind.ValueKind != JsonValueKind.String
+                || row.TryGetProperty("taskId", out JsonElement taskId) is false || taskId.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            string? operation = row.TryGetProperty("operation", out JsonElement op) && op.ValueKind == JsonValueKind.String
+                ? op.GetString()
+                : null;
+            DateTimeOffset? at = row.TryGetProperty("at", out JsonElement atValue)
+                                 && atValue.TryGetDateTimeOffset(out DateTimeOffset parsed)
+                ? parsed
+                : null;
+
+            return (kind.GetString()!, taskId.GetString()!, operation, at);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// This run's event-stream lines, or empty when there is no stream (every halt that returns before the
+    /// observer chain exists writes none — SSOT §8.1). Display-only: an unreadable stream costs the
+    /// observation, never the command.
+    /// </summary>
+    private static IReadOnlyList<string> ReadEventLines(string planDirectory, string runId)
+    {
+        try
+        {
+            string path = Path.Combine(planDirectory, "logs", runId, "events.jsonl");
+            return File.Exists(path) ? File.ReadAllLines(path) : [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
 
     private static void PrintRow(
         string taskId, int taskWidth, TaskJournalEntry? entry, RunLivenessState liveness, TextWriter output)

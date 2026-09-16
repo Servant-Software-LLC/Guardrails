@@ -377,6 +377,42 @@ public interface IRunObserver
     /// </summary>
     void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) { }
 
+    /// <summary>
+    /// A task is WAITING on the git that builds its worktree (issue #722): the harness has dequeued it, the
+    /// work named by <paramref name="operation"/> is running now, and its action has not started.
+    ///
+    /// <para><b>An OBSERVATION, never a verdict.</b> Nothing in Core may classify a wait as too long. The
+    /// harness raises this when the wait BEGINS and raises nothing when it ends — the task's own
+    /// <see cref="TaskStarting"/> is the end of it, and every surface overwrites the row from there — so no
+    /// implementation needs a clock, a threshold, or a paired event, and none may grow one.
+    /// <b>That ending is prompt at dequeue but LAGS in the serial pre-pass</b>, which builds every
+    /// initially-ready task's worktree in one loop and only dispatches them in the next: the first root's
+    /// <see cref="TaskStarting"/> does not arrive until the LAST of those builds returns, so several rows can
+    /// read as waiting while only one is still doing git. Tolerable precisely because nothing derives a
+    /// duration from these rows — exact about when a wait began, approximate about when it ended.
+    /// <c>RunLiveness.Assess</c> takes no clock and no task state, deliberately (#704); this event gives a
+    /// waiting task no parameter to travel through into that verdict, and must not be given one.</para>
+    ///
+    /// <para><b>Why it exists.</b> Plan 40's run sat for 28 hours with a live process, no child processes and
+    /// no halt record, because one <c>git worktree add</c> never returned. Every surface showed a healthy
+    /// run with nothing in flight; the parked task was indistinguishable from one that had not been reached.
+    /// The second benefit is free and was the exact gap in that incident: <c>guardrails status</c> reads
+    /// <c>events.jsonl</c>'s mtime for its last-activity observation, so a parked run stops reading as idle.</para>
+    ///
+    /// <para><paramref name="operation"/> is the already-composed, human-readable name of the git work (e.g.
+    /// "creating a worktree off the plan branch") — a primitive beside <see cref="TaskNode"/> for the same
+    /// reason <see cref="AttemptModelResolved"/> spells out: this interface is public,
+    /// <c>Guardrails.Cli</c> has no <c>InternalsVisibleTo</c> into <c>Guardrails.Core</c>, and a type here
+    /// would be inconsistent accessibility (CS0051) the moment it is not public.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must still
+    /// forward it EXPLICITLY (the <c>ObserverForwardingSweepTests</c> contract): an unforwarded call
+    /// resolves to this empty body and the wait is swallowed silently, in every mode (the
+    /// <see cref="VerifierAdvisoryFound"/> / <see cref="WaveGateFinished"/> lesson) — which is precisely the
+    /// silence this event was added to end.</para>
+    /// </summary>
+    void TaskWaitingOnWorktree(TaskNode task, string operation) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

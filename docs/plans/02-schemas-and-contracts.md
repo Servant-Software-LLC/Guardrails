@@ -4864,6 +4864,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 
 | `kind` | Raised from | Additional fields |
 |---|---|---|
+| `task-waiting-on-worktree` | `TaskWaitingOnWorktree` | `operation` |
 | `task-started` | `TaskStarting` | — |
 | `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
@@ -4884,6 +4885,34 @@ table and `--no-ui` console output.
 purpose.** Unlike a supply, a wave delivery already has a durable, richer record — `run.json`'s
 `waves.<dir>.delivered` (§7) — so a projection here would be a second, thinner copy of the same fact for an
 agent to keep in sync with. It still reaches §8.2's `observer.jsonl` for render fidelity.
+
+**`task-waiting-on-worktree` is an OBSERVATION, never a verdict (issue #722).** It is emitted whenever the
+harness BEGINS the git that builds a task's worktree, and `operation` names that work in words a human reads
+(e.g. `creating a worktree off the plan branch`). **There are two such moments, and a consumer must not
+assume either one:** the serial PRE-PASS that builds every initially-ready task's worktree before any worker
+starts — where the row IS the handle assignment, not something that follows it — and DEQUEUE, where a
+fan-in's or a fork-the-rest sibling's deferred worktree is materialized on the worker that owns it. So a
+waiting row does **not** license the inference that its task has been dispatched. It exists because plan 40's run sat for 28 hours with a live
+process, no child processes and no halt record while one `git worktree add` never returned: the parked
+task was indistinguishable, on every surface, from one the run had not yet reached.
+
+There is **no paired "finished" row**, deliberately: the task's own `task-started` ends the wait, and every
+surface overwrites its row from there, so a second kind would carry nothing a reader does not already have.
+**That ending is prompt at dequeue and can LAG in the pre-pass**, and the difference is worth stating rather
+than glossing: the pre-pass builds every initially-ready worktree in one loop and dispatches them in the
+next, so the first root's `task-started` does not arrive until the LAST of those builds returns. With ten
+ready tasks at a couple of seconds each, several rows can read as waiting while only one is still doing git.
+That is tolerable only because nothing derives a duration or a verdict from these rows — the row is exact
+about when a wait BEGAN and approximate about when it ended.
+The row therefore states WHAT is being waited on and — through the envelope's `at` — WHEN the wait began,
+and **nothing else**. It carries no `outcome`, no `passed`, no `exitCode` and no `detail`, and **no
+component may derive a verdict from it**: the harness cannot tell a slow git from a hung one, which is the
+same reason §7's `owner` liveness takes no clock (#704). A consumer is free to notice that a wait is old; the
+harness does not, and `RunLiveness.Assess` is given no parameter through which it could. `guardrails status`
+prints the current waits as an observation BESIDE its run-state verdict, never inside it. The row's second
+benefit is free and was the exact gap in that incident: `status`'s last-activity observation reads
+`events.jsonl`'s mtime, so a parked run stops reading as idle. **A bound on the git subprocess itself is a
+separate, undecided question** (#722 item 3) — this row contains a hang, it does not end one.
 
 **One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
 `Journal.AttemptOutcome` (`JournalJson.OutcomeToken`) — the same token §7 journals and §15.2's
@@ -4924,7 +4953,18 @@ message is the one value on the row that can carry a path, a token, or a fragmen
 reflects over `ExitCodes` — a hand-copied gloss that nothing checks is the same drift risk this
 design cites when it rejects a parallel token set.)
 
-**Where the stream begins, and what its absence means.** The first row is a `task-started`. There
+**Where the stream begins, and what its absence means.** The first row is a `task-started` — or the
+`task-waiting-on-worktree` that precedes it, when the first task the run reaches must have its worktree
+built before it can start (#722). That case is reachable in practice, not theoretical: the harness builds
+the worktrees of every initially-ready task in a serial pre-pass *before* any worker starts, and announces
+each one unconditionally, so in worktree mode the very first row of a run's bracket is ALWAYS a waiting row.
+(There is no "slow enough to be worth announcing" judgement anywhere — the harness does not time these
+builds, and must not.)
+The same applies to each wave's entry tasks, and to a resumed run whose fan-in has become initially-ready
+because its producers are already green. Those two kinds are therefore the only ones that can open a
+bracket, and a consumer asking *"has this run reached the DAG?"* must accept EITHER: one that keys on
+`task-started` alone reads a run parked in its very first worktree creation as a run that never started —
+the exact ambiguity this file exists to remove, in the state where it costs the most. There
 is deliberately NO run-opening event: one was designed and rejected (design of record
 `docs/plans/595-event-vocabulary-contract.md` §1a) because its payload could not be stated
 accurately at run start and its name would have implied a bracket it did not deliver. Six halts

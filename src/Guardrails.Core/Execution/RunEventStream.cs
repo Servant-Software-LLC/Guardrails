@@ -27,6 +27,10 @@ namespace Guardrails.Core.Execution;
 /// a consumer unable to tell a healthy run that has not finished its first attempt from a run that never
 /// started, the very ambiguity #585 exists to remove):
 /// <list type="bullet">
+///   <item><c>task-waiting-on-worktree</c> — a dequeued task is waiting on the git that builds its
+///         worktree, carrying the <c>operation</c> in words. An OBSERVATION with a start time and no
+///         paired "finished" row (the task's own <c>task-started</c> ends it) — never a verdict, because
+///         the harness cannot tell a slow git from a hung one (issue #722).</item>
 ///   <item><c>task-started</c> — a task entered execution. The FIRST of these is a run's liveness proof.</item>
 ///   <item><c>attempt-started</c> — an attempt began, carrying its <c>budget</c>.</item>
 ///   <item><c>guardrail-finished</c> — one guardrail settled: <c>guardrail</c>, <c>passed</c>, and on
@@ -118,6 +122,13 @@ public sealed class RunEventStream : IRunObserver
         _bracket = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Random.Shared.Next(0x1_0000):x4}";
     }
 
+    /// <summary>
+    /// The wire token for the issue-#722 waiting row. Public because <c>guardrails status</c> is its one
+    /// READER, and a hand-copied literal there is exactly how a reader comes to disagree with the writer it
+    /// is reading.
+    /// </summary>
+    public const string WaitingOnWorktreeKind = "task-waiting-on-worktree";
+
     /// <inheritdoc/>
     public void TaskStarting(TaskNode task)
     {
@@ -128,6 +139,24 @@ public sealed class RunEventStream : IRunObserver
             Kind = "task-started",
             RunId = _runId,
             TaskId = task.Id
+        });
+    }
+
+    /// <summary>
+    /// Issue #722. The row states WHAT is being waited on and — through the envelope's <c>at</c> — WHEN the
+    /// wait began, and nothing else: no outcome, no detail, nothing a consumer could mistake for the
+    /// harness's own judgement about a wait it is not entitled to judge.
+    /// </summary>
+    public void TaskWaitingOnWorktree(TaskNode task, string operation)
+    {
+        _inner.TaskWaitingOnWorktree(task, operation);
+
+        AppendLine(new EventRow
+        {
+            Kind = WaitingOnWorktreeKind,
+            RunId = _runId,
+            TaskId = task.Id,
+            Operation = operation
         });
     }
 
@@ -505,6 +534,13 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.NeedsHumanKind"/>.</summary>
         public string? NeedsHumanKind { get; init; }
+
+        /// <summary>
+        /// <c>task-waiting-on-worktree</c>: the git being waited on, in words a human reads (#722). Free
+        /// text composed by the HARNESS about its own work — it names no path and echoes no tool output,
+        /// unlike <see cref="Detail"/>, which is why it is not withheld on the wire.
+        /// </summary>
+        public string? Operation { get; init; }
 
         /// <summary><c>supplied-resources-committed</c>: the workspace-relative destinations that landed.</summary>
         public IReadOnlyList<string>? Paths { get; init; }

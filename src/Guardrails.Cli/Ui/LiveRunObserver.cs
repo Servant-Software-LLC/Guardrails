@@ -245,6 +245,35 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(task.Id, "[yellow]running[/]", LogLinkMarkup(task.Id) ?? string.Empty);
     }
 
+    public void TaskWaitingOnWorktree(TaskNode task, string operation)
+    {
+        lock (_gate)
+        {
+            // Same guard as TaskStarting: a task in a collapsed wave has no row to start a clock for.
+            if (!_rowByKey.ContainsKey(task.Id))
+            {
+                return;
+            }
+
+            // Issue #722: the row enters the RUNNING state early, with its own prefix — so the 1 Hz ticker
+            // renders "preparing worktree 0:42" and an operator can see the harness working on a task whose
+            // action has not begun. Before this, the row said `pending` for the whole wait, which is what a
+            // task the run has not reached says, and is how plan 40's parked run read as healthy for 28
+            // hours. Yellow like running/retry: the colour never claims a cause, because the harness cannot
+            // tell a slow git from a hung one.
+            _running[task.Id] = new RunningState(StartedNow, "preparing worktree");
+        }
+
+        // No paired "done" event exists and none is needed: TaskStarting overwrites both cells on a healthy
+        // return, so the wait ends by being replaced rather than by a second event nobody could raise if the
+        // git never comes back. At DEQUEUE that replacement is immediate; from the serial PRE-PASS it can
+        // lag, because every initially-ready worktree is built before any of them is dispatched — so on a
+        // wide first wave several rows may read `preparing worktree` while only the last is still in git.
+        // The clock under each row is still the truth about when ITS wait began, which is what an operator
+        // reads it for.
+        Update(task.Id, "[yellow]preparing worktree[/]", $"[yellow]{Markup.Escape(operation)}[/]");
+    }
+
     public void AttemptStarting(TaskNode task, int attempt, int budget)
     {
         if (attempt <= 1)

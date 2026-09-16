@@ -248,7 +248,15 @@ public static class AttachCommand
     /// A member this replay does not (yet) know how to decode falls through as a no-op — forward-compatible
     /// with event types this task never had to invent a wire shape for.
     /// </summary>
-    private static void Dispatch(JsonNode node, IRunObserver renderer, IReadOnlyDictionary<string, TaskNode> taskById)
+    /// <remarks>
+    /// Public (not private) for the same reason <c>RunCommand.Hyperlink</c> and
+    /// <c>LiveRunObserver.StatusMarkup</c> are: the Cli assembly ships no <c>InternalsVisibleTo</c>, so a
+    /// pure mapping method IS the test seam. It matters here specifically because "dispatched" and
+    /// "silently skipped" are INDISTINGUISHABLE from outside — both exit Success, and the renderer draws to
+    /// the process-global Spectre console rather than the injected <c>IConsoleIo</c> — so a CLI-level test
+    /// would pass with a <c>case</c> deleted and guard nothing at all.
+    /// </remarks>
+    public static void Dispatch(JsonNode node, IRunObserver renderer, IReadOnlyDictionary<string, TaskNode> taskById)
     {
         string member = RequireString(node, "member");
 
@@ -344,6 +352,16 @@ public static class AttachCommand
 
             case "OverwatchNoVerdict":
                 renderer.OverwatchNoVerdict(RequireString(node, "taskId"), RequireString(node, "reason"));
+                break;
+
+            // Issue #722. Declared rather than left to the default arm below, because this is the surface an
+            // operator watches an unattended run FROM, and the event exists for precisely the hang that
+            // makes them open it. Skipping it here would have shown the attached terminal a task sitting at
+            // `pending` forever while the run's own terminal showed `preparing worktree 3:41:12` — the two
+            // views disagreeing about the one fact the operator is trying to establish. LiveRunObserver
+            // already implements the member, so the renderer needs nothing further.
+            case "TaskWaitingOnWorktree":
+                renderer.TaskWaitingOnWorktree(TaskFor(node, taskById), RequireString(node, "operation"));
                 break;
 
             default:
