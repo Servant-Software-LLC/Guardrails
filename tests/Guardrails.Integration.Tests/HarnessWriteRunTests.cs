@@ -446,6 +446,7 @@ public sealed class HarnessWriteRunTests
         private readonly bool _actionSucceeds;
         private readonly IReadOnlyList<string> _refusedCommands;
         private readonly int _failingInvocations;
+        private readonly bool _nestControlKey;
 
         public ProbeThenHatchRunner(
             string? harnessWritePath,
@@ -454,7 +455,8 @@ public sealed class HarnessWriteRunTests
             string? deliverableToWrite = null,
             bool actionSucceeds = true,
             IReadOnlyList<string>? refusedCommands = null,
-            int failingInvocations = 0)
+            int failingInvocations = 0,
+            bool nestControlKey = false)
         {
             _harnessWritePath = harnessWritePath;
             _blockedWritePaths = blockedWritePaths;
@@ -463,6 +465,7 @@ public sealed class HarnessWriteRunTests
             _actionSucceeds = actionSucceeds;
             _refusedCommands = refusedCommands ?? [];
             _failingInvocations = failingInvocations;
+            _nestControlKey = nestControlKey;
         }
 
         public int Invocations { get; private set; }
@@ -489,10 +492,15 @@ public sealed class HarnessWriteRunTests
             }
 
             string stateOut = invocation.Environment["GUARDRAILS_STATE_OUT"];
+            string entry = "{ \"path\": \"" + _harnessWritePath + "\", \"content\": \"" + _content +
+                           "\", \"reason\": \"the direct .claude/ write was refused\" }";
+            // #586: nestControlKey models the measured mistake — the request written ONE LEVEL under the task's own
+            // folder key, where the harness never reads it, so nothing is written and the attempt is rejected.
             string json = _harnessWritePath is null
                 ? "{}"
-                : "{ \"needsHarnessWrite\": { \"path\": \"" + _harnessWritePath +
-                  "\", \"content\": \"" + _content + "\", \"reason\": \"the direct .claude/ write was refused\" } }";
+                : _nestControlKey
+                    ? "{ \"01-write\": { \"needsHarnessWrite\": " + entry + " } }"
+                    : "{ \"needsHarnessWrite\": " + entry + " }";
             File.WriteAllText(stateOut, json);
             // #329: actionSucceeds=false models the ACTION itself failing (the agent could not complete)
             // while a .claude/ wall was reported — NO guardrail then runs, the pure #104 permission-wall.
@@ -514,7 +522,7 @@ public sealed class HarnessWriteRunTests
     /// </summary>
     private static string WriteHarnessWritePromptPlan(
         string repoPath, string? writeScope, string guardrailChecksPath, int defaultRetries = 0,
-        string? requiredToken = null, bool guardrailTimesOut = false)
+        string? requiredToken = null, bool guardrailTimesOut = false, string? stagingTo = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
@@ -556,11 +564,15 @@ public sealed class HarnessWriteRunTests
         // is still Timeout, failedGuardrails is still exactly [02-timeout] - so this widens the room
         // the NON-target work runs in without loosening what the test proves.
         string timeoutJson = guardrailTimesOut ? ", \"timeoutSeconds\": 20" : "";
+        // #708: a staging task whose action stages NOTHING is how the staging-move failure site is reached.
+        string stagingJson = stagingTo is null
+            ? ""
+            : ", \"stagingOutputs\": [ { \"from\": \"skill/**\", \"to\": \"" + stagingTo + "\" } ]";
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "probe .claude/ then request a harness write",
-              "dependsOn": []{{writeScopeJson}}{{timeoutJson}}
+              "dependsOn": []{{writeScopeJson}}{{stagingJson}}{{timeoutJson}}
             }
             """);
 
@@ -889,19 +901,47 @@ public sealed class HarnessWriteRunTests
     }
 
     [Fact]
-    public async Task Worktree_NonClaudeRepeatedWall_OnASucceededAction_DoesNotPreemptTheHatchRejection()
+    public async Task Worktree_RepeatedInScopeWall_AtTheHatchRejection_HaltsInsteadOfBurningTheBudget()
     {
-        // #708: a wall refused across attempts settles only an attempt whose ACTION FAILED. Here every action
-        // SUCCEEDS and emits a hatch to an OUT-OF-SCOPE target, while a non-.claude/ path (src/Sneaky.cs) is
-        // refused on every attempt. The hatch rejection settles each attempt, retried with its feedback like any
-        // other rejected hatch, and the repeated refusal never pre-empts it. Before #708 this halted
-        // permission-denied on attempt 2. This test used to pin that halt, from when #321's hatch filter might
-        // have dropped the path; #325 removed the filter, and the #86 halt on a FAILED action is pinned in
-        // PromptRunnerReliabilityTests.
+        // #708 W4: the hatch rejection is one of four sites that settle an attempt BEFORE its guardrails run. Every
+        // action here SUCCEEDS and emits a hatch to an OUT-OF-SCOPE target, which is rejected, while an IN-SCOPE
+        // path (docs/ssot.md) is refused on every attempt. Such an attempt never converged, and nothing grants the
+        // write between attempts — so the second one halts needs-human rather than retrying to exhaustion, with the
+        // rejection reported as the cause (#538/#329) and the wall named beside it.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: "src/OutOfScope.cs", blockedWritePaths: [refused]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("needsHarnessWrite rejected", task.Summary);
+        Assert.Contains($"write repeatedly refused (permission wall) — {refused}", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+        Assert.Equal(
+            new[] { AttemptOutcome.HarnessWriteRejected, AttemptOutcome.HarnessWriteRejected },
+            journalAfter.Tasks["01-write"].Attempts.Select(a => a.Outcome));
+        // The third budgeted attempt was not spent on a write nothing between attempts will grant.
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedOutOfScopeWall_AtTheHatchRejection_KeepsRetrying()
+    {
+        // #708 W6's control at that same site, varying ONLY whether the refused path is inside the enforced scope.
+        // src/Sneaky.cs falls outside "docs/**", so the write-scope check would reject it anyway and it cannot be
+        // this task's deliverable: it is auxiliary, exactly like a refused command, and the budget runs its course.
         using var repo = new TempGitRepo();
         string planDir = WriteHarnessWritePromptPlan(
-            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: ".claude/commands/foo.md",
-            defaultRetries: 2);
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: "docs/ssot.md", defaultRetries: 2);
 
         var runner = new ProbeThenHatchRunner(
             harnessWritePath: "src/OutOfScope.cs", blockedWritePaths: ["src/Sneaky.cs"]);
@@ -917,6 +957,143 @@ public sealed class HarnessWriteRunTests
             new[] { AttemptOutcome.HarnessWriteRejected, AttemptOutcome.HarnessWriteRejected, AttemptOutcome.HarnessWriteRejected },
             journalAfter.Tasks["01-write"].Attempts.Select(a => a.Outcome));
         Assert.Equal(3, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedInScopeWall_AtAStagingFailure_HaltsReportingTheStagingFailure()
+    {
+        // Site 1 of the four: the staging move runs after a successful action and before the guardrails. This action
+        // stages nothing, so the declared `from` matches no files, while the same in-scope path is refused throughout.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [refused]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("staging move failed", task.Summary);
+        Assert.Contains($"write repeatedly refused (permission wall) — {refused}", task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.StagingFailed, AttemptOutcome.StagingFailed }, attempts.Select(a => a.Outcome));
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedInScopeWall_AtANestedControlKey_HaltsReportingTheNesting()
+    {
+        // Site 2: a control key written ONE LEVEL under the task's own folder key (#586) is not a control key at
+        // all — nothing is written, and the attempt is rejected before any guardrail runs.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: refused, blockedWritePaths: [refused], nestControlKey: true);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("needsHarnessWrite was nested under '01-write'", task.Summary);
+        Assert.Contains($"write repeatedly refused (permission wall) — {refused}", task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.InvalidFragment, AttemptOutcome.InvalidFragment }, attempts.Select(a => a.Outcome));
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedInScopeWall_OnAGuardrailFailedAttempt_HaltsOnThatAttempt()
+    {
+        // #708 W6 at the guardrail-failed site. Nothing is ever written, so 01-exists fails on every attempt, and
+        // the refused path is the very deliverable the guardrail is looking for.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [refused]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("guardrail(s) failed: 01-exists — needs human", task.Summary);
+        Assert.Contains($"write repeatedly refused (permission wall) — {refused}", task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.GuardrailFailed, AttemptOutcome.GuardrailFailed }, attempts.Select(a => a.Outcome));
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedOutOfScopeWall_OnAGuardrailFailedAttempt_KeepsRetrying_WithTheRefusalAsContext()
+    {
+        // The control for the test above, varying ONLY the refused path. Outside the enforced scope it is auxiliary:
+        // the attempt retries on the guardrail's verdict, and the refusal is reported as secondary context.
+        using var repo = new TempGitRepo();
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: "docs/ssot.md", defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: ["src/Sneaky.cs"]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.False(task.IsGreen);
+        Assert.Contains("secondary context: write repeatedly refused (permission wall) — src/Sneaky.cs", task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(3, attempts.Count);
+        Assert.All(attempts, a => Assert.Equal(AttemptOutcome.GuardrailFailed, a.Outcome));
+        Assert.Equal(3, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedInScopeWall_WhenTheGuardrailTimedOut_RecordsTimeout_NotGuardrailFailed()
+    {
+        // #339 N1's rule at the #708 halt: a guardrail the clock KILLED keeps its timeout classification, exactly as
+        // the canonical guardrail-failed sibling and the structural-wall halt do. Attempt 1's action fails (one
+        // refusal, not yet a repeat) and costs no guardrail time; attempt 2 lands the deliverable, 01-exists passes,
+        // the sleeper is killed — and the same in-scope path is refused a second time.
+        using var repo = new TempGitRepo();
+        const string deliverable = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: deliverable, defaultRetries: 2,
+            guardrailTimesOut: true);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: deliverable,
+            failingInvocations: 1);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("02-timeout", task.Summary);
+        Assert.Contains($"write repeatedly refused (permission wall) — {deliverable}", task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.ActionFailed, AttemptOutcome.Timeout }, attempts.Select(a => a.Outcome));
+        Assert.Equal("02-timeout", Assert.Single(attempts[1].FailedGuardrails).Name);
+        Assert.Equal(2, runner.Invocations);
     }
 
     [Fact]

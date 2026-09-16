@@ -870,9 +870,14 @@ public static class RetryPolicy
     /// the violation it was. <paramref name="salvageRef"/> is the attempt's IN-SCOPE work, preserved because no
     /// reset follows a halt and the tree is orphaned (#554).
     /// </summary>
+    /// <param name="wall">
+    /// #708: a write INSIDE the scope that was also refused on two or more attempts, or null when there is none. It
+    /// is added to this halt rather than replacing it — the plan's gap is still what a human must fix, and widening
+    /// the scope alone would not clear the refusal.
+    /// </param>
     public static string ForWriteScopeGapHalt(
         TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null,
-        string? outOfScopePatchPath = null)
+        string? outOfScopePatchPath = null, PermissionWallDecision? wall = null)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
         var text = new StringBuilder();
@@ -924,6 +929,13 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The scope is right and the agent is wrong. Tighten this task's prompt so it stays inside the");
         text.AppendLine("scope above, then resume the run.");
+        if (wall is not null)
+        {
+            text.AppendLine();
+            AppendRepeatedPaths(text, wall.RepeatedPaths);
+            AppendRepeatedCommands(text, wall.RepeatedCommands);
+        }
+
         AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
         return text.ToString();
     }
@@ -934,7 +946,11 @@ public static class RetryPolicy
     /// and the exact <c>task.json</c> fix. It keeps the stable <c>needs human: </c> prefix every harness
     /// needs-human summary carries.
     /// </summary>
-    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap)
+    /// <param name="wall">
+    /// #708: appended when a write inside the scope was ALSO refused on two or more attempts, so the one line a
+    /// reader sees carries both halves of what must change.
+    /// </param>
+    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap, PermissionWallDecision? wall = null)
     {
         IReadOnlyList<string> paths = GapPaths(gap);
         string why = gap.UpstreamAuthorByPath.Count > 0
@@ -946,8 +962,9 @@ public static class RetryPolicy
             : $"write-scope gap: {string.Join(", ", paths)} was written outside this task's writeScope again, " +
               "after an earlier attempt's feedback named it";
         string pronoun = paths.Count == 1 ? "it" : "them";
+        string refusal = wall is null ? "" : $"; {RepeatedRefusals(wall)}";
         return $"needs human: {why}; if this task must change {pronoun}, add {JsonEntries(paths)} to writeScope in " +
-               TaskJsonPath(task);
+               TaskJsonPath(task) + refusal;
     }
 
     /// <summary>Every path a scope-gap halt is about, in ordinal order.</summary>
@@ -1338,30 +1355,51 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// #708: feedback for the repeated-WRITE-PATH halt on an attempt whose action SUCCEEDED and whose guardrails FAILED.
-    /// A command refused on repeated attempts does not settle such an attempt, but a refused write path does: nothing
-    /// grants the write between attempts, so a retry would be refused it again and would likely fail the same
-    /// guardrail. As in the #329 structural halt, the guardrail failure that genuinely ran leads
-    /// (<paramref name="primaryBody"/>), and the wall follows in #86's own path wording.
+    /// #708: feedback for the repeated-WRITE-PATH halt on an attempt whose action SUCCEEDED but which never converged
+    /// — at any of the five sites that settle such an attempt: a guardrail failure, or one of the four rejections
+    /// that run BEFORE the guardrails (a staging failure, a nested control key, a refused <c>needsHarnessWrite</c>, a
+    /// write-scope violation). A command refused on repeated attempts does not settle one of these, but a refused
+    /// write path INSIDE the task's enforced write scope does: nothing grants that write between attempts, so a
+    /// retry would be refused it again and reach the same place. As in the #329 structural halt, the cause that
+    /// genuinely fired LEADS (<paramref name="primaryHeading"/> / <paramref name="primaryBody"/>) and the wall
+    /// follows in #86's own path wording.
     /// </summary>
-    public static string ForRepeatedPathWallHalt(TaskNode task, string primaryBody, PermissionWallDecision wall)
+    /// <param name="budgetRemained">
+    /// Whether attempts were still budgeted when this halt fired. On the LAST one there was no budget left to save,
+    /// and saying otherwise credits the harness with ending a task early when the budget ended it (#708).
+    /// </param>
+    /// <param name="salvageRef">
+    /// The attempt's IN-SCOPE work, preserved because a halt performs no reset and leaves the tree ORPHANED — the
+    /// same disposition, and so the same <see cref="SalvageFraming.Escalation"/> wording, as an agent's own
+    /// <c>needsHuman</c> (#554).
+    /// </param>
+    public static string ForRepeatedPathWallHalt(
+        TaskNode task,
+        string primaryHeading,
+        string primaryBody,
+        PermissionWallDecision wall,
+        bool budgetRemained,
+        SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
         text.AppendLine($"# Task '{task.Id}' needs a human");
         text.AppendLine();
         text.AppendLine($"Task: {task.Description}");
         text.AppendLine();
-        text.AppendLine("## A guardrail failed");
+        text.AppendLine($"## {primaryHeading}");
         text.AppendLine();
         text.AppendLine(primaryBody.TrimEnd());
         text.AppendLine();
-        text.AppendLine("The harness settled this task `needs-human` on this attempt: a write was also refused on two or");
-        text.AppendLine("more attempts (below). Nothing grants that write between attempts, so a retry would be refused it");
-        text.AppendLine("again, and the remaining retry budget was not burned. Grant the write, or remove the task's need");
-        text.AppendLine("for it, then re-run.");
+        text.AppendLine("The harness settled this task `needs-human` on this attempt: a write inside this task's own");
+        text.AppendLine("write scope was also refused on two or more attempts (below). Nothing grants that write between");
+        text.AppendLine(budgetRemained
+            ? "attempts, so a retry would be refused it again, and the remaining retry budget was not burned."
+            : "attempts, so a retry would have been refused it again. This was the last budgeted attempt.");
+        text.AppendLine("Grant the write, or remove the task's need for it, then re-run.");
         text.AppendLine();
         AppendRepeatedPaths(text, wall.RepeatedPaths);
         AppendRepeatedCommands(text, wall.RepeatedCommands);
+        AppendSalvageSection(text, salvageRef, SalvageFraming.Escalation);
         return text.ToString();
     }
 
