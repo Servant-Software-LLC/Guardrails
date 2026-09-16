@@ -196,9 +196,60 @@ public sealed class DeliveryRecordTests
     }
 
     /// <summary>
+    /// The qualifier is the ONLY difference (design 39 §4). The same held run, with and without a wave that already
+    /// delivered, produces the same sentence apart from "the rest of", so a future edit to the partial wording cannot
+    /// quietly reword the flat one — and the flat run keeps saying "The verified work ... NOT on your checkout",
+    /// which is true exactly when nothing landed.
+    /// </summary>
+    [Fact]
+    public void ADeliveredWave_AddsOnlyTheRestOfQualifier_AndLeavesTheFlatRunsWordsAlone()
+    {
+        RunReport flat = Report(whollyGreenButUndelivered: true) with
+        {
+            MergeOnSuccess = true,
+            MergeOnSuccessSource = MergeOnSuccessSource.Default,
+            DeliverySuppressingDecision = BestGuessAt("12-implement-events-endpoint")
+        };
+
+        RunReport partial = flat with
+        {
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-02-build"] = new()
+                {
+                    Status = WaveDeliveryStatus.Delivered,
+                    StartedAt = DateTimeOffset.UnixEpoch,
+                    At = DateTimeOffset.UnixEpoch,
+                    Commit = "deadbeef",
+                    Covers = ["wave-02-build"],
+                },
+            },
+        };
+
+        string flatReason = RunCommand.DescribeDelivery(flat, terminalGatePassed: true, PlanDir).Reason!;
+        string partialReason = RunCommand.DescribeDelivery(partial, terminalGatePassed: true, PlanDir).Reason!;
+
+        Assert.Contains(
+            "The verified work is sitting on 'guardrails/27-operator-visibility' and NOT on your checkout",
+            flatReason, StringComparison.Ordinal);
+        Assert.DoesNotContain("the rest of", flatReason, StringComparison.OrdinalIgnoreCase);
+
+        const string prefix = "delivered: wave-02-build — ";
+        Assert.StartsWith(prefix, partialReason, StringComparison.Ordinal);
+        Assert.Equal(
+            flatReason.Replace(
+                "The verified work is sitting on",
+                "The rest of the verified work is sitting on",
+                StringComparison.Ordinal),
+            partialReason[prefix.Length..]);
+    }
+
+    /// <summary>
     /// The waved shape of the same run (design 39 §4): an earlier run delivered wave-02 at its own barrier, and this
     /// resume passed <c>--no-merge-on-success</c>. The record reads <c>partially-delivered</c>, and the rest is held
-    /// for both causes, named in the same words the flat run above uses.
+    /// for both causes, named in the flat run's words with ONE qualifier: "the REST of the verified work". Wave-02
+    /// landed on the checkout, so the flat run's unqualified "The verified work ... NOT on your checkout" would
+    /// contradict this record's own "delivered: wave-02-build" prefix.
     /// </summary>
     [Fact]
     public void APartialDeliveryTurnedOffThatAlsoRecordedADecision_NamesBothCauses_AfterTheDeliveredWave()
@@ -229,7 +280,7 @@ public sealed class DeliveryRecordTests
             "delivered: wave-02-build — delivery was held back for two reasons, either of which alone would have held "
             + "it: mergeOnSuccess is off (set by --no-merge-on-success), and the autonomous-mode interlock (#361) — "
             + "this run recorded 'proceeded-best-guess' at 'wave-03-build/01-compile' (task boundary), so "
-            + "machine-decided work is not auto-delivered. The verified work is sitting on "
+            + "machine-decided work is not auto-delivered. The rest of the verified work is sitting on "
             + "'guardrails/27-operator-visibility' and NOT on your checkout; a later --fresh or 'reset -y' destroys it. "
             + "Judge the decision (decisions[]) first, then re-run with --merge-on-success, which both turns delivery "
             + "on and overrides the interlock, or merge the branch by hand",
