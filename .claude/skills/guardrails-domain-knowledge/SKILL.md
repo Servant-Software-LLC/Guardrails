@@ -425,7 +425,9 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   `out-of-scope.patch`, captured before the scoped revert, for a human, and never applied or offered as
   salvage while the scope excludes it. Once a widened scope covers its paths, the next attempt's composed prompt
   gains "Out-of-scope work an earlier attempt left is now in scope", offering exactly those paths to recover and
-  superseding the earlier "not for you" (#707 review W4). (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
+  superseding the earlier "not for you" (#707 review W4) -- but ONLY while no later attempt has run since the copy
+  was captured (the composer looks at the most recent prior attempt alone), else the pointer would send a later
+  attempt back to bytes its own predecessor already recovered and moved past (#707 review delta). (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
   non-empty snapshot is not evidence of in-scope work.) **Two suppress-the-stash exceptions:**
   (1) **fragment-rejection** paths (invalid-fragment / foreign-key) keep the #162 re-author disclosure,
   not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** is suppressed AT
@@ -472,11 +474,16 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   path; when the repeat rule halts on a test, the halt leads with "keeps editing a test" and offers widening the
   scope only second. Otherwise the halt names each path, the `task.json`, and the one-line `writeScope` entry to
   add. Its salvage is taken only with in-scope work, filtered to the enforced scope. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
-  `doomed` verdict stays advisory (SSOT section 3.4). **Autonomous routing (#707 review):** the three HARNESS
-  needs-human halts — this gap halt, the #86/#104 permission wall, and the #201 no-route settle — set
-  `TaskResult.HardBlocker` and escalate as `hard-blocker-permanent`, never through the criticality judge and never
-  past a best-guess. Only an agent's own needsHuman (`TaskResult.NeedsHumanQuestion`) is a judgment call. The
-  shared `needs human: ` summary prefix is for human-facing readers only, and no routing reads it.
+  `doomed` verdict stays advisory (SSOT section 3.4). **Autonomous routing (#707 review):** routing is
+  DEFAULT-SAFE on the OUTCOME. Only an agent's own needsHuman (`TaskResult.NeedsHumanQuestion`) is a judgment
+  call; EVERY other `needs-human` outcome -- this gap halt, the #86/#104 wall, the #201 no-route settle, the
+  #325/#329 structural wall, a failed task preflight, a reached cost cap, an unresolved AI merge, a re-verify
+  rollback, the #174/#264 short-circuit -- escalates as `hard-blocker-permanent`, never through the criticality
+  judge and never past a best-guess. `TaskResult.HardBlocker` only makes the recorded signal more precise; a
+  producer that sets nothing is still escalated. Those escalations are filed under the NON-ANSWERABLE
+  `hard-blocker` gate (not `needs-human`): no answer file widens a writeScope or grants a path, so the consumer
+  and both pick surfaces refuse them and such a run exits `2`, not `4`. The shared `needs human: ` summary
+  prefix is for human-facing readers only, and no routing reads it.
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
   hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the

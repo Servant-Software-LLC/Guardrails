@@ -1237,13 +1237,26 @@ stable `needs human: ` prefix, the path, and (except for that test variant) the 
 domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
 diagnose this halt.
 
-**Harness halts route as hard blockers in autonomous mode, never as judgment calls (#707 review).** Three
-needs-human halts are decided by the HARNESS on a blocker no retry and no best-guess can clear: this write-scope-gap
-halt, the §9.3 permission wall, and the no-route settle (#201, DoR §6.2). Their summaries share the
-`needs human: ` prefix with an agent's own question, and the classify-then-act dispatch used to recognize "the agent
-asked" by that prefix. So all three were judgment calls: the criticality judge ran, and below the threshold a
-best-guess re-drove the task with a fresh budget, recorded `proceeded-best-guess`, and turned delivery off. Routing
-now reads structured fields only.
+**Harness halts route as hard blockers in autonomous mode, never as judgment calls (#707 review).** A needs-human
+halt the HARNESS decided rests on a blocker no retry and no best-guess can clear: this write-scope-gap halt, the
+§9.3 permission wall, the no-route settle (#201, DoR §6.2), the structural `.claude/` wall (#325/#329), a failed
+task preflight, a reached cost cap, an unresolved AI merge, a re-verify rollback, and the #174/#264 short-circuit.
+Their summaries share the `needs human: ` prefix with an agent's own question, and the classify-then-act dispatch
+used to recognize "the agent asked" by that prefix. So they were judgment calls: the criticality judge ran, and
+below the threshold a best-guess re-drove the task with a fresh budget, recorded `proceeded-best-guess`, and turned
+delivery off. Routing now reads structured fields only.
+
+**The routing rule is DEFAULT-SAFE, not a list of known halts (#707 review delta).** Routing on
+`TaskResult.HardBlocker` alone left seven producers — the structural wall, task preflight, cost cap, AI-merge
+unresolved, AI-merge re-verify failure, non-FF union re-verify failure, and the #174/#264 short-circuit — matching
+NO branch at all: no judge call, no escalation, no `decisions[]` entry, a run ended on a blocker with nothing
+recorded anywhere. The dispatch now branches on the OUTCOME: `NeedsHumanQuestion` (only the agent's own needsHuman
+sets it) is the judgment call, and **every other `needs-human` outcome escalates as `hard-blocker-permanent`**,
+classified from `HardBlocker` when its producer set one and from a generic harness-halt signal carrying the
+summary when it did not. No outcome is exempt — the cost cap included, and the #174/#264 short-circuit records a
+second entry beside its overwatcher floor decision, which is the honest outcome rather than silence. A new
+needs-human producer is therefore routed correctly by default; forgetting to set a signal costs precision in the
+record, never the escalation itself.
 - `TaskResult.NeedsHumanQuestion` is set by an agent's own `needsHuman` alone (#606), and is the one judgment call.
 - `TaskResult.HardBlocker` is a `GateSignal` set by the three halts' producers: `PermissionWall`, `NoRoute` and
   `WriteScopeGap`. Each classifies `hard-blocker-permanent` and escalates at the `needs-human` gate without
@@ -1276,10 +1289,16 @@ nothing of the agent's work.
 it touches from its `diff --git` headers. The capture passes `--no-renames`, so each header names a single path
 twice. When the ENFORCED scope of the attempt being composed now covers at least one of those paths — because the
 scope was widened, as the halt asked — the composed prompt gains `## Out-of-scope work an earlier attempt left is
-now in scope`. That section names the most recent such patch and lists only the paths the scope now covers, as
+now in scope`. That section names the patch and lists only the paths the scope now covers, as
 work to recover rather than re-author. It says it supersedes the earlier feedback's "not for you", which was true
 under the scope that attempt ran with, and that any path in the patch still outside the scope stays off-limits.
 While no kept path is in scope, the copy is never mentioned to the agent at all.
+
+A copy is offered only while **no later attempt has run since it was captured** (#707 review delta): the composer
+considers the MOST RECENT prior attempt alone, and says nothing when that attempt kept no copy. Otherwise the
+pointer goes stale in the one sequence it exists for — attempt N keeps a copy, the scope widens, attempt N+1
+recovers from it and then fails a guardrail — and attempt N+2 would be sent back to the superseded bytes by
+wording ("recover each one from its hunk in that file") more directive than attempt N+1's own salvage pointer.
 
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
@@ -3401,7 +3420,7 @@ review-gate gate (no new boundary is added) — and **adds these OPTIONAL fields
 
 | Field (optional) | Type | Meaning |
 |---|---|---|
-| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
+| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| `hard-blocker` (every harness-decided needs-human halt, NON-answerable — #707 review delta, §7.2) \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
 | `classification` | string | `judgment-call` \| `hard-blocker-retryable` \| `hard-blocker-permanent` |
 | `criticality` | string | the assessed level (`low`\|`moderate`\|`high`\|`critical`); null for a hard blocker |
 | `confidence` | string | the judge's confidence (`low`\|`moderate`\|`high`); null for a hard blocker |
@@ -3972,10 +3991,15 @@ diagram is stale or missing (the "regenerate" signal); for `lock --check`: the f
 the baseline or the baseline is missing (the "re-baseline" signal); for `merge`: there are unresolved
 conflicts to resolve, or the BASE baseline is missing and must be established first (§11.5) · `3`
 cancelled · `4` **`EscalationsPending`** — an autonomous run (`docs/plans/12-autonomous-mode.md`, issue
-#361 Phase 3) ended with **unresolved escalations** (an answer-required halt: one or more
-`logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered`, §8). This is a **NEW, DISTINCT
-non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated firstmate consumer
-**never** reads an answer-required halt as clean green AND can tell it apart from a plain needs-human halt.
+#361 Phase 3) ended with **unresolved ANSWERABLE escalations** (an answer-required halt: one or more
+`logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered` on an **answerable** gate —
+`needs-human` or `wave-checkpoint`, §8). A run whose open escalations are all **non-answerable**
+(`hard-blocker`, `review-gate`) exits **`2`** instead (#707 review delta): code `4` promises "a firstmate answer
+file unblocks this on the next resume", and for a harness-decided hard blocker that promise is false — the
+consumer refuses such an answer, and the remedy is a human editing `task.json` or the config. This is a
+**NEW, DISTINCT non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated
+firstmate consumer **never** reads an answer-required halt as clean green AND can tell it apart from a plain
+needs-human halt.
 Code `2` is deliberately **NOT** reused here: `2` is indistinguishable from a normal needs-human, whereas
 `EscalationsPending` signals "a firstmate answer file (§7.2/§7.4) can unblock this on the next resume." ·
 `5` **`ProceededUnreviewed`** — an autonomous run (`docs/plans/12-autonomous-mode.md` §5.2, issue #361
@@ -4690,6 +4714,9 @@ logs/<runId>/escalations/
 │                              #   surface presents; `[]` for a free-text or non-answerable escalation
 │                              #   + `kind` (#485): the agent's OPTIONAL needsHuman classification
 │                              #   (`blocked-work` | `defective-guardrail`); ABSENT when unclassified
+│                              #   + `classification` (#707 review delta): the class the gate was acted on
+│                              #   under (`judgment-call` | `hard-blocker-retryable` | `hard-blocker-permanent`),
+│                              #   the same value as the decisions[] entry; ABSENT when the caller records none
 └── <seq>-<gate>.answer.json   # OPTIONAL firstmate reply, co-located beside the record it answers (§7.2/§7.4);
                                #   present once a crew has written an answer for an ANSWERABLE gate — a
                                #   hand-authored reply OR a pick surface's chosen option (§9, #387)
@@ -4701,8 +4728,22 @@ The escalation record's **`status` lifecycle** is `open` (written by `Escalate`)
 this **creating** run's `escalations/` dir even across later resumes (§7.2). The `.answer.json` reply is the
 firstmate answer-file contract (`docs/plans/12-autonomous-mode.md` §7.4); a resume consumes it under the
 dual-hash / CAS binding rules in §7.2. Only the two **answerable** gates (`needs-human`, `wave-checkpoint`)
-ever carry a reply — there is **no `review-gate` answer file** (no `review-attested` kind, §7.2). A run that
-ends with any escalation still `open`/`answered` (unconsumed) exits `4 = EscalationsPending` (§7.1).
+ever carry a reply — there is **no `review-gate` answer file** (no `review-attested` kind, §7.2), and no
+**`hard-blocker`** answer file either. A run that ends with an **answerable** escalation still `open`/`answered`
+(unconsumed) exits `4 = EscalationsPending` (§7.1); one whose open escalations are all non-answerable exits
+`2`, because no answer file can clear them.
+
+**The `hard-blocker` gate (#707 review delta).** Every needs-human halt the HARNESS decided is filed under this
+gate rather than `needs-human`: a permission wall, a no-route settle, a write-scope gap, a structural `.claude/`
+wall, a failed task preflight, a reached cost cap, an unresolved AI merge, a re-verify rollback, the #174/#264
+short-circuit. It is NON-answerable by the same `AnswerableGates` predicate the resume-time consumer and both
+pick surfaces already enforce — no answer widens a `writeScope`, grants a blocked path or raises a cost cap, so
+an injected answer could only re-drive a task that must fail again while the run reported "answer required"
+instead of the real remedy (editing `task.json` or the config). Its record carries `criticality: null` like any
+hard blocker. Every escalation record also carries **`classification`** (`judgment-call` |
+`hard-blocker-retryable` | `hard-blocker-permanent`) — the same value as the `decisions[]` entry, on the record a
+human or firstmate actually reads, so an answerable judgment call is distinguishable from a hard blocker without
+inferring it from the gate name.
 
 **`feedback.md` header is action-kind AND rollback/salvage aware (issues #264 / #167 / #306).** The
 `feedback.md` opens with retry guidance chosen first by action kind, then — for a PROMPT action — by what
@@ -5159,7 +5200,8 @@ inert hook. See §9.4 for the mechanism this condition gates.
   check gates on — #706, §3.4), previous-attempt feedback (actions,
   attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
   and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **recoverable out-of-scope work** (actions, worktree mode, only when the
-  enforced scope now covers a path an earlier attempt's `out-of-scope.patch` touched — #705/#707 review, §3.4),
+  enforced scope now covers a path the MOST RECENT prior attempt's `out-of-scope.patch` touched, and no later
+  attempt has run since — #705/#707 review, §3.4),
   **staging-outputs
   contract** (actions, when `stagingOutputs` declared, §3.5: the absolute `GUARDRAILS_STAGING_DIR` and
   the `from→to` map embedded verbatim — "write here; the harness moves it to `.claude/`; do not write

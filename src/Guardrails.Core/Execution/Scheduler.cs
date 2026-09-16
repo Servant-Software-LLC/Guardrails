@@ -4176,14 +4176,22 @@ public sealed class Scheduler
     /// Map a just-settled task's outcome to a <see cref="GateSignal"/> and dispatch it through
     /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). These task-level stops are dial/forensic-eligible: an
     /// agent-emitted <c>{"needsHuman": "…"}</c> (a class-(a) judgment call, recognised by
-    /// <see cref="TaskResult.NeedsHumanQuestion"/>, which only the agent's own needsHuman sets); a HARNESS needs-human
-    /// halt carrying <see cref="TaskResult.HardBlocker"/> (a permission wall, a no-route settle or a write-scope gap —
-    /// class (c), escalated without the judge, #707 review); a rate-limit EXHAUSTION (a
+    /// <see cref="TaskResult.NeedsHumanQuestion"/>, which only the agent's own needsHuman sets); EVERY OTHER
+    /// <see cref="TaskOutcome.NeedsHuman"/> — a stop the HARNESS decided — as a hard blocker under the
+    /// non-answerable <see cref="AnswerableGates.HardBlockerGate"/> gate, classified from
+    /// <see cref="TaskResult.HardBlocker"/> when its producer set one and from the OUTCOME alone when it did not
+    /// (#707 review, and its delta review's default-safe rule); a rate-limit EXHAUSTION (a
     /// class-(b) transient that never cleared → <see cref="TaskOutcome.RateLimited"/>); and a SUCCEEDED task
     /// that carries a <see cref="TaskResult.ResolvedTransient"/> signal (a class-(b) transient that DID clear
     /// within the pause budget — the executor already resolved it, so this only RECORDS the <c>blocker-retried</c>
-    /// forensic entry, never re-runs a wait). Every other outcome (a terminal-exhaustion needs-human, a cost-cap
-    /// halt, an overwatcher floor, a plain success) already carries its own shipped handling and is untouched.
+    /// forensic entry, never re-runs a wait).
+    ///
+    /// <para><b>No needs-human outcome is exempt.</b> An earlier revision of this comment claimed a
+    /// terminal-exhaustion needs-human, a cost-cap halt and an overwatcher floor "already carry their own
+    /// shipped handling". For the cost cap that was simply untrue — <see cref="CostCapHaltFor"/> builds a bare
+    /// needs-human result and nothing else recorded it — and for the others the handling they carry is a
+    /// journal settle or a floor decision, not an escalation. Each now escalates here as well; a second record
+    /// beside a floor's own decision is the honest outcome, and silence was the defect.</para>
     /// </summary>
     private async Task ClassifyTaskGateAsync(TaskNode task, TaskResult result, CancellationToken ct)
     {
@@ -4198,19 +4206,33 @@ public sealed class Scheduler
             if (result.Outcome == TaskOutcome.NeedsHuman && result.NeedsHumanQuestion is { } question)
             {
                 await ClassifyAndActAsync(
-                    GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
-                    question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
+                    GateSignal.AgentNeedsHuman(question), gate: AnswerableGates.NeedsHumanGate, subject: task.Id,
+                    boundary: "task", question: question, definitionHash: definitionHash,
+                    criticalityGate: CriticalityGate.NeedsHuman,
                     ct, options: result.NeedsHumanOptions, kind: result.NeedsHumanKind, waveDir: task.WaveDir)
                     .ConfigureAwait(false);
             }
-            else if (result.Outcome == TaskOutcome.NeedsHuman && result.HardBlocker is { } blocker)
+            else if (result.Outcome == TaskOutcome.NeedsHuman)
             {
-                // The HARNESS stopped the task. Its own signal is classified, and the halt's summary is the context
-                // a human answers the escalation with.
+                // The HARNESS stopped the task. Its own signal is classified when it carries one; otherwise the
+                // OUTCOME alone is enough — this is the DEFAULT-SAFE branch (#707 delta review, W2-a).
+                //
+                // Before it, a needs-human result setting neither structured field matched no branch and simply
+                // VANISHED: no judge call, no escalation, no decisions[] entry, and a run that ended on a blocker
+                // with nothing recorded anywhere. Seven producers did exactly that — the structural .claude/ wall,
+                // a failed task preflight, the cost cap, an unresolved AI merge, a failed post-AI-merge re-verify,
+                // a non-FF union re-verify rollback, and the #174/#264 short-circuit. A stop the harness decided
+                // is escalated on the outcome, never on which fields its producer happened to populate.
+                //
+                // The gate is `hard-blocker`, NOT `needs-human` (W2-b): no answer file widens a writeScope, grants
+                // a blocked path or raises a cost cap, so such an escalation must be non-answerable on every
+                // surface (the consumer, both pick surfaces) and must not make the run exit "answer required".
+                GateSignal blocker = result.HardBlocker
+                    ?? GateSignal.HarnessHalt(result.Summary ?? $"the harness stopped '{task.Id}' needs-human");
                 await ClassifyAndActAsync(
-                    blocker, gate: "needs-human", subject: task.Id, boundary: "task", question: result.Summary,
-                    definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman, ct,
-                    waveDir: task.WaveDir).ConfigureAwait(false);
+                    blocker, gate: AnswerableGates.HardBlockerGate, subject: task.Id, boundary: "task",
+                    question: result.Summary, definitionHash: definitionHash,
+                    criticalityGate: CriticalityGate.NeedsHuman, ct, waveDir: task.WaveDir).ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.RateLimited)
             {
@@ -4447,7 +4469,10 @@ public sealed class Scheduler
             DefinitionHash = definitionHash,
             At = DateTimeOffset.UtcNow,
             Options = options ?? [],
-            Kind = kind
+            Kind = kind,
+            // #707 delta review: the same classification the autonomy.jsonl line below carries, recorded on the
+            // escalation RECORD too — that file is what a human or firstmate reads when deciding what to do.
+            Classification = classification
         });
         AppendAutonomyRecord(gate, boundary, subject, classification, DecisionTokens.Escalated,
             criticality, confidence: null, threshold: null, question: question, bestGuess: null, rationale: null);

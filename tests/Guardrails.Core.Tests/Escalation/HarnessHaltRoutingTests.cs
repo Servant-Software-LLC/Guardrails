@@ -24,6 +24,9 @@ public sealed class HarnessHaltRoutingTests : IDisposable
 {
     private const string TaskId = "01-implement";
 
+    /// <summary>The NON-answerable gate a harness halt is filed under (delta review W2-b).</summary>
+    private const string HardBlockerGate = "hard-blocker";
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), "gr-halt-routing-" + Guid.NewGuid().ToString("N"));
 
     public void Dispose()
@@ -48,6 +51,8 @@ public sealed class HarnessHaltRoutingTests : IDisposable
     [InlineData("permission-wall")]
     [InlineData("no-route")]
     [InlineData("write-scope-gap")]
+    [InlineData("structural-wall")]
+    [InlineData("task-preflight")]
     public async Task AHarnessHalt_IsAHardBlocker_ItNeverReachesTheJudge_NorProceedsOnABestGuess(string halt)
     {
         TaskResult result = HarnessHaltFromItsRealProducer(halt);
@@ -60,6 +65,55 @@ public sealed class HarnessHaltRoutingTests : IDisposable
         Assert.Equal(1, executor.Calls); // no best-guess re-drive with a fresh budget
         // Not vacuous: the stop DID reach the classify-then-act dispatch, and escalated as a blocker.
         Assert.Contains(decisions, d => d.Decision == DecisionTokens.Escalated && d.Subject == TaskId);
+        // The delta review's W2-b: a harness halt is NOT answerable, so it is filed under a gate no answer
+        // file and no pick surface can bind. Filing it under `needs-human` invited a firstmate answer into a
+        // re-run that cannot succeed — no answer widens a writeScope or grants a blocked path.
+        Assert.Contains(decisions, d => d.Decision == DecisionTokens.Escalated && d.Gate == HardBlockerGate);
+        Assert.DoesNotContain(decisions, d => d.Decision == DecisionTokens.Escalated && d.Gate == "needs-human");
+    }
+
+    /// <summary>
+    /// The delta review's W2-a: SEVEN harness producers set NEITHER structured field, and each reached the
+    /// dispatch, matched no branch, and vanished — no judge call, no escalation, no <c>decisions[]</c> entry.
+    /// A run ended on a blocker with nothing recorded anywhere. These rows are the ones a real producer can
+    /// build here; each must escalate through the default-safe branch on the OUTCOME alone.
+    /// </summary>
+    [Theory]
+    [InlineData("task-preflight")] // AttemptJournaler.TaskPreflightFailed — neither field
+    [InlineData("cost-cap")]       // Scheduler.CostCapHaltFor — neither field, and the task never launched
+    public async Task ANeitherFieldHarnessHalt_StillEscalates_OnTheOutcomeAlone(string halt)
+    {
+        // Not vacuous: assert the producer really does carry neither field, so this row proves the DEFAULT
+        // branch and not some signal set elsewhere. If a later change gives one of these a HardBlocker, this
+        // assertion fails loudly rather than letting the row silently stop testing the default.
+        TaskResult produced = halt == "cost-cap" ? CostCapHaltShape() : HarnessHaltFromItsRealProducer(halt);
+        Assert.Null(produced.NeedsHumanQuestion);
+        Assert.Null(produced.HardBlocker);
+
+        (RunJournal journal, CountingJudgeRunner judge, StubExecutor executor) = halt == "cost-cap"
+            ? await RunAutonomouslyAsync(HarnessHaltFromItsRealProducer("task-preflight"), costCapHit: true)
+            : await RunAutonomouslyAsync(produced);
+
+        IReadOnlyList<DecisionEntry> decisions = journal.Document.Decisions ?? [];
+        Assert.Equal(0, judge.Invocations);
+        Assert.DoesNotContain(decisions, d => d.Decision == DecisionTokens.ProceededBestGuess);
+        Assert.Contains(decisions, d => d.Decision == DecisionTokens.Escalated && d.Gate == HardBlockerGate);
+        // The cost cap halts BEFORE the task is launched, so its executor is never asked at all.
+        Assert.Equal(halt == "cost-cap" ? 0 : 1, executor.Calls);
+    }
+
+    [Fact]
+    public void StructuralWallHalt_CarriesThePermissionWallSignal_NotAnEmptyResult()
+    {
+        // The #325/#329 structural-wall halt is the SAME wall class the #86/#104 site already routes, so it
+        // carries the same signal rather than falling to the generic default. Pinned on the producer itself:
+        // once the default branch exists, routing alone can no longer tell the two apart.
+        TaskResult result = HarnessHaltFromItsRealProducer("structural-wall");
+
+        Assert.Null(result.NeedsHumanQuestion);
+        GateSignal blocker = Assert.IsType<GateSignal>(result.HardBlocker);
+        Assert.Equal(GateSignalKind.PermissionWall, blocker.Kind);
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(blocker));
     }
 
     [Fact]
@@ -90,9 +144,33 @@ public sealed class HarnessHaltRoutingTests : IDisposable
                 task, attemptNumber: 1, DateTimeOffset.UtcNow, RelativeLogDir, logDir, provenance: null,
                 reason: "no candidate block serves the 'hard' tier, at it or above it").Result,
             "write-scope-gap" => WriteScopeGapHalt(journaler, task, logDir),
+            "structural-wall" => journaler.StructuralWallHalt(
+                task, attemptNumber: 1, DateTimeOffset.UtcNow, RelativeLogDir, logDir, Action(),
+                AttemptOutcome.GuardrailFailed,
+                summary: "guardrail(s) failed: 01-ok — needs human; a .claude/ write was blocked this attempt",
+                feedback: "a guardrail failed and a .claude/ write was blocked",
+                guardrailResults: [],
+                failedGuardrails: [new FailedGuardrail { Name = "01-ok", Reason = "assertion failed" }],
+                wall: new PermissionWallDecision(
+                    Halt: true, StructuralPaths: [".claude/skills/x/SKILL.md"], RepeatedPaths: [])).Result,
+            "task-preflight" => journaler.TaskPreflightFailed(
+                task, attemptNumber: 1, DateTimeOffset.UtcNow, RelativeLogDir, logDir,
+                failedChecks: [new FailedGuardrail { Name = "01-upstream-materialized", Reason = "src/Api.cs absent" }]).Result,
             _ => throw new ArgumentOutOfRangeException(nameof(halt), halt, "unknown harness halt")
         };
     }
+
+    /// <summary>
+    /// The cost-cap halt's shape as <c>Scheduler.CostCapHaltFor</c> builds it — a bare needs-human result with
+    /// NEITHER structured field. Used only to assert that shape; the ROUTING row drives the real Scheduler
+    /// producer via <see cref="RunAutonomouslyAsync"/>'s <c>costCapHit</c>, which never launches the task.
+    /// </summary>
+    private static TaskResult CostCapHaltShape() => new()
+    {
+        TaskId = TaskId,
+        Outcome = TaskOutcome.NeedsHuman,
+        Summary = "cost cap reached: cumulative journaled cost has reached the configured maxCostUsd ($1); task not launched."
+    };
 
     private static TaskResult WriteScopeGapHalt(AttemptJournaler journaler, TaskNode task, string logDir)
     {
@@ -132,17 +210,31 @@ public sealed class HarnessHaltRoutingTests : IDisposable
     // ── the autonomous run ───────────────────────────────────────────────────────────────────────
 
     private async Task<(RunJournal Journal, CountingJudgeRunner Judge, StubExecutor Executor)> RunAutonomouslyAsync(
-        TaskResult haltedResult)
+        TaskResult haltedResult, bool costCapHit = false)
     {
         string planDir = Path.Combine(_root, "plan-" + Guid.NewGuid().ToString("N"));
         var autonomy = new AutonomyConfig { EscalationThreshold = EscalationThreshold.High };
         PlanDefinition basePlan = Plan(planDir, NewTask(planDir));
         PlanDefinition plan = basePlan with
         {
-            Config = basePlan.Config with { AutonomyPolicy = AutonomyPolicy.Auto, Autonomy = autonomy }
+            Config = basePlan.Config with
+            {
+                AutonomyPolicy = AutonomyPolicy.Auto,
+                Autonomy = autonomy,
+                // A POSITIVE cap, tripped below by real journaled spend — a zero/negative cap is rejected at
+                // load (GR2012), so a run can never actually reach the dispatch carrying one.
+                MaxCostUsd = costCapHit ? 1m : null
+            }
         };
         new StateManager(plan.PlanDirectory).Initialize();
         RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        if (costCapHit)
+        {
+            // Spend recorded by an EARLIER unit of this run, exactly as a paid attempt records it: the cap is
+            // reached before this task is dispatched, so Scheduler.CostCapHaltFor halts it un-launched.
+            journal.AddOverheadCost(5m);
+        }
 
         var judge = new CountingJudgeRunner();
         var executor = new StubExecutor(haltedResult);
