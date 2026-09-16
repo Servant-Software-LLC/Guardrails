@@ -1213,6 +1213,8 @@ public sealed class HarnessWriteRunTests
         Assert.Contains($"- `{inScope}`", halt);
         Assert.Contains("## Secondary context", halt);
         Assert.Contains($"- path: `{outOfScope}`", halt);
+        // ...and named ONCE: what the halt already listed above is not repeated as secondary context.
+        Assert.DoesNotContain($"- path: `{inScope}`", halt);
     }
 
     [Fact]

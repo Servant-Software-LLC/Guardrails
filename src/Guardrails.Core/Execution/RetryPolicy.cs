@@ -1504,9 +1504,23 @@ public static class RetryPolicy
     /// refusal is reported beside their verdict, so the next attempt stops reaching for a call that will be refused
     /// again. Empty when nothing repeated.
     /// </summary>
-    public static string ForRepeatedRefusalContext(PermissionWallDecision decision)
+    /// <param name="alreadyNamed">
+    /// Targets the surrounding feedback has ALREADY listed — at a halt, the wall's own paths and commands, which
+    /// appear above under their own headings. Listing one again here reads as a second, different finding. The
+    /// filter is applied at the RENDER, never at the source: every caller still hands over the FULL decision, so a
+    /// refusal can only be de-duplicated, never lost. When nothing survives the filter the whole section is
+    /// omitted — a heading with no bullets reads as a finding whose evidence went missing.
+    /// </param>
+    public static string ForRepeatedRefusalContext(
+        PermissionWallDecision decision, IReadOnlyCollection<string>? alreadyNamed = null)
     {
-        if (!decision.HasRepeated)
+        HashSet<string>? named = alreadyNamed is { Count: > 0 }
+            ? new HashSet<string>(alreadyNamed, StringComparer.Ordinal)
+            : null;
+        List<string> paths = decision.RepeatedPaths.Where(p => named?.Contains(p) != true).ToList();
+        List<string> commands = decision.RepeatedCommands.Where(c => named?.Contains(c) != true).ToList();
+
+        if (paths.Count == 0 && commands.Count == 0)
         {
             return string.Empty;
         }
@@ -1515,19 +1529,21 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("## Secondary context — refused on two or more attempts");
         text.AppendLine();
-        foreach (string path in decision.RepeatedPaths)
+        foreach (string path in paths)
         {
             text.AppendLine($"- path: `{path}`");
         }
 
-        foreach (string command in decision.RepeatedCommands)
+        foreach (string command in commands)
         {
             text.AppendLine($"- command: `{command}`");
         }
 
         text.AppendLine();
         text.AppendLine("These are not granted, so the same call will be refused again. They did not settle this");
-        text.AppendLine("attempt; the guardrail verdicts above did. Do not spend turns on them: reach the result by a");
+        // "the cause reported above" rather than "the guardrail verdicts above": since #708 this section is also
+        // rendered at the four pre-guardrail sites, where no guardrail ran and naming one would be false.
+        text.AppendLine("attempt; the cause reported above did. Do not spend turns on them: reach the result by a");
         text.AppendLine("granted route and let the task's guardrails verify it. If the deliverable cannot land without");
         text.AppendLine("one of them, write {\"needsHuman\": \"<which one, and why>\"} to GUARDRAILS_STATE_OUT and stop.");
         return text.ToString();

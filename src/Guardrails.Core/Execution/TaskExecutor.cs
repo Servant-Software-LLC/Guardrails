@@ -2281,8 +2281,9 @@ public sealed class TaskExecutor : ITaskExecutor
         // #708: the NARROWED wall is what the halt reports, so the text names what actually caused it. Everything
         // else the attempt was refused — an out-of-scope path, a command — still has to be NAMED: an operator who
         // grants the path the halt names, re-runs, and is then ambushed by the second refusal was told half the
-        // story. ForRepeatedRefusalContext takes the FULL decision and is empty when nothing repeated.
-        string context = RetryPolicy.ForRepeatedRefusalContext(wall);
+        // story. Each branch below hands ForRepeatedRefusalContext the FULL decision plus what it has ALREADY
+        // listed, so the section carries exactly the refusals the halt text does not — nothing lost, nothing said
+        // twice — and disappears when that leaves nothing.
 
         // A structural .claude/ wall outranks the repeat: it is un-clearable by construction (#104), so it settles
         // on the FIRST attempt that hits it rather than waiting for a second. It never reaches RepeatedPaths — the
@@ -2295,7 +2296,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 task, attemptNumber, startedAt, relativeLogDir, logDir, action, outcome,
                 $"{causeSummary} — needs human; a .claude/ write was blocked this attempt ({wallPaths}), " +
                 "which no retry clears (see feedback)",
-                RetryPolicy.ForStructuralWallHalt(task, primaryHeading, primaryBody, wall.StructuralPaths) + context,
+                RetryPolicy.ForStructuralWallHalt(task, primaryHeading, primaryBody, wall.StructuralPaths)
+                    + RetryPolicy.ForRepeatedRefusalContext(wall, wall.StructuralPaths),
                 guardrailResults ?? [], failedGuardrails ?? [],
                 provenance: provenance, segments: segments, harnessWrite: harnessWrite);
         }
@@ -2306,7 +2308,10 @@ public sealed class TaskExecutor : ITaskExecutor
             $"{causeSummary} — needs human; {RetryPolicy.RepeatedRefusals(haltWall)} (see feedback)",
             RetryPolicy.ForRepeatedPathWallHalt(
                 task, primaryHeading, primaryBody, haltWall, budgetRemained, salvage,
-                workNotPreserved, outOfScopePatchPath) + context,
+                workNotPreserved, outOfScopePatchPath)
+                // The halt already lists haltWall's paths AND its commands, under their own headings.
+                + RetryPolicy.ForRepeatedRefusalContext(
+                    wall, haltingPaths.Concat(wall.RepeatedCommands).ToList()),
             guardrailResults ?? [], failedGuardrails ?? [],
             provenance: provenance, segments: segments, harnessWrite: harnessWrite);
     }
