@@ -6156,7 +6156,10 @@ workspace stays a wall; one outside it never is, scope or no scope. The comparis
 separators: the refusal is reported however the refused tool call named it, while the workspace may be the #383
 short junction (`C:\.a\…`) or a macOS `/var` alias (#452), so a lexical miss is retried over both sides'
 symlink-resolved form. That direction matters — a lexical-only test would read a real in-scope wall as auxiliary
-and burn the budget against a wall no summary names. **What a non-converged structural halt REPORTS is
+and burn the budget against a wall no summary names. **Resolution is best-effort, so the reconciliation is not
+guaranteed:** `RealPath.Resolve` degrades to the literal spelling for a path it cannot resolve (it does not
+exist, it is unreadable, the link chain is circular), and the comparison then falls back to the lexical answer —
+so a refusal naming an unresolvable alias of the workspace can still read as auxiliary and retry. **What a non-converged structural halt REPORTS is
 in turn cause-aware (issue #329):** the `permission-denied` outcome is reported only when the wall is the
 honest primary cause (the action failed, so no guardrail ran); a guardrail that genuinely RAN and FAILED
 is reported as `guardrail-failed` with `failedGuardrails[]` populated, with the `.claude/` wall as
@@ -6256,11 +6259,16 @@ bare forms repeat together. The harness routes on these lists only — never on 
       a `needsHarnessWrite` — even a malformed, nested one — the refusal it hit is the PRECONDITION for the
       route it is taking, not an un-clearable wall, so the rejection is reported on its own and the attempt
       retries. Halting there would pre-empt the hatch, which is the defect #321 fixed and #325 generalised.
-    - **A repeated in-scope path halts only if the task has NOT already written it.** In-scope is necessary but
-      not sufficient for "this attempt can never converge": at these four sites no guardrail has looked for the
+    - **A repeated in-scope path halts unless THIS ATTEMPT changed it.** In-scope is necessary but not
+      sufficient for "this attempt can never converge": at these four sites no guardrail has looked for the
       deliverable yet, so a refusal of a path the agent nonetheless produced by another route says nothing about
-      the rejection that actually failed the attempt. The guardrail-failed site keeps the unnarrowed rule —
-      there a guardrail DID look, and failed.
+      the rejection that actually failed the attempt. The question is asked of the attempt's own diff against
+      `taskBase` — the same stage-then-diff the write-scope check uses — and NOT of the filesystem. A segment
+      worktree is checked out AT `taskBase`, so "the file exists" is true of everything the repo already
+      contains, which would mask the wall for the two commonest shapes there are: modifying an existing file,
+      and implementing against an upstream stub. The guardrail-failed site keeps the unnarrowed rule — there a
+      guardrail DID look, and failed. A git failure yields an EMPTY changed-set, so the wall stands rather than
+      being silently masked.
     - **The halt preserves exactly what the retry it replaces would have preserved.** A halt returns before the
       F2 reset, so the tree is ORPHANED rather than rolled back and the salvage carries the escalation framing
       (§3.2/§9, #554). The ONE exception is the nested-control-key site, which keeps the documented

@@ -234,6 +234,55 @@ public static class WriteScopeCheck
     }
 
     /// <summary>
+    /// Every path THIS attempt changed versus <paramref name="taskBase"/>, workspace-relative and
+    /// forward-slashed — the same stage-then-diff primitive <see cref="Check"/> uses, so the two can never
+    /// disagree about what the attempt actually touched.
+    /// <para>
+    /// Asked by the #708 pre-guardrail wall rule, which has to tell "the agent produced this path by another
+    /// route" from "the repo already contained it". A segment worktree is checked out AT
+    /// <paramref name="taskBase"/>, so a filesystem existence test answers the SECOND question while appearing to
+    /// answer the first — it reads true for an upstream-authored stub and for the very file the task exists to
+    /// edit, which masks the wall for the two commonest task shapes there are.
+    /// </para>
+    /// <para>
+    /// FAILS CLOSED, the deliberate opposite of <see cref="HasFileChanges"/>: a git error yields an EMPTY set, so
+    /// no path is taken for "already changed" and the wall STANDS. An unknown answer must never silently mask a
+    /// wall — that is the direction #708 exists to prevent — whereas #174's short-circuit must never FIRE on an
+    /// unknown, which is why its sibling fails open instead. Same reconstructable-set staging exclusion as
+    /// <see cref="Check"/> (SSOT §5.3(D)).
+    /// </para>
+    /// </summary>
+    public static IReadOnlySet<string> ChangedPaths(string repoPath, string taskBase)
+    {
+        var changed = new HashSet<string>(
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        try
+        {
+            SegmentStaging.StageAll(repoPath);
+            string diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string line = rawLine.Trim();
+                int tabIdx = line.IndexOf('\t');
+                if (tabIdx < 0) continue;
+
+                string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
+                if (path.Length > 0)
+                {
+                    changed.Add(path);
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        return changed;
+    }
+
+    /// <summary>
     /// Issue #705: KEEP the out-of-scope bytes. <see cref="ScopedRevert"/> destroys every offending change, which is
     /// right when the out-of-scope write is collateral and exactly wrong when it IS the deliverable — the shape of
     /// every plan scope gap. Plan 40's task 20 lost a working implementation this way on two attempts running.
