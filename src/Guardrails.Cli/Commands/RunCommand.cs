@@ -2168,9 +2168,10 @@ public static class RunCommand
     ///     <c>cancelled</c>, <c>aborted</c> or <c>definition drift</c> — for every held wave it left behind, one
     ///     that was mid-flight included;</item>
     ///   <item>the wave's tasks that need a human, or that hit a provider limit (<c>rate-limited</c>);</item>
-    ///   <item><c>not reached</c> only when the barrier block marked every task blocked (SSOT §7: not reached means
-    ///     pending or blocked). A cancelled task never reads as not reached; with no other cause it reads
-    ///     <c>not finished</c>.</item>
+    ///   <item><c>not reached</c> when no task in the wave ever started (SSOT §7: not reached means pending or
+    ///     blocked) — every task blocked by the barrier block, or stamped Cancelled as never-started by
+    ///     <c>BuildReport</c>, which is what a wave after a checkpoint or wave-drift halt carries. A wave that
+    ///     partly ran and stopped for a cause no arm above named reads <c>not finished</c>.</item>
     /// </list>
     /// A wave whose tasks all passed on a run that did not stop (the final wave behind a failed terminal gate, or
     /// a withheld run-end merge) gets no reason: that cause is run-level, and the run's own verdict names it.
@@ -2214,14 +2215,21 @@ public static class RunCommand
             reasons.Add($"{string.Join(", ", rateLimited)} rate-limited");
         }
 
-        // Only the barrier block marks every task of a wave Blocked (Scheduler.BlockLaterWaves): a Blocked task
-        // otherwise needs a non-green predecessor in its own wave, which is named above, because a dependsOn
-        // across waves is invalid (GR2034).
-        if (reasons.Count == 0 && tasks.Count > 0 && tasks.All(t => t.Outcome == TaskOutcome.Blocked))
+        // NO TASK EVER STARTED ⇒ not reached (SSOT §7: not reached means pending or blocked). Blocked is the
+        // barrier block's mark (Scheduler.BlockLaterWaves); Cancelled is BuildReport's mark for a task that never
+        // started, which is what a wave AFTER a JIT/breakdown checkpoint halt or a wave-drift halt carries — those
+        // report with cancelled: false, and BlockLaterWaves does not run on them. Reaching this arm at all means
+        // nothing above named a reason: no run-level stop cause, and no failing task. So a Cancelled task here
+        // cannot be one that started and was cancelled mid-attempt — that settles on a run whose report is
+        // Cancelled, which RunStopCause names first. A Blocked task otherwise needs a non-green predecessor in its
+        // own wave, also named above, because a dependsOn across waves is invalid (GR2034).
+        if (reasons.Count == 0 && tasks.Count > 0
+            && tasks.All(t => t.Outcome is TaskOutcome.Blocked or TaskOutcome.Cancelled))
         {
             reasons.Add("not reached");
         }
 
+        // Defensive: a wave that partly ran and then stopped for a cause nothing above named.
         if (reasons.Count == 0 && tasks.Any(t => t.Outcome == TaskOutcome.Cancelled))
         {
             reasons.Add("not finished");
