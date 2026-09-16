@@ -94,12 +94,6 @@ public sealed class Scheduler
     // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
     private IntegrationHandle? _pendingDeliveryIntegration;
 
-    // Design 39 §4: the branch a barrier delivery THIS PROCESS settled landed on, so BuildReport can name it.
-    // Never derived from the journal or from the run-start pin alone: every process re-pins OriginalBranch from
-    // HEAD, so a resume on a switched or detached checkout must not be credited with an earlier process's
-    // delivery (B1). Never the literal "HEAD". Written only on the barrier path, between drains.
-    private string? _barrierDeliveredToBranch;
-
     // #545 part 3 (plan 31 §5.2): the mid-run plan-folder edit watch. Constructed HERE rather than at the
     // composition root — unlike the Scheduler's other collaborators — because nothing depends on the seam
     // being injectable: the watch has no substitutable behaviour any test needs to fake, and it is built
@@ -230,6 +224,16 @@ public sealed class Scheduler
             // Surface it through the same honest-halt ABORTED report the CLI renders cleanly.
             return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                 with { Abort = BuildAbort(ex) };
+        }
+
+        // #726: when this plan has already delivered, the branch it delivered TO — not this process's
+        // run-start pin — is where every delivery below must land. Read once, here, and carried on the
+        // handle so the barrier promotion and the run-end merge compare against the same value. Absent on a
+        // plan that has delivered nothing, where the pin IS the target and nothing changes.
+        if (integ is not null
+            && (_journal as Journal.RunJournal)?.Document.DeliveryTarget is { Length: > 0 } recordedTarget)
+        {
+            integ = integ with { RecordedDeliveryTarget = recordedTarget };
         }
 
         // Whole-plan resume reconcile — ONCE, before any wave. Prune this run's stale segment refs,
@@ -1267,16 +1271,26 @@ public sealed class Scheduler
             EndOfRunSweep(directoryOwner, settled, integ);
         }
 
+        // #726: the run-end merge is a LANDING SITE too, so it records the plan's delivery target on its
+        // way through — write-once, so on a waved plan whose barrier already recorded one this changes
+        // nothing, and on a flat plan it is what makes a later resume from another branch refuse instead of
+        // quietly fast-forwarding that branch onto the plan tip.
+        if (mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged && integ is not null)
+        {
+            NoteDeliveryLanded(integ);
+        }
+
         // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change).
-        // The run-end merge ran green (FF or clean merge) ⇒ its own branch. Otherwise keep what BuildReport
-        // stamped: non-null only when a barrier delivery THIS PROCESS settled LANDED (design 39 §4), which really
-        // did reach that branch; null for a no-delivery run, a halted delivery with nothing landed, or serial.
+        // The run-end merge ran green (FF or clean merge) ⇒ the delivery target, which the merge's own #588
+        // gate just proved is where HEAD is. Otherwise keep what BuildReport stamped: non-null only when a
+        // barrier delivery LANDED (design 39 §4), which really did reach that branch; null for a
+        // no-delivery run, a halted delivery with nothing landed, or serial.
         // #588: a BranchMoved run-end merge adds no branch of its own, and the CLI's "delivered to X" notice
         // keys on the run-end merge landing — never on this field alone — so it cannot print a branch the
         // run-end work never reached, the exact false claim that issue was filed for.
         string? deliveredToBranch =
             mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
-                ? integ?.OriginalBranch
+                ? integ?.DeliveryTarget
                 : report.DeliveredToBranch;
 
         return report with
@@ -1363,13 +1377,20 @@ public sealed class Scheduler
 
         (MergeOnSuccessResult outcome, string? detail) = DeliverToUserBranch(integ, cancellationToken);
 
+        // #726: the deferred run-end merge is the same landing site as Finalize's immediate one, so it
+        // records the plan's delivery target on the same terms (write-once).
+        if (outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged)
+        {
+            NoteDeliveryLanded(integ);
+        }
+
         return report with
         {
             MergeOnSuccessOutcome = outcome,
             MergeOnSuccessDetail = detail,
             DeliveredToBranch =
                 outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
-                    ? integ.OriginalBranch
+                    ? integ.DeliveryTarget
                     : report.DeliveredToBranch, // design 39 §4: a refused merge keeps a barrier delivery's branch
             DeliveryPendingTerminalGate = false
         };
@@ -3202,12 +3223,14 @@ public sealed class Scheduler
                     Commit = trial.Commit,
                     Covers = coveredWaves
                 };
+                // #726: record the TARGET before the record that describes it. The trial has just proved the
+                // plan tip is already on the delivery target, so the durable fact that constrains every LATER
+                // delivery must not lag the descriptive one — a crash between the two writes the other way
+                // round leaves a wave reading `delivered` with no target recorded, which is this bug again.
+                // Unconditional, unlike the announcement: an earlier process may have settled the record and
+                // then crashed before recording, and RecordDeliveryTarget is write-once anyway.
+                NoteDeliveryLanded(integ);
                 SettleDelivery(wave, settled2, announce: priorDelivered is null);
-                if (priorDelivered is null)
-                {
-                    // This process settled the record, and the trial just proved the work is on its pinned branch.
-                    NoteBarrierDeliveryLanded(integ);
-                }
 
                 // Design 39 §1c "How a refresh is recorded": read the trigger from the TRIAL, never from
                 // MergeOnSuccessResult (review round 4 "d39-refresh-record") — an AlreadyDelivered trial
@@ -3276,6 +3299,10 @@ public sealed class Scheduler
             MergeOnSuccessResult promoted = provider.PromoteTrialDelivery(integ, trial, ct);
             if (promoted == MergeOnSuccessResult.FastForwarded)
             {
+                // #726: the promotion landed, so record WHERE before the record that describes it — see the
+                // already-delivered path above for why that order is the safe one.
+                NoteDeliveryLanded(integ);
+
                 // #597: name the decision an operator override lifted for THIS delivery, so run.json keeps
                 // the trace — only when the override actually had to fire (verdict.ForcedPastDecision).
                 SettleDelivery(wave, new Journal.WaveDeliveredRecord
@@ -3288,7 +3315,6 @@ public sealed class Scheduler
                     Detail = verdict.ForcedPastDecision ? SuppressingDecisionDetail(suppressingDecision!) : null,
                     Covers = coveredWaves
                 }, announce: true);
-                NoteBarrierDeliveryLanded(integ);
 
                 // Design 39 §1c "How a refresh is recorded": PromoteTrialDelivery is ALWAYS a fast-forward
                 // to the trial ref (review round 4 "d39-refresh-record") — the trigger is the trial's own
@@ -3376,7 +3402,11 @@ public sealed class Scheduler
         string integrationPath = integ.IntegrationWorktreePath;
         string planTipBeforeRefresh = GitCaptureLine(integrationPath, "rev-parse", "HEAD");
 
-        string message = $"Refreshed-From: {integ.OriginalBranch}\nGuardrails-Run: {_journal.RunId}";
+        // #726: the branch the refreshed commits came FROM is the delivery target, not this process's pin.
+        // A refresh only ever follows a delivery that landed, and a delivery can only land on the target, so
+        // the two agree here by construction — naming the target says WHY rather than leaving it to a
+        // coincidence a later change could break.
+        string message = $"Refreshed-From: {integ.DeliveryTarget}\nGuardrails-Run: {_journal.RunId}";
         (int exitCode, _) = RunGitInDir(
             integrationPath, "merge", "--no-ff", "--no-verify", "-m", message, upstreamSha);
 
@@ -3418,7 +3448,7 @@ public sealed class Scheduler
             {
                 At = DateTimeOffset.UtcNow,
                 Commit = refreshCommit,
-                From = integ.OriginalBranch,
+                From = integ.DeliveryTarget,
                 Upstream = upstreamSha,
                 DeliveredWave = wave.Dir,
                 Paths = paths
@@ -3490,17 +3520,32 @@ public sealed class Scheduler
     }
 
     /// <summary>
-    /// B1 (design 39 §4): remember the branch a barrier delivery THIS PROCESS settled landed on —
-    /// <paramref name="integ"/>'s pin, which this process's promotion (or its trial's ancestry check) just verified.
-    /// Never the literal <c>HEAD</c>: a detached checkout names no branch.
+    /// Record the branch a delivery that just LANDED went to (SSOT §7 <c>deliveryTarget</c>, issue #726) —
+    /// <paramref name="integ"/>'s delivery target, which this promotion (or its trial's ancestry check) has
+    /// just verified is where <c>HEAD</c> actually is. Called from BOTH landing sites: a wave's barrier
+    /// delivery and the run-end merge.
+    /// <para>
+    /// <see cref="Journal.RunJournal.RecordDeliveryTarget"/> is write-once and refuses the literal
+    /// <c>HEAD</c>, so a later process can neither re-point the target at whatever branch it is standing on
+    /// nor record a detached checkout as one. A unit-test fake journal models no durable document and
+    /// records nothing — the same <c>_journal is Journal.RunJournal</c> guard <see cref="SettleDelivery"/>
+    /// uses.
+    /// </para>
     /// </summary>
-    private void NoteBarrierDeliveryLanded(IntegrationHandle integ)
+    private void NoteDeliveryLanded(IntegrationHandle integ)
     {
-        if (integ.OriginalBranch is { Length: > 0 } branch && !string.Equals(branch, "HEAD", StringComparison.Ordinal))
+        if (_journal is Journal.RunJournal runJournal)
         {
-            _barrierDeliveredToBranch = branch;
+            runJournal.RecordDeliveryTarget(integ.DeliveryTarget);
         }
     }
+
+    /// <summary>
+    /// The branch this plan's deliveries have landed on (SSOT §7 <c>deliveryTarget</c>, issue #726), or null
+    /// when none has. The ONE source every report reads for <c>delivery.deliveredToBranch</c> — never this
+    /// process's run-start pin, which on a resume names wherever the checkout happens to be.
+    /// </summary>
+    private string? RecordedDeliveryTarget() => (_journal as Journal.RunJournal)?.Document.DeliveryTarget;
 
     /// <summary>The <see cref="DeliveryOutcome"/> member of the same name as <paramref name="result"/> (both enums already exist; design 39 §4).</summary>
     private static Journal.DeliveryOutcome ToDeliveryOutcome(MergeOnSuccessResult result) => result switch
@@ -3544,7 +3589,7 @@ public sealed class Scheduler
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.DeliveryRefused,
             Headline = headline,
-            Detail = DeliveryRefusedRemedyDetail(outcome, detail, integ.OriginalBranch)
+            Detail = DeliveryRefusedRemedyDetail(outcome, detail, integ.DeliveryTarget)
         };
 
         _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
@@ -3573,25 +3618,35 @@ public sealed class Scheduler
     /// <summary>
     /// The halt's remedy line (design 39 §1c/§4 review round 5): a <c>branch-moved</c> refusal has TWO
     /// causes under the one <c>branch-moved</c> token, and the remedy differs by which one the provider's
-    /// detail names. Keyed on the shared <c>run started on</c> prefix (never one ending — a detached HEAD's
-    /// ending differs from a switched-checkout's, and both need the SAME "check out again" remedy) and on
-    /// the <c>after the trial was built</c> suffix (which also covers a rewound branch): the checkout is
-    /// still on the pinned branch there, so the fix is simply to resume — telling the operator to check
-    /// anything out would be actively wrong. A <c>conflict</c> or <c>dirty-working-tree</c> refusal names no
-    /// single remedy action here (resolving either is content-specific); its own detail already says what
-    /// blocked it, so the halt just tells the operator to resume once it is resolved.
+    /// detail names. Keyed on the two OPENING phrases a "the checkout is not on the delivery target" detail
+    /// can carry (never one ending — a detached HEAD's ending differs from a switched-checkout's, and all of
+    /// them need the SAME "check out again" remedy) and on the
+    /// <see cref="DeliveryRefusalWording.AfterTheTrialWasBuilt"/> marker (which also covers a rewound
+    /// branch): the checkout is still on the target there, so the fix is simply to resume — telling the
+    /// operator to check anything out would be actively wrong. A <c>conflict</c> or <c>dirty-working-tree</c>
+    /// refusal names no single remedy action here (resolving either is content-specific); its own detail
+    /// already says what blocked it, so the halt just tells the operator to resume once it is resolved.
+    /// <para>
+    /// <paramref name="deliveryTarget"/> is the branch the remedy NAMES, so on a resume (#726) it is the
+    /// branch the earlier delivery landed on — never this process's pin, which is the branch the operator is
+    /// being told to leave.
+    /// </para>
     /// </summary>
     private static string DeliveryRefusedRemedyDetail(
-        Journal.DeliveryOutcome outcome, string? detail, string originalBranch)
+        Journal.DeliveryOutcome outcome, string? detail, string deliveryTarget)
     {
         if (outcome == Journal.DeliveryOutcome.BranchMoved && detail is not null)
         {
-            if (detail.StartsWith("run started on", StringComparison.Ordinal))
+            // #726 added the second prefix: a refusal whose target was RECORDED by an earlier delivery needs
+            // the SAME remedy, and reads differently only because the target no longer comes from this
+            // process's pin.
+            if (detail.StartsWith(DeliveryRefusalWording.RunStartedOn, StringComparison.Ordinal)
+                || detail.StartsWith(DeliveryRefusalWording.EarlierDeliveryLandedOn, StringComparison.Ordinal))
             {
-                return $"check out '{originalBranch}' again, then resume.";
+                return $"check out '{deliveryTarget}' again, then resume.";
             }
 
-            if (detail.Contains("after the trial was built", StringComparison.Ordinal))
+            if (detail.Contains(DeliveryRefusalWording.AfterTheTrialWasBuilt, StringComparison.Ordinal))
             {
                 return "The change is already on the plan side of the next trial — resume.";
             }
@@ -5701,13 +5756,14 @@ public sealed class Scheduler
             MergeOnSuccess = plan.Config.MergeOnSuccess,
             MergeOnSuccessSource = plan.Config.MergeOnSuccessSource,
 
-            // Design 39 §4: once a barrier delivery THIS PROCESS settled has landed, every report names the branch
-            // it landed on — a halted, partially-delivered run included (DescribeDelivery copies it into
-            // delivery.deliveredToBranch). Null otherwise, including a resume whose deliveries all landed in an
-            // earlier process: RunJournal.RecordDelivery keeps the branch that process recorded (B1). Finalize and
-            // CompleteDeferredDelivery keep it when their own run-end merge does not land.
+            // Design 39 §4 / #726: once a barrier delivery has landed for this plan, every report names the
+            // branch it landed on — a halted, partially-delivered run included (DescribeDelivery copies it
+            // into delivery.deliveredToBranch). The source is the RECORDED target, never this process's
+            // run-start pin: a resume re-pins from HEAD, so naming the pin is exactly how a run came to
+            // report a branch its delivered work had never reached. Null when nothing has landed. Finalize
+            // and CompleteDeferredDelivery keep this value when their own run-end merge does not land.
             DeliveredToBranch = waveDeliveries.Values.Any(r => r.Status == Journal.WaveDeliveryStatus.Delivered)
-                ? _barrierDeliveredToBranch
+                ? RecordedDeliveryTarget()
                 : null
         };
     }

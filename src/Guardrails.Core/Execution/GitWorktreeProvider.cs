@@ -403,8 +403,9 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // resumed run could call the merge more than once over its lifetime).
         LastMergeOnSuccessDetail = null;
 
-        // Issue #588 — COMPARE AND REFUSE: the delivery target is PINNED at run start
-        // (integ.OriginalBranch, read once by CreateIntegration) but every merge below is a bare
+        // Issue #588 — COMPARE AND REFUSE: the delivery target is integ.DeliveryTarget — the branch an
+        // earlier delivery already landed on (#726), else the pin read once at run start — but every merge
+        // below is a bare
         // `git merge` in the user's repo, which lands on whatever HEAD currently is. Those two were
         // never reconciled, so a branch checked out (or created from HEAD) WHILE the run was in flight
         // silently redirected the delivery: the measured incident merged into
@@ -419,7 +420,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // leaves the user's checkout untouched and the verified work on the plan branch, which is the
         // same SAFE failure direction HookRejected (#149/#150) and DirtyWorkingTree (#448) take, and it
         // carries its detail through the same LastMergeOnSuccessDetail channel they use.
-        if (HeadMovedDetail(integ.OriginalBranch) is { } moved)
+        if (HeadMovedDetail(integ) is { } moved)
         {
             LastMergeOnSuccessDetail = moved;
             return MergeOnSuccessResult.BranchMoved;
@@ -1692,13 +1693,15 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
-    /// The issue #588 moved-HEAD gate for the end-of-run delivery. Returns <c>null</c> when the merge may
-    /// proceed — the user's checkout is STILL on <paramref name="originalBranch"/>, the branch the run
-    /// pinned as its delivery target at start. Otherwise returns the human-readable detail naming BOTH
-    /// branches, for <see cref="LastMergeOnSuccessDetail"/> to carry to the CLI.
+    /// The issue #588/#726 moved-HEAD gate, shared by BOTH delivery paths. Returns <c>null</c> when the
+    /// merge may proceed — the checkout is STILL on <paramref name="integ"/>'s
+    /// <see cref="IntegrationHandle.DeliveryTarget"/>: the branch an earlier delivery already landed on
+    /// (#726), else the branch this run pinned at start (#588). Otherwise returns the human-readable detail
+    /// naming BOTH branches, for <see cref="LastMergeOnSuccessDetail"/> to carry to the CLI.
     /// <para>
-    /// Three refusing shapes, all "not provably the pinned branch": HEAD is on a DIFFERENT branch (the
-    /// measured incident — a branch created from HEAD mid-run); HEAD is DETACHED (the local idiom
+    /// Three refusing shapes, all "not provably the delivery target": HEAD is on a DIFFERENT branch (the
+    /// measured incidents — a branch created from HEAD mid-run, #588; a resume after a <c>git switch</c> on a
+    /// plan that had already delivered, #726); HEAD is DETACHED (the local idiom
     /// <c>rev-parse --abbrev-ref HEAD</c> prints the literal <c>HEAD</c>, and a delivery there would land
     /// commits on no branch at all, including the case where the run itself started detached); or HEAD
     /// could not be read at all. The last one FAILS CLOSED for the same reason
@@ -1706,28 +1709,39 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// than declining.
     /// </para>
     /// </summary>
-    private string? HeadMovedDetail(string originalBranch)
+    private string? HeadMovedDetail(IntegrationHandle integ)
     {
+        string target = integ.DeliveryTarget;
+
         // Same idiom CreateIntegration used to PIN the target, so the two values are directly comparable.
         var (stdout, exit) = TryGitIn(_repoPath, "rev-parse", "--abbrev-ref", "HEAD");
-        string started = string.Equals(originalBranch, DetachedHead, StringComparison.Ordinal)
-            ? "run started on a detached HEAD"
-            : $"run started on '{originalBranch}'";
+
+        // WHERE this run must deliver, and WHY that is the branch — the halves an operator needs to act.
+        // While nothing has landed the target IS this process's run-start pin, and the clause is unchanged
+        // from #588. Once a delivery has landed (#726) the target comes from the journal instead, and saying
+        // "run started on ..." would name the branch HEAD is standing on NOW — the very thing being refused,
+        // and on a resume from a detached start it named the literal "HEAD", sending the operator to check
+        // out a branch that does not exist.
+        string pinned = string.Equals(target, integ.OriginalBranch, StringComparison.Ordinal)
+            ? (string.Equals(target, DetachedHead, StringComparison.Ordinal)
+                ? $"{DeliveryRefusalWording.RunStartedOn} a detached HEAD"
+                : $"{DeliveryRefusalWording.RunStartedOn} '{target}'")
+            : $"{DeliveryRefusalWording.EarlierDeliveryLandedOn} '{target}'";
 
         if (exit != 0)
         {
-            return $"{started}; the current branch could not be read (git rev-parse failed)";
+            return $"{pinned}; the current branch could not be read (git rev-parse failed)";
         }
 
         string current = stdout.Trim();
         if (string.Equals(current, DetachedHead, StringComparison.Ordinal))
         {
-            return $"{started}; HEAD is now detached (no branch checked out)";
+            return $"{pinned}; HEAD is now detached (no branch checked out)";
         }
 
-        return string.Equals(current, originalBranch, StringComparison.Ordinal)
+        return string.Equals(current, target, StringComparison.Ordinal)
             ? null
-            : $"{started}; HEAD is now '{current}'";
+            : $"{pinned}; HEAD is now '{current}'";
     }
 
     /// <summary>
@@ -2062,7 +2076,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public TrialDelivery CreateTrialDelivery(IntegrationHandle integ, string waveDir, CancellationToken ct)
     {
         string trialRef = TrialRefName(waveDir);
-        string userTip = Git("rev-parse", integ.OriginalBranch).Trim();
+
+        // #726: the trial is built from the DELIVERY TARGET, not this process's run-start pin, so a resume
+        // on another branch builds (and then refuses) the same trial the original process would have — it
+        // never builds one against a branch this plan has never delivered to.
+        string userTip = Git("rev-parse", integ.DeliveryTarget).Trim();
         string planTip = Git("rev-parse", integ.PlanBranchName).Trim();
 
         // A crashed earlier attempt for this waveDir may have left its ref and/or worktree behind;
@@ -2237,21 +2255,24 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
         LastMergeOnSuccessDetail = null;
 
-        // #588, checked first: a switched checkout is refused before any other gate reasons about it.
-        if (HeadMovedDetail(integ.OriginalBranch) is { } moved)
+        // #588/#726, checked first: a checkout that is not on the DELIVERY TARGET — the branch an earlier
+        // delivery already landed on, else this run's own pin — is refused before any other gate reasons
+        // about it, and before anything is promoted.
+        if (HeadMovedDetail(integ) is { } moved)
         {
             LastMergeOnSuccessDetail = moved;
             return MergeOnSuccessResult.BranchMoved;
         }
 
-        // The user's branch must still point at the tip the trial was built from — comparing the SHA
+        // The delivery target must still point at the tip the trial was built from — comparing the SHA
         // itself, never the result of --ff-only: after a rewind the fast-forward to the trial commit
         // SUCCEEDS and would silently re-land the commit the user dropped.
-        string currentUserTip = Git("rev-parse", integ.OriginalBranch).Trim();
+        string currentUserTip = Git("rev-parse", integ.DeliveryTarget).Trim();
         if (!string.Equals(currentUserTip, trial.UserTip, StringComparison.Ordinal))
         {
             LastMergeOnSuccessDetail =
-                $"'{integ.OriginalBranch}' moved from {trial.UserTip[..10]} to {currentUserTip[..10]} after the trial was built";
+                $"'{integ.DeliveryTarget}' moved from {trial.UserTip[..10]} to {currentUserTip[..10]} "
+                + DeliveryRefusalWording.AfterTheTrialWasBuilt;
             return MergeOnSuccessResult.BranchMoved;
         }
 

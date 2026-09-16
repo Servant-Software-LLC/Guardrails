@@ -32,7 +32,7 @@ public sealed record TrialDelivery
     /// </summary>
     public string? Commit { get; init; }
 
-    /// <summary>The user's branch tip (<c>IntegrationHandle.OriginalBranch</c>) this trial was built from.</summary>
+    /// <summary>The tip of this plan's delivery target (<c>IntegrationHandle.DeliveryTarget</c>, issue #726) this trial was built from.</summary>
     public required string UserTip { get; init; }
 
     /// <summary>
