@@ -1532,7 +1532,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         $"write-scope violation: {offendingList}",
                         wall, PreGuardrailWallPaths, consultStructural: structuralMaySettle, budgetRemained: !isFinal,
                         () => scopeCheck.InScopePaths.Count > 0
-                            ? TryStashEscalatingAttempt(task, worktree, attemptNumber)
+                            ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedScope)
                             : null,
                         provenance, AttemptJournaler.SegmentsFor(action), harnessWriteRecord,
                         outOfScopePatchPath: outOfScopePatchPath) is { } scopeWallHalt)
@@ -1721,7 +1721,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Gated on the write-scope check having seen an in-scope change, because a snapshot of a tree with
                 // none is the line-ending churn #705 measured, not work worth offering anyone.
                 Func<SalvageRef?> wallSalvage = () => attemptScopeCheck is { InScopePaths.Count: > 0 }
-                    ? TryStashEscalatingAttempt(task, worktree, attemptNumber)
+                    ? TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? [])
                     : null;
                 // The structural branch of WallHalt is unreachable here: a structural wall already returned above.
                 return WallHalt(
@@ -2328,6 +2328,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 RetryPolicy.ForStructuralWallHalt(task, primaryHeading, primaryBody, wall.StructuralPaths)
                     + RetryPolicy.ForRepeatedRefusalContext(wall, wall.StructuralPaths),
                 guardrailResults ?? [], failedGuardrails ?? [],
+                // #707 review: the halt routes as a hard blocker off the decision it just named — here the
+                // structural `.claude/` wall, the same class the #86/#104 site carries.
+                wall,
                 provenance: provenance, segments: segments, harnessWrite: harnessWrite);
         }
 
@@ -2352,6 +2355,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 + RetryPolicy.ForRepeatedRefusalContext(
                     wall, paths.Concat(wall.RepeatedCommands).ToList()),
             guardrailResults ?? [], failedGuardrails ?? [],
+            // #707 review: the hard-blocker signal carries the NARROWED decision, so what the escalation
+            // records is the wall this halt actually named rather than every target the attempt was refused.
+            haltWall,
             provenance: provenance, segments: segments, harnessWrite: harnessWrite);
     }
 

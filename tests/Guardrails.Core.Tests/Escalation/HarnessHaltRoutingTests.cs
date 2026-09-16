@@ -139,7 +139,9 @@ public sealed class HarnessHaltRoutingTests : IDisposable
         {
             "permission-wall" => journaler.PermissionWall(
                 task, attemptNumber: 2, DateTimeOffset.UtcNow, RelativeLogDir, logDir, Action(),
-                new PermissionWallDecision(Halt: true, StructuralPaths: [], RepeatedPaths: ["src/Locked.cs"])).Result,
+                new PermissionWallDecision(
+                    Halt: true, StructuralPaths: [], RepeatedPaths: ["src/Locked.cs"],
+                    RepeatedCommands: [])).Result,
             "no-route" => journaler.NoRoute(
                 task, attemptNumber: 1, DateTimeOffset.UtcNow, RelativeLogDir, logDir, provenance: null,
                 reason: "no candidate block serves the 'hard' tier, at it or above it").Result,
@@ -152,7 +154,8 @@ public sealed class HarnessHaltRoutingTests : IDisposable
                 guardrailResults: [],
                 failedGuardrails: [new FailedGuardrail { Name = "01-ok", Reason = "assertion failed" }],
                 wall: new PermissionWallDecision(
-                    Halt: true, StructuralPaths: [".claude/skills/x/SKILL.md"], RepeatedPaths: [])).Result,
+                    Halt: true, StructuralPaths: [".claude/skills/x/SKILL.md"], RepeatedPaths: [],
+                    RepeatedCommands: [])).Result,
             "task-preflight" => journaler.TaskPreflightFailed(
                 task, attemptNumber: 1, DateTimeOffset.UtcNow, RelativeLogDir, logDir,
                 failedChecks: [new FailedGuardrail { Name = "01-upstream-materialized", Reason = "src/Api.cs absent" }]).Result,
