@@ -75,10 +75,12 @@ public sealed class AtomicFileTests : IDisposable
     }
 
     [Fact]
-    public void AReplaceBlockedForGood_FailsLoudly_AfterEveryRetryIsSpent()
+    public void AReplaceBlockedForGood_FailsLoudly_AfterEveryRetryIsSpent_AndNamesTheLikelyCause()
     {
-        // The control: a retry must never turn a permanent failure into a silent one. The write still throws the
-        // move's own exception, only after the bounded retries, and leaves neither a torn target nor a stray temp.
+        // The control: a retry must never turn a permanent failure into a silent one. The write still throws after
+        // the bounded retries, and leaves neither a torn target nor a stray temp. It must also say what is wrong:
+        // the bare "Access to the path is denied" it used to surface named no cause, and for run.json the run is
+        // already lost by the time an operator reads it (#727 review).
         Assert.SkipUnless(OperatingSystem.IsWindows(), WindowsOnly);
         string path = Path.Combine(_dir, "run.json");
         File.WriteAllText(path, "old");
@@ -96,5 +98,18 @@ public sealed class AtomicFileTests : IDisposable
         Assert.Equal(AtomicFile.ReplaceAttempts - 1, retries);
         Assert.Equal("old", File.ReadAllText(path));
         Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+
+        // It names the file, says another process is holding it open, and lists the suspects an operator can act on.
+        Assert.Contains(path, failure!.Message, StringComparison.Ordinal);
+        Assert.Contains("holding it open", failure.Message, StringComparison.Ordinal);
+        foreach (string suspect in new[] { "virus scanner", "backup agent", "guardrails attach", "guardrails logs", "editor" })
+        {
+            Assert.Contains(suspect, failure.Message, StringComparison.Ordinal);
+        }
+
+        // The original failure rides along, so the underlying Win32 error is still there to read.
+        Assert.True(
+            failure.InnerException is UnauthorizedAccessException or IOException,
+            $"expected the move's own exception as the inner one, got: {failure.InnerException?.GetType().Name ?? "none"}");
     }
 }

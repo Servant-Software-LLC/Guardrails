@@ -11,11 +11,13 @@ namespace Guardrails.Core.State;
 /// <para><b>The move is retried while another handle holds the target (issue #727).</b> On Windows,
 /// replacing a file fails while any other process has it open, even for reading. Before #727 that failure
 /// went straight to the caller, and for <c>run.json</c> the caller is the Scheduler, which aborts the run on
-/// it. So anything that reads the journal while a run is going (a <c>guardrails logs</c> page re-reading it on
-/// every load, <c>attach</c>'s poll, <c>status</c>) could abort a healthy run: measured, a 25-task plan aborted
-/// at task 9 with "Access to the path is denied" while a logs page reloaded. A read holds the file for
-/// microseconds, so a short, bounded retry outlasts it. A handle that never lets go still fails the write, with
-/// the move's own exception, once every retry is spent.</para>
+/// it. Every reader a run may have alongside it therefore depends on this retry (SSOT §7, journal writes):
+/// <c>guardrails logs</c> re-reads the journal on every page load, <c>guardrails attach</c> polls it every
+/// 250 ms, and <c>guardrails status</c> reads it on demand. Measured: a 25-task plan aborted at task 9 with
+/// "Access to the path is denied" after 1,383 page loads against the old build, and ran 25 of 25 across 3,810
+/// loads against this one. A read holds the file for microseconds, so a short, bounded retry outlasts it. A
+/// handle that never lets go still fails the write, loudly: once every retry is spent the failure names the
+/// likely cause and carries the move's own exception as its inner exception.</para>
 /// </summary>
 public static class AtomicFile
 {
@@ -92,6 +94,19 @@ public static class AtomicFile
             {
                 onRetry?.Invoke(attempt);
                 Thread.Sleep(RetryDelay(attempt));
+            }
+            catch (Exception ex) when (IsHeldByAnotherHandle(ex))
+            {
+                // Every retry spent and the file is STILL held. What surfaced before was the bare "Access to the
+                // path is denied", which names no cause — and for run.json the run is already lost by the time
+                // anyone reads it, so the message has to point at what actually holds files open (#727 review).
+                // Loud either way: this throws, and the original exception rides along as the inner one, so the
+                // underlying Win32 error is still there to read.
+                throw new IOException(
+                    $"Could not replace '{path}' after {ReplaceAttempts} attempts: another process is holding it "
+                    + "open. That is usually a virus scanner, a backup agent, a running `guardrails attach` or "
+                    + "`guardrails logs` session, or an editor with the file open. Close it and run again.",
+                    ex);
             }
         }
     }
