@@ -1,4 +1,6 @@
 using System.CommandLine;
+using System.Globalization;
+using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
@@ -7,24 +9,33 @@ namespace Guardrails.Cli.Commands;
 
 /// <summary>
 /// <c>guardrails status [folder]</c> — print a read-only table from the run journal:
-/// task, status, attempt count, last failure reason, and the latest attempt's log dir.
+/// task, status, attempt count, last failure reason, and the latest attempt's log dir — under one line saying
+/// whether the run is alive (issue #704).
 /// Works mid-run (the journal is persisted at every transition) and after a run completes.
 /// Defaults to the current directory when the folder is omitted.
 /// </summary>
 public static class StatusCommand
 {
-    public static Command Create(IConsoleIo io)
+    /// <summary>
+    /// Build the command. <paramref name="processProbe"/> is the process table the run-liveness line is checked
+    /// against (issue #704): null means the real one, which is what the CLI's command factory builds; a test passes
+    /// a fake to decide the answer without a real process to kill.
+    /// </summary>
+    public static Command Create(IConsoleIo io, IProcessProbe? processProbe = null)
     {
         var folderArgument = FolderArgument.Create();
 
         var command = new Command("status", "Show per-task status from the run journal (read-only).");
         command.Add(folderArgument);
 
-        command.SetAction(parseResult => Run(FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out), io));
+        command.SetAction(parseResult => Run(
+            FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out),
+            io,
+            processProbe ?? SystemProcessProbe.Instance));
         return command;
     }
 
-    private static int Run(string folder, IConsoleIo io)
+    private static int Run(string folder, IConsoleIo io, IProcessProbe processProbe)
     {
         TextWriter output = io.Out;
 
@@ -59,21 +70,44 @@ public static class StatusCommand
         // is the one thing this command can tell you that a resumed run cannot). It is to say BOTH facts.
         JournalDocument document = JournalReader.Read(journalPath);
 
+        // #704 — and the file cannot say whether anything is still RUNNING. A run that died with a sleeping or
+        // rebooting laptop leaves the journal exactly as a live run leaves it, so the table alone misreported in
+        // both directions: a dead run read as in progress, and a live run's in-flight task was listed as leftover
+        // state a resume would discard. The verdict comes from facts — did the owner record an end, is its pid
+        // (with its start identity) still in the process table — never from how long ago anything last moved.
+        RunLivenessState liveness = RunLiveness.Assess(document.Owner, RunLiveness.ThisHost(), processProbe);
+        IReadOnlyList<string> taskIds = [.. probe.Plan.Tasks.Select(task => task.Id)];
+
         output.WriteLine($"Run {document.RunId}  ({document.PlanHash})");
+        output.WriteLine(LivenessLine(
+            liveness,
+            document.Owner,
+            liveness == RunLivenessState.Ended ? EndedSummary(taskIds, document) : string.Empty,
+            LastActivity(probe.Plan.PlanDirectory, journalPath, document),
+            DateTimeOffset.UtcNow,
+            folder));
         output.WriteLine();
-        output.WriteLine($"  {"TASK",-32} {"STATUS",-12} {"ATTEMPTS",-9} {"LAST FAILURE",-40} LOG DIR");
-        output.WriteLine(new string('-', 120));
+
+        int taskWidth = TaskColumnWidth(taskIds);
+        output.WriteLine($"  {"TASK".PadRight(taskWidth)} {"STATUS",-12} {"ATTEMPTS",-9} {"LAST FAILURE",-40} LOG DIR");
+        output.WriteLine(new string('-', taskWidth + 88));
 
         // Print in plan (ordinal) order so the table matches the run order.
         foreach (Core.Model.TaskNode task in probe.Plan.Tasks)
         {
             document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry);
-            PrintRow(task.Id, entry, output);
+            PrintRow(task.Id, taskWidth, entry, liveness, output);
         }
 
         // #639: what a resume would do with the rows above. Omitted entirely when nothing is affected —
-        // a clean or still-pending journal prints byte-for-byte what it printed before.
-        IReadOnlyList<string> resumable = ResumableTasks(probe.Plan, document);
+        // a clean or still-pending journal prints no footer at all.
+        //
+        // #704: and omitted while the owner is ALIVE. The footer exists because a halted run's table is a last
+        // outcome that reads like a prediction; a live run's table is neither — it is the run's current state,
+        // and its `running` task is in flight, not something a resume will discard.
+        IReadOnlyList<string> resumable = liveness == RunLivenessState.Running
+            ? []
+            : ResumableTasks(probe.Plan, document, liveness);
         if (resumable.Count > 0)
         {
             output.WriteLine();
@@ -84,9 +118,9 @@ public static class StatusCommand
                 output.WriteLine($"  {line}");
             }
 
-            output.WriteLine(
-                "Only 'succeeded' survives a resume; blocked / failed / needs-human / running all become "
-                + "pending.");
+            // #704: a closing sentence that names statuses contradicts the list above it the moment a row prints as
+            // `interrupted`, so it names none: the list IS the set a resume puts back to pending.
+            output.WriteLine("Only 'succeeded' survives a resume; every task listed above becomes pending.");
         }
 
         // #515: the provider-pause ledger, omitted entirely when nothing paused (nearly every run).
@@ -111,6 +145,175 @@ public static class StatusCommand
 
         return ExitCodes.Success;
     }
+
+    /// <summary>
+    /// The one line above the table that says whether the run is alive (issue #704, SSOT §7 <c>owner</c>) — pure and
+    /// public for the same reason <see cref="LastFailureText"/> is. <paramref name="owner"/> is the owner
+    /// <paramref name="state"/> was assessed from, and <paramref name="endedSummary"/> the <see cref="EndedSummary"/>
+    /// an ENDED line carries.
+    /// <para>
+    /// A RUNNING line names the next step for the one case "alive" does not cover — alive and not progressing (the
+    /// scheduler hang, #722) — because the operator is told to read this line first and would otherwise be left with
+    /// "alive" and no action.
+    /// </para>
+    /// <para>
+    /// Every verdict short of ENDED also carries the run's last activity (<see cref="LastActivity"/>). That is an
+    /// OBSERVATION for the operator and nothing more: it is what tells a live-but-stuck run from a live-and-busy one. It
+    /// is kept out of the verdict itself on purpose, because a suspended laptop's clock keeps moving and "nothing for N
+    /// hours" would condemn a healthy run that merely slept. ENDED omits it: the recorded end already says when the run
+    /// stopped.
+    /// </para>
+    /// </summary>
+    public static string LivenessLine(
+        RunLivenessState state, RunOwner? owner, string endedSummary, DateTimeOffset lastActivity, DateTimeOffset now,
+        string folder)
+    {
+        string activity =
+            $"Last activity {Timestamp(lastActivity)} ({BreakdownProgress.FormatClock(now - lastActivity)} ago).";
+        string resume = $"guardrails run {PasteableFolder(folder)}";
+
+        return state switch
+        {
+            RunLivenessState.Running =>
+                $"Run state: RUNNING — owner process {owner!.Pid} is alive. {activity} If it is not progressing, stop "
+                + $"process {owner.Pid}, then resume with: {resume}",
+            RunLivenessState.ExitedWithoutFinishing =>
+                $"Run state: EXITED WITHOUT FINISHING — owner process {owner!.Pid} is gone and never recorded an end, "
+                + $"so nothing is running. {activity} Resume with: {resume}",
+            RunLivenessState.Ended =>
+                $"Run state: ENDED at {Timestamp(owner!.FinishedAt!.Value)} — {endedSummary}; nothing is running.",
+            RunLivenessState.OnAnotherHost =>
+                $"Run state: UNKNOWN — owner process {owner!.Pid} ran on host '{owner.Host}', and its liveness can only "
+                + $"be checked there. {activity}",
+            RunLivenessState.CannotCheck =>
+                $"Run state: UNKNOWN — owner process {owner!.Pid} could not be checked from here, so a live run and a "
+                + $"dead one look the same. {activity}",
+            _ =>
+                "Run state: UNKNOWN — this journal names no owner process (it predates #704, or its run could not read "
+                + $"its own identity), so a live run and a dead one look the same here. {activity}"
+        };
+    }
+
+    /// <summary>
+    /// What an ENDED run ended AS (issue #704), read from what the journal already records — because "ended" alone
+    /// reads the same for a green delivery, a halt and a cancel, and the operator is told to read this line first. In
+    /// precedence order:
+    /// <list type="number">
+    /// <item>a gate halt (<c>halt</c>) — it settles no task, so its own headline is the outcome;</item>
+    /// <item>a task at <c>needs-human</c> or <c>failed</c> — the first in plan order, and how many more;</item>
+    /// <item>a task still <c>running</c> — a fault unwound mid-attempt, so it was interrupted;</item>
+    /// <item>a <c>pending</c> task whose last attempt was <c>cancelled</c> — the run was cancelled;</item>
+    /// <item>every task <c>succeeded</c> — with the delivery outcome, so stranded work names its branch;</item>
+    /// <item>otherwise — the run stopped before finishing (a declined drift prompt, a MAX_PATH preflight): how far it got.</item>
+    /// </list>
+    /// Pure and public for the same reason <see cref="LastFailureText"/> is. <paramref name="taskIds"/> is the plan's
+    /// task order.
+    /// </summary>
+    public static string EndedSummary(IReadOnlyList<string> taskIds, JournalDocument document)
+    {
+        if (document.Halt is { } halt)
+        {
+            return $"halted: {halt.Headline}";
+        }
+
+        List<(string Id, TaskJournalEntry Entry)> entries =
+        [
+            .. taskIds
+                .Where(document.Tasks.ContainsKey)
+                .Select(id => (id, document.Tasks[id]))
+        ];
+
+        List<(string Id, TaskJournalEntry Entry)> halted =
+            [.. entries.Where(task => task.Entry.Status is JournalTaskStatus.NeedsHuman or JournalTaskStatus.Failed)];
+        if (halted.Count > 0)
+        {
+            return $"halted at {halted[0].Id} ({StatusText(halted[0].Entry.Status)}){AndMore(halted.Count)}";
+        }
+
+        List<string> interrupted =
+            [.. entries.Where(task => task.Entry.Status == JournalTaskStatus.Running).Select(task => task.Id)];
+        if (interrupted.Count > 0)
+        {
+            return $"interrupted at {interrupted[0]}{AndMore(interrupted.Count)}";
+        }
+
+        if (entries.Any(task => task.Entry.Status == JournalTaskStatus.Pending
+                && task.Entry.Attempts is [.., { Outcome: AttemptOutcome.Cancelled }]))
+        {
+            return "cancelled";
+        }
+
+        int succeeded = entries.Count(task => task.Entry.Status == JournalTaskStatus.Succeeded);
+        return succeeded == taskIds.Count
+            ? $"all {taskIds.Count} task(s) succeeded{DeliverySuffix(document.Delivery)}{MachineDecisionSuffix(document)}"
+            : $"stopped with {succeeded} of {taskIds.Count} task(s) succeeded";
+    }
+
+    /// <summary>
+    /// What a wholly-green run does not get to hide (#361/#597): that a machine decision shaped it, or that an
+    /// operator override delivered it past one. Without this, "all N task(s) succeeded, delivered to master" reads
+    /// exactly like an ordinary green run — and the operator is told to read this line FIRST, while the journal
+    /// already records both facts in <c>decisions[]</c> and <c>delivery.forcedPastDecision</c>.
+    /// <para>
+    /// Derived from the harness's OWN policy (<see cref="RunOutcomePolicy"/>), never a second reading of
+    /// <c>decisions[]</c>, so this line cannot disagree with the interlock that acted on them — the #639 rule about
+    /// one owner per rule, applied here.
+    /// </para>
+    /// <para>
+    /// First match wins: a forced delivery names the decision it overrode (the most actionable fact, and the run's
+    /// unreviewed waves still reach the operator through the end-of-run banner), then an unreviewed run's wave
+    /// count, then any other machine decision — naming the judgment to go and check.
+    /// </para>
+    /// </summary>
+    private static string MachineDecisionSuffix(JournalDocument document)
+    {
+        if (document.Delivery?.ForcedPastDecision is { } forced)
+        {
+            return $", delivered past a machine decision ({forced.Decision} at {forced.Subject})";
+        }
+
+        IReadOnlyList<DecisionEntry> decisions = document.Decisions ?? [];
+        if (RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions) is > 0 and var unreviewed)
+        {
+            return $", ran with {unreviewed} unreviewed wave(s)";
+        }
+
+        return RunOutcomePolicy.SuppressingDecision(decisions) is { } shaped
+            ? $", shaped by a machine decision ({shaped.Decision} at {shaped.Subject})"
+            : string.Empty;
+    }
+
+    /// <summary>
+    /// When the run last visibly did something (issue #704) — the newest modification time of <c>run.json</c>, the
+    /// run's event stream (<c>logs/&lt;runId&gt;/events.jsonl</c>), and the files of each RUNNING task's newest attempt
+    /// directory (its stream log and friends). <c>run.json</c> alone moves only at task transitions, so on a long attempt
+    /// its age said nothing about whether the run was moving. A settled task's logs are deliberately not read: they are
+    /// not this run making progress.
+    /// <para>DISPLAY ONLY. It never feeds <see cref="RunLiveness.Assess"/> — see the no-clock rule there.</para>
+    /// </summary>
+    public static DateTimeOffset LastActivity(string planDirectory, string journalPath, JournalDocument document)
+    {
+        string runLogs = Path.Combine(planDirectory, "logs", document.RunId);
+        IEnumerable<string> sources =
+        [
+            journalPath,
+            Path.Combine(runLogs, "events.jsonl"),
+            .. document.Tasks
+                .Where(pair => pair.Value.Status == JournalTaskStatus.Running)
+                .SelectMany(pair => NewestAttemptFiles(Path.Combine(runLogs, pair.Key)))
+        ];
+
+        return sources.Where(File.Exists).Select(File.GetLastWriteTimeUtc).DefaultIfEmpty().Max();
+    }
+
+    /// <summary>
+    /// The TASK column's width: the longest task id, never narrower than the header (issue #704). A fixed
+    /// <c>,-32</c> pushed every longer id's row out of line — plan 40's <c>19-author-tests-overwatcher-autoresolve</c>
+    /// is 39 characters — and a scripted parse of the table then produced nonsense counts. <c>run --dry-run</c>'s
+    /// per-task table sizes its column by this same rule, so the two tables cannot size one plan's ids two ways.
+    /// </summary>
+    public static int TaskColumnWidth(IEnumerable<string> taskIds) =>
+        taskIds.Select(id => id.Length).Append("TASK".Length).Max();
 
     /// <summary>
     /// One line per task that took at least one class-(b) transient pause (issue #515, SSOT §7
@@ -139,11 +342,13 @@ public static class StatusCommand
             })
     ];
 
-    private static void PrintRow(string taskId, TaskJournalEntry? entry, TextWriter output)
+    private static void PrintRow(
+        string taskId, int taskWidth, TaskJournalEntry? entry, RunLivenessState liveness, TextWriter output)
     {
+        string task = taskId.PadRight(taskWidth);
         if (entry is null)
         {
-            output.WriteLine($"  {taskId,-32} {"(unknown)",-12} {"-",-9} {"-",-40} -");
+            output.WriteLine($"  {task} {"(unknown)",-12} {"-",-9} {"-",-40} -");
             return;
         }
 
@@ -151,7 +356,7 @@ public static class StatusCommand
         string failure = LastFailureText(last);
         string logDir = last?.LogDir ?? "-";
 
-        output.WriteLine($"  {taskId,-32} {StatusText(entry.Status),-12} {entry.Attempts.Count,-9} {Truncate(failure, 40),-40} {logDir}");
+        output.WriteLine($"  {task} {StatusCell(entry.Status, liveness),-12} {entry.Attempts.Count,-9} {Truncate(failure, 40),-40} {logDir}");
     }
 
     /// <summary>
@@ -202,8 +407,21 @@ public static class StatusCommand
     };
 
     /// <summary>
-    /// The tasks a resume would put back to <c>pending</c>, in plan order, each with the status the
-    /// journal currently holds (#639).
+    /// The STATUS cell (issue #704): the journal's own word, except where the process table has just disproved it.
+    /// A task the journal holds <c>running</c> under a run that is no longer going — its owner exited without
+    /// finishing, or recorded an end without settling that task (a fault that unwound mid-attempt) — is not in
+    /// progress, and prints <c>interrupted</c>. A resume still re-runs it, exactly as the footer says. Where
+    /// liveness is UNKNOWN the journal's word stands: there is nothing to disprove it with.
+    /// </summary>
+    private static string StatusCell(JournalTaskStatus status, RunLivenessState liveness) =>
+        status == JournalTaskStatus.Running
+        && liveness is RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended
+            ? "interrupted"
+            : StatusText(status);
+
+    /// <summary>
+    /// The tasks a resume would put back to <c>pending</c>, in plan order, each with the status cell the table
+    /// printed for it (#639, #704).
     ///
     /// <para>
     /// Deliberately derived from <see cref="RunJournal.WouldResumeRun"/> rather than from a second list of
@@ -213,7 +431,7 @@ public static class StatusCommand
     /// </para>
     /// </summary>
     private static IReadOnlyList<string> ResumableTasks(
-        Core.Model.PlanDefinition plan, JournalDocument document)
+        Core.Model.PlanDefinition plan, JournalDocument document, RunLivenessState liveness)
     {
         var lines = new List<string>();
         foreach (Core.Model.TaskNode task in plan.Tasks)
@@ -221,12 +439,73 @@ public static class StatusCommand
             if (document.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
                 && RunJournal.WouldResumeRun(entry.Status))
             {
-                lines.Add($"{task.Id} ({StatusText(entry.Status)})");
+                lines.Add($"{task.Id} ({StatusCell(entry.Status, liveness)})");
             }
         }
 
         return lines;
     }
+
+    /// <summary>The newest-numbered <c>attempt-N</c> directory's files under one task's log directory; empty when there is none.</summary>
+    private static IReadOnlyList<string> NewestAttemptFiles(string taskLogs)
+    {
+        try
+        {
+            if (!Directory.Exists(taskLogs))
+            {
+                return [];
+            }
+
+            string? newest = Directory.EnumerateDirectories(taskLogs, "attempt-*")
+                .Select(dir => (Dir: dir, Number: AttemptNumber(dir)))
+                .Where(attempt => attempt.Number >= 0)
+                .OrderByDescending(attempt => attempt.Number)
+                .Select(attempt => attempt.Dir)
+                .FirstOrDefault();
+
+            return newest is null ? [] : [.. Directory.EnumerateFiles(newest)];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return []; // display-only: an unreadable log directory costs a less precise age, never the command
+        }
+    }
+
+    private static int AttemptNumber(string attemptDir) =>
+        int.TryParse(Path.GetFileName(attemptDir)["attempt-".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out int number)
+            ? number
+            : -1;
+
+    private static string AndMore(int count) => count > 1 ? $" and {count - 1} more" : string.Empty;
+
+    /// <summary>
+    /// How a wholly-green run's delivery reads on the ENDED line: where the work went, and — for the one outcome that
+    /// strands it — which branch it is sitting on. Nothing when there was nothing to deliver (serial mode) or no record.
+    /// </summary>
+    private static string DeliverySuffix(DeliverySection? delivery) => delivery switch
+    {
+        null => string.Empty,
+        { Delivered: true, DeliveredToBranch: { } branch } => $", delivered to {branch}",
+        { Delivered: true } => ", delivered",
+        { Outcome: DeliveryOutcome.PartiallyDelivered } => ", partially delivered",
+        { Outcome: DeliveryOutcome.NotAttempted, PlanBranch: { } planBranch } =>
+            $", NOT delivered — the work is on {planBranch}",
+        { Outcome: DeliveryOutcome.NotAttempted } => string.Empty,
+        { Outcome: var refused } => $", not delivered ({JournalJson.DeliveryOutcomeToken(refused)})"
+    };
+
+    /// <summary>
+    /// A timestamp as the status line prints it: UTC, to the second, ISO-8601.
+    /// </summary>
+    private static string Timestamp(DateTimeOffset value) =>
+        value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The folder as a shell takes it back: the resume command is printed to be pasted, so a path containing a
+    /// space arrives quoted — the same rule <c>run</c> applies to its <c>guardrails logs</c> remedy.
+    /// </summary>
+    private static string PasteableFolder(string folder) =>
+        folder.Contains(' ', StringComparison.Ordinal) ? $"\"{folder}\"" : folder;
 
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..(max - 1)] + "…";

@@ -2956,9 +2956,117 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
       "deliveredWave": "wave-02-issue-510", // the wave whose non-fast-forward delivery triggered it
       "paths": ["src/Teammate.cs"]      // git diff --name-only <commit>^1 <commit>, forward-slash, ordinal-sorted
     }
-  ]
+  ],
+
+  // OPTIONAL record of WHICH PROCESS owns this run (issue #704) — what `guardrails status` checks to tell a run
+  // that is still going from one whose process died mid-flight (a laptop that slept or rebooted, a killed
+  // process), which otherwise leaves this file exactly as a live run leaves it. Claimed by `guardrails run` ALONE,
+  // IN the same write that loads the journal — never by `reset`, `supply` or `--dry-run`, which would name a
+  // process that owns nothing — and REPLACED by every run that claims the journal (a resume is a new process).
+  // Absent (never null noise) in every journal written before #704, and after a run that could not read its own
+  // identity: that claim CLEARS the previous owner rather than leaving its verdict standing.
+  "owner": {
+    "pid": 14168,                       // the owning harness process
+    "processStartedAt": "2026-09-13T04:15:59.8123456+00:00",
+                                        // when that PROCESS started, as .NET reports it (UTC, full precision). The
+                                        //   start identity on Windows and macOS, where the kernel stores it; on Linux
+                                        //   recorded for readers only, because .NET rebuilds it from the wall clock
+    "processStartTicks": 4242,          // LINUX ONLY: /proc/<pid>/stat field 22 — the kernel's record of the start, in
+                                        //   clock ticks since boot. The Linux start identity: no clock step moves it
+    "bootId": "7b0e2c4e-…",             // LINUX ONLY: /proc/sys/kernel/random/boot_id. Start ticks count from boot, so
+                                        //   they name a process only within one boot; a different id proves a reboot
+    "host": "LAPTOP-7",                 // OPTIONAL: a pid means nothing on another machine. ABSENT when unreadable
+    "finishedAt": "2026-09-13T05:02:11.441+00:00"
+                                        // OPTIONAL: when the run ENDED by any path that unwinds — green, halted,
+                                        //   cancelled, an early return, a fault the harness surfaced — stamped right
+                                        //   after the run-finished event. ABSENT while the run is going, and absent for
+                                        //   good when the process vanished first (killed, hard crash, reboot).
+                                        //   Cleared by the next run's claim.
+  }
 }
 ```
+
+**`owner` — liveness is decided from facts, never from a duration (#704).** `guardrails status` prints one
+line between its `Run <runId>` header and the table, from this verdict, in precedence order:
+
+| Verdict | Condition | The line |
+|---|---|---|
+| `ENDED` | `owner.finishedAt` is present | `Run state: ENDED at <t> — <outcome>; nothing is running.` |
+| `RUNNING` | the recorded owner is running now, by its exact start identity (below) | `Run state: RUNNING — owner process <pid> is alive. Last activity <t> (<age> ago). If it is not progressing, stop process <pid>, then resume with: guardrails run <folder>` |
+| `UNKNOWN` (cannot check) | something holds the pid but its start identity is unreadable here, or the owner was recorded without the identity this OS compares | `Run state: UNKNOWN — owner process <pid> could not be checked from here, so a live run and a dead one look the same. Last activity <t> (<age> ago).` |
+| `UNKNOWN` (another host) | not running here, and `owner.host` names a different machine | `Run state: UNKNOWN — owner process <pid> ran on host '<host>', and its liveness can only be checked there. Last activity <t> (<age> ago).` |
+| `EXITED WITHOUT FINISHING` | any other owner | `Run state: EXITED WITHOUT FINISHING — owner process <pid> is gone and never recorded an end, so nothing is running. Last activity <t> (<age> ago). Resume with: guardrails run <folder>` |
+| `UNKNOWN` (not recorded) | no `owner` section | `Run state: UNKNOWN — this journal names no owner process (it predates #704, or its run could not read its own identity), so a live run and a dead one look the same here. Last activity <t> (<age> ago).` |
+
+- **The start identity is exact on every OS — there is no tolerance.** A pid alone is not an identity: the OS
+  reuses a freed pid.
+  - *Windows and macOS:* `processStartedAt`, compared to the tick. The kernel stores the creation time and .NET
+    returns it unchanged, so every reader sees the same value.
+  - *Linux:* `processStartTicks` and `bootId`, compared exactly. .NET reconstructs `Process.StartTime` per READING
+    process from `CLOCK_REALTIME_COARSE` minus `CLOCK_BOOTTIME`, so the run and a later `status` disagree — by
+    milliseconds normally, and by hours in a WSL2 / VM / devcontainer guest whose wall clock steps forward on wake
+    while its boot clock never counted the host's sleep. The kernel's own start ticks and boot id move with no clock.
+    A different boot id proves a reboot, so the owner is not running.
+  - An identity that cannot be read — access denied, or an owner recorded without the identity this OS compares —
+    is `UNKNOWN`, never `EXITED`. That includes an owner carrying the LINUX identity checked from Windows or macOS:
+    one plan folder is reachable from both (and WSL2's default host name is the Windows machine name, so the host
+    check does not catch it), and its `processStartedAt` is the value .NET rebuilt from the wall clock.
+  - *Linux zombies are not running.* An exited-but-unreaped process keeps a `/proc/<pid>/stat` with its original
+    start ticks, so the ticks alone would read it as `RUNNING` and — worse — would block a resume that has no
+    override. The state field (field 3) settles it: `Z` is `NotRunning`.
+  - *Known limitation:* under `hidepid=2`, another user's `/proc/<pid>` is invisible, and that is indistinguishable
+    from a process that is gone. Such an owner reads `EXITED WITHOUT FINISHING`. A run's own `status` is unaffected,
+    since a run and its operator share a user.
+- **The host comparison never outranks the process table**: a matching live process is the owner even if the
+  machine's name changed under it (macOS renames a laptop that joins another network).
+- **`ENDED` names the outcome the journal already records**, first match wins: a gate halt → `halted: <halt.headline>`;
+  a `needs-human` or `failed` task → `halted at <first such task in plan order> (<status>)`, plus `and N more`; a task
+  still `running` → `interrupted at <task>`; a `pending` task whose last attempt was `cancelled` → `cancelled`; every
+  task succeeded → `all N task(s) succeeded`, followed by `, delivered to <branch>`, `, NOT delivered — the work is
+  on <planBranch>`, `, not delivered (<delivery.outcome>)`, `, partially delivered`, or nothing when there was
+  nothing to deliver; otherwise → `stopped with S of N task(s) succeeded`.
+  - **A wholly-green run that a machine decision shaped never reads as clean green (#361/#597).** After the delivery
+    clause the line carries, first match wins: `, delivered past a machine decision (<token> at <subject>)` when an
+    operator override delivered it past the §5.3 interlock (the run's unreviewed waves still reach the operator
+    through the end-of-run banner); else `, ran with N unreviewed wave(s)`; else `, shaped by a machine decision
+    (<token> at <subject>)`. All three are derived from `RunOutcomePolicy` over `decisions[]` and from
+    `delivery.forcedPastDecision`, never from a second reading of those records, so the line cannot disagree with the
+    interlock that acted on them. An ordinary decision — a halt, a drift resolved automatically — adds nothing.
+- **"Last activity" is an OBSERVATION, never an input.** It is the newest modification time of `run.json`,
+  `logs/<runId>/events.jsonl`, and the files of each `running` task's newest `attempt-N` directory — `run.json` alone
+  moves only at task transitions. There is deliberately no wall-clock stall rule ("no progress for N minutes ⇒
+  dead"): a suspend advances the clock, so it would condemn a healthy run on exactly the laptops this exists for,
+  and on Windows neither `TickCount64` nor `Stopwatch` excludes suspend. An alive-but-stuck run (#722) reads
+  `RUNNING` with an old last activity, and the line names the next step.
+- **The table follows the verdict.** Under `EXITED WITHOUT FINISHING` or `ENDED`, a task the journal holds
+  `running` prints `interrupted` — in the STATUS column and in the #639 resume footer, whose closing sentence reads
+  "every task listed above becomes pending". Under `RUNNING` the resume footer is withheld: a live run's table is its
+  current state, not a last outcome, and its in-flight task is not leftover state. Under any `UNKNOWN` the
+  journal's own words stand, since nothing disproves them.
+- **One live run per journal.** `guardrails run` REFUSES to start — exit 1, naming the pid, before `--fresh` and
+  before touching the journal — while the journal's owner reads `RUNNING` on this machine. Every Scheduler write
+  persists its whole in-memory document, including the owner it loaded, so a second run would overwrite the first
+  run's claim and then mark it ended while it is still live. There is no override flag: wait for that process, or
+  stop it. It never refuses for `EXITED WITHOUT FINISHING`, `ENDED`, or any `UNKNOWN`.
+  - **`run --revalidate-task` is refused on the same terms**, before it reads or writes anything: it is a different
+    verb over the SAME journal, and against a live run its load applies the resume normalization and persists it —
+    flipping that run's `running` task back to `pending`, clearing its halt record — and then runs that task's
+    guardrails in the same workspace, beside the run that owns it.
+  - **It is check-then-act, and that window is real.** The refusal reads the journal, and the claim is written a few
+    statements later by the run's own load (with `--fresh` in between), so two runs launched within moments of each
+    other can both pass the check and the second one's claim wins. What it reliably covers is the case it was
+    reported for: starting a run against a journal whose owner is ALREADY live. Closing the race needs an OS-level
+    lock on the journal, which is not what this record is.
+- **How the owner is written.** The claim rides `RunJournal.LoadOrCreateForRun`'s own write, so it cannot fail on
+  its own; every other load (the Scheduler's own, `reset`, `supply`) carries the owner forward untouched. A run that
+  cannot read its own identity prints one warning and CLEARS the previous owner (so `status` reads `UNKNOWN`) rather
+  than leaving that run's verdict to be read as this one's. `finishedAt` is written right after the run-finished
+  event — nothing after that point writes `run.json` — with a method-exit backstop for the early returns that never
+  reach it (a failed plan preflight, a declined drift prompt). It is written only for the owner that claimed the run
+  and has not already ended, never recreates a deleted `run.json`, re-reads the journal from disk first (the
+  `delivery` hazard below), and prints one warning if it cannot be written.
+- The TASK column — in this table and in `run --dry-run`'s per-task table — is as wide as the plan's longest task
+  id (never narrower than its header), so every row stays aligned and parseable.
 
 **`waves.<dir>.delivered` — the per-wave barrier-delivery record (design of record
 `39-incremental-delivery.md` §4, issue #525; full mechanics in §14.12).** Present only on a wave that is a

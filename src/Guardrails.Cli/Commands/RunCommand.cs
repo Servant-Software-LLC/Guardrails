@@ -409,6 +409,16 @@ public static class RunCommand
             probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MaxCostUsd = costCap } } };
         }
 
+        // Issue #704 — one live run per journal. Every Scheduler write persists its whole in-memory document, including
+        // the owner it loaded, so two runs on one journal overwrite each other's claim and the first to end marks the
+        // other — still live — as ended. Checked BEFORE --fresh (which would tear the live run's state down) and before
+        // the load below (which would normalize a live run's statuses). Only a RUNNING owner blocks: one that is gone, on
+        // another host, or uncheckable is exactly what a resume is for.
+        if (RefuseWhileOwnerIsRunning(probe.Plan, folder, io.Out))
+        {
+            return ExitCodes.HarnessError;
+        }
+
         if (fresh)
         {
             RunReset.Fresh(probe.Plan.PlanDirectory);
@@ -419,12 +429,31 @@ public static class RunCommand
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
 
+        // Issue #704 — this process's own start identity, read BEFORE the load so the claim rides the load's own write
+        // (RunJournal.LoadOrCreateForRun): claimed before RecordEnvironment and the Scheduler's own later LoadOrCreate,
+        // for the ordering reason spelled out at RecordEnvironment below. A platform that will not give the identity costs
+        // the claim, never the run — and the load then CLEARS the previous owner rather than leaving that run's verdict
+        // to be read as this one's.
+        RunOwner? owner = RunLiveness.OwnerForThisProcess();
+        if (owner is null)
+        {
+            io.Out.WriteLine(
+                "WARNING: could not read this process's start identity, so run.json names no owner for this run; "
+                + "`guardrails status` will report its state as UNKNOWN (issue #704).");
+        }
+
         // Resolve the run's id up-front so the live log server and the post-mortem links target the
-        // correct logs/<runId>/ tree (SSOT §8/§12). LoadOrCreate is idempotent: it creates run.json
+        // correct logs/<runId>/ tree (SSOT §8/§12). The load is idempotent: it creates run.json
         // here (or reads it on resume), and the Scheduler's own LoadOrCreate then reads the SAME
         // run.json — so this runId matches the one the executor writes attempt logs under.
-        RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
+        RunJournal journal = RunJournal.LoadOrCreateForRun(probe.Plan, owner);
         string runId = journal.Document.RunId;
+
+        // Issue #704 — record that the run ENDED: right after the run-finished event below, and, through this `using`, on
+        // every earlier way out of this method that unwinds. A run whose process vanished — killed, crashed hard, a laptop
+        // rebooting under it — never gets that write, and `guardrails status` reads the difference: a live owner is
+        // RUNNING, a gone one with no recorded end EXITED WITHOUT FINISHING.
+        using var ownership = new RunOwnership(journal, owner, io.Out);
 
         // #383/#407/#419 worktree-mode run-start setup: the startup GC (a crash BACKSTOP now, #419), the
         // liveness lock, and — on Windows — a FRESH short junction for this run. The junction is a
@@ -945,6 +974,12 @@ public static class RunCommand
                 // diagramObserver is null only if the throw happened before the chain was built (BuildObserverChain
                 // never ran) — `?.` makes that correctly raise nothing rather than a NullReferenceException.
                 diagramObserver?.RunFinished(resolvedExitCode, faultKind);
+
+                // Issue #704 — the run's end, recorded the moment its verdict is settled rather than at method exit.
+                // Nothing after this point writes run.json (the webhook sink's drain, the log server's shutdown and the
+                // exit worktree sweep touch none of it), so nothing can erase the record — and a process killed during
+                // that tail no longer reads EXITED WITHOUT FINISHING for a run that had already finished deciding.
+                ownership.RecordEnd();
             }
         }
         finally
@@ -964,6 +999,57 @@ public static class RunCommand
                 WorktreeReclaim.ReclaimRootsOnExit(probe.Plan.Workspace, exitRoot, io.Out);
             }
         }
+    }
+
+    /// <summary>
+    /// Issue #704 — true, after printing why, when <paramref name="plan"/>'s journal names an owner that is RUNNING on
+    /// this machine: a live <c>guardrails run</c> already drives this journal, and a second one would overwrite its
+    /// claim with every write and then mark it ended while it is still going.
+    /// <para>
+    /// <c>internal</c> because <see cref="Revalidate.ExecuteAsync"/> guards itself with the SAME check:
+    /// <c>--revalidate-task</c> is a different verb over the same journal, and against a live run its load would
+    /// normalize that run's statuses on disk and then run a task's guardrails beside it.
+    /// </para>
+    /// <para>
+    /// Only the exact probe's RUNNING refuses. An owner that is gone, recorded on another host, or uncheckable does not —
+    /// those are precisely the runs a resume exists for, and refusing on a guess would strand the plan. There is no
+    /// override flag: the remedy for a stuck owner is to stop that process, and the message names it.
+    /// </para>
+    /// <para>
+    /// Read-only: <see cref="JournalReader.Read"/>, never a load that would normalize the live run's statuses. An
+    /// unreadable journal does not refuse; the run's own load reports it, loudly, a moment later.
+    /// </para>
+    /// </summary>
+    internal static bool RefuseWhileOwnerIsRunning(Core.Model.PlanDefinition plan, string folder, TextWriter output)
+    {
+        string journalPath = RunJournal.PathFor(plan.PlanDirectory);
+        if (!File.Exists(journalPath))
+        {
+            return false;
+        }
+
+        RunOwner? owner;
+        try
+        {
+            owner = JournalReader.Read(journalPath).Owner;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
+
+        if (owner is null
+            || RunLiveness.Assess(owner, RunLiveness.ThisHost(), SystemProcessProbe.Instance) != RunLivenessState.Running)
+        {
+            return false;
+        }
+
+        string target = folder.Contains(' ', StringComparison.Ordinal) ? $"\"{folder}\"" : folder;
+        output.WriteLine(
+            $"Refusing to start: run.json names process {owner.Pid} on this machine as this plan's owner, and it is "
+            + $"still RUNNING. Wait for that run to end, or stop process {owner.Pid}, then run 'guardrails run {target}' "
+            + "again (issue #704).");
+        return true;
     }
 
     /// <summary>
