@@ -86,6 +86,23 @@ public sealed class GateClassifierTests
         Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
     }
 
+    [Fact]
+    public void HarnessHalt_IsHardBlockerPermanent_AndKeepsItsOwnKindAndDetail()
+    {
+        // #707 delta review (NIT-3). The default-safe branch builds THIS signal for a harness halt whose
+        // producer set no more specific kind. Classify() alone cannot pin it: Unknown maps to the same class,
+        // so a mutation swapping one for the other would behave identically and no test would notice. The KIND
+        // is what makes the record precise — an unrecognised/ambiguous stop (Unknown, §4.3) and a stop the
+        // harness decided deliberately are different facts, and only the latter has a summary worth carrying.
+        const string summary = "cost cap reached: cumulative journaled cost has reached the configured maxCostUsd ($20)";
+        GateSignal signal = GateSignal.HarnessHalt(summary);
+
+        Assert.Equal(GateSignalKind.HarnessHalt, signal.Kind);
+        Assert.NotEqual(GateSignalKind.Unknown, signal.Kind);
+        Assert.Equal(summary, signal.Detail);
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
     // ── Class (a): judgment call (the ONLY dial-eligible class) ───────────────────────────────────
 
     [Fact]

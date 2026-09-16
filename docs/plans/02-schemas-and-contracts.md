@@ -3993,10 +3993,15 @@ conflicts to resolve, or the BASE baseline is missing and must be established fi
 cancelled · `4` **`EscalationsPending`** — an autonomous run (`docs/plans/12-autonomous-mode.md`, issue
 #361 Phase 3) ended with **unresolved ANSWERABLE escalations** (an answer-required halt: one or more
 `logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered` on an **answerable** gate —
-`needs-human` or `wave-checkpoint`, §8). A run whose open escalations are all **non-answerable**
-(`hard-blocker`, `review-gate`) exits **`2`** instead (#707 review delta): code `4` promises "a firstmate answer
+`needs-human` or `wave-checkpoint`, §8). A run whose open escalations are all **non-answerable** — `hard-blocker`,
+`review-gate` or `blocker` — exits **`2`** instead (#707 review delta): code `4` promises "a firstmate answer
 file unblocks this on the next resume", and for a harness-decided hard blocker that promise is false — the
-consumer refuses such an answer, and the remedy is a human editing `task.json` or the config. This is a
+consumer refuses such an answer, and the remedy is a human editing `task.json` or the config. The same holds for
+the other two: a `review-gate` record clears only by a real human review pass (§7.5, no answer kind exists), and
+a `blocker` is a retry-exhausted transient. **A firstmate still sees a non-zero exit** on every one of these
+runs — the distinction is only between "an answer unblocks this" (`4`) and "a human must act" (`2`), never
+between failure and success. A run carrying BOTH an open answerable escalation and a hard blocker exits `4`: the
+answer genuinely can unblock the next resume, and the hard blocker does not mask it. This is a
 **NEW, DISTINCT non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated
 firstmate consumer **never** reads an answer-required halt as clean green AND can tell it apart from a plain
 needs-human halt.
