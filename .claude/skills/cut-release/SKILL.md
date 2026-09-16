@@ -36,13 +36,30 @@ problem.
 
 Use `git -C <repo-root>` for every git command (never `cd … && git …`).
 
-1. **Everything merged and pushed.** No open PR you intend to include is still unmerged.
+**Run the mechanical checks first — they are scripted for a reason:**
+
+```bash
+.github/scripts/release-preflight.sh preflight <sha-you-are-about-to-tag>
+```
+
+It resolves the tag target, compares it to `origin/master`, reports the working tree, and refuses
+to proceed inside the #747 timing window (see **If it fails**). Every check it performs is one
+that was done by hand — and got wrong — during a real cut. The prose below says what it checks
+and why; the script is what actually checks it.
+
+1. **The commit you are about to TAG is `origin/master`.** This is a check on the **tag target**,
+   not on your working tree. You can be standing anywhere — a stale checkout, a worktree, a
+   detached HEAD — and still tag correctly, *provided the sha you name is `origin/master`*. The
+   failure that actually happened was tagging a specific sha from a checkout that was behind and
+   assuming `HEAD` spoke for it. Resolve **both sides** through `rev-parse` before comparing, or a
+   short sha compares unequal to a 40-character one and every check is a false result:
    ```bash
-   git -C <repo> fetch origin
-   git -C <repo> status --short                 # only expected untracked drafts, nothing staged
-   git -C <repo> log origin/master..HEAD --oneline   # MUST be empty (nothing unpushed)
-   git -C <repo> rev-parse HEAD origin/master        # the two SHAs MUST match
+   git -C <repo> fetch origin --tags
+   git -C <repo> rev-parse --verify "<sha>^{commit}"          # the tag target, fully resolved
+   git -C <repo> rev-parse --verify "origin/master^{commit}"  # MUST be identical
+   git -C <repo> log origin/master..HEAD --oneline            # nothing unpushed, if you are on master
    ```
+   No open PR you intend to include may still be unmerged.
 2. **The integrated HEAD is green.** Every merged PR was CI-green individually, and the
    release pipeline re-runs the full 3-OS matrix on the tagged commit anyway — but run a
    final local gate on the actual release artifact for confidence:
@@ -53,7 +70,9 @@ Use `git -C <repo-root>` for every git command (never `cd … && git …`).
    Expect 0 warnings/0 errors and a green suite (the two `RealClaude*` tests skip without a
    live key — that's normal).
 3. **Working tree clean** apart from any long-lived untracked plan-folder drafts under
-   `docs/plans/` that were never part of the release.
+   `docs/plans/` that were never part of the release. This one is **advisory**: a tag names a
+   *commit*, so uncommitted files cannot leak into the release. Check it to catch work you
+   *meant* to ship and didn't — not as a gate on the tag.
 4. **Nothing to edit before tagging.** The shipped version comes from the TAG
    (`-p:Version=${GITHUB_REF_NAME#v}`), not from a file. `src/Guardrails.Cli/Guardrails.Cli.csproj`'s
    `<Version>` is only the default a *locally built* tool reports (and stamps into installed skills);
@@ -102,8 +121,13 @@ NuGet won't let you republish, so a typo'd or reused version wastes a number per
 
 ## Cut it
 
-Annotate the tag with the headline changes since the previous tag (helps the release notes
-and the git history read well):
+Annotate the tag with the headline changes since the previous tag. **This annotation matters more
+than it looks.** The `create-release` job publishes the GitHub Release with `--generate-notes`,
+which emits a raw list of merged commits and PR titles — accurate, and useless to someone deciding
+whether to upgrade. Your tag annotation and the notes you write over the generated ones are the
+**only** places a human-readable upgrade warning can live. If this release carries a breaking
+change, a migration step, or a reason to upgrade promptly, it has to be said here or it is not
+said at all.
 
 ```bash
 # v1.2.0 below is a WORKED EXAMPLE — substitute the version you picked above.
@@ -116,10 +140,35 @@ git -C <repo> tag -a v1.2.0 -m "v1.2.0 — <one-line theme>
 git -C <repo> push origin v1.2.0
 ```
 
-The tag push is the trigger. **Do not** create a GitHub "Release" object by hand — this
-repo releases by tag; `gh release list` is normally empty.
+The tag push is the trigger.
+
+**The pipeline creates the GitHub Release itself.** The `create-release` job runs
+`gh release create "$TAG" --title "$TAG" --generate-notes` (adding `--prerelease` for any tag
+carrying a suffix, which is what keeps throwaway `-ci.` dry-run tags out of "latest"). It is
+idempotent — it reuses an existing Release rather than failing — and the five `binaries` jobs then
+upload their archives as assets to it.
+
+So `gh release list` is **not** empty; every `vX.Y.0` is there. Do not create the Release object by
+hand — the pipeline owns it, and a hand-made one races the job. **Your job is the notes**, not the
+object. Where the release warrants it, replace the generated commit list with something a consumer
+can act on:
+
+```bash
+gh release view v1.2.0 --repo Servant-Software-LLC/Guardrails          # read what --generate-notes produced
+gh release edit v1.2.0 --repo Servant-Software-LLC/Guardrails --notes-file notes.md
+```
+
+A routine release can keep the generated notes. One with an upgrade note or a breaking change
+cannot — see the annotation guidance above.
 
 ## Watch the pipeline to completion
+
+```bash
+.github/scripts/release-preflight.sh ci <sha>   # find the run, poll it, print every job's conclusion
+```
+
+That polls correctly and refuses to build a run URL from an empty id (a hand-written `--jq` filter
+that yielded nothing produced a malformed URL and a 404 during a real cut). By hand:
 
 ```bash
 gh run list --repo Servant-Software-LLC/Guardrails --workflow release.yml --limit 3   # find the run id
@@ -137,20 +186,52 @@ gh run view <run-id> --repo Servant-Software-LLC/Guardrails \
   --json conclusion,jobs --jq '{conclusion, jobs:[.jobs[]|{name,conclusion}]}'
 ```
 
-Success = `conclusion: success` and all five jobs green:
-`test (windows-latest)`, `test (ubuntu-latest)`, `test (macos-latest)`,
-`packaged-tool-smoke (ubuntu)`, and **`pack and publish to NuGet.org`**.
+Success = `conclusion: success` and **all eleven jobs** green:
 
-The pipeline gate (`release.yml`): the 3-OS test matrix **and** the packaged-tool-smoke
-(pack the tag version → install to an isolated tool-path → assert the `skills/` payload
-shipped and is version-stamped, #171) must pass; only then does `publish` pack and push.
-A build-green-but-package-broken state (e.g. #169) fails the smoke *before* it can publish.
+| Job | What it is |
+|---|---|
+| `test (windows-latest)` | the 3-OS matrix: restore, build, Core, Integration, the whole solution |
+| `test (ubuntu-latest)` | concurrently (#566), and every example's diagrams fresh (#636) |
+| `test (macos-latest)` | |
+| `packaged-tool-smoke (ubuntu)` | pack the tag version → install to an isolated tool-path → assert the `skills/` payload shipped and is version-stamped (#171) |
+| `pack and publish to NuGet.org` | needs both of the above; the only job that touches NuGet |
+| `create GitHub Release` | needs both of the above; creates the Release with `--generate-notes` |
+| `binary (osx-arm64)` | the five self-contained single-file binaries. All need `create-release`. |
+| `binary (osx-x64)` | The `osx-*` legs run on a macOS runner because `codesign` is macOS-only: |
+| `binary (linux-x64)` | each is ad-hoc signed (required to exec at all on Apple Silicon, #415) and |
+| `binary (linux-arm64)` | Developer-ID-signed + notarized when the signing secrets exist. Each |
+| `binary (win-x64)` | uploads its archive + `.sha256` to the Release. |
+
+Two independent branches hang off the same gate: `publish` (NuGet) and `create-release` →
+`binaries` (the GitHub Release and its assets). A build-green-but-package-broken state (e.g. #169)
+fails the smoke *before* either branch can run. Note `publish` is skipped for `-ci.` dry-run tags,
+which still exercise the test, smoke, release and binary jobs — so on such a tag ten green jobs and
+one skipped is the expected result, not a failure.
+
+**Check the test counts, don't just read the tick.** A green run that quietly stopped running some
+tests looks exactly like a green run:
+
+```bash
+.github/scripts/release-preflight.sh verify <run-id>   # counts vs the recorded baseline
+```
+
+Totals must be identical across all three OS; skips legitimately differ per platform, which is why
+the baseline records them. A changed **total** is expected when tests were added. A changed
+**skipped** under an unchanged total means a test stopped running somewhere — invisible in the
+tick, and the shape that cost v1.15.0. Re-record with `baseline <run-id>` once you have explained
+the difference, and commit the file.
 
 ## Confirm live
 
 The publish job succeeding means `dotnet nuget push` was accepted. **NuGet indexing lags a
-couple of minutes**, so an immediate `dotnet tool install` may not resolve yet. Tell the
-consumer:
+couple of minutes**, so an immediate `dotnet tool install` may not resolve yet. Confirm the
+version is actually on the feed before telling anyone it shipped:
+
+```bash
+.github/scripts/release-preflight.sh published 1.2.0
+```
+
+Then tell the consumer:
 
 ```bash
 dotnet tool install --global ServantSoftware.Guardrails          # newest stable
@@ -178,6 +259,14 @@ teaches users a flag that no longer means anything for this package).
   push origin :refs/tags/v…`) to abort, then re-tag correctly. Once the `publish` job has
   pushed to NuGet, the version is permanent — do NOT try to "fix" it by republishing; cut
   the next minor instead.
+- **`Transient_PausesAndResumes_WithoutConsumingRetryBudget` failed, and only that** → check the
+  clock before you believe it. While **#747** is open, that test fails *deterministically* in the
+  **10:50–11:20 window** on the clock of whatever machine ran it (UTC on a CI runner). The fixture
+  hardcodes `resetHint: "11:20am"` and asserts the wait equals the 30-minute probe interval + 4s;
+  inside that window `min(probeInterval, timeUntilReset)` correctly picks the smaller remainder and
+  the equality fails. It is arithmetic, not flake and not load — so **do not "just re-run" it**, and
+  do not burn a version number on it. `preflight` refuses to start a release inside that window for
+  exactly this reason. Wait until after 11:20, or fix #747.
 
 ## Do not
 
