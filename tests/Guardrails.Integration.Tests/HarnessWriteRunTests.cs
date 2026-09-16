@@ -1065,6 +1065,185 @@ public sealed class HarnessWriteRunTests
     }
 
     [Fact]
+    public async Task Worktree_RepeatedInScopeWall_AtAStagingFailure_PreservesTheAttemptsWork()
+    {
+        // #708: converting a RETRY into a HALT must not remove preservation. The retry path this halt replaces
+        // stashes through StashIfRollingBack; the halt returns before the F2 reset, so without the same stash the
+        // tree is orphaned with no ref and no patch — the work is simply gone.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/blocked.md";     // in scope, and never written: a genuine wall
+        const string work = "docs/work.md";           // real in-scope work, which must survive the halt
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: work, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [refused], deliverableToWrite: work);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
+        IReadOnlyList<AttemptRecord> attempts = journal.Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.StagingFailed, AttemptOutcome.StagingFailed }, attempts.Select(a => a.Outcome));
+
+        string haltDir = Path.Combine(planDir, attempts[1].LogDir.Replace('/', Path.DirectorySeparatorChar));
+        string patch = Path.Combine(haltDir, "prior-attempt.patch");
+        Assert.True(File.Exists(patch), "the halted attempt's work must be preserved, as the retry it replaced did");
+        Assert.Contains(work, File.ReadAllText(patch));
+
+        string feedback = File.ReadAllText(Path.Combine(haltDir, "feedback.md"));
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("ORPHANED", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_RepeatedInScopeWall_AtANestedControlKey_SaysTheWorkWasNotPreserved()
+    {
+        // The deliberate exception: a rejected state fragment stays unsalvaged (the documented boundary). Staying
+        // SILENT about that is the part that misleads, so the halt says it outright.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/blocked.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: refused, blockedWritePaths: [refused], nestControlKey: true);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        string feedback = File.ReadAllText(Path.Combine(
+            planDir, attempts[1].LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+
+        Assert.Contains("was NOT preserved", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_ARefusedInScopePath_TheTaskAlreadyWrote_DoesNotEndTheTask()
+    {
+        // WEAK-4: in-scope is NECESSARY but not SUFFICIENT for "this attempt can never converge". At a
+        // pre-guardrail site no guardrail has looked for the deliverable yet, so a refusal of a path the task
+        // HAS ALREADY WRITTEN proves nothing about convergence — the real failure is the staging move. Ending
+        // the task there would kill a run a retry could have finished.
+        using var repo = new TempGitRepo();
+        const string written = "docs/ssot.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: written, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        // The refused path is the one the agent nonetheless wrote — it reached the result by another route.
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [written], deliverableToWrite: written);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        Assert.False(Assert.Single(report.Tasks).IsGreen);
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(3, attempts.Count);   // the full budget, not a halt on attempt 2
+        Assert.Equal(3, runner.Invocations);
+        Assert.All(attempts, a => Assert.Equal(AttemptOutcome.StagingFailed, a.Outcome));
+    }
+
+    [Fact]
+    public async Task Worktree_AStructuralClaudeWall_AtAStagingFailure_HaltsInsteadOfBurningTheBudget()
+    {
+        // A structural .claude/ wall never enters RepeatedPaths — the tracker files it under StructuralPaths — so
+        // the in-scope repeat rule cannot see it. Before this, a task whose .claude/ deliverable is staged, whose
+        // direct .claude/ write was refused, and whose staging move then failed retried to exhaustion with the
+        // wall named nowhere. The structural wall is consulted at these sites too, symmetrically.
+        using var repo = new TempGitRepo();
+        const string claudePath = ".claude/commands/foo.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: claudePath, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [claudePath]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("staging move failed", task.Summary);
+        Assert.Contains(claudePath, task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        // The #104 fast-halt: a structural wall is un-clearable, so it settles on the FIRST attempt that hits it.
+        Assert.Equal(AttemptOutcome.StagingFailed, Assert.Single(attempts).Outcome);
+        Assert.Equal(1, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_ARepeatedOutOfScopeRefusal_IsNamedAsSecondaryContext_AtAHaltAndOnARetry()
+    {
+        // #708: narrowing the wall to in-scope paths must not LOSE the out-of-scope refusal. An operator who
+        // grants the path the halt names, re-runs, and is then ambushed by the second refusal has been told half
+        // the story. The four pre-guardrail sites carry it on their retries too.
+        using var repo = new TempGitRepo();
+        const string inScope = "docs/blocked.md";
+        const string outOfScope = "src/Sneaky.cs";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: inScope, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [inScope, outOfScope]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        string halt = File.ReadAllText(Path.Combine(
+            planDir, attempts[1].LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+
+        // The in-scope path is what halted; the out-of-scope one is named as context, not lost.
+        Assert.Contains("## Repeatedly-refused path(s)", halt);
+        Assert.Contains($"- `{inScope}`", halt);
+        Assert.Contains("## Secondary context", halt);
+        Assert.Contains($"- path: `{outOfScope}`", halt);
+    }
+
+    [Fact]
+    public async Task Worktree_AnOutOfScopeRepeat_AtAStagingFailure_CarriesSecondaryContextOnTheRetry()
+    {
+        // The retry half of the same claim: nothing halts here (the only repeat is out of scope), and the
+        // attempt that retries still tells the agent the call will be refused again.
+        using var repo = new TempGitRepo();
+        const string outOfScope = "src/Sneaky.cs";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: "docs/ssot.md", defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [outOfScope]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        Assert.False(Assert.Single(report.Tasks).IsGreen);
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(3, attempts.Count);   // auxiliary: the budget runs its course
+
+        // Attempt 2 is the first with a REPEAT to report, and it retried rather than halting.
+        string retry = File.ReadAllText(Path.Combine(
+            planDir, attempts[1].LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+        Assert.Contains("## Secondary context", retry);
+        Assert.Contains($"- path: `{outOfScope}`", retry);
+    }
+
+    [Fact]
     public async Task Worktree_RepeatedInScopeWall_WhenTheGuardrailTimedOut_RecordsTimeout_NotGuardrailFailed()
     {
         // #339 N1's rule at the #708 halt: a guardrail the clock KILLED keeps its timeout classification, exactly as

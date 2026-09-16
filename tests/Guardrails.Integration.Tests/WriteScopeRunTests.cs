@@ -252,9 +252,17 @@ public sealed class WriteScopeRunTests
             [AttemptOutcome.WriteScopeViolation, AttemptOutcome.WriteScopeViolation],
             entry.Attempts.Select(a => a.Outcome));
 
-        string halt = File.ReadAllText(Path.Combine(AttemptDir(planDir, "01-implement", 2), "feedback.md"));
+        string attempt2 = AttemptDir(planDir, "01-implement", 2);
+        string halt = File.ReadAllText(Path.Combine(attempt2, "feedback.md"));
         Assert.Contains("## Repeatedly-refused path(s)", halt);
         Assert.Contains("`src/Impl.cs`", halt);
+
+        // #705, which the retry path this halt replaces already disclosed: the out-of-scope bytes were reverted,
+        // a copy was kept, and the feedback points a human at it. A kept copy nothing names is a copy nobody finds.
+        string keptCopy = Path.Combine(attempt2, "out-of-scope.patch");
+        Assert.True(File.Exists(keptCopy), "the reverted out-of-scope work must still be kept at a halt");
+        Assert.Contains("reverted", halt);
+        Assert.Contains(keptCopy.Replace('\\', '/'), halt);
     }
 
     [Fact]
