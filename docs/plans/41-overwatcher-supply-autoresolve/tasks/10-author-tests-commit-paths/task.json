@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + throwing stub for SuppliedDrain.CommitPaths (explicit pathspec, rollback to the pre-commit HEAD on failure), with Drain's existing behaviour pinned unchanged",
+  "dependsOn": [],
+  "stableId": "p10c4z",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/SuppliedDrainTests.cs",
+    "src/Guardrails.Core/Execution/SuppliedDrain.cs"
+  ]
+}

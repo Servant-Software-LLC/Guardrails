@@ -1,0 +1,8 @@
+{
+  "description": "Record in the domain-knowledge skill that naming the missing file by its exact workspace-relative path is what makes the auto-resolve fire - delivered through needsHarnessWrite, the only mechanism that can write under .claude/",
+  "dependsOn": ["14-implement-autoresolve-wiring"],
+  "stableId": "k20s7j",
+  "writeScope": [
+    ".claude/skills/guardrails-domain-knowledge/SKILL.md"
+  ]
+}

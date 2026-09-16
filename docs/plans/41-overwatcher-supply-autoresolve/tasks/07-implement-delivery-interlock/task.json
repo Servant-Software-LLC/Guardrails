@@ -1,0 +1,9 @@
+{
+  "description": "Implement the shared suppressing-decision predicate so BOTH the run-end and the wave-barrier interlock are defined in terms of it, and add the auto-supplied / advisory tokens",
+  "dependsOn": ["06-author-tests-delivery-interlock"],
+  "stableId": "d7mq8x",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Execution/RunOutcomePolicy.cs"
+  ]
+}

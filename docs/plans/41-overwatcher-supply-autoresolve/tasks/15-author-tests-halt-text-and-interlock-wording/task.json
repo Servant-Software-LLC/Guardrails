@@ -1,0 +1,8 @@
+{
+  "description": "Author failing tests pinning the halt text on the shared MissingResourceSignal predicate and the interlock banner's generalised machine-decision wording",
+  "dependsOn": ["03-implement-missing-resource-facts", "07-implement-delivery-interlock"],
+  "stableId": "h15t8q",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedHaltTextTests.cs"
+  ]
+}

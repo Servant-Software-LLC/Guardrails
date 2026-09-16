@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant: no conflict markers, and no definition kept twice by an AI-merge (union-safe, conditional)",
+  "scope": "integration"
+}

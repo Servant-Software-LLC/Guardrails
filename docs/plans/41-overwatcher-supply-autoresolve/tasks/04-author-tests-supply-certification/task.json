@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + stubs for OverwatchSupplyAutoResolve.Certify (one row per refusal token), the shared GateThreshold rule, and the resource-supply parser case",
+  "dependsOn": ["03-implement-missing-resource-facts"],
+  "stableId": "c4rt9v",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/OverwatchSupplyAutoResolveTests.cs",
+    "tests/Guardrails.Core.Tests/OverwatchProposalResourceSupplyTests.cs",
+    "src/Guardrails.Core/Execution/GateThreshold.cs",
+    "src/Guardrails.Core/Execution/OverwatchDecision.cs"
+  ]
+}

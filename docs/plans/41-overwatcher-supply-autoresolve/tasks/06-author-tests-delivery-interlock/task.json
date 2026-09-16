@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + throwing stub for the ONE shared delivery-interlock predicate and the auto-supplied / advisory decision tokens",
+  "dependsOn": [],
+  "stableId": "d6lk3s",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunOutcomePolicyTests.cs",
+    "tests/Guardrails.Core.Tests/WaveDelivery/WaveScopedInterlockTests.cs",
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Execution/RunOutcomePolicy.cs"
+  ]
+}

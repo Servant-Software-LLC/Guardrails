@@ -1,0 +1,10 @@
+{
+  "description": "Implement ProposeResourceSupplyAsync and the missing-resource trigger over the stubs; the generic diagnose brief stays byte-identical",
+  "dependsOn": ["08-author-tests-resource-supply-brief"],
+  "stableId": "b9tk6y",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/OverwatchTrigger.cs",
+    "src/Guardrails.Core/Execution/OverwatchDetailWriter.cs"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "charterVersion": "0.27.0",
+  "plan": "41-overwatcher-supply-autoresolve.charter.md",
+  "planSha256": "f8e5ae910699e832e9b09fd249807fe301659ffa3ccee04f0dec86ff6b342458",
+  "answers": null,
+  "answersSha256": null,
+  "handoff": "41-overwatcher-supply-autoresolve.md",
+  "handoffSha256": "bc23e6e6d3cf59815e16fd2cbd95534eee29dca6fda0069a93f276cac462a6dd",
+  "malformedQuestions": 0,
+  "gate": {
+    "flagPassed": true,
+    "needsHuman": false,
+    "exitCode": 0,
+    "blockers": [],
+    "unmatchedAnswerIds": []
+  },
+  "questions": [
+    {
+      "id": "d41-candidate-scope",
+      "title": "Which ownership rule must a candidate path pass?",
+      "sourceLine": 300,
+      "answered": true,
+      "answer": [
+        "No other task in the plan may produce it: every other task declares a writeScope and none covers the path"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "d41-supply-source",
+      "title": "Where may an overwatcher auto-resolve take the missing file from?",
+      "sourceLine": 368,
+      "answered": true,
+      "answer": [
+        "The operator\u0027s checkout: the file as committed at the checkout\u0027s HEAD, unmodified in the working tree"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "d41-below-critical",
+      "title": "Below dial:critical, is the overwatcher consulted about a missing-resource halt at all?",
+      "sourceLine": 449,
+      "answered": true,
+      "answer": [
+        "No: the deterministic halt text already proposes the three commands, so no diagnose is spent"
+      ],
+      "answerSource": "inline"
+    },
+    {
+      "id": "d41-terminal-gate-names-supply",
+      "title": "Should the terminal gate\u0027s halt also name supplied and refreshed content, as the wave gate halts already do?",
+      "sourceLine": 617,
+      "answered": true,
+      "answer": [
+        "Yes, in this change: append UnauthoredContentNote to the terminal gate halt\u0027s headline and detail"
+      ],
+      "answerSource": "inline"
+    }
+  ]
+}

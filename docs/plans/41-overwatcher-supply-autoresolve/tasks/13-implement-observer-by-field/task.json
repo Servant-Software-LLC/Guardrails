@@ -1,0 +1,17 @@
+{
+  "description": "Replace SuppliedResourcesCommitted with the three-argument member across all six implementers and its one call site, render `by` in every surface, and correct the three stale doc comments",
+  "dependsOn": ["12-author-tests-observer-by-field"],
+  "stableId": "o13f9p",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Core/Execution/ObserverProjection.cs",
+    "src/Guardrails.Core/Execution/RunEventStream.cs",
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}
