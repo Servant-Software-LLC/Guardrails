@@ -95,7 +95,10 @@ public sealed class StatusWaitingOnWorktreeTests
     private static string[] ObservationBlock(string output)
     {
         string[] lines = Lines(output);
-        int header = Array.FindIndex(lines, line => line.StartsWith("Waiting on a worktree", StringComparison.Ordinal));
+        int header = Array.FindIndex(
+            lines,
+            line => line.StartsWith("Waiting on a worktree", StringComparison.Ordinal)
+                    || line.StartsWith("Was waiting on a worktree", StringComparison.Ordinal));
         if (header < 0)
         {
             return [];
@@ -185,12 +188,50 @@ public sealed class StatusWaitingOnWorktreeTests
         string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.Running));
 
         Assert.Contains("Run state: RUNNING", output, StringComparison.Ordinal);
+
+        // A COARSE smell-check on the rendered text, and no more than that: "not responding" would sail
+        // straight through it. The actual guarantee is structural and lives in RunLiveness.Assess's
+        // SIGNATURE — it takes no clock and no task state, so a waiting task has no parameter through which
+        // it could reach the verdict at all. This list only catches someone hand-writing a judgement into
+        // the block's own text.
         foreach (string forbidden in (string[])["STUCK", "HUNG", "stalled", "too long"])
         {
             Assert.DoesNotContain(forbidden, output, StringComparison.Ordinal);
         }
 
         Assert.Contains(ObservationBlock(output), line => line.Contains("02-second", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// #722 F5 — a wait on a run whose owner is GONE is printed in the past tense. A present-tense
+    /// "creating a worktree … (3d02h ago)" beside <c>Run state: EXITED WITHOUT FINISHING</c> would assert
+    /// activity the process table has already disproved, which is the class of output this command's own
+    /// <c>interrupted</c> cell exists to prevent. The row is still printed: that a run died while building a
+    /// worktree is a forensic lead worth keeping.
+    /// </summary>
+    [Fact]
+    public async Task AWaitOnARunThatIsOver_IsPrintedInThePastTense()
+    {
+        using StatePlanBuilder plan = TwoTaskPlan();
+        WriteJournal(plan);
+
+        WriteEvents(plan,
+            ("task-waiting-on-worktree", "02-second", FreshSegmentOperation, new DateTimeOffset(2026, 9, 11, 22, 46, 25, TimeSpan.Zero)));
+
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.NotRunning));
+
+        Assert.Contains("Run state: EXITED WITHOUT FINISHING", output, StringComparison.Ordinal);
+
+        string[] block = ObservationBlock(output);
+        Assert.NotEmpty(block);
+        Assert.StartsWith("Was waiting on a worktree", block[0], StringComparison.Ordinal);
+
+        string row = Assert.Single(block, line => line.Contains("02-second", StringComparison.Ordinal));
+        Assert.Contains("last recorded", row, StringComparison.Ordinal);
+
+        // The two present-tense constructions this must not use about a run that is over.
+        Assert.DoesNotContain(" ago)", row, StringComparison.Ordinal);
+        Assert.DoesNotContain("since", row, StringComparison.Ordinal);
     }
 
     /// <summary>Nothing waiting, nothing printed — the pause ledger's discipline, so an ordinary run's status stays noise-free.</summary>

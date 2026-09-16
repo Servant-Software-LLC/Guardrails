@@ -107,11 +107,11 @@ public static class StatusCommand
         // verdict above — never inside it: RunLiveness.Assess takes no clock and no task state, and this
         // block deliberately gives it nothing to take.
         IReadOnlyList<string> waiting = WaitingOnWorktreeLines(
-            ReadEventLines(probe.Plan.PlanDirectory, document.RunId), taskWidth, DateTimeOffset.UtcNow);
+            ReadEventLines(probe.Plan.PlanDirectory, document.RunId), taskWidth, DateTimeOffset.UtcNow, liveness);
         if (waiting.Count > 0)
         {
             output.WriteLine();
-            output.WriteLine("Waiting on a worktree (observation — the harness applies no time limit):");
+            output.WriteLine(WaitingOnWorktreeHeader(liveness));
             foreach (string line in waiting)
             {
                 output.WriteLine(line);
@@ -378,7 +378,7 @@ public static class StatusCommand
     /// <para>Pure — public for the same reason <see cref="LastFailureText"/> is.</para>
     /// </summary>
     public static IReadOnlyList<string> WaitingOnWorktreeLines(
-        IEnumerable<string> eventLines, int taskWidth, DateTimeOffset now)
+        IEnumerable<string> eventLines, int taskWidth, DateTimeOffset now, RunLivenessState liveness)
     {
         var lastByTask = new Dictionary<string, (string Kind, string? Operation, DateTimeOffset? At)>(StringComparer.Ordinal);
         foreach (string line in eventLines)
@@ -396,23 +396,52 @@ public static class StatusCommand
             .. lastByTask
                 .Where(pair => string.Equals(pair.Value.Kind, RunEventStream.WaitingOnWorktreeKind, StringComparison.Ordinal))
                 .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => WaitingLine(pair.Key, pair.Value.Operation, pair.Value.At, now, taskWidth))
+                .Select(pair => WaitingLine(pair.Key, pair.Value.Operation, pair.Value.At, now, taskWidth, liveness))
         ];
     }
 
     /// <summary>
+    /// The block's header, in the tense the process table supports. The same rule <see cref="StatusCell"/>
+    /// follows: the recorded fact stands, except where liveness has just disproved the PRESENT TENSE of it.
+    /// </summary>
+    public static string WaitingOnWorktreeHeader(RunLivenessState liveness) =>
+        RunIsOver(liveness)
+            ? "Was waiting on a worktree when the run stopped (observation):"
+            : "Waiting on a worktree (observation — the harness applies no time limit):";
+
+    /// <summary>
     /// One waiting task's line. A row with no readable <c>at</c> still reports the wait — omitting the task
     /// because its timestamp was unreadable would hide the very thing this block exists to show.
+    ///
+    /// <para><b>Tense follows liveness.</b> A run whose owner is gone is not doing anything now, so a
+    /// present-tense "creating a worktree … (3d02h ago)" beside <c>Run state: EXITED WITHOUT FINISHING</c>
+    /// would assert activity the process table has already disproved — the same class of output this
+    /// command's own <c>interrupted</c> cell exists to prevent. The fact is still worth printing: that a run
+    /// died while building a worktree is a forensic lead, so the row is kept and only its tense changes.</para>
     /// </summary>
     private static string WaitingLine(
-        string taskId, string? operation, DateTimeOffset? at, DateTimeOffset now, int taskWidth)
+        string taskId, string? operation, DateTimeOffset? at, DateTimeOffset now, int taskWidth,
+        RunLivenessState liveness)
     {
         string what = string.IsNullOrEmpty(operation) ? "a worktree operation" : operation;
-        string since = at is { } started
-            ? $"since {Timestamp(started)} ({BreakdownProgress.FormatClock(now - started)} ago)"
-            : "since an unrecorded time";
-        return $"  {taskId.PadRight(taskWidth)} {what} — {since}";
+        string when = (at, RunIsOver(liveness)) switch
+        {
+            ({ } started, false) => $"since {Timestamp(started)} ({BreakdownProgress.FormatClock(now - started)} ago)",
+            ({ } started, true) => $"last recorded {Timestamp(started)}",
+            (null, false) => "since an unrecorded time",
+            (null, true) => "at an unrecorded time"
+        };
+
+        return $"  {taskId.PadRight(taskWidth)} {what} — {when}";
     }
+
+    /// <summary>
+    /// Whether the process table has established that this run is no longer going — the only two verdicts
+    /// that disprove the present tense. Every UNKNOWN verdict leaves it alone: not being able to check is
+    /// not evidence of death (#704).
+    /// </summary>
+    private static bool RunIsOver(RunLivenessState liveness) =>
+        liveness is RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended;
 
     /// <summary>
     /// The three fields this command reads off one <c>events.jsonl</c> line, or null when the line is not a

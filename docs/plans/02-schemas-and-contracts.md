@@ -4945,11 +4945,15 @@ reflects over `ExitCodes` — a hand-copied gloss that nothing checks is the sam
 design cites when it rejects a parallel token set.)
 
 **Where the stream begins, and what its absence means.** The first row is a `task-started` — or the
-`task-waiting-on-worktree` that precedes it, when the first task the run dispatches must have a worktree
-built before it can start (#722). Those two kinds are the only ones that can open a bracket, so a consumer
-asking *"has this run reached the DAG?"* must accept EITHER: one that keys on `task-started` alone reads a
-run parked in its very first worktree creation as a run that never started — the exact ambiguity this file
-exists to remove, in the state where it costs the most. There
+`task-waiting-on-worktree` that precedes it, when the first task the run reaches must have its worktree
+built before it can start (#722). That case is reachable in practice, not theoretical: the harness builds
+the worktrees of every initially-ready task in a serial pre-pass *before* any worker starts, and announces
+each one, so the very first row of a run's bracket is a waiting row whenever the first such build is slow.
+The same applies to each wave's entry tasks, and to a resumed run whose fan-in has become initially-ready
+because its producers are already green. Those two kinds are therefore the only ones that can open a
+bracket, and a consumer asking *"has this run reached the DAG?"* must accept EITHER: one that keys on
+`task-started` alone reads a run parked in its very first worktree creation as a run that never started —
+the exact ambiguity this file exists to remove, in the state where it costs the most. There
 is deliberately NO run-opening event: one was designed and rejected (design of record
 `docs/plans/595-event-vocabulary-contract.md` §1a) because its payload could not be stated
 accurately at run start and its name would have implied a bracket it did not deliver. Six halts

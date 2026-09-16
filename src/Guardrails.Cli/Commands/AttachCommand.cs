@@ -346,6 +346,16 @@ public static class AttachCommand
                 renderer.OverwatchNoVerdict(RequireString(node, "taskId"), RequireString(node, "reason"));
                 break;
 
+            // Issue #722. Declared rather than left to the default arm below, because this is the surface an
+            // operator watches an unattended run FROM, and the event exists for precisely the hang that
+            // makes them open it. Skipping it here would have shown the attached terminal a task sitting at
+            // `pending` forever while the run's own terminal showed `preparing worktree 3:41:12` — the two
+            // views disagreeing about the one fact the operator is trying to establish. LiveRunObserver
+            // already implements the member, so the renderer needs nothing further.
+            case "TaskWaitingOnWorktree":
+                renderer.TaskWaitingOnWorktree(TaskFor(node, taskById), RequireString(node, "operation"));
+                break;
+
             default:
                 // An event type this replay has no wire-shape decision for yet (a wave/cleanup/decision
                 // event, or a future addition) — skip it rather than fail the whole replay over it. This

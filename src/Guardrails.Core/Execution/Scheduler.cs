@@ -1134,9 +1134,26 @@ public sealed class Scheduler
         {
             if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
             {
-                WorktreeHandle handle = _worktreeProvider != null && integ != null
-                    ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
-                    : new WorktreeHandle();
+                // #722 (F2): the pre-pass builds these worktrees SERIALLY, before any worker exists, so a
+                // hang here is not the settle-lock deadlock — but it is the same SILENCE, and it sits on the
+                // path an operator walks while RECOVERING from that deadlock. A resumed run's fan-in is a
+                // root here (its producers are pre-settled green), as are the first tasks of any run and
+                // every wave's entry tasks, since DrainAsync runs per wave. Without this call a hang in any
+                // of them leaves no events.jsonl row, no task-started, every task `pending` and
+                // `Run state: RUNNING` — byte-for-byte the silence this issue was filed about. Announced
+                // before the git, exactly as MaterializeDeferredWorktree does.
+                WorktreeHandle handle;
+                if (_worktreeProvider is { } prePassProvider && integ is { } prePassInteg)
+                {
+                    _observer.TaskWaitingOnWorktree(task, FreshWorktreeOperation);
+                    handle = prePassProvider.CreateSegment(task.Id, attempt: 1, prePassInteg, cancellationToken);
+                }
+                else
+                {
+                    // Serial / no provider: no git, so nothing to announce and nothing to wait on.
+                    handle = new WorktreeHandle();
+                }
+
                 handles[task.Id] = handle;
                 if (!string.IsNullOrEmpty(handle.WorktreePath))
                 {
@@ -4215,6 +4232,17 @@ public sealed class Scheduler
     /// </summary>
     private WorktreeHandle MaterializeDeferredWorktree(RunContext context, TaskEnvelope envelope)
     {
+        // The two request kinds are mutually exclusive by construction (AssignDependentHandles sets exactly
+        // one). An envelope carrying both would silently take the fork branch below and hand a FAN-IN a
+        // single producer's base — a wrong base, shipped quietly, which is this issue's whole failure genre.
+        // An impossible state that merely picks one is worse than one that says so.
+        if (envelope.Fork is not null && envelope.Fresh is not null)
+        {
+            throw new InvalidOperationException(
+                $"task '{envelope.Task.Id}' carries BOTH a fork and a fresh-segment request; they are "
+                + "mutually exclusive (#722).");
+        }
+
         if (_worktreeProvider is not { } provider)
         {
             return envelope.Handle;

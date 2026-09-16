@@ -26,6 +26,9 @@ public sealed class FanInWorktreeDeferralTests
     /// <summary>How long a test waits for an arrival before declaring the run wedged. Not an assertion — see the class remarks.</summary>
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
+    /// <summary>The operation string the harness reports for a fresh segment. Pinned here because it is operator-facing text.</summary>
+    private const string FreshSegmentOperation = "creating a worktree off the plan branch";
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Fakes
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -38,14 +41,13 @@ public sealed class FanInWorktreeDeferralTests
 
     /// <summary>
     /// A no-git provider that MODELS A PLAN BRANCH: a tip that <see cref="Integrate"/> advances and that
-    /// <see cref="RewindPlanBranchTo"/> can move BACKWARDS. The backwards move is the point — it is what
-    /// makes the monotonicity test a checked invariant rather than a restatement of the fake.
+    /// <see cref="RewindPlanBranchTo"/> can move BACKWARDS.
     ///
-    /// <para><see cref="CreateSegment"/> can be GATED for one task id: it signals
-    /// <see cref="CreateSegmentEntered"/> and then blocks the calling thread until
-    /// <see cref="ReleaseCreateSegment"/> is set — a synchronous block, because that is what the real
-    /// provider's unbounded <c>WaitForExit()</c> is. The tip is read AFTER the gate, so a test can land a
-    /// sibling's commit while a fan-in waits at the door.</para>
+    /// <para>Two operations can be GATED, each blocking the calling thread synchronously — because that is
+    /// what the real provider's unbounded <c>WaitForExit()</c> is: <see cref="CreateSegment"/> for one task
+    /// id, and <see cref="CurrentPlanBranchTip"/> for every caller. The tip is read AFTER the
+    /// <see cref="CreateSegment"/> gate, so a test can land a sibling's commit while a fan-in waits at the
+    /// door.</para>
     /// </summary>
     private sealed class TipTrackingWorktreeProvider : IWorktreeProvider
     {
@@ -53,19 +55,34 @@ public sealed class FanInWorktreeDeferralTests
         private int _tip;
         private readonly Dictionary<string, string> _headByWorktree = new(StringComparer.Ordinal);
         private readonly List<(string TaskId, int Tip)> _creates = [];
+        private int _tipReads;
+        private int _integrates;
 
         /// <summary>The task id whose <see cref="CreateSegment"/> blocks, or null for none.</summary>
         public string? GateCreateSegmentFor { get; init; }
+
+        /// <summary>When true, EVERY <see cref="CurrentPlanBranchTip"/> call blocks until released.</summary>
+        public bool GateCurrentPlanBranchTip { get; init; }
+
+        /// <summary>Asked at the top of <see cref="CreateSegment"/>: had the observer already been told?</summary>
+        public Func<string, bool>? WasAnnounced { get; set; }
 
         public TaskCompletionSource CreateSegmentEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource ReleaseCreateSegment { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource ReleasePlanTipRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public ConcurrentQueue<string> RewoundTo { get; } = [];
+
+        /// <summary>taskId → whether the observer had ALREADY been told when the git call began (#722 F1).</summary>
+        public ConcurrentDictionary<string, bool> AnnouncedBeforeCreate { get; } = new(StringComparer.Ordinal);
+
+        public int TipReads => Volatile.Read(ref _tipReads);
 
         public static string Sha(int tip) => $"tip-{tip:D4}";
 
-        /// <summary>The plan branch's tip right now.</summary>
+        /// <summary>The plan branch's tip right now, without going through the gated public read.</summary>
         public string CurrentTip()
         {
             lock (_tipGate)
@@ -103,6 +120,10 @@ public sealed class FanInWorktreeDeferralTests
 
         public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct)
         {
+            // #722 F1: sampled BEFORE anything else, so the test can pin the documented ordering — the
+            // observer is told the wait has begun BEFORE the call that may never return.
+            AnnouncedBeforeCreate[taskId] = WasAnnounced?.Invoke(taskId) ?? false;
+
             if (GateCreateSegmentFor is { } gated && string.Equals(taskId, gated, StringComparison.Ordinal))
             {
                 CreateSegmentEntered.TrySetResult();
@@ -167,19 +188,39 @@ public sealed class FanInWorktreeDeferralTests
         /// <summary>A settled task's work lands on the plan branch: the tip GAINS a commit.</summary>
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
         {
-            string taskId = string.IsNullOrEmpty(segment.TaskId) ? segment.SegmentBranchName : segment.TaskId;
             lock (_tipGate)
             {
                 _tip++;
                 segment.RecordedCommitSha = Sha(_tip);
             }
 
+            Interlocked.Increment(ref _integrates);
             return IntegrationResult.FastForward;
         }
 
-        public string CurrentPlanBranchTip(IntegrationHandle integ) => CurrentTip();
+        /// <summary>
+        /// The OTHER unbounded git this seam can run (<c>git rev-parse</c>). Gateable for the same reason
+        /// <see cref="CreateSegment"/> is: rejected option B would have put exactly this call back under the
+        /// settle lock.
+        /// </summary>
+        public string CurrentPlanBranchTip(IntegrationHandle integ)
+        {
+            Interlocked.Increment(ref _tipReads);
 
-        /// <summary>The one NON-monotone writer. Moving the tip backwards is possible here BY DESIGN, so a mid-drain rewind would be caught rather than argued about.</summary>
+            // Gated only ONCE THE DRAIN IS UNDER WAY — after at least one task has integrated. The
+            // scheduler legitimately reads the tip in its synchronous setup (the resume/drift pre-pass),
+            // long before any worker exists; blocking that would wedge the run during startup and prove
+            // nothing about the settle lock. Keying on "has anything integrated yet" makes the arming
+            // deterministic instead of a race against the test's own timing.
+            if (GateCurrentPlanBranchTip && Volatile.Read(ref _integrates) > 0)
+            {
+                ReleasePlanTipRead.Task.GetAwaiter().GetResult();
+            }
+
+            return CurrentTip();
+        }
+
+        /// <summary>The one NON-monotone writer this fake models. Moving the tip backwards is possible here BY DESIGN.</summary>
         public void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget)
         {
             RewoundTo.Enqueue(resetTarget);
@@ -213,11 +254,6 @@ public sealed class FanInWorktreeDeferralTests
 
         public ConcurrentDictionary<string, string> AssignedTaskBase { get; } = new(StringComparer.Ordinal);
 
-        /// <summary>Runs on the worker thread before the (possibly gated) wait — the seam a mutation proof uses.</summary>
-        public Action<TaskNode, IWorktreeProvider>? OnExecute { get; init; }
-
-        public IWorktreeProvider? Provider { get; set; }
-
         public void Complete(string id) => Gate(id).TrySetResult();
 
         public void CompleteAll()
@@ -232,11 +268,6 @@ public sealed class FanInWorktreeDeferralTests
         {
             AssignedPath[task.Id] = worktree.WorktreePath;
             AssignedTaskBase[task.Id] = worktree.TaskBase;
-
-            if (Provider is { } provider)
-            {
-                OnExecute?.Invoke(task, provider);
-            }
 
             if (_gated.Contains(task.Id))
             {
@@ -256,25 +287,45 @@ public sealed class FanInWorktreeDeferralTests
     }
 
     /// <summary>
-    /// Records the ARRIVAL of each task's <see cref="IRunObserver.TaskFinished"/> as a completed task, so a
-    /// test awaits the event itself rather than sampling a flag after a sleep.
+    /// Records the ARRIVAL of each task's <see cref="IRunObserver.TaskFinished"/> and
+    /// <see cref="IRunObserver.TaskWaitingOnWorktree"/> as completed tasks, so a test awaits the event
+    /// itself rather than sampling a flag after a sleep.
+    ///
+    /// <para>Implementing <c>TaskWaitingOnWorktree</c> is load-bearing (#722 F1): while this observer
+    /// inherited the interface's empty default, BOTH emitter lines in the Scheduler could be deleted and the
+    /// entire suite stayed green — the containment half of the fix was unguarded at its source.</para>
     /// </summary>
     private sealed class SettleArrivalObserver : IRunObserver
     {
         private readonly ConcurrentDictionary<string, TaskCompletionSource> _finished = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, TaskCompletionSource> _waiting = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> _operations = new(StringComparer.Ordinal);
 
-        public Task Finished(string taskId) => Slot(taskId).Task;
+        public Task Finished(string taskId) => Slot(_finished, taskId).Task;
+
+        public Task WaitingOn(string taskId) => Slot(_waiting, taskId).Task;
+
+        public bool WasAnnounced(string taskId) => _operations.ContainsKey(taskId);
+
+        public string? OperationFor(string taskId) =>
+            _operations.TryGetValue(taskId, out string? operation) ? operation : null;
 
         public void TaskStarting(TaskNode task) { }
 
-        public void TaskFinished(TaskResult result) => Slot(result.TaskId).TrySetResult();
+        public void TaskFinished(TaskResult result) => Slot(_finished, result.TaskId).TrySetResult();
+
+        public void TaskWaitingOnWorktree(TaskNode task, string operation)
+        {
+            _operations[task.Id] = operation;
+            Slot(_waiting, task.Id).TrySetResult();
+        }
 
         public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
 
         public void PlanHashMismatch(string previousPlanHash) { }
 
-        private TaskCompletionSource Slot(string taskId) =>
-            _finished.GetOrAdd(taskId, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        private static TaskCompletionSource Slot(ConcurrentDictionary<string, TaskCompletionSource> map, string key) =>
+            map.GetOrAdd(key, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
     }
 
     private static Scheduler Create(
@@ -316,6 +367,7 @@ public sealed class FanInWorktreeDeferralTests
         var provider = new TipTrackingWorktreeProvider { GateCreateSegmentFor = "03-fanin" };
         var executor = new GatedRecordingExecutor("01-p1", "02-p2", "03-fanin", "04-independent");
         var observer = new SettleArrivalObserver();
+        provider.WasAnnounced = observer.WasAnnounced;
 
         Task<RunReport> run = Create(plan, executor, provider, observer, parallelism: 4)
             .RunAsync(plan, TestContext.Current.CancellationToken);
@@ -344,6 +396,24 @@ public sealed class FanInWorktreeDeferralTests
                 + "creation was blocked (#722): the fan-in's CreateSegment is still running under the "
                 + "scheduler's settle lock, so one hung git stops every settle and all dispatch.");
 
+            // #722 F1 — the containment half, guarded at its SOURCE. Without these three assertions both
+            // emitter lines in the Scheduler could be deleted with the whole suite still green, on a
+            // surface that by construction only appears during a hang nobody provokes in CI.
+            await ArrivesAsync(
+                observer.WaitingOn("03-fanin"),
+                "the Scheduler never raised TaskWaitingOnWorktree for the blocked fan-in (#722): the wait "
+                + "is invisible on every surface, which is the half of this issue that makes a hang legible.");
+
+            Assert.Equal(FreshSegmentOperation, observer.OperationFor("03-fanin"));
+
+            // The documented ordering: told BEFORE the call, because after it there may be nothing left to
+            // tell anyone with.
+            Assert.True(
+                provider.AnnouncedBeforeCreate["03-fanin"],
+                "TaskWaitingOnWorktree was raised AFTER CreateSegment began (#722). A git that never "
+                + "returns would then announce nothing at all — the announcement must precede the call it "
+                + "is about.");
+
             provider.ReleaseCreateSegment.TrySetResult();
             executor.Complete("03-fanin");
 
@@ -363,18 +433,172 @@ public sealed class FanInWorktreeDeferralTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // 2. Monotonicity guard — the enumeration turned into a checked invariant.
+    // 2. The PRE-PASS — the recovery path for this very bug (#722 F2).
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Reading the fan-in's base at DEQUEUE rather than at its producer's settle is only safe because the
-    /// plan branch is gains-only while a drain is in flight: a failed re-verify creates no commit to rewind,
-    /// and the one non-monotone writer (<see cref="IWorktreeProvider.RewindPlanBranchTo"/>) runs in the
-    /// pre-pass and between waves, never during dispatch.
-    /// <para>The fake CAN move its tip backwards, so this asserts that property rather than assuming it.</para>
+    /// The scheduler builds a worktree for every initially-ready task SERIALLY, before any worker starts.
+    /// That is not the settle-lock deadlock — there are no workers to block — but it is the same silence,
+    /// and it sits on the path an operator walks while RECOVERING from the deadlock: on resume, a fan-in
+    /// whose producers are already green IS an initially-ready task, so its worktree is built here rather
+    /// than at dequeue. The same applies to the first tasks of any run and to every wave's entry tasks.
+    /// <para>Without the announcement, a hang here leaves no <c>events.jsonl</c> row, no <c>task-started</c>,
+    /// every task <c>pending</c> and <c>Run state: RUNNING</c> — byte-for-byte the silence #722 is about.</para>
     /// </summary>
     [Fact]
-    public async Task ThePlanBranchNeverMovesBackwards_WhileADrainIsInFlight()
+    public async Task ThePrePass_AnnouncesAWorktreeWaitBeforeBuildingIt()
+    {
+        PlanDefinition plan = Plan(Task("01-root"));
+
+        var provider = new TipTrackingWorktreeProvider { GateCreateSegmentFor = "01-root" };
+        var executor = new GatedRecordingExecutor("01-root");
+        var observer = new SettleArrivalObserver();
+        provider.WasAnnounced = observer.WasAnnounced;
+
+        // Task.Run, unlike every other test here, and for the reason this test exists: the pre-pass runs in
+        // RunAsync's SYNCHRONOUS prologue, before the first await, so a gated root blocks the CALLER — the
+        // returned Task would never even be assigned, and the test would deadlock at this line with no
+        // bound able to save it. Handing that blocking prologue to a pool thread is what lets the test
+        // observe it.
+        // Fully qualified: this file has `using static PlanFixtures`, so in EXPRESSION context the bare
+        // name `Task` binds to the fixture's Task(string, params string[]) helper, not the BCL type.
+        Task<RunReport> run = System.Threading.Tasks.Task.Run(
+            () => Create(plan, executor, provider, observer, parallelism: 2)
+                .RunAsync(plan, TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            await ArrivesAsync(
+                observer.WaitingOn("01-root"),
+                "the PRE-PASS built a worktree without announcing it (#722 F2): a hang there is invisible "
+                + "on every surface — no events.jsonl row, no task-started, every task pending and the run "
+                + "reading as RUNNING — which is exactly the state this issue was filed about, on the path "
+                + "an operator hits while recovering from it.");
+
+            Assert.Equal(FreshSegmentOperation, observer.OperationFor("01-root"));
+
+            await ArrivesAsync(
+                provider.CreateSegmentEntered.Task,
+                "the pre-pass never entered CreateSegment — the fixture never reached the condition.");
+
+            Assert.True(
+                provider.AnnouncedBeforeCreate["01-root"],
+                "the pre-pass announced the wait AFTER starting the git it is about (#722 F2).");
+
+            provider.ReleaseCreateSegment.TrySetResult();
+            executor.Complete("01-root");
+
+            RunReport report = await run.WaitAsync(Bound, TestContext.Current.CancellationToken);
+            Assert.True(report.AllSucceeded, string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+        }
+        finally
+        {
+            provider.ReleaseCreateSegment.TrySetResult();
+            executor.CompleteAll();
+            try { await run.WaitAsync(Bound, CancellationToken.None); } catch (Exception) { /* teardown */ }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // 3. The OTHER unbounded git on this seam (#722 F7).
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A TRIPWIRE, and deliberately labelled as one. <see cref="IWorktreeProvider.CurrentPlanBranchTip"/> is
+    /// a <c>git rev-parse</c> through the same runner with the same unbounded wait, and putting it back
+    /// under the settle lock is the exact shape of REJECTED option B — capture the base under the gate,
+    /// defer only the tree. That change would leave this issue's hang fully in place while every other test
+    /// in this file still passed, because they gate only <c>CreateSegment</c>.
+    /// <para>Today nothing reads the tip during a drain, so the gate is not exercised; the assertion message
+    /// says so rather than implying coverage it does not have. The moment someone adds such a read under
+    /// <c>_gate</c>, this test deadlocks the sibling and fails.</para>
+    /// </summary>
+    [Fact]
+    public async Task AHungPlanTipRead_DoesNotBlockASiblingsSettle()
+    {
+        PlanDefinition plan = Plan(
+            Task("01-p1"),
+            Task("02-p2"),
+            Task("03-fanin", "01-p1", "02-p2"),
+            Task("04-independent"));
+
+        var provider = new TipTrackingWorktreeProvider
+        {
+            GateCreateSegmentFor = "03-fanin",
+            GateCurrentPlanBranchTip = true
+        };
+        var executor = new GatedRecordingExecutor("01-p1", "02-p2", "03-fanin", "04-independent");
+        var observer = new SettleArrivalObserver();
+        provider.WasAnnounced = observer.WasAnnounced;
+
+        Task<RunReport> run = Create(plan, executor, provider, observer, parallelism: 4)
+            .RunAsync(plan, TestContext.Current.CancellationToken);
+
+        try
+        {
+            executor.Complete("01-p1");
+            executor.Complete("02-p2");
+
+            await ArrivesAsync(
+                provider.CreateSegmentEntered.Task,
+                "the fan-in's CreateSegment was never entered — the fixture never reached the condition.");
+
+            executor.Complete("04-independent");
+
+            await ArrivesAsync(
+                observer.Finished("04-independent"),
+                "a sibling's settle did not land while BOTH a fan-in's worktree creation and every "
+                + "plan-tip read were blocked (#722 F7). Some git call is running under the scheduler's "
+                + "settle lock again — most likely a CurrentPlanBranchTip capture, which is rejected "
+                + $"option B's shape and leaves the original hang in place. Tip reads so far: {provider.TipReads}.");
+
+            provider.ReleasePlanTipRead.TrySetResult();
+            provider.ReleaseCreateSegment.TrySetResult();
+            executor.Complete("03-fanin");
+
+            RunReport report = await run.WaitAsync(Bound, TestContext.Current.CancellationToken);
+            Assert.True(report.AllSucceeded, string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+        }
+        finally
+        {
+            provider.ReleasePlanTipRead.TrySetResult();
+            provider.ReleaseCreateSegment.TrySetResult();
+            executor.CompleteAll();
+            try { await run.WaitAsync(Bound, CancellationToken.None); } catch (Exception) { /* teardown */ }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // 4. No rewind during a drain (#722 F6 — narrowed to what it actually checks).
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Reading the fan-in's base at DEQUEUE rather than at its producer's settle is sound only while the
+    /// plan branch is gains-only during a drain. This checks TWO things, and it is worth being exact about
+    /// which, because an earlier version of this comment claimed more:
+    /// <list type="number">
+    ///   <item>the scheduler calls <see cref="IWorktreeProvider.RewindPlanBranchTo"/> — the one non-monotone
+    ///     writer in the interface — ZERO times while a drain is in flight; and</item>
+    ///   <item>the bases handed to successive segment creations are non-decreasing in read order.</item>
+    /// </list>
+    ///
+    /// <para><b>What it does NOT check.</b> The real gains-only property does not live in this fake. It
+    /// lives in <c>GitWorktreeProvider.Integrate</c>'s <c>--no-commit</c> staging plus
+    /// <c>RollbackMerge</c>'s reset to the pre-merge integration HEAD: a failed re-verify creates no commit,
+    /// so there is nothing to rewind. This fake models the tip as a counter that only <c>Integrate</c>
+    /// raises, so a change that COMMITTED the union before re-verify and had <c>RollbackMerge</c> reset one
+    /// commit back would move the real branch backwards mid-drain and orphan a fan-in's base <b>with this
+    /// test still green</b>. Proving that belongs in an integration test against a real repository, not in a
+    /// counter here — a second implementation of the integration protocol living in a unit fake would drift
+    /// from the real one and hand back false confidence, which is this issue's own failure genre.</para>
+    ///
+    /// <para>Clause 2 additionally cannot be mutated independently through production code today: the only
+    /// writer that can lower this fake's tip is <c>RewindPlanBranchTo</c>, which clause 1 catches first. It
+    /// is a tripwire for a future non-monotone writer, not a currently-exercised assertion.</para>
+    /// </summary>
+    [Fact]
+    public async Task NoPlanBranchRewindOccursDuringADrain_AndBasesAreReadNonDecreasing()
     {
         // Two fan-ins (04-d, 06-f) so more than one base is read at dequeue, with integrations landing
         // between them.
@@ -395,7 +619,7 @@ public sealed class FanInWorktreeDeferralTests
 
         Assert.True(report.AllSucceeded, string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
-        // No non-monotone writer ran at all during the drain.
+        // Clause 1: no non-monotone writer ran at all during the drain.
         Assert.Empty(provider.RewoundTo);
 
         IReadOnlyList<(string TaskId, int Tip)> creates = provider.Creates();
@@ -407,18 +631,19 @@ public sealed class FanInWorktreeDeferralTests
             creates[^1].Tip > creates[0].Tip,
             $"the plan tip never advanced across {creates.Count} segment creations, so this guard proves nothing");
 
+        // Clause 2.
         for (int i = 1; i < creates.Count; i++)
         {
             Assert.True(
                 creates[i].Tip >= creates[i - 1].Tip,
-                $"the plan branch moved BACKWARDS during the drain: '{creates[i - 1].TaskId}' read tip "
+                $"a base was read BACKWARDS during the drain: '{creates[i - 1].TaskId}' read tip "
                 + $"{creates[i - 1].Tip} and '{creates[i].TaskId}' then read tip {creates[i].Tip}. A base read "
                 + "at dequeue is only sound while the branch is gains-only in flight (#722).");
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // 3. Anti-tautology — the base IS the tree, read at dequeue, after a sibling's commit landed.
+    // 5. Anti-tautology — the base IS the tree, read at dequeue, after a sibling's commit landed.
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -440,6 +665,7 @@ public sealed class FanInWorktreeDeferralTests
         var provider = new TipTrackingWorktreeProvider { GateCreateSegmentFor = "03-fanin" };
         var executor = new GatedRecordingExecutor("01-p1", "02-p2", "03-fanin", "04-late");
         var observer = new SettleArrivalObserver();
+        provider.WasAnnounced = observer.WasAnnounced;
 
         Task<RunReport> run = Create(plan, executor, provider, observer, parallelism: 4)
             .RunAsync(plan, TestContext.Current.CancellationToken);
