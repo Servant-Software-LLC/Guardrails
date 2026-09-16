@@ -513,6 +513,41 @@ public sealed class PartialDeliveryReportTests
         Assert.DoesNotContain("not reached", output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A wave the run never started reads "not reached", even though its tasks settle Cancelled rather than Blocked:
+    /// BlockLaterWaves does not run on the JIT / breakdown checkpoint halts or the wave-drift halts, which report
+    /// with <c>cancelled: false</c>, so BuildReport stamps the never-started tasks Cancelled and no run-level stop
+    /// cause exists. Reaching the Cancelled arm there would call a wave that never started "not finished".
+    /// </summary>
+    [Fact]
+    public void TheReport_ForAWaveAfterACheckpointHalt_SaysNotReached_NotNotFinished()
+    {
+        var report = new RunReport
+        {
+            Tasks =
+            [
+                Green("wave-01-deliver/01-a"),
+                CancelledTask("wave-03-tail/01-c", "not started (run cancelled)"),
+            ],
+            WaveDeliveries = new Dictionary<string, WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = DeliveredRecord("wave-01-deliver"),
+            },
+            WaveHalt = new WaveHalt
+            {
+                WaveDir = "wave-02-jit",
+                Kind = WaveHaltKind.NextWaveUnauthored,
+                Headline = "wave-02-jit is unauthored",
+            },
+        };
+
+        string output = RenderReport(report);
+
+        Assert.Contains("Held (the run halted here): wave-02-jit.", output, StringComparison.Ordinal);
+        Assert.Contains("Held on the plan branch: wave-03-tail (not reached).", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("not finished", output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void TheReport_ForADefinitionDriftHalt_SaysDefinitionDrift()
     {
