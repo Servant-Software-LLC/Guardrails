@@ -873,12 +873,19 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   populated (the `.claude/` wall carried as SECONDARY context in the summary/`feedback.md`), NOT
   `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
   action-failed #104 first-attempt wall, or the #86 repeat on an action-failed attempt -- stays
-  `permission-denied`. The halt DECISION is unchanged; only the reported outcome/message/`failedGuardrails`
-  differ. **The #86 repeat is settled at the attempt's outcome (#708):** a path or command refused on 2+
-  attempts halts an attempt whose ACTION FAILED (`permission-denied`); an attempt whose action succeeded runs
-  its guardrails, and a pass is green; if a guardrail fails, a repeated WRITE PATH halts needs-human there
-  (reported `guardrail-failed` with `failedGuardrails[]`, like the structural halt), while repeated COMMANDS
-  alone are an ordinary `guardrail-failed` retry carrying the refusal as secondary context. The runner also
+  `permission-denied`. #329 changed only what a structural halt REPORTS, never when it fires. **The #86 repeat
+  is settled at the attempt's OUTCOME, and only for an IN-SCOPE write path (#708):** a path or command refused
+  on 2+ attempts halts an attempt whose ACTION FAILED (`permission-denied`); an attempt whose action succeeded
+  runs its guardrails, and a pass is green. An attempt whose action succeeded but that never CONVERGED -- a
+  failed guardrail, or any of the FOUR rejections that run BEFORE the guardrails (a staging-move failure, a
+  nested control key, a refused `needsHarnessWrite`, a write-scope violation) -- halts needs-human when a
+  repeated refused write path lies INSIDE the scope that attempt is enforced against (its `writeScope` plus the
+  implicit `stagingOutputs` destinations). The cause that fired is the reported outcome and leads the summary
+  and `feedback.md`; the wall is named after it, and at the write-scope site a #707 scope-gap halt keeps its own
+  diagnosis and gains the refused path. A refused COMMAND, or a refused path OUTSIDE that scope, never halts
+  such an attempt -- both are routes the agent can reach its result without, so it retries carrying the refusal
+  as secondary context. A target counts only on an attempt whose LATEST observation refused it, at most once per
+  attempt NUMBER, so a transient pause that re-runs an attempt cannot make it a repeat on its own. The runner also
   reports which refused targets are COMMANDS (`RefusedCommands`): a command is never the structural `.claude/`
   wall, and halt text names it a command, never a write path. **MANY FILES IN ONE
   ATTEMPT (#445, the CARDINALITY dimension):** the key's value may be a single entry object OR an ARRAY of

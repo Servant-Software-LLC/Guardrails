@@ -879,20 +879,57 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
-    public void RepeatedPathWallHalt_LeadsWithTheGuardrailFailure_ThenNamesThePath()
+    public void RepeatedPathWallHalt_LeadsWithTheCauseThatFired_ThenNamesThePath()
     {
-        // #708 / #329: when a repeated write wall halts an attempt whose guardrails failed, the guardrail that ran and
-        // failed leads, and the wall follows in #86's own path wording.
+        // #708 / #329: when a repeated in-scope write wall halts an attempt, the cause that genuinely fired leads,
+        // and the wall follows in #86's own path wording.
         var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
 
-        string feedback = RetryPolicy.ForRepeatedPathWallHalt(PromptTask("04-impl"), "- **01-fail** — exit 1", wall);
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A guardrail failed", "- **01-fail** — exit 1", wall, budgetRemained: true);
 
         int failure = feedback.IndexOf("## A guardrail failed", StringComparison.Ordinal);
         int wallSection = feedback.IndexOf("## Repeatedly-refused path(s)", StringComparison.Ordinal);
-        Assert.True(failure >= 0 && wallSection > failure, "the guardrail failure that ran must lead, and the wall follow it");
+        Assert.True(failure >= 0 && wallSection > failure, "the cause that fired must lead, and the wall follow it");
         Assert.Contains("- **01-fail** — exit 1", feedback);
         Assert.Contains("- `src/locked/Protected.cs`", feedback);
         Assert.Contains("cover this path", feedback);
+        Assert.Contains("the remaining retry budget was not burned", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_OnAFinalAttempt_DoesNotClaimABudgetItNeverSaved()
+    {
+        // #708: this halt also fires at the four pre-guardrail rejection sites, where it can land on the LAST
+        // budgeted attempt — and there was no budget left to save. Claiming otherwise credits the harness with
+        // ending the task early when the budget ended it, which is the opposite of the diagnosis a human needs.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A write-scope violation", "- `docs/stray.md`", wall, budgetRemained: false);
+
+        Assert.Contains("## A write-scope violation", feedback);
+        Assert.Contains("This was the last budgeted attempt.", feedback);
+        Assert.DoesNotContain("the remaining retry budget was not burned", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_OffersPreservedWork_AsOrphaned_NotAsRolledBack()
+    {
+        // #554 / #708: a halt performs NO reset — the loop returns before it — so the tree the attempt wrote in is
+        // ORPHANED, not rolled back. The retry path's wording here would tell a human something false about the
+        // state of that tree, which is the whole reason SalvageFraming exists.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+        var salvage = new SalvageRef(
+            "refs/guardrails/04-impl/attempt-2", " src/Impl.cs | 12 ++", Attempt: 2, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A guardrail failed", "- **01-fail** — exit 1", wall, budgetRemained: true, salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("ORPHANED", feedback);
+        Assert.Contains("refs/guardrails/04-impl/attempt-2", feedback);
+        Assert.DoesNotContain("rolled back to a clean base", feedback);
     }
 
     // ── #705 salvage says only what is true, and out-of-scope work is kept for a human ───────────
