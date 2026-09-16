@@ -152,6 +152,29 @@ public sealed record JournalDocument
     public DeliverySection? Delivery { get; init; }
 
     /// <summary>
+    /// OPTIONAL — the branch THIS PLAN's deliveries land on (SSOT §7 <c>deliveryTarget</c>, issue #726),
+    /// recorded the first time any delivery LANDS (a wave's barrier delivery, or the run-end merge) and
+    /// never overwritten afterwards.
+    /// <para>
+    /// <b>The gap this closes.</b> Every process re-pins its delivery target from <c>HEAD</c> at run start
+    /// (<see cref="Execution.IntegrationHandle.OriginalBranch"/>), and nothing recorded where an earlier
+    /// delivery actually went. Since design 39 delivers a waved plan's earlier waves at their own barriers,
+    /// a resume from another branch — <c>git switch -c spike</c> after wave 1 landed on <c>master</c> —
+    /// delivered the REST of the plan to <c>spike</c>, and the #588 branch-moved check refused nothing
+    /// because it compared against the NEW pin. The plan's work ended up split across two branches with
+    /// nothing reporting the split.
+    /// </para>
+    /// <para>
+    /// Written by <see cref="RunJournal.RecordDeliveryTarget"/> alone, which refuses the literal
+    /// <c>HEAD</c> (a detached checkout names no branch) and never replaces an existing value. Additive and
+    /// backward-compatible on the same terms as <see cref="PlanPreflights"/>: absent — never <c>null</c>
+    /// noise — on a run that has delivered nothing.
+    /// </para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeliveryTarget { get; init; }
+
+    /// <summary>
     /// OPTIONAL machine, concurrency and version profile probed ONCE for the whole run (plan 30 §3.4) —
     /// host, OS, CPU count, total memory, resolved parallelism, and the harness/skill versions the run
     /// executed under. DOCUMENT grain, not per-task or per-attempt: every one of these facts is identical
@@ -245,8 +268,10 @@ public sealed record DeliverySection
     /// <summary>
     /// The user's branch the work was delivered TO, whenever any of it landed — by the run-end merge, or by a
     /// wave's barrier delivery on a partially-delivered run (design 39 §4; mirrors
-    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null when nothing landed. A resume that delivered nothing
-    /// itself keeps the branch the delivering process recorded (<see cref="RunJournal.RecordDelivery"/>).
+    /// <see cref="Execution.RunReport.DeliveredToBranch"/>). Null when nothing landed. Derived from
+    /// <see cref="JournalDocument.DeliveryTarget"/> (issue #726), never from the reporting process's own
+    /// run-start pin; <see cref="RunJournal.RecordDelivery"/> additionally carries an earlier value forward
+    /// for a journal written before that field existed.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DeliveredToBranch { get; init; }

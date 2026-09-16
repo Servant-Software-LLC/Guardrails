@@ -42,11 +42,13 @@ public enum MergeOnSuccessResult
     HookRejected,
 
     /// <summary>
-    /// The user's checkout is no longer on the branch the run started on (issue #588), so NOTHING was
-    /// merged. The delivery TARGET is pinned at run start (<see cref="IntegrationHandle.OriginalBranch"/>,
-    /// read once by <c>CreateIntegration</c>) but the merge itself is a bare <c>git merge</c> that lands on
-    /// whatever <c>HEAD</c> currently is — so a branch created or checked out WHILE the run was in flight
-    /// silently redirected the delivery, and the report still named the pinned branch. Detached HEAD
+    /// The user's checkout is no longer on this plan's delivery target (issues #588/#726), so NOTHING was
+    /// merged. The target is <see cref="IntegrationHandle.DeliveryTarget"/> — the branch an earlier delivery
+    /// already landed on, else the pin read once by <c>CreateIntegration</c> — but the merge itself is a
+    /// bare <c>git merge</c> that lands on whatever <c>HEAD</c> currently is. So a branch created or checked
+    /// out WHILE the run was in flight silently redirected the delivery and the report still named the
+    /// pinned branch (#588), and a RESUME from another branch redirected every remaining delivery of a
+    /// partly-delivered waved plan, splitting its work across two branches (#726). Detached HEAD
     /// (<c>rev-parse --abbrev-ref HEAD</c> → the literal <c>HEAD</c>) and an unreadable HEAD take this same
     /// path: neither is provably the original branch, and the gate FAILS CLOSED.
     /// <para>

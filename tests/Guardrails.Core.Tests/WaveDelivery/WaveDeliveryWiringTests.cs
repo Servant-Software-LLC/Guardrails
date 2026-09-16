@@ -1149,6 +1149,10 @@ public sealed class WaveDeliveryWiringTests
     // or on a detached HEAD, pins a branch no delivery ever reached. The CLI writes delivery.deliveredToBranch
     // from RunReport.DeliveredToBranch through RunJournal.RecordDelivery; RecordPartialDelivery mirrors that
     // write here, because Core.Tests cannot reference the CLI's DescribeDelivery.
+    //
+    // #726 replaced the mechanism underneath: the branch is now READ from the journal's recorded
+    // deliveryTarget rather than remembered per process, so the report names it on a resume too. The
+    // property these rows exist for is unchanged — the resume's own pin is never named.
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     private static void RecordPartialDelivery(RunJournal journal, RunReport report) =>
@@ -1201,8 +1205,14 @@ public sealed class WaveDeliveryWiringTests
 
         Assert.Equal(0, provider2.PromoteTrialDeliveryCalls);
         AssertWaveDelivered(report2, "wave-01-deliver"); // process 1's record is still on the report
-        Assert.True(report2.DeliveredToBranch is null,
-            $"this process delivered nothing, yet its report names '{report2.DeliveredToBranch}' as the branch it delivered to.");
+
+        // #726 moved this field from "the branch THIS PROCESS delivered to" — null here, which is how #734
+        // avoided naming 'spike' — to "the branch this PLAN's delivered work is on", read from the recorded
+        // target. Naming the resume's own pin was the defect; naming nothing was only a way to dodge it, so
+        // the guarantee is now asserted directly instead of through a null.
+        Assert.Equal("master", report2.DeliveredToBranch);
+        Assert.NotEqual(resumeBranch, report2.DeliveredToBranch);
+        Assert.Equal("master", journal2.Document.DeliveryTarget);
 
         RecordPartialDelivery(journal2, report2);
         Assert.Equal("master", DeliveredToBranchOnDisk(journal2));

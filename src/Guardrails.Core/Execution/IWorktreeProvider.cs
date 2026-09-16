@@ -263,9 +263,9 @@ public interface IWorktreeProvider
 
     /// <summary>
     /// Build the trial merge for a wave's delivery gate: merge the plan branch onto
-    /// <c>refs/guardrails/trial/&lt;waveDir&gt;</c> from the user's branch tip
-    /// (<see cref="IntegrationHandle.OriginalBranch"/>), WITHOUT touching the user's checkout. Checks
-    /// four cases in order:
+    /// <c>refs/guardrails/trial/&lt;waveDir&gt;</c> from the tip of this plan's delivery target
+    /// (<see cref="IntegrationHandle.DeliveryTarget"/> — the branch an earlier delivery already landed on
+    /// (#726), else this run's pin), WITHOUT touching the user's checkout. Checks four cases in order:
     /// <list type="number">
     ///   <item>The user's tip EQUALS the plan tip (a resume right after a quiet-case promotion
     ///     landed): the ref points at that commit; <see cref="TrialDelivery.AlreadyDelivered"/> and
@@ -300,10 +300,11 @@ public interface IWorktreeProvider
     /// <see cref="MergeOnSuccessResult.FastForwarded"/> and nothing is touched either. Otherwise,
     /// checked in order (each detail written to <see cref="LastMergeOnSuccessDetail"/>):
     /// <list type="number">
-    ///   <item>Issue #588 — the checkout is still on <see cref="IntegrationHandle.OriginalBranch"/>;
-    ///     otherwise <see cref="MergeOnSuccessResult.BranchMoved"/>, naming both branches. Remedy: the
-    ///     operator checks the original branch out again, then re-runs.</item>
-    ///   <item>The user's branch still points at <see cref="TrialDelivery.UserTip"/>; otherwise
+    ///   <item>Issues #588/#726 — the checkout is still on <see cref="IntegrationHandle.DeliveryTarget"/>
+    ///     (the branch an earlier delivery already landed on, else this run's pin); otherwise
+    ///     <see cref="MergeOnSuccessResult.BranchMoved"/>, naming both branches. Remedy: the operator checks
+    ///     that branch out again, then re-runs.</item>
+    ///   <item>The target branch still points at <see cref="TrialDelivery.UserTip"/>; otherwise
     ///     <see cref="MergeOnSuccessResult.BranchMoved"/>, naming the branch and the two tips
     ///     (advanced or rewound). Remedy: the operator resumes, and the next trial includes their new
     ///     commits.</item>

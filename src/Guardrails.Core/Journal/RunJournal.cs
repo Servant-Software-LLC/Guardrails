@@ -658,6 +658,50 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// once, and a resume that gets further is the authority on what finally happened.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Record the branch this plan's deliveries land on (SSOT §7 <c>deliveryTarget</c>, issue #726) — called
+    /// the first time a delivery LANDS (a wave's barrier delivery, or the run-end merge), and a no-op every
+    /// time after that.
+    /// <para>
+    /// <b>WRITE ONCE is the whole safety property.</b> Every process re-pins its delivery target from
+    /// <c>HEAD</c> at run start, so a later process allowed to re-point this field would simply record
+    /// whichever branch it happened to be standing on — which is the defect, not the fix.
+    /// </para>
+    /// <para>
+    /// The literal <c>HEAD</c> is refused: <c>git rev-parse --abbrev-ref HEAD</c> prints it for a DETACHED
+    /// checkout, which names no branch, and recording it would make every later refusal tell an operator to
+    /// check out a branch that does not exist. Refusing the VALUE does not close the field — a real branch
+    /// recorded afterwards still lands.
+    /// </para>
+    /// <para>
+    /// RE-READS FROM DISK FIRST, exactly like <see cref="RecordDelivery"/> and <see cref="RecordEnvironment"/>
+    /// and for the same reason: every document-level recorder on this type follows that shape, so a call site
+    /// moved later — where staleness would matter — inherits the safe behavior instead of re-deriving it.
+    /// </para>
+    /// </summary>
+    public void RecordDeliveryTarget(string branch)
+    {
+        if (string.IsNullOrWhiteSpace(branch) || string.Equals(branch, "HEAD", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            JournalDocument current = File.Exists(_journalPath) ? Read(_journalPath) : _document;
+            if (current.DeliveryTarget is { Length: > 0 })
+            {
+                // Adopt what is on disk (this instance's view may be older) but never replace the recorded
+                // target, and never re-persist: the first delivery to land owns this field for the plan.
+                _document = current;
+                return;
+            }
+
+            _document = current with { DeliveryTarget = branch };
+            Persist();
+        }
+    }
+
     public void RecordDelivery(DeliverySection delivery)
     {
         ArgumentNullException.ThrowIfNull(delivery);

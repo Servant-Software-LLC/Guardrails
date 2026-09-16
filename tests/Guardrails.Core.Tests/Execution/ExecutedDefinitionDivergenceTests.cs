@@ -374,6 +374,13 @@ public sealed class ExecutedDefinitionDivergenceTests : IDisposable
             [
                 "attempts",
                 "definitionHash",
+                // #726: this fixture's run DELIVERS (AssertGreenAndDelivering, above), and a delivery that
+                // LANDS now records the branch it landed on, so every later delivery in the plan can be
+                // refused when the checkout is somewhere else. Additive, and orthogonal to the divergence
+                // gate this pin guards: §6.3's "gate silent ⇒ field absent" is about definitionHashAtSettle
+                // and the decisions[] entry, both still absent here and both still asserted above. A run
+                // that delivers NOTHING writes no such key, so the silence this pin exists for is intact.
+                "deliveryTarget",
                 "mergeSequence",
                 "nextMergeSequence",
                 "planHash",

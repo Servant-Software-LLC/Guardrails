@@ -211,7 +211,14 @@ wave is not marked complete until its delivery settles, so resuming after you fi
 re-attempts that wave's delivery. The two branch causes need different remedies: a checkout
 switched to another branch needs that branch checked out again before you resume, while a branch
 that simply advanced after the trial was built needs only a resume, since the next trial includes
-your new commits. `run.json` records the refusal in `decisions[]` as `delivery-refused`, which the
+your new commits.
+
+**Once a wave has delivered, the rest of the plan goes to the same branch.** The harness records the
+branch the first delivery landed on and compares against that one from then on, so resuming from
+somewhere else — another branch, or a detached `HEAD` — is refused rather than quietly delivering the
+rest of the plan there and splitting its work across two branches. The halt names both branches and
+tells you to check the first one out again. This is enforcement of the rule above, not a new one to
+learn. `run.json` records the refusal in `decisions[]` as `delivery-refused`, which the
 console shows; the log site, though, shows only the wave as needs-human — there is no log-site
 panel for a refused delivery in this version.
 

@@ -3025,6 +3025,16 @@ fails the write, loudly, with a message naming the likely cause.
   // reported total. Absent (not null noise) until the first overhead spend.
   "overheadCostUsd": 0.0123,
 
+  // OPTIONAL — the branch THIS PLAN's deliveries land on (issue #726), recorded the first time any delivery
+  // LANDS (a wave's barrier delivery, §14.12, or the run-end merge) and never overwritten afterwards. Every
+  // process re-pins its own delivery target from HEAD at run start, and nothing recorded where an earlier
+  // delivery went — so a waved plan that delivered wave 1 to `master` and was then resumed after a
+  // `git switch -c spike` delivered the REST of itself to `spike`, with the #588 branch-moved check refusing
+  // nothing because it compared the new pin against itself. Absent (never null noise) until the first
+  // delivery lands; never the literal "HEAD", which is what `rev-parse --abbrev-ref HEAD` prints for a
+  // DETACHED checkout and names no branch.
+  "deliveryTarget": "master",
+
   // OPTIONAL end-of-run DELIVERY record (issue #542): did this run's verified work reach the user's branch,
   // and if not, why not. Everything ELSE about a run was already durable here — every task, attempt, cost,
   // gate and decision — but the one outcome that determines whether the work is ANYWHERE lived only in the
@@ -3305,14 +3315,33 @@ and the run-end merge is then held (the §1a interlock) or refused (conflict, ho
 still reads `partially-delivered`, with `reason` naming the holding decision or the refusal's token — never
 `not-attempted` or a bare refusal outcome, both of which would read as "nothing shipped" when part of it
 did. Both branches are named: `planBranch` is the branch still holding the rest, and `deliveredToBranch` is
-the branch the barrier deliveries landed on. That branch comes only from a delivery the run's own process
-settled. Every process re-pins its delivery target from `HEAD`, so a resume that delivers nothing itself (after
-a `git switch`, or on a detached `HEAD`) records no branch of its own and keeps the one the delivering process
-recorded; the literal `HEAD` is never recorded. The source is `RunReport.WaveDeliveries`, stamped from the journal in `BuildReport` on EVERY report,
+the branch the barrier deliveries landed on — **derived from `deliveryTarget` (below), never from the
+resuming process's pin**. Whether any delivery landed at all comes from `RunReport.WaveDeliveries`, stamped
+from the journal in `BuildReport` on EVERY report,
 halted ones included, so a plan-level terminal-gate failure after earlier waves delivered still gets this
 record written — before the CLI's terminal-gate halt returns. The one case that reads `delivered`, not
 `partially-delivered`: a rejecting hook held every barrier delivery and the run-end merge then landed —
 that merge carries every held wave, so nothing stayed behind.
+
+**`deliveryTarget` — the branch this plan's deliveries land on, RECORDED rather than re-derived (issue
+#726).** The delivery target is pinned from `HEAD` by every process at run start
+(`IntegrationHandle.OriginalBranch`), which is the right answer only while nothing has landed yet. Since
+§14.12 lets earlier waves deliver at their own barriers, a resume from somewhere else silently delivered the
+REST of a plan to that other branch: run on `master`, wave 1 delivers, a wave-2 task needs a human,
+`git switch -c spike`, fix it, resume — and wave 2's barrier delivery plus the run-end merge land on
+`spike`. Nothing was refused, because the #588 branch-moved check compared against the NEW pin. The plan's
+work ended up split across two branches with nothing reporting the split; before §14.12 all delivery
+happened at run end, so a resume elsewhere at least kept the work together.
+
+The field is written by `RunJournal.RecordDeliveryTarget` the first time any delivery LANDS — a barrier
+delivery or the run-end merge, the two landing sites — and is **write-once**: a later process allowed to
+re-point it would record whichever branch it happened to be standing on, which is the defect rather than the
+fix. The literal `HEAD` is refused at the write path, so a detached checkout never becomes a target an
+operator would then be told to check out. Every delivery gate reads `IntegrationHandle.DeliveryTarget` — the
+recorded value when there is one, else the run-start pin — so a checkout that is not on it is refused
+**before anything is promoted**, under the same `branch-moved` outcome and the same
+`WaveHaltKind.DeliveryRefused` halt §14.12 already defines. Absent on a plan that has delivered nothing,
+where the pin IS the target and behaviour is byte-identical to before.
 
 **`supplied[]` — a supplied file is not the plan's own work (design of record
 `40-in-flight-resource-supply.md`, issue #373).** `at` / `commit` / `paths` / `bytes` record when the drain
@@ -3420,7 +3449,7 @@ review-gate gate (no new boundary is added) — and **adds these OPTIONAL fields
 
 | Field (optional) | Type | Meaning |
 |---|---|---|
-| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| `hard-blocker` (every harness-decided needs-human halt, NON-answerable — #707 review delta, §7.2) \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
+| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| `hard-blocker` (every harness-decided needs-human halt, NON-answerable — #707 review delta, §7.2) \| `delivery-refused` (a wave's barrier delivery was refused — §14.12; NON-answerable for the same reason, and deliberately absent from `AnswerableGates`: no answer clears a checkout that is not on the plan's delivery target, only checking that branch out again does) \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
 | `classification` | string | `judgment-call` \| `hard-blocker-retryable` \| `hard-blocker-permanent` |
 | `criticality` | string | the assessed level (`low`\|`moderate`\|`high`\|`critical`); null for a hard blocker |
 | `confidence` | string | the judge's confidence (`low`\|`moderate`\|`high`); null for a hard blocker |
@@ -8778,6 +8807,16 @@ refusal (§5.3), and both need a different operator action:
 - the checkout was switched to another branch mid-run — check the branch out again, then resume.
 - the user's branch advanced (or was rewound) after the trial was built — `detail` reads `'<branch>' moved
   from <sha10> to <sha10> after the trial was built` — resume; the NEXT trial includes the new commits.
+
+**The branch compared against is the RECORDED delivery target, not this process's pin (issue #726, §7
+`deliveryTarget`).** Once any delivery has landed, every later delivery in the plan — a barrier promotion
+and the run-end merge alike — is refused unless `HEAD` is on the branch that delivery went to, a detached
+`HEAD` included. The refusal reuses this same `branch-moved` outcome and the same
+`WaveHaltKind.DeliveryRefused` halt, and its `detail` opens `an earlier delivery landed on '<branch>'`
+instead of `run started on '<branch>'` so the halt names the branch the work is ON rather than the one the
+checkout wandered to; the remedy is the same "check out `<branch>`, then resume". Before this, a resume from
+another branch delivered the rest of a waved plan there and refused nothing, and a resume from a DETACHED
+start named the literal `HEAD` in its remedy — a branch that does not exist.
 
 **A rejecting hook HOLDS delivery instead of halting the run (review round 5, `d39-hooks-untracked-tooling`).**
 When the user's hook rejects a trial-merge commit, that delivery and every later barrier delivery are held
