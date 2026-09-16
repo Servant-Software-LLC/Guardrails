@@ -274,8 +274,15 @@ public static class WriteScopeCheck
                 }
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or System.ComponentModel.Win32Exception
+                                      or IOException)
         {
+            // The catch matches the PROMISE in the summary above, not merely the exception RunGit happens to
+            // throw today: a non-zero git exit (InvalidOperationException), a spawn failure (Win32Exception —
+            // git off PATH, a bad working directory), and an IO fault all fail CLOSED to an empty set. A
+            // narrower catch would let one of those escape and take out the attempt while the doc went on
+            // claiming a guarantee the code did not make — the silent-failure shape #708 is itself about.
             return new HashSet<string>(StringComparer.Ordinal);
         }
 
