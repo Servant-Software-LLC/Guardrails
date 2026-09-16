@@ -16,10 +16,17 @@ public static class ExitCodes
     public const int Cancelled = 3;
 
     /// <summary>
-    /// The run halted with unresolved escalations — an autonomous-mode answer-required halt (§7.1): the wired
-    /// escalation sink left at least one <c>logs/&lt;runId&gt;/escalations/</c> record <c>open</c>, awaiting a
-    /// firstmate answer. Distinct from <see cref="TaskFailed"/> so a consumer can tell an answer-required halt
-    /// apart from a plain needs-human and never read either as green.
+    /// The run halted with unresolved ANSWERABLE escalations — an autonomous-mode answer-required halt (§7.1):
+    /// the wired escalation sink left at least one <c>logs/&lt;runId&gt;/escalations/</c> record <c>open</c> on a
+    /// gate an answer file may bind (<c>needs-human</c> or <c>wave-checkpoint</c>), awaiting a firstmate answer.
+    /// Distinct from <see cref="TaskFailed"/> so a consumer can tell an answer-required halt apart from a plain
+    /// needs-human and never read either as green.
+    ///
+    /// <para><b>A non-answerable open record does NOT produce this code (#707 delta review).</b> A
+    /// <c>hard-blocker</c>, <c>review-gate</c> or <c>blocker</c> record is open for a HUMAN to act on — editing
+    /// <c>task.json</c>, granting a path, reviewing the plan — and no answer file can bind it, so a run whose
+    /// open escalations are all of that kind exits <see cref="TaskFailed"/> instead. This code promises "a
+    /// firstmate answer unblocks this on the next resume"; it is only ever returned when that is true.</para>
     /// </summary>
     public const int EscalationsPending = 4;
 
