@@ -25,7 +25,7 @@ public sealed class OnTheFlyLogSiteTests
 
         var observer = new OnTheFlyLogSiteObserver(
             IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [a, b],
-            liveUrlForTask: id => liveUrls.TryGetValue(id, out string? u) ? u : null);
+            liveUrlForTask: id => liveUrls.TryGetValue(id, out string? u) ? u : null, liveRunUrl: null);
 
         // Initial: both pending → both plain text, with the in-place live poll (issue #543).
         observer.WriteInitialIndex();
@@ -89,7 +89,7 @@ public sealed class OnTheFlyLogSiteTests
         TaskNode a = temp.Task("01-alpha");
         var inner = new RecordingObserver();
 
-        var observer = new OnTheFlyLogSiteObserver(inner, temp.LogsRoot, TempSite.RunId, [a], liveUrlForTask: null);
+        var observer = new OnTheFlyLogSiteObserver(inner, temp.LogsRoot, TempSite.RunId, [a], liveUrlForTask: null, liveRunUrl: null);
 
         observer.TaskStarting(a);
         observer.GuardrailFinished(a, new GuardrailResult { Name = "01-x", Passed = true });
@@ -110,7 +110,7 @@ public sealed class OnTheFlyLogSiteTests
         WaveNode wave = temp.Wave("wave-01-alpha", 1, "alpha", a);
 
         var observer = new OnTheFlyLogSiteObserver(
-            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [a], liveUrlForTask: null, waves: [wave]);
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [a], liveUrlForTask: null, liveRunUrl: null, waves: [wave]);
 
         observer.WriteInitialIndex();
         string wave0 = temp.ReadWaveIndex("wave-01-alpha");

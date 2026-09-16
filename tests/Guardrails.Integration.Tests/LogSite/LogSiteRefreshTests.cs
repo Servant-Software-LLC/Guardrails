@@ -67,8 +67,11 @@ public sealed class LogSiteRefreshTests
         }
     }
 
-    /// <summary>Renders a plan index and returns its HTML. <paramref name="live"/> selects during-run vs settled.</summary>
-    private static string Index(bool live)
+    /// <summary>
+    /// Renders a plan index and returns its HTML. <paramref name="live"/> selects during-run vs settled;
+    /// <paramref name="liveRunUrl"/> is the run's own log server, when it has one (issue #714).
+    /// </summary>
+    private static string Index(bool live, string? liveRunUrl = null)
     {
         using var temp = new TempDir();
         string path = LogSiteRenderer.WriteIndex(
@@ -77,12 +80,13 @@ public sealed class LogSiteRefreshTests
             [FakeTask("01-alpha", "the first task")],
             statusResolver: _ => live ? "running" : "succeeded",
             linkResolver: _ => live ? LogSiteRenderer.IndexLink.Plain : LogSiteRenderer.IndexLink.Static,
-            includeRefresh: live);
+            includeRefresh: live,
+            liveRunUrl: liveRunUrl);
         return File.ReadAllText(path);
     }
 
     /// <summary>Renders a per-wave index and returns its HTML.</summary>
-    private static string WaveIndex(bool live)
+    private static string WaveIndex(bool live, string? liveRunUrl = null)
     {
         using var temp = new TempDir();
         TaskNode a = WaveTask("wave-01-alpha", "01-a", "Alpha first");
@@ -92,7 +96,8 @@ public sealed class LogSiteRefreshTests
             Wave("wave-01-alpha", 1, "alpha", a),
             statusResolver: _ => live ? "running" : "succeeded",
             linkResolver: _ => live ? LogSiteRenderer.IndexLink.Plain : LogSiteRenderer.IndexLink.Static,
-            includeRefresh: live);
+            includeRefresh: live,
+            liveRunUrl: liveRunUrl);
         return File.ReadAllText(path);
     }
 
@@ -321,5 +326,47 @@ public sealed class LogSiteRefreshTests
         Assert.DoesNotContain("http-equiv=\"refresh\"", duringRun, StringComparison.Ordinal);
         Assert.Contains("GR_LOG_POLL_MS", duringRun, StringComparison.Ordinal);
         Assert.DoesNotContain("GR_LOG_POLL_MS", WaveIndex(live: false), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Issue #714, as its review corrected it. When the run has its own log server, the file-view notice must link that
+    /// server first: during a healthy run, sending the reader to start a second server with <c>guardrails logs</c>
+    /// duplicates one that is already up. It must still name <c>guardrails logs</c> as the fallback, though. A
+    /// hard-killed run (taskkill /F, a power loss) leaves its during-run pages linking a server that is gone, and a
+    /// later server can reuse the port and answer for a different run. With the live link alone, that reader is left
+    /// with no remedy at all, which is the #552 rationale above.
+    /// </summary>
+    [Fact]
+    public void OfflineNotice_WithTheRunsLogServer_LinksItsLiveView_AndKeepsGuardrailsLogsAsTheFallback()
+    {
+        const string liveRun = "http://127.0.0.1:58523/";
+        string notice = OfflineNotice.In(Index(live: true, liveRunUrl: liveRun));
+
+        Assert.Contains($"<a href=\"{liveRun}\">{liveRun}</a>", notice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.True(
+            notice.IndexOf(liveRun, StringComparison.Ordinal) < notice.IndexOf("guardrails logs", StringComparison.Ordinal),
+            "the live link must come first, with guardrails logs as the fallback after it");
+    }
+
+    /// <summary>The wave page renders its notice through a separate method: the sibling surface a fix misses.</summary>
+    [Fact]
+    public void TheWavePagesOfflineNotice_LinksTheRunsLogServer_AndKeepsTheFallbackToo()
+    {
+        const string liveRun = "http://127.0.0.1:58523/";
+        string notice = OfflineNotice.In(WaveIndex(live: true, liveRunUrl: liveRun));
+
+        Assert.Contains($"<a href=\"{liveRun}\">{liveRun}</a>", notice, StringComparison.Ordinal);
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+    }
+
+    /// <summary>With no server, <c>guardrails logs</c> stays the remedy, and nothing links a server that does not exist.</summary>
+    [Fact]
+    public void OfflineNotice_WithoutALogServer_KeepsGuardrailsLogs_AndLinksNoServer()
+    {
+        string notice = OfflineNotice.In(Index(live: true));
+
+        Assert.Contains("guardrails logs", notice, StringComparison.Ordinal);
+        Assert.DoesNotContain("http://", notice, StringComparison.Ordinal);
     }
 }

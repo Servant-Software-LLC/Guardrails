@@ -16,15 +16,16 @@ namespace Guardrails.Cli.Ui;
 ///
 /// The CANONICAL "all tasks" page is the static index file (<c>logs/&lt;runId&gt;/index.html</c>,
 /// rendered by <see cref="LogSiteRenderer"/>) — durable and server-independent. This live server is
-/// the active-only TAILING backend reached BY clicking a running task from that static index, so it
-/// no longer serves its own all-tasks landing: <c>GET /</c> is a pointer note at the static index's
-/// PATH (a browser can't follow <c>http→file</c>, so the path is shown as text), and the per-task
-/// page is an active-task DEADEND (no "all tasks" link — the user hits Back) (issue #143).
+/// the TAILING backend reached BY clicking a running task from that static index. Its <c>GET /</c> is the
+/// transient live run view, which names the static index's PATH (a browser can't follow <c>http→file</c>,
+/// so the path is shown as text), and the per-task page is an active-task DEADEND (no "all tasks" link —
+/// the user hits Back) (issues #143, #573).
 ///
 /// Routes:
 /// <list type="bullet">
-///   <item><c>GET /</c> — a small pointer note directing the user to the canonical static index file
-///     (this server only tails active tasks; it cannot link to <c>file://</c>).</item>
+///   <item><c>GET /</c> — the live run view (issues #573, #713): every task with its status word and its
+///     latest attempt, each linked to its live tail, plus the static index file's path. The status comes
+///     from the source wired by <see cref="StartServing"/>, which is also what starts the server answering.</item>
 ///   <item><c>GET /diagram.html</c> — the live status diagram <c>logs/&lt;runId&gt;/diagram.html</c>
 ///     (issue #522), which <see cref="OnTheFlyDiagramObserver"/> keeps written to that exact path; a
 ///     404 when the run has not written one yet.</item>
@@ -254,12 +255,65 @@ public sealed class LogServer : IAsyncDisposable
     /// <summary>The base URL the server is listening on, e.g. <c>http://localhost:54321/</c>.</summary>
     public string BaseUrl => _baseUrl;
 
+    /// <summary>
+    /// The live status diagram's URL on this server (<c>GET /diagram.html</c>, issue #522), e.g.
+    /// <c>http://127.0.0.1:54321/diagram.html</c>. Whenever the server is up, the run prints this rather than
+    /// the diagram's file path, and its during-run pages point a reader who opened them as files here (issue #714).
+    /// </summary>
+    public string DiagramUrl => $"{_baseUrl}diagram.html";
+
     /// <summary>The log page URL for a task, or null if the id is unknown.</summary>
     public string? UrlForTask(string taskId) =>
         _taskIds.Contains(taskId) ? $"{_baseUrl}tasks/{Uri.EscapeDataString(taskId)}" : null;
 
+    // #713: the live run view's status source. Set exactly once, by StartServing, which also starts the accept loop,
+    // so no request is ever handled without it.
+    private Func<IReadOnlyDictionary<string, string>>? _taskStatuses;
+
     /// <summary>
-    /// Start a loopback log server for <paramref name="planDirectory"/>'s tasks. Best-effort: if
+    /// Wire the live run view's (<c>GET /</c>) Status column to its source, then start answering requests. The
+    /// source is a snapshot of each task's status word, keyed by task id, in the static index's vocabulary (issue
+    /// #713). The server never decides a task's status itself. It used to read the column off the filesystem as
+    /// "the highest <c>attempt-N</c> directory", and because an attempt directory is created when the attempt
+    /// STARTS, a succeeded task, a running task and a failed one all read <c>attempt 1</c>.
+    ///
+    /// <para><c>guardrails run</c> wires the in-process map the during-run static index is rendered from
+    /// (<see cref="OnTheFlyLogSiteObserver.StatusSnapshot"/>), so both pages render from one map and this page never
+    /// becomes a second reader of the journal the harness is writing. <c>guardrails logs</c>, which runs no harness,
+    /// wires the journal it already reads.</para>
+    ///
+    /// <para><b>Nothing is answered before this (#713 review).</b> <see cref="TryStart"/> only binds, so the URLs
+    /// exist before the run's observer chain does; that chain is built around them. A request that arrives in
+    /// between waits in the listener's queue and is answered once this runs. It used to be answered at once, with
+    /// every row <c>unknown</c>.</para>
+    ///
+    /// <para><b>Exactly once.</b> A second source would be a second reader that can disagree with the first, so a
+    /// second call throws instead of quietly replacing what the page was showing.</para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A status source was already wired.</exception>
+    public void StartServing(Func<IReadOnlyDictionary<string, string>> taskStatuses)
+    {
+        ArgumentNullException.ThrowIfNull(taskStatuses);
+        if (Interlocked.CompareExchange(ref _taskStatuses, taskStatuses, null) is not null)
+        {
+            throw new InvalidOperationException(
+                "This log server already has a status source; a second one would be a second reader that can "
+                + "disagree with the first (issue #713).");
+        }
+
+        _acceptLoop = Task.Run(AcceptLoopAsync);
+    }
+
+    /// <summary>
+    /// Whether the server has started answering requests, which it does only once <see cref="StartServing"/> has
+    /// wired its status source (#713 review). Public as a test seam: the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>.
+    /// </summary>
+    public bool IsServing => _acceptLoop is not null;
+
+    /// <summary>
+    /// Bind a loopback log server for <paramref name="planDirectory"/>'s tasks. It answers nothing until
+    /// <see cref="StartServing"/> gives it a status source (#713 review). Best-effort: if
     /// the listener cannot bind (locked-down host, port in use), prints one warning to
     /// <paramref name="warn"/> and returns null — the run proceeds without it, never blocked by a
     /// UX nicety. <paramref name="port"/> = 0 selects a free ephemeral port.
@@ -317,9 +371,9 @@ public sealed class LogServer : IAsyncDisposable
                 // run is selected by the journal's runId (the live run owns it; the post-mortem reads
                 // it for the Status column), so the server walks exactly that run's tree.
                 string logsRoot = Path.Combine(planDirectory, "logs", runId);
-                var server = new LogServer(listener, baseUrl, logsRoot, tasks, proceedUnreviewed);
-                server._acceptLoop = Task.Run(server.AcceptLoopAsync);
-                return server;
+                // Bound, not yet serving: StartServing starts the accept loop once the status source exists
+                // (#713 review), so no request is ever answered without one.
+                return new LogServer(listener, baseUrl, logsRoot, tasks, proceedUnreviewed);
             }
 
             // Exhausted the retry budget without binding — surface the last race failure to the
@@ -1153,13 +1207,17 @@ public sealed class LogServer : IAsyncDisposable
     }
 
     /// <summary>
-    /// One row per task: its id linked to the live tail this server serves, plus what the attempt
-    /// directories on disk actually show. Deliberately derived from the filesystem rather than from a
-    /// journal read — the journal is written by the running harness and this page must never be a second
-    /// reader that can disagree with the one the operator is watching.
+    /// One row per task: its id linked to the live tail this server serves, its status word, and its latest
+    /// attempt. The status comes from the source wired by <see cref="StartServing"/> (issue #713), read
+    /// as ONE snapshot for the whole page so every row describes the same moment. It is rendered in the static
+    /// index's own cell shape, so the shared <c>.status[data-status=…]</c> colors apply. The attempt number is
+    /// detail beside the status and never stands in for it: an attempt directory exists from the moment the
+    /// attempt starts, so it cannot say how the attempt ended.
     /// </summary>
     private string TaskRowsHtml()
     {
+        // Never null here: a request is only handled once StartServing has set the source (#713 review).
+        IReadOnlyDictionary<string, string> statuses = _taskStatuses!();
         var rows = new StringBuilder();
 
         foreach (TaskNode task in _tasks)
@@ -1167,17 +1225,18 @@ public sealed class LogServer : IAsyncDisposable
             string id = WebUtility.HtmlEncode(task.Id);
             string href = "/tasks/" + Uri.EscapeDataString(task.Id);
 
-            string? attemptDir = ResolveAttemptDir(task.Id, null, out int? attempt);
-            string state = attemptDir is null
-                ? "<span class=\"muted\">not started</span>"
-                : $"attempt {attempt}";
+            // "unknown" is the static index's own word for a status it cannot resolve, and it is the honest
+            // reading for a task the source does not list (under `guardrails logs`, a journal read that failed).
+            string status = WebUtility.HtmlEncode(statuses.TryGetValue(task.Id, out string? word) ? word : "unknown");
+            string attempt = ResolveAttemptDir(task.Id, null, out int? number) is null ? "—" : $"attempt {number}";
 
-            rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td><td>")
-                .Append(state).AppendLine("</td></tr>");
+            rows.Append("<tr><td><a href=\"").Append(href).Append("\">").Append(id).Append("</a></td>")
+                .Append("<td class=\"status\" data-status=\"").Append(status).Append("\">").Append(status).Append("</td>")
+                .Append("<td>").Append(attempt).AppendLine("</td></tr>");
         }
 
         return rows.Length == 0
-            ? "<tr><td colspan=\"2\" class=\"muted\">This run declares no tasks yet.</td></tr>"
+            ? "<tr><td colspan=\"3\" class=\"muted\">This run declares no tasks yet.</td></tr>"
             : rows.ToString();
     }
 
@@ -1322,14 +1381,16 @@ __STYLE__
 <h1>Guardrails run — task logs</h1>
 <p>Every task in this run. Click one to follow its live log; the page refreshes on its own.</p>
 <table>
-<thead><tr><th>Task</th><th>State</th></tr></thead>
+<thead><tr><th>Task</th><th>Status</th><th>Latest attempt</th></tr></thead>
 <tbody>
 __ROWS__
 </tbody>
 </table>
-<p class="muted">"State" is what the attempt directories on disk show right now; a task the harness
-has not reached yet has none. For the full picture (guardrail results, sources, diagrams) open the
-durable static index, which works with or without this server:</p>
+<p class="muted">"Status" is the harness's own word for each task: under a run, the same one that run's
+during-run index shows &mdash; a task a resume found already done reads "skipped", and a cancelled run's
+unstarted tasks read "cancelled"; under <code>guardrails logs</code>, the journal's word. "Latest attempt"
+is the newest attempt directory on disk. For the full picture (guardrail results, sources, diagrams) open
+the durable static index, which works with or without this server:</p>
 <pre>__INDEX_PATH__</pre>
 <p class="muted">That one is a file path rather than a link because a browser blocks
 <code>http://</code> &rarr; <code>file://</code>.</p>

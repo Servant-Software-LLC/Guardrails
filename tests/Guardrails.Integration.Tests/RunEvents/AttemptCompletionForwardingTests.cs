@@ -95,7 +95,7 @@ public sealed class AttemptCompletionForwardingTests
         string logsRoot = tree.Dir("logs", "test-run");
         var inner = new RecordingObserver();
         TaskNode task = FlatTask("01-first");
-        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null);
+        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null, liveRunUrl: null);
 
         ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.ActionFailed));
 
@@ -119,7 +119,7 @@ public sealed class AttemptCompletionForwardingTests
             Config = new RunConfig { Version = 1 },
             Tasks = [task]
         };
-        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null);
+        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null, liveDiagramUrl: null);
 
         ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.ActionFailed));
 
@@ -137,7 +137,7 @@ public sealed class AttemptCompletionForwardingTests
         string logsRoot = tree.Dir("logs", "test-run");
         var inner = new RecordingObserver();
         TaskNode task = FlatTask("01-first");
-        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null);
+        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null, liveRunUrl: null);
 
         ((IRunObserver)decorator).AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.MaxTurns));
 
@@ -173,14 +173,14 @@ public sealed class AttemptCompletionForwardingTests
 
         var logSiteInner = new RecordingObserver();
         var logSiteDecorator = new OnTheFlyLogSiteObserver(
-            logSiteInner, tree.Dir("logs", "log-site-run"), "log-site-run", [task], liveUrlForTask: null);
+            logSiteInner, tree.Dir("logs", "log-site-run"), "log-site-run", [task], liveUrlForTask: null, liveRunUrl: null);
         ((IRunObserver)logSiteDecorator).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
         Assert.Single(logSiteInner.Calls);
         Assert.Equal(outcome, logSiteInner.Calls[0].Outcome);
 
         var diagramInner = new RecordingObserver();
-        var diagramDecorator = new OnTheFlyDiagramObserver(diagramInner, tree.Dir("logs", "diagram-run"), plan, journalForSeed: null);
+        var diagramDecorator = new OnTheFlyDiagramObserver(diagramInner, tree.Dir("logs", "diagram-run"), plan, journalForSeed: null, liveDiagramUrl: null);
         ((IRunObserver)diagramDecorator).AttemptFinished(task, AttemptRecordFixture(1, outcome));
 
         Assert.Single(diagramInner.Calls);

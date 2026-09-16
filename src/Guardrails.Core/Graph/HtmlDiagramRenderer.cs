@@ -148,15 +148,15 @@ public static class HtmlDiagramRenderer
 
     /// <summary>
     /// The STATIC plan-root <c>diagram.html</c> overload (issue #33): no live status, no during-run
-    /// refresh. Delegates to the 5-arg <see cref="Render(string, string, IReadOnlyDictionary{string, string}, IReadOnlyDictionary{string, string}, bool)"/>
-    /// with an EMPTY <c>statusByNodeId</c> and <c>duringRun:false</c>, so the badge overlay loop appends
+    /// refresh. Delegates to the full <see cref="Render(string, string, IReadOnlyDictionary{string, string}, IReadOnlyDictionary{string, string}, bool, string)"/>
+    /// with an EMPTY <c>statusByNodeId</c>, <c>duringRun:false</c> and no live URL, so the badge overlay loop appends
     /// nothing and no <c>meta refresh</c> is injected. Kept so <c>GraphCommand</c> and the existing tests
     /// need no change — the plan-root file carries the inert overlay scaffolding but no badges (issue
     /// #219, SSOT §10.1). ONE template, status-as-data: no two-variant drift.
     /// </summary>
     public static string Render(
         string mermaidSource, string sourceHash, IReadOnlyDictionary<string, string> taskFolderTargets)
-        => Render(mermaidSource, sourceHash, taskFolderTargets, NoStatus, duringRun: false);
+        => Render(mermaidSource, sourceHash, taskFolderTargets, NoStatus, duringRun: false, liveDiagramUrl: null);
 
     /// <summary>
     /// Build the <c>diagram.html</c> document for <paramref name="mermaidSource"/> stamped with
@@ -176,13 +176,22 @@ public static class HtmlDiagramRenderer
     /// is pure chrome (a separate <c>&lt;script&gt;</c> blob + JS), so it can never move
     /// <c>source-sha256</c> or make <c>graph --check</c> report a plan stale.
     /// </para>
+    /// <para>
+    /// <paramref name="liveDiagramUrl"/> (issue #714) is where the run's own log server serves this page live,
+    /// or null when there is no server, which is always the case for the plan-root artifact. It changes only
+    /// what the hidden <c>#gr-live-offline</c> notice tells a reader who opened the page as a file: a link to
+    /// that live copy or, without one, <c>guardrails logs</c>. A <c>file://</c> page cannot discover the port,
+    /// which is why the writer passes it in. The null wording is byte-for-byte the notice every committed
+    /// <c>diagram.html</c> already carries.
+    /// </para>
     /// </summary>
     public static string Render(
         string mermaidSource,
         string sourceHash,
         IReadOnlyDictionary<string, string> taskFolderTargets,
         IReadOnlyDictionary<string, string> statusByNodeId,
-        bool duringRun)
+        bool duringRun,
+        string? liveDiagramUrl)
     {
         ArgumentNullException.ThrowIfNull(mermaidSource);
         ArgumentException.ThrowIfNullOrEmpty(sourceHash);
@@ -215,7 +224,10 @@ public static class HtmlDiagramRenderer
 
         // Normalize the full output — the template raw-string literal picks up \r\n when the
         // file is checked out with CRLF on Windows; the mermaid source is already normalized above.
+        // The offline notice is substituted FIRST, before any plan-derived text, so nothing a plan authors can
+        // ever be read as its placeholder.
         return Template
+            .Replace("__LIVE_OFFLINE_NOTICE__", OfflineNotice(liveDiagramUrl), StringComparison.Ordinal)
             .Replace("__SOURCE_SHA256__", sourceHash, StringComparison.Ordinal)
             .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal)
             .Replace("__TASK_FOLDER_TARGETS__", targetsJson, StringComparison.Ordinal)
@@ -226,6 +238,42 @@ public static class HtmlDiagramRenderer
             .Replace("\r", "\n", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The <c>#gr-live-offline</c> notice when there is no log server to point at (issue #552): <c>guardrails
+    /// logs</c> is the remedy. Byte-for-byte the text this template carried before #714, so no committed
+    /// <c>diagram.html</c> changes.
+    /// </summary>
+    private const string OfflineNoticeWithoutServer = """
+        Live status updates are unavailable on this copy &mdash; it is not
+          live. The diagram SERVED by the log-site server is live. To get one for a run in progress, run
+          <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
+          under the URL it prints; task/guardrail status then updates automatically as the run progresses.
+        """;
+
+    /// <summary>
+    /// What the <c>#gr-live-offline</c> notice says (issue #714). With the run's own log server up, it first links the
+    /// copy that server is ALREADY serving live: during plan 39's run the operator saw this notice on a healthy run
+    /// while the live copy was one URL away. It still names <c>guardrails logs</c> as the fallback (#714 review),
+    /// because a hard-killed run leaves this page linking a server that is gone, or a port a later run has reused.
+    /// Without a server, the <c>guardrails logs</c> wording is the whole notice.
+    /// </summary>
+    private static string OfflineNotice(string? liveDiagramUrl)
+    {
+        if (liveDiagramUrl is null)
+        {
+            return OfflineNoticeWithoutServer;
+        }
+
+        string url = System.Net.WebUtility.HtmlEncode(liveDiagramUrl);
+        return $"""
+            Live status updates are unavailable on this copy &mdash; it was opened as a file, so it
+              cannot poll. This run serves it live at <a href="{url}">{url}</a> while the run is going. If that
+              does not answer, or shows a different run, the run has ended: run
+              <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
+              under the URL it prints.
+            """;
+    }
+
     // __SOURCE_SHA256__ is filled with a lowercase-hex hash (no escaping needed). __GRAPH_SOURCE__
     // is filled with the verbatim Mermaid text inside a raw-text <script> element (see remarks).
     // __TASK_FOLDER_TARGETS__ is filled with a JSON object (container id -> folder path).
@@ -233,6 +281,7 @@ public static class HtmlDiagramRenderer
     // (issue #219). __DURING_RUN__ is the JS boolean literal that gates the spinner animation and
     // the live poll below. __LIVE_POLL_SCRIPT__ is the entire in-place live-poll subsystem (issue
     // #523 — see class remarks): empty on the final page, so it carries no trace of GR_LIVE_POLL_MS.
+    // __LIVE_OFFLINE_NOTICE__ is the #gr-live-offline notice's text (issue #714, see OfflineNotice).
     private const string Template = """
 <!-- guardrails:graph v1 source-sha256=__SOURCE_SHA256__ -->
 <!doctype html>
@@ -330,10 +379,7 @@ public static class HtmlDiagramRenderer
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
   On GitHub, diagram.md renders instead.</div>
-<div id="gr-live-offline" hidden>Live status updates are unavailable on this copy &mdash; it is not
-  live. The diagram SERVED by the log-site server is live. To get one for a run in progress, run
-  <code>guardrails logs &lt;plan-folder&gt;</code> in a terminal and open <code>diagram.html</code>
-  under the URL it prints; task/guardrail status then updates automatically as the run progresses.</div>
+<div id="gr-live-offline" hidden>__LIVE_OFFLINE_NOTICE__</div>
 <div id="gr-live-paused" hidden>Live status updates paused &mdash; the last
   <span id="gr-live-fails">0</span> poll attempts failed. Still retrying; this clears itself when one
   succeeds.</div>

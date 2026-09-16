@@ -1,4 +1,12 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
+using System.Text.Json;
 using Guardrails.Cli;
+using Guardrails.Core.Journal;
+using Guardrails.Core.State;
+using Guardrails.Integration.Tests.LogSite;
+using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Integration.Tests;
 
@@ -11,6 +19,8 @@ namespace Guardrails.Integration.Tests;
 /// </summary>
 public sealed class LogsCliTests
 {
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+
     private static async Task<(int ExitCode, string Output)> InvokeAsync(params string[] args) =>
         await InvokeAsync(CancellationToken.None, args);
 
@@ -74,5 +84,142 @@ public sealed class LogsCliTests
         string logsDir = Path.Combine(plan.PlanDir, "logs");
         string[] indexes = Directory.GetFiles(logsDir, "index.html", SearchOption.AllDirectories);
         Assert.NotEmpty(indexes);
+    }
+
+    [Fact]
+    public async Task Logs_LiveRunView_ReportsEachTasksJournalStatus_ReadAgainOnEveryLoad()
+    {
+        // Issue #713, for the other server that renders the live run view. `guardrails logs` runs no harness, so
+        // there is no in-process status map for it to share. The journal on disk is its only word on each task,
+        // and the static index it has just rendered came from the same journal. It must be READ AGAIN on every
+        // load, not captured at startup: this command is the documented way to attach to a run still in flight
+        // (#552), the page reloads itself every few seconds, and a startup snapshot would go on showing a task
+        // that has since finished as running for as long as the tab stayed open.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+        Assert.Equal(ExitCodes.Success, runExit);
+
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        (Task<(int ExitCode, string Output)> serving, string baseUrl) = await StartLogsServerAsync(plan.PlanDir, stop.Token);
+
+        int exit;
+        try
+        {
+            Assert.Equal("succeeded", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+
+            // The harness rewrites run.json as tasks settle. Rewrite it the same way, atomically and through the
+            // journal's own serializer, then load the page again: it must follow the file.
+            string journalPath = RunJournal.PathFor(plan.PlanDir);
+            JournalDocument journal = JournalReader.Read(journalPath);
+            JournalDocument rewritten = journal with
+            {
+                Tasks = journal.Tasks.ToDictionary(
+                    kv => kv.Key, kv => kv.Value with { Status = JournalTaskStatus.NeedsHuman }, StringComparer.Ordinal)
+            };
+            AtomicFile.WriteAllText(journalPath, JsonSerializer.Serialize(rewritten, JournalJson.Options));
+
+            Assert.Equal("needs-human", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+        }
+        finally
+        {
+            stop.Cancel(); // the Ctrl-C signal
+            (exit, _) = await serving;
+        }
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
+    [Fact]
+    public async Task Logs_LiveRunView_ReportsNothingFromAnotherRunsJournal()
+    {
+        // #713 review, N3. The per-load journal read did not check which run the journal belongs to. A tab left open on
+        // `guardrails logs` across `guardrails run --fresh` would show the NEW run's statuses beside the OLD run's
+        // attempt logs: two runs presented as one. When the journal's run id is not the run being served, the page
+        // must say it does not know.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int runExit, _) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+        Assert.Equal(ExitCodes.Success, runExit);
+
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        (Task<(int ExitCode, string Output)> serving, string baseUrl) = await StartLogsServerAsync(plan.PlanDir, stop.Token);
+
+        int exit;
+        try
+        {
+            Assert.Equal("succeeded", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+
+            // A different run now owns the journal, as it would after `run --fresh` in another terminal.
+            string journalPath = RunJournal.PathFor(plan.PlanDir);
+            JournalDocument journal = JournalReader.Read(journalPath);
+            AtomicFile.WriteAllText(
+                journalPath, JsonSerializer.Serialize(journal with { RunId = journal.RunId + "-fresh" }, JournalJson.Options));
+
+            Assert.Equal("unknown", LiveRunViewRows.Find(await Http.GetStringAsync(baseUrl, ct), "01-first").Status);
+        }
+        finally
+        {
+            stop.Cancel(); // the Ctrl-C signal
+            (exit, _) = await serving;
+        }
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
+    /// <summary>
+    /// Start <c>guardrails logs --no-open</c> serving in the background and return once its live run view
+    /// answers. The port is chosen here so the test knows the URL without reading console output the command
+    /// is still writing. A caller-chosen port gets a single bind attempt, so a port lost to another process
+    /// between probe and bind ends that invocation, and a fresh port is tried.
+    /// </summary>
+    private static async Task<(Task<(int ExitCode, string Output)> Serving, string BaseUrl)> StartLogsServerAsync(
+        string planDir, CancellationToken stop)
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            int port = FreeLoopbackPort();
+            string baseUrl = $"http://127.0.0.1:{port}/";
+            Task<(int ExitCode, string Output)> serving = Task.Run(
+                () => InvokeAsync(stop, "logs", planDir, "--no-open", "--port", port.ToString(CultureInfo.InvariantCulture)),
+                ct);
+
+            // A bound on the wait, not an assertion about speed (#714 review, N5): a server that never answers must
+            // fail this test where it happens, rather than spin until the test host gives up on the whole class.
+            TimeSpan readyBudget = TimeSpan.FromSeconds(90);
+            DateTime deadline = DateTime.UtcNow + readyBudget;
+            while (!serving.IsCompleted)
+            {
+                Assert.True(DateTime.UtcNow < deadline, $"guardrails logs did not answer on {baseUrl} within {readyBudget}");
+                try
+                {
+                    using HttpResponseMessage response = await Http.GetAsync(baseUrl, ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return (serving, baseUrl);
+                    }
+                }
+                catch (HttpRequestException)
+                {
+                    // not listening yet
+                }
+
+                await Task.Delay(50, ct);
+            }
+        }
+
+        throw new InvalidOperationException("guardrails logs could not bind a free loopback port in 10 attempts");
+    }
+
+    private static int FreeLoopbackPort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
     }
 }

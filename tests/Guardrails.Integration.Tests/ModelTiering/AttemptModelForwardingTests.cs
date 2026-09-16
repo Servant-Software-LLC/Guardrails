@@ -128,7 +128,7 @@ public sealed class AttemptModelForwardingTests
         string logsRoot = tree.Dir("logs", "test-run");
         var inner = new RecordingObserver();
         TaskNode task = FlatTask("01-first");
-        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null);
+        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [task], liveUrlForTask: null, liveRunUrl: null);
 
         ((IRunObserver)decorator).AttemptModelResolved(task, 1, "observed-model", "requested-model");
         ((IRunObserver)decorator).AttemptModelResolved(task, 2, "route-model", null);
@@ -149,7 +149,7 @@ public sealed class AttemptModelForwardingTests
             Config = new RunConfig { Version = 1 },
             Tasks = [task]
         };
-        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null);
+        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null, liveDiagramUrl: null);
 
         ((IRunObserver)decorator).AttemptModelResolved(task, 1, "observed-model", "requested-model");
         ((IRunObserver)decorator).AttemptModelResolved(task, 2, "route-model", null);

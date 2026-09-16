@@ -507,7 +507,7 @@ public sealed class JitBreakdownVisibilityTests
             logsRoot, "test-run", wave,
             statusResolver: _ => "succeeded",
             linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
-            includeRefresh: false));
+            includeRefresh: false, liveRunUrl: null));
 
         // Explicitly passing null must produce the SAME bytes as omitting the parameter entirely, so the
         // new optional argument cannot change the dominant page even by a whitespace.
@@ -518,7 +518,8 @@ public sealed class JitBreakdownVisibilityTests
             includeRefresh: false,
             halt: null,
             claimResolver: null,
-            phase: null));
+            phase: null,
+            liveRunUrl: null));
 
         Assert.Equal(withoutPanel, explicitNull);
         Assert.DoesNotContain("class=\"phase\"", withoutPanel);
@@ -569,7 +570,7 @@ public sealed class JitBreakdownVisibilityTests
             logsRoot, "test-run", [FlatTask("01-first")],
             statusResolver: _ => "succeeded",
             linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
-            includeRefresh: false));
+            includeRefresh: false, liveRunUrl: null));
 
         Assert.DoesNotContain("class=\"phase\"", index);
         Assert.DoesNotContain("section.phase", index);
@@ -681,7 +682,7 @@ public sealed class JitBreakdownVisibilityTests
         string logsRoot = tree.Dir("logs", "test-run");
         var inner = new CountingObserver();
         WaveNode stub = Wave("wave-02-beta", 2);
-        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [], null, [stub]);
+        var decorator = new OnTheFlyLogSiteObserver(inner, logsRoot, "test-run", [], null, null, [stub]);
         WaveBreakdownContext context = Context("wave-02-beta", tree.Dir("breakdown"), tree.Dir("tasks"));
 
         decorator.WaveBreakdownStarting(context);
@@ -705,7 +706,7 @@ public sealed class JitBreakdownVisibilityTests
             Config = new RunConfig { Version = 1 },
             Tasks = [FlatTask("01-first")]
         };
-        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null);
+        var decorator = new OnTheFlyDiagramObserver(inner, tree.Dir("logs"), plan, journalForSeed: null, liveDiagramUrl: null);
         WaveBreakdownContext context = Context("wave-02-beta", tree.Dir("breakdown"), tree.Dir("tasks"));
 
         decorator.WaveBreakdownStarting(context);

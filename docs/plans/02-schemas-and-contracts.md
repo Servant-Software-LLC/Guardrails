@@ -2588,6 +2588,15 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
 
 ## 7. `state/run.json` (journal)
 
+**The journal is written atomically (§0 intro: write a temp file, then move it over the target), and that
+final move is RETRIED while another process holds the file open (issue #727).** On Windows the move fails
+while any other handle has `run.json` open, even one that is only reading, and the Scheduler treats a failed
+journal write as fatal — so before #727 a reader could abort a healthy run. Every reader a run may have
+alongside it depends on this retry: `guardrails logs` re-reads the journal on every page load (§12.2),
+`guardrails attach` re-reads it every 250 ms while it replays a live run (§12.2), and `guardrails status`
+reads it on demand. The retry is bounded (about a third of a second); a handle that never lets go still
+fails the write, loudly, with a message naming the likely cause.
+
 ```jsonc
 {
   "version": 1,
@@ -7170,7 +7179,14 @@ never carries badges.
   site's `OnTheFlyLogSiteObserver`) forwards every event and, under one lock, re-renders the
   page from an in-memory node-id → status map. Atomic write; best-effort (a render failure
   never flips an outcome or aborts the run). Wired in both the live and `--no-ui` paths, stacked
-  around the log-site observer. A clickable `file://` link to it is printed at run start.
+  around the log-site observer. At run start the run prints a link to it (issue #714): `Live status
+  diagram: http://127.0.0.1:<port>/diagram.html`, the copy the run's own log server serves live
+  (§12), whenever that server is up; and the `file://` path, labeled `Status diagram (snapshot, not
+  live):`, only when there is no server (`--no-log-server`, or a start that failed). A `file://` page
+  cannot poll, so before #714 the one diagram link a run with a server printed opened on its own
+  "not live" notice. At run end the run prints the settled page's `file://` path as `Final status
+  diagram:`, beside the static index link (#714 review): the live URL printed at start stops answering
+  with the server, so a finished run would otherwise name no diagram a reader can still open.
 - **During-run vs final (issue #523).** The during-run page no longer carries
   `<meta http-equiv="refresh">` or any other whole-document reload: the old 3s reload killed pan/zoom
   and scroll on every tick, dropped a click landing mid-reload, and re-ran `mermaid.render` on a big DAG
@@ -7182,7 +7198,12 @@ never carries badges.
   `GR_DURING_RUN` reads `false` — the terminal run state written by
   `OnTheFlyDiagramObserver.WriteFinalStatic` once the run settles — and, for a plain `file://` view that
   cannot poll itself, a failed fetch instead reveals the hidden `#gr-live-offline` notice rather than
-  failing silently forever. The final page, written once at run end from the observer's own in-memory
+  failing silently forever. When the run has a log server, that notice first links the copy the server is
+  serving live (`http://127.0.0.1:<port>/diagram.html`): a `file://` page cannot discover the port, but the
+  during-run writer knows it (issue #714). It still names `guardrails logs <plan-folder>` as the fallback,
+  because a hard-killed run leaves this page linking a server that is gone, or a port a later run has
+  reused; with no server that command is the whole notice. The settled page keeps the server-less wording,
+  because its server stops as it is written. The final page, written once at run end from the observer's own in-memory
   map, carries no trace of `GR_LIVE_POLL_MS` or the poll script at all — the whole block is substituted
   from one conditional template chunk, so `duringRun:false` renders a plain static page — and shows every
   node settled: a durable post-mortem.
@@ -7204,8 +7225,11 @@ never carries badges.
   the **absence** of the poll block, so nothing was added to the FINAL page and its bytes are unchanged
   from before #543 (the byte-identity goldens in `LogSiteHaltBannerTests` are the tripwire). The
   trade-off is explicit: a during-run page opened over `file://` no longer updates itself, because it
-  cannot fetch itself — it shows the offline notice and points at the live server, which is the surface
-  that can actually stream. An honest static snapshot beats a page that reloads forever and cannot say
+  cannot fetch itself — it shows the offline notice, which points at a surface that can actually stream:
+  first the run's own live run view (`http://127.0.0.1:<port>/`) when the run has a log server (issue
+  #714), then `guardrails logs <plan-folder>` as the fallback for a run that has since ended; with no
+  server, that command alone. An honest static snapshot beats a
+  page that reloads forever and cannot say
   whether it is current. **Settle-on-fault (issue #333):** the run-end final writes (this
   diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`, so an UNEXPECTED
   throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the Scheduler and so is
@@ -7442,16 +7466,39 @@ guardrail's script is one click from its failing log (issue #141 item 3).
 **Static is the durable site; live is an active-only leaf (issue #143).** Because the live server
 dies when the harness stops, it is deliberately **not** part of the durable navigable site:
 
-- `GET /` is **not** an all-tasks landing. It is a small **pointer note** naming the canonical static
-  index file by its absolute path (a browser blocks `http://` → `file://`, so the path is shown as
-  **text** to open, not linked). The server cannot — and does not — render a second, harness-dependent
-  task table.
+- `GET /` is the **live run view** (issue #573): every task the plan declares, each linked to its live
+  tail, with a **Status** column and a **Latest attempt** column, reloading itself every 5 s. It still
+  names the canonical static index file by its absolute path, as the fuller durable page (a browser blocks
+  `http://` → `file://`, so the path is shown as **text**, not linked). Like the rest of the server it is
+  transient; the static index remains the durable all-tasks surface.
+  - **Status** is the task's status word in the static index's vocabulary (`succeeded`, `running`,
+    `needs-human`, `blocked`, `failed`, `pending`, plus `skipped` for a task a resume found already done and
+    `cancelled` for one a cancelled run never started; each has its own color, #713 review), rendered in the
+    index's own `class="status" data-status="…"` cell so the shared colors apply (issue #713).
+    The server never derives it. Under `guardrails run` it is the
+    in-process status map the during-run static index is rendered from, so both pages render from one map
+    and the live page is never a second reader of the journal the harness is writing. That is not a promise
+    that the two can never differ for a moment. A finishing task's status is set, and the index file
+    rewritten, under separate acquisitions of the observer's lock, and a failed index write is retried only
+    by the next event, so the live page can briefly be ahead of the index file. It never shows a status the
+    map did not hold. Under `guardrails logs` (§12.2), which runs no harness, it is the journal, re-read on
+    every page load. A task the source does not list reads `unknown`.
+  - **Bind, then serve (#713 review).** `LogServer.TryStart` only binds, so a run can print its URLs before
+    anything exists to answer them. The server accepts no request until `StartServing` wires the Status
+    column's source, which it takes exactly once (a second source throws). Under `guardrails run` that
+    happens as the observer chain is built, just after the URL is printed. A request that arrives in between
+    waits in the listener's queue and is then answered with the source in place; it used to be answered at
+    once, with every row reading `unknown`.
+  - **Latest attempt** is the newest `attempt-N/` directory on disk (`—` when there is none). It is detail
+    beside the status and never stands in for it: an attempt directory exists from the moment the attempt
+    starts, so it cannot say how the attempt ended. Before #713 it WAS the column, and a succeeded task, a
+    running task and a failed one all read `attempt 1`.
 - The live per-task page is an active-task **deadend**: it carries **no** "all tasks" navigation. The
   user arrives by clicking a running task on the static index and leaves via the browser Back button.
 
 Rationale: the static pages are durable and server-independent; the live page is inherently transient,
-so it is an active-task leaf, not part of the durable navigable site. The journal-projected **Status**
-table lives on the static index (§12.3), which is the single all-tasks surface.
+so it is an active-task leaf, not part of the durable navigable site. The **Status** table on the static
+index (§12.3) remains the durable all-tasks surface.
 
 **Binding and safety.** The server binds to the numeric loopback address `127.0.0.1` on a port (an
 automatically chosen free ephemeral port by default), **never** to a routable interface — logs may
@@ -7476,7 +7523,7 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 | Route | Serves |
 |---|---|
-| `GET /` | a **pointer note** (issue #143) naming the canonical static index file `logs/<runId>/index.html` by its absolute path (shown as text — a browser blocks `http://` → `file://`); **not** an all-tasks table |
+| `GET /` | the **live run view** (issues #573, #713): one row per task with its **Status** word (the in-process status map under `run`, the journal under `logs`; `unknown` for a task the source does not list; no request is answered before the source is wired) and its **Latest attempt**, each task linked to `/tasks/{id}`, plus the canonical static index file `logs/<runId>/index.html` named by its absolute path (shown as text — a browser blocks `http://` → `file://`) |
 | `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt), plus a **Source** section (issue #141 item 3). An active-task **deadend** — no "all tasks" link (issue #143); the user reaches it from the static index and returns via Back |
 | `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[], fileDetails[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), the selected attempt's filenames, and a `fileDetails[]` of `{ name, size, empty }` per file (so a zero-byte capture is greyed + "(empty)" in the file dropdown — issue #141 item 4) |
 | `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
@@ -7519,7 +7566,12 @@ secrets (this section's own binding note), so serving `logs/<runId>/` as static 
 every one of them to anything that can reach the port. The guardrail/preflight routes instead resolve
 `{file}` only through the same precomputed per-folder known-source set `/tasks/{id}/sourcefile` already
 uses, so the server's file surface stays exactly the declared sources — never an arbitrary path under
-the logs tree.
+the logs tree. Whenever this server is up, the diagram line the run prints at start names this route,
+not the file (issue #714): `Live status diagram: http://127.0.0.1:<port>/diagram.html`. A page opened as
+a file cannot poll, so the `file://` link the run used to label live opened on the page's own "not
+live" notice during a healthy run. Only a run with no server prints the `file://` path, labeled
+`Status diagram (snapshot, not live):`. At run end every run also prints the settled diagram's
+`file://` path as `Final status diagram:` (§10.1), since the live URL dies with the server.
 
 **On-the-fly static site (issue #141 item 2).** Independently of the server, `run` also keeps the
 **static** log site (§12.3) up to date as the run proceeds — on **both** the live and the `--no-ui`
@@ -7599,8 +7651,16 @@ run does, so on the thread pool the process would routinely exit before it ran �
 resets the subscriber's connection exactly as hard as stopping the listener would have.
 
 The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
-/ `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —
-the live server no longer renders one (issue #143).
+/ `failed` / `pending`) lives on that static index (§12.3), which is the durable all-tasks surface. The
+live run view at `GET /` shows the same word for each task (issue #713): `logs` hands its server the
+journal, re-read on every page load, because this command attaches to runs still in flight and a
+startup snapshot would keep a finished task reading `running`. That makes a served tab a long-lived
+reader of `run.json` while a run is writing it, which is safe only because the harness's atomic write
+retries its final replace while another handle holds the file (issue #727). Before that retry, a page
+reloading during a run could abort the run with "Access to the path is denied". The journal is ignored
+unless its `runId` is the run being served (#713 review): the journal names whichever run wrote it last,
+so a tab left open across `run --fresh` would otherwise show the new run's statuses beside the served
+run's attempt logs, and every row reads `unknown` instead.
 
 | Flag | Default | Meaning |
 |---|---|---|

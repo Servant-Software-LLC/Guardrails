@@ -161,4 +161,71 @@ public sealed class LogServerRunGateTests
             occupier.Dispose();
         }
     }
+
+    /// <summary>Matches the live run view line and captures its base URL.</summary>
+    private static readonly Regex RunViewUrl = new(
+        @"Live run view \(all tasks, auto-refreshing\): (?<base>http://127\.0\.0\.1:\d+/)", RegexOptions.None, TimeSpan.FromSeconds(5));
+
+    [Fact]
+    public async Task Run_WithTheLogServer_LinksTheServedDiagram_NotAFileLabeledLive()
+    {
+        // Issue #714. Plan 39's run printed "Live status diagram: file:///…/diagram.html" while its own server was
+        // serving that same page live at /diagram.html. A page opened as a file cannot poll for updates, so it
+        // opened with its "not live" notice showing and kept it through a refresh, on a healthy run. The
+        // maintainer, mid-run: "Is it still going?" A line that says live has to link the live page.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Match runView = RunViewUrl.Match(output);
+        Assert.True(runView.Success, $"expected the run to advertise its live run view; got:\n{output}");
+
+        // The SAME server the run view names. A diagram URL on any other port would be just as dead.
+        Assert.Contains($"Live status diagram: {runView.Groups["base"].Value}diagram.html", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Live status diagram: file:", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_WithoutTheLogServer_PrintsTheDiagramFile_AsASnapshot_NeverAsLive()
+    {
+        // With no server, the file is the only copy of the diagram there is, so it is still worth printing. It just
+        // has to be called what it is: a page opened as a file shows the state at the moment it was opened.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.DoesNotContain("Live status diagram", output, StringComparison.Ordinal);
+
+        // Matched on the run's own logs/<runId>/ suffix rather than the whole path, which a temp directory behind a
+        // symlink (macOS /var → /private/var) can legitimately spell two ways.
+        string runId = Path.GetFileName(Assert.Single(Directory.GetDirectories(Path.Combine(plan.PlanDir, "logs"))));
+        string line = Assert.Single(
+            output.Split('\n'), l => l.StartsWith("Status diagram (snapshot, not live): ", StringComparison.Ordinal));
+        Assert.Contains("file://", line, StringComparison.Ordinal);
+        Assert.Contains($"/logs/{runId}/diagram.html", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_WithTheLogServer_EndsByNamingTheSettledDiagramFile()
+    {
+        // #714 review, N4. The run prints its live diagram URL at start, and that URL dies with the run's server.
+        // After a run with a server it was the only diagram line on screen, so the settled post-mortem diagram had no
+        // printed path at all. The run now ends by printing the file, next to the static index link.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        string runId = Path.GetFileName(Assert.Single(Directory.GetDirectories(Path.Combine(plan.PlanDir, "logs"))));
+        string[] lines = output.Split('\n');
+        int live = Array.FindIndex(lines, l => l.StartsWith("Live status diagram: http://", StringComparison.Ordinal));
+        int final = Array.FindIndex(lines, l => l.StartsWith("Final status diagram: ", StringComparison.Ordinal));
+
+        Assert.True(live >= 0, $"expected the run-start live diagram line; got:\n{output}");
+        Assert.True(final > live, $"expected a final diagram line after the live one; got:\n{output}");
+        Assert.Contains("file://", lines[final], StringComparison.Ordinal);
+        Assert.Contains($"/logs/{runId}/diagram.html", lines[final], StringComparison.Ordinal);
+    }
 }
