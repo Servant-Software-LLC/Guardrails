@@ -987,6 +987,38 @@ public sealed class HarnessWriteRunTests
     }
 
     [Fact]
+    public async Task Worktree_RepeatedInScopeWall_OnAPathThatExistedAtTaskBase_StillHalts()
+    {
+        // #708 review item 1 — the BLOCKER probe. Identical to the control above but for ONE thing: the refused
+        // path is COMMITTED at taskBase, and the runner still writes nothing. A segment worktree is checked out AT
+        // taskBase, so asking File.Exists answers "does the repo contain this file", not "did THIS attempt write
+        // it" — and it reads true for a file an upstream task authored and for the very file this task exists to
+        // edit. That masked the wall at all four pre-guardrail sites, for precisely the two shapes #708 was filed
+        // about: modify an existing file, and implement against an upstream stub.
+        using var repo = new TempGitRepo();
+        const string refused = "docs/ssot.md";
+        repo.Commit(refused, "the file this task exists to edit, present before the attempt starts");
+
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\"docs/**\"", guardrailChecksPath: refused, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [refused]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains($"write repeatedly refused (permission wall) — {refused}", task.Summary);
+
+        IReadOnlyList<AttemptRecord> baseSeeded =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
+        Assert.Equal(new[] { AttemptOutcome.StagingFailed, AttemptOutcome.StagingFailed }, baseSeeded.Select(a => a.Outcome));
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
     public async Task Worktree_RepeatedInScopeWall_AtANestedControlKey_HaltsReportingTheNesting()
     {
         // Site 2: a control key written ONE LEVEL under the task's own folder key (#586) is not a control key at
@@ -1179,6 +1211,37 @@ public sealed class HarnessWriteRunTests
         IReadOnlyList<AttemptRecord> attempts =
             JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
         // The #104 fast-halt: a structural wall is un-clearable, so it settles on the FIRST attempt that hits it.
+        Assert.Equal(AttemptOutcome.StagingFailed, Assert.Single(attempts).Outcome);
+        Assert.Equal(1, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_AStructuralWallUnrelatedToTheHatch_StillHalts_AtAStagingFailure()
+    {
+        // #708 review item 2. The structural wall yields to an attempt that is USING a .claude/ escape route, but
+        // only when the route is about the WALLED path. Here the hatch targets commands/a.md and succeeds, while an
+        // UNRELATED .claude/ path (commands/b.md) is structurally refused; the staging move then fails. Yielding on
+        // "any hatch present" let that attempt burn its whole budget with the wall named nowhere — the gap WEAK-6
+        // closed, reopened. This is also the first test to exercise the yield predicate being FALSE.
+        using var repo = new TempGitRepo();
+        const string unrelatedWall = ".claude/commands/b.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: unrelatedWall, defaultRetries: 2,
+            stagingTo: ".claude/skills/demo/");
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: ".claude/commands/a.md", blockedWritePaths: [unrelatedWall]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("staging move failed", task.Summary);
+        Assert.Contains(unrelatedWall, task.Summary);
+
+        IReadOnlyList<AttemptRecord> attempts =
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-write"].Attempts;
         Assert.Equal(AttemptOutcome.StagingFailed, Assert.Single(attempts).Outcome);
         Assert.Equal(1, runner.Invocations);
     }
