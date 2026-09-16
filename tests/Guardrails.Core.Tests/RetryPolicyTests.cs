@@ -914,6 +914,33 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void RepeatedRefusalContext_OmitsWhatTheHaltAlreadyNamed()
+    {
+        // #708 review: at a halt the wall's own paths are already listed under `## Repeatedly-refused path(s)` and
+        // its commands under `## Repeatedly-refused command(s)`. Listing either again under secondary context reads
+        // as a second, different finding. The filter is at the RENDER — the caller still hands over the FULL
+        // decision, so nothing is lost; only what has demonstrably been named already is dropped.
+        var wall = new PermissionWallDecision(
+            true, [], ["docs/blocked.md", "src/Sneaky.cs"], ["echo \"EXIT:$?\""]);
+
+        string context = RetryPolicy.ForRepeatedRefusalContext(wall, ["docs/blocked.md", "echo \"EXIT:$?\""]);
+
+        Assert.Contains("- path: `src/Sneaky.cs`", context);
+        Assert.DoesNotContain("docs/blocked.md", context);
+        Assert.DoesNotContain("EXIT:$?", context);
+    }
+
+    [Fact]
+    public void RepeatedRefusalContext_IsOmittedEntirely_WhenTheHaltNamedEverything()
+    {
+        // An empty section is worse than no section: a heading with no bullets reads as a finding with its
+        // evidence missing.
+        var wall = new PermissionWallDecision(true, [], ["docs/blocked.md"], []);
+
+        Assert.Empty(RetryPolicy.ForRepeatedRefusalContext(wall, ["docs/blocked.md"]));
+    }
+
+    [Fact]
     public void RepeatedPathWallHalt_WhenNothingWasPreserved_SaysSo_RatherThanStayingSilent()
     {
         // #708: the nested-control-key site stays unsalvaged (the documented fragment-rejection boundary), and a
