@@ -1,0 +1,9 @@
+{
+  "description": "Implement MissingResourceSignal and MissingResourceFacts over the stubs so their tests pass (tri-state git: an error is never read as absent)",
+  "dependsOn": ["02-author-tests-missing-resource-facts"],
+  "stableId": "m3f8rt",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/MissingResourceSignal.cs",
+    "src/Guardrails.Core/Execution/MissingResourceFacts.cs"
+  ]
+}

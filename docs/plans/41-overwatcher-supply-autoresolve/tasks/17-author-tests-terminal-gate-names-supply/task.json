@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests that a FAILED terminal gate halt names supplied and refreshed content, and that a run which supplied nothing keeps a byte-identical halt",
+  "dependsOn": [],
+  "stableId": "t17g6b",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedTerminalGateHaltTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

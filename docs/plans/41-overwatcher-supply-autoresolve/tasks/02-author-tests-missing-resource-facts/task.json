@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + throwing stubs for MissingResourceSignal (path-token match) and MissingResourceFacts (tri-state git lineage and per-path facts)",
+  "dependsOn": [],
+  "stableId": "m2f4jd",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/Supply/MissingResourceSignalTests.cs",
+    "tests/Guardrails.Core.Tests/Supply/MissingResourceFactsTests.cs",
+    "src/Guardrails.Core/Execution/MissingResourceSignal.cs",
+    "src/Guardrails.Core/Execution/MissingResourceFacts.cs"
+  ]
+}

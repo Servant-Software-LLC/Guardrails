@@ -1,0 +1,18 @@
+{
+  "description": "Wire the missing-resource auto-resolve into Scheduler.OnSettledAsync and share one Overwatch through SchedulerFactory - the seam #712 says does not exist. Gated by the real-path wiring proof, all ten tests executed",
+  "dependsOn": [
+    "01-author-tests-wiring-proof",
+    "03-implement-missing-resource-facts",
+    "05-implement-supply-certification",
+    "07-implement-delivery-interlock",
+    "09-implement-resource-supply-brief",
+    "11-implement-commit-paths",
+    "13-implement-observer-by-field"
+  ],
+  "stableId": "s14w2c",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/SchedulerFactory.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

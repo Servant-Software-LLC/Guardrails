@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + stubs for ProposeResourceSupplyAsync: the pinned brief heading, harness-facts-first content, the resource-supply-only fix vocabulary, and a real-seam proof over the production prompt runner",
+  "dependsOn": ["05-implement-supply-certification", "07-implement-delivery-interlock"],
+  "stableId": "b8rn5w",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/OverwatchResourceSupplyBriefTests.cs",
+    "src/Guardrails.Core/Execution/OverwatchTrigger.cs",
+    "src/Guardrails.Core/Execution/Overwatch.cs"
+  ]
+}

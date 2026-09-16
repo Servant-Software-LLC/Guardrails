@@ -1,0 +1,9 @@
+{
+  "description": "Author the RED real-path wiring proof (P1, P2, C1-C7, N1) for the overwatcher missing-resource auto-resolve, driven through the real composition root",
+  "dependsOn": [],
+  "stableId": "w1a7kq",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/Supply/OverwatchSupplyAutoResolveWiringTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

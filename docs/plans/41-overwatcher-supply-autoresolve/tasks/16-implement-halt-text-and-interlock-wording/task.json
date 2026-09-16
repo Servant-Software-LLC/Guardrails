@@ -1,0 +1,8 @@
+{
+  "description": "Point the missing-resource halt text at the shared MissingResourceSignal predicate and generalise the interlock banner and --merge-on-success description to name a machine decision",
+  "dependsOn": ["15-author-tests-halt-text-and-interlock-wording"],
+  "stableId": "h16r4d",
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ]
+}

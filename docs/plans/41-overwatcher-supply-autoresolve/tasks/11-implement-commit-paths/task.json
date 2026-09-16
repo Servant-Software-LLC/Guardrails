@@ -1,0 +1,8 @@
+{
+  "description": "Implement SuppliedDrain.CommitPaths over the stub and refactor Drain to copy the staged files then call it, so the operator path gains the same pathspec + rollback protection",
+  "dependsOn": ["10-author-tests-commit-paths"],
+  "stableId": "p11d7k",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/SuppliedDrain.cs"
+  ]
+}

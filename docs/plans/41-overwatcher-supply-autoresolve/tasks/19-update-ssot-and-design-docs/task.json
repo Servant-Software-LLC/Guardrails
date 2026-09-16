@@ -1,0 +1,10 @@
+{
+  "description": "Apply the design section 12 edits: SSOT sections 1, 2.1, 7, 8, 8.1, 9.2 and the new 9.2.2, plus the design-40 and autonomous-mode deltas, in the same change as the code",
+  "dependsOn": ["14-implement-autoresolve-wiring"],
+  "stableId": "d19s5f",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md",
+    "docs/plans/40-in-flight-resource-supply.md",
+    "docs/plans/12-autonomous-mode.md"
+  ]
+}

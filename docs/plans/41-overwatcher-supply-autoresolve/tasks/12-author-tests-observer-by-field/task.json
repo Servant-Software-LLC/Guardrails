@@ -1,0 +1,12 @@
+{
+  "description": "Author failing parameter-list-aware forwarding guards and events.jsonl assertions for SuppliedResourcesCommitted's new `by` argument, plus the three-argument interface stub they compile against",
+  "dependsOn": [],
+  "stableId": "o12b3n",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunEvents/ObserverForwardingSweepTests.cs",
+    "tests/Guardrails.Core.Tests/Supply/SuppliedObserverEventTests.cs",
+    "tests/Guardrails.Integration.Tests/Supply/SuppliedObserverCliForwardingTests.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

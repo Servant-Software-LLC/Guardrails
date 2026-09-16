@@ -1,0 +1,12 @@
+{
+  "description": "Implement the pure Certify gate and the shared GateThreshold rule; add the resource-supply parser case; DELETE Resolve, ProposedSequenceFor, OverwatchDecisionKind.AutoResolve and AutoResolvedPaths",
+  "dependsOn": ["04-author-tests-supply-certification"],
+  "stableId": "c5pv2m",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GateThreshold.cs",
+    "src/Guardrails.Core/Execution/OverwatchDecision.cs",
+    "src/Guardrails.Core/Execution/OverwatchProposal.cs",
+    "src/Guardrails.Core/Execution/OverwatchFix.cs",
+    "src/Guardrails.Core/Execution/CriticalityJudge.cs"
+  ]
+}

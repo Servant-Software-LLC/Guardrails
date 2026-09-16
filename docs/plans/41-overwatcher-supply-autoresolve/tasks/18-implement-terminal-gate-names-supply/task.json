@@ -1,0 +1,8 @@
+{
+  "description": "Append the existing UnauthoredContentNote headline suffix and detail lines to the terminal gate halt, so a flat plan discloses a supply exactly as a waved one does",
+  "dependsOn": ["17-author-tests-terminal-gate-names-supply", "14-implement-autoresolve-wiring"],
+  "stableId": "t18h9m",
+  "writeScope": [
+    "src/Guardrails.Cli/PlanGuardrailPhase.cs"
+  ]
+}
