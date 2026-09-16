@@ -469,6 +469,34 @@ public sealed class UndeliveredWorkWarningTests
     }
 
     /// <summary>
+    /// Design 39 §4: a partially-delivered run names the branch its barrier delivery landed on
+    /// (<see cref="RunReport.DeliveredToBranch"/> set) while its run-end merge never landed. The notice speaks
+    /// for the run-end delivery, so it stays silent here — it must not key on that field alone.
+    /// </summary>
+    [Fact]
+    public void APartialDelivery_WhoseRunEndMergeNeverLanded_PrintsNoDeliveredNotice()
+    {
+        var partial = new RunReport
+        {
+            Tasks = [new TaskResult { TaskId = "wave-02-final/01-write", Outcome = TaskOutcome.NeedsHuman, Summary = "needs human" }],
+            DeliveredToBranch = "main",
+            WaveDeliveries = new Dictionary<string, Guardrails.Core.Journal.WaveDeliveredRecord>
+            {
+                ["wave-01-deliver"] = new()
+                {
+                    Status = Guardrails.Core.Journal.WaveDeliveryStatus.Delivered,
+                    StartedAt = DateTimeOffset.UnixEpoch,
+                    At = DateTimeOffset.UnixEpoch,
+                    Commit = "deadbeef",
+                    Covers = ["wave-01-deliver"],
+                },
+            },
+        };
+
+        Assert.Equal(string.Empty, RenderNotice(partial, deliveryFromDefaultOnly: true));
+    }
+
+    /// <summary>
     /// Issue #576: the banner's own instruction — "merge '&lt;planBranch&gt;' into your branch yourself" —
     /// is what produces the stale state, because the plan branch is cut ONCE and never rebased. A
     /// plan-folder fix made between resumes took effect (the harness reads the folder from the main

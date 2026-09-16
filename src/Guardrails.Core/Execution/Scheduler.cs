@@ -94,6 +94,12 @@ public sealed class Scheduler
     // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
     private IntegrationHandle? _pendingDeliveryIntegration;
 
+    // Design 39 §4: the branch a barrier delivery THIS PROCESS settled landed on, so BuildReport can name it.
+    // Never derived from the journal or from the run-start pin alone: every process re-pins OriginalBranch from
+    // HEAD, so a resume on a switched or detached checkout must not be credited with an earlier process's
+    // delivery (B1). Never the literal "HEAD". Written only on the barrier path, between drains.
+    private string? _barrierDeliveredToBranch;
+
     // #545 part 3 (plan 31 §5.2): the mid-run plan-folder edit watch. Constructed HERE rather than at the
     // composition root — unlike the Scheduler's other collaborators — because nothing depends on the seam
     // being injectable: the watch has no substitutable behaviour any test needs to fake, and it is built
@@ -1261,15 +1267,17 @@ public sealed class Scheduler
             EndOfRunSweep(directoryOwner, settled, integ);
         }
 
-        // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change),
-        // so the CLI's one-time "delivered by default" notice can name it. Non-null only when delivery
-        // actually ran green (FF or clean merge); null for a halted delivery, a no-delivery run, or serial.
-        // #588 depends on that restriction: BranchMoved must leave this NULL so the "delivered to X" line
-        // does not print a branch the work never reached — the exact false claim that issue was filed for.
+        // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change).
+        // The run-end merge ran green (FF or clean merge) ⇒ its own branch. Otherwise keep what BuildReport
+        // stamped: non-null only when a barrier delivery THIS PROCESS settled LANDED (design 39 §4), which really
+        // did reach that branch; null for a no-delivery run, a halted delivery with nothing landed, or serial.
+        // #588: a BranchMoved run-end merge adds no branch of its own, and the CLI's "delivered to X" notice
+        // keys on the run-end merge landing — never on this field alone — so it cannot print a branch the
+        // run-end work never reached, the exact false claim that issue was filed for.
         string? deliveredToBranch =
             mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
                 ? integ?.OriginalBranch
-                : null;
+                : report.DeliveredToBranch;
 
         return report with
         {
@@ -1362,7 +1370,7 @@ public sealed class Scheduler
             DeliveredToBranch =
                 outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
                     ? integ.OriginalBranch
-                    : null,
+                    : report.DeliveredToBranch, // design 39 §4: a refused merge keeps a barrier delivery's branch
             DeliveryPendingTerminalGate = false
         };
     }
@@ -3195,6 +3203,11 @@ public sealed class Scheduler
                     Covers = coveredWaves
                 };
                 SettleDelivery(wave, settled2, announce: priorDelivered is null);
+                if (priorDelivered is null)
+                {
+                    // This process settled the record, and the trial just proved the work is on its pinned branch.
+                    NoteBarrierDeliveryLanded(integ);
+                }
 
                 // Design 39 §1c "How a refresh is recorded": read the trigger from the TRIAL, never from
                 // MergeOnSuccessResult (review round 4 "d39-refresh-record") — an AlreadyDelivered trial
@@ -3275,6 +3288,7 @@ public sealed class Scheduler
                     Detail = verdict.ForcedPastDecision ? SuppressingDecisionDetail(suppressingDecision!) : null,
                     Covers = coveredWaves
                 }, announce: true);
+                NoteBarrierDeliveryLanded(integ);
 
                 // Design 39 §1c "How a refresh is recorded": PromoteTrialDelivery is ALWAYS a fast-forward
                 // to the trial ref (review round 4 "d39-refresh-record") — the trigger is the trial's own
@@ -3472,6 +3486,19 @@ public sealed class Scheduler
         if (announce)
         {
             _observer.WaveDelivered(wave, record);
+        }
+    }
+
+    /// <summary>
+    /// B1 (design 39 §4): remember the branch a barrier delivery THIS PROCESS settled landed on —
+    /// <paramref name="integ"/>'s pin, which this process's promotion (or its trial's ancestry check) just verified.
+    /// Never the literal <c>HEAD</c>: a detached checkout names no branch.
+    /// </summary>
+    private void NoteBarrierDeliveryLanded(IntegrationHandle integ)
+    {
+        if (integ.OriginalBranch is { Length: > 0 } branch && !string.Equals(branch, "HEAD", StringComparison.Ordinal))
+        {
+            _barrierDeliveredToBranch = branch;
         }
     }
 
@@ -5645,7 +5672,16 @@ public sealed class Scheduler
             // path that forgot to stamp it would read "on, held by the interlock" on a run that had delivery OFF —
             // the false statement #710 was filed for. Stamping it here leaves no path that can forget.
             MergeOnSuccess = plan.Config.MergeOnSuccess,
-            MergeOnSuccessSource = plan.Config.MergeOnSuccessSource
+            MergeOnSuccessSource = plan.Config.MergeOnSuccessSource,
+
+            // Design 39 §4: once a barrier delivery THIS PROCESS settled has landed, every report names the branch
+            // it landed on — a halted, partially-delivered run included (DescribeDelivery copies it into
+            // delivery.deliveredToBranch). Null otherwise, including a resume whose deliveries all landed in an
+            // earlier process: RunJournal.RecordDelivery keeps the branch that process recorded (B1). Finalize and
+            // CompleteDeferredDelivery keep it when their own run-end merge does not land.
+            DeliveredToBranch = waveDeliveries.Values.Any(r => r.Status == Journal.WaveDeliveryStatus.Delivered)
+                ? _barrierDeliveredToBranch
+                : null
         };
     }
 

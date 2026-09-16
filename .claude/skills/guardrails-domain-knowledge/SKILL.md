@@ -613,7 +613,8 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 - **The delivery target is VERIFIED at merge time, never assumed (#588).** `OriginalBranch` is pinned at
   run start, but the merge itself runs in the repo against whatever `HEAD` is when it fires. If the
   checkout MOVED during the run — a branch switch, or a detached HEAD — the harness **refuses**:
-  `BranchMoved`, nothing merged, `DeliveredToBranch` null so no "delivered to X" line prints, work left
+  `BranchMoved`, nothing merged, no "delivered to X" line prints (that notice keys on the run-end merge
+  landing; `DeliveredToBranch` is null unless an earlier wave's barrier delivery landed, design 39 §4), work left
   on the plan branch. It does NOT check the original branch back out: that would stomp the branch someone
   switched to deliberately. Measured incident: a run started on `master`, a design branch was created
   from HEAD mid-run, and the work merged into that branch while the run truthfully reported `master` —
