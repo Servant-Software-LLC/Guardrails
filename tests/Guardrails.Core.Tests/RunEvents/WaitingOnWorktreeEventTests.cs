@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Text.Json;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Tests.RunEvents;
@@ -142,6 +144,31 @@ public sealed class WaitingOnWorktreeEventTests
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// The display-only guarantee is STRUCTURAL, and this is what makes that checkable rather than merely
+    /// asserted (#722). Every "this can never become a verdict" claim in this feature rests on one fact:
+    /// <see cref="RunLiveness.Assess"/> takes an owner, a host name and a process probe — no clock, and no
+    /// task state — so a waiting task has no parameter through which it could ever reach the liveness
+    /// verdict. Before this test, ADDING such a parameter broke nothing, which left the whole claim resting
+    /// on a signature nothing pinned.
+    /// </summary>
+    [Trait("Category", "RunEvents")]
+    [Fact]
+    public void RunLivenessAssess_TakesNoClockAndNoTaskState()
+    {
+        MethodInfo assess = typeof(RunLiveness).GetMethod(nameof(RunLiveness.Assess))
+            ?? throw new InvalidOperationException("RunLiveness.Assess not found — did it move or get renamed?");
+
+        Type[] parameters = [.. assess.GetParameters().Select(p => p.ParameterType)];
+
+        Assert.Equal([typeof(RunOwner), typeof(string), typeof(IProcessProbe)], parameters);
+
+        // Named explicitly, because these are the two shapes a future change would most plausibly add, and
+        // either would silently turn an observation into an input to a verdict (#704's no-clock rule).
+        Assert.DoesNotContain(parameters, p => p == typeof(DateTimeOffset) || p == typeof(DateTime));
+        Assert.DoesNotContain(parameters, p => typeof(System.Collections.IEnumerable).IsAssignableFrom(p) && p != typeof(string));
     }
 
     [Trait("Category", "RunEvents")]

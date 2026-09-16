@@ -266,7 +266,11 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
         // No paired "done" event exists and none is needed: TaskStarting overwrites both cells on a healthy
         // return, so the wait ends by being replaced rather than by a second event nobody could raise if the
-        // git never comes back.
+        // git never comes back. At DEQUEUE that replacement is immediate; from the serial PRE-PASS it can
+        // lag, because every initially-ready worktree is built before any of them is dispatched — so on a
+        // wide first wave several rows may read `preparing worktree` while only the last is still in git.
+        // The clock under each row is still the truth about when ITS wait began, which is what an operator
+        // reads it for.
         Update(task.Id, "[yellow]preparing worktree[/]", $"[yellow]{Markup.Escape(operation)}[/]");
     }
 

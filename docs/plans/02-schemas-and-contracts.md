@@ -4886,15 +4886,24 @@ purpose.** Unlike a supply, a wave delivery already has a durable, richer record
 `waves.<dir>.delivered` (§7) — so a projection here would be a second, thinner copy of the same fact for an
 agent to keep in sync with. It still reaches §8.2's `observer.jsonl` for render fidelity.
 
-**`task-waiting-on-worktree` is an OBSERVATION, never a verdict (issue #722).** It is emitted when the
-harness DEQUEUES a task whose worktree must still be built and BEGINS that git work — between the task's
-handle assignment and its first attempt — and `operation` names the work in words a human reads (e.g.
-`creating a worktree off the plan branch`). It exists because plan 40's run sat for 28 hours with a live
+**`task-waiting-on-worktree` is an OBSERVATION, never a verdict (issue #722).** It is emitted whenever the
+harness BEGINS the git that builds a task's worktree, and `operation` names that work in words a human reads
+(e.g. `creating a worktree off the plan branch`). **There are two such moments, and a consumer must not
+assume either one:** the serial PRE-PASS that builds every initially-ready task's worktree before any worker
+starts — where the row IS the handle assignment, not something that follows it — and DEQUEUE, where a
+fan-in's or a fork-the-rest sibling's deferred worktree is materialized on the worker that owns it. So a
+waiting row does **not** license the inference that its task has been dispatched. It exists because plan 40's run sat for 28 hours with a live
 process, no child processes and no halt record while one `git worktree add` never returned: the parked
 task was indistinguishable, on every surface, from one the run had not yet reached.
 
 There is **no paired "finished" row**, deliberately: the task's own `task-started` ends the wait, and every
 surface overwrites its row from there, so a second kind would carry nothing a reader does not already have.
+**That ending is prompt at dequeue and can LAG in the pre-pass**, and the difference is worth stating rather
+than glossing: the pre-pass builds every initially-ready worktree in one loop and dispatches them in the
+next, so the first root's `task-started` does not arrive until the LAST of those builds returns. With ten
+ready tasks at a couple of seconds each, several rows can read as waiting while only one is still doing git.
+That is tolerable only because nothing derives a duration or a verdict from these rows — the row is exact
+about when a wait BEGAN and approximate about when it ended.
 The row therefore states WHAT is being waited on and — through the envelope's `at` — WHEN the wait began,
 and **nothing else**. It carries no `outcome`, no `passed`, no `exitCode` and no `detail`, and **no
 component may derive a verdict from it**: the harness cannot tell a slow git from a hung one, which is the
@@ -4948,7 +4957,9 @@ design cites when it rejects a parallel token set.)
 `task-waiting-on-worktree` that precedes it, when the first task the run reaches must have its worktree
 built before it can start (#722). That case is reachable in practice, not theoretical: the harness builds
 the worktrees of every initially-ready task in a serial pre-pass *before* any worker starts, and announces
-each one, so the very first row of a run's bracket is a waiting row whenever the first such build is slow.
+each one unconditionally, so in worktree mode the very first row of a run's bracket is ALWAYS a waiting row.
+(There is no "slow enough to be worth announcing" judgement anywhere — the harness does not time these
+builds, and must not.)
 The same applies to each wave's entry tasks, and to a resumed run whose fan-in has become initially-ready
 because its producers are already green. Those two kinds are therefore the only ones that can open a
 bracket, and a consumer asking *"has this run reached the DAG?"* must accept EITHER: one that keys on

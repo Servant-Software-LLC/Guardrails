@@ -47,8 +47,12 @@ public sealed class StatusWaitingOnWorktreeTests
     private static string[] Lines(string output) =>
         [.. output.Split('\n').Select(line => line.TrimEnd('\r'))];
 
-    /// <summary>A journal as a live run leaves it: 01-first settled, 02-second not yet started, and an owner with no recorded end.</summary>
-    private static void WriteJournal(StatePlanBuilder plan)
+    /// <summary>
+    /// A journal as a live run leaves it: 01-first settled, 02-second not yet started, and an owner with no
+    /// recorded end. <paramref name="host"/> overrides the recorded host, so a test can produce the
+    /// ON-ANOTHER-HOST verdict (recorded elsewhere, not running here).
+    /// </summary>
+    private static void WriteJournal(StatePlanBuilder plan, string? host = null)
     {
         var document = new JournalDocument
         {
@@ -59,7 +63,7 @@ public sealed class StatusWaitingOnWorktreeTests
                 ["01-first"] = new() { Status = JournalTaskStatus.Succeeded },
                 ["02-second"] = new() { Status = JournalTaskStatus.Pending }
             },
-            Owner = new RunOwner { Pid = 14168, ProcessStartedAt = AnyStart, Host = RunLiveness.ThisHost() }
+            Owner = new RunOwner { Pid = 14168, ProcessStartedAt = AnyStart, Host = host ?? RunLiveness.ThisHost() }
         };
 
         string stateDir = Path.Combine(plan.PlanDir, "state");
@@ -199,7 +203,15 @@ public sealed class StatusWaitingOnWorktreeTests
             Assert.DoesNotContain(forbidden, output, StringComparison.Ordinal);
         }
 
-        Assert.Contains(ObservationBlock(output), line => line.Contains("02-second", StringComparison.Ordinal));
+        string[] block = ObservationBlock(output);
+
+        // The PRESENT-tense header, pinned. Without this nothing in the repo asserted it: widening
+        // ObservationBlock to accept either header (so the past-tense test could find its block) removed the
+        // only thing that distinguished them, and `RunIsOver => true` then passed every test while printing
+        // "Was waiting on a worktree when the run stopped" directly beneath "Run state: RUNNING". A false
+        // death reported about a LIVE run is strictly worse than the stale present-tense lead F5 fixed.
+        Assert.StartsWith("Waiting on a worktree", block[0], StringComparison.Ordinal);
+        Assert.Contains(block, line => line.Contains("02-second", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -232,6 +244,33 @@ public sealed class StatusWaitingOnWorktreeTests
         // The two present-tense constructions this must not use about a run that is over.
         Assert.DoesNotContain(" ago)", row, StringComparison.Ordinal);
         Assert.DoesNotContain("since", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #722 — the tense changes only for the two verdicts that DISPROVE the present tense. A run recorded on
+    /// another host is not running HERE, which says nothing about a process table this machine cannot see
+    /// (#704), so the wait stays present-tense. This pins <c>RunIsOver</c>'s own documented rule that every
+    /// UNKNOWN verdict is left alone; without it, widening that predicate to include
+    /// <c>OnAnotherHost</c> would report a false death about a run most likely alive elsewhere, and no test
+    /// would notice.
+    /// </summary>
+    [Fact]
+    public async Task AWaitOnARunRecordedOnAnotherHost_StaysInThePresentTense()
+    {
+        using StatePlanBuilder plan = TwoTaskPlan();
+        WriteJournal(plan, host: "some-other-machine");
+
+        WriteEvents(plan,
+            ("task-waiting-on-worktree", "02-second", FreshSegmentOperation, new DateTimeOffset(2026, 9, 11, 22, 46, 25, TimeSpan.Zero)));
+
+        string output = await StatusAsync(plan.PlanDir, new FakeProcessTable(ProcessCheck.NotRunning));
+
+        Assert.Contains("Run state: UNKNOWN", output, StringComparison.Ordinal);
+
+        string[] block = ObservationBlock(output);
+        Assert.NotEmpty(block);
+        Assert.StartsWith("Waiting on a worktree", block[0], StringComparison.Ordinal);
+        Assert.DoesNotContain("Was waiting", block[0], StringComparison.Ordinal);
     }
 
     /// <summary>Nothing waiting, nothing printed — the pause ledger's discipline, so an ordinary run's status stays noise-free.</summary>

@@ -45,7 +45,9 @@ public sealed class ConsoleRunObserver : IRunObserver
             // Issue #722. Under --no-ui the tailed log IS the record, and the gap this closes is the one a
             // CI log shows worst: between a task's [task] line and its first output there is now a line
             // saying the harness is doing git, so a run parked there is not silence. No paired "done" line —
-            // the task's own [task] line follows on a healthy return.
+            // the task's own [task] line follows on a healthy return. Immediately at dequeue; from the
+            // serial pre-pass it lags, since every initially-ready worktree is built before any is
+            // dispatched, so a wide first wave prints several [worktree] lines before the first [task].
             _output.WriteLine($"[worktree] {task.Id}: {operation}");
         }
     }

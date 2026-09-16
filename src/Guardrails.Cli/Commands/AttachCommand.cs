@@ -248,7 +248,15 @@ public static class AttachCommand
     /// A member this replay does not (yet) know how to decode falls through as a no-op — forward-compatible
     /// with event types this task never had to invent a wire shape for.
     /// </summary>
-    private static void Dispatch(JsonNode node, IRunObserver renderer, IReadOnlyDictionary<string, TaskNode> taskById)
+    /// <remarks>
+    /// Public (not private) for the same reason <c>RunCommand.Hyperlink</c> and
+    /// <c>LiveRunObserver.StatusMarkup</c> are: the Cli assembly ships no <c>InternalsVisibleTo</c>, so a
+    /// pure mapping method IS the test seam. It matters here specifically because "dispatched" and
+    /// "silently skipped" are INDISTINGUISHABLE from outside — both exit Success, and the renderer draws to
+    /// the process-global Spectre console rather than the injected <c>IConsoleIo</c> — so a CLI-level test
+    /// would pass with a <c>case</c> deleted and guard nothing at all.
+    /// </remarks>
+    public static void Dispatch(JsonNode node, IRunObserver renderer, IReadOnlyDictionary<string, TaskNode> taskById)
     {
         string member = RequireString(node, "member");
 

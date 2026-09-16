@@ -4228,7 +4228,11 @@ public sealed class Scheduler
     ///
     /// <para>The observer is told BEFORE the call, because after it there may be nothing left to tell
     /// anyone. There is no paired "finished" event: the task's own <see cref="IRunObserver.TaskStarting"/>
-    /// follows within microseconds of a healthy return and every surface overwrites its row from there.</para>
+    /// overwrites its row instead. HERE, at dequeue, that follows within microseconds of a healthy return —
+    /// but the pre-pass emitter shares this event and does NOT have that property (it builds every
+    /// initially-ready worktree before dispatching any of them), so the general contract is the weaker one
+    /// stated on <see cref="IRunObserver.TaskWaitingOnWorktree"/>: exact about when a wait began,
+    /// approximate about when it ended.</para>
     /// </summary>
     private WorktreeHandle MaterializeDeferredWorktree(RunContext context, TaskEnvelope envelope)
     {

@@ -73,10 +73,27 @@ public sealed class FanInWorktreeDeferralTests
 
         public TaskCompletionSource ReleasePlanTipRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        /// <summary>Signalled when a gated <see cref="CurrentPlanBranchTip"/> is about to block — the option-B entry point.</summary>
+        public TaskCompletionSource PlanTipReadEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public ConcurrentQueue<string> RewoundTo { get; } = [];
 
         /// <summary>taskId → whether the observer had ALREADY been told when the git call began (#722 F1).</summary>
         public ConcurrentDictionary<string, bool> AnnouncedBeforeCreate { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>One worktree-creating GIT call: the task it was for, and which kind (#722 WEAK-2).</summary>
+        public sealed record GitCreation(string TaskId, string Kind);
+
+        /// <summary>
+        /// EVERY git call this provider made that creates a worktree, in order. The census test derives its
+        /// expectations from THIS rather than from a hand-written list of task ids, so a creation path added
+        /// later is covered by default instead of being unguarded by default — which is exactly how the fork
+        /// emitter came to be missed.
+        /// </summary>
+        public ConcurrentQueue<GitCreation> GitCreations { get; } = [];
+
+        /// <summary>Tasks handed a REUSED directory — a pure handle rewrite, no git, so nothing to announce.</summary>
+        public ConcurrentQueue<string> ReusedTaskIds { get; } = [];
 
         public int TipReads => Volatile.Read(ref _tipReads);
 
@@ -123,6 +140,7 @@ public sealed class FanInWorktreeDeferralTests
             // #722 F1: sampled BEFORE anything else, so the test can pin the documented ordering — the
             // observer is told the wait has begun BEFORE the call that may never return.
             AnnouncedBeforeCreate[taskId] = WasAnnounced?.Invoke(taskId) ?? false;
+            GitCreations.Enqueue(new GitCreation(taskId, "segment"));
 
             if (GateCreateSegmentFor is { } gated && string.Equals(taskId, gated, StringComparison.Ordinal))
             {
@@ -156,7 +174,13 @@ public sealed class FanInWorktreeDeferralTests
             };
         }
 
-        public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt) => new()
+        public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt)
+        {
+            ReusedTaskIds.Enqueue(taskId);
+            return ReuseHandle(upstreamSegment, taskId);
+        }
+
+        private static WorktreeHandle ReuseHandle(WorktreeHandle upstreamSegment, string taskId) => new()
         {
             WorktreePath = upstreamSegment.WorktreePath,
             SegmentBranchName = upstreamSegment.SegmentBranchName,
@@ -168,6 +192,9 @@ public sealed class FanInWorktreeDeferralTests
 
         public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt)
         {
+            AnnouncedBeforeCreate[taskId] = WasAnnounced?.Invoke(taskId) ?? false;
+            GitCreations.Enqueue(new GitCreation(taskId, "fork"));
+
             string path = $"fork://{taskId}/attempt-{attempt}";
             lock (_tipGate)
             {
@@ -214,6 +241,7 @@ public sealed class FanInWorktreeDeferralTests
             // deterministic instead of a race against the test's own timing.
             if (GateCurrentPlanBranchTip && Volatile.Read(ref _integrates) > 0)
             {
+                PlanTipReadEntered.TrySetResult();
                 ReleasePlanTipRead.Task.GetAwaiter().GetResult();
             }
 
@@ -501,6 +529,75 @@ public sealed class FanInWorktreeDeferralTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
+    // 2b. The CENSUS — every worktree-creating git is announced (#722 WEAK-2).
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// There are THREE emitters, not two: the serial pre-pass, a fan-in materialized at dequeue, and a
+    /// FORK-THE-REST sibling at dequeue. The fork one was missed by the first round of guards precisely
+    /// because those were written per-known-call-site, so the next emitter added would be unguarded by
+    /// default in the same way — and fork-the-rest is not a rare path: every non-inheritor single-producer
+    /// dependent takes it, so a 5-wide fan-out is four forked <c>git worktree add</c> calls per settle.
+    ///
+    /// <para>This closes the CLASS instead of its instances: the expectation is derived from the git calls
+    /// the provider actually made, so a creation path added later is covered without anyone remembering to
+    /// add an assertion for it. The negative control matters as much — an INHERITED directory is a pure
+    /// handle rewrite with no git, so it must NOT be announced; without that, "announce everything" would
+    /// pass this test while flooding the stream.</para>
+    /// </summary>
+    [Fact]
+    public async Task EveryWorktreeCreatingGit_IsAnnouncedBeforeItRuns()
+    {
+        // 01-p is a pre-pass root. Its two single-producer dependents split: one INHERITS (no git), one
+        // FORKS (git). 04-fanin is multi-producer, so it is a fresh segment created at dequeue.
+        PlanDefinition plan = Plan(
+            Task("01-p"),
+            Task("02-d1", "01-p"),
+            Task("03-d2", "01-p"),
+            Task("04-fanin", "02-d1", "03-d2"));
+
+        var provider = new TipTrackingWorktreeProvider();
+        var executor = new GatedRecordingExecutor();
+        var observer = new SettleArrivalObserver();
+        provider.WasAnnounced = observer.WasAnnounced;
+
+        RunReport report = await Create(plan, executor, provider, observer, parallelism: 4)
+            .RunAsync(plan, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded, string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        TipTrackingWorktreeProvider.GitCreation[] creations = [.. provider.GitCreations];
+
+        // Non-vacuity: this fixture really did exercise BOTH creation kinds. Without it, a topology change
+        // that stopped producing forks would leave the fork emitter unguarded again and silently.
+        Assert.Contains(creations, c => c.Kind == "segment");
+        Assert.Contains(creations, c => c.Kind == "fork");
+
+        foreach (TipTrackingWorktreeProvider.GitCreation creation in creations)
+        {
+            Assert.True(
+                provider.AnnouncedBeforeCreate.TryGetValue(creation.TaskId, out bool announced) && announced,
+                $"the harness ran a worktree-creating git ({creation.Kind}) for '{creation.TaskId}' without "
+                + "announcing it first (#722). A hang in that call is invisible on every surface — which is "
+                + "the silence this issue exists to end, restored on one path while the others stay guarded.");
+
+            string expected = creation.Kind == "fork"
+                ? "creating a worktree from its producer's commit"
+                : FreshSegmentOperation;
+            Assert.Equal(expected, observer.OperationFor(creation.TaskId));
+        }
+
+        // Negative control: a REUSED directory runs no git, so it must stay silent.
+        foreach (string reused in provider.ReusedTaskIds)
+        {
+            Assert.False(
+                observer.WasAnnounced(reused),
+                $"'{reused}' inherited its producer's directory — a pure handle rewrite with no git — yet a "
+                + "worktree wait was announced for it (#722). The row must mean git is running.");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     // 3. The OTHER unbounded git on this seam (#722 F7).
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -540,18 +637,33 @@ public sealed class FanInWorktreeDeferralTests
             executor.Complete("01-p1");
             executor.Complete("02-p2");
 
+            // Wait until the fan-in's worktree work has BEGUN, in whichever form it takes: off-gate inside
+            // CreateSegment (correct), or under _gate in a plan-tip capture (rejected option B, which blocks
+            // in AssignDependentHandles before any CreateSegment is reached). Releasing the sibling before
+            // this point lets it settle in the gap and pass by LUCK — measured: that is exactly what
+            // happened the first time this test was mutated, and it then failed with a misleading "the
+            // fixture never reached the condition" instead of naming the defect it had caught.
             await ArrivesAsync(
-                provider.CreateSegmentEntered.Task,
-                "the fan-in's CreateSegment was never entered — the fixture never reached the condition.");
+                System.Threading.Tasks.Task.WhenAny(
+                    provider.CreateSegmentEntered.Task, provider.PlanTipReadEntered.Task),
+                "neither the fan-in's CreateSegment nor a gated plan-tip read was ever entered — the "
+                + "fixture never reached the condition it is about.");
 
             executor.Complete("04-independent");
 
+            // THE assertion.
             await ArrivesAsync(
                 observer.Finished("04-independent"),
-                "a sibling's settle did not land while BOTH a fan-in's worktree creation and every "
-                + "plan-tip read were blocked (#722 F7). Some git call is running under the scheduler's "
-                + "settle lock again — most likely a CurrentPlanBranchTip capture, which is rejected "
-                + $"option B's shape and leaves the original hang in place. Tip reads so far: {provider.TipReads}.");
+                "a sibling's settle did not land while every plan-tip read was blocked (#722 F7). A git "
+                + "call is running under the scheduler's settle lock again — the signature of REJECTED "
+                + "option B (capture the base under the gate, defer only the tree), which leaves this "
+                + $"issue's hang fully in place. Tip reads so far: {provider.TipReads}.");
+
+            provider.ReleasePlanTipRead.TrySetResult();
+
+            await ArrivesAsync(
+                provider.CreateSegmentEntered.Task,
+                "the fan-in's CreateSegment was never entered — the fixture never reached the condition.");
 
             provider.ReleasePlanTipRead.TrySetResult();
             provider.ReleaseCreateSegment.TrySetResult();

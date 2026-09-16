@@ -385,6 +385,11 @@ public interface IRunObserver
     /// harness raises this when the wait BEGINS and raises nothing when it ends — the task's own
     /// <see cref="TaskStarting"/> is the end of it, and every surface overwrites the row from there — so no
     /// implementation needs a clock, a threshold, or a paired event, and none may grow one.
+    /// <b>That ending is prompt at dequeue but LAGS in the serial pre-pass</b>, which builds every
+    /// initially-ready task's worktree in one loop and only dispatches them in the next: the first root's
+    /// <see cref="TaskStarting"/> does not arrive until the LAST of those builds returns, so several rows can
+    /// read as waiting while only one is still doing git. Tolerable precisely because nothing derives a
+    /// duration from these rows — exact about when a wait began, approximate about when it ended.
     /// <c>RunLiveness.Assess</c> takes no clock and no task state, deliberately (#704); this event gives a
     /// waiting task no parameter to travel through into that verdict, and must not be given one.</para>
     ///
