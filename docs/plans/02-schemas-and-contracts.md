@@ -2588,6 +2588,15 @@ record nor the gate happens — deliberate deferral (plan-source provenance desi
 
 ## 7. `state/run.json` (journal)
 
+**The journal is written atomically (§0 intro: write a temp file, then move it over the target), and that
+final move is RETRIED while another process holds the file open (issue #727).** On Windows the move fails
+while any other handle has `run.json` open, even one that is only reading, and the Scheduler treats a failed
+journal write as fatal — so before #727 a reader could abort a healthy run. Every reader a run may have
+alongside it depends on this retry: `guardrails logs` re-reads the journal on every page load (§12.2),
+`guardrails attach` re-reads it every 250 ms while it replays a live run (§12.2), and `guardrails status`
+reads it on demand. The retry is bounded (about a third of a second); a handle that never lets go still
+fails the write, loudly, with a message naming the likely cause.
+
 ```jsonc
 {
   "version": 1,
