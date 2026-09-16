@@ -26,6 +26,12 @@
 #     Linux CI runner (a CRLF checkout breaks `#!/usr/bin/env bash`). ---
 /.github/scripts/*.sh eol=lf
 
+# --- The release test-count baseline: `release-preflight.sh verify` diffs this file against
+#     counts it generates with LF. Without this pin a Windows checkout (core.autocrlf=true)
+#     materializes it as CRLF, and every verify fails on invisible trailing ^M — a confusing
+#     red that looks like drifted test counts and is not. ---
+/.github/release-baseline.txt eol=lf
+
 # --- Root bootstrap installer: LF so the bash shebang runs when a macOS/Linux user
 #     downloads it via `curl … | bash` (a CRLF checkout breaks `#!/usr/bin/env bash`). ---
 /install.sh eol=lf
