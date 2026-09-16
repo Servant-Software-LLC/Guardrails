@@ -756,6 +756,7 @@ internal sealed class AttemptJournaler
         string feedback,
         IReadOnlyList<GuardrailResult> guardrailResults,
         IReadOnlyList<FailedGuardrail> failedGuardrails,
+        PermissionWallDecision wall,
         AttemptProvenance? provenance = null,
         AttemptSegments? segments = null,
         HarnessWriteRecord? harnessWrite = null)
@@ -798,7 +799,11 @@ internal sealed class AttemptJournaler
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = action.ExitCode,
             Guardrails = guardrailResults,
-            Summary = summary
+            Summary = summary,
+            // #707 delta review (W2-a): this halt is the SAME wall class the #86/#104 site routes — the
+            // structural `.claude/` paths are what no retry clears — so it carries the same signal rather than
+            // relying on the default-safe branch. Routing must never have to infer a wall from prose.
+            HardBlocker = GateSignal.PermissionWall(wall)
         }, FeedbackPath: null, Outcome: primaryOutcome);
     }
 

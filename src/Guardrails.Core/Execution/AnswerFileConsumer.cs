@@ -174,7 +174,9 @@ public sealed class AnswerFileConsumer
         }
 
         // 6. Answerable gate (§7.3): only needs-human / wave-checkpoint bind. review-gate (no answer kind
-        //    exists, §7.5), a hard blocker, and any terminal gate are NON-answerable → reject.
+        //    exists, §7.5), the `hard-blocker` gate every HARNESS-decided halt is filed under (#707 delta
+        //    review — no answer widens a writeScope, grants a blocked path or raises a cost cap), and any
+        //    other terminal gate are NON-answerable → reject.
         if (!AnswerableGates.IsAnswerable(gate))
         {
             return ReEscalate(AnswerOutcome.Rejected, $"gate '{gate}' is not answerable by an answer file (§7.3)");

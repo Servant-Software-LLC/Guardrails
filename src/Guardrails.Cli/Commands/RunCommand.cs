@@ -1317,7 +1317,7 @@ public static class RunCommand
         // Surface the distinct EscalationsPending code so a consumer never reads an answer-required halt as a
         // plain needs-human (2) — and never as green (0). A non-autonomous needs-human writes no such record
         // and still returns TaskFailed.
-        if (HasUnresolvedEscalation(planDirectory, runId))
+        if (HasUnresolvedAnswerableEscalation(planDirectory, runId))
         {
             return ExitCodes.EscalationsPending;
         }
@@ -1326,17 +1326,27 @@ public static class RunCommand
     }
 
     /// <summary>
-    /// True when this run ended with at least one UNRESOLVED escalation (SSOT §7.1/§7.6, issue #361 Phase 3):
-    /// an autonomous-mode <see cref="Core.Execution.FileEscalationSink"/> record under
+    /// True when this run ended with at least one UNRESOLVED, ANSWERABLE escalation (SSOT §7.1/§7.6, issue
+    /// #361 Phase 3): an autonomous-mode <see cref="Core.Execution.FileEscalationSink"/> record under
     /// <c>logs/&lt;runId&gt;/escalations/</c> whose <c>status</c> is still <c>open</c> — not yet flipped to
-    /// <c>consumed</c> by a resume's answer-injection. This is the answer-required-halt signal the exit-code
-    /// mapping branches on to return <see cref="ExitCodes.EscalationsPending"/> instead of a plain
-    /// <see cref="ExitCodes.TaskFailed"/>. Best-effort: an unreadable/corrupt record is skipped (a read hiccup
-    /// must neither manufacture nor mask the distinct code), and a run with no <c>escalations/</c> dir returns
-    /// false. The sibling <c>&lt;seq&gt;-&lt;gate&gt;.answer.json</c> reply files carry no <c>status</c>, so
-    /// they are naturally ignored.
+    /// <c>consumed</c> by a resume's answer-injection — on a gate an answer file may actually bind
+    /// (<see cref="Core.Execution.AnswerableGates.IsAnswerable"/>). This is the answer-required-halt signal the
+    /// exit-code mapping branches on to return <see cref="ExitCodes.EscalationsPending"/> instead of a plain
+    /// <see cref="ExitCodes.TaskFailed"/>.
+    ///
+    /// <para><b>Why the gate is checked (#707 delta review).</b> Code 4 means "a firstmate answer file can
+    /// unblock this on the next resume". For a HARNESS-decided halt filed under
+    /// <see cref="Core.Execution.AnswerableGates.HardBlockerGate"/> that claim is false: the consumer refuses
+    /// such an answer, so the run would report answer-required forever while the real remedy — editing
+    /// <c>task.json</c>, granting a path, raising the cap — went unstated. Those runs are a plain actionable
+    /// needs-human (2). A <c>review-gate</c> record is likewise non-answerable and no longer forces 4.</para>
+    ///
+    /// <para>Best-effort: an unreadable/corrupt record, or one with no readable <c>gate</c>, is skipped (a read
+    /// hiccup must neither manufacture nor mask the distinct code), and a run with no <c>escalations/</c> dir
+    /// returns false. The sibling <c>&lt;seq&gt;-&lt;gate&gt;.answer.json</c> reply files carry no
+    /// <c>status</c>, so they are naturally ignored.</para>
     /// </summary>
-    private static bool HasUnresolvedEscalation(string planDirectory, string runId)
+    private static bool HasUnresolvedAnswerableEscalation(string planDirectory, string runId)
     {
         string escalationsDir = Path.Combine(planDirectory, "logs", runId, "escalations");
         if (!Directory.Exists(escalationsDir))
@@ -1351,7 +1361,10 @@ public static class RunCommand
                 using JsonDocument document = JsonDocument.Parse(File.ReadAllText(recordPath));
                 if (document.RootElement.ValueKind == JsonValueKind.Object
                     && document.RootElement.TryGetProperty("status", out JsonElement status)
-                    && status.ValueEquals("open"))
+                    && status.ValueEquals("open")
+                    && document.RootElement.TryGetProperty("gate", out JsonElement gate)
+                    && gate.GetString() is { } gateName
+                    && Core.Execution.AnswerableGates.IsAnswerable(gateName))
                 {
                     return true;
                 }

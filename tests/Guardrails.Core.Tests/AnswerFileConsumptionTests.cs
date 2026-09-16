@@ -428,6 +428,39 @@ public sealed class AnswerFileConsumptionTests : IDisposable
         Assert.Equal("open", ReadStatus(seq, "blocker"));
     }
 
+    [Fact]
+    public void HardBlockerGateAnswer_IsRejected_TheGateIsNotAnswerable()
+    {
+        const int seq = 16;
+        // The #707 delta review (W2-b): the harness's OWN needs-human halts — a permission wall, a no-route
+        // settle, a write-scope gap, a failed task preflight, a cost cap — are filed under the `hard-blocker`
+        // gate precisely BECAUSE no answer resolves them. An answer cannot widen a writeScope, grant a blocked
+        // path, or raise a cost cap; injecting one only re-drives a task that must fail again, and the run
+        // then reports "answer required" when the real remedy is editing task.json or the config.
+        WriteEscalation(seq, "hard-blocker", TaskId, _taskHash, criticality: null);
+        AnswerFile answer = new()
+        {
+            RunId = RunId,
+            Seq = seq,
+            Gate = "hard-blocker",
+            Subject = TaskId,
+            DefinitionHash = _taskHash,
+            AnsweredBy = "firstmate:crew-lead@example",
+            AnsweredAt = DateTimeOffset.Parse("2026-07-19T14:40:02Z"),
+            Answer = new AnswerPayload { Kind = "needs-human", Text = "add src/Stub.cs to the writeScope" }
+        };
+        WriteAnswer(answer, fileName: $"{seq}-hard-blocker.answer.json");
+
+        var consumer = new AnswerFileConsumer(_escalationsDir);
+
+        AnswerConsumptionResult result = consumer.Consume(seq, "hard-blocker", _taskHash, proceedUnreviewed: false);
+
+        Assert.Equal(AnswerOutcome.Rejected, result.Outcome);
+        Assert.True(result.ReEscalated);
+        Assert.Null(result.InjectedPromptSection);
+        Assert.Equal("open", ReadStatus(seq, "hard-blocker"));
+    }
+
     // =====================================================================================================
     //  wave-checkpoint ⇒ a wave-proceed payload (proceed/hold) applies at the checkpoint  (§7.4)
     // =====================================================================================================

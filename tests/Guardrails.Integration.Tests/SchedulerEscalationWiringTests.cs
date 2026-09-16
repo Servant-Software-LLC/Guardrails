@@ -489,6 +489,37 @@ public sealed class SchedulerEscalationWiringTests
         Assert.Equal(4, exit);                         // ExitCodes.EscalationsPending (§7.1), added by task 15
     }
 
+    [Fact]
+    public async Task Cli_RunWhoseOnlyEscalationIsAHardBlocker_ExitsTaskFailed_NotAnswerRequired()
+    {
+        // The #707 delta review (W2-b). A HARNESS halt — here a failed task preflight — escalates, but no
+        // answer file can resolve it: the remedy is editing task.json or the environment. Exit 4 means
+        // "a firstmate answer unblocks this on the next resume", which is false for a hard blocker, so such a
+        // run must exit 2 (actionable needs-human). Exit 4 stays reserved for the ANSWERABLE gates, proven by
+        // Cli_RunWithUnresolvedEscalation_ExitsEscalationsPending_DistinctFromNeedsHuman above.
+        using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
+            .AddFailingPreflightTask("01-build");
+
+        (int exit, string output) = await RunViaCliAsync("run", plan.PlanDir, "--autonomous", "--no-ui", "--max-cost-usd", "50", "--no-log-server");
+
+        // The run must have REACHED the DAG: a plan that failed to load exits 1 with no journal at all, and
+        // every assertion below would then fail on an unrelated IO error instead of naming the real cause.
+        Assert.True(
+            File.Exists(RunJournal.PathFor(plan.PlanDir)),
+            $"the run wrote no journal — it never started. CLI output:\n{output}");
+
+        // Not vacuous: an escalation WAS raised — under the non-answerable gate — and is still open.
+        string[] hardBlockers = Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-hard-blocker.json");
+        Assert.NotEmpty(hardBlockers);
+        Assert.Contains(Decisions(plan.PlanDir),
+            d => d.Decision == DecisionTokens.Escalated && d.Gate == "hard-blocker" && d.Subject == "01-build");
+        Assert.Empty(Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-needs-human.json"));
+
+        Assert.NotEqual(ExitCodes.Success, exit);
+        Assert.NotEqual(ExitCodes.EscalationsPending, exit); // no answer file can clear a hard blocker
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+    }
+
     // ────────────────────────────────────────────────────────────────────────────────────────────
     //  A real, runnable autonomous plan folder whose prompt runners are FAKE, deterministic CLIs.
     //  Everything lives under the system temp dir (never the worktree), so nothing leaks into the
@@ -621,6 +652,29 @@ public sealed class SchedulerEscalationWiringTests
         public EscalationPlanBuilder AddTransientTask(string id)
         {
             WriteTask(id, mode: "transient", question: "");
+            return this;
+        }
+
+        /// <summary>
+        /// A task whose <c>preflights/</c> gate FAILS (SSOT §7): a HARNESS halt with no agent question — the
+        /// action never runs, no retry is burned, and no answer file can clear it. The delta review's W2-b
+        /// fixture. The check carries the <c>catches:</c> declaration the four-folder model enforces (GR2027).
+        /// </summary>
+        public EscalationPlanBuilder AddFailingPreflightTask(string id)
+        {
+            WriteTask(id, mode: "ok", question: "");
+            string preflightsDir = Path.Combine(_root, "tasks", id, "preflights");
+            Directory.CreateDirectory(preflightsDir);
+
+            // The `catches:` declaration must OPEN the file (GR2027): the scan stops at the first line that is
+            // not a comment, and `@echo off` is real code — which is why this is a .ps1 on Windows, mirroring
+            // the proven GateFailurePersistenceTests recipe, rather than the .cmd used for the fake CLIs.
+            const string catches = "# catches: the upstream producer never delivered the bytes this task inherits";
+            WriteExecutable(
+                Path.Combine(preflightsDir, Windows ? "01-upstream-materialized.ps1" : "01-upstream-materialized.sh"),
+                Windows
+                    ? $"{catches}\r\nWrite-Output 'upstream artifact is absent'\r\nexit 1\r\n"
+                    : $"{catches}\necho 'upstream artifact is absent'\nexit 1\n");
             return this;
         }
 
