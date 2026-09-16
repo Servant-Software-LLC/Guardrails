@@ -29,6 +29,9 @@ $pinned = @(
     'Compute_RefusesAPathUnderThePlanFolder',
     'Compute_FailsClosed_WhenAnotherTaskDeclaresNoWriteScope',
     'Compute_RefusesAPathAnotherTaskMayProduce',
+    # ADDED AT REVIEW - the discriminating row for the DECIDED d41-candidate-scope option. See task 02's
+    # red census for why every other row is green under the REJECTED option too.
+    'Compute_ReturnsACandidate_WhenTheHaltedTasksOwnWriteScopeCoversThePath',
     'Compute_RefusesAPathAlreadyPresentOnTheRunBase',
     'Compute_RefusesAPathWithACaseOnlyTwinOnTheRunBase',
     'Compute_RefusesAPathThisRunDeleted',

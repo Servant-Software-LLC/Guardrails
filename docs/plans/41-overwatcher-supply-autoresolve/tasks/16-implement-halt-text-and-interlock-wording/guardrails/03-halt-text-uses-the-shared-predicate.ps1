@@ -93,10 +93,36 @@ if ($scan -cmatch '\bResourcePathToken\b') {
     $failures += "$rel still declares or uses ResourcePathToken. Deleting it is the point: §2.1 requires ONE producer of the path-token match, and the tests cannot see a leftover private copy because both spellings render identical text for every input the suite supplies. Remove the field and its use; MissingResourceSignal replaces both."
 }
 
+# RENAME-PROOF SECOND ANCHOR (review finding). The clause above bans an IDENTIFIER, and an identifier is
+# something the author may freely vary: keeping the private regex and renaming it PathTokenPattern, beside
+# a real MissingResourceSignal call, satisfies every other clause here. So also ban the CONSTRUCT.
+# Reads $raw DELIBERATELY: the declaration's pattern lives in a string literal, which $scan blanks and in
+# which $safe rewrites '/' to '#', so neither derived level can see it.
+# MEASURED on the untouched tree: 'private static readonly Regex' occurs EXACTLY ONCE in this file, at the
+# ResourcePathToken declaration this task deletes -> baseline 1, a removal deliverable, red on arrival.
+# OVER-MATCH CHECK (#470): that single occurrence IS the member being removed, so the ban cannot false-red
+# code that must survive. (A ban on 'new Regex(' or '[GeneratedRegex' was considered and REJECTED: the
+# declaration uses a target-typed `new(...)`, so both measure 0 today AND 0 after a rename - a clause that
+# could never fire, which is the defect this review just removed from the wording ban below.)
+if ($raw -cmatch 'private static readonly Regex') {
+    $failures += "$rel still declares a private compiled Regex for the path-token match. Renaming ResourcePathToken does not satisfy §2.1 - it requires ONE producer, and a second live spelling drifts silently because both render identical text for every input the suite supplies. Delete the declaration and call MissingResourceSignal."
+}
+
 # --- FORBIDDEN: the two wording ratchets ------------------------------------------------------------
 # These read $code, NOT $scan: the banned strings are option and banner text living in string literals,
 # which $scan would strip - the clause would then be vacuously green however the wording was left.
-if ($code -cmatch 'proceeded-best-guess / proceeded-unreviewed') {
+#
+# THE SEPARATOR IS MATCHED AS '.', NOT AS '/', AND THAT IS THE WHOLE FIX (review finding).
+# The first spelling of this clause hunted for the literal 'proceeded-best-guess / proceeded-unreviewed'
+# and COULD NEVER FIRE. The $safe pass above replaces / and * INSIDE string literals with '#', and this
+# banned text IS a string literal (the --merge-on-success Description), so by the time $code exists it
+# reads 'proceeded-best-guess # proceeded-unreviewed'. Proven with a mutant: a file keeping the
+# enumeration verbatim exited 0. Its DECLARED baseline was wrong too - raw 1, $code 0 - which is why the
+# per-CLAUSE census (#478) catches this and a per-SCRIPT red never could: the script exited 1 the whole
+# time, on its siblings.
+# '.' matches the neutralized '#' and an un-neutralized '/' alike, so the clause now fires either way.
+# RE-MEASURED after the change, over this script's own $code: 1 (a removal deliverable, red on arrival).
+if ($code -cmatch 'proceeded-best-guess\s*.\s*proceeded-unreviewed') {
     $failures += "$rel still enumerates 'proceeded-best-guess / proceeded-unreviewed' in the --merge-on-success description. Design 41 §6 puts a THIRD token, auto-supplied, into the one shared delivery-interlock set, so the enumeration - and the 'this flag matters only for those two cases' tail beside it - are now false. Name a machine decision without enumerating only those two."
 }
 

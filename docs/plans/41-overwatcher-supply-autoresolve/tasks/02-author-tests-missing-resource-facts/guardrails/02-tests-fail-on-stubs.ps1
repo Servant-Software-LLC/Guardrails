@@ -38,6 +38,14 @@ $pinned = @(
     'Compute_RefusesAPathUnderThePlanFolder',
     'Compute_FailsClosed_WhenAnotherTaskDeclaresNoWriteScope',
     'Compute_RefusesAPathAnotherTaskMayProduce',
+    # ADDED AT REVIEW - the ONLY row that separates the DECIDED d41-candidate-scope option from the
+    # rejected one. The review chose "every OTHER task declares a writeScope and none covers it" over
+    # "NO task in the plan, INCLUDING the halted one". Both options pass every other row here, and both
+    # pass the wiring proof too, because that fixture's halted task declares writeScope ["02-done.txt"]
+    # and so does not own vendor/resource.js. Without this row an implementation written
+    # `plan.Tasks.Any(...)` instead of `plan.Tasks.Where(t => t.Id != haltedTask.Id).Any(...)` ships
+    # green - and it refuses exactly the vendoring-task case the decision exists to serve.
+    'Compute_ReturnsACandidate_WhenTheHaltedTasksOwnWriteScopeCoversThePath',
     'Compute_RefusesAPathAlreadyPresentOnTheRunBase',
     'Compute_RefusesAPathWithACaseOnlyTwinOnTheRunBase',
     'Compute_RefusesAPathThisRunDeleted',

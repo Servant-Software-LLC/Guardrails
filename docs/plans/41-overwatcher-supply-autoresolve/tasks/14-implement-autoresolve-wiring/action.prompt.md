@@ -98,6 +98,27 @@ second one. The public `CreateExecutor(plan, processRunner, probe, observer, int
 signature and its tuple** — `Revalidate.cs:113` deconstructs it — so delegate to an internal overload
 that accepts a prebuilt `Overwatch`.
 
+### The OTHER half of §2.1's shared threshold rule — it is yours
+
+§2.1 says the effective `needs-human` threshold rule is spelled **twice** today, and that **both** spellings
+are replaced by the shared `GateThreshold.Effective(autonomy, gate)`. Task 05 replaced the
+`CriticalityJudge` half and deliberately left this one to you, because `Scheduler.cs` is in **your**
+`writeScope` and not in its.
+
+So: delete `Scheduler`'s own private threshold resolver — the one that builds a per-gate value from
+`GateThresholds?.NeedsHuman` / `?.WaveCheckpoint` and then returns `(perGate ?? cfg.EscalationThreshold)`
+lowercased — and have its caller use the shared rule instead. Grep for it rather than trusting a line
+number:
+
+```
+grep -n "EffectiveThresholdToken\|EscalationThreshold" src/Guardrails.Core/Execution/Scheduler.cs
+```
+
+Leaving the private fallback in place **beside** a call to the shared rule is worse than either alone: two
+live spellings that agree today and drift silently later. That is fact 11's shape — the defect §2.1 exists
+to close — and it is why `03-scheduler-uses-the-shared-rule.ps1` both requires the call and bans the
+fallback.
+
 ### Corrected facts — earlier drafts of this design were WRONG on these
 
 - `RunCommand.MissingResourceHaltLines` is declared at `RunCommand.cs:3357` and called at `:3291`. It is

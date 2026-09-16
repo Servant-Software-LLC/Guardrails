@@ -124,9 +124,14 @@ foreach ($name in $mustExist) {
         $failures += "[$name] NOT FOUND in the TRX. It is DECLARED-EXEMPT from the red census (see this file's header for why a correct test is green on master), NOT exempt from existing. Write it."
         continue
     }
-    $notRun = @($hits | Where-Object { $_.outcome -eq 'NotExecuted' -or [string]::IsNullOrEmpty($_.outcome) })
+    # REVIEW FIX: a declared exemption is green BY CONSTRUCTION, so it must be REQUIRED green. The first
+    # spelling rejected only NotExecuted/empty, so an exempt row that came back FAILED passed this census -
+    # proven by running this script over a synthesized TRX. A fixture broken outright could then leave
+    # every row red and still satisfy the gate, with the bill landing one task later as a misattributed
+    # needs-human rather than here as a clear red.
+    $notRun = @($hits | Where-Object { $_.outcome -ne 'Passed' })
     if ($notRun.Count -gt 0) {
-        $failures += "[$name] is a DECLARED EXEMPTION and did NOT execute. 'NotExecuted' means [Fact(Skip=...)]. An exempt row still has to run; skipping it turns the exemption into no coverage at all, and task 14's forward census requires all ten executed."
+        $failures += "[$name] is a DECLARED EXEMPTION and its outcome was not 'Passed'. An exemption is green BY CONSTRUCTION, so it is REQUIRED green here: 'NotExecuted' means [Fact(Skip=...)], and 'Failed' means the fixture itself is broken. An exempt row still has to run AND pass; skipping it turns the exemption into no coverage at all, and task 14's forward census requires all ten executed."
     }
 }
 

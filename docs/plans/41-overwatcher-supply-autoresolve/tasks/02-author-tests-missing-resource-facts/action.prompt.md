@@ -161,6 +161,20 @@ VERBATIM:
 | `Compute_RefusesAPathUnderThePlanFolder` | `under-plan-folder` |
 | `Compute_FailsClosed_WhenAnotherTaskDeclaresNoWriteScope` | `plan-scope-incomplete` |
 | `Compute_RefusesAPathAnotherTaskMayProduce` | `produced-by-another-task` |
+
+**And one more row for check 4 — the one that makes the DECISION observable.** Add
+`Compute_ReturnsACandidate_WhenTheHaltedTasksOwnWriteScopeCoversThePath`: the halted task's **own**
+`writeScope` **does** cover the path, every *other* task's does not, and every other fact passes — assert
+the path IS a candidate.
+
+This row exists because the review answered `d41-candidate-scope` with *"every **other** task declares a
+`writeScope` and none covers it"* and explicitly rejected *"**no** task in the plan, **including** the
+halted one"*. Every other row in this file is green under **both** readings, and so is the wiring proof —
+its halted task declares `writeScope ["02-done.txt"]`, so it does not own `vendor/resource.js` either.
+Without this row, `plan.Tasks.Any(t => WriteScope.IsInScope(t, path))` ships green and then refuses the
+vendoring task — a task that *embeds* a bundle declares the HTML it writes, not the bundle — which is the
+exact case the decision was made to serve. Write it so it fails if the halted task is included in the
+ownership scan.
 | `Compute_RefusesAPathAlreadyPresentOnTheRunBase` | `present-on-run-base` |
 | `Compute_RefusesAPathWithACaseOnlyTwinOnTheRunBase` | `case-collision` |
 | `Compute_RefusesAPathThisRunDeleted` | `deleted-on-run-base` |
