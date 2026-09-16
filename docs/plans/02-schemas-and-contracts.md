@@ -3008,7 +3008,15 @@ line between its `Run <runId>` header and the table, from this verdict, in prece
     while its boot clock never counted the host's sleep. The kernel's own start ticks and boot id move with no clock.
     A different boot id proves a reboot, so the owner is not running.
   - An identity that cannot be read — access denied, or an owner recorded without the identity this OS compares —
-    is `UNKNOWN`, never `EXITED`.
+    is `UNKNOWN`, never `EXITED`. That includes an owner carrying the LINUX identity checked from Windows or macOS:
+    one plan folder is reachable from both (and WSL2's default host name is the Windows machine name, so the host
+    check does not catch it), and its `processStartedAt` is the value .NET rebuilt from the wall clock.
+  - *Linux zombies are not running.* An exited-but-unreaped process keeps a `/proc/<pid>/stat` with its original
+    start ticks, so the ticks alone would read it as `RUNNING` and — worse — would block a resume that has no
+    override. The state field (field 3) settles it: `Z` is `NotRunning`.
+  - *Known limitation:* under `hidepid=2`, another user's `/proc/<pid>` is invisible, and that is indistinguishable
+    from a process that is gone. Such an owner reads `EXITED WITHOUT FINISHING`. A run's own `status` is unaffected,
+    since a run and its operator share a user.
 - **The host comparison never outranks the process table**: a matching live process is the owner even if the
   machine's name changed under it (macOS renames a laptop that joins another network).
 - **`ENDED` names the outcome the journal already records**, first match wins: a gate halt → `halted: <halt.headline>`;
@@ -3017,6 +3025,13 @@ line between its `Run <runId>` header and the table, from this verdict, in prece
   task succeeded → `all N task(s) succeeded`, followed by `, delivered to <branch>`, `, NOT delivered — the work is
   on <planBranch>`, `, not delivered (<delivery.outcome>)`, `, partially delivered`, or nothing when there was
   nothing to deliver; otherwise → `stopped with S of N task(s) succeeded`.
+  - **A wholly-green run that a machine decision shaped never reads as clean green (#361/#597).** After the delivery
+    clause the line carries, first match wins: `, delivered past a machine decision (<token> at <subject>)` when an
+    operator override delivered it past the §5.3 interlock (the run's unreviewed waves still reach the operator
+    through the end-of-run banner); else `, ran with N unreviewed wave(s)`; else `, shaped by a machine decision
+    (<token> at <subject>)`. All three are derived from `RunOutcomePolicy` over `decisions[]` and from
+    `delivery.forcedPastDecision`, never from a second reading of those records, so the line cannot disagree with the
+    interlock that acted on them. An ordinary decision — a halt, a drift resolved automatically — adds nothing.
 - **"Last activity" is an OBSERVATION, never an input.** It is the newest modification time of `run.json`,
   `logs/<runId>/events.jsonl`, and the files of each `running` task's newest `attempt-N` directory — `run.json` alone
   moves only at task transitions. There is deliberately no wall-clock stall rule ("no progress for N minutes ⇒
@@ -3033,6 +3048,15 @@ line between its `Run <runId>` header and the table, from this verdict, in prece
   persists its whole in-memory document, including the owner it loaded, so a second run would overwrite the first
   run's claim and then mark it ended while it is still live. There is no override flag: wait for that process, or
   stop it. It never refuses for `EXITED WITHOUT FINISHING`, `ENDED`, or any `UNKNOWN`.
+  - **`run --revalidate-task` is refused on the same terms**, before it reads or writes anything: it is a different
+    verb over the SAME journal, and against a live run its load applies the resume normalization and persists it —
+    flipping that run's `running` task back to `pending`, clearing its halt record — and then runs that task's
+    guardrails in the same workspace, beside the run that owns it.
+  - **It is check-then-act, and that window is real.** The refusal reads the journal, and the claim is written a few
+    statements later by the run's own load (with `--fresh` in between), so two runs launched within moments of each
+    other can both pass the check and the second one's claim wins. What it reliably covers is the case it was
+    reported for: starting a run against a journal whose owner is ALREADY live. Closing the race needs an OS-level
+    lock on the journal, which is not what this record is.
 - **How the owner is written.** The claim rides `RunJournal.LoadOrCreateForRun`'s own write, so it cannot fail on
   its own; every other load (the Scheduler's own, `reset`, `supply`) carries the owner forward untouched. A run that
   cannot read its own identity prints one warning and CLEARS the previous owner (so `status` reads `UNKNOWN`) rather

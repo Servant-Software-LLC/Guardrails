@@ -51,7 +51,7 @@ public sealed class SystemProcessProbe : IProcessProbe
             return OperatingSystem.IsLinux()
                 ? owner with
                 {
-                    ProcessStartTicks = ParseStartTicks(File.ReadAllText($"/proc/{self.Id}/stat")),
+                    ProcessStartTicks = ParseStat(File.ReadAllText($"/proc/{self.Id}/stat")).StartTicks,
                     BootId = ReadBootId()
                 }
                 : owner;
@@ -63,9 +63,26 @@ public sealed class SystemProcessProbe : IProcessProbe
         }
     }
 
-    /// <summary>Windows / macOS: the kernel-stored start time, compared exactly — no tolerance, because none is needed.</summary>
-    internal static ProcessCheck CompareStartTime(RunOwner recorded, DateTimeOffset observed) =>
-        observed == recorded.ProcessStartedAt ? ProcessCheck.Running : ProcessCheck.NotRunning;
+    /// <summary>
+    /// Windows / macOS: the kernel-stored start time, compared exactly — no tolerance, because none is needed.
+    /// <para>
+    /// An owner carrying the LINUX identity is <see cref="ProcessCheck.CannotTell"/> instead, mirroring what
+    /// <see cref="CompareLinux"/> does in the other direction. One plan folder is reachable from both systems —
+    /// and WSL2's default host name is the Windows machine name, so the host check does not catch it — while that
+    /// owner's <see cref="RunOwner.ProcessStartedAt"/> is the value .NET rebuilt from the wall clock and is
+    /// documented as being for the reader only. Comparing it could report EXITED, with a resume command, for a run
+    /// that is alive.
+    /// </para>
+    /// </summary>
+    internal static ProcessCheck CompareStartTime(RunOwner recorded, DateTimeOffset observed)
+    {
+        if (recorded.ProcessStartTicks is not null || recorded.BootId is not null)
+        {
+            return ProcessCheck.CannotTell;
+        }
+
+        return observed == recorded.ProcessStartedAt ? ProcessCheck.Running : ProcessCheck.NotRunning;
+    }
 
     /// <summary>
     /// Linux: the recorded kernel identity against the current boot id and the pid's <c>/proc/&lt;pid&gt;/stat</c> line
@@ -92,7 +109,17 @@ public sealed class SystemProcessProbe : IProcessProbe
 
         try
         {
-            return ParseStartTicks(stat) == recordedTicks ? ProcessCheck.Running : ProcessCheck.NotRunning;
+            (char state, long startTicks) = ParseStat(stat);
+
+            // A ZOMBIE has exited; the kernel only still lists it because nobody reaped it, and its start ticks are
+            // unchanged. Start ticks alone would call it RUNNING — reporting a finished run as in progress, and
+            // blocking a resume that has no override.
+            if (state == 'Z')
+            {
+                return ProcessCheck.NotRunning;
+            }
+
+            return startTicks == recordedTicks ? ProcessCheck.Running : ProcessCheck.NotRunning;
         }
         catch (FormatException)
         {
@@ -101,11 +128,12 @@ public sealed class SystemProcessProbe : IProcessProbe
     }
 
     /// <summary>
-    /// Field 22 (<c>starttime</c>) of a <c>/proc/&lt;pid&gt;/stat</c> line: clock ticks after boot. Field 2 is the process
-    /// name in parentheses and may itself contain spaces and parentheses, so fields are counted from the LAST
-    /// <c>)</c>: the next token is field 3, which puts field 22 at index 19.
+    /// The two fields of a <c>/proc/&lt;pid&gt;/stat</c> line this identity needs: field 3 (<c>state</c>) and field 22
+    /// (<c>starttime</c>, clock ticks after boot). Field 2 is the process name in parentheses and may itself contain
+    /// spaces and parentheses, so fields are counted from the LAST <c>)</c>: the next token is field 3, which puts
+    /// field 22 at index 19.
     /// </summary>
-    internal static long ParseStartTicks(string stat)
+    internal static (char State, long StartTicks) ParseStat(string stat)
     {
         int nameEnd = stat.LastIndexOf(')');
         string[] fields = nameEnd < 0
@@ -113,9 +141,10 @@ public sealed class SystemProcessProbe : IProcessProbe
             : stat[(nameEnd + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         return fields.Length > 19
+            && fields[0].Length == 1
             && long.TryParse(fields[19], NumberStyles.None, CultureInfo.InvariantCulture, out long ticks)
-            ? ticks
-            : throw new FormatException("not a /proc/<pid>/stat line with a starttime field");
+            ? (fields[0][0], ticks)
+            : throw new FormatException("not a /proc/<pid>/stat line with state and starttime fields");
     }
 
     private static ProcessCheck CheckLinux(RunOwner owner)

@@ -380,14 +380,113 @@ public sealed class StatusRunLivenessTests
     };
 
     private static JournalDocument Journal(
-        (string Id, TaskJournalEntry Entry)[] tasks, DeliverySection? delivery = null, RunHalt? halt = null) => new()
+        (string Id, TaskJournalEntry Entry)[] tasks,
+        DeliverySection? delivery = null,
+        RunHalt? halt = null,
+        IReadOnlyList<DecisionEntry>? decisions = null) => new()
     {
         RunId = RunId,
         PlanHash = "sha256:test",
         Tasks = tasks.ToDictionary(task => task.Id, task => task.Entry, StringComparer.Ordinal),
         Delivery = delivery,
-        Halt = halt
+        Halt = halt,
+        Decisions = decisions
     };
+
+    private static DecisionEntry Decision(string token, string subject, string boundary = "task") => new()
+    {
+        Boundary = boundary,
+        Policy = "auto",
+        Decision = token,
+        At = T,
+        Subject = subject,
+        Headline = $"{token} at {subject}"
+    };
+
+    private static (string Id, TaskJournalEntry Entry)[] BothSucceeded() =>
+        [("01-first", Entry(JournalTaskStatus.Succeeded)), ("02-second", Entry(JournalTaskStatus.Succeeded))];
+
+    private static DeliverySection Stranded() => new()
+    {
+        Delivered = false,
+        Outcome = DeliveryOutcome.NotAttempted,
+        Reason = "mergeOnSuccess is off (set by --no-merge-on-success)",
+        PlanBranch = "guardrails/plan"
+    };
+
+    // ── A machine-decided run must never read as clean green (#361/#597) ─────────────────────────
+
+    /// <summary>
+    /// The operator is told to read the Run state line FIRST, so a wholly-green run whose delivery was forced past
+    /// the autonomous-mode interlock cannot read exactly like an ordinary green delivery. The journal already records
+    /// which decision was overridden; the line names it.
+    /// </summary>
+    [Fact]
+    public void EndedSummary_AForcedDelivery_NamesTheDecisionItWasForcedPast()
+    {
+        var delivery = new DeliverySection
+        {
+            Delivered = true,
+            Outcome = DeliveryOutcome.FastForwarded,
+            DeliveredToBranch = "master",
+            ForcedPastDecision = new ForcedDeliveryRecord
+            {
+                Decision = "proceeded-best-guess",
+                Subject = "12-implement-events-endpoint",
+                Boundary = "task"
+            }
+        };
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, delivered to master, delivered past a machine decision "
+            + "(proceeded-best-guess at 12-implement-events-endpoint)",
+            StatusCommand.EndedSummary(Ids, Journal(BothSucceeded(), delivery)));
+    }
+
+    /// <summary>A run that proceeded through unreviewed waves is flagged with the count the harness itself derives.</summary>
+    [Fact]
+    public void EndedSummary_ARunThatProceededUnreviewed_CountsTheWaves()
+    {
+        IReadOnlyList<DecisionEntry> decisions =
+        [
+            Decision(DecisionTokens.ProceededUnreviewed, "wave-02-issue-510", boundary: "wave"),
+            Decision(DecisionTokens.ProceededUnreviewed, "wave-03-issue-511", boundary: "wave")
+        ];
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, NOT delivered — the work is on guardrails/plan, ran with 2 unreviewed wave(s)",
+            StatusCommand.EndedSummary(Ids, Journal(BothSucceeded(), Stranded(), decisions: decisions)));
+    }
+
+    /// <summary>A best guess shaped the result even though no wave ran unreviewed, so the line says whose judgment to check.</summary>
+    [Fact]
+    public void EndedSummary_ARunShapedByABestGuess_NamesTheDecision()
+    {
+        IReadOnlyList<DecisionEntry> decisions = [Decision(DecisionTokens.ProceededBestGuess, "07-implement-thing")];
+
+        Assert.Equal(
+            "all 2 task(s) succeeded, NOT delivered — the work is on guardrails/plan, shaped by a machine decision "
+            + "(proceeded-best-guess at 07-implement-thing)",
+            StatusCommand.EndedSummary(Ids, Journal(BothSucceeded(), Stranded(), decisions: decisions)));
+    }
+
+    /// <summary>
+    /// The control that keeps the flag meaningful: ordinary decisions — a halt, a drift resolved automatically — are
+    /// not machine-decided WORK, and add nothing to the line.
+    /// </summary>
+    [Fact]
+    public void EndedSummary_OrdinaryDecisions_AddNothing()
+    {
+        IReadOnlyList<DecisionEntry> decisions =
+        [
+            Decision(DecisionTokens.Halted, "05-x"),
+            Decision(DecisionTokens.AutoApplied, "06-y", boundary: "drift")
+        ];
+
+        Assert.Equal(
+            "all 2 task(s) succeeded",
+            StatusCommand.EndedSummary(Ids, Journal(BothSucceeded(), decisions: decisions)));
+    }
 
     /// <summary>A gate halt settles no task, so the gate's own headline is the outcome — ahead of anything in the table.</summary>
     [Fact]

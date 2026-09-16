@@ -179,7 +179,32 @@ public sealed class RunOwnershipTests
         Assert.DoesNotContain("Refusing to start", output, StringComparison.Ordinal);
     }
 
-    private static void WriteJournalOwnedBy(StatePlanBuilder plan, RunOwner owner)
+    /// <summary>
+    /// <c>--revalidate-task</c> is the same journal under a different verb. It returns into
+    /// <c>Revalidate.ExecuteAsync</c> long before the refusal that guards <c>run</c>, and it loads the journal with
+    /// the resume normalization — which, against a live run, flips that run's <c>running</c> task to <c>pending</c> on
+    /// disk, clears its halt record, and then runs that task's guardrails in the same workspace, concurrently. It is
+    /// refused on the same terms, and SSOT §7 states the guarantee without a carve-out.
+    /// </summary>
+    [Fact]
+    public async Task ARevalidate_IsRefused_WhileTheJournalsOwnerIsRunningOnThisMachine()
+    {
+        using var plan = new StatePlanBuilder().AddTask("01-first");
+        RunOwner self = RunLiveness.OwnerForThisProcess()!;
+        WriteJournalOwnedBy(plan, self, JournalTaskStatus.NeedsHuman);
+        byte[] before = File.ReadAllBytes(JournalPath(plan));
+
+        (int exit, string output) =
+            await InvokeAsync("run", plan.PlanDir, "--revalidate-task", "01-first", "--no-log-server");
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("Refusing to start", output, StringComparison.Ordinal);
+        Assert.Contains($"process {self.Pid}", output, StringComparison.Ordinal);
+        Assert.Equal(before, File.ReadAllBytes(JournalPath(plan)));
+    }
+
+    private static void WriteJournalOwnedBy(
+        StatePlanBuilder plan, RunOwner owner, JournalTaskStatus status = JournalTaskStatus.Running)
     {
         var document = new JournalDocument
         {
@@ -187,7 +212,7 @@ public sealed class RunOwnershipTests
             PlanHash = "sha256:test",
             Tasks = new Dictionary<string, TaskJournalEntry>(StringComparer.Ordinal)
             {
-                ["01-first"] = new() { Status = JournalTaskStatus.Running }
+                ["01-first"] = new() { Status = status }
             },
             Owner = owner
         };

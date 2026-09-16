@@ -42,6 +42,16 @@ public static class Revalidate
             return ExitCodes.HarnessError;
         }
 
+        // Issue #704 — the refusal that guards `run` guards this verb too, because it drives the SAME journal.
+        // Against a live run, the RunJournal.LoadOrCreate below applies the resume normalization and PERSISTS it —
+        // flipping that run's `running` task back to `pending` and clearing its halt record — and then runs that
+        // task's guardrails in the same workspace, concurrently with the run that owns it. Placed before every read
+        // and write of the journal, so a refusal leaves run.json byte-identical.
+        if (RunCommand.RefuseWhileOwnerIsRunning(probe.Plan, folder, output))
+        {
+            return ExitCodes.HarnessError;
+        }
+
         PlanDefinition plan = probe.Plan;
 
         // B2(a) — reserved synthetic ids (SSOT §7.1): re-run ONLY the named whole-plan phase against

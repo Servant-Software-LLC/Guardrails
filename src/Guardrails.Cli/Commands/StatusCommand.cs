@@ -245,8 +245,42 @@ public static class StatusCommand
 
         int succeeded = entries.Count(task => task.Entry.Status == JournalTaskStatus.Succeeded);
         return succeeded == taskIds.Count
-            ? $"all {taskIds.Count} task(s) succeeded{DeliverySuffix(document.Delivery)}"
+            ? $"all {taskIds.Count} task(s) succeeded{DeliverySuffix(document.Delivery)}{MachineDecisionSuffix(document)}"
             : $"stopped with {succeeded} of {taskIds.Count} task(s) succeeded";
+    }
+
+    /// <summary>
+    /// What a wholly-green run does not get to hide (#361/#597): that a machine decision shaped it, or that an
+    /// operator override delivered it past one. Without this, "all N task(s) succeeded, delivered to master" reads
+    /// exactly like an ordinary green run — and the operator is told to read this line FIRST, while the journal
+    /// already records both facts in <c>decisions[]</c> and <c>delivery.forcedPastDecision</c>.
+    /// <para>
+    /// Derived from the harness's OWN policy (<see cref="RunOutcomePolicy"/>), never a second reading of
+    /// <c>decisions[]</c>, so this line cannot disagree with the interlock that acted on them — the #639 rule about
+    /// one owner per rule, applied here.
+    /// </para>
+    /// <para>
+    /// First match wins: a forced delivery names the decision it overrode (the most actionable fact, and the run's
+    /// unreviewed waves still reach the operator through the end-of-run banner), then an unreviewed run's wave
+    /// count, then any other machine decision — naming the judgment to go and check.
+    /// </para>
+    /// </summary>
+    private static string MachineDecisionSuffix(JournalDocument document)
+    {
+        if (document.Delivery?.ForcedPastDecision is { } forced)
+        {
+            return $", delivered past a machine decision ({forced.Decision} at {forced.Subject})";
+        }
+
+        IReadOnlyList<DecisionEntry> decisions = document.Decisions ?? [];
+        if (RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions) is > 0 and var unreviewed)
+        {
+            return $", ran with {unreviewed} unreviewed wave(s)";
+        }
+
+        return RunOutcomePolicy.SuppressingDecision(decisions) is { } shaped
+            ? $", shaped by a machine decision ({shaped.Decision} at {shaped.Subject})"
+            : string.Empty;
     }
 
     /// <summary>

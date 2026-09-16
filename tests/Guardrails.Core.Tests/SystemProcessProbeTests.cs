@@ -33,9 +33,12 @@ public sealed class SystemProcessProbeTests
         BootId = bootId
     };
 
-    /// <summary>A real <c>/proc/&lt;pid&gt;/stat</c> line whose field 22 (<c>starttime</c>) is <paramref name="startTicks"/>.</summary>
-    private static string Stat(long startTicks) =>
-        $"14168 (my (odd) proc) S 1 14168 14168 0 -1 4194560 1200 0 0 0 150 30 0 0 20 0 12 0 {startTicks} 123456789 2000";
+    /// <summary>
+    /// A real <c>/proc/&lt;pid&gt;/stat</c> line: field 3 is <paramref name="state"/> and field 22
+    /// (<c>starttime</c>) is <paramref name="startTicks"/>.
+    /// </summary>
+    private static string Stat(long startTicks, char state = 'S') =>
+        $"14168 (my (odd) proc) {state} 1 14168 14168 0 -1 4194560 1200 0 0 0 150 30 0 0 20 0 12 0 {startTicks} 123456789 2000";
 
     // ── The live checks ──────────────────────────────────────────────────────────────────────────
 
@@ -106,6 +109,24 @@ public sealed class SystemProcessProbeTests
         Assert.Equal(ProcessCheck.NotRunning, SystemProcessProbe.CompareStartTime(recorded, Started.AddTicks(-1)));
     }
 
+    /// <summary>
+    /// An owner recorded on LINUX, checked from Windows or macOS — one plan folder reachable from both, and WSL2's
+    /// default host name is the Windows machine name, so the host check does not catch it. Its
+    /// <c>processStartedAt</c> is the value .NET rebuilt from the wall clock and is documented as "for the reader
+    /// only" there, so comparing it could report EXITED — with a resume command — for a live run. The honest answer
+    /// is that this OS cannot check that identity, mirroring what <c>CompareLinux</c> already does in the other
+    /// direction.
+    /// </summary>
+    [Fact]
+    public void AnOwnerCarryingTheLinuxIdentity_CannotBeCheckedByStartTimeAlone()
+    {
+        Assert.Equal(ProcessCheck.CannotTell, SystemProcessProbe.CompareStartTime(LinuxOwner(), Started));
+        Assert.Equal(
+            ProcessCheck.CannotTell, SystemProcessProbe.CompareStartTime(LinuxOwner(bootId: null), Started));
+        Assert.Equal(
+            ProcessCheck.CannotTell, SystemProcessProbe.CompareStartTime(LinuxOwner(startTicks: null), Started));
+    }
+
     // ── Linux: the kernel's own start ticks and boot id, compared exactly ────────────────────────
 
     [Fact]
@@ -139,6 +160,17 @@ public sealed class SystemProcessProbeTests
         Assert.Equal(ProcessCheck.NotRunning, SystemProcessProbe.CompareLinux(LinuxOwner(), "boot-a", Stat(4243)));
     }
 
+    /// <summary>
+    /// A ZOMBIE is an exited process the kernel still lists because nobody reaped it. Its <c>/proc/&lt;pid&gt;/stat</c>
+    /// survives with the same start ticks, so start ticks alone read it as RUNNING — which would report a finished run
+    /// as in progress AND block a resume that has no override. The state field says what it is.
+    /// </summary>
+    [Fact]
+    public void OnLinux_AZombie_IsNotRunning()
+    {
+        Assert.Equal(ProcessCheck.NotRunning, SystemProcessProbe.CompareLinux(LinuxOwner(), "boot-a", Stat(4242, 'Z')));
+    }
+
     [Fact]
     public void OnLinux_NoProcessWithThePid_IsNotRunning()
     {
@@ -167,11 +199,13 @@ public sealed class SystemProcessProbeTests
 
     /// <summary>
     /// The process name (field 2) is parenthesized and may itself contain spaces and parentheses, so fields are
-    /// counted from the LAST <c>)</c> — splitting the whole line on spaces would read the wrong field.
+    /// counted from the LAST <c>)</c> — splitting the whole line on spaces would read the wrong fields. Field 3 is
+    /// the state and field 22 the start ticks.
     /// </summary>
     [Fact]
-    public void ParseStartTicks_CountsFieldsFromTheLastParenthesis()
+    public void ParseStat_CountsFieldsFromTheLastParenthesis()
     {
-        Assert.Equal(4242, SystemProcessProbe.ParseStartTicks(Stat(4242)));
+        Assert.Equal(('S', 4242L), SystemProcessProbe.ParseStat(Stat(4242)));
+        Assert.Equal(('Z', 77L), SystemProcessProbe.ParseStat(Stat(77, 'Z')));
     }
 }

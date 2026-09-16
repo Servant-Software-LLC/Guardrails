@@ -689,7 +689,10 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   `cancelled`, …), or `UNKNOWN` (another host, an identity that cannot be read, or no owner recorded). A dead run's
   `running` task prints `interrupted`; a live run gets no resume footer. **Never resume a run that reads RUNNING —
   and `guardrails run` itself REFUSES to start (exit 1, naming the pid) while the journal's owner reads RUNNING on
-  this machine**, because two processes on one journal overwrite each other's claim. There is no override flag:
+  this machine — `run --revalidate-task` too, since it drives the same journal**, because two processes on one
+  journal overwrite each other's claim. A wholly-green run that a machine decision shaped (#361/#597) says so on its
+  ENDED line — `delivered past a machine decision (…)`, `ran with N unreviewed wave(s)`, or `shaped by a machine
+  decision (…)` — so such a run can never read as clean green. There is no override flag:
   wait for that process or stop it. It does not refuse for EXITED, ENDED or UNKNOWN. RUNNING means alive, not
   progressing: the line's "Last activity … ago" (newest of `run.json`, `events.jsonl` and the running attempt's
   logs) is how you spot an alive-but-stuck owner (#722), and it is an OBSERVATION, never a verdict. There is

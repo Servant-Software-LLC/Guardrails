@@ -1006,6 +1006,11 @@ public static class RunCommand
     /// this machine: a live <c>guardrails run</c> already drives this journal, and a second one would overwrite its
     /// claim with every write and then mark it ended while it is still going.
     /// <para>
+    /// <c>internal</c> because <see cref="Revalidate.ExecuteAsync"/> guards itself with the SAME check:
+    /// <c>--revalidate-task</c> is a different verb over the same journal, and against a live run its load would
+    /// normalize that run's statuses on disk and then run a task's guardrails beside it.
+    /// </para>
+    /// <para>
     /// Only the exact probe's RUNNING refuses. An owner that is gone, recorded on another host, or uncheckable does not —
     /// those are precisely the runs a resume exists for, and refusing on a guess would strand the plan. There is no
     /// override flag: the remedy for a stuck owner is to stop that process, and the message names it.
@@ -1015,7 +1020,7 @@ public static class RunCommand
     /// unreadable journal does not refuse; the run's own load reports it, loudly, a moment later.
     /// </para>
     /// </summary>
-    private static bool RefuseWhileOwnerIsRunning(Core.Model.PlanDefinition plan, string folder, TextWriter output)
+    internal static bool RefuseWhileOwnerIsRunning(Core.Model.PlanDefinition plan, string folder, TextWriter output)
     {
         string journalPath = RunJournal.PathFor(plan.PlanDirectory);
         if (!File.Exists(journalPath))
