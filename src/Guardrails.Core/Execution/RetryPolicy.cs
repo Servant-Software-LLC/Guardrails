@@ -1437,13 +1437,24 @@ public static class RetryPolicy
     /// same disposition, and so the same <see cref="SalvageFraming.Escalation"/> wording, as an agent's own
     /// <c>needsHuman</c> (#554).
     /// </param>
+    /// <param name="workNotPreserved">
+    /// True where this halt deliberately preserves NOTHING — the nested-control-key site, which keeps the
+    /// documented fragment-rejection boundary (#586). A halt performs no reset, so the tree is orphaned either
+    /// way; saying nothing reads as "there was nothing worth keeping", which is a different and wrong claim.
+    /// </param>
+    /// <param name="outOfScopePatchPath">
+    /// #705: at the write-scope site the offending bytes were REVERTED and a copy kept. The retry path this halt
+    /// replaces discloses both, and a kept copy nothing points at is a copy nobody finds.
+    /// </param>
     public static string ForRepeatedPathWallHalt(
         TaskNode task,
         string primaryHeading,
         string primaryBody,
         PermissionWallDecision wall,
         bool budgetRemained,
-        SalvageRef? salvageRef = null)
+        SalvageRef? salvageRef = null,
+        bool workNotPreserved = false,
+        string? outOfScopePatchPath = null)
     {
         var text = new StringBuilder();
         text.AppendLine($"# Task '{task.Id}' needs a human");
@@ -1461,8 +1472,26 @@ public static class RetryPolicy
             : "attempts, so a retry would have been refused it again. This was the last budgeted attempt.");
         text.AppendLine("Grant the write, or remove the task's need for it, then re-run.");
         text.AppendLine();
+
+        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
+        {
+            text.AppendLine("The out-of-scope path(s) named above were reverted to their pre-attempt state before this");
+            text.AppendLine($"halt. A copy of those changes was kept at `{keptCopy.Replace('\\', '/')}`, for the human");
+            text.AppendLine("deciding whether this task's writeScope should grow.");
+            text.AppendLine();
+        }
+
         AppendRepeatedPaths(text, wall.RepeatedPaths);
         AppendRepeatedCommands(text, wall.RepeatedCommands);
+
+        if (workNotPreserved)
+        {
+            text.AppendLine("This attempt's work was NOT preserved: a rejected state fragment is not salvaged (the");
+            text.AppendLine("documented boundary — the fragment was never applied, so there is no accepted result to");
+            text.AppendLine("build on). Re-author the fragment in the shape shown above and re-run.");
+            text.AppendLine();
+        }
+
         AppendSalvageSection(text, salvageRef, SalvageFraming.Escalation);
         return text.ToString();
     }

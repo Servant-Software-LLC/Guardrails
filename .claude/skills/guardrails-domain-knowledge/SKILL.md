@@ -880,12 +880,19 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   failed guardrail, or any of the FOUR rejections that run BEFORE the guardrails (a staging-move failure, a
   nested control key, a refused `needsHarnessWrite`, a write-scope violation) -- halts needs-human when a
   repeated refused write path lies INSIDE the scope that attempt is enforced against (its `writeScope` plus the
-  implicit `stagingOutputs` destinations). The cause that fired is the reported outcome and leads the summary
-  and `feedback.md`; the wall is named after it, and at the write-scope site a #707 scope-gap halt keeps its own
-  diagnosis and gains the refused path. A refused COMMAND, or a refused path OUTSIDE that scope, never halts
-  such an attempt -- both are routes the agent can reach its result without, so it retries carrying the refusal
-  as secondary context. A target counts only on an attempt whose LATEST observation refused it, at most once per
-  attempt NUMBER, so a transient pause that re-runs an attempt cannot make it a repeat on its own. The runner also
+  implicit `stagingOutputs` destinations) AND the task has not already written that path -- at the four
+  pre-guardrail sites no guardrail has looked for the deliverable yet, so a refusal the agent routed around
+  proves nothing. A structural `.claude/` wall is consulted at those four sites too, and halts on the FIRST
+  attempt that hits it. The cause that fired is the reported outcome and leads the summary and `feedback.md`;
+  the wall is named after it, and at the write-scope site a #707 scope-gap halt keeps its own diagnosis and
+  gains the refused path. Each halt preserves what the retry it replaces would have (escalation framing -- a
+  halt performs no reset, so the tree is ORPHANED), except the nested-control-key site, which preserves nothing
+  and says so. A refused COMMAND, or a refused path OUTSIDE that scope, never halts such an attempt -- both are
+  routes the agent can reach its result without, so it retries carrying the refusal as secondary context, which
+  is carried at EVERY halt and retry so narrowing the wall never loses a refusal. The scope comparison resolves
+  path SPELLINGS (a #383 junction, a macOS `/var` alias) rather than comparing lexically. A target counts only
+  on an attempt whose LATEST observation refused it, at most once per attempt NUMBER, so a transient pause that
+  re-runs an attempt cannot make it a repeat on its own. The runner also
   reports which refused targets are COMMANDS (`RefusedCommands`): a command is never the structural `.claude/`
   wall, and halt text names it a command, never a write path. **MANY FILES IN ONE
   ATTEMPT (#445, the CARDINALITY dimension):** the key's value may be a single entry object OR an ARRAY of

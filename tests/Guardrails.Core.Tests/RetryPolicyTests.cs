@@ -914,6 +914,38 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void RepeatedPathWallHalt_WhenNothingWasPreserved_SaysSo_RatherThanStayingSilent()
+    {
+        // #708: the nested-control-key site stays unsalvaged (the documented fragment-rejection boundary), and a
+        // halt performs no reset — so the tree is orphaned with nothing offered. Silence there reads as "there was
+        // nothing to keep"; the agent and the human both need to be told the work was not preserved.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "The state fragment was rejected", "- nested", wall,
+            budgetRemained: true, salvageRef: null, workNotPreserved: true);
+
+        Assert.Contains("was NOT preserved", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public void RepeatedPathWallHalt_AtAWriteScopeViolation_KeepsThe705Disclosures()
+    {
+        // #705: the revert destroys the out-of-scope bytes unless a copy is kept, and the copy is useless if
+        // nothing points a human at it. The halt must disclose both, exactly as ForWriteScopeViolation does on
+        // the retry path it replaces.
+        var wall = new PermissionWallDecision(true, [], ["src/locked/Protected.cs"], []);
+
+        string feedback = RetryPolicy.ForRepeatedPathWallHalt(
+            PromptTask("04-impl"), "A write-scope violation", "- `docs/stray.md`", wall,
+            budgetRemained: true, salvageRef: null, outOfScopePatchPath: "/logs/out-of-scope.patch");
+
+        Assert.Contains("reverted", feedback);
+        Assert.Contains("/logs/out-of-scope.patch", feedback);
+    }
+
+    [Fact]
     public void RepeatedPathWallHalt_OffersPreservedWork_AsOrphaned_NotAsRolledBack()
     {
         // #554 / #708: a halt performs NO reset — the loop returns before it — so the tree the attempt wrote in is
