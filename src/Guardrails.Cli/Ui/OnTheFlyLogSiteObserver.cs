@@ -326,6 +326,13 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
         _inner.SuppliedResourcesCommitted(paths, commit);
 
+    // Issue #722: forwarded EXPLICITLY, verbatim — an unforwarded call here would swallow the event in
+    // every mode, and this decorator sits in both chains. It does not ACT on it: the site's per-task status
+    // comes from the journal's vocabulary, and a task waiting on git has no journal status to render — the
+    // durable record of the wait is events.jsonl, which the log server already serves.
+    public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
+        _inner.TaskWaitingOnWorktree(task, operation);
+
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
     // lesson again). This observer does not ACT on it: a wave's delivery is not a log-site artifact, so it

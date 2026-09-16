@@ -38,6 +38,18 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void TaskWaitingOnWorktree(TaskNode task, string operation)
+    {
+        lock (_gate)
+        {
+            // Issue #722. Under --no-ui the tailed log IS the record, and the gap this closes is the one a
+            // CI log shows worst: between a task's [task] line and its first output there is now a line
+            // saying the harness is doing git, so a run parked there is not silence. No paired "done" line —
+            // the task's own [task] line follows on a healthy return.
+            _output.WriteLine($"[worktree] {task.Id}: {operation}");
+        }
+    }
+
     public void AttemptStarting(TaskNode task, int attempt, int budget)
     {
         if (attempt == 1)

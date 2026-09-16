@@ -321,6 +321,20 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
 - **Windows .sh hazard**: bare `bash` can resolve to WSL's `System32\bash.exe` and
   fail on Windows paths (GitHub issue #1). Tests/examples use OS-appropriate
   scripts; `guardrails.json interpreters` is the user escape hatch.
+- **A subagent reporting "done" is NOT evidence its work landed.** A completion notification looks
+  identical whether the agent committed or is still holding every file in its own worktree, so VERIFY
+  before you believe it: `git -C <agent worktree> log origin/<branch>..HEAD` (is there a commit at all?)
+  and `git -C <agent worktree> status --porcelain` (is the work still uncommitted?), asked of the AGENT'S
+  OWN worktree, not the one you are sitting in. In one session four of five agents held substantial work
+  with nothing committed — including **139 untracked files, which no `git stash` saves** — and one of those
+  worktrees became permanently unverifiable while still holding it. The check costs two commands; the
+  failure costs the work.
+  - **The mirror-image mistake: a branch vanishing right after its own merge is EXPECTED, not loss.**
+    GitHub auto-deletes a merged PR's branch, so `git ls-remote origin <branch>` returning nothing is what
+    success looks like. An agent primed about durability re-pushed an already-merged branch because
+    "absent from the remote" is byte-identical to "work lost". Ask `git log origin/master --oneline
+    --grep '#<issue>'` or `git branch --merged master` first — the question is whether the COMMITS are on
+    master, never whether the branch still exists.
 - **A mutation proof must REBUILD — `--no-build` INVERTS its result.** `dotnet test --no-build` on
   `Guardrails.Integration.Tests` runs against the `Guardrails.Core.dll` already sitting in that
   project's output, so a mutation just made to Core is not in it: the test exercises UNMUTATED code

@@ -295,6 +295,13 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
         _inner.SuppliedResourcesCommitted(paths, commit);
 
+    // Issue #722: forwarded EXPLICITLY, verbatim — same trap, and it would bite hardest here, since an
+    // unforwarded call would swallow the one event that says a task is waiting on git. This observer does
+    // not ACT on it: the DAG's shape is unchanged while a task waits for its worktree, and badging the node
+    // `running` before its action has started would claim more than the harness knows.
+    public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
+        _inner.TaskWaitingOnWorktree(task, operation);
+
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
     // lesson again). This observer does not ACT on it: a wave's delivery is not a shape of the DAG, so it

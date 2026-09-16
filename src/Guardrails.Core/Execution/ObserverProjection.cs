@@ -110,6 +110,22 @@ public sealed class ObserverProjection : IRunObserver
         _inner.TaskStarting(task);
     }
 
+    /// <summary>
+    /// Issue #722 — recorded so a replayed run shows the wait exactly where it happened. Declared
+    /// explicitly, like every member here: a default body inherited by this projection would make its own
+    /// "every observed call" contract false.
+    /// </summary>
+    public void TaskWaitingOnWorktree(TaskNode task, string operation)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "TaskWaitingOnWorktree",
+            ["taskId"] = task.Id,
+            ["operation"] = operation
+        });
+        _inner.TaskWaitingOnWorktree(task, operation);
+    }
+
     public void AttemptStarting(TaskNode task, int attempt, int budget)
     {
         Append(new JsonObject

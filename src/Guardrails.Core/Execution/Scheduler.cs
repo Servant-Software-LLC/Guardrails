@@ -4121,7 +4121,7 @@ public sealed class Scheduler
             await foreach (TaskEnvelope envelope in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
                 TaskNode task = envelope.Task;
-                WorktreeHandle handle = MaterializeForkIfDeferred(context, envelope);
+                WorktreeHandle handle = MaterializeDeferredWorktree(context, envelope);
 
                 // Plan 31 §5.2 — poll boundary 1 of 2: task DISPATCH. Placed before the attempt runs, so an
                 // edit made while the DAG was busy elsewhere is reported at the first boundary that follows
@@ -4173,31 +4173,77 @@ public sealed class Scheduler
     }
 
     /// <summary>
-    /// plan 08 topology-wiring M1 §B: materialize a deferred fork-the-rest sibling's worktree at
-    /// dequeue — the actual <c>git worktree add</c> runs HERE, OFF the <see cref="_gate"/> every
-    /// settling worker contends for. The fork roots off the producer's RECORDED sha (captured in
-    /// the request under <c>_gate</c> at assignment, W-2), never a live rev-parse of the segment
-    /// branch the inheritor may have advanced. Returns the envelope's existing handle unchanged
-    /// when there is no deferred fork.
+    /// The human-readable name of the git a FAN-IN task waits on (issue #722), as
+    /// <see cref="IRunObserver.TaskWaitingOnWorktree"/> reports it.
     /// </summary>
-    private WorktreeHandle MaterializeForkIfDeferred(RunContext context, TaskEnvelope envelope)
+    private const string FreshWorktreeOperation = "creating a worktree off the plan branch";
+
+    /// <summary>The same, for a fork-the-rest sibling.</summary>
+    private const string ForkWorktreeOperation = "creating a worktree from its producer's commit";
+
+    /// <summary>
+    /// plan 08 topology-wiring M1 §B + issue #722: materialize a DEFERRED worktree at dequeue — the actual
+    /// <c>git worktree add</c> runs HERE, OFF the <see cref="_gate"/> every settling worker contends for.
+    /// Returns the envelope's existing handle unchanged when nothing was deferred (a reused directory, or
+    /// serial mode).
+    ///
+    /// <para>Both deferred shapes land here, and the difference between them is load-bearing:</para>
+    /// <list type="bullet">
+    ///   <item><see cref="ForkRequest"/> carries the producer's RECORDED sha, captured under
+    ///     <see cref="_gate"/> at assignment (W-2). A fork MUST capture: a segment branch is mutable and an
+    ///     inheritor may have advanced it, so a late read there would root the fork on work that is not its
+    ///     producer's.</item>
+    ///   <item><see cref="FreshSegmentRequest"/> carries NOTHING, and must not. A fan-in roots off the plan
+    ///     branch, whose tip is gains-only while a drain is in flight, so the correct base is whatever the
+    ///     branch holds at the moment its worktree is built — read HERE, in the same call that builds the
+    ///     tree, which is what makes base and tree atomic by construction.</item>
+    /// </list>
+    ///
+    /// <para><b>Why the fan-in's whole <c>CreateSegment</c> is deferred rather than just its
+    /// <c>worktree add</c> (issue #722).</b> Capturing the tip under the gate and deferring only the tree
+    /// would look safer and is not: <see cref="IWorktreeProvider.CurrentPlanBranchTip"/> runs
+    /// <c>git rev-parse</c> through the same runner, with the same unbounded <c>WaitForExit()</c>, so it
+    /// leaves a git subprocess under <see cref="_gate"/> and does not fix the hang at all. Before this, a
+    /// fan-in's <c>CreateSegment</c> ran inside the settling worker's gate, where
+    /// <see cref="IRunObserver.TaskFinished"/> and the ready-queue enqueue both happen only after release —
+    /// so one git that never returned blocked every task's settle and all dispatch. Plan 40's run sat that
+    /// way for 28 hours: process alive, no children, no halt record.</para>
+    ///
+    /// <para>The observer is told BEFORE the call, because after it there may be nothing left to tell
+    /// anyone. There is no paired "finished" event: the task's own <see cref="IRunObserver.TaskStarting"/>
+    /// follows within microseconds of a healthy return and every surface overwrites its row from there.</para>
+    /// </summary>
+    private WorktreeHandle MaterializeDeferredWorktree(RunContext context, TaskEnvelope envelope)
     {
-        if (envelope.Fork is not { } fork || _worktreeProvider is not { } provider)
+        if (_worktreeProvider is not { } provider)
         {
             return envelope.Handle;
         }
 
-        // git I/O off the gate.
-        WorktreeHandle handle = provider.ForkFromTip(fork.ProducerRecordedSha, envelope.Task.Id, attempt: 1);
+        WorktreeHandle handle;
+        if (envelope.Fork is { } fork)
+        {
+            // git I/O off the gate.
+            _observer.TaskWaitingOnWorktree(envelope.Task, ForkWorktreeOperation);
+            handle = provider.ForkFromTip(fork.ProducerRecordedSha, envelope.Task.Id, attempt: 1);
+        }
+        else if (envelope.Fresh is not null)
+        {
+            // git I/O off the gate — including the plan-tip read, which is the half option B would have
+            // left behind under it.
+            _observer.TaskWaitingOnWorktree(envelope.Task, FreshWorktreeOperation);
+            handle = CreateFreshSegment(context, envelope.Task.Id);
+        }
+        else
+        {
+            return envelope.Handle;
+        }
 
         // Bookkeeping under the gate: record the assigned handle + directory ownership.
         lock (_gate)
         {
             context.Handles[envelope.Task.Id] = handle;
-            if (!string.IsNullOrEmpty(handle.WorktreePath))
-            {
-                context.DirectoryOwner[handle.WorktreePath] = envelope.Task.Id;
-            }
+            RecordOwnership(context, handle, envelope.Task.Id);
         }
 
         return handle;
@@ -5218,7 +5264,10 @@ public sealed class Scheduler
     /// <list type="bullet">
     ///   <item><b>Multi-producer dependents (fan-in)</b> get a fresh <see cref="IWorktreeProvider.CreateSegment"/>
     ///     off the plan-branch tip, which already contains every producer's integrated work — never
-    ///     reused (§A1).</item>
+    ///     reused (§A1). Like the fork below, it is a DEFERRED request the worker materializes off-gate
+    ///     (issue #722); unlike the fork, it captures nothing here, because the plan-branch tip is
+    ///     gains-only during a drain and the correct base is the one its worktree is actually built
+    ///     from.</item>
     ///   <item><b>Single-producer dependents</b> are the inherit-one/fork-rest fan-out. The inheritor
     ///     (longest downstream chain via <see cref="DependencyGraph.TransitiveDependentsOf"/>, ordinal-id
     ///     tiebreak) reuses the producer's segment directory via the pure-handle
@@ -5226,8 +5275,10 @@ public sealed class Scheduler
     ///     transfers to the inheritor). The rest fork off the producer's RECORDED sha — a DEFERRED
     ///     request the worker materializes off-gate (§B, W-2).</item>
     /// </list>
-    /// Runs under <see cref="_gate"/>. All assignment + bookkeeping is here; only the fork's
-    /// <c>git worktree add</c> is deferred off-gate.
+    /// Runs under <see cref="_gate"/>. Every assignment DECISION is here; every git call a decision implies
+    /// is deferred off-gate to <see cref="MaterializeDeferredWorktree"/>, so nothing this method does can
+    /// block another worker's settle (issue #722). The one exception owns no git at all: the serial /
+    /// no-provider placeholder.
     /// </summary>
     private void AssignDependentHandles(
         RunContext context, TaskNode producer, List<string> justReady, List<TaskEnvelope> newlyReady)
@@ -5238,10 +5289,25 @@ public sealed class Scheduler
         {
             if (context.ById[dependent].DependsOn.Count > 1)
             {
-                WorktreeHandle fanInHandle = CreateFreshSegment(context, dependent);
-                context.Handles[dependent] = fanInHandle;
-                RecordOwnership(context, fanInHandle, dependent);
-                newlyReady.Add(new TaskEnvelope(context.ById[dependent], fanInHandle));
+                if (_worktreeProvider is not null && context.Integ is not null)
+                {
+                    // #722: DEFER the whole CreateSegment to dequeue, exactly as fork-the-rest already
+                    // defers its own worktree add. This method runs under _gate, and CreateSegment is two
+                    // unbounded git calls; running them here is what let a single hung git stop every
+                    // other task's settle and all dispatch for 28 hours with nothing recorded anywhere.
+                    // The request deliberately carries NO base sha — see MaterializeDeferredWorktree.
+                    newlyReady.Add(new TaskEnvelope(
+                        context.ById[dependent], new WorktreeHandle(), Fresh: new FreshSegmentRequest()));
+                }
+                else
+                {
+                    // Serial mode / no provider: the empty placeholder IS the final handle, assigned here
+                    // as it always was. There is no git on this path, so there is nothing to defer — and
+                    // deferring it would only move a pure assignment somewhere harder to follow.
+                    var placeholder = new WorktreeHandle();
+                    context.Handles[dependent] = placeholder;
+                    newlyReady.Add(new TaskEnvelope(context.ById[dependent], placeholder));
+                }
             }
             else
             {
@@ -5296,7 +5362,10 @@ public sealed class Scheduler
         }
     }
 
-    /// <summary>Create a fresh segment off the plan-branch tip (or an empty handle without a provider).</summary>
+    /// <summary>
+    /// Create a fresh segment off the plan-branch tip (or an empty handle without a provider). Called from
+    /// <see cref="MaterializeDeferredWorktree"/> at DEQUEUE — never under <see cref="_gate"/> (issue #722).
+    /// </summary>
     private WorktreeHandle CreateFreshSegment(RunContext context, string taskId) =>
         _worktreeProvider != null && context.Integ != null
             ? _worktreeProvider.CreateSegment(taskId, attempt: 1, context.Integ, CancellationToken.None)
@@ -5769,12 +5838,13 @@ public sealed class Scheduler
     }
 
     /// <summary>
-    /// Per-task channel item pairing a task with its assigned worktree handle. When
-    /// <see cref="Fork"/> is non-null the handle is a placeholder and the worker materializes the
-    /// real fork worktree off-gate at dequeue (M1 §B); otherwise <see cref="Handle"/> is the final
-    /// assigned segment/reused directory.
+    /// Per-task channel item pairing a task with its assigned worktree handle. When <see cref="Fork"/> or
+    /// <see cref="Fresh"/> is non-null the handle is a placeholder and the worker materializes the real
+    /// worktree off-gate at dequeue (M1 §B, issue #722); otherwise <see cref="Handle"/> is the final
+    /// assigned segment/reused directory. The two request kinds are mutually exclusive.
     /// </summary>
-    private readonly record struct TaskEnvelope(TaskNode Task, WorktreeHandle Handle, ForkRequest? Fork = null);
+    private readonly record struct TaskEnvelope(
+        TaskNode Task, WorktreeHandle Handle, ForkRequest? Fork = null, FreshSegmentRequest? Fresh = null);
 
     /// <summary>
     /// A deferred fork-the-rest request (M1 §B): the producer's RECORDED commit sha to fork off
@@ -5782,6 +5852,25 @@ public sealed class Scheduler
     /// worker via <see cref="IWorktreeProvider.ForkFromTip"/> before the task's action runs.
     /// </summary>
     private readonly record struct ForkRequest(string ProducerRecordedSha);
+
+    /// <summary>
+    /// A deferred fan-in request (issue #722): build this task a fresh segment off the plan branch at
+    /// DEQUEUE, via <see cref="IWorktreeProvider.CreateSegment"/>, instead of under <see cref="_gate"/>
+    /// while its producer settles.
+    ///
+    /// <para><b>It carries no data, and that emptiness is the contract.</b> A fan-in must NOT capture a
+    /// base under the gate: the capture is itself a <c>git rev-parse</c> through the same unbounded runner,
+    /// so capturing would leave the hang exactly where it was, and the plan branch is gains-only during a
+    /// drain, so the tip read at dequeue is the correct base — one that includes any sibling's work that
+    /// landed in between, which is what a fan-in wants by definition.</para>
+    ///
+    /// <para><b>A DISTINCT type from <see cref="ForkRequest"/> on purpose.</b> The two obey opposite
+    /// disciplines — a fork must capture under the gate because a segment branch is mutable and an
+    /// inheritor can advance it; a fan-in must not — and unifying them behind a shared "base sha" field
+    /// would invite a later change to swap the two, which is precisely the wrong assignment and would fail
+    /// silently in both directions.</para>
+    /// </summary>
+    private readonly record struct FreshSegmentRequest();
 
     /// <summary>Mutable shared state of one run, guarded by the scheduler's gate.</summary>
     private sealed class RunContext(

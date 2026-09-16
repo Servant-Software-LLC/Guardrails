@@ -4864,6 +4864,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 
 | `kind` | Raised from | Additional fields |
 |---|---|---|
+| `task-waiting-on-worktree` | `TaskWaitingOnWorktree` | `operation` |
 | `task-started` | `TaskStarting` | — |
 | `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
@@ -4884,6 +4885,25 @@ table and `--no-ui` console output.
 purpose.** Unlike a supply, a wave delivery already has a durable, richer record — `run.json`'s
 `waves.<dir>.delivered` (§7) — so a projection here would be a second, thinner copy of the same fact for an
 agent to keep in sync with. It still reaches §8.2's `observer.jsonl` for render fidelity.
+
+**`task-waiting-on-worktree` is an OBSERVATION, never a verdict (issue #722).** It is emitted when the
+harness DEQUEUES a task whose worktree must still be built and BEGINS that git work — between the task's
+handle assignment and its first attempt — and `operation` names the work in words a human reads (e.g.
+`creating a worktree off the plan branch`). It exists because plan 40's run sat for 28 hours with a live
+process, no child processes and no halt record while one `git worktree add` never returned: the parked
+task was indistinguishable, on every surface, from one the run had not yet reached.
+
+There is **no paired "finished" row**, deliberately: the task's own `task-started` ends the wait, and every
+surface overwrites its row from there, so a second kind would carry nothing a reader does not already have.
+The row therefore states WHAT is being waited on and — through the envelope's `at` — WHEN the wait began,
+and **nothing else**. It carries no `outcome`, no `passed`, no `exitCode` and no `detail`, and **no
+component may derive a verdict from it**: the harness cannot tell a slow git from a hung one, which is the
+same reason §7's `owner` liveness takes no clock (#704). A consumer is free to notice that a wait is old; the
+harness does not, and `RunLiveness.Assess` is given no parameter through which it could. `guardrails status`
+prints the current waits as an observation BESIDE its run-state verdict, never inside it. The row's second
+benefit is free and was the exact gap in that incident: `status`'s last-activity observation reads
+`events.jsonl`'s mtime, so a parked run stops reading as idle. **A bound on the git subprocess itself is a
+separate, undecided question** (#722 item 3) — this row contains a hang, it does not end one.
 
 **One vocabulary, not two (#585).** `outcome` on `attempt-finished` is the wire token of
 `Journal.AttemptOutcome` (`JournalJson.OutcomeToken`) — the same token §7 journals and §15.2's
@@ -4924,7 +4944,12 @@ message is the one value on the row that can carry a path, a token, or a fragmen
 reflects over `ExitCodes` — a hand-copied gloss that nothing checks is the same drift risk this
 design cites when it rejects a parallel token set.)
 
-**Where the stream begins, and what its absence means.** The first row is a `task-started`. There
+**Where the stream begins, and what its absence means.** The first row is a `task-started` — or the
+`task-waiting-on-worktree` that precedes it, when the first task the run dispatches must have a worktree
+built before it can start (#722). Those two kinds are the only ones that can open a bracket, so a consumer
+asking *"has this run reached the DAG?"* must accept EITHER: one that keys on `task-started` alone reads a
+run parked in its very first worktree creation as a run that never started — the exact ambiguity this file
+exists to remove, in the state where it costs the most. There
 is deliberately NO run-opening event: one was designed and rejected (design of record
 `docs/plans/595-event-vocabulary-contract.md` §1a) because its payload could not be stated
 accurately at run start and its name would have implied a bracket it did not deliver. Six halts
