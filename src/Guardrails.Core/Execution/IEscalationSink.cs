@@ -30,8 +30,18 @@ public interface IEscalationSink
 /// </summary>
 public sealed record EscalationRequest
 {
-    /// <summary>The gate: <c>needs-human</c> · <c>wave-checkpoint</c> · <c>review-gate</c> · <c>blocker</c> (all escalate; only <c>needs-human</c>/<c>wave-checkpoint</c> are answerable, §7.2).</summary>
+    /// <summary>The gate: <c>needs-human</c> · <c>wave-checkpoint</c> · <c>review-gate</c> · <c>blocker</c> · <c>hard-blocker</c> (all escalate; only <c>needs-human</c>/<c>wave-checkpoint</c> are answerable, §7.2).</summary>
     public required string Gate { get; init; }
+
+    /// <summary>
+    /// The deterministic class the gate was acted on under (doc 12 §4/§6.2): <c>judgment-call</c> ·
+    /// <c>hard-blocker-retryable</c> · <c>hard-blocker-permanent</c>. Recorded ON the escalation record
+    /// (#707 delta review), not only on the <c>decisions[]</c> entry, so whoever reads
+    /// <c>escalations/*.json</c> — a human triaging the halt, or a firstmate deciding whether to write an
+    /// answer — can tell an answerable judgment call from a hard blocker no answer resolves without
+    /// re-deriving it from the gate name. Null for a caller that records no classification.
+    /// </summary>
+    public string? Classification { get; init; }
 
     /// <summary>The unit the escalation concerns — a task id (needs-human) or a wave dir (wave-checkpoint/review-gate).</summary>
     public required string Subject { get; init; }

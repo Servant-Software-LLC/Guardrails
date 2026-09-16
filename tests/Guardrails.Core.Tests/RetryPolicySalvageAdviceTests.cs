@@ -312,7 +312,10 @@ public sealed class RetryPolicySalvageAdviceTests
         "guardrail" => RetryPolicy.ForGuardrailFailures(
             PromptTask("07-impl"), attempt: 2, GuardrailVerdicts, fileWritesRolledBack: true, salvageRef: salvage),
         "write-scope" => RetryPolicy.ForWriteScopeViolation(
-            PromptTask("07-impl"), attempt: 2, Offenses, fileWritesRolledBack: true, salvageRef: salvage),
+            PromptTask("07-impl"), attempt: 2,
+            // The salvage this suite offers is an attempt's IN-SCOPE work, which #705 requires the check to have seen.
+            new WriteScopeCheckResult { Passed = false, Scope = ["src/**"], OffendingPaths = Offenses, InScopePaths = ["src/a.cs"] },
+            fileWritesRolledBack: true, salvageRef: salvage),
         _ => throw new ArgumentOutOfRangeException(nameof(entryPoint), entryPoint, "unknown RetryPolicy entry point")
     };
 

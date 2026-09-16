@@ -2731,7 +2731,7 @@ public sealed class PlanValidator
         // is not this finding — the whole point is the ABSENCE of such an upstream author.
         foreach (TaskNode task in plan.Tasks)
         {
-            List<string> ownTests = [.. (task.WriteScope ?? []).Where(LooksLikeTestPath)];
+            List<string> ownTests = [.. (task.WriteScope ?? []).Where(TestPathConvention.LooksLikeTestPath)];
             if (ownTests.Count == 0 || !AssertsItsTestsPASS(task))
             {
                 continue;
@@ -2810,23 +2810,6 @@ public sealed class PlanValidator
                 queue.Enqueue(next);
             }
         }
-    }
-
-    /// <summary>
-    /// A conservative "this is a test file" reading of a writeScope entry. Deliberately keyed on the
-    /// conventions this repo and the plans it generates actually use; a miss is silence, which is the right
-    /// direction for a lint whose false positive would flag a legitimate task.
-    /// </summary>
-    private static bool LooksLikeTestPath(string path)
-    {
-        string normalized = Normalize(path);
-        return normalized.Contains("test", StringComparison.OrdinalIgnoreCase)
-               && (normalized.EndsWith("tests.cs", StringComparison.OrdinalIgnoreCase)
-                   || normalized.EndsWith("test.cs", StringComparison.OrdinalIgnoreCase)
-                   || normalized.EndsWith("_test.py", StringComparison.OrdinalIgnoreCase)
-                   || normalized.EndsWith(".test.ts", StringComparison.OrdinalIgnoreCase)
-                   || normalized.EndsWith(".test.js", StringComparison.OrdinalIgnoreCase)
-                   || normalized.EndsWith(".spec.ts", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string Normalize(string path) => path.Trim().Replace('\\', '/');

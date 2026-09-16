@@ -1534,6 +1534,41 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// Which task last committed <paramref name="path"/> (issue #707): the <c>Guardrails-Task:</c> and
+    /// <c>Guardrails-Task-Hash:</c> trailers of the most recent commit reachable from <paramref name="taskBase"/>
+    /// that touched it. Every integration commit carries those trailers — the segment commit on both the FF and
+    /// the non-FF path, and the union merge commit (<see cref="TrailerMessage"/>) — so this is a fact the harness
+    /// already holds, not an inference. They are read off the commit's LAST trailer block, the same attribution
+    /// rule the resume pre-pass uses, so a hand fix that merely mentions a trailer in prose attributes to no one.
+    /// Returns <c>(null, null)</c> — never throws — when no commit touched the path, the commit carries no trailer,
+    /// or git fails: an unknown author is treated as "not upstream", the direction that keeps an ordinary retry.
+    /// </summary>
+    public static (string? TaskId, string? DefinitionHash) LastCommitTaskTrailer(
+        string worktreePath, string taskBase, string path)
+    {
+        try
+        {
+            // --literal-pathspecs: a real file name containing a glob character must name that file, not a pattern.
+            string body = GitIn(worktreePath, "--literal-pathspecs", "log", "-1", "--format=%B", taskBase, "--", path);
+            string? taskId = null;
+            string? definitionHash = null;
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
+                    taskId = line["Guardrails-Task: ".Length..];
+                else if (line.StartsWith("Guardrails-Task-Hash: ", StringComparison.Ordinal))
+                    definitionHash = line["Guardrails-Task-Hash: ".Length..];
+            }
+
+            return (taskId, definitionHash);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return (null, null);
+        }
+    }
+
+    /// <summary>
     /// Delete one salvage ref (issue #554). The escalation path writes the snapshot before it can know
     /// whether the FILTERED diff is empty — <c>commit-tree</c> is what produces the tree to diff — so when
     /// it turns out there was nothing in scope to salvage this removes the ref again, leaving "no patch,

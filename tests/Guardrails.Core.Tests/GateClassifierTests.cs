@@ -69,6 +69,40 @@ public sealed class GateClassifierTests
         Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
     }
 
+    [Fact]
+    public void NoRoute_IsHardBlockerPermanent()
+    {
+        // #707 review: no candidate block serves the requested tier (#201, DoR §6.2) — a routing-configuration gap.
+        // Every retry resolves the same way, and no best-guess supplies a runner block.
+        GateSignal signal = GateSignal.NoRoute("no candidate block serves the 'hard' tier, at it or above it");
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
+    [Fact]
+    public void WriteScopeGap_IsHardBlockerPermanent()
+    {
+        // #707: every retry is handed the same scope, and the fix is a task.json edit no best-guess makes.
+        GateSignal signal = GateSignal.WriteScopeGap("src/Stub.cs was written outside this task's writeScope again");
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
+    [Fact]
+    public void HarnessHalt_IsHardBlockerPermanent_AndKeepsItsOwnKindAndDetail()
+    {
+        // #707 delta review (NIT-3). The default-safe branch builds THIS signal for a harness halt whose
+        // producer set no more specific kind. Classify() alone cannot pin it: Unknown maps to the same class,
+        // so a mutation swapping one for the other would behave identically and no test would notice. The KIND
+        // is what makes the record precise — an unrecognised/ambiguous stop (Unknown, §4.3) and a stop the
+        // harness decided deliberately are different facts, and only the latter has a summary worth carrying.
+        const string summary = "cost cap reached: cumulative journaled cost has reached the configured maxCostUsd ($20)";
+        GateSignal signal = GateSignal.HarnessHalt(summary);
+
+        Assert.Equal(GateSignalKind.HarnessHalt, signal.Kind);
+        Assert.NotEqual(GateSignalKind.Unknown, signal.Kind);
+        Assert.Equal(summary, signal.Detail);
+        Assert.Equal(GateClass.HardBlockerPermanent, GateClassifier.Classify(signal));
+    }
+
     // ── Class (a): judgment call (the ONLY dial-eligible class) ───────────────────────────────────
 
     [Fact]

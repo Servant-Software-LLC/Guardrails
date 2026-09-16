@@ -880,7 +880,8 @@ supersedes that: agentic looping needs the artifact BACK — the retry agent, in
 **per-guardrail verdicts** (§8: which checks already passed, which failed and why), is the one reasoning
 about the failure and decides how much to reuse. So salvage now fires for **guardrail-fail, action-fail,
 timeout, max-turns, output-cap, and write-scope** — every path where a non-final worktree attempt is
-about to be reset. The clean-slate reset stays the DEFAULT starting point (avoids compounding a corrupt
+about to be reset (a write-scope violation only when the attempt changed something INSIDE its scope; its
+out-of-scope bytes are kept separately as `out-of-scope.patch` — #705, §3.4). The clean-slate reset stays the DEFAULT starting point (avoids compounding a corrupt
 partial state); the stash is opt-in for the agent. A genuine no-op attempt (empty diff vs `taskBase`) is
 NOT offered a stash (nothing to salvage). **Two documented exceptions, both suppressing the stash:**
 (1) the **fragment-rejection** paths (invalid-fragment / foreign-key, §6.2) keep their #162 re-author
@@ -908,9 +909,9 @@ mints a new `runId` and forks a fresh segment at `planHead`; `reuse`/`fork` are 
 policies and never reach across runs, so nothing ever hands the old tree back). The guard is therefore
 **`IsRealGitSegment`, not `WorktreeWillReset`** — a *final* escalating attempt still preserves, which is
 exactly the attempt whose work a human is about to build on. The staged set is **filtered to the task's
-declared `writeScope`** — `PreserveAttemptToRef` gained a `restrictToScope` parameter for exactly this
-divergence (`null` on the retry path, which keeps its snapshot byte-identical to pre-#554; the task's
-`writeScope` array on the escalation path), enforced by `RestrictStagedSetToScope`, which lists the
+enforced scope** (its declared `writeScope` plus its `stagingOutputs` destinations) — `PreserveAttemptToRef`
+gained a `restrictToScope` parameter for exactly this divergence (`null` on the retry path, which keeps its
+snapshot byte-identical to pre-#554; the enforced scope on the escalation path), enforced by `RestrictStagedSetToScope`, which lists the
 already-staged set and `git reset`s every path outside scope back out of the throwaway index before
 `write-tree`: this short-circuit fires well upstream of the write-scope check and `ScopedRevert`, so
 `PreserveAttemptToRef`'s otherwise-unfiltered `git add -A` would write an escalating agent's out-of-scope
@@ -920,7 +921,12 @@ suppression is structurally inapplicable here** — it keys off the failed-guard
 residual as the retry path (a protected file *inside* the task's own `writeScope` is still stashed, caught
 if re-gamed by the deterministic per-attempt re-check). **The feedback wording on this path must not claim
 a rollback** — nothing was rolled back; the honest framing states the tree is orphaned and the ref/patch
-are the only durable copies.
+are the only durable copies. The **write-scope-gap halt** (§3.4, issue #707) reuses this preservation: it too
+returns before the F2 reset, so its in-scope work is preserved the same way and offered in its `feedback.md` under
+the neutral prior-attempt framing — but only when the write-scope check saw an in-scope change, because with none
+the snapshot could hold only index churn (§3.4). Both escalation-path callers filter to the task's ENFORCED scope
+(the declared `writeScope` plus its `stagingOutputs` destinations), so a staged deliverable already moved into its
+`.claude/` destination is not dropped from the only durable copy.
 
 **Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
 record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
@@ -1128,8 +1134,8 @@ validated plan never reaches the check with a null scope, but the check nonethel
 to an EMPTY one in worktree mode (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
 any write is offending — rather than passing. **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
-the deleted path must be in scope. The declared scope is also injected into the action prompt
-(advisory) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
+the deleted path must be in scope. The ENFORCED scope is rendered into the action prompt and the violation
+feedback (issue #706, below) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
 workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020**, warning;
 `plan-breakdown` emits a real surface or `[]`, never a vacuous `**`). **TDD test-protection:** a
 test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
@@ -1175,6 +1181,124 @@ When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
 authorize), not the pre-move staging writes — the surface the check protects (what reaches the
 commit) is unchanged and still fully gated.
+
+**The agent is shown the scope it is judged by (issue #706).** The executor resolves the ENFORCED scope once
+per attempt — the declared `writeScope` (a null coalesced to `[]`, #389) plus the implicit `stagingOutputs`
+destinations (`<to>**` for a directory `to`, plus `.guardrails-staging/**`) — and reads it twice: it is the
+array the check gates on, and it is rendered into the composed action prompt as a harness-generated
+`## Write scope (harness-enforced)` section (§9) listing every entry as a backticked bullet. Beneath the entries,
+the section states the matcher's rules as `WriteScope.IsInScope` applies them. An entry that ends in `/`, or whose
+last segment has no file extension, is a directory covering everything beneath it. A bare dotfile entry such as
+`.gitignore` also covers that exact file (#262). `*` matches within one segment. `**` matches ONE or more whole
+segments, never zero, so `src/**/Foo.cs` does not cover `src/Foo.cs` (#707 review). A violation's
+`feedback.md` lists the same entries after the offending paths, under the line
+`This task's writeScope allows changes ONLY to:`, read off `WriteScopeCheckResult.Scope` (the array the verdict
+was computed against); for a prompt action it then names the `needsHuman` route for a path the task cannot do
+without. Both surfaces come from the enforced array, never from author prose, so neither can drift from the
+verdict — before this the only statement of scope an agent saw was a hand-copied paragraph, and plans 39 and
+40 shipped 48 prompts whose paragraph read "Write only to the path(s) listed above" and listed nothing. An
+EMPTY scope is stated in words (`writeScope` is EMPTY) on both surfaces, never rendered as a heading or lead-in
+over no entries. Serial mode renders no section: no check runs there, so "harness-enforced" would be false.
+
+**A write-scope gap the PLAN caused halts `needs-human` instead of retrying (issue #707).** Every retry is
+handed the same scope, so no retry can clear a gap in it; plan 40's task 20 spent four attempts, two overwatch
+diagnoses and a best-guess on a one-line `task.json` fix. For a **prompt** action, the harness settles the task
+`needs-human` on the violating attempt when either deterministic rule holds. The attempt is journaled with its
+true outcome, `write-scope-violation`, and task status `needs-human`.
+1. **Repeat.** An offending path was ALSO written out of scope on an earlier attempt of this task. It is tracked
+   per task within one execution, keyed on the path alone, with the git-error sentinel excluded: the write-scope
+   analogue of the §9.3 #86 repeat rule, and a separate record from it.
+2. **Upstream author, first occurrence.** EVERY offending path is a modify or a delete, is NOT a test file (the
+   conservative `TestPathConvention.LooksLikeTestPath` reading GR2075, the grades-its-own-test lint, also uses),
+   and has a most recent commit
+   reachable from `taskBase` carrying a `Guardrails-Task:` trailer naming a transitive `dependsOn` ancestor and a
+   `Guardrails-Task-Hash:` equal to that ancestor's definition hash as this run loaded it (read from the commit's
+   last trailer block, the resume pre-pass's attribution rule), AND the attempt changed NOTHING inside its own
+   scope (`WriteScopeCheckResult.InScopePaths` is empty). The in-scope condition is load-bearing. An
+   ancestor-authored path alone cannot tell a stub the plan forgot to hand this task from a test file the plan
+   deliberately withheld from it — the TDD split protects tests with exactly this check — so an attempt that did
+   real in-scope work and also touched an upstream file is retried, and rule 1 bounds that at one extra attempt.
+   The hash condition keeps a commit made under some other definition of that id from counting. It is defense
+   in depth: such a trailer reachable from the run's base is normally settled first by the plan-branch
+   reconcile (§7.2), before any attempt runs. A **test** path never takes this rule: in a correctly split TDD
+   plan the stub sits inside the implementing task's own scope, so the only upstream-authored file this rule
+   could still fire on is a test — where "widen the scope" is the wrong advice. It is retried, and rule 1
+   halts it on the repeat.
+
+The halt's `feedback.md` keeps the `## Write-scope violation` marker. It names each path with its evidence (the
+upstream author, or the earlier attempt), lists the allowed scope, and gives the absolute `task.json` path and the
+exact JSON entry to add to `writeScope`. Because no reset follows a halt, it also appends the attempt's in-scope
+salvage (§3.2), taken only when the check saw an in-scope change (with none, the revert took everything the agent
+wrote and a snapshot could hold only index churn) and filtered to the enforced scope, so a staged deliverable is
+kept. When a repeated path is a **test file**, the halt LEADS with that — "the agent keeps editing `<path>`, a test
+file" normally authored upstream and protected by the plan's TDD split — and offers widening the scope only as the
+less likely alternative, after it in `feedback.md` and never in the summary. The `TaskResult.Summary` carries the
+stable `needs human: ` prefix, the path, and (except for that test variant) the same one-line fix. **Script** actions are excluded: they cannot self-correct, and their reproduction is the #264 short-circuit's
+domain, whose byte-identical-output guard is deliberate. No model is consulted, and the overwatcher is not asked to
+diagnose this halt.
+
+**Harness halts route as hard blockers in autonomous mode, never as judgment calls (#707 review).** A needs-human
+halt the HARNESS decided rests on a blocker no retry and no best-guess can clear: this write-scope-gap halt, the
+§9.3 permission wall, the no-route settle (#201, DoR §6.2), the structural `.claude/` wall (#325/#329), a failed
+task preflight, a reached cost cap, an unresolved AI merge, a re-verify rollback, and the #174/#264 short-circuit.
+Their summaries share the `needs human: ` prefix with an agent's own question, and the classify-then-act dispatch
+used to recognize "the agent asked" by that prefix. So they were judgment calls: the criticality judge ran, and
+below the threshold a best-guess re-drove the task with a fresh budget, recorded `proceeded-best-guess`, and turned
+delivery off. Routing now reads structured fields only.
+
+**The routing rule is DEFAULT-SAFE, not a list of known halts (#707 review delta).** Routing on
+`TaskResult.HardBlocker` alone left seven producers — the structural wall, task preflight, cost cap, AI-merge
+unresolved, AI-merge re-verify failure, non-FF union re-verify failure, and the #174/#264 short-circuit — matching
+NO branch at all: no judge call, no escalation, no `decisions[]` entry, a run ended on a blocker with nothing
+recorded anywhere. The dispatch now branches on the OUTCOME: `NeedsHumanQuestion` (only the agent's own needsHuman
+sets it) is the judgment call, and **every other `needs-human` outcome escalates as `hard-blocker-permanent`**,
+classified from `HardBlocker` when its producer set one and from a generic harness-halt signal carrying the
+summary when it did not. No outcome is exempt — the cost cap included, and the #174/#264 short-circuit records a
+second entry beside its overwatcher floor decision, which is the honest outcome rather than silence. A new
+needs-human producer is therefore routed correctly by default; forgetting to set a signal costs precision in the
+record, never the escalation itself.
+- `TaskResult.NeedsHumanQuestion` is set by an agent's own `needsHuman` alone (#606), and is the one judgment call.
+- `TaskResult.HardBlocker` is a `GateSignal` set by the three halts' producers: `PermissionWall`, `NoRoute` and
+  `WriteScopeGap`. Each classifies `hard-blocker-permanent` and escalates at the `needs-human` gate without
+  consulting the judge.
+
+The summary prefix stays for human-facing readers, and no machine decision reads it.
+
+**Out-of-scope work stays recoverable, and salvage says only what is true (issue #705).** The scoped revert
+destroys the offending bytes, which is exactly wrong when the out-of-scope write IS the deliverable — and every
+plan scope gap looks like that. So before the revert the harness writes `out-of-scope.patch` (§8) into the
+attempt's log dir. It is a `git diff --cached --binary` of the offending paths against `taskBase`, taken from the
+index the check just staged: added, modified and deleted paths alike, in-scope paths excluded. The capture is
+best-effort and never leaves an empty file. It exists for the human deciding whether `writeScope` should grow:
+the harness never applies it and never offers it to a retry as salvage. The violation feedback names it as a
+human's copy, "not for you", because re-applying it fails the same check, and the #707 halt names it too.
+
+The retry salvage (§3.2) for a write-scope violation is taken only when the attempt changed something INSIDE its
+scope (`WriteScopeCheckResult.InScopePaths` is non-empty). With no in-scope change there is nothing in scope to
+save, so no ref and no `prior-attempt.patch` are written. The feedback header says so — "None of your previous
+attempt's work was kept for you … there is no in-scope work to recover" — instead of "SAVED, not lost", and on a
+final attempt it likewise claims nothing preserved. `RetryPolicy.ForWriteScopeViolation` enforces the same rule
+itself: it neither claims nor offers salvage for a violation with no in-scope change, whatever snapshot it is
+handed. The snapshot alone cannot answer the question, because it stages into a fresh throwaway index that
+re-hashes every file. A CRLF-committed file under `core.autocrlf=true`, or an executable bit under
+`core.filemode=false`, reads as changed there and nowhere else; plan 40's salvage held exactly that churn and
+nothing of the agent's work.
+
+**The attempt that runs after the scope widens is pointed at the kept work (#707 review).**
+`DependencyContextBuilder.BuildPriorAttempts` finds each prior attempt's `out-of-scope.patch` and reads the paths
+it touches from its `diff --git` headers. The capture passes `--no-renames`, so each header names a single path
+twice. When the ENFORCED scope of the attempt being composed now covers at least one of those paths — because the
+scope was widened, as the halt asked — the composed prompt gains `## Out-of-scope work an earlier attempt left is
+now in scope`. That section names the patch and lists only the paths the scope now covers, as
+work to recover rather than re-author. It says it supersedes the earlier feedback's "not for you", which was true
+under the scope that attempt ran with, and that any path in the patch still outside the scope stays off-limits.
+While no kept path is in scope, the copy is never mentioned to the agent at all.
+
+A copy is offered only while **no later attempt has run since it was captured** (#707 review delta): the composer
+considers the MOST RECENT prior attempt alone, and says nothing when that attempt kept no copy. Otherwise the
+pointer goes stale in the one sequence it exists for — attempt N keeps a copy, the scope widens, attempt N+1
+recovers from it and then fails a guardrail — and attempt N+2 would be sent back to the superseded bytes by
+wording ("recover each one from its hunk in that file") more directive than attempt N+1's own salvage pointer.
 
 ### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
 
@@ -3296,7 +3420,7 @@ review-gate gate (no new boundary is added) — and **adds these OPTIONAL fields
 
 | Field (optional) | Type | Meaning |
 |---|---|---|
-| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
+| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| `hard-blocker` (every harness-decided needs-human halt, NON-answerable — #707 review delta, §7.2) \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
 | `classification` | string | `judgment-call` \| `hard-blocker-retryable` \| `hard-blocker-permanent` |
 | `criticality` | string | the assessed level (`low`\|`moderate`\|`high`\|`critical`); null for a hard blocker |
 | `confidence` | string | the judge's confidence (`low`\|`moderate`\|`high`); null for a hard blocker |
@@ -3867,10 +3991,20 @@ diagram is stale or missing (the "regenerate" signal); for `lock --check`: the f
 the baseline or the baseline is missing (the "re-baseline" signal); for `merge`: there are unresolved
 conflicts to resolve, or the BASE baseline is missing and must be established first (§11.5) · `3`
 cancelled · `4` **`EscalationsPending`** — an autonomous run (`docs/plans/12-autonomous-mode.md`, issue
-#361 Phase 3) ended with **unresolved escalations** (an answer-required halt: one or more
-`logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered`, §8). This is a **NEW, DISTINCT
-non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated firstmate consumer
-**never** reads an answer-required halt as clean green AND can tell it apart from a plain needs-human halt.
+#361 Phase 3) ended with **unresolved ANSWERABLE escalations** (an answer-required halt: one or more
+`logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered` on an **answerable** gate —
+`needs-human` or `wave-checkpoint`, §8). A run whose open escalations are all **non-answerable** — `hard-blocker`,
+`review-gate` or `blocker` — exits **`2`** instead (#707 review delta): code `4` promises "a firstmate answer
+file unblocks this on the next resume", and for a harness-decided hard blocker that promise is false — the
+consumer refuses such an answer, and the remedy is a human editing `task.json` or the config. The same holds for
+the other two: a `review-gate` record clears only by a real human review pass (§7.5, no answer kind exists), and
+a `blocker` is a retry-exhausted transient. **A firstmate still sees a non-zero exit** on every one of these
+runs — the distinction is only between "an answer unblocks this" (`4`) and "a human must act" (`2`), never
+between failure and success. A run carrying BOTH an open answerable escalation and a hard blocker exits `4`: the
+answer genuinely can unblock the next resume, and the hard blocker does not mask it. This is a
+**NEW, DISTINCT non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated
+firstmate consumer **never** reads an answer-required halt as clean green AND can tell it apart from a plain
+needs-human halt.
 Code `2` is deliberately **NOT** reused here: `2` is indistinguishable from a normal needs-human, whereas
 `EscalationsPending` signals "a firstmate answer file (§7.2/§7.4) can unblock this on the next resume." ·
 `5` **`ProceededUnreviewed`** — an autonomous run (`docs/plans/12-autonomous-mode.md` §5.2, issue #361
@@ -4461,7 +4595,15 @@ logs/<runId>/<task-id>/attempt-N/
                               #   whose tree was never rolled back, only ORPHANED; the escalation form is
                               #   scope-filtered to writeScope, the retry form is not. The NEXT attempt's
                               #   feedback.md (retry) or the escalation record + composed prompt (escalation)
-                              #   points at it (`git apply`); absent on a no-op/serial attempt
+                              #   points at it (`git apply`); absent on a no-op/serial attempt, and on a
+                              #   write-scope violation that changed nothing INSIDE the scope (#705, §3.4)
+├── out-of-scope.patch       # #705: applyable diff of a write-scope violation's OFFENDING paths vs taskBase,
+                              #   captured from the check's staged index BEFORE the scoped revert destroys
+                              #   them; for a HUMAN deciding whether writeScope should grow — never applied by
+                              #   the harness, never offered to a retry as salvage; named in feedback.md; once a
+                              #   widened scope covers its paths, the next attempt's composed prompt offers those
+                              #   paths to recover (§3.4); absent when there was no violation or the best-effort
+                              #   capture failed
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
 
@@ -4577,6 +4719,9 @@ logs/<runId>/escalations/
 │                              #   surface presents; `[]` for a free-text or non-answerable escalation
 │                              #   + `kind` (#485): the agent's OPTIONAL needsHuman classification
 │                              #   (`blocked-work` | `defective-guardrail`); ABSENT when unclassified
+│                              #   + `classification` (#707 review delta): the class the gate was acted on
+│                              #   under (`judgment-call` | `hard-blocker-retryable` | `hard-blocker-permanent`),
+│                              #   the same value as the decisions[] entry; ABSENT when the caller records none
 └── <seq>-<gate>.answer.json   # OPTIONAL firstmate reply, co-located beside the record it answers (§7.2/§7.4);
                                #   present once a crew has written an answer for an ANSWERABLE gate — a
                                #   hand-authored reply OR a pick surface's chosen option (§9, #387)
@@ -4588,8 +4733,22 @@ The escalation record's **`status` lifecycle** is `open` (written by `Escalate`)
 this **creating** run's `escalations/` dir even across later resumes (§7.2). The `.answer.json` reply is the
 firstmate answer-file contract (`docs/plans/12-autonomous-mode.md` §7.4); a resume consumes it under the
 dual-hash / CAS binding rules in §7.2. Only the two **answerable** gates (`needs-human`, `wave-checkpoint`)
-ever carry a reply — there is **no `review-gate` answer file** (no `review-attested` kind, §7.2). A run that
-ends with any escalation still `open`/`answered` (unconsumed) exits `4 = EscalationsPending` (§7.1).
+ever carry a reply — there is **no `review-gate` answer file** (no `review-attested` kind, §7.2), and no
+**`hard-blocker`** answer file either. A run that ends with an **answerable** escalation still `open`/`answered`
+(unconsumed) exits `4 = EscalationsPending` (§7.1); one whose open escalations are all non-answerable exits
+`2`, because no answer file can clear them.
+
+**The `hard-blocker` gate (#707 review delta).** Every needs-human halt the HARNESS decided is filed under this
+gate rather than `needs-human`: a permission wall, a no-route settle, a write-scope gap, a structural `.claude/`
+wall, a failed task preflight, a reached cost cap, an unresolved AI merge, a re-verify rollback, the #174/#264
+short-circuit. It is NON-answerable by the same `AnswerableGates` predicate the resume-time consumer and both
+pick surfaces already enforce — no answer widens a `writeScope`, grants a blocked path or raises a cost cap, so
+an injected answer could only re-drive a task that must fail again while the run reported "answer required"
+instead of the real remedy (editing `task.json` or the config). Its record carries `criticality: null` like any
+hard blocker. Every escalation record also carries **`classification`** (`judgment-call` |
+`hard-blocker-retryable` | `hard-blocker-permanent`) — the same value as the `decisions[]` entry, on the record a
+human or firstmate actually reads, so an answerable judgment call is distinguishable from a hard blocker without
+inferring it from the gate name.
 
 **`feedback.md` header is action-kind AND rollback/salvage aware (issues #264 / #167 / #306).** The
 `feedback.md` opens with retry guidance chosen first by action kind, then — for a PROMPT action — by what
@@ -4606,6 +4765,10 @@ what already works" even though the worktree reset had discarded the writes):
   was SAVED, not lost. Recover the parts that already work from '## Prior attempt work is salvageable'
   below, then make ONLY the change needed"); or **rolled-back-and-lost** (worktree non-final, salvage
   off/failed: "…rolled back to a clean base and are NOT recoverable. Re-author from scratch").
+- A PROMPT action's **write-scope violation with no in-scope change** gets its own line whatever the
+  disposition — "None of your previous attempt's work was kept for you: every change it made was OUTSIDE this
+  task's writeScope … there is no in-scope work to recover" — and never the stashed wording, because nothing in
+  scope existed to stash (#705, §3.4).
 
 **Per-guardrail verdict ledger (issue #306).** A guardrail-failure `feedback.md` also carries a "## Prior
 attempt: guardrail verdicts" ledger — every guardrail that ran, marked `✅` (passed, do not break) or `❌`
@@ -4704,8 +4867,9 @@ to find out — the read layer 3 exists to remove, reintroduced on the path wher
 #361's answer-injection path an escalation with no content. Widening `detail` was rejected for the reason
 the paragraph below gives; a question is written by the HARNESS for a human and carries no tool output,
 which is a different risk profile and is why it gets its own field and its own disclosure. `detail` keeps
-the `needs human: …` prefix unchanged, so every existing reader — including the prose parse that drives
-the autonomous escalation dispatch — is undisturbed.
+the `needs human: …` prefix unchanged for every human-facing reader. No machine decision reads that prose: the
+autonomous escalation dispatch routes on this structured question (an agent's own needsHuman) and on
+`TaskResult.HardBlocker` (a harness halt), never on the prefix (§3.4, #707 review).
 
 **`attempt-finished` is the journal's `AttemptRecord`, emitted live.** `IRunObserver.AttemptFinished`
 carries the whole `Journal.AttemptRecord` (§7), so the row is a projection of the record the journal
@@ -5036,9 +5200,14 @@ inert hook. See §9.4 for the mechanism this condition gates.
 - The composed prompt (§8 `composed-prompt.md`) = body + appended harness sections:
   shared state (inlined ≤ 16 KB, else by path), **dependency context** (actions: pointers to
   the transitive `dependsOn` closure's `transcript.md` + contributed `fragment.json`, present
-  on every attempt — #26 Gap 4), output contract (actions), previous-attempt feedback (actions,
+  on every attempt — #26 Gap 4), output contract (actions), **write-scope section** (actions, worktree
+  mode only: `## Write scope (harness-enforced)`, the ENFORCED scope rendered from the array the write-scope
+  check gates on — #706, §3.4), previous-attempt feedback (actions,
   attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
-  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **staging-outputs
+  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **recoverable out-of-scope work** (actions, worktree mode, only when the
+  enforced scope now covers a path the MOST RECENT prior attempt's `out-of-scope.patch` touched, and no later
+  attempt has run since — #705/#707 review, §3.4),
+  **staging-outputs
   contract** (actions, when `stagingOutputs` declared, §3.5: the absolute `GUARDRAILS_STAGING_DIR` and
   the `from→to` map embedded verbatim — "write here; the harness moves it to `.claude/`; do not write
   `.claude/` directly", since agents read instructions, not env vars), verdict
@@ -5785,7 +5954,10 @@ judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager
 - the **no-op-deadlock (#174/#182)** or **deterministic-`script` (#264)** short-circuit about to fire;
 - the **permission-wall** early halt (§9.3 / #266) — may fire even on attempt 1;
 - the **write-scope-violation loop** and **max-turns** exhaustion (both are guardrail-class failures at
-  attempt ≥ 2, so they are covered by the eager trigger);
+  attempt ≥ 2, so they are covered by the eager trigger). A prompt action's REPEATED offending path, or a
+  first-attempt upstream-authored scope gap, no longer reaches that consult: it settles `needs-human`
+  deterministically first (§3.4, #707). A `doomed` classification at the eager trigger stays ADVISORY — it
+  never grants, and it never halts on its own;
 - **terminal exhaustion → `needs-human`** (§9.2.1).
 
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
@@ -6070,6 +6242,11 @@ and a `stagingOutputs` attempt whose moved deliverable passes its guardrails is 
 outcome (action failed or guardrails failed) with an un-recoverable `.claude/` wall present; its
 `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`, then the session-wide
 `bypassPermissions` fallback (the settings-grant remedy is retired, #273).
+
+**In autonomous mode a permission-wall halt is a hard blocker.** Its `TaskResult` carries
+`HardBlocker = GateSignal.PermissionWall(decision)`, so the classify-then-act dispatch escalates it as
+`hard-blocker-permanent` without consulting the criticality judge, and never proceeds on a best-guess past it. A
+wall is a missing grant, which no best-guess supplies (§3.4, #707 review).
 
 ### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
 

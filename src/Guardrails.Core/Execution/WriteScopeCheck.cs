@@ -60,11 +60,14 @@ public static class WriteScopeCheck
             return new WriteScopeCheckResult
             {
                 Passed = false,
-                OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }]
+                Scope = scope,
+                OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }],
+                InScopePaths = []
             };
         }
 
         var offending = new List<WriteScopeOffense>();
+        var inScope = new List<string>();
         foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string line = rawLine.Trim();
@@ -88,12 +91,18 @@ public static class WriteScopeCheck
                     Preview = CapturePreviewIfNewFile(repoPath, path, status)
                 });
             }
+            else
+            {
+                inScope.Add(path);
+            }
         }
 
         return new WriteScopeCheckResult
         {
             Passed = offending.Count == 0,
-            OffendingPaths = offending
+            Scope = scope,
+            OffendingPaths = offending,
+            InScopePaths = inScope
         };
     }
 
@@ -225,6 +234,50 @@ public static class WriteScopeCheck
     }
 
     /// <summary>
+    /// Issue #705: KEEP the out-of-scope bytes. <see cref="ScopedRevert"/> destroys every offending change, which is
+    /// right when the out-of-scope write is collateral and exactly wrong when it IS the deliverable — the shape of
+    /// every plan scope gap. Plan 40's task 20 lost a working implementation this way on two attempts running.
+    /// Call it after <see cref="Check"/> and strictly before <see cref="ScopedRevert"/>: it diffs the INDEX that
+    /// <see cref="Check"/> just staged against <paramref name="taskBase"/>, limited to the offending paths, so the
+    /// patch holds exactly the bytes the verdict judged — added, modified and deleted paths alike, and none of the
+    /// in-scope work. <c>--binary</c> keeps a binary change applyable, <c>--no-color</c> keeps a user's color config
+    /// out of the bytes, and <c>--literal-pathspecs</c> makes a file name containing a glob character name that file.
+    /// Returns "" (never throws) when nothing is offending or git fails: the copy is best-effort and must never fail
+    /// the attempt or stand in the way of the revert. The WS_2 git-error sentinel is not a path and is skipped.
+    /// </summary>
+    public static string CaptureOffendingPatch(
+        string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    {
+        List<string> paths = offendingPaths.Where(o => o.Status != '?').Select(o => o.Path).ToList();
+        var batches = new List<string>();
+        try
+        {
+            // Batched so a very large offending set cannot overflow a child's command line. The paths are disjoint,
+            // so the batches' patches concatenate into one applyable patch.
+            for (int i = 0; i < paths.Count; i += PatchPathBatchSize)
+            {
+                // --no-renames: each file header then names ONE path twice, which is how the next attempt's composer
+                // reads back which paths a kept copy touches (#707 review W4).
+                var args = new List<string>
+                {
+                    "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
+                };
+                args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
+                batches.Add(RunGit(repoPath, [.. args]));
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return "";
+        }
+
+        return string.Concat(batches);
+    }
+
+    /// <summary>How many paths one <see cref="CaptureOffendingPatch"/> git child is handed.</summary>
+    private const int PatchPathBatchSize = 100;
+
+    /// <summary>
     /// Restore each path in <paramref name="offendingPaths"/> to its <paramref name="taskBase"/>
     /// state, leaving all in-scope WIP (staged or unstaged) untouched. No-op when
     /// <paramref name="offendingPaths"/> is empty.
@@ -337,9 +390,35 @@ public sealed record WriteScopeCheckResult
     /// <summary>True when every changed path is within the declared write-scope.</summary>
     public bool Passed { get; init; }
 
+    /// <summary>
+    /// The scope globs this check ENFORCED — the array it was handed, with a null scope already coalesced
+    /// to empty (#389). Carried on the result so anything that tells the agent what it may write reads
+    /// the rule the verdict was actually computed against, never a second copy of it (issue #706).
+    /// </summary>
+    public required IReadOnlyList<string> Scope { get; init; }
+
     /// <summary>Changed paths that fall outside the declared write-scope. Empty when <see cref="Passed"/>.</summary>
     public IReadOnlyList<WriteScopeOffense> OffendingPaths { get; init; } = [];
+
+    /// <summary>
+    /// Changed paths the declared write-scope DOES cover — the in-scope work the attempt made, from the same
+    /// diff that found the offenses. Empty on the git-error sentinel.
+    /// </summary>
+    public required IReadOnlyList<string> InScopePaths { get; init; }
 }
+
+/// <summary>
+/// Why a write-scope violation halted <c>needs-human</c> instead of retrying (issue #707). Both halves are
+/// deterministic facts the harness already holds; no model judged either.
+/// </summary>
+/// <param name="RepeatedPaths">Offending paths this task ALSO wrote out of scope on an earlier attempt.</param>
+/// <param name="UpstreamAuthorByPath">
+/// Offending path → the upstream task (a transitive <c>dependsOn</c> ancestor) that last committed it. Non-empty
+/// only when EVERY offending path is upstream-authored and the attempt changed nothing inside its own scope.
+/// </param>
+public sealed record WriteScopeGap(
+    IReadOnlyList<string> RepeatedPaths,
+    IReadOnlyDictionary<string, string> UpstreamAuthorByPath);
 
 /// <summary>
 /// One offending path from a write-scope violation (issue #253), paired with its raw

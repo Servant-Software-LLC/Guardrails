@@ -565,6 +565,90 @@ public sealed class WriteScopeCheckTests
     }
 
     // -------------------------------------------------------------------------
+    // Issues #707 / #705: the in-scope half of the same diff
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// The check reports the changed paths the scope DOES cover, from the very diff that found the offenses —
+    /// the fact that tells "the attempt did real in-scope work and strayed" apart from "every change it made
+    /// was outside its scope", which the first-attempt plan-gap halt (#707) and an honest salvage header (#705)
+    /// both turn on.
+    /// </summary>
+    [Fact]
+    public void Check_ReportsTheInScopeChangedPaths_FromTheSameDiff()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("src/Feature.cs", "// base", "add base feature");
+        string taskBase = repo.HeadSha();
+        File.WriteAllText(Path.Combine(repo.RepoPath, "src", "Feature.cs"), "// in-scope work");
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "notes.md"), "stray");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.False(result.Passed);
+        Assert.Equal("docs/notes.md", Assert.Single(result.OffendingPaths).Path);
+        Assert.Equal(["src/Feature.cs"], result.InScopePaths);
+    }
+
+    /// <summary>
+    /// DECLARED CONTROL — green before the in-scope set was populated as well as after: an attempt whose every
+    /// change is out of scope reports NO in-scope path.
+    /// </summary>
+    [Fact]
+    public void Check_EveryChangeOutOfScope_ReportsNoInScopePaths()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "notes.md"), "stray");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.Single(result.OffendingPaths);
+        Assert.Empty(result.InScopePaths);
+    }
+
+    /// <summary>
+    /// Issue #705: the out-of-scope bytes are captured from the index the check just staged, BEFORE the scoped
+    /// revert destroys them — every offending path (a modify and a brand-new file alike) and none of the in-scope
+    /// work — and the capture is a real patch: applied to the reverted tree, it brings those bytes back.
+    /// </summary>
+    [Fact]
+    public void OffendingPatch_CapturesOnlyTheOutOfScopeBytes_AndReappliesAfterTheRevert()
+    {
+        using var repo = new TempGitRepo();
+        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "false"); // byte-exact apply on every OS
+        repo.CommitFile("src/Feature.cs", "// base feature", "add base feature");
+        repo.CommitFile("config/settings.json", "{\"base\": true}", "add base config");
+        string taskBase = repo.HeadSha();
+
+        File.WriteAllText(Path.Combine(repo.RepoPath, "src", "Feature.cs"), "// in-scope wip");
+        File.WriteAllText(Path.Combine(repo.RepoPath, "config", "settings.json"), "{\"modified\": true}");
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "new.md"), "brand new out-of-scope file");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+        string patch = WriteScopeCheck.CaptureOffendingPatch(repo.RepoPath, taskBase, result.OffendingPaths);
+        WriteScopeCheck.ScopedRevert(repo.RepoPath, taskBase, result.OffendingPaths);
+
+        Assert.Contains("{\"modified\": true}", patch);
+        Assert.Contains("brand new out-of-scope file", patch);
+        Assert.DoesNotContain("in-scope wip", patch);
+        Assert.Equal("{\"base\": true}", repo.ReadFile("config/settings.json")); // the revert still happened
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "docs", "new.md")));
+
+        // Inside .git, so the patch file itself is never part of any diff.
+        string patchFile = Path.Combine(repo.RepoPath, ".git", "out-of-scope.patch");
+        File.WriteAllText(patchFile, patch);
+        TempGitRepo.Git(repo.RepoPath, "apply", patchFile);
+
+        Assert.Equal("{\"modified\": true}", repo.ReadFile("config/settings.json"));
+        Assert.Equal("brand new out-of-scope file", repo.ReadFile("docs/new.md"));
+        Assert.Equal("// in-scope wip", repo.ReadFile("src/Feature.cs"));
+    }
+
+    // -------------------------------------------------------------------------
     // Issue #280: phase-2 scope-clean (StripOutOfScope) — strips silently, returns what it stripped,
     // and NEVER touches the reconstructable dep set (invisible to Check's staging).
     // -------------------------------------------------------------------------

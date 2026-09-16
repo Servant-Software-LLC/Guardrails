@@ -76,6 +76,106 @@ public sealed class PromptComposerTests : IDisposable
         Assert.DoesNotContain("## Staging outputs", composed);
     }
 
+    // ── #706 the harness renders the ENFORCED write scope ─────────────────────────────────────────
+
+    private const string WriteScopeHeading = "## Write scope (harness-enforced)";
+
+    [Fact]
+    public void Action_WithEnforcedWriteScope_RendersEveryEntryInAHarnessSection()
+    {
+        // #706: the agent in plan 40 was never shown its writeScope — the only statement of it was an
+        // author-copied "write only to the path(s) listed above" that listed nothing. The composer now
+        // renders the array the check ENFORCES (staging destinations included, which is why the fixture
+        // carries one): every entry, in order, none dropped and none invented.
+        string stateIn = WriteState("{}");
+        IReadOnlyList<string> scope =
+        [
+            "src/Guardrails.Core/Execution/Overwatch.cs",
+            "tests/Guardrails.Core.Tests/Supply/**",
+            ".guardrails-staging/**"
+        ];
+
+        string composed = PromptComposer.ComposeAction(
+            "Implement it.", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null,
+            isWorktreeMode: true, writeScope: scope);
+
+        string section = SectionBody(composed, WriteScopeHeading);
+        List<string> listed = section.Split('\n')
+            .Where(line => line.StartsWith("- `", StringComparison.Ordinal))
+            .Select(line => line[3..line.IndexOf('`', 3)])
+            .ToList();
+        Assert.Equal(scope, listed);
+        // It is a harness section, after the output contract — and it names the escape for a scope the
+        // plan got wrong, which is what attempt 4 of plan 40 eventually had to invent for itself.
+        Assert.True(composed.IndexOf(WriteScopeHeading, StringComparison.Ordinal)
+                    > composed.IndexOf("## Output contract", StringComparison.Ordinal));
+        Assert.Contains("needsHuman", section);
+    }
+
+    [Fact]
+    public void Action_WithEmptyEnforcedWriteScope_SaysNothingMayBeWritten_NotAnEmptyList()
+    {
+        // Control against a section that renders but says nothing: `writeScope: []` is a deliberate
+        // "writes nothing to the repo" declaration (#389). A heading over zero bullets reads as a rendering
+        // bug, so the section must SAY the scope is empty.
+        string stateIn = WriteState("{}");
+
+        string composed = PromptComposer.ComposeAction(
+            "Configure it.", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null,
+            isWorktreeMode: true, writeScope: []);
+
+        string section = SectionBody(composed, WriteScopeHeading);
+        Assert.Contains("EMPTY", section);
+        Assert.DoesNotContain("- `", section);
+    }
+
+    [Fact]
+    public void Action_WithoutEnforcedWriteScope_OmitsTheSection()
+    {
+        // DECLARED CONTROL — green before the feature as well as after. Serial mode passes null: no
+        // write-scope check runs there, so a section headed "harness-enforced" would be a false claim.
+        string stateIn = WriteState("{}");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null);
+
+        Assert.DoesNotContain("## Write scope", composed);
+    }
+
+    [Fact]
+    public void Action_WriteScopeSection_StatesTheMatchRulesTheCheckApplies()
+    {
+        // #706 review N1: the section's one sentence on HOW an entry matches is the agent's only statement of the
+        // matcher, so it must describe WriteScope.IsInScope rather than a looser glob dialect. It said `**` matches
+        // "across any number" of segments, which reads as zero or more — but the matcher's `**` takes ONE or more,
+        // so `src/**/Foo.cs` does not cover `src/Foo.cs` — and it never mentioned that a bare dotfile entry such as
+        // `.gitignore` covers that exact file (#262). The rows are first proven against the real matcher, so this
+        // test fails if the wording and the matcher ever disagree, not merely if the wording changes.
+        Assert.False(Guardrails.Core.Execution.WriteScope.IsInScope("src/Foo.cs", ["src/**/Foo.cs"]));
+        Assert.True(Guardrails.Core.Execution.WriteScope.IsInScope("src/a/Foo.cs", ["src/**/Foo.cs"]));
+        Assert.True(Guardrails.Core.Execution.WriteScope.IsInScope(".gitignore", [".gitignore"]));
+
+        // The scope names neither example, so every mention below comes from the rules sentence, not a bullet.
+        string composed = PromptComposer.ComposeAction(
+            "Implement it.", WriteState("{}"), Path.Combine(_dir, "o.json"), feedbackPath: null,
+            isWorktreeMode: true, writeScope: ["src/Impl.cs"]);
+
+        string section = SectionBody(composed, WriteScopeHeading);
+        Assert.Contains("ONE or more", section);
+        Assert.DoesNotContain("any number", section);
+        Assert.Contains("`src/**/Foo.cs` does not cover `src/Foo.cs`", section);
+        Assert.Contains("`.gitignore`", section);
+    }
+
+    /// <summary>The text under <paramref name="heading"/>, up to the next <c>## </c> heading; fails when absent.</summary>
+    private static string SectionBody(string composed, string heading)
+    {
+        int start = composed.IndexOf(heading, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"expected a '{heading}' section in the composed prompt:\n{composed}");
+        int bodyStart = start + heading.Length;
+        int next = composed.IndexOf("\n## ", bodyStart, StringComparison.Ordinal);
+        return next < 0 ? composed[bodyStart..] : composed[bodyStart..next];
+    }
+
     [Fact]
     public void Action_StateAt16KbBoundary_IsInlined_JustOver_IsByPath()
     {

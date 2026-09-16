@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
@@ -711,8 +712,10 @@ public static class RetryPolicy
 
     /// <summary>
     /// Compose feedback for an attempt rejected by the write-scope check (plan 08 §2/§3.4).
-    /// Names each offending path so the agent removes the out-of-scope change on retry. The
-    /// harness has already performed a scoped revert of the offending paths before calling this.
+    /// Names each offending path so the agent removes the out-of-scope change on retry, and (issue #706)
+    /// lists the scope the check ENFORCED — read off <paramref name="scopeCheck"/> itself, so the allowed
+    /// list is the verdict's own rule and can never be a second copy of it. The harness has already
+    /// performed a scoped revert of the offending paths before calling this.
     /// </summary>
     /// <remarks>
     /// Issue #253: each path is labelled with its raw git change-status (A/M/D) so a human debugging
@@ -736,17 +739,114 @@ public static class RetryPolicy
     /// Appends the salvage-adoption section. Null in serial mode or when salvage is off.
     /// </param>
     public static string ForWriteScopeViolation(
-        TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths,
-        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
+        TaskNode task, int attempt, WriteScopeCheckResult scopeCheck,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null, string? outOfScopePatchPath = null)
     {
+        // #705: whether the attempt left ANY in-scope work is the check's own fact, not the snapshot's — a snapshot
+        // taken after the revert can be non-empty with nothing of the agent's in it. With no in-scope change there
+        // is nothing to claim or offer as salvage, whatever the caller handed over.
+        bool madeInScopeChanges = scopeCheck.InScopePaths.Count > 0;
+        SalvageRef? offeredSalvage = madeInScopeChanges ? salvageRef : null;
+
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt, task.Action.Kind, fileWritesRolledBack, salvageRef);
+        AppendHeader(text, task, attempt, task.Action.Kind, fileWritesRolledBack, offeredSalvage,
+            noInScopeWork: !madeInScopeChanges);
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
-        foreach (WriteScopeOffense offense in offendingPaths)
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap: null);
+
+        text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
+        if (fileWritesRolledBack)
         {
-            text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)})");
+            // Worktree mode: the out-of-scope paths were scoped-reverted, then the WHOLE attempt is reset
+            // to taskBase before the next one — so the in-scope work is NOT on disk either. It is stashed
+            // (see the salvage section) when salvage is on. Do not claim it "is preserved".
+            text.AppendLine("The out-of-scope path(s) above were reverted, and the whole attempt is then reset to a");
+            text.AppendLine("clean base before your retry. On retry, write only to paths the writeScope above");
+            text.AppendLine("covers (SSOT §3.4, plan 08 §2).");
+        }
+        else
+        {
+            text.AppendLine("The harness has already reverted those files to their pre-attempt state.");
+            text.AppendLine(madeInScopeChanges
+                ? "Your in-scope changes are preserved."
+                : "That attempt changed nothing inside this task's writeScope.");
+            text.AppendLine("On retry, write only to paths the writeScope above covers (SSOT §3.4, plan 08 §2).");
+        }
+
+        if (outOfScopePatchPath is { Length: > 0 } keptCopy)
+        {
+            // #705: the revert no longer destroys the out-of-scope bytes. Whose copy it is has to be said: the one
+            // reader who must NOT use it is the retry agent, because re-applying it fails this same check.
+            text.AppendLine();
+            text.AppendLine($"Before reverting, the harness kept a copy of the out-of-scope change(s) at `{keptCopy.Replace('\\', '/')}`.");
+            text.AppendLine("That copy is for a human deciding whether this task's writeScope should grow — not for you:");
+            text.AppendLine("re-applying it fails this same check.");
+        }
+
+        if (task.Action.Kind == ActionKind.Prompt)
+        {
+            // #706: the one move that ends a scope gap the PLAN caused is a question to a human. Plan 40's
+            // task 20 found it only on its fourth attempt, having never been told the door existed.
+            text.AppendLine();
+            text.AppendLine("If this task cannot be done without changing a path outside that scope, do not write it again.");
+            text.AppendLine("Write `{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`");
+            text.AppendLine("to the state-out path instead, so a human can widen the writeScope in task.json.");
+        }
+
+        AppendSalvageSection(text, offeredSalvage);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// The ALLOWED half of a write-scope violation (issue #706): the scope the check actually enforced, read
+    /// off its own result and listed beside the offending paths, so a reader can tell a stray write from a
+    /// scope the plan got wrong. Before this the feedback said "ensure you only write to paths covered by this
+    /// task's writeScope" and never named one. An empty scope is stated in words rather than rendered as a
+    /// lead-in over no bullets.
+    /// </summary>
+    private static void AppendAllowedScope(StringBuilder text, IReadOnlyList<string> scope)
+    {
+        if (scope.Count == 0)
+        {
+            text.AppendLine("This task's writeScope is EMPTY: it may not change any file in the repository.");
+            return;
+        }
+
+        text.AppendLine("This task's writeScope allows changes ONLY to:");
+        foreach (string entry in scope)
+        {
+            text.AppendLine($"- `{entry}`");
+        }
+    }
+
+    /// <summary>
+    /// Each offending path with its git status letter (#253) and, for a new file, the forensic preview captured
+    /// before the revert deleted it. On a scope-gap halt (issue #707) each path also says WHY it is evidence: the
+    /// upstream task that last committed it, or that an earlier attempt wrote it out of scope too.
+    /// </summary>
+    private static void AppendOffenses(StringBuilder text, IReadOnlyList<WriteScopeOffense> offenses, WriteScopeGap? gap)
+    {
+        foreach (WriteScopeOffense offense in offenses)
+        {
+            string evidence = "";
+            if (gap is not null)
+            {
+                if (gap.UpstreamAuthorByPath.TryGetValue(offense.Path, out string? author))
+                {
+                    evidence += $"; last committed by upstream task `{author}`";
+                }
+
+                if (gap.RepeatedPaths.Contains(offense.Path, StringComparer.Ordinal))
+                {
+                    evidence += "; also written outside the scope on an earlier attempt";
+                }
+            }
+
+            text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)}{evidence})");
             if (offense.Preview is { } preview)
             {
                 text.AppendLine($"  - {preview.SizeBytes} byte(s) before revert:");
@@ -758,27 +858,180 @@ public static class RetryPolicy
                 text.AppendLine("    ```");
             }
         }
+    }
 
+    /// <summary>
+    /// The <c>feedback.md</c> of a write-scope violation the harness HALTED instead of retrying (issue #707): a
+    /// scope gap the plan caused, which no retry can clear because every retry is handed the same scope. Plan
+    /// 40's task 20 spent four attempts, two overwatch diagnoses and a best-guess on a one-line
+    /// <c>task.json</c> fix. Written for the human who must decide, so it carries in one read: why no retry can
+    /// help, each path with the evidence against it, the scope as enforced, exactly where the fix goes, and the
+    /// entry to add. It keeps the <c>## Write-scope violation</c> marker, so telemetry classifies the attempt as
+    /// the violation it was. <paramref name="salvageRef"/> is the attempt's IN-SCOPE work, preserved because no
+    /// reset follows a halt and the tree is orphaned (#554).
+    /// </summary>
+    public static string ForWriteScopeGapHalt(
+        TaskNode task, int attempt, WriteScopeCheckResult scopeCheck, WriteScopeGap gap, SalvageRef? salvageRef = null,
+        string? outOfScopePatchPath = null)
+    {
+        IReadOnlyList<string> paths = GapPaths(gap);
+        IReadOnlyList<string> tests = RepeatedTests(gap);
+        var text = new StringBuilder();
+        text.AppendLine(tests.Count > 0
+            ? $"# Task '{task.Id}' needs a human: it keeps editing a test outside its writeScope"
+            : $"# Task '{task.Id}' needs a human: its writeScope does not cover what it keeps changing");
         text.AppendLine();
-        if (fileWritesRolledBack)
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        if (tests.Count > 0)
         {
-            // Worktree mode: the out-of-scope paths were scoped-reverted, then the WHOLE attempt is reset
-            // to taskBase before the next one — so the in-scope work is NOT on disk either. It is stashed
-            // (see the salvage section) when salvage is on. Do not claim it "is preserved".
-            text.AppendLine("The out-of-scope path(s) above were reverted, and the whole attempt is then reset to a");
-            text.AppendLine("clean base before your retry. On retry, ensure you only write to paths covered by this");
-            text.AppendLine("task's writeScope (SSOT §3.4, plan 08 §2).");
+            // Review W1: a repeated TEST is not a scope the plan forgot. Lead with the test; widening the scope is
+            // the less likely remedy and comes after it.
+            text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying. The agent keeps editing");
+            text.AppendLine($"{string.Join(", ", tests.Select(p => $"`{p}`"))}, a test file outside this task's writeScope, written on an earlier");
+            text.AppendLine("attempt too. Tests are normally authored by an upstream task and protected by the plan's TDD split,");
+            text.AppendLine("so the likely problem is this task's prompt or approach, not its scope.");
         }
         else
         {
-            text.AppendLine("The harness has already reverted those files to their pre-attempt state. Your");
-            text.AppendLine("in-scope changes are preserved. On retry, ensure you only write to paths covered");
-            text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
+            text.AppendLine($"The harness stopped this task after attempt {attempt} instead of retrying: a retry is handed");
+            text.AppendLine("the same writeScope, so it cannot change a path that scope does not cover.");
         }
 
-        AppendSalvageSection(text, salvageRef);
+        if (gap.UpstreamAuthorByPath.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine("Every path below was last committed by a task this one depends on, and this attempt changed");
+            text.AppendLine("NOTHING inside its own writeScope. That is the shape of a scope the plan got wrong — for");
+            text.AppendLine("example, a stub an upstream task created that no downstream task is allowed to write.");
+        }
+
+        if (gap.RepeatedPaths.Count > 0 && tests.Count == 0)
+        {
+            text.AppendLine();
+            text.AppendLine("A path marked below was written outside this task's writeScope on an earlier attempt as");
+            text.AppendLine("well, after that attempt's feedback had already named it.");
+        }
+
+        text.AppendLine();
+        text.AppendLine("## Write-scope violation");
+        text.AppendLine();
+        text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
+        AppendOffenses(text, scopeCheck.OffendingPaths, gap);
+        text.AppendLine();
+        AppendAllowedScope(text, scopeCheck.Scope);
+        text.AppendLine();
+        if (tests.Count > 0)
+        {
+            text.AppendLine("## Most likely: keep this task off the test");
+            text.AppendLine();
+            text.AppendLine("Tighten this task's prompt so it changes the implementation, not the test, then resume the run.");
+            text.AppendLine("If the test itself is wrong, fix it in the task that authors it.");
+            text.AppendLine();
+            text.AppendLine("## Less likely: this task must own the test");
+            text.AppendLine();
+            text.AppendLine($"Only then, add it to `writeScope` in `{TaskJsonPath(task)}`:");
+            text.AppendLine();
+            text.AppendLine($"    {JsonEntries(paths)}");
+            text.AppendLine();
+            text.AppendLine("and resume the run. The task starts again with a fresh retry budget.");
+            AppendKeptOutOfScopeCopy(text, outOfScopePatchPath);
+            AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
+            return text.ToString();
+        }
+
+        text.AppendLine("## If this task genuinely has to change it");
+        text.AppendLine();
+        text.AppendLine($"Add it to `writeScope` in `{TaskJsonPath(task)}`, a one-line change:");
+        text.AppendLine();
+        text.AppendLine($"    {JsonEntries(paths)}");
+        text.AppendLine();
+        text.AppendLine("then resume the run. The task starts again with a fresh retry budget.");
+        AppendKeptOutOfScopeCopy(text, outOfScopePatchPath);
+        text.AppendLine();
+        text.AppendLine("## If it does not");
+        text.AppendLine();
+        text.AppendLine("The scope is right and the agent is wrong. Tighten this task's prompt so it stays inside the");
+        text.AppendLine("scope above, then resume the run.");
+        AppendSalvageSection(text, salvageRef, SalvageFraming.PriorAttempt);
         return text.ToString();
     }
+
+    /// <summary>
+    /// The one-line <see cref="TaskResult.Summary"/> of a scope-gap halt (issue #707), complete on its own because
+    /// it is what the live table, <c>run.json</c> and an escalation record show: the path, why no retry can help,
+    /// and the exact <c>task.json</c> fix. It keeps the stable <c>needs human: </c> prefix every harness
+    /// needs-human summary carries.
+    /// </summary>
+    public static string WriteScopeGapSummary(TaskNode task, WriteScopeGap gap)
+    {
+        if (RepeatedTests(gap) is { Count: > 0 } tests)
+        {
+            // Review W1: the summary is what a human acts on first, so for a test it never names widening the
+            // scope as the fix.
+            return $"needs human: the agent keeps editing {string.Join(", ", tests)}, a test file outside this task's " +
+                   "writeScope — tests are normally authored upstream and protected by the plan's TDD split, so the " +
+                   "likely fix is this task's prompt; widening its writeScope is the less likely alternative";
+        }
+
+        IReadOnlyList<string> paths = GapPaths(gap);
+        string why = gap.UpstreamAuthorByPath.Count > 0
+            ? "probable plan scope gap: this attempt changed nothing inside its writeScope, and everything it did " +
+              "change was last committed by an upstream task (" +
+              string.Join(", ", gap.UpstreamAuthorByPath
+                  .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                  .Select(kv => $"{kv.Key} by {kv.Value}")) + ")"
+            : $"write-scope gap: {string.Join(", ", paths)} was written outside this task's writeScope again, " +
+              "after an earlier attempt's feedback named it";
+        string pronoun = paths.Count == 1 ? "it" : "them";
+        return $"needs human: {why}; if this task must change {pronoun}, add {JsonEntries(paths)} to writeScope in " +
+               TaskJsonPath(task);
+    }
+
+    /// <summary>
+    /// The repeated paths that are TEST files, on a halt that is not a plan scope gap (review W1): the case the
+    /// halt must lead with a protected test instead of with widening the scope. A plan-gap halt never holds a test
+    /// path — the first-occurrence rule refuses one.
+    /// </summary>
+    private static IReadOnlyList<string> RepeatedTests(WriteScopeGap gap) =>
+        gap.UpstreamAuthorByPath.Count > 0
+            ? []
+            : gap.RepeatedPaths
+                .Where(TestPathConvention.LooksLikeTestPath)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+    /// <summary>#705: the kept out-of-scope copy, named for the human the halt asks — the reader it is for.</summary>
+    private static void AppendKeptOutOfScopeCopy(StringBuilder text, string? outOfScopePatchPath)
+    {
+        if (outOfScopePatchPath is not { Length: > 0 } keptCopy)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine($"The change this attempt made there was kept before the revert, at `{keptCopy.Replace('\\', '/')}`,");
+        text.AppendLine("so widening the scope does not mean losing that work.");
+    }
+
+    /// <summary>Every path a scope-gap halt is about, in ordinal order.</summary>
+    private static IReadOnlyList<string> GapPaths(WriteScopeGap gap) =>
+        gap.RepeatedPaths.Concat(gap.UpstreamAuthorByPath.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>The paths as the JSON string literals a human pastes into a <c>writeScope</c> array.</summary>
+    private static string JsonEntries(IReadOnlyList<string> paths) =>
+        string.Join(", ", paths.Select(p => JsonSerializer.Serialize(p, JsonLiteral)));
+
+    /// <summary>Readable JSON literals: a path's non-ASCII characters stay as written instead of <c>\uXXXX</c>.</summary>
+    private static readonly JsonSerializerOptions JsonLiteral =
+        new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    /// <summary>The task's own <c>task.json</c>, forward-slashed so it reads the same on every OS.</summary>
+    private static string TaskJsonPath(TaskNode task) =>
+        Path.Combine(task.Directory, "task.json").Replace('\\', '/');
 
     /// <summary>Human-readable label for a <see cref="WriteScopeOffense.Status"/> letter.</summary>
     private static string DescribeStatus(char status) => status switch
@@ -1189,6 +1442,9 @@ public static class RetryPolicy
     ///     orphaned rather than reverted. The salvage section is still the route to the work, but claiming
     ///     a rollback that never happened would be false, so this branch says what actually became of the
     ///     tree.</item>
+    ///   <item><b>Nothing in scope to keep</b> (issue #705 — <paramref name="noInScopeWork"/>): a write-scope
+    ///     violation whose every change was out of scope, so the revert left no in-scope work under any
+    ///     disposition. It says so and never takes the stashed wording, whatever snapshot exists.</item>
     /// </list>
     /// Defaults keep the Persisted prompt wording and the <see cref="SalvageFraming.Retry"/> framing, so
     /// callers that pass no disposition are unchanged.
@@ -1200,7 +1456,8 @@ public static class RetryPolicy
         ActionKind actionKind = ActionKind.Prompt,
         bool fileWritesRolledBack = false,
         SalvageRef? salvageRef = null,
-        SalvageFraming framing = SalvageFraming.Retry)
+        SalvageFraming framing = SalvageFraming.Retry,
+        bool noInScopeWork = false)
     {
         text.AppendLine($"# Attempt {attempt} of task '{task.Id}' failed");
         text.AppendLine();
@@ -1212,6 +1469,16 @@ public static class RetryPolicy
             text.AppendLine("between attempts. Re-running the unchanged script produces byte-identical output");
             text.AppendLine("and fails the same guardrail every time; the script or its guardrail must be");
             text.AppendLine("edited to converge.");
+        }
+        else if (noInScopeWork)
+        {
+            // #705: a write-scope violation whose EVERY change was out of scope. The revert took all of it, so there
+            // is nothing in scope to have kept — the case the "SAVED, not lost" line below used to claim anyway,
+            // because a snapshot taken after the revert is not empty on a tree whose line endings or file modes a
+            // fresh index re-reads. Checked BEFORE the stashed branch, so no snapshot can make it say otherwise.
+            text.AppendLine("None of your previous attempt's work was kept for you: every change it made was OUTSIDE this");
+            text.AppendLine("task's writeScope, so the harness reverted all of it and there is no in-scope work to");
+            text.AppendLine("recover. Start from the clean base and change only what the writeScope below allows.");
         }
         else if (fileWritesRolledBack && salvageRef is not null)
         {

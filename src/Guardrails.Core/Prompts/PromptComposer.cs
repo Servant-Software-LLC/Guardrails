@@ -15,8 +15,14 @@ namespace Guardrails.Core.Prompts;
 /// <item>(actions) <c>## Context from completed dependency tasks</c> — transcript/fragment pointers
 ///   for the transitive <c>dependsOn</c> closure (issue #26 Gap 4); present on every attempt.</item>
 /// <item>(actions) <c>## Output contract</c> — write a JSON fragment to STATE_OUT; the needsHuman escape.</item>
+/// <item>(actions, worktree mode only) <c>## Write scope (harness-enforced)</c> — the ENFORCED write scope
+///   (declared <c>writeScope</c> + implicit staging destinations), rendered from the array the write-scope
+///   check gates on, never from author prose (issue #706).</item>
 /// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
 ///   plus pointers to ALL prior attempts' transcript/feedback (issue #26 Gaps 2 &amp; 3).</item>
+/// <item>(actions, worktree mode, only when the enforced scope now covers a path an earlier attempt's
+///   <c>out-of-scope.patch</c> touched) <c>## Out-of-scope work an earlier attempt left is now in scope</c> — that
+///   kept work, offered to recover (#707 review W4).</item>
 /// <item>(guardrails) <c>## Verdict contract</c> — verifier instructions + the verdict file path.</item>
 /// <item>(worktree mode only) <c>## Worktree safety</c> — a warning that <c>git stash</c> is NOT
 ///   safe here (issue #192: <c>refs/stash</c> is repo-wide, not worktree-scoped, so a concurrent
@@ -62,7 +68,8 @@ public static class PromptComposer
         string? stagingDir = null,
         IReadOnlyList<StagingOutput>? stagingOutputs = null,
         bool isWorktreeMode = false,
-        string? injectedHumanAnswer = null)
+        string? injectedHumanAnswer = null,
+        IReadOnlyList<string>? writeScope = null)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
@@ -70,7 +77,9 @@ public static class PromptComposer
         AppendDependencyContext(text, dependencies);
         AppendOutputContract(text, stateOutPath);
         AppendStagingOutputs(text, stagingDir, stagingOutputs);
+        AppendWriteScope(text, writeScope);
         AppendPreviousAttempt(text, feedbackPath, priorAttempts);
+        AppendRecoverableOutOfScopeWork(text, priorAttempts, writeScope);
         AppendInjectedHumanAnswer(text, injectedHumanAnswer);
         AppendWorktreeSafety(text, isWorktreeMode);
         return text.ToString();
@@ -199,6 +208,56 @@ public static class PromptComposer
         text.Append('\n');
         text.Append("Do NOT attempt to write under `.claude/` directly — it will be refused. Stage, and the\n");
         text.Append("harness delivers.\n");
+    }
+
+    /// <summary>
+    /// The write-scope section (issue #706), emitted ONLY when the executor hands over the ENFORCED scope —
+    /// worktree mode, where the write-scope check runs (SSOT §3.4). It is generated from the very array that
+    /// check gates on: the declared <c>writeScope</c> plus the implicit <c>stagingOutputs</c> destinations.
+    /// Before this, the only statement of scope an agent ever saw was author-written prose, and in plans 39
+    /// and 40 that prose read "Write only to the path(s) listed above" in 48 prompts that listed nothing;
+    /// task 20 of plan 40 spent four attempts against a scope it could not see. Rendering the enforced array
+    /// makes the source of truth the rule itself, which a hand-copied paragraph can never be. An EMPTY scope
+    /// (a deliberate "writes nothing", #389) is stated in words: a heading over no bullets would read as a
+    /// rendering fault.
+    /// </summary>
+    private static void AppendWriteScope(StringBuilder text, IReadOnlyList<string>? writeScope)
+    {
+        if (writeScope is null)
+        {
+            return;
+        }
+
+        text.Append("\n## Write scope (harness-enforced)\n\n");
+        if (writeScope.Count == 0)
+        {
+            text.Append("This task's `writeScope` is EMPTY: it may not add, modify or delete ANY file in the\n");
+            text.Append("repository. Its only output is the state fragment described above.\n\n");
+        }
+        else
+        {
+            text.Append("This task may add, modify or delete ONLY these workspace-relative paths — its declared\n");
+            text.Append("`writeScope`, plus any destination the harness delivers for it:\n\n");
+            foreach (string entry in writeScope)
+            {
+                text.Append("- `").Append(entry).Append("`\n");
+            }
+
+            // The agent's only statement of the matcher, so it states WriteScope.IsInScope's rules exactly (#707
+            // review N1): `**` takes ONE or more whole segments, never zero, and a bare dotfile entry also matches the
+            // file itself (#262). PromptComposerTests proves each example against the real matcher.
+            text.Append('\n');
+            text.Append("An entry that ends in `/`, or whose last segment has no file extension, is a directory and\n");
+            text.Append("covers everything beneath it; a bare dotfile entry such as `.gitignore` also covers that exact\n");
+            text.Append("file. `*` matches within one path segment. `**` matches ONE or more whole segments, never zero,\n");
+            text.Append("so `src/**/Foo.cs` does not cover `src/Foo.cs`.\n\n");
+        }
+
+        text.Append("When you finish, the harness diffs every file you changed against this task's base commit.\n");
+        text.Append("A change to any path this scope does not cover FAILS the attempt, and that path is reverted.\n");
+        text.Append("If the task cannot be done without changing a path it does not cover, do not write it. Write\n");
+        text.Append("`{ \"needsHuman\": { \"question\": \"<the path, and why this task must change it>\", \"kind\": \"blocked-work\" } }`\n");
+        text.Append("to the state-out path instead, so a human can widen the scope in `task.json`.\n");
     }
 
     /// <summary>
@@ -365,6 +424,67 @@ public static class PromptComposer
             text,
             new Execution.SalvageRef(refName, DiffStat: "", preserved.Attempt, preserved.SalvagePatchPath),
             Execution.SalvageFraming.PriorAttempt);
+    }
+
+    /// <summary>
+    /// Out-of-scope work an earlier attempt left that the scope NOW covers (#707 review W4 — #705's second audience).
+    /// A write-scope violation keeps its out-of-scope changes as <c>out-of-scope.patch</c> and tells the retry they
+    /// are "not for you", which is true while the scope excludes them. Once a human widens the scope to cover them,
+    /// the attempt that runs next is pointed at that kept work to recover instead of re-authoring it, and told this
+    /// supersedes the earlier note. Emitted ONLY when <paramref name="writeScope"/> — the enforced scope, null in
+    /// serial mode — covers at least one kept path; otherwise the copy stays out of the agent's instructions entirely,
+    /// so the retry's own "not for you" is never contradicted. Offers the most recent such copy, and only the paths
+    /// in it the scope now covers.
+    /// </summary>
+    private static void AppendRecoverableOutOfScopeWork(
+        StringBuilder text, IReadOnlyList<PriorAttemptRef>? priorAttempts, IReadOnlyList<string>? writeScope)
+    {
+        if (writeScope is null || priorAttempts is null)
+        {
+            return;
+        }
+
+        // ONLY the most recent attempt's kept copy (#707 delta review, W4-stale). A copy is offered while no
+        // LATER attempt has run since it was captured. Once one has — typically the attempt that recovered from
+        // this very copy under the widened scope and then failed something else — the copy is STALE, and the
+        // wording below ("recover each one from its hunk in that file") is more directive than that later
+        // attempt's own salvage pointer, so an agent would discard newer work in favour of older bytes.
+        foreach (PriorAttemptRef attempt in priorAttempts.OrderByDescending(a => a.Attempt).Take(1))
+        {
+            if (attempt.OutOfScopePatchPath is not { } keptCopy)
+            {
+                continue;
+            }
+
+            List<string> nowInScope = attempt.OutOfScopePaths
+                .Where(path => Execution.WriteScope.IsInScope(path, writeScope))
+                .ToList();
+            if (nowInScope.Count == 0)
+            {
+                continue;
+            }
+
+            text.Append("\n## Out-of-scope work an earlier attempt left is now in scope\n\n");
+            text.Append($"Attempt {attempt.Attempt} changed the paths below while they were OUTSIDE this task's writeScope, and the\n");
+            text.Append("harness kept that work before reverting it. The scope now covers them. The kept copy is a plain unified\n");
+            text.Append("diff at:\n\n");
+            text.Append('`').Append(keptCopy.Replace('\\', '/')).Append("`\n\n");
+            foreach (string path in nowInScope)
+            {
+                text.Append("- `").Append(path).Append("`\n");
+            }
+
+            text.Append('\n');
+            text.Append("Recover each one from its hunk in that file with your file-editing tool instead of re-authoring it. This\n");
+            text.Append("supersedes the \"not for you\" note in that attempt's feedback, which was true under the scope it ran with.\n");
+            if (nowInScope.Count < attempt.OutOfScopePaths.Count)
+            {
+                text.Append("The same copy also changes paths that are still outside this task's writeScope. Leave those alone:\n");
+                text.Append("writing them fails the write-scope check again.\n");
+            }
+
+            return;
+        }
     }
 
     /// <summary>

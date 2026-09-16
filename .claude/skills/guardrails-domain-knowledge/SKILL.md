@@ -400,7 +400,11 @@ terminal row, and the security posture are the SSOT, not duplicated here:
 
 - Attempt = snapshot -> run action (failed action skips guardrails) -> **write-scope check**
   (if `writeScope` set: deterministic read-only git diff membership test in the segment worktree;
-  violation = retry with feedback naming out-of-scope paths) -> run guardrails (`failFast` default)
+  violation = retry with feedback naming the out-of-scope paths AND listing the allowed ones) -> run
+  guardrails (`failFast` default). **The agent sees its scope (#706):** in worktree mode the ENFORCED scope
+  (`writeScope` + implicit staging destinations -- the array the check gates on) is rendered into the
+  composed prompt as a harness section `## Write scope (harness-enforced)`, so an author-copied "scope
+  boundary" paragraph is no longer the agent's only source (plans 39/40 had 48 that named no path)
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
@@ -416,7 +420,15 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   scope guard**: salvage now fires for **EVERY non-final worktree failure** -- guardrail-fail, action-fail,
   timeout, max-turns, output-cap, write-scope -- NOT only the two non-logic budget-exhaustion outcomes,
   because the retry agent (informed by the per-guardrail verdicts, below) decides how much to reuse. A
-  genuine no-op attempt (empty diff) is not offered a stash. **Two suppress-the-stash exceptions:**
+  genuine no-op attempt (empty diff) is not offered a stash. **A write-scope violation is stashed only when
+  the attempt changed something IN scope (#705)**: its out-of-scope bytes are kept instead as
+  `out-of-scope.patch`, captured before the scoped revert, for a human, and never applied or offered as
+  salvage while the scope excludes it. Once a widened scope covers its paths, the next attempt's composed prompt
+  gains "Out-of-scope work an earlier attempt left is now in scope", offering exactly those paths to recover and
+  superseding the earlier "not for you" (#707 review W4) -- but ONLY while no later attempt has run since the copy
+  was captured (the composer looks at the most recent prior attempt alone), else the pointer would send a later
+  attempt back to bytes its own predecessor already recovered and moved past (#707 review delta). (A throwaway-index snapshot can show line-ending or file-mode churn on a tree nobody touched, so a
+  non-empty snapshot is not evidence of in-scope work.) **Two suppress-the-stash exceptions:**
   (1) **fragment-rejection** paths (invalid-fragment / foreign-key) keep the #162 re-author disclosure,
   not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** is suppressed AT
   CREATION (no ref, no patch) so a gamed edit is genuinely unrecoverable via salvage -- keyed off a robust
@@ -435,7 +447,8 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   salvage -- regardless of `isFinal` -- because the escalating attempt's tree is never reset in place,
   only ORPHANED (a resume forks a fresh segment; nothing hands the old tree back), so the guard is
   `IsRealGitSegment`, not `WorktreeWillReset`. The staged set on this path is **filtered to the task's
-  `writeScope`** via `PreserveAttemptToRef`'s new `restrictToScope` parameter (`RestrictStagedSetToScope`)
+  enforced scope** (`writeScope` plus `stagingOutputs` destinations) via `PreserveAttemptToRef`'s new
+  `restrictToScope` parameter (`RestrictStagedSetToScope`)
   -- the protected-artifact suppression above is structurally inapplicable here (`failed`
   is empty; no guardrail ran). A **per-task retention cap** (`GitWorktreeProvider.SalvageRefRetentionPerTask`,
   `5`) bounds the refs an endlessly-escalating task accumulates. The feedback framing never claims a rollback.
@@ -445,12 +458,32 @@ terminal row, and the security posture are the SSOT, not duplicated here:
   re-author. The PROMPT-action retry header is now chosen by what actually happened to the on-disk work:
   **Persisted** (serial/final -- "keep what already works", still true), **rolled-back-but-stashed**
   (worktree + salvage -- "SAVED, recover from the salvage section"), or **rolled-back-and-lost** (worktree,
-  salvage off -- "not recoverable, re-author"). This fixes the #167 gap where the guardrail-fail/action-fail
+  salvage off -- "not recoverable, re-author"). A write-scope violation that changed nothing in scope gets
+  its own line ("None of your previous attempt's work was kept for you"), never SAVED (#705). This fixes the #167 gap where the guardrail-fail/action-fail
   (and write-scope) headers falsely claimed "keep what already works" while the reset had discarded the
   writes. Serial mode is unchanged (writes persist across attempts -> the "keep what works" wording is
   already accurate, and no stash is needed).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
+- **Write-scope gap halt (#707)**: a PROMPT action's write-scope violation settles `needs-human` on that
+  attempt (outcome `write-scope-violation`) instead of retrying when (1) an offending path was ALSO written out
+  of scope on an earlier attempt, or (2) on any attempt, EVERY offending path was last committed by a transitive
+  `dependsOn` ancestor (its `Guardrails-Task:` trailer plus a matching `Guardrails-Task-Hash:`) AND the attempt
+  changed nothing inside its own scope, and no offending path is a test file (`TestPathConvention`). The in-scope
+  and test conditions keep an implement task that merely touched a protected upstream test on the ordinary retry
+  path; when the repeat rule halts on a test, the halt leads with "keeps editing a test" and offers widening the
+  scope only second. Otherwise the halt names each path, the `task.json`, and the one-line `writeScope` entry to
+  add. Its salvage is taken only with in-scope work, filtered to the enforced scope. Scripts stay with #264. Deterministic, with no overwatcher consult; an eager
+  `doomed` verdict stays advisory (SSOT section 3.4). **Autonomous routing (#707 review):** routing is
+  DEFAULT-SAFE on the OUTCOME. Only an agent's own needsHuman (`TaskResult.NeedsHumanQuestion`) is a judgment
+  call; EVERY other `needs-human` outcome -- this gap halt, the #86/#104 wall, the #201 no-route settle, the
+  #325/#329 structural wall, a failed task preflight, a reached cost cap, an unresolved AI merge, a re-verify
+  rollback, the #174/#264 short-circuit -- escalates as `hard-blocker-permanent`, never through the criticality
+  judge and never past a best-guess. `TaskResult.HardBlocker` only makes the recorded signal more precise; a
+  producer that sets nothing is still escalated. Those escalations are filed under the NON-ANSWERABLE
+  `hard-blocker` gate (not `needs-human`): no answer file widens a writeScope or grants a path, so the consumer
+  and both pick surfaces refuse them and such a run exits `2`, not `4`. The shared `needs human: ` summary
+  prefix is for human-facing readers only, and no routing reads it.
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
   hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
