@@ -292,8 +292,8 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // omitting this compiles cleanly and drops the supplied-resources announcement in every mode (the
     // VerifierAdvisoryFound lesson again). This observer does not ACT on it: a base-changed announcement
     // is not a shape of the DAG, so it forwards and nothing else.
-    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
-        _inner.SuppliedResourcesCommitted(paths, commit);
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by) =>
+        _inner.SuppliedResourcesCommitted(paths, commit, by);
 
     // Issue #722: forwarded EXPLICITLY, verbatim — same trap, and it would bite hardest here, since an
     // unforwarded call would swallow the one event that says a task is waiting on git. This observer does

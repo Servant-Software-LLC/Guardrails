@@ -5110,8 +5110,10 @@ public sealed class Scheduler
             });
         }
 
-        // §2 step 3: a run whose base changed underneath it must say so.
-        _observer.SuppliedResourcesCommitted(drained.CommittedPaths, commitSha);
+        // §2 step 3: a run whose base changed underneath it must say so. "operator" agrees with the
+        // supplied[] record's own By five lines above (design 41 §6) — this drain commits whatever an
+        // operator staged through `guardrails supply`.
+        _observer.SuppliedResourcesCommitted(drained.CommittedPaths, commitSha, "operator");
     }
 
     /// <summary>

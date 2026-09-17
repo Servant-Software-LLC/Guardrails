@@ -323,8 +323,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // omitting this compiles cleanly and drops the supplied-resources announcement in every mode (the
     // VerifierAdvisoryFound lesson again). This observer does not ACT on it: a base-changed announcement
     // is not a log-site artifact, so it forwards and nothing else.
-    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) =>
-        _inner.SuppliedResourcesCommitted(paths, commit);
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by) =>
+        _inner.SuppliedResourcesCommitted(paths, commit, by);
 
     // Issue #722: forwarded EXPLICITLY, verbatim — an unforwarded call here would swallow the event in
     // every mode, and this decorator sits in both chains. It does not ACT on it: the site's per-task status
