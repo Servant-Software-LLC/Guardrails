@@ -187,4 +187,72 @@ public sealed class RunOutcomePolicyTests
                 RunOutcomePolicy.SuppressingDecision(stream) is not null);
         }
     }
+
+    // ── auto-supplied: the design 41 §6 delivery-interlock token (fact 11) ────────────────────────
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void SuppressesDelivery_True_WhenAutoSuppliedRecorded()
+    {
+        // design 41 §6: a certified missing-resource auto-resolve committed a file onto the plan branch —
+        // machine-decided work, so it holds delivery exactly as proceeded-best-guess does. Ordinary
+        // decisions alongside it must not mask it.
+        var decisions = new[]
+        {
+            Decision(DecisionTokens.Escalated),
+            Decision(DecisionTokens.AutoSupplied),
+            Decision(DecisionTokens.Halted)
+        };
+
+        Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions));
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void SuppressingDecision_ReturnsTheAutoSuppliedEntry_AsTheEvidence()
+    {
+        // #597: the evidence, not a bare bool — the returned entry is the auto-supplied one and carries its
+        // Subject (the halted task's id), so the banner can name which decision at which task.
+        var decisions = new[]
+        {
+            Decision(DecisionTokens.Escalated, "12-implement-events-endpoint"),
+            Decision(DecisionTokens.AutoSupplied, "18-missing-config-file"),
+            Decision(DecisionTokens.Halted, "12-implement-events-endpoint")
+        };
+
+        DecisionEntry? suppressing = RunOutcomePolicy.SuppressingDecision(decisions);
+
+        Assert.NotNull(suppressing);
+        Assert.Equal(DecisionTokens.AutoSupplied, suppressing!.Decision);
+        Assert.Equal("18-missing-config-file", suppressing.Subject);
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void AutoSupplied_SuppressesDelivery_ButIsNotAnUnreviewedWave()
+    {
+        // Both facts over the same decisions[]: SuppressesDelivery is true AND ProceededUnreviewedWaveCount
+        // is 0. An auto-supply is not an unreviewed wave and must not reach the distinct exit code.
+        var decisions = new[]
+        {
+            Decision(DecisionTokens.Escalated),
+            Decision(DecisionTokens.AutoSupplied),
+            Decision(DecisionTokens.Halted)
+        };
+
+        Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions));
+        Assert.Equal(0, RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions));
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void AutoApplied_StillDelivers_BecauseAutoSuppliedIsADifferentToken()
+    {
+        // The load-bearing NEGATIVE: a run whose only decision is auto-applied (a provably-safe resolution)
+        // DELIVERS normally. This rejects a predicate returning true for everything, and is the
+        // token-confusion row: auto-supplied is deliberately not auto-applied (design 41 §6).
+        var decisions = new[] { Decision(DecisionTokens.AutoApplied) };
+
+        Assert.False(RunOutcomePolicy.SuppressesDelivery(decisions));
+    }
 }
