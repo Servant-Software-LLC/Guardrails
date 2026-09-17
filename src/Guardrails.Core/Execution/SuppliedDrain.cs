@@ -33,7 +33,6 @@ public static class SuppliedDrain
             return new SuppliedDrainResult { CommittedPaths = [], TotalBytes = 0L, CommitSha = null };
         }
 
-        long totalBytes = 0;
         var committedPaths = new List<string>();
         foreach (SuppliedFile file in staged)
         {
@@ -41,30 +40,15 @@ public static class SuppliedDrain
                 workspace, file.DestinationPath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.Copy(file.AbsoluteStagedPath, destination, overwrite: true);
-            totalBytes += new FileInfo(file.AbsoluteStagedPath).Length;
             committedPaths.Add(file.DestinationPath);
         }
 
-        var addArgs = new List<string> { "add", "--" };
-        addArgs.AddRange(committedPaths);
-        GitIn(workspace, addArgs.ToArray());
-
-        // --no-verify: this is a harness-owned plumbing commit onto the run's base, not the user's
-        // own work, so a machine-global git hook (e.g. a pre-commit scanner) must not gate it —
-        // mirroring GitWorktreeProvider's other internal boundary commits (issue #149).
-        string commitMessage = $"Supplied-By: {by}\nGuardrails-Run: {runId}";
-        GitIn(workspace, "commit", "--no-verify", "-m", commitMessage);
-        string commitSha = GitIn(workspace, "rev-parse", "HEAD").Trim();
+        SuppliedDrainResult result = CommitPaths(workspace, runId, by, committedPaths);
 
         string suppliedRoot = Path.Combine(planDirectory, "logs", runId, SuppliedStagingTree.SuppliedFolder);
         Directory.Delete(suppliedRoot, recursive: true);
 
-        return new SuppliedDrainResult
-        {
-            CommittedPaths = committedPaths,
-            TotalBytes = totalBytes,
-            CommitSha = commitSha
-        };
+        return result;
     }
 
     /// <summary>
@@ -75,8 +59,50 @@ public static class SuppliedDrain
     /// can be picked up by a later drain under someone else's name (design 41 §5).
     /// </summary>
     public static SuppliedDrainResult CommitPaths(
-        string workspace, string runId, string by, IReadOnlyList<string> paths) =>
-        throw new NotImplementedException();
+        string workspace, string runId, string by, IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0)
+        {
+            return new SuppliedDrainResult { CommittedPaths = [], TotalBytes = 0L, CommitSha = null };
+        }
+
+        string preHead = GitIn(workspace, "rev-parse", "HEAD").Trim();
+        try
+        {
+            var addArgs = new List<string> { "add", "--" };
+            addArgs.AddRange(paths);
+            GitIn(workspace, addArgs.ToArray());
+
+            // --no-verify: this is a harness-owned plumbing commit onto the run's base, not the user's
+            // own work, so a machine-global git hook (e.g. a pre-commit scanner) must not gate it —
+            // mirroring GitWorktreeProvider's other internal boundary commits (issue #149).
+            var commitArgs = new List<string>
+            {
+                "commit", "--no-verify", "-m", $"Supplied-By: {by}\nGuardrails-Run: {runId}", "--"
+            };
+            commitArgs.AddRange(paths);
+            GitIn(workspace, commitArgs.ToArray());
+        }
+        catch
+        {
+            GitIn(workspace, "reset", "--hard", preHead);
+            throw;
+        }
+
+        long totalBytes = 0;
+        foreach (string path in paths)
+        {
+            totalBytes += new FileInfo(
+                Path.Combine(workspace, path.Replace('/', Path.DirectorySeparatorChar))).Length;
+        }
+
+        return new SuppliedDrainResult
+        {
+            CommittedPaths = [.. paths],
+            TotalBytes = totalBytes,
+            CommitSha = GitIn(workspace, "rev-parse", "HEAD").Trim()
+        };
+    }
 
     /// <summary>
     /// Run <c>git</c> with <paramref name="workingDir"/> as its cwd and return stdout. Throws
