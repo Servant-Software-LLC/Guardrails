@@ -378,15 +378,16 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
-    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         lock (_gate)
         {
             // Design 40 §2 step 3: a run whose base changed underneath it must say so — under --no-ui the
             // tailed log IS the record, and a silent base change is indistinguishable from a harness bug
-            // when a later task behaves unexpectedly.
+            // when a later task behaves unexpectedly. `by` names the supplier (design 41 §6) so a triage
+            // never has to guess whether the file came from an operator or the overwatcher.
             _output.WriteLine(
-                $"[supplied] {paths.Count} resource(s) committed {commit}: {string.Join(", ", paths)}");
+                $"[supplied] by {by}: {paths.Count} resource(s) committed {commit}: {string.Join(", ", paths)}");
         }
     }
 
