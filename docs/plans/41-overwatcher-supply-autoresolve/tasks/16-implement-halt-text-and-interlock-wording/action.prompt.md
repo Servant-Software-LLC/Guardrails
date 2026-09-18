@@ -62,6 +62,18 @@ Keep everything else about the banner intact. It already names the decision toke
 interpolation (`suppressing.Decision` / `suppressing.Subject`), which is precisely why it needs no
 per-token knowledge — do not replace that interpolation with an enumeration.
 
+**That sentence is PINNED VERBATIM by an existing test, and updating it is part of this task.**
+`tests/Guardrails.Integration.Tests/UndeliveredWorkWarningTests.cs` asserts the whole banner as one
+string in two places (`OffWithADecision_NamesBothCauses_AndNeverClaimsTheSettingIsOn` and
+`OnWithADecision_NamesTheInterlock_AndThatTheSettingIsOnByDefault`), so the moment you reword the
+sentence those two rows go red. That file IS in your `writeScope` — update both pins to the new
+wording in the same change.
+
+This is not the "do not edit authored tests" case: this file is pre-existing repo coverage, not a
+proof task 15 wrote for you. Leaving it stale does not fail YOUR guardrails — it fails the run's
+TERMINAL GATE, on the merged HEAD, after every task in the plan has gone green, and no other task
+declares the file, so nothing downstream can repair it.
+
 ### 3. Generalise the `--merge-on-success` description
 
 Its `Description` says *"delivers work a machine decision (proceeded-best-guess / proceeded-unreviewed)

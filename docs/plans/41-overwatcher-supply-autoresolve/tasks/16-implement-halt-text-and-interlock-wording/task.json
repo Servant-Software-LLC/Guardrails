@@ -3,6 +3,7 @@
   "dependsOn": ["15-author-tests-halt-text-and-interlock-wording"],
   "stableId": "h16r4d",
   "writeScope": [
-    "src/Guardrails.Cli/Commands/RunCommand.cs"
+    "src/Guardrails.Cli/Commands/RunCommand.cs",
+    "tests/Guardrails.Integration.Tests/UndeliveredWorkWarningTests.cs"
   ]
 }

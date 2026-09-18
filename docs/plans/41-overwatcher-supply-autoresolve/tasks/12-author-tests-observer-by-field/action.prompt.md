@@ -113,10 +113,17 @@ In `SuppliedObserverCliForwardingTests` (Integration):
 
 - `ConsoleRunObserver_ForwardsTheEventWithTheSupplier`
 - `LiveRunObserver_RendersTheSupplierInTheLiveTable` — the live table prints
-  `supplied by overwatcher: 1 resource(s) committed <sha> — <paths>`.
+  `supplied by overwatcher: <n> resource(s) committed <sha> — <paths>`.
 - `NoUi_PrintsTheSuppliedResourcesLineNamingTheSupplier` — `--no-ui` prints
-  `[supplied] by overwatcher: 1 resource(s) committed <sha>: <paths>`. Assert the literal
+  `[supplied] by overwatcher: <n> resource(s) committed <sha>: <paths>`. Assert the literal
   `[supplied] by overwatcher:` — the wording is design 41 §6's, and an operator greps for it.
+
+  **`<n>` is `paths.Count`, so whatever you pass in, the count you assert must agree with it.**
+  Both renderers already read `paths.Count` on master, and design §6's canonical format spells the
+  field `N`, a variable — the literal `1` appears in the design's illustrative lines only because
+  those examples pass a single path. Raise the event with two paths and assert `1 resource(s)` and
+  the row is unsatisfiable under ANY implementation: the implementing task may not edit these tests,
+  so it can only halt, one tier away from the task that could have fixed it.
 - `EveryCliDecorator_DeclaresAndForwardsTheEventWithTheSupplier` — the parameter-aware census over
   `OnTheFlyDiagramObserver` and `OnTheFlyLogSiteObserver`, plus the real-chain forward proof.
 - `OverwatcherSupply_ReachesTheEventsJsonlRowAndTheNoUiLine` — **the artifact test.** Build the REAL

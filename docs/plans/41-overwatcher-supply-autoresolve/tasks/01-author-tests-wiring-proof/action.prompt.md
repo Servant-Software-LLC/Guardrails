@@ -182,6 +182,27 @@ behaviour, so do not rename, reorder or merge them.
 4. `WhenAnotherTaskOwnsThePath_NoBriefIsSent_AndTheStopIsObserved` — **C2.** An independent task
    `04-owns-vendor` declares `writeScope` `["vendor/**"]`. Also: `observed` with
    `produced-by-another-task`; no brief.
+
+   **This row's fourth task changes the fixture plan's TOPOLOGY, and that has a validation
+   consequence you must handle or the test cannot pass.** The other rows use the three-task chain
+   01 → 02 → 03: one leaf, no fan-in, so GR2028 is exempt. `04-owns-vendor` has no dependents and
+   nothing depends on it, so this plan now has TWO leaves (`03-downstream` and `04-owns-vendor`) —
+   a parallel topology. In worktree mode (`maxParallelism: 2`, which this fixture sets) GR2028 then
+   REQUIRES the plan's terminal `<plan>/guardrails/` folder to carry a real integration re-run. The
+   fixture builds no such folder, so the plan fails **validation**, `guardrails run` exits before
+   `RunJournal.LoadOrCreateForRun` writes `state/run.json`, and every later assertion dies reading a
+   journal that was never created — a `DirectoryNotFoundException` that reads like a harness bug.
+
+   So this row's fixture must also write a `<plan>/guardrails/` check. A conflict-marker union
+   invariant is the accepted GR2028 form for a plan with no toolchain to invoke, and it must open
+   with a `catches:` comment — plan-level guardrails load with `enforceCatches: true` (GR2027),
+   unlike the `tasks/<id>/guardrails/` files, which is why the trivial per-task `exit 0` checks need
+   none. Write it for BOTH platforms, as you do the task scripts; a `.sh` without `catches:` fails
+   GR2027 on the Linux and macOS legs alone. A tautological `exit 0` does NOT satisfy GR2028.
+
+   Do not sidestep this by giving `04-owns-vendor` a dependency: its whole point is that it is an
+   INDEPENDENT task declaring ownership, and §2.2's check 4 asks "may any OTHER task produce this
+   path?", which is indifferent to ordering.
 5. `WhenTheProposalCarriesNoFix_CertificationRefuses_NoResourceSupplyOp` — **C3.** The proposal has no
    fix. Also: `advisory` with `no-resource-supply-op`.
 6. `WhenTheFileIsUncommittedInTheCheckout_NoBriefIsSent_NotCommittedInCheckout` — **C4.** Task `01`
