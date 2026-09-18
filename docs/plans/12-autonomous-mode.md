@@ -1055,9 +1055,9 @@ approve; then the harness developer writes them into `02-schemas-and-contracts.m
   overwatcher `auto`-tier gate: silent auto-apply requires the PRESENCE of the `autonomy` block, NOT
   `autonomyPolicy: auto` alone (§9 Phase 4) — so an existing `auto` consumer's behavior is unchanged.
 - **§5.3 / §2 (delivery)** — state the interaction with #340 `mergeOnSuccess`: a run that recorded any
-  `proceeded-best-guess` or `proceeded-unreviewed` decision **defaults `mergeOnSuccess` to OFF** (machine
-  judgment ⇒ no auto-delivery; the green-but-undelivered warning fires), overridable only by explicit
-  `--merge-on-success` (§1).
+  `proceeded-best-guess`, `proceeded-unreviewed` or (design 41) `auto-supplied` decision **defaults
+  `mergeOnSuccess` to OFF** (machine judgment ⇒ no auto-delivery; the green-but-undelivered warning fires),
+  overridable only by explicit `--merge-on-success` (§1).
 - **§7 (`run.json`)** — extend `decisions[]` `DecisionEntry` with the OPTIONAL fields `gate`,
   `classification`, `criticality`, `confidence`, `threshold`, `bestGuess`, `blockerAttempts`,
   `blockerWaitedSeconds`, `assessmentRef`, and (for answer-injection) `answerRef` + `answeredBy`; add the

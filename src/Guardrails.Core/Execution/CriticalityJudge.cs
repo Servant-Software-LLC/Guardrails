@@ -123,7 +123,7 @@ public sealed class CriticalityJudge
         }
 
         // The deterministic threshold compare (§3.3): escalate ⟺ assessedCriticality ≥ effectiveThreshold.
-        if (assessed >= EffectiveThreshold(gate))
+        if (assessed >= GateThreshold.Effective(_config, gate))
         {
             return new CriticalityDecision
             {
@@ -143,22 +143,6 @@ public sealed class CriticalityJudge
             BestGuess = bestGuess,
             Rationale = rationale
         };
-    }
-
-    /// <summary>
-    /// The effective threshold for <paramref name="gate"/> (§3.5): a per-gate <see cref="GateThresholds"/>
-    /// override for this gate when present, else the run-wide <see cref="AutonomyConfig.EscalationThreshold"/>.
-    /// </summary>
-    private EscalationThreshold EffectiveThreshold(CriticalityGate gate)
-    {
-        GateThresholds? gates = _config.GateThresholds;
-        EscalationThreshold? perGate = gate switch
-        {
-            CriticalityGate.NeedsHuman => gates?.NeedsHuman,
-            CriticalityGate.WaveCheckpoint => gates?.WaveCheckpoint,
-            _ => null
-        };
-        return perGate ?? _config.EscalationThreshold;
     }
 
     // --- unknown failure: the maxJudgeWidenings run-level cap (§4.3) -----------------------------

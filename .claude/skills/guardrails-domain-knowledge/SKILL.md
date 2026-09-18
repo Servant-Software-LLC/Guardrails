@@ -1502,6 +1502,16 @@ lands at that same path once drained.
   The caller is told apart by whether the harness-owned `GUARDRAILS_*` namespace is present in its own
   environment at all: present means a task invocation, checked against the calling task's own declared
   `writeScope`; wholly absent means an operator, unrestricted.
+- **At `dial:critical` the overwatcher may resolve a missing file itself (design 41, issue #712).** When a
+  task halts with `{"needsHuman": {"question": "...", "kind": "blocked-work"}}` whose question names the
+  missing file by its exact workspace-relative path (write a root-level file as `./name`), and that file is
+  committed on the branch the run started from, missing from the run's base, and not produced by any other
+  task, the harness may commit it onto the plan branch as `Supplied-By: overwatcher` and re-run the task.
+  The consult carries the `missing-resource` trigger token, so an agent reading a run's `overwatch.jsonl`
+  records can connect them to the halt it wrote -- and it is the `blocked-work` classification that lets
+  the overwatcher supply the file at all; a `defective-guardrail` kind is refused outright. So name the
+  path verbatim and classify the halt `blocked-work`; never stub it, fetch it, or hand-copy it into your
+  worktree.
 
 ## Load-bearing invariants
 

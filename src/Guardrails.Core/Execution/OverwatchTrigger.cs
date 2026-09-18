@@ -21,7 +21,15 @@ public enum OverwatchTrigger
     PermissionWall,
 
     /// <summary>The task exhausted its retry budget and is settling <c>needs-human</c> — today's §9.2 triage, now one overwatcher case (§9.2.1).</summary>
-    TerminalExhaustion
+    TerminalExhaustion,
+
+    /// <summary>
+    /// A task settled <c>needs-human</c> with a question naming a workspace path that is committed in the
+    /// operator's checkout but missing from the run's base (design 41 §2.1). The ONE consult on an
+    /// agent-emitted <c>needsHuman</c>, and only at an effective <c>needs-human</c> threshold of
+    /// <c>critical</c> in worktree mode.
+    /// </summary>
+    MissingResource
 }
 
 /// <summary>Canonical wire tokens for <see cref="OverwatchTrigger"/> — used in <c>decisions[]</c> / <c>overwatch.jsonl</c> so the spelling never forks.</summary>
@@ -35,6 +43,7 @@ public static class OverwatchTriggers
         OverwatchTrigger.DeterministicScript => "deterministic-script",
         OverwatchTrigger.PermissionWall => "permission-wall",
         OverwatchTrigger.TerminalExhaustion => "terminal-exhaustion",
+        OverwatchTrigger.MissingResource => "missing-resource",
         _ => throw new ArgumentOutOfRangeException(nameof(trigger), trigger, "Unhandled overwatch trigger.")
     };
 }

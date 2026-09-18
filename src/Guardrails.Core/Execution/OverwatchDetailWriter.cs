@@ -74,4 +74,13 @@ internal sealed record OverwatchDetailApplied
 {
     public bool Guidance { get; init; }
     public int ExtraRetries { get; init; }
+
+    /// <summary>
+    /// Design 41 §6: on a certified missing-resource <c>auto-supplied</c> record, the workspace-relative
+    /// paths committed onto the run's base. Additive — null (omitted) on every other <see cref="OverwatchDetailApplied"/>.
+    /// </summary>
+    public IReadOnlyList<string>? Supplied { get; init; }
+
+    /// <summary>Design 41 §6: on a certified missing-resource <c>auto-supplied</c> record, the sha of the commit that carries <see cref="Supplied"/>.</summary>
+    public string? Commit { get; init; }
 }

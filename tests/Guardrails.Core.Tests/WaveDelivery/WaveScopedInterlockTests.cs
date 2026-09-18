@@ -131,6 +131,83 @@ public sealed class WaveScopedInterlockTests
         Assert.Null(RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, new[] { "wave-99-decoy" }));
     }
 
+    // ── The auto-supplied token: the shared delivery-interlock predicate (design 41 §6, fact 11) ───────
+    // Without these rows, a token added only to the run-end spelling (RunOutcomePolicyTests) passes every
+    // other test in the plan, and machine-decided work reaches the user's branch at a wave barrier.
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void AnAutoSuppliedDecision_HoldsTheWaveBarrierDelivery()
+    {
+        DecisionEntry heldAtWave2 = Decision(DecisionTokens.AutoSupplied, Wave2);
+        var decisions = new[] { heldAtWave2 };
+        var coveredWaves = new[] { Wave2 };
+
+        Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions, coveredWaves));
+        Assert.Same(heldAtWave2, RunOutcomePolicy.SuppressingDecisionForDelivery(decisions, coveredWaves));
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void AnAutoSuppliedDecisionOutsideAnyWave_HoldsEveryDelivery()
+    {
+        // Wave is null (design 41 §6 sets `wave` only when the plan is waved, so a flat plan's entry has
+        // none). It holds the delivery whatever the covered set is — the check fails CLOSED, exactly as it
+        // already does for proceeded-best-guess.
+        var decisions = new[] { Decision(DecisionTokens.AutoSupplied, wave: null) };
+
+        Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions, new[] { Wave2 }));
+        Assert.True(RunOutcomePolicy.SuppressesDelivery(decisions, new[] { Wave3 }));
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void AnAutoSuppliedDecisionInAnUncoveredWave_DoesNotHoldThisDelivery()
+    {
+        // wave-01's work already reached the user's branch: an auto-supplied decision recorded there does
+        // not hold a later {wave-02, wave-03} delivery. The new token joins the token set; it does not widen
+        // the scoping rule design 39 settled.
+        var decisions = new[] { Decision(DecisionTokens.AutoSupplied, Wave1) };
+
+        Assert.False(RunOutcomePolicy.SuppressesDelivery(decisions, new[] { Wave2, Wave3 }));
+    }
+
+    [Fact]
+    [Trait("Category", "OverwatchSupply")]
+    public void BothSpellingsAgreeOnEveryToken_OverTheSameDecision()
+    {
+        // The anti-fact-11 row: for each token a run can record, build a single-entry stream whose Wave is
+        // a wave also passed as the covered set (so the wave filter is satisfied for every row and the
+        // comparison isolates the TOKEN set), and assert the two spellings cannot DISAGREE. This does not
+        // assert which tokens suppress — that is the other rows' job.
+        string[] tokens =
+        [
+            DecisionTokens.ProceededBestGuess,
+            DecisionTokens.ProceededUnreviewed,
+            DecisionTokens.AutoSupplied,
+            DecisionTokens.AutoApplied,
+            DecisionTokens.Advisory,
+            DecisionTokens.Escalated,
+            DecisionTokens.Halted,
+            DecisionTokens.Observed,
+            DecisionTokens.BlockerRetried,
+            DecisionTokens.NoVerdict
+        ];
+
+        foreach (string token in tokens)
+        {
+            var stream = new[] { Decision(token, Wave2) };
+            var covered = new[] { Wave2 };
+
+            bool runEnd = RunOutcomePolicy.SuppressingDecision(stream) is not null;
+            bool wave = RunOutcomePolicy.SuppressingDecisionForDelivery(stream, covered) is not null;
+
+            Assert.True(
+                runEnd == wave,
+                $"token '{token}': SuppressingDecision={runEnd} but SuppressingDecisionForDelivery={wave}");
+        }
+    }
+
     // ── Driving the REAL Scheduler (the composition-root discipline, #120) ─────────────────────────────
     // Copied/trimmed from SchedulerReviewGateTests, whose helpers are private nested types: a WavePlanBuilder
     // plan with wave-01 authored and wave-02 an empty JIT stub carrying a brief.md, autonomyPolicy: auto with

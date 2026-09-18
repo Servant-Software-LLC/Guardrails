@@ -167,6 +167,22 @@ public static class DecisionTokens
     /// </para>
     /// </summary>
     public const string Observed = "observed";
+
+    /// <summary>
+    /// A certified missing-resource auto-resolve committed a file onto the plan branch (design 41 §6, SSOT
+    /// §9.2.2). Deliberately NOT <see cref="AutoApplied"/>: that token means a PROVABLY SAFE resolution, and
+    /// this is a bounded judgement — a model decided the halt was about this file. It HOLDS DELIVERY exactly
+    /// as <see cref="ProceededBestGuess"/> does, at run end AND at every wave barrier.
+    /// </summary>
+    public const string AutoSupplied = "auto-supplied";
+
+    /// <summary>
+    /// The overwatcher was consulted, or began an auto-resolve, and changed nothing it was asked to (design 41
+    /// §6). Already EMITTED today by <c>Overwatch.NonGrant</c> (<c>Overwatch.cs:370-376</c>) as a bare string
+    /// literal; this promotes it to a constant so a consumer asserts against the constant, never a literal.
+    /// Outcome-inert: it does not hold delivery.
+    /// </summary>
+    public const string Advisory = "advisory";
 }
 
 /// <summary>

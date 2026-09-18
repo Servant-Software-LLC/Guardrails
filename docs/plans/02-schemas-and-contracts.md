@@ -133,8 +133,10 @@ separate ignore entry is needed. The harness alone drains it: at a task boundary
 executing, or — for a run that has already halted and exited, with no live task boundary to reach — at
 run start before the first task is scheduled (§7 `supplied[]`). Draining copies the staged tree onto the
 plan branch, commits it, and deletes `logs/<runId>/supplied/` so a second drain is inert. **No guardrail
-ever reads this tree**; it is a hand-off point between the operator (or an in-scope task, or the
-overwatcher, §3.6) and the harness, not workspace content a check verifies.
+ever reads this tree**; it is a hand-off point between the operator (or an in-scope task, §3.6) and the
+harness, not workspace content a check verifies. The overwatcher's missing-resource auto-resolve (§9.2.2)
+never stages here: it commits the file it was certified to supply directly, so a file an operator staged is
+never drained under `by: "overwatcher"`.
 
 ### 1.1 `tasks/<id>/samples/` — committed guardrail evidence, outside the loader and outside the hash
 
@@ -633,6 +635,13 @@ decision-class: `drift` (#274, task or wave granularity), `wave` (#254 inter-wav
 drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt); `decision` is one of `halted` /
 `prompted-approved` / `prompted-declined` / `auto-applied` / `no-verdict` (the last one is `task`-boundary
 only — the #452 record of an overwatcher that was consulted, **spent**, and produced no verdict; §9.2).
+Three more `task`-boundary values belong to the overwatcher: `advisory` (it was consulted, or began an
+auto-resolve, and changed nothing it was asked to — a non-floor consult that could not grant, or a refused,
+failed or cost-capped missing-resource auto-resolve, §9.2.2), `auto-supplied` (a certified missing-resource
+auto-resolve committed a file onto the plan branch, §9.2.2), and `observed` (an auto-resolve was eligible by
+dial but not attempted, with the reason — outcome-inert, as everywhere). `auto-supplied` is deliberately NOT
+`auto-applied`: that token means a provably safe resolution, and this is a bounded judgement. It holds
+delivery exactly as `proceeded-best-guess` does.
 **In M1 only the `drift` boundary is emitted**
 (the on-resume definition-drift gate, §7.2); the schema + discriminator already accommodate all three so
 the `wave` (M2) and `task` (M3) boundaries just append. #269's design of record reuses this policy + log
@@ -2421,7 +2430,9 @@ covers two causes with two different operator responses, and both can be true at
   or a manual merge as the remedy.
 - **(b) The interlock.** `mergeOnSuccess` resolved **on** (`the default`, or
   `set by "mergeOnSuccess": true in guardrails.json`) and a recorded `proceeded-best-guess` /
-  `proceeded-unreviewed` held the work back. The banner NAMES the decision, its boundary and its **subject** —
+  `proceeded-unreviewed` / `auto-supplied` (design 41, §9.2.2) held the work back — one token set, shared by
+  the run-end interlock here and the wave-barrier interlock (§14.12). The banner NAMES the decision, its
+  boundary and its **subject** —
   the task or wave the machine decided at — because the operator's first job is to judge whether that decision
   is stale (in the measured #597 case it was: the best-guess belonged to an attempt that later halted, and the
   task was re-run to a genuine green). Saying "mergeOnSuccess is off" here sends a reader to `guardrails.json`,
@@ -3274,11 +3285,12 @@ computes the identical set.
 `outcome: "not-attempted"` alone would send a reader hunting for an unmerged branch that, in most cases,
 holds nothing they need — and in one holds everything. So `reason` separates: (a) `mergeOnSuccess` resolved
 off on a wholly-green run; (a′) delivery suppressed by the **autonomous-mode interlock** on a wholly-green
-run with `mergeOnSuccess` ON, naming the `proceeded-best-guess` / `proceeded-unreviewed` decision and its
-subject (issue #597 — writing (a)'s wording here recorded a cause that was flatly untrue, in the one file an
-unattended pipeline can read); (a″) BOTH — `mergeOnSuccess` resolved off AND such a decision was recorded —
-naming both causes, which either alone would have held the work (issue #710: (a′)'s wording there recorded
-"mergeOnSuccess itself is ON" for a run started with `--no-merge-on-success`); (b) the terminal gate did not
+run with `mergeOnSuccess` ON, naming the `proceeded-best-guess` / `proceeded-unreviewed` / `auto-supplied`
+(design 41, §9.2.2) decision and its subject (issue #597 — writing (a)'s wording here recorded a cause that
+was flatly untrue, in the one file an unattended pipeline can read); (a″) BOTH — `mergeOnSuccess` resolved
+off AND such a decision was recorded — naming both causes, which either alone would have held the work
+(issue #710: (a′)'s wording there recorded "mergeOnSuccess itself is ON" for a run started with
+`--no-merge-on-success`); (b) the terminal gate did not
 pass; (c) the run was not wholly green; (d) serial mode, where there is no separate plan branch and the work is
 already in the checkout. (a), (a′) and (a″) state the setting in the clause they share with the console banner,
 `mergeOnSuccess is ON|off (<source>)`, where `<source>` is `set by --no-merge-on-success`,
@@ -3353,6 +3365,10 @@ task behaving oddly) someone needs to know what is in the tree that no task auth
 carries a trailer DERIVED from this field — `Supplied-By: <by>` alongside the existing `Guardrails-Run:
 <runId>` (§5.3) — never the constant `Supplied-By-Operator`, which would be a false statement on any supply
 the operator did not perform.
+A `by: "overwatcher"` record is written only by the certified missing-resource auto-resolve (§9.2.2): its
+`commit` is on the plan branch (never the operator's checkout), it never drains `logs/<runId>/supplied/`,
+its `bytes` is the source blob's size, and the checkout commit and branch its bytes were read from are
+named in the `auto-supplied` `decisions[]` entry written in the same step.
 
 **`refreshed[]` — the same question, asked of the harness's OWN reverse merge (design of record
 `39-incremental-delivery.md` §1c, issue #525; §5.3/§14.12).** A non-fast-forward wave delivery admits
@@ -4673,6 +4689,9 @@ Also at the **task** level, the **overwatcher** (§9.2, #269) writes:
   *audit* is the shared top-level `decisions[]` (`boundary:"task"`, §2.1/§7). Writes nothing when the
   overwatcher was **not consulted** (no runner, cost cap already reached) — but a diagnose that RAN and
   produced no verdict appends a `decision:"no-verdict"` record (§9.2, issue #452), never silence.
+  A missing-resource consult (§9.2.2) records `trigger: "missing-resource"`, a `fixes[]` entry of
+  `{ kind: "resource-supply", authority: "default", target: <path> }` per proposed op, and — on
+  `decision: "auto-supplied"` — `applied: { supplied: [<paths>], commit: <sha> }`.
 - `feedback.md` / `triage.json` — the terminal-exhaustion case (§9.2.1), unchanged.
 - `overwatch-guidance.md` — written only when a granted guidance injection could not be appended to the
   failed attempt's `feedback.md`; the fallback carrier of the sanctioned ephemeral guidance.
@@ -4871,15 +4890,15 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
 | `run-finished` | `IRunObserver.RunFinished` | `exitCode`, `faultKind` — no `taskId` (run-scoped, like `supplied-resources-committed` below) |
-| `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit` — no `taskId`: a drain (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
+| `supplied-resources-committed` | `IRunObserver.SuppliedResourcesCommitted` | `paths`, `commit`, `by` (`operator` \| `overwatcher` \| `task:<folder>`, the same value as the `supplied[]` record) — no `taskId`: a supply commit (§1/§7 `supplied[]`) is scoped to the RUN, not to whichever task's boundary happened to trigger it |
 
 **`SuppliedResourcesCommitted` announces a base change the run did not itself author (design of record
 `40-in-flight-resource-supply.md`, issue #373).** A run whose base changed underneath it must say so — a
 silent one is indistinguishable from a harness bug the next time a task behaves unexpectedly. Forwarded
 through every `IRunObserver` decorator like any other member (a decorator that drops it fails the same
 forwarding-sweep test every other member is caught by), it reaches `events.jsonl` as the row above and, for
-a human watching the run, a `[supplied] N resource(s) committed <commit>: <paths>` line in both the live
-table and `--no-ui` console output.
+a human watching the run, a `[supplied] by <by>: N resource(s) committed <commit>: <paths>` line in both
+the live table and `--no-ui` console output.
 
 **`WaveDelivered` (§14.12, design of record `39-incremental-delivery.md`, issue #525) gets NO row here, on
 purpose.** Unlike a supply, a wave delivery already has a durable, richer record — `run.json`'s
@@ -6043,7 +6062,10 @@ common with the AI-merge worker and terminal triage, #314 — it is not a task a
 synthetic `AttemptRecord` would corrupt attempt numbering), and it is folded into the run's cumulative cost,
 so once that cumulative cost reaches the cap no further diagnose is spent (the cost mitigation for eager —
 and the diagnose spend therefore also appears in the reported total). It does
-**NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask).
+**NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask) — with ONE
+exception, the **missing-resource consult** (§9.2.2): at an effective `needs-human` threshold of `critical`,
+in worktree mode, the Scheduler consults it at most once per task per run to propose a `resource-supply`
+fix that a deterministic gate may certify.
 
 **The mechanical asymmetry — the load-bearing constraint.** Self-healing must NEVER soften a
 deterministic guardrail's verdict, so the overwatcher's fix authority is **asymmetric**, and the
@@ -6109,6 +6131,10 @@ overwatcher was actually invoked:
 
 - **Not consulted** — no runner resolved, or the `maxCostUsd` cap already reached — records **nothing**.
   Nothing ran, nothing was billed, and the deterministic policy stands: there is no event to report.
+  The one exception is the missing-resource auto-resolve (§9.2.2): once the dial is engaged and the halt is
+  shaped like a missing resource, every reason it is not attempted — including no runner and the cost cap —
+  records one outcome-inert `decision: "observed"` entry, because at the dial that promised an
+  auto-resolve, its absence must not be silent.
 - **Consulted but no verdict** — the diagnose ran and came back with an error, a turn exhaustion, a
   denial abort, or a body that does not parse as a verdict — records a **`decision: "no-verdict"`**
   `decisions[]` entry (`boundary: "task"`) **and** an `overwatch.jsonl` record, **and** emits a visible
@@ -6205,6 +6231,53 @@ failed/throwing triage is silently skipped.
 By default, triage only **drafts** the GH issue (title + body) into `feedback.md` and files
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
+
+#### 9.2.2 Missing-resource auto-resolve (design of record `41-overwatcher-supply-autoresolve.md`, issue #712)
+
+The one overwatcher action that changes the run's base, and the only consult on an agent-emitted
+`needsHuman`. It wires design 40 §3: at `dial:critical`, a halt caused by a file that is committed on the
+branch the run started from but missing from the run's own lineage may be resolved without a human. **A
+prompt may propose; only a deterministic gate may certify** — the overwatcher keeps its read-only tool
+profile, and every fact about the file is computed by the harness. The model contributes one judgement it
+cannot be checked on (that the halt is about the file); the facts, the task's own guardrails and the
+delivery interlock bound it.
+
+- **When.** Tier 0 (else no record): worktree mode, the real `RunJournal`, `autonomyPolicy: auto` with an
+  `autonomy` block, `GateThreshold.Effective(autonomy, needs-human) == critical`, and
+  `gateThresholds.review-gate` is not `proceed-unreviewed`. Tier 1 (else no record): the task settled
+  `needs-human` with a question naming a workspace path (`MissingResourceSignal`, shared with the halt
+  text; `./name` for a root-level file) and a `kind` other than `defective-guardrail`. Tier 2 (each recorded
+  as `observed`): `unclassified-kind`, `already-auto-resolved` (read from `decisions[]`), `no-runner`,
+  `cost-cap`, `facts-unavailable`, or no candidate.
+- **Candidates.** Git facts are tri-state; an error is never read as absent. Run-level: the checkout is on
+  `OriginalBranch` and descends from `OriginalHeadSha`. Per path, in order: inside the workspace; not under
+  `.claude/`, `.guardrails-staging/`, `.guardrails-agent-io/` or a top-level `.git*`; not under the plan
+  folder; no other task may produce it (every other task declares a `writeScope`, none covers it); absent
+  at the integration `HEAD`, with no case-only twin; not deleted on the plan branch since its merge-base
+  with the checkout; a blob at the checkout `HEAD`; unmodified in the checkout's working tree.
+- **Proposal.** A read-only diagnose whose brief begins
+  `# Overwatch resource supply: task '<id>' (attempt <n>, trigger: missing-resource)`, states the question
+  and the candidate facts as harness facts, and admits only `{"kind":"resource-supply","path":"<candidate>"}`.
+  The generic brief never lists it; `OverwatchFixClassifier` classifies it `default`, so it is never applied
+  on any other path.
+- **Certification (`OverwatchSupplyAutoResolve.Certify`, pure).** Dial composition; not
+  `proceed-unreviewed`; classification `retryable`; at least one `resource-supply` op; every path a
+  candidate; no duplicates. Any failure refuses the whole proposal — there is no partial supply.
+- **Consumer (`Scheduler.OnSettledAsync`).** Under the integration lock: re-check the base
+  (`run-base-changed`); `git checkout <checkout HEAD sha> -- <paths>` in the integration worktree (never
+  `plan.Workspace`, never via `logs/<runId>/supplied/`); commit with an explicit pathspec, rolling back on
+  failure, trailers `Supplied-By: overwatcher` / `Guardrails-Run: <runId>`; then, in the same step, append
+  `supplied[]` (`by: "overwatcher"`), record `auto-supplied`, and raise
+  `SuppliedResourcesCommitted(paths, commit, "overwatcher")`. If `maxCostUsd` is now reached, adopt the
+  cost-cap halt; else create a fresh segment at the task's next attempt number, re-run the task with nothing
+  injected, and adopt the result whatever its outcome. The adopted result, not the original halt, goes to
+  the classify-then-act dispatch.
+- **Record.** `decisions[]` (`boundary: "task"`, `gate: "needs-human"`, `threshold: "critical"`, `wave` when
+  waved): `auto-supplied`, `advisory` (refused, `commit-failed`, `rearm-failed`, `rearm-skipped-cost-cap`),
+  `no-verdict`, `observed`. `auto-supplied` holds delivery at run end AND at every wave barrier.
+- **Floors untouched.** No guardrail, preflight, `task.json` or review marker is written; plan-folder and
+  `.claude/` paths are never candidates, so `PlanDefinitionHash` and every prompt task's tool environment
+  are unchanged.
 
 ### 9.3 Permission-wall halt (issues #86 / #104 / #325 / #329 / #708)
 

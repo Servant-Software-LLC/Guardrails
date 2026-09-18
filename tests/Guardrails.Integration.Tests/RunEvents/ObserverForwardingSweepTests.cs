@@ -84,23 +84,31 @@ public sealed class ObserverForwardingSweepTests
     }
 
     /// <summary>
-    /// A member is DECLARED by a type when the type itself carries it — an implicit override or an explicit
-    /// interface implementation (private, named <c>Guardrails.Core.Execution.IRunObserver.&lt;Member&gt;</c>).
-    /// Inheriting the interface's empty default declares nothing, which is precisely the state these tests
-    /// must be able to see.
+    /// A member is DECLARED by a type when the type itself carries it with the SAME parameter list — an
+    /// implicit override or an explicit interface implementation (private, named
+    /// <c>Guardrails.Core.Execution.IRunObserver.&lt;Member&gt;</c>) whose parameter TYPES match exactly.
+    /// Matching by name alone is exactly the defect design 41 §6 is written against: once
+    /// <see cref="IRunObserver.SuppliedResourcesCommitted"/> gained a three-argument overload, a decorator
+    /// that kept only the two-argument one would satisfy a name-only census perfectly while the Scheduler's
+    /// three-argument call still lands on the interface's empty default body. Inheriting a default declares
+    /// nothing, which is precisely the state these tests must be able to see.
     /// </summary>
-    private static bool Declares(Type type, string methodName) =>
+    private static bool Declares(Type type, MethodInfo member) =>
         type.GetMethods(
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-            .Any(m => m.Name == methodName || m.Name.EndsWith("." + methodName, StringComparison.Ordinal));
+            .Any(m => (m.Name == member.Name || m.Name.EndsWith("." + member.Name, StringComparison.Ordinal))
+                      && m.GetParameters().Select(p => p.ParameterType)
+                           .SequenceEqual(member.GetParameters().Select(p => p.ParameterType)));
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // 1. The exhaustive reflection census — MUST BE RED (RunFinished is the newly-added member).
+    // 1. The exhaustive reflection census — MUST BE RED (SuppliedResourcesCommitted's new
+    //    three-argument overload is the newly-added member; RunFinished etc. stay green).
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     [Trait("Category", "RunEvents")]
+    [Trait("Category", "OverwatchSupply")]
     [Fact]
-    public void EveryTransparentDecorator_DeclaresEveryIRunObserverMember()
+    public void EveryTransparentDecorator_DeclaresEveryIRunObserverMember_WithItsExactParameterList()
     {
         Assembly coreAssembly = typeof(IRunObserver).Assembly;
         Assembly cliAssembly = typeof(ConsoleRunObserver).Assembly;
@@ -136,15 +144,17 @@ public sealed class ObserverForwardingSweepTests
         string[] missing =
         [
             .. decorators.SelectMany(d => members
-                .Where(m => !Declares(d.Resolved!, m.Name))
-                .Select(m => $"{d.Resolved!.FullName} : {m.Name}"))
+                .Where(m => !Declares(d.Resolved!, m))
+                .Select(m => $"{d.Resolved!.FullName} : {m.Name}"
+                    + $"({string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name))})"))
         ];
 
         Assert.True(
             missing.Length == 0,
             "The following (type, member) pairs are IRunObserver members a transparent decorator does NOT "
-            + "declare — each inherits the interface's empty default body and silently swallows that event "
-            + "before it ever reaches whatever the decorator wraps:\n" + string.Join("\n", missing));
+            + "declare with the EXACT parameter list — each inherits the interface's empty default body and "
+            + "silently swallows that event (or an argument it now carries) before it ever reaches whatever "
+            + "the decorator wraps:\n" + string.Join("\n", missing));
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -195,14 +205,16 @@ public sealed class ObserverForwardingSweepTests
         // use-after-dispose bug, not a style choice about whether a renderer "should" render a completion
         // line — the next reader who thinks a completion line would look nice must see THIS reason, not a
         // nicer-sounding wrong one.
+        MethodInfo runFinished = typeof(IRunObserver).GetMethod(nameof(IRunObserver.RunFinished))!;
+
         Assert.False(
-            Declares(typeof(LiveRunObserver), nameof(IRunObserver.RunFinished)),
+            Declares(typeof(LiveRunObserver), runFinished),
             $"{nameof(LiveRunObserver)} declares {nameof(IRunObserver.RunFinished)}, but by the time that "
             + "event fires the live observer has already been disposed — RunCommand's `await using` scopes "
             + "it to the `if (live)` block — so handling it here would be a use-after-dispose.");
 
         Assert.False(
-            Declares(typeof(ConsoleRunObserver), nameof(IRunObserver.RunFinished)),
+            Declares(typeof(ConsoleRunObserver), runFinished),
             $"{nameof(ConsoleRunObserver)} declares {nameof(IRunObserver.RunFinished)}. Nothing about the "
             + $"console path is disposed early, but symmetry with {nameof(LiveRunObserver)} still matters: "
             + "neither renderer is meant to own the run's completion line.");

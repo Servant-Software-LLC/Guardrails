@@ -158,6 +158,11 @@ self-defeating"). An auto-resolve here is not `proceed-unreviewed`: it supplies 
 whose gates then run in full, and nothing is certified that was not verified. The distinction is worth
 stating explicitly so a later reader does not treat this as the precedent that erodes that ruling.
 
+**Wired by design 41 (issue #712).** Plan 40 shipped this decision as a gate nothing called. Design 41
+(`41-overwatcher-supply-autoresolve.md`) specifies the consult, the harness-computed facts, the
+certification gate, the Scheduler consumer, the drain target (the integration worktree, never the
+operator's checkout) and the real-path test.
+
 ---
 
 ## 4. Provenance: a supplied file is not the plan's work

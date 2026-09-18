@@ -328,9 +328,9 @@ public sealed class RunEventStream : IRunObserver
         _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
 
     /// <inheritdoc/>
-    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
-        _inner.SuppliedResourcesCommitted(paths, commit);
+        _inner.SuppliedResourcesCommitted(paths, commit, by);
 
         AppendLine(new EventRow
         {
@@ -338,7 +338,8 @@ public sealed class RunEventStream : IRunObserver
             RunId = _runId,
             TaskId = null,
             Paths = paths,
-            Commit = commit
+            Commit = commit,
+            By = by
         });
     }
 
@@ -547,6 +548,9 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>supplied-resources-committed</c>: the SHA the drain committed them in.</summary>
         public string? Commit { get; init; }
+
+        /// <summary><c>supplied-resources-committed</c>: the supplier (design 41 §6) — <c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c>.</summary>
+        public string? By { get; init; }
     }
 }
 

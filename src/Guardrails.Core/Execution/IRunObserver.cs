@@ -356,12 +356,15 @@ public interface IRunObserver
     void TerminalGateFinished(bool passed, IReadOnlyList<string> failedNames) { }
 
     /// <summary>
-    /// The harness committed one or more operator-supplied files onto the run's own base (design 40 §2 step
-    /// 3, plan-of-record <c>docs/plans/40-in-flight-resource-supply.md</c>). <paramref name="paths"/> are
-    /// the workspace-relative destinations the files now occupy (design 40 §1 — the staged layout IS the
-    /// destination layout), and <paramref name="commit"/> is the SHA the drain committed them in, carrying
-    /// the <c>Supplied-By-Operator</c> trailer (§4). Raised once per drain, at the resume-path boundary,
-    /// BEFORE the first task is scheduled — never mid-task.
+    /// The harness committed one or more supplied files onto the run's own base (design 40 §2 step 3; design 41
+    /// §5). <paramref name="paths"/> are the workspace-relative destinations the files now occupy;
+    /// <paramref name="commit"/> is the SHA of the commit that carries them, whose trailers are
+    /// <c>Supplied-By: &lt;by&gt;</c> and <c>Guardrails-Run: &lt;runId&gt;</c> (design 40 §4); and
+    /// <paramref name="by"/> is the supplier that commit and its <c>supplied[]</c> record name
+    /// (<c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c>). Raised once per such commit, after
+    /// its <c>supplied[]</c> record is written: by <c>Scheduler.DrainSuppliedAtTaskBoundary</c> at a task
+    /// boundary, and by the Scheduler's missing-resource auto-resolve (design 41). The run-start drain in
+    /// <c>RunCommand</c> does not raise it today.
     ///
     /// <para><b>Why this matters more than it looks.</b> A run whose base changed underneath it must SAY
     /// so — a silent base change is indistinguishable from a harness bug when a later task behaves
@@ -375,7 +378,7 @@ public interface IRunObserver
     /// lesson). <see cref="NullObserver"/> is the one legitimate exception — its whole contract is to
     /// swallow every event, so it correctly leaves this undeclared too.</para>
     /// </summary>
-    void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) { }
+    void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by) { }
 
     /// <summary>
     /// A task is WAITING on the git that builds its worktree (issue #722): the harness has dequeued it, the
