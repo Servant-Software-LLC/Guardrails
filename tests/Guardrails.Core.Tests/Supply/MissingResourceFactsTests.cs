@@ -19,7 +19,11 @@ namespace Guardrails.Core.Tests.Supply;
 public sealed class MissingResourceFactsTests : IDisposable
 {
     private readonly TempGitRepo _checkout = new();
-    private readonly TempGitRepo _integration = new();
+
+    // The run's BASE starts WITHOUT 'vendor/resource.js'. See the ctor's parameter doc: row 5 is checked
+    // before rows 6/8/9/10, so a base carrying the path shadows every later reason. The three rows that
+    // need it present on the base commit it themselves.
+    private readonly TempGitRepo _integration = new(withVendoredResource: false);
 
     // ── run-level lineage facts ────────────────────────────────────────────────────────────────
     [Fact]
@@ -232,7 +236,13 @@ public sealed class MissingResourceFactsTests : IDisposable
         internal string RepoPath { get; } =
             Path.Combine(Path.GetTempPath(), "gr-missing-resource-facts-" + Guid.NewGuid().ToString("N"));
 
-        internal TempGitRepo()
+        /// <param name="withVendoredResource">
+        /// Commit 'vendor/resource.js' during construction. TRUE for the checkout repo, whose committed
+        /// state rows 8/9/10 read. FALSE for the integration repo — the run's BASE — because row 5
+        /// ('absent from the run's base') is checked first, and a base that already carries the path
+        /// makes four of this file's rows unsatisfiable under any implementation.
+        /// </param>
+        internal TempGitRepo(bool withVendoredResource = true)
         {
             Directory.CreateDirectory(RepoPath);
 
@@ -251,8 +261,28 @@ public sealed class MissingResourceFactsTests : IDisposable
 
             WriteFile("README.md", "# fixture repo");
             Commit("Initial commit");
-            WriteFile("vendor/resource.js", "export const ok = true;");
-            Commit("Commit the vendored resource");
+
+            // The two fixture ROLES diverge here, and the divergence is load-bearing.
+            //
+            // _checkout is where the vendored file legitimately exists: the committed/uncommitted and
+            // modified-in-working-tree rows (§2.2 rows 8/9/10) all read its state, so it needs the
+            // resource from construction.
+            //
+            // _integration is the RUN'S BASE. §2.2 row 5 ('absent from the run's base') is checked
+            // against the integration worktree's CURRENT HEAD, and the per-path checks run in strict
+            // numeric order — row 5 before rows 6/8/9/10. So if the base carries 'vendor/resource.js'
+            // from construction, row 5 fires FIRST for every row that uses the default path, and four
+            // rows become unsatisfiable no matter how Compute() is written:
+            // the positive candidate row, the halted-task's-own-writeScope row, the case-only-twin row
+            // (row 6 never reached), and the modified-in-checkout row (row 10 never reached).
+            //
+            // The rows that DO need the base to carry it add it themselves (AlreadyPresentOnTheRunBase,
+            // CaseOnlyTwin, ThisRunDeleted), so starting clean costs them nothing.
+            if (withVendoredResource)
+            {
+                WriteFile("vendor/resource.js", "export const ok = true;");
+                Commit("Commit the vendored resource");
+            }
         }
 
         internal string HeadSha() => Git("rev-parse", "HEAD").Trim();
