@@ -68,6 +68,29 @@ public enum OverwatchDecisionKind
     AutoResolve
 }
 
+/// <summary>One certified supply: a candidate path, paired with the checkout commit its bytes are read at.</summary>
+public sealed record CertifiedSupply
+{
+    /// <summary>The workspace-relative path, normalized.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>The candidate's own source sha — never a sha the proposal supplied.</summary>
+    public required string SourceCommit { get; init; }
+}
+
+/// <summary>The gate's verdict (design 41 §3.1): certified with its supplies, or refused with a reason token.</summary>
+public sealed record SupplyCertification
+{
+    /// <summary>True only when every check passed. There is no partial certification.</summary>
+    public required bool Certified { get; init; }
+
+    /// <summary>The refusal token when <see cref="Certified"/> is false; otherwise null.</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>Every certified op, each paired with its candidate's source sha. Empty on a refusal.</summary>
+    public required IReadOnlyList<CertifiedSupply> Supplies { get; init; }
+}
+
 /// <summary>
 /// Decides whether the overwatcher may AUTO-RESOLVE a needs-human halt caused by a missing supplied
 /// resource (design 40 §3) instead of merely proposing the fix. Gated at <c>dial:critical</c> — the SAME
@@ -150,6 +173,17 @@ public static class OverwatchSupplyAutoResolve
             RichHaltSummary = ProposedSequenceFor(task, plan, resourceSupply)
         };
     }
+
+    /// <summary>
+    /// The deterministic gate (design 41 §3.1). A PURE function: no git, no journal, no filesystem.
+    /// A prompt may propose; only this may certify.
+    /// </summary>
+    public static SupplyCertification Certify(
+        AutonomyPolicy policy,
+        bool autonomyBlockPresent,
+        AutonomyConfig? autonomy,
+        IReadOnlyList<MissingResourceCandidate> candidates,
+        OverwatchProposal? proposal) => throw new NotImplementedException();
 
     /// <summary>
     /// The copy-pasteable three-command sequence design 40 §3(b) decided: the operator runs the SAME
