@@ -1,6 +1,5 @@
 using System.CommandLine;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -62,7 +61,7 @@ public static class RunCommand
 
         var mergeOnSuccessOption = new Option<bool>("--merge-on-success")
         {
-            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json, AND is the operator override that delivers work a machine decision (proceeded-best-guess / proceeded-unreviewed) would otherwise hold back on the plan branch (#361/#597). Delivery is the DEFAULT, so this flag matters only for those two cases."
+            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json, AND is the operator override that delivers work a machine decision would otherwise hold back on the plan branch (#361/#597). Delivery is the DEFAULT, so this flag matters only when a machine decision held delivery back."
         };
 
         var noMergeOnSuccessOption = new Option<bool>("--no-merge-on-success")
@@ -2661,7 +2660,7 @@ public static class RunCommand
         TextWriter output, string planName, string planBranch, string overrideNote)
     {
         output.WriteLine(
-            "JUDGE THE DECISION FIRST — run.json → decisions[]. A best-guess that a later attempt");
+            "JUDGE THE DECISION FIRST — run.json → decisions[]. A machine decision that a later attempt");
         output.WriteLine(
             "superseded is stale; one that shaped the result you are looking at is not. Then either:");
         output.WriteLine($"  guardrails run {planName} --merge-on-success   {overrideNote}");
@@ -3829,10 +3828,6 @@ public static class RunCommand
         _ => "  fix the action or guardrails, then re-run to resume."
     };
 
-    /// <summary>A workspace-relative path token: two or more '/'-joined segments, e.g. <c>vendor/mermaid.min.js</c>.</summary>
-    private static readonly Regex ResourcePathToken =
-        new(@"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", RegexOptions.Compiled);
-
     /// <summary>
     /// The missing-resource carve-out of a <c>blocked-work</c> halt (design 40 §3/§5): when the agent's
     /// <see cref="TaskResult.NeedsHumanQuestion"/> names a workspace-relative resource path, replaces
@@ -3855,8 +3850,8 @@ public static class RunCommand
             return [];
         }
 
-        Match match = ResourcePathToken.Match(needsHuman.NeedsHumanQuestion ?? string.Empty);
-        if (!match.Success)
+        IReadOnlyList<string> resourcePaths = MissingResourceSignal.PathsIn(needsHuman.NeedsHumanQuestion);
+        if (resourcePaths.Count == 0)
         {
             return [];
         }
@@ -3869,18 +3864,18 @@ public static class RunCommand
             return [];
         }
 
-        string resourcePath = match.Value;
+        string resourcePathArgs = string.Join(' ', resourcePaths);
 
         return
         [
             "  This is a missing resource, not a scope problem: plan-folder edits reach a running plan; "
                 + "code artifacts do not — re-scoping the task cannot conjure it. Supply it, then reset and "
                 + "resume this task:",
-            $"    guardrails supply {planDirectory} {resourcePath}",
+            $"    guardrails supply {planDirectory} {resourcePathArgs}",
             $"    guardrails reset {planDirectory} {needsHuman.TaskId}",
             $"    guardrails run {planDirectory}",
             "  Once staged, the opt-in shorthand runs the same three steps in one call: "
-                + $"guardrails supply --resume {planDirectory} {resourcePath}"
+                + $"guardrails supply --resume {planDirectory} {resourcePathArgs}"
         ];
     }
 
