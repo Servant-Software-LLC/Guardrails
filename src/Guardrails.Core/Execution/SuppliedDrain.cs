@@ -68,6 +68,17 @@ public static class SuppliedDrain
     }
 
     /// <summary>
+    /// Commit exactly <paramref name="paths"/> (workspace-relative, forward-slash) as they stand in
+    /// <paramref name="workspace"/>, with the §4 trailer <c>Supplied-By: &lt;by&gt;</c> /
+    /// <c>Guardrails-Run: &lt;runId&gt;</c>. The EXPLICIT PATHSPEC is the point: nothing else left in the
+    /// index rides along. On ANY failure the pre-commit <c>HEAD</c> is restored, so no partly-staged file
+    /// can be picked up by a later drain under someone else's name (design 41 §5).
+    /// </summary>
+    public static SuppliedDrainResult CommitPaths(
+        string workspace, string runId, string by, IReadOnlyList<string> paths) =>
+        throw new NotImplementedException();
+
+    /// <summary>
     /// Run <c>git</c> with <paramref name="workingDir"/> as its cwd and return stdout. Throws
     /// <see cref="InvalidOperationException"/> on a non-zero exit, mirroring the harness's other git
     /// runners (e.g. <see cref="GitWorktreeProvider"/>) so a failed drain surfaces as a loud fault
