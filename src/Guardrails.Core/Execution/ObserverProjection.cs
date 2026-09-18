@@ -447,7 +447,7 @@ public sealed class ObserverProjection : IRunObserver
         _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
     }
 
-    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit)
+    public void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by)
     {
         var pathArray = new JsonArray();
         foreach (string path in paths)
@@ -459,9 +459,10 @@ public sealed class ObserverProjection : IRunObserver
         {
             ["member"] = "SuppliedResourcesCommitted",
             ["paths"] = pathArray,
-            ["commit"] = commit
+            ["commit"] = commit,
+            ["by"] = by
         });
-        _inner.SuppliedResourcesCommitted(paths, commit);
+        _inner.SuppliedResourcesCommitted(paths, commit, by);
     }
 
     /// <summary>

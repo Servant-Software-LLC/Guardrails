@@ -75,11 +75,9 @@ public sealed record JournalDocument
     /// Additive and backward-compatible on the same terms as <see cref="PlanPreflights"/>: absent (never
     /// <c>null</c> noise) on a run that never supplied anything, which is the overwhelming majority.
     /// <para>
-    /// This property is the STUB half of task <c>05-author-tests-provenance</c> — an honest, working
-    /// container. Its element type, <see cref="Journal.SuppliedRecord"/>, is the half that is NOT yet
-    /// implemented; see that type's remarks. A document that never sets this property round-trips
-    /// through <see cref="JournalJson"/> unchanged whether or not <see cref="Journal.SuppliedRecord"/>
-    /// has been filled in, which is exactly the never-weaker guarantee this section must not regress.
+    /// Written only by <see cref="RunJournal.RecordSupplied"/>, after the commit it names exists: by the
+    /// run-start drain in <c>RunCommand</c>, by <c>Scheduler.DrainSuppliedAtTaskBoundary</c>, and by the
+    /// Scheduler's missing-resource auto-resolve (design 41, <c>by: "overwatcher"</c>).
     /// </para>
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -95,11 +93,8 @@ public sealed record JournalDocument
     /// backward-compatible on the same terms as <see cref="Supplied"/>: absent (never <c>null</c> noise) on
     /// a run that never refreshed, which is the overwhelming majority.
     /// <para>
-    /// This property is the STUB half of task <c>24-author-tests-refresh-provenance</c> — an honest,
-    /// working container, the exact shape of <see cref="Supplied"/> beside it. Its element type,
-    /// <see cref="Journal.RefreshedRecord"/>, is the half that is NOT yet implemented; see that type's
-    /// remarks. A document that never sets this property round-trips through <see cref="JournalJson"/>
-    /// unchanged whether or not <see cref="Journal.RefreshedRecord"/> has been filled in.
+    /// Written only by <see cref="RunJournal.RecordRefreshed"/>, after the refresh merge commit exists
+    /// (design 39 §1c).
     /// </para>
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -319,8 +314,9 @@ public sealed record DeliverySection
 public sealed record ForcedDeliveryRecord
 {
     /// <summary>
-    /// The overridden decision's token: <c>proceeded-best-guess</c> or <c>proceeded-unreviewed</c> — the
-    /// two <c>decisions[]</c> tokens that suppress delivery (<c>RunOutcomePolicy.SuppressingDecision</c>).
+    /// The overridden decision's token — a machine decision that suppresses delivery
+    /// (<c>RunOutcomePolicy.SuppressingDecision</c>): <c>proceeded-best-guess</c>, <c>proceeded-unreviewed</c>,
+    /// or <c>auto-supplied</c>.
     /// </summary>
     public required string Decision { get; init; }
 
