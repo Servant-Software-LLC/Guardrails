@@ -377,6 +377,8 @@ public interface IRunObserver
     /// </summary>
     void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit) { }
 
+    void SuppliedResourcesCommitted(IReadOnlyList<string> paths, string commit, string by) { }
+
     /// <summary>
     /// A task is WAITING on the git that builds its worktree (issue #722): the harness has dequeued it, the
     /// work named by <paramref name="operation"/> is running now, and its action has not started.
