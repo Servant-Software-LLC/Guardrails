@@ -27,7 +27,8 @@ public sealed record OverwatchProposal
     /// <para>Wire shape:
     /// <c>{ "classification": "doomed"|"retryable", "diagnosis": "...", "fixes": [ { "kind": "guidance",
     /// "guidance": "..." } | { "kind": "budget", "field": "maxTurns", "value": 40 } | { "kind":
-    /// "file-edit", "path": "..." } | { "kind": "task-field", "field": "writeScope" } ] }</c>.</para>
+    /// "file-edit", "path": "..." } | { "kind": "task-field", "field": "writeScope" } | { "kind":
+    /// "resource-supply", "path": "..." } ] }</c>.</para>
     /// </summary>
     public static OverwatchProposal? TryParse(string? resultText)
     {
@@ -131,6 +132,12 @@ public sealed record OverwatchProposal
                 return string.IsNullOrWhiteSpace(taskField)
                     ? null
                     : new OverwatchFixOp { Kind = OverwatchFixKind.TaskFieldEdit, TaskField = taskField };
+
+            case "resource-supply":
+                string? resourcePath = StringProp(fix, "path");
+                return string.IsNullOrWhiteSpace(resourcePath)
+                    ? null
+                    : new OverwatchFixOp { Kind = OverwatchFixKind.ResourceSupply, TargetPath = resourcePath };
 
             default:
                 return null;
