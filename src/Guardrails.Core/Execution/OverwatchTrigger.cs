@@ -43,6 +43,7 @@ public static class OverwatchTriggers
         OverwatchTrigger.DeterministicScript => "deterministic-script",
         OverwatchTrigger.PermissionWall => "permission-wall",
         OverwatchTrigger.TerminalExhaustion => "terminal-exhaustion",
+        OverwatchTrigger.MissingResource => "missing-resource",
         _ => throw new ArgumentOutOfRangeException(nameof(trigger), trigger, "Unhandled overwatch trigger.")
     };
 }
