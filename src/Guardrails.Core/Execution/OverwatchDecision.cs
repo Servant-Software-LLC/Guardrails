@@ -1,4 +1,3 @@
-using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
@@ -33,13 +32,6 @@ public sealed record OverwatchDecision
     /// </summary>
     public string? RichHaltSummary { get; init; }
 
-    /// <summary>
-    /// For <see cref="OverwatchDecisionKind.AutoResolve"/>: the workspace-relative paths the overwatcher
-    /// supplied via <see cref="OverwatchSupplyAutoResolve.Resolve"/> (design 40 §3/§4). Null for every
-    /// other kind.
-    /// </summary>
-    public IReadOnlyList<string>? AutoResolvedPaths { get; init; }
-
     /// <summary>The advisory no-op: the deterministic policy stands unchanged (no runner, cost cap hit, or a malformed/errored/absent proposal).</summary>
     public static OverwatchDecision NoAction { get; } = new() { Kind = OverwatchDecisionKind.NoAction };
 }
@@ -54,18 +46,7 @@ public enum OverwatchDecisionKind
     Halt,
 
     /// <summary>Grant one more attempt BECAUSE a sanctioned change (guidance / budget) was applied that materially alters it.</summary>
-    Grant,
-
-    /// <summary>
-    /// The overwatcher supplied an already-staged resource and re-armed the halted task itself — ONLY at
-    /// <c>dial:critical</c> (design 40 §3, <see cref="OverwatchSupplyAutoResolve"/>). Distinct from
-    /// <see cref="Grant"/>: a grant continues the SAME attempt with a sanctioned action-layer lever
-    /// (guidance/budget); an auto-resolve drains a supplied file onto the run's base — naming the
-    /// overwatcher as the <see cref="Journal.SuppliedRecord.By"/> supplier (design 40 §4) — and re-arms
-    /// the task for a FRESH attempt whose own guardrails still run in full, exactly as if a human had run
-    /// the three-command sequence themselves.
-    /// </summary>
-    AutoResolve
+    Grant
 }
 
 /// <summary>One certified supply: a candidate path, paired with the checkout commit its bytes are read at.</summary>
@@ -92,112 +73,127 @@ public sealed record SupplyCertification
 }
 
 /// <summary>
-/// Decides whether the overwatcher may AUTO-RESOLVE a needs-human halt caused by a missing supplied
-/// resource (design 40 §3) instead of merely proposing the fix. Gated at <c>dial:critical</c> — the SAME
-/// composition rule doc 12 §3.2 uses everywhere else the dial engages: <see cref="AutonomyPolicy.Auto"/>
-/// AND an <c>autonomy</c> block present (<paramref name="autonomyBlockPresent"/> below — the
-/// anti-Option-(c) guard also used by the auto-tier gate in <see cref="Overwatch"/>) AND
-/// <see cref="EscalationThreshold.Critical"/>. Below that composition, the resolve does nothing but
-/// propose the copy-pasteable three-command sequence (design 40 §3(b)) — it never drains the staging tree
-/// and never touches the journal.
+/// The deterministic certification gate for a missing-resource auto-resolve (design 41 §3.1):
+/// <see cref="Certify"/> either certifies every proposed <c>resource-supply</c> op — each paired with its
+/// own candidate's source sha — or refuses the WHOLE proposal with one reason token. There is no partial
+/// certification: a partial supply would re-arm a task that then halts again on the file it still does not
+/// have, spending money doing it.
 /// <para>
-/// <b>The caution the decision survives (design 40 §3).</b> Applying the fix is mechanical — draining
-/// <c>resourceSupply</c>'s already-staged file (<see cref="SuppliedDrain.Drain"/>) and recording it
-/// (<see cref="RunJournal.RecordSupplied"/>) reuse the SAME shipped machinery a human-driven
-/// <c>guardrails supply</c> uses. What is NOT mechanical, and what stays a human's call below
-/// <c>dial:critical</c>, is deciding that <c>resourceSupply</c>'s staged file really is the file the task
-/// needed — the caller is trusted to have made that match; this method only gates WHETHER to act on it.
+/// A PURE function: no git, no journal, no filesystem, no child process. Everything <see cref="Certify"/>
+/// decides on — the dial, the candidates, the proposal — was established by the harness before it ran, so
+/// there is nothing left for it to go and look up. That purity is what makes the gate trustworthy, and a
+/// guardrail enforces it mechanically by banning the run-recording and file-supplying machinery's own
+/// names, and any direct filesystem or process access, from this whole file.
+/// </para>
+/// <para>
+/// Gated at <c>dial:critical</c> — the SAME composition rule doc 12 §3.2 uses everywhere else the dial
+/// engages: <see cref="AutonomyPolicy.Auto"/> AND an <c>autonomy</c> block present (the anti-Option-(c)
+/// guard also used by the auto-tier gate in <see cref="Overwatch"/>) AND <see cref="GateThreshold.Effective"/>
+/// resolving to <see cref="EscalationThreshold.Critical"/>. Below that composition — or on any of the
+/// gate's other refusals — the caller proposes the copy-pasteable <c>supply</c>/<c>reset</c>/<c>run</c>
+/// sequence instead of acting on it (the halted task's own halt text is the single producer of that
+/// sequence).
 /// </para>
 /// </summary>
 public static class OverwatchSupplyAutoResolve
 {
-    /// <param name="policy">The run's <see cref="AutonomyPolicy"/>. Anything other than <see cref="AutonomyPolicy.Auto"/> keeps the dial inert (doc 12 §3.2).</param>
-    /// <param name="autonomyBlockPresent">Whether the run's config carries an explicit <c>autonomy</c> block — the anti-Option-(c) guard; a bare <c>auto</c> with no block keeps the dial inert.</param>
-    /// <param name="escalationThreshold">The run-wide dial (<c>plan.Config.Autonomy?.EscalationThreshold</c>). Only <see cref="EscalationThreshold.Critical"/> sanctions an auto-resolve.</param>
-    /// <param name="task">The halted task the resource is needed for.</param>
-    /// <param name="plan">The plan — supplies <c>Workspace</c>/<c>PlanDirectory</c> for the drain.</param>
-    /// <param name="journal">The run's journal — receives the §4 provenance record on an auto-resolve.</param>
-    /// <param name="resourceSupply">
-    /// The <see cref="OverwatchFixKind.ResourceSupply"/> fix naming the already-staged, already-matched
-    /// resource. The caller has already made the "is this the right file" judgement (design 40 §3); this
-    /// method only gates whether to act on it.
-    /// </param>
-    public static OverwatchDecision Resolve(
-        AutonomyPolicy policy,
-        bool autonomyBlockPresent,
-        EscalationThreshold? escalationThreshold,
-        TaskNode task,
-        PlanDefinition plan,
-        RunJournal journal,
-        OverwatchFixOp resourceSupply)
-    {
-        ArgumentNullException.ThrowIfNull(task);
-        ArgumentNullException.ThrowIfNull(plan);
-        ArgumentNullException.ThrowIfNull(journal);
-        ArgumentNullException.ThrowIfNull(resourceSupply);
-
-        bool atCritical =
-            policy == AutonomyPolicy.Auto
-            && autonomyBlockPresent
-            && escalationThreshold == EscalationThreshold.Critical;
-
-        if (atCritical)
-        {
-            SuppliedDrainResult drained = SuppliedDrain.Drain(
-                plan.Workspace, plan.PlanDirectory, journal.RunId, by: "overwatcher");
-
-            if (drained.CommitSha is { } commitSha)
-            {
-                journal.RecordSupplied(new SuppliedRecord
-                {
-                    At = DateTimeOffset.UtcNow,
-                    Commit = commitSha,
-                    Paths = drained.CommittedPaths,
-                    Bytes = drained.TotalBytes,
-                    By = "overwatcher"
-                });
-
-                return new OverwatchDecision
-                {
-                    Kind = OverwatchDecisionKind.AutoResolve,
-                    AutoResolvedPaths = drained.CommittedPaths
-                };
-            }
-        }
-
-        // Below dial:critical (or, at critical, nothing was actually staged to drain — never-weaker):
-        // propose the copy-pasteable three-command sequence rather than acting on it.
-        return new OverwatchDecision
-        {
-            Kind = OverwatchDecisionKind.Halt,
-            RichHaltSummary = ProposedSequenceFor(task, plan, resourceSupply)
-        };
-    }
-
     /// <summary>
     /// The deterministic gate (design 41 §3.1). A PURE function: no git, no journal, no filesystem.
-    /// A prompt may propose; only this may certify.
+    /// A prompt may propose; only this may certify. Checks run in order — each refusal token below is
+    /// observed only once every earlier check has passed:
+    /// <list type="number">
+    ///   <item><c>dial-not-critical</c>: <paramref name="policy"/> is <see cref="AutonomyPolicy.Auto"/>,
+    ///   <paramref name="autonomyBlockPresent"/>, and <see cref="GateThreshold.Effective"/> for
+    ///   <see cref="CriticalityGate.NeedsHuman"/> resolves to <see cref="EscalationThreshold.Critical"/>.</item>
+    ///   <item><c>proceed-unreviewed</c>: <c>gateThresholds.review-gate</c> is
+    ///   <see cref="ReviewGateDecision.ProceedUnreviewed"/>.</item>
+    ///   <item><c>doomed</c>: <paramref name="proposal"/> is absent, or is not
+    ///   <see cref="OverwatchClassification.Retryable"/>.</item>
+    ///   <item><c>no-resource-supply-op</c>: no <see cref="OverwatchFixKind.ResourceSupply"/> op is proposed.</item>
+    ///   <item><c>not-a-candidate</c>: some proposed path, after <c>/</c> and <c>./</c> normalization, matches no <paramref name="candidates"/> entry.</item>
+    ///   <item><c>duplicate-path</c>: some path is proposed twice.</item>
+    /// </list>
+    /// A pass certifies every proposed op, each paired with ITS CANDIDATE's source sha — never a sha the
+    /// proposal supplied; the model cannot contribute a fact about where bytes came from.
     /// </summary>
+    /// <param name="policy">The run's <see cref="AutonomyPolicy"/>. Anything other than <see cref="AutonomyPolicy.Auto"/> keeps the dial inert (doc 12 §3.2).</param>
+    /// <param name="autonomyBlockPresent">Whether the run's config carries an explicit <c>autonomy</c> block — the anti-Option-(c) guard; a bare <c>auto</c> with no block keeps the dial inert.</param>
+    /// <param name="autonomy">The run's autonomy block, or null when there is none — resolved via <see cref="GateThreshold.Effective"/>.</param>
+    /// <param name="candidates">The harness-computed candidates (design 41 §2.2) a proposed path must match.</param>
+    /// <param name="proposal">The overwatcher's diagnose proposal, or null when absent/unparseable.</param>
     public static SupplyCertification Certify(
         AutonomyPolicy policy,
         bool autonomyBlockPresent,
         AutonomyConfig? autonomy,
         IReadOnlyList<MissingResourceCandidate> candidates,
-        OverwatchProposal? proposal) => throw new NotImplementedException();
-
-    /// <summary>
-    /// The copy-pasteable three-command sequence design 40 §3(b) decided: the operator runs the SAME
-    /// <c>supply</c> / <c>reset</c> / <c>run</c> steps the auto-resolve above performs mechanically.
-    /// </summary>
-    private static string ProposedSequenceFor(TaskNode task, PlanDefinition plan, OverwatchFixOp resourceSupply)
+        OverwatchProposal? proposal)
     {
-        string folder = Path.GetFileName(
-            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        ArgumentNullException.ThrowIfNull(candidates);
 
-        return
-            "Below dial:critical the overwatcher only proposes this fix — apply it yourself:\n" +
-            $"  guardrails supply {folder} {resourceSupply.TargetPath}\n" +
-            $"  guardrails reset {folder} {task.Id}\n" +
-            $"  guardrails run {folder}";
+        bool dialCritical =
+            policy == AutonomyPolicy.Auto
+            && autonomyBlockPresent
+            && GateThreshold.Effective(autonomy, CriticalityGate.NeedsHuman) == EscalationThreshold.Critical;
+        if (!dialCritical)
+        {
+            return Refuse("dial-not-critical");
+        }
+
+        if (autonomy?.GateThresholds?.ReviewGate == ReviewGateDecision.ProceedUnreviewed)
+        {
+            return Refuse("proceed-unreviewed");
+        }
+
+        if (proposal is null || proposal.Classification != OverwatchClassification.Retryable)
+        {
+            return Refuse("doomed");
+        }
+
+        List<string> proposedPaths = proposal.Fixes
+            .Where(fix => fix.Kind == OverwatchFixKind.ResourceSupply)
+            .Select(fix => NormalizePath(fix.TargetPath ?? ""))
+            .ToList();
+
+        if (proposedPaths.Count == 0)
+        {
+            return Refuse("no-resource-supply-op");
+        }
+
+        Dictionary<string, MissingResourceCandidate> byPath = candidates.ToDictionary(c => c.Path);
+
+        foreach (string path in proposedPaths)
+        {
+            if (!byPath.ContainsKey(path))
+            {
+                return Refuse("not-a-candidate");
+            }
+        }
+
+        if (proposedPaths.Distinct(StringComparer.Ordinal).Count() != proposedPaths.Count)
+        {
+            return Refuse("duplicate-path");
+        }
+
+        List<CertifiedSupply> supplies = proposedPaths
+            .Select(path => byPath[path])
+            .Select(candidate => new CertifiedSupply { Path = candidate.Path, SourceCommit = candidate.SourceCommit })
+            .ToList();
+
+        return new SupplyCertification { Certified = true, Reason = null, Supplies = supplies };
+    }
+
+    private static SupplyCertification Refuse(string reason) =>
+        new() { Certified = false, Reason = reason, Supplies = [] };
+
+    /// <summary>Normalize backslashes to <c>/</c> and strip a leading <c>./</c> before matching a candidate.</summary>
+    private static string NormalizePath(string path)
+    {
+        string normalized = path.Replace('\\', '/');
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+        {
+            normalized = normalized[2..];
+        }
+
+        return normalized;
     }
 }

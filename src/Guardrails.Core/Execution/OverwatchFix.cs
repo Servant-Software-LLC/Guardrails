@@ -50,11 +50,12 @@ public enum OverwatchFixKind
     TaskFieldEdit,
 
     /// <summary>
-    /// Supply an already-staged resource (design 40 §3) rather than edit an authored file — the judge
-    /// names the workspace-relative path (<see cref="OverwatchFixOp.TargetPath"/>) it believes the
-    /// operator has already staged via <c>guardrails supply</c>. Never routed onto the guidance/budget
-    /// allowlist by <see cref="OverwatchFixClassifier"/>; gated at <c>dial:critical</c> by
-    /// <see cref="OverwatchSupplyAutoResolve"/> instead.
+    /// Supply a resource from the operator checkout (design 41 §3) rather than edit an authored file —
+    /// the judge names the workspace-relative path (<see cref="OverwatchFixOp.TargetPath"/>) it believes
+    /// resolves the halted task's missing-resource question. The source is never a staged file: it is the
+    /// path as committed at the operator checkout's <c>HEAD</c>, one of the harness-computed candidates.
+    /// Never routed onto the guidance/budget allowlist by <see cref="OverwatchFixClassifier"/>; certified
+    /// at <c>dial:critical</c> by <see cref="OverwatchSupplyAutoResolve"/> instead.
     /// </summary>
     ResourceSupply
 }
@@ -82,7 +83,7 @@ public sealed record OverwatchFixOp
     /// <summary>
     /// For <see cref="OverwatchFixKind.FileEdit"/>: the target path (workspace/plan-relative or absolute)
     /// the judge would edit. For <see cref="OverwatchFixKind.ResourceSupply"/>: the workspace-relative
-    /// path of the resource the judge believes is already staged.
+    /// path of the resource the judge believes resolves the halted task's missing-resource question.
     /// </summary>
     public string? TargetPath { get; init; }
 
