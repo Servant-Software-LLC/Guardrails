@@ -12,13 +12,19 @@ namespace Guardrails.Core.Tests.Supply;
 /// ACTUAL git repository rather than faking the seam. A faked git would prove nothing about the thing
 /// this class exists to do.
 /// <para>
-/// TDD red: <see cref="SuppliedDrain.Drain"/> currently throws <see cref="NotImplementedException"/>, so
-/// every test below is expected to FAIL against the stub. Do not add
-/// <c>Assert.Throws&lt;NotImplementedException&gt;</c> wrappers — that would make these pass against the
-/// stub, which defeats the point of pinning them red.
+/// TDD red: <see cref="SuppliedDrain.Drain"/> is fully implemented already, and its five
+/// <c>Drain_*</c> tests below are GREEN on this base. The red member here is
+/// <see cref="SuppliedDrain.CommitPaths"/>, which currently throws
+/// <see cref="NotImplementedException"/> — every <c>CommitPaths_*</c> test is expected to FAIL against
+/// that stub. Do not add <c>Assert.Throws&lt;NotImplementedException&gt;</c> wrappers around those calls
+/// — that would make them pass against the stub, which defeats the point of pinning them red.
+/// <see cref="Drain_CommitsOnlyTheStagedFiles_WhenAnUnrelatedFileIsStaged"/> is also red, but for a
+/// different reason: it is a real defect in today's fully-implemented <see cref="SuppliedDrain.Drain"/>,
+/// which commits with no pathspec at all, so an unrelated staged file rides along under the supplier's
+/// name.
 /// </para>
 /// </summary>
-[Trait("Category", "Supply")]
+[Trait("Category", "OverwatchSupply")]
 public sealed class SuppliedDrainTests : IDisposable
 {
     private readonly TempGitRepo _repo = new();
@@ -132,6 +138,113 @@ public sealed class SuppliedDrainTests : IDisposable
         Assert.Equal(_repo.HeadSha(), result.CommitSha);
     }
 
+    [Fact]
+    public void Drain_CommitsOnlyTheStagedFiles_WhenAnUnrelatedFileIsStaged()
+    {
+        // The same protection §5 gives CommitPaths, proven here for the OPERATOR path — this is why
+        // task 11 refactors Drain to go through CommitPaths rather than leaving two commit mechanisms.
+        // RED against today's fully-implemented Drain: it commits with no pathspec at all, so an
+        // operator's half-staged work rides along under the supplier's name.
+        Stage("R", "vendor/x.js", "export const ok = true;");
+        _repo.WriteFile("unrelated-staged.txt", "unrelated");
+        _repo.Git("add", "unrelated-staged.txt");
+
+        SuppliedDrain.Drain(_repo.RepoPath, _planDirectory, "R", "operator");
+
+        string[] committedFiles = _repo.Git("show", "--name-only", "--format=", "HEAD")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(["vendor/x.js"], committedFiles);
+    }
+
+    // ── CommitPaths ───────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void CommitPaths_CommitsOnlyItsPathspec_WhenAnUnrelatedFileIsStaged()
+    {
+        // The headline property: the explicit pathspec is the point — nothing else left in the index
+        // rides along under the supplier's name.
+        _repo.WriteFile("unrelated-staged.txt", "unrelated");
+        _repo.Git("add", "unrelated-staged.txt");
+        _repo.WriteFile("vendor/x.js", "export const ok = true;");
+
+        SuppliedDrain.CommitPaths(_repo.RepoPath, "R", "operator", ["vendor/x.js"]);
+
+        string[] committedFiles = _repo.Git("show", "--name-only", "--format=", "HEAD")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(["vendor/x.js"], committedFiles);
+        Assert.Contains("unrelated-staged.txt", _repo.Status());
+    }
+
+    [Theory]
+    [InlineData("operator")]
+    [InlineData("overwatcher")]
+    [InlineData("task:03-author-tests-drain")]
+    public void CommitPaths_CommitsWithTheSuppliedByTrailer(string by)
+    {
+        // Mirrors Drain_CommitsWithTheSuppliedByTrailer: the trailer's VALUE is whatever `by` names,
+        // never the fixed string "Supplied-By-Operator".
+        _repo.WriteFile("vendor/x.js", "content");
+
+        SuppliedDrain.CommitPaths(_repo.RepoPath, "R", by, ["vendor/x.js"]);
+
+        string message = _repo.LastCommitMessage();
+        Assert.Contains($"Supplied-By: {by}", message);
+        Assert.Contains("Guardrails-Run: R", message);
+        Assert.DoesNotContain("Supplied-By-Operator", message);
+    }
+
+    [Fact]
+    public void CommitPaths_ReturnsTheCommittedPathsBytesAndCommitSha()
+    {
+        _repo.WriteFile("vendor/x.js", "12345");   // 5 bytes
+        _repo.WriteFile("docs/notes.md", "123");   // 3 bytes
+
+        SuppliedDrainResult result = SuppliedDrain.CommitPaths(
+            _repo.RepoPath, "R", "operator", ["vendor/x.js", "docs/notes.md"]);
+
+        Assert.Equal(["vendor/x.js", "docs/notes.md"], result.CommittedPaths);
+        Assert.Equal(8L, result.TotalBytes);
+        Assert.Equal(_repo.HeadSha(), result.CommitSha);
+    }
+
+    [Fact]
+    public void CommitPaths_OnAnEmptyPathList_MakesNoCommit()
+    {
+        // The never-weaker row, matching Drain's own empty-staging-tree guarantee.
+        string before = _repo.HeadSha();
+
+        SuppliedDrainResult result = SuppliedDrain.CommitPaths(_repo.RepoPath, "R", "operator", []);
+
+        Assert.Equal(before, _repo.HeadSha());
+        Assert.Empty(result.CommittedPaths);
+        Assert.Equal(0L, result.TotalBytes);
+        Assert.Null(result.CommitSha);
+    }
+
+    [Fact]
+    public void CommitPaths_WhenTheCommitFails_ResetsHardToThePreCommitHead()
+    {
+        // Make the failure happen at the COMMIT step, not the `add` step: commit vendor/x.js, then call
+        // CommitPaths for that SAME path with its content UNCHANGED while an unrelated modification sits
+        // staged in the index. `git add` exits 0 (nothing to stage), but
+        // `git commit --no-verify -m … -- vendor/x.js` exits 1 with "no changes added to commit".
+        _repo.WriteFile("vendor/x.js", "content");
+        _repo.Git("add", "vendor/x.js");
+        _repo.Git("commit", "-m", "seed vendor/x.js");
+        string preCallSha = _repo.HeadSha();
+
+        _repo.WriteFile("README.md", "# fixture repo\nmodified");
+        _repo.Git("add", "README.md");
+
+        Assert.Throws<InvalidOperationException>(() =>
+            SuppliedDrain.CommitPaths(_repo.RepoPath, "R", "operator", ["vendor/x.js"]));
+
+        Assert.Equal(preCallSha, _repo.HeadSha());
+        // The only assertion that can see the reset --hard actually ran: the unrelated staged
+        // modification to README.md is gone, not just left uncommitted.
+        Assert.Equal(string.Empty, _repo.Status().Trim());
+    }
+
     // ── a real git repository, not a fake of one ─────────────────────────────────────────────────────
 
     /// <summary>
@@ -176,7 +289,26 @@ public sealed class SuppliedDrainTests : IDisposable
 
         internal string LastCommitMessage() => Git("log", "-1", "--format=%B");
 
-        private string Git(params string[] arguments)
+        /// <summary>
+        /// Write a file at <paramref name="workspaceRelativePath"/>, creating its parent directory
+        /// first — git PRUNES a now-empty parent on Git-for-Windows, so a later write into it throws.
+        /// </summary>
+        internal void WriteFile(string workspaceRelativePath, string content)
+        {
+            string path = Path.Combine(RepoPath, workspaceRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, content);
+        }
+
+        /// <summary>
+        /// <c>git reset --hard</c> — NEVER <c>git merge --abort</c>, which exits 128 on a dirtied
+        /// tracked path rather than actually discarding it.
+        /// </summary>
+        internal void ResetHard(string commitish) => Git("reset", "--hard", commitish);
+
+        internal string Status() => Git("status", "--porcelain");
+
+        internal string Git(params string[] arguments)
         {
             var psi = new ProcessStartInfo("git")
             {
