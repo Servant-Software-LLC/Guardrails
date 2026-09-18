@@ -564,7 +564,69 @@ public sealed class OverwatchSupplyAutoResolveWiringTests
                 WriteExecutable(Path.Combine(taskDir, "guardrails", "01-check.sh"), "#!/usr/bin/env bash\nexit 0\n");
             }
 
+            // Nothing depends on this task, and nothing depends on 01-operator-commits either, so adding
+            // it gives the plan TWO leaves (03-downstream and 04-owns-vendor) instead of one chain. That
+            // is a parallel topology, and GR2028 then REQUIRES the terminal '<plan>/guardrails/' folder to
+            // carry a real integration re-run. Without one the plan fails VALIDATION, the run exits before
+            // RunJournal.LoadOrCreateForRun ever writes state/run.json, and this test dies reading a
+            // journal that was never created — a failure that reads as "the wiring is broken".
+            WriteTerminalUnionGate();
+
             return this;
+        }
+
+        /// <summary>
+        /// The GR2028 terminal gate, needed only once a test gives the plan a parallel topology (today
+        /// only <see cref="AddIndependentOwnerTask"/> does). A conflict-marker scan is the accepted
+        /// union-invariant form for a plan with no toolchain to invoke, and is the canonical shape used by
+        /// this repo's own union-safe guardrails. It deliberately is NOT a tautological <c>exit 0</c> —
+        /// that is the precise thing GR2028 rejects.
+        /// </summary>
+        private void WriteTerminalUnionGate()
+        {
+            string gateDir = Path.Combine(PlanDir, "guardrails");
+            Directory.CreateDirectory(gateDir);
+
+            if (Windows)
+            {
+                File.WriteAllText(
+                    Path.Combine(gateDir, "01-union-conflict-marker-free.ps1"),
+                    """
+                    # catches: a merge that left git conflict markers in the union, or dropped a
+                    #          contribution entirely - the terminal union-soundness boundary GR2028
+                    #          requires once this plan has more than one leaf.
+                    $failures = @()
+                    foreach ($f in @('02-done.txt', 'vendor/resource.js')) {
+                        if (-not (Test-Path $f)) { continue }
+                        $content = Get-Content -Raw -Path $f
+                        if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
+                            $failures += "$f contains git conflict markers - the union did not cleanly integrate"
+                        }
+                    }
+                    if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Output $_ }; exit 1 }
+                    exit 0
+                    """);
+            }
+            else
+            {
+                WriteExecutable(
+                    Path.Combine(gateDir, "01-union-conflict-marker-free.sh"),
+                    """
+                    #!/usr/bin/env bash
+                    # catches: a merge that left git conflict markers in the union, or dropped a
+                    #          contribution entirely - the terminal union-soundness boundary GR2028
+                    #          requires once this plan has more than one leaf.
+                    rc=0
+                    for f in 02-done.txt vendor/resource.js; do
+                      [ -f "$f" ] || continue
+                      if grep -qE '^<<<<<<<' "$f" || grep -qE '^>>>>>>>' "$f"; then
+                        echo "$f contains git conflict markers - the union did not cleanly integrate"
+                        rc=1
+                      fi
+                    done
+                    exit $rc
+                    """);
+            }
         }
 
         /// <summary>N1: the resource is committed onto master BEFORE the run — so the integration branch,
