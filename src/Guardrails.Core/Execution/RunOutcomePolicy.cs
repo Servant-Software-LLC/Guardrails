@@ -54,9 +54,16 @@ public static class RunOutcomePolicy
     /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
     /// <returns>The first <c>proceeded-best-guess</c> / <c>proceeded-unreviewed</c> entry, else null.</returns>
     public static DecisionEntry? SuppressingDecision(IEnumerable<DecisionEntry> decisions) =>
-        decisions.FirstOrDefault(d =>
-            d.Decision == DecisionTokens.ProceededBestGuess ||
-            d.Decision == DecisionTokens.ProceededUnreviewed);
+        decisions.FirstOrDefault(HoldsDelivery);
+
+    /// <summary>
+    /// THE delivery-interlock token set, spelled ONCE (design 41 §6, fact 11). Both
+    /// <see cref="SuppressingDecision"/> (run end) and <see cref="SuppressingDecisionForDelivery"/> (every wave
+    /// barrier) are defined in terms of it, so a new suppressing token cannot be added to one spelling and
+    /// missed by the other. Task 07 implements it: true for <c>proceeded-best-guess</c>,
+    /// <c>proceeded-unreviewed</c> and <c>auto-supplied</c>; false for every other token.
+    /// </summary>
+    private static bool HoldsDelivery(DecisionEntry decision) => throw new NotImplementedException();
 
     /// <summary>
     /// The delivery-scoped counterpart of <see cref="SuppressingDecision"/> (design 39 §1a/§1b, review round
@@ -81,10 +88,7 @@ public static class RunOutcomePolicy
     /// <returns>The first suppressing entry whose wave is covered (or unattributed), else null.</returns>
     public static DecisionEntry? SuppressingDecisionForDelivery(
         IEnumerable<DecisionEntry> decisions, IReadOnlyCollection<string> coveredWaves) =>
-        decisions.FirstOrDefault(d =>
-            (d.Decision == DecisionTokens.ProceededBestGuess ||
-             d.Decision == DecisionTokens.ProceededUnreviewed) &&
-            (d.Wave is null || coveredWaves.Contains(d.Wave)));
+        decisions.FirstOrDefault(d => HoldsDelivery(d) && (d.Wave is null || coveredWaves.Contains(d.Wave)));
 
     /// <summary>
     /// True when <see cref="SuppressingDecisionForDelivery"/> finds a decision that holds this delivery —
