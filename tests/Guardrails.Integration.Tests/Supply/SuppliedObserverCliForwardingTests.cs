@@ -185,7 +185,7 @@ public sealed class SuppliedObserverCliForwardingTests
         // Design 41 §6's exact wording — an operator greps for this literal.
         Assert.Contains("[supplied] by overwatcher:", output);
         Assert.Contains(
-            "[supplied] by overwatcher: 1 resource(s) committed a1b2c3d4: "
+            "[supplied] by overwatcher: 2 resource(s) committed a1b2c3d4: "
             + "vendor/mermaid.min.js, vendor/plugin.js",
             output);
     }
