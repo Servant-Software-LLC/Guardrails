@@ -1,3 +1,5 @@
+using System.CommandLine;
+using Guardrails.Cli;
 using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 
@@ -34,7 +36,7 @@ namespace Guardrails.Integration.Tests.Supply;
 /// tests.
 /// </para>
 /// </summary>
-[Trait("Category", "Supply")]
+[Trait("Category", "OverwatchSupply")]
 public sealed class SuppliedHaltTextTests
 {
     private const string TaskId = "02-vendor-mermaid-runtime";
@@ -44,6 +46,34 @@ public sealed class SuppliedHaltTextTests
     private const string MissingFileQuestion =
         MissingFilePath + " is committed to master but is not an ancestor of this run's branch " +
         "lineage; the task cannot proceed without it.";
+
+    // Design 41 §2.1 — a second missing path in the same question, to pin the shared predicate's
+    // "every token, not only the first" behaviour.
+    private const string SecondMissingFilePath = "assets/icons/logo.svg";
+
+    private const string TwoMissingFilesQuestion =
+        MissingFilePath + " and " + SecondMissingFilePath + " are committed to master but neither is " +
+        "an ancestor of this run's branch lineage; the task cannot proceed without them.";
+
+    // A leading "./" — the form the domain-knowledge skill tells agents to use so a root-level file
+    // matches at all (design 41 §2.1) — must be normalized away in the emitted command.
+    private const string DotSlashFilePath = "./mermaid.min.js";
+
+    private const string DotSlashFileQuestion =
+        DotSlashFilePath + " is committed to master but is not an ancestor of this run's branch " +
+        "lineage; the task cannot proceed without it.";
+
+    // A scoped npm package segment containing '@' — today's regex excludes it and matches a truncated
+    // interior substring instead of the whole path (design 41 §2.1).
+    private const string ScopedNodeModulesPath = "node_modules/@scope/x/index.js";
+
+    private const string ScopedNodeModulesQuestion =
+        ScopedNodeModulesPath + " is committed to master but is not an ancestor of this run's branch " +
+        "lineage; the task cannot proceed without it.";
+
+    // The task whose DecisionEntry suppressed delivery in the design 41 §6 banner tests below — distinct
+    // from TaskId (the halted task in the MissingResourceHalt_* tests above) to keep the two scenarios apart.
+    private const string SuppressingTaskId = "07-vendor-mermaid-runtime";
 
     private static readonly string PlanDirectory = Path.Combine("docs", "plans", "40-demo-plan");
     private static readonly string LogsRoot = Path.Combine(PlanDirectory, "logs", RunId);
@@ -88,6 +118,115 @@ public sealed class SuppliedHaltTextTests
         Assert.Contains(TaskId, resetLine, StringComparison.Ordinal);
 
         Assert.Contains(PlanDirectory, runLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingResourceHalt_ForASinglePlainPath_IsUnchanged()
+    {
+        // Design 41 §2.1's never-weaker requirement, asserted directly (not via containment): a question
+        // naming exactly one ordinary path renders the SAME three commands, with the same arguments, as
+        // today's private-regex implementation. The shared predicate is allowed to match MORE than today,
+        // never to change what it already got right.
+        string rendered = RenderOne(Halt(MissingFileQuestion, NeedsHumanKinds.BlockedWork));
+
+        string supplyLine = LineContaining(rendered, "guardrails supply");
+        string resetLine = LineContaining(rendered, "guardrails reset");
+        string runLine = LineContaining(rendered, "guardrails run");
+
+        Assert.Equal($"    guardrails supply {PlanDirectory} {MissingFilePath}", supplyLine);
+        Assert.Equal($"    guardrails reset {PlanDirectory} {TaskId}", resetLine);
+        Assert.Equal($"    guardrails run {PlanDirectory}", runLine);
+    }
+
+    [Fact]
+    public void MissingResourceHalt_NamesEveryPathTheQuestionNames()
+    {
+        // Design 41 §2.1: the shared predicate returns EVERY token in the question, not only the first.
+        // Today's private regex takes Match.Value (the first match only), so the second file is invisible
+        // and the operator supplies half of what the task needs.
+        string rendered = RenderOne(Halt(TwoMissingFilesQuestion, NeedsHumanKinds.BlockedWork));
+
+        string supplyLine = LineContaining(rendered, "guardrails supply");
+        Assert.Contains(MissingFilePath, supplyLine, StringComparison.Ordinal);
+        Assert.Contains(SecondMissingFilePath, supplyLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingResourceHalt_NormalizesALeadingDotSlash_ForARootLevelFile()
+    {
+        // Design 41 §2.1: a leading "./" is normalized away, so an agent writing "./mermaid.min.js" (the
+        // form the domain-knowledge skill tells agents to use so a root-level file matches at all) yields
+        // the token "mermaid.min.js" — the emitted command must not carry the leading "./".
+        string rendered = RenderOne(Halt(DotSlashFileQuestion, NeedsHumanKinds.BlockedWork));
+
+        string supplyLine = LineContaining(rendered, "guardrails supply");
+        Assert.Contains("mermaid.min.js", supplyLine, StringComparison.Ordinal);
+        Assert.DoesNotContain(DotSlashFilePath, supplyLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingResourceHalt_MatchesAScopedNodeModulesPath_Whole()
+    {
+        // Design 41 §2.1: a segment may contain '@', so a scoped npm package path is matched WHOLE. Today's
+        // regex excludes '@' and matches a truncated interior substring, so the printed command points at a
+        // path that does not exist — a wrong answer, not a missing one.
+        string rendered = RenderOne(Halt(ScopedNodeModulesQuestion, NeedsHumanKinds.BlockedWork));
+
+        string supplyLine = LineContaining(rendered, "guardrails supply");
+        Assert.Contains(ScopedNodeModulesPath, supplyLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UndeliveredWorkBanner_ForAMachineDecision_DoesNotCallItABestGuess()
+    {
+        // Design 41 §6: with auto-supplied joining the shared delivery-interlock token set, the banner must
+        // stop calling every suppressing decision a "best guess" — today's JUDGE THE DECISION FIRST line is
+        // unconditional prose that names no token.
+        RunReport report = new()
+        {
+            Tasks = [],
+            WhollyGreenButUndelivered = true,
+            DeliverySuppressingDecision = AutoSuppliedDecision()
+        };
+
+        string rendered = RenderBanner(report);
+
+        Assert.DoesNotContain("A best-guess", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UndeliveredWorkBanner_NamesTheAutoSuppliedDecisionAndItsTask()
+    {
+        // Green on the base: the banner already interpolates suppressing.Decision / suppressing.Subject
+        // rather than enumerating tokens (issue #597), so this stays true once auto-supplied joins the set.
+        RunReport report = new()
+        {
+            Tasks = [],
+            WhollyGreenButUndelivered = true,
+            DeliverySuppressingDecision = AutoSuppliedDecision()
+        };
+
+        string rendered = RenderBanner(report);
+
+        Assert.Contains(DecisionTokens.AutoSupplied, rendered, StringComparison.Ordinal);
+        Assert.Contains(SuppressingTaskId, rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MergeOnSuccessOption_DescribesAMachineDecision_WithoutEnumeratingOnlyTheTwoTokens()
+    {
+        // Design 41 §6: a third token (auto-supplied) joins the delivery-interlock set, so the option
+        // description's two-token enumeration and its "two cases" tail are false. Read through the real
+        // command surface, not a re-declared literal — task 16 owns the prose.
+        var io = new StringConsoleIo();
+        Command command = RunCommand.Create(io, TelemetryOverrides.None);
+        Option mergeOnSuccessOption = command.Options.Single(o => o.Name == "--merge-on-success");
+        string description = mergeOnSuccessOption.Description ?? "";
+
+        Assert.Contains("machine decision", description, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "proceeded-best-guess / proceeded-unreviewed", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("only for those two cases", description, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -137,6 +276,22 @@ public sealed class SuppliedHaltTextTests
     }
 
     private static string RenderOne(TaskResult result) => Render([result], _ => null);
+
+    private static string RenderBanner(RunReport report)
+    {
+        using var writer = new StringWriter { NewLine = "\n" };
+        RunCommand.RenderUndeliveredWorkWarning(report, terminalGatePassed: true, PlanDirectory, writer);
+        return writer.ToString();
+    }
+
+    private static DecisionEntry AutoSuppliedDecision() => new()
+    {
+        Boundary = "task",
+        Policy = "auto",
+        Decision = DecisionTokens.AutoSupplied,
+        Subject = SuppressingTaskId,
+        Headline = $"Missing resource auto-supplied on the plan branch for {SuppressingTaskId}"
+    };
 
     private static string LineContaining(string rendered, string token)
     {
