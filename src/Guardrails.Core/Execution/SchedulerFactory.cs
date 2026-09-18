@@ -45,6 +45,24 @@ public static class SchedulerFactory
         IRunObserver observer,
         IOverwatchInteraction? overwatchInteraction = null)
     {
+        Overwatch? overwatch = BuildOverwatch(plan, processRunner, overwatchInteraction);
+        return CreateExecutor(plan, processRunner, probe, observer, overwatch);
+    }
+
+    /// <summary>
+    /// Design 41 §4/§7: the internal overload <see cref="Create"/> calls with the ONE <see cref="Overwatch"/>
+    /// it built (issue #712's seam) — never a second one — so the same instance drives both the
+    /// <see cref="TaskExecutor"/> and the <see cref="Scheduler"/>'s missing-resource auto-resolve. The public
+    /// overload above builds its own (for the re-validate-only caller, which has no Scheduler to share it
+    /// with) and delegates here so both paths share one construction.
+    /// </summary>
+    internal static (TaskExecutor Executor, RunJournal Journal) CreateExecutor(
+        PlanDefinition plan,
+        ProcessRunner processRunner,
+        IExecutableProbe probe,
+        IRunObserver observer,
+        Overwatch? overwatch)
+    {
         var stateManager = new StateManager(plan.PlanDirectory);
         stateManager.Initialize();
 
@@ -57,33 +75,42 @@ public static class SchedulerFactory
         var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
-        // #269 overwatcher (SSOT §9.2, doc 11): the active AI supervisor that SUBSUMES the shipped
-        // one-shot needs-human triage (now its §9.2.1 terminal-exhaustion case) and adds the eager /
-        // short-circuit / permission-wall triggers. The diagnose core is ON by default: it fires whenever
-        // an overwatch-capable prompt runner resolves — the reserved `overwatch` profile for the eager/
-        // short-circuit diagnose, the reserved `ai-triage` profile for the terminal case (each resolved
-        // with fallback to the default/sole runner). A script-only plan that declares NO prompt runner at
-        // all leaves the whole component null — no overwatcher, never a crash. The interaction seam defaults
-        // to non-interactive (honest halt): the v1 production posture (mid-run TTY confirm is a v2 UX bet).
-        Overwatch? overwatch = null;
-        IPromptRunner? diagnoseRunner = ResolveOverwatchRunner(registry);
-        IPromptRunner? triageRunner = ResolveTriageRunner(registry);
-        if (diagnoseRunner is not null || triageRunner is not null)
-        {
-            NeedsHumanTriage? triage = triageRunner is not null
-                ? new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile)
-                : null;
-            // The auto-tier gate (issue #361 Phase 4, doc 12 §9 Phase 4) engages ONLY when the plan carries an
-            // explicit `autonomy` block — NOT on `autonomyPolicy: auto` alone (the anti-Option-(c) guard). Pass
-            // block-presence so a bare `auto` still degrades to prompt, byte-identical to today.
-            overwatch = new Overwatch(
-                diagnoseRunner, triage, plan.Config.AutonomyPolicy,
-                overwatchInteraction ?? IOverwatchInteraction.NonInteractive,
-                autonomyBlockPresent: plan.Config.Autonomy is not null);
-        }
-
         var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch);
         return (executor, journal);
+    }
+
+    /// <summary>
+    /// #269 overwatcher (SSOT §9.2, doc 11): the active AI supervisor that SUBSUMES the shipped one-shot
+    /// needs-human triage (now its §9.2.1 terminal-exhaustion case) and adds the eager / short-circuit /
+    /// permission-wall / design-41 missing-resource triggers. The diagnose core is ON by default: it fires
+    /// whenever an overwatch-capable prompt runner resolves — the reserved <c>overwatch</c> profile for the
+    /// eager/short-circuit/missing-resource diagnose, the reserved <c>ai-triage</c> profile for the terminal
+    /// case (each resolved with fallback to the default/sole runner). A script-only plan that declares NO
+    /// prompt runner at all leaves the whole component null — no overwatcher, never a crash. The interaction
+    /// seam defaults to non-interactive (honest halt): the v1 production posture (mid-run TTY confirm is a
+    /// v2 UX bet).
+    /// </summary>
+    private static Overwatch? BuildOverwatch(
+        PlanDefinition plan, ProcessRunner processRunner, IOverwatchInteraction? overwatchInteraction)
+    {
+        PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
+        IPromptRunner? diagnoseRunner = ResolveOverwatchRunner(registry);
+        IPromptRunner? triageRunner = ResolveTriageRunner(registry);
+        if (diagnoseRunner is null && triageRunner is null)
+        {
+            return null;
+        }
+
+        NeedsHumanTriage? triage = triageRunner is not null
+            ? new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile)
+            : null;
+        // The auto-tier gate (issue #361 Phase 4, doc 12 §9 Phase 4) engages ONLY when the plan carries an
+        // explicit `autonomy` block — NOT on `autonomyPolicy: auto` alone (the anti-Option-(c) guard). Pass
+        // block-presence so a bare `auto` still degrades to prompt, byte-identical to today.
+        return new Overwatch(
+            diagnoseRunner, triage, plan.Config.AutonomyPolicy,
+            overwatchInteraction ?? IOverwatchInteraction.NonInteractive,
+            autonomyBlockPresent: plan.Config.Autonomy is not null);
     }
 
     /// <summary>Build a ready-to-run scheduler for <paramref name="plan"/>.</summary>
@@ -120,7 +147,10 @@ public static class SchedulerFactory
         string? junctionRoot = null,
         WorktreeModeResolution? worktreeMode = null)
     {
-        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatchInteraction);
+        // Design 41 §4/§7: build the ONE Overwatch here and hand it to both CreateExecutor (which wires it
+        // into the TaskExecutor, unchanged) and the Scheduler (below) — never a second instance.
+        Overwatch? overwatch = BuildOverwatch(plan, processRunner, overwatchInteraction);
+        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatch);
 
         // The re-verifier (attempt-decoupled guardrail runner) is wired UNCONDITIONALLY — non-null in
         // BOTH serial and worktree mode. Its only caller today (the per-union re-verify) fires only in
@@ -235,7 +265,8 @@ public static class SchedulerFactory
             breakdownConfirmations: breakdownConfirmations,
             escalationSink: escalationSink,
             criticalityJudge: criticalityJudge,
-            blockerRetry: blockerRetry);
+            blockerRetry: blockerRetry,
+            overwatch: overwatch);
     }
 
     /// <summary>

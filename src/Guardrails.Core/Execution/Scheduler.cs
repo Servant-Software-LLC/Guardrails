@@ -80,6 +80,12 @@ public sealed class Scheduler
     private readonly CriticalityJudge? _criticalityJudge;
     private readonly BlockerRetry? _blockerRetry;
 
+    // Design 41 §4/§7: the SAME Overwatch instance SchedulerFactory hands to the TaskExecutor (issue
+    // #712's seam) — never a second one. Drives the missing-resource auto-resolve's propose step
+    // (TryAutoResolveMissingResourceAsync). Null exactly when the factory built no overwatcher at all (a
+    // script-only plan with no prompt runner), in which case the auto-resolve stops at "no-runner".
+    private readonly Overwatch? _overwatch;
+
     // #361 Phase 3 (doc 12 §4.1/§7.4): the reply channel's in-run handoff. A below-threshold judgment call
     // records a best-guess (ActOnJudgmentCallAsync) whose text must reach the NEXT attempt's composed prompt —
     // but the executor terminates a needs-human short-circuit WITHOUT retrying, so the Scheduler re-drives one
@@ -134,7 +140,8 @@ public sealed class Scheduler
         CriticalityJudge? criticalityJudge = null,
         BlockerRetry? blockerRetry = null,
         Func<TimeSpan, CancellationToken, Task>? providerWaitDelay = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        Overwatch? overwatch = null)
     {
         _plan = plan;
         _executor = executor;
@@ -150,6 +157,7 @@ public sealed class Scheduler
         _escalationSink = escalationSink;
         _criticalityJudge = criticalityJudge;
         _blockerRetry = blockerRetry;
+        _overwatch = overwatch;
         // #511 seams: the barrier's provider wait is gated deterministically in tests (no real sleeps) and
         // its reset-hint resolution needs a fixed clock, exactly as the task door's does.
         _providerWaitDelay = providerWaitDelay ?? Task.Delay;
@@ -4448,7 +4456,8 @@ public sealed class Scheduler
             .AssessAsync(new CriticalityGateContext { Gate = criticalityGate, Detail = question ?? "" }, ct)
             .ConfigureAwait(false);
 
-        string threshold = EffectiveThresholdToken(criticalityGate);
+        string threshold = GateThreshold.Effective(_plan.Config.Autonomy, criticalityGate)
+            .ToString().ToLowerInvariant();
         string? criticality = decision.Criticality is { } c ? c.ToString().ToLowerInvariant() : null;
         string? confidence = decision.Confidence is { } cf ? cf.ToString().ToLowerInvariant() : null;
 
@@ -4653,28 +4662,6 @@ public sealed class Scheduler
         return $" Attempt {last.Attempt} wrote work before it stopped, and its in-scope files were preserved: "
              + $"git ref {DependencyContextBuilder.SalvageRefNameFor(subject, last.Attempt)}, "
              + $"readable patch {patch.Replace('\\', '/')}.";
-    }
-
-    /// <summary>
-    /// The effective escalation threshold token for <paramref name="gate"/> (doc 12 §3.5): a per-gate
-    /// <see cref="GateThresholds"/> override when present, else the run-wide dial — the same resolution the
-    /// judge applies, recomputed here only to STAMP the forensic record (the judge does not surface it).
-    /// </summary>
-    private string EffectiveThresholdToken(CriticalityGate gate)
-    {
-        AutonomyConfig? cfg = _plan.Config.Autonomy;
-        if (cfg is null)
-        {
-            return "";
-        }
-
-        EscalationThreshold? perGate = gate switch
-        {
-            CriticalityGate.NeedsHuman => cfg.GateThresholds?.NeedsHuman,
-            CriticalityGate.WaveCheckpoint => cfg.GateThresholds?.WaveCheckpoint,
-            _ => null
-        };
-        return (perGate ?? cfg.EscalationThreshold).ToString().ToLowerInvariant();
     }
 
     /// <summary>
@@ -5147,6 +5134,462 @@ public sealed class Scheduler
         }
     }
 
+    // ================================================================================================
+    //  Design 41 — the overwatcher's missing-resource auto-resolve (issue #712's seam). Wires design 40 §3:
+    //  at dial:critical, a halt caused by a file that is committed on the branch the run started from but
+    //  missing from the run's own lineage may be resolved without a human. A prompt may propose; only the
+    //  deterministic OverwatchSupplyAutoResolve.Certify may certify.
+    // ================================================================================================
+
+    /// <summary>
+    /// Design 41 §4: the consumer of the missing-resource auto-resolve, called from <see cref="OnSettledAsync"/>
+    /// between the green settle and the classify-then-act dispatch. Returns the adopted result and handle when
+    /// a certified supply was committed (or the diagnose spend pushed the run over its cost cap), or null when
+    /// the dial is not engaged, the halt is not shaped like a missing resource, a tier-2 stop applies, no
+    /// candidates exist, the diagnose produced no verdict, or certification refused — in every one of those
+    /// cases the original halt reaches <see cref="ClassifyTaskGateAsync"/> exactly as it does today.
+    /// <para>
+    /// Every step through certification is wrapped the way the #550 re-drive is wrapped: a thrown git call or
+    /// runner never faults the run. Steps up to and including certification run OUTSIDE
+    /// <see cref="_integrationLock"/> — the diagnose can take minutes, and other tasks' settles must not wait
+    /// on it.
+    /// </para>
+    /// </summary>
+    private async Task<(TaskResult Result, WorktreeHandle Handle)?> TryAutoResolveMissingResourceAsync(
+        RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle, CancellationToken ct)
+    {
+        // Tier 0 (§2.1): is the dial engaged? No record — nothing was promised.
+        if (result.Outcome != TaskOutcome.NeedsHuman)
+        {
+            return null;
+        }
+
+        if (_journal is not Journal.RunJournal runJournal
+            || context.Integ is not { } integ
+            || _worktreeProvider is not { } worktreeProvider
+            || _plan.Config.AutonomyPolicy != AutonomyPolicy.Auto
+            || _plan.Config.Autonomy is not { } autonomy
+            || GateThreshold.Effective(autonomy, CriticalityGate.NeedsHuman) != EscalationThreshold.Critical
+            || autonomy.GateThresholds?.ReviewGate == ReviewGateDecision.ProceedUnreviewed)
+        {
+            return null;
+        }
+
+        // Tier 1 (§2.1): shaped like a missing resource? No record — an ordinary design question.
+        if (result.NeedsHumanQuestion is not { Length: > 0 } question
+            || result.NeedsHumanKind == NeedsHumanKinds.DefectiveGuardrail)
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> paths = MissingResourceSignal.PathsIn(question);
+        if (paths.Count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            // Tier 2 (§2.1): stops, each recorded as one `observed` decision with its reason token.
+            if (result.NeedsHumanKind is null)
+            {
+                RecordAutoResolveObserved(runJournal, task, "unclassified-kind");
+                return null;
+            }
+
+            if (runJournal.Document.Decisions?.Any(
+                    d => d.Decision == DecisionTokens.AutoSupplied && d.Subject == task.Id) == true)
+            {
+                RecordAutoResolveObserved(runJournal, task, "already-auto-resolved");
+                return null;
+            }
+
+            if (_overwatch is not { } overwatch)
+            {
+                RecordAutoResolveObserved(runJournal, task, "no-runner");
+                return null;
+            }
+
+            if (CostCapHaltFor(task) is not null)
+            {
+                RecordAutoResolveObserved(runJournal, task, "cost-cap");
+                return null;
+            }
+
+            // Facts (§2.2).
+            MissingResourceFactsResult facts = MissingResourceFacts.Compute(
+                _plan, task, paths, integ.IntegrationWorktreePath, integ.OriginalBranch, integ.OriginalHeadSha);
+
+            if (!facts.Available)
+            {
+                RecordAutoResolveObserved(runJournal, task, facts.UnavailableReason ?? "facts-unavailable");
+                return null;
+            }
+
+            if (facts.Candidates.Count == 0)
+            {
+                string pathDetail = string.Join(
+                    "\n", facts.Verdicts.Where(v => v.Reason is not null).Select(v => $"{v.Path} {v.Reason}"));
+                RecordAutoResolveObserved(runJournal, task, "no candidate paths", pathDetail);
+                return null;
+            }
+
+            int haltedAttempt = Math.Max(1, runJournal.NextAttemptNumber(task.Id) - 1);
+            string attemptLogDir = Path.Combine(
+                _plan.PlanDirectory, "logs", runJournal.RunId, task.Id, $"attempt-{haltedAttempt}");
+
+            // Propose (§2.3). A no-verdict is recorded by the existing path (Overwatch.RecordNoVerdict).
+            OverwatchProposal? proposal = await overwatch.ProposeResourceSupplyAsync(
+                    task, _plan, haltedAttempt, question, facts.Candidates, attemptLogDir, runJournal, _observer, ct)
+                .ConfigureAwait(false);
+            if (proposal is null)
+            {
+                return null;
+            }
+
+            // Certify (§3.1) — the pure gate.
+            SupplyCertification cert = OverwatchSupplyAutoResolve.Certify(
+                _plan.Config.AutonomyPolicy, autonomyBlockPresent: true, autonomy, facts.Candidates, proposal);
+            if (!cert.Certified)
+            {
+                RecordAutoResolveAdvisory(runJournal, task, cert.Reason!, proposal.Diagnosis);
+                return null;
+            }
+
+            return await CommitAndRearmMissingResourceAsync(
+                    context, task, handle, runJournal, integ, worktreeProvider, paths, haltedAttempt, proposal, cert, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A thrown git call or runner never faults the run (mirrors the #550 re-drive's wrap).
+            _observer.CleanupFailed(task.Id, ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Design 41 §4 steps 5–9: under <see cref="_integrationLock"/>, re-check the certified paths against the
+    /// integration <c>HEAD</c>, commit them with the §5 provenance, record the §6 evidence, then release the
+    /// lock and re-arm a fresh segment at the task's next attempt number. Adopts the re-armed result WHATEVER
+    /// its outcome (unlike #550: the base changed, so "the file is missing" is now false). A failure after the
+    /// commit records <c>advisory</c> with <c>rearm-failed</c> and reports through <see cref="IRunObserver.CleanupFailed"/>;
+    /// the commit, its <c>supplied[]</c> record and its <c>auto-supplied</c> decision all remain, because they
+    /// are true.
+    /// </summary>
+    private async Task<(TaskResult Result, WorktreeHandle Handle)?> CommitAndRearmMissingResourceAsync(
+        RunContext context, TaskNode task, WorktreeHandle originalHandle, Journal.RunJournal runJournal,
+        IntegrationHandle integ, IWorktreeProvider worktreeProvider, IReadOnlyList<string> paths,
+        int haltedAttempt, OverwatchProposal proposal, SupplyCertification cert, CancellationToken ct)
+    {
+        string sourceCommit = cert.Supplies[0].SourceCommit;
+        List<string> certifiedPaths = [.. cert.Supplies.Select(s => s.Path)];
+
+        WorktreeHandle? rearmedHandle = null;
+        await _integrationLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // Last check (§3.1): is every certified path still absent from the integration HEAD, with no
+            // case-only twin? A re-run of the same facts is the simplest way to ask that question honestly.
+            MissingResourceFactsResult recheck = MissingResourceFacts.Compute(
+                _plan, task, paths, integ.IntegrationWorktreePath, integ.OriginalBranch, integ.OriginalHeadSha);
+            bool stillClear = recheck.Available
+                && certifiedPaths.All(p => recheck.Candidates.Any(c => c.Path == p));
+            if (!stillClear)
+            {
+                RecordAutoResolveAdvisory(runJournal, task, "run-base-changed", proposal.Diagnosis);
+                return null;
+            }
+
+            SuppliedDrainResult drainResult;
+            string preCommitHead = GitRevParseHead(integ.IntegrationWorktreePath);
+            try
+            {
+                // §4 step 5: the exact blob + mode, via the object database the integration worktree shares
+                // with the checkout — never plan.Workspace, never logs/<runId>/supplied/.
+                GitCheckoutPathsFromCommit(integ.IntegrationWorktreePath, sourceCommit, certifiedPaths);
+                drainResult = SuppliedDrain.CommitPaths(
+                    integ.IntegrationWorktreePath, runJournal.RunId, "overwatcher", certifiedPaths);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                GitResetHardBestEffort(integ.IntegrationWorktreePath, preCommitHead);
+                RecordAutoResolveAdvisory(runJournal, task, "commit-failed", proposal.Diagnosis);
+                return null;
+            }
+
+            // §4 step 6, still under the lock and before any further fallible step: this is what keeps
+            // delivery suppressed however the re-arm below ends.
+            RecordAutoSupplied(runJournal, task, integ, sourceCommit, drainResult);
+            AppendMissingResourceOverwatchRecord(runJournal, task, haltedAttempt, proposal, drainResult);
+
+            // §4 step 7: the diagnose spend may have crossed the cap.
+            if (CostCapHaltFor(task) is { } costCapResult)
+            {
+                RecordAutoResolveAdvisory(runJournal, task, "rearm-skipped-cost-cap", proposal.Diagnosis);
+                return (costCapResult, originalHandle);
+            }
+
+            // §4 step 8: re-arm at the task's NEXT attempt number — a root task's original segment is
+            // already attempt-1, and CreateSegment names its branch/path from this number.
+            try
+            {
+                int rearmAttempt = runJournal.NextAttemptNumber(task.Id);
+                rearmedHandle = worktreeProvider.CreateSegment(task.Id, rearmAttempt, integ, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _observer.CleanupFailed(task.Id, ex);
+                RecordAutoResolveAdvisory(runJournal, task, "rearm-failed", proposal.Diagnosis);
+                return null;
+            }
+
+            // Load-bearing (§4 step 8): dependents inherit through context.Handles. The OLD segment stays
+            // owned in context.DirectoryOwner for the end-of-run sweep (fix-don't-restart).
+            lock (_gate)
+            {
+                context.Handles[task.Id] = rearmedHandle;
+                RecordOwnership(context, rearmedHandle, task.Id);
+            }
+        }
+        finally
+        {
+            _integrationLock.Release();
+        }
+
+        // §4 step 8 continued: release the lock, THEN run the re-armed attempt — never under
+        // _integrationLock, so other tasks' settles are not blocked on this task's action.
+        WorktreeHandle handleToRun = rearmedHandle!;
+        try
+        {
+            TaskResult rearmedResult = await _executor.ExecuteAsync(task, handleToRun, ct).ConfigureAwait(false);
+            rearmedResult = await SettleGreenIfWorktreeAsync(context, task, rearmedResult, handleToRun, ct)
+                .ConfigureAwait(false);
+
+            // §4 step 9: adopt WHATEVER the outcome — deliberately unlike #550, because the base did change
+            // here, so "the file is missing" is now false. Summary is left untouched.
+            return (rearmedResult, handleToRun);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _observer.CleanupFailed(task.Id, ex);
+            RecordAutoResolveAdvisory(runJournal, task, "rearm-failed", proposal.Diagnosis);
+            return null;
+        }
+    }
+
+    /// <summary>Design 41 §6: a tier-2 stop, or no candidate, recorded as one outcome-inert `observed` decision.</summary>
+    private void RecordAutoResolveObserved(Journal.RunJournal runJournal, TaskNode task, string reason, string detail = "")
+    {
+        var entry = new DecisionEntry
+        {
+            Boundary = "task",
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.Observed,
+            Subject = task.Id,
+            Gate = "needs-human",
+            Threshold = "critical",
+            Wave = task.WaveDir,
+            Headline = $"Auto-resolve not attempted for '{task.Id}': {reason}",
+            Detail = detail
+        };
+        runJournal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+    }
+
+    /// <summary>Design 41 §6: a certification refusal, or a post-certify failure short of a commit, recorded as `advisory`.</summary>
+    private void RecordAutoResolveAdvisory(Journal.RunJournal runJournal, TaskNode task, string reason, string? diagnosis)
+    {
+        var entry = new DecisionEntry
+        {
+            Boundary = "task",
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.Advisory,
+            Subject = task.Id,
+            Gate = "needs-human",
+            Threshold = "critical",
+            Wave = task.WaveDir,
+            Headline = $"Overwatch did not complete the auto-resolve for '{task.Id}' ({reason})",
+            Detail = diagnosis is { Length: > 0 } d ? $"(unverified) {d}" : ""
+        };
+        runJournal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+    }
+
+    /// <summary>
+    /// Design 41 §4 step 6 / §5 / §6: record the supplied[] provenance, the auto-supplied decision (holds
+    /// delivery at run end and at every wave barrier, via RunOutcomePolicy), and announce the commit.
+    /// </summary>
+    private void RecordAutoSupplied(
+        Journal.RunJournal runJournal, TaskNode task, IntegrationHandle integ, string sourceCommit,
+        SuppliedDrainResult drainResult)
+    {
+        runJournal.RecordSupplied(new Journal.SuppliedRecord
+        {
+            At = DateTimeOffset.UtcNow,
+            Commit = drainResult.CommitSha!,
+            Paths = drainResult.CommittedPaths,
+            Bytes = drainResult.TotalBytes,
+            By = "overwatcher"
+        });
+
+        string suppliedList = string.Join(", ", drainResult.CommittedPaths);
+        var entry = new DecisionEntry
+        {
+            Boundary = "task",
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.AutoSupplied,
+            Subject = task.Id,
+            Gate = "needs-human",
+            Threshold = "critical",
+            Wave = task.WaveDir,
+            Headline = $"Overwatch supplied {suppliedList} to '{task.Id}' from your checkout at " +
+                       $"{ShortSha(sourceCommit)} ({integ.OriginalBranch}) as {ShortSha(drainResult.CommitSha!)}",
+            Detail = $"source {sourceCommit} on {integ.OriginalBranch}; commit {drainResult.CommitSha}"
+        };
+        runJournal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+
+        _observer.SuppliedResourcesCommitted(drainResult.CommittedPaths, drainResult.CommitSha!, "overwatcher");
+    }
+
+    /// <summary>Design 41 §6: the missing-resource overwatch.jsonl record, with the `applied` commit that proves it.</summary>
+    private void AppendMissingResourceOverwatchRecord(
+        Journal.RunJournal runJournal, TaskNode task, int haltedAttempt, OverwatchProposal proposal,
+        SuppliedDrainResult drainResult)
+    {
+        List<OverwatchDetailFix> detailFixes = [.. proposal.Fixes
+            .Where(f => f.Kind == OverwatchFixKind.ResourceSupply)
+            .Select(f => new OverwatchDetailFix { Kind = "resource-supply", Authority = "default", Target = f.TargetPath })];
+
+        OverwatchDetailWriter.Append(
+            Path.Combine(_plan.PlanDirectory, "logs", runJournal.RunId, task.Id),
+            new OverwatchDetailRecord
+            {
+                At = DateTimeOffset.UtcNow.ToString("O"),
+                Trigger = OverwatchTriggers.Token(OverwatchTrigger.MissingResource),
+                Attempt = haltedAttempt,
+                Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+                Decision = DecisionTokens.AutoSupplied,
+                Classification = "retryable",
+                Diagnosis = proposal.Diagnosis,
+                Fixes = detailFixes,
+                Applied = new OverwatchDetailApplied
+                {
+                    Supplied = drainResult.CommittedPaths,
+                    Commit = drainResult.CommitSha
+                },
+                Headline = $"Overwatch supplied {string.Join(", ", drainResult.CommittedPaths)} to '{task.Id}' " +
+                           $"as {ShortSha(drainResult.CommitSha!)}"
+            });
+    }
+
+    private static string ShortSha(string sha) => sha.Length <= 10 ? sha : sha[..10];
+
+    /// <summary><c>git rev-parse HEAD</c> in <paramref name="workingDir"/>, trimmed.</summary>
+    private static string GitRevParseHead(string workingDir)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        psi.ArgumentList.Add("rev-parse");
+        psi.ArgumentList.Add("HEAD");
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git rev-parse HEAD (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
+        }
+
+        return stdout.Trim();
+    }
+
+    /// <summary>
+    /// Design 41 §4 step 5: <c>git checkout &lt;sourceCommit&gt; -- &lt;paths&gt;</c> in the integration
+    /// worktree, which shares the checkout's object database — the exact blob and file mode, with no filter
+    /// or line-ending re-application.
+    /// </summary>
+    private static void GitCheckoutPathsFromCommit(string workingDir, string sourceCommit, IReadOnlyList<string> paths)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+        };
+        psi.ArgumentList.Add("checkout");
+        psi.ArgumentList.Add(sourceCommit);
+        psi.ArgumentList.Add("--");
+        foreach (string path in paths)
+        {
+            psi.ArgumentList.Add(path);
+        }
+
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git checkout {sourceCommit} -- {string.Join(' ', paths)} (in {workingDir}) exited " +
+                $"{proc.ExitCode}: {stderr.Trim()}{stdout}");
+        }
+    }
+
+    /// <summary>
+    /// Design 41 §5: on a failed commit, restore the pre-commit <c>HEAD</c> so no partly-staged file can be
+    /// picked up by a later drain under someone else's name. Best-effort — never masks the original failure.
+    /// </summary>
+    private static void GitResetHardBestEffort(string workingDir, string sha)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("git")
+            {
+                WorkingDirectory = workingDir,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+                StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
+            };
+            psi.ArgumentList.Add("reset");
+            psi.ArgumentList.Add("--hard");
+            psi.ArgumentList.Add(sha);
+
+            using var proc = Process.Start(psi)!;
+            proc.StandardOutput.ReadToEnd();
+            proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+        }
+        catch
+        {
+            // Cleanup after an already-failed commit attempt; never mask the original failure.
+        }
+    }
+
     private async Task OnSettledAsync(
         RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle, CancellationToken ct)
     {
@@ -5157,6 +5600,18 @@ public sealed class Scheduler
         // Old path (serial mode or fake provider): the executor already merged + journaled;
         // just call provider.Integrate directly so IWorktreeProvider.IntegrateCallCount tests pass.
         result = await SettleGreenIfWorktreeAsync(context, task, result, handle, ct).ConfigureAwait(false);
+
+        // Design 41 §3.3/§4 — the missing-resource auto-resolve, between the green settle above and the
+        // classify-then-act dispatch below. Certified-and-committed adopts the re-armed result/handle, so
+        // the original halt never reaches ClassifyTaskGateAsync and the CriticalityJudge is never consulted
+        // about it. Anything else (not engaged, wrong shape, a stop, no candidates, no verdict, refused)
+        // leaves `result`/`handle` untouched — the never-weaker path, which is most of the branches.
+        if (await TryAutoResolveMissingResourceAsync(context, task, result, handle, ct).ConfigureAwait(false) is
+            { } autoResolved)
+        {
+            result = autoResolved.Result;
+            handle = autoResolved.Handle;
+        }
 
         // #361 Phase 3 (doc 12 §4): classify-then-act at a task-level gate when the autonomy dial is wired. A
         // non-green needs-human / rate-limit stop is deterministically classified and acted on (escalate /
