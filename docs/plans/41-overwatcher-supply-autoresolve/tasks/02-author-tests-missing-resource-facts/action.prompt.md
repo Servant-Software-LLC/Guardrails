@@ -236,6 +236,24 @@ run's integration worktree (`integrationWorktreePath`). They are separate git re
 the production code's "shared object database" is an optimisation of the real seam, not something these
 unit facts depend on.
 
+**The two repositories must NOT start with the same content, and getting this wrong is unrecoverable from
+inside task 03.** Whatever path the refusal rows share, the CHECKOUT carries it from construction — rows
+8/9/10 read its committed and working-tree state — but the INTEGRATION repo is the run's BASE and must
+start WITHOUT it. The per-path checks run in strict numeric order and check 5 is `present-on-run-base`, so
+a base that already carries the path fires check 5 FIRST for every row using it, shadowing checks 6/8/9/10
+and making four rows unsatisfiable under ANY implementation:
+
+- `Compute_ReturnsACandidateCarryingItsCheckoutSha_ForACommittedUnownedPathMissingFromTheRunBase`
+- `Compute_ReturnsACandidate_WhenTheHaltedTasksOwnWriteScopeCoversThePath`
+- `Compute_RefusesAPathWithACaseOnlyTwinOnTheRunBase`
+- `Compute_RefusesAPathModifiedInTheCheckoutsWorkingTree`
+
+So a single constructor that commits the shared path unconditionally, used for both roles, makes this task
+impossible to satisfy — and the failure surfaces in task 03, which may not edit these tests and can only
+halt. Give the fixture a way to construct WITHOUT the shared path and use it for the integration repo. The
+three rows that genuinely need the path present on the base (`AlreadyPresentOnTheRunBase`, `CaseOnlyTwin`,
+`ThisRunDeleted`) commit it themselves, so starting clean costs them nothing.
+
 ### What "red" means here
 
 The pinned tests MUST COMPILE and FAIL against the throwing stubs. **There are no declared census
