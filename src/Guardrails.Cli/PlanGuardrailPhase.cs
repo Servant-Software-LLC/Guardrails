@@ -166,21 +166,47 @@ public static class PlanGuardrailPhase
 
         // Issue #432: on FAILURE also record the uniform top-level `halt`, so post-mortem tooling has one
         // place to read "why did this run stop?" regardless of WHICH of the four gate folders halted it.
-        RunHalt? halt = result.Passed
-            ? null
-            : new RunHalt
+        PlanPhaseJournalWriter.Update(plan.PlanDirectory, document =>
+        {
+            if (result.Passed)
+            {
+                // A passing gate writes no halt at all — the disclosure rides on the halt and must never
+                // become an unconditional announcement on a green run.
+                return document with { PlanGuardrails = section };
+            }
+
+            string headline = "Terminal gate FAILED on the merged HEAD: "
+                              + string.Join(", ", failedChecks.Select(f => f.Name));
+
+            // Design 41 §6 "Later gate halts": the SAME reader the wave entry/exit halts use
+            // (Scheduler.BuildGateHalt). It returns null when there is no unauthored content, so a run
+            // that supplied and refreshed nothing keeps a byte-identical headline.
+            if (UnauthoredContentNote.HeadlineSuffix(document) is { } suffix)
+            {
+                headline += suffix;
+            }
+
+            // RunHalt carries no Detail field, so the per-record lines go to the phase's own heartbeat
+            // writer — in production the run's console. Empty means write nothing, not a blank line.
+            if (heartbeatOut is not null)
+            {
+                foreach (string line in UnauthoredContentNote.DetailLines(document))
+                {
+                    heartbeatOut.WriteLine(line);
+                }
+            }
+
+            var halt = new RunHalt
             {
                 Kind = RunHaltKind.PlanGuardrailFailed,
                 HaltedAt = DateTimeOffset.UtcNow,
-                Headline = "Terminal gate FAILED on the merged HEAD: "
-                           + string.Join(", ", failedChecks.Select(f => f.Name)),
+                Headline = headline,
                 FailedChecks = failedChecks,
                 LogDir = relativeLogDir
             };
 
-        PlanPhaseJournalWriter.Update(plan.PlanDirectory, document => halt is null
-            ? document with { PlanGuardrails = section }
-            : document with { PlanGuardrails = section, Halt = halt });
+            return document with { PlanGuardrails = section, Halt = halt };
+        });
 
         observer?.TerminalGateFinished(result.Passed, [.. failedChecks.Select(f => f.Name)]);
 
