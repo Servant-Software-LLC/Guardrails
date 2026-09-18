@@ -7,9 +7,9 @@ namespace Guardrails.Core.Execution;
 /// unit-test base and the single place two run-outcome facts are derived:
 ///
 /// <list type="bullet">
-///   <item><b>Delivery suppression (the §1 hard rule, #340):</b> a run that recorded even one
-///   <see cref="DecisionTokens.ProceededBestGuess"/> or <see cref="DecisionTokens.ProceededUnreviewed"/>
-///   decision shaped its result with machine-decided work, so <c>mergeOnSuccess</c> DEFAULTS to OFF — the
+///   <item><b>Delivery suppression (the §1 hard rule, #340):</b> a run that recorded even one decision the
+///   shared delivery-interlock predicate holds — <see cref="SuppressingDecision"/> names it and returns the
+///   evidence — shaped its result with machine-decided work, so <c>mergeOnSuccess</c> DEFAULTS to OFF — the
 ///   verified work stays on the plan branch and is never auto-delivered.</item>
 ///   <item><b>The unreviewed-wave flag (§5.2 Option P / §7.1):</b> the number of
 ///   <see cref="DecisionTokens.ProceededUnreviewed"/> decisions is the "ran with N unreviewed waves" flag
@@ -60,10 +60,12 @@ public static class RunOutcomePolicy
     /// THE delivery-interlock token set, spelled ONCE (design 41 §6, fact 11). Both
     /// <see cref="SuppressingDecision"/> (run end) and <see cref="SuppressingDecisionForDelivery"/> (every wave
     /// barrier) are defined in terms of it, so a new suppressing token cannot be added to one spelling and
-    /// missed by the other. Task 07 implements it: true for <c>proceeded-best-guess</c>,
-    /// <c>proceeded-unreviewed</c> and <c>auto-supplied</c>; false for every other token.
+    /// missed by the other.
     /// </summary>
-    private static bool HoldsDelivery(DecisionEntry decision) => throw new NotImplementedException();
+    private static bool HoldsDelivery(DecisionEntry decision) =>
+        decision.Decision == DecisionTokens.ProceededBestGuess ||
+        decision.Decision == DecisionTokens.ProceededUnreviewed ||
+        decision.Decision == DecisionTokens.AutoSupplied;
 
     /// <summary>
     /// The delivery-scoped counterpart of <see cref="SuppressingDecision"/> (design 39 §1a/§1b, review round
