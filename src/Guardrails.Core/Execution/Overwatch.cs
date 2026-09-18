@@ -177,6 +177,23 @@ public sealed class Overwatch
         return decision;
     }
 
+    /// <summary>
+    /// Propose a resource-supply resolution for a task halted <c>needs-human</c> on a missing workspace path
+    /// (design 41 §2.3, issue #382). Runs one diagnose against the <see cref="MissingResourceCandidate"/>
+    /// table with the <see cref="OverwatchTrigger.MissingResource"/> trigger and returns the parsed
+    /// proposal — the caller (§3) certifies it; this method never decides whether a fix is applied.
+    /// </summary>
+    internal async Task<OverwatchProposal?> ProposeResourceSupplyAsync(
+        TaskNode task,
+        PlanDefinition plan,
+        int attempt,
+        string needsHumanQuestion,
+        IReadOnlyList<MissingResourceCandidate> candidates,
+        string taskLogDir,
+        RunJournal journal,
+        IRunObserver observer,
+        CancellationToken ct) => throw new NotImplementedException();
+
     /// <summary>True for a DETERMINISTIC HALT boundary (a short-circuit / permission wall / exhaustion) where a
     /// non-grant decision HALTS the task; false for the eager <c>attempt ≥ 2</c> trigger, a NON-floor boundary
     /// where a non-grant decision is purely advisory (the loop keeps retrying per the deterministic policy — the
