@@ -11,6 +11,7 @@ Each line: `- [Topic-Path](relative/path/) — one-line description`
 - [Guardrails/Model-Tiering-Epic](Guardrails/Model-Tiering-Epic/) — Model-tiering & provider-management epic (#201): sub-issue breakdown, sequential wave plans, diagram.html live-status/search features, and OSS-extraction verdict
 - [Guardrails/Preflights-Two-Scope](Guardrails/Preflights-Two-Scope/) — Two-scope preflights/guardrails feature plan-breakdown and execution on feat/preflights-two-scope
 - [Guardrails/Release-Gate-And-Overwatcher-Supply](Guardrails/Release-Gate-And-Overwatcher-Supply/) — v1.21.0 release-hardening gate (5 fix PRs, adversarial reviews, cut-release skill/script correction) and design 41/#712 overwatcher missing-resource auto-resolve plan build + run
+- [Guardrails/System-One-Research](Guardrails/System-One-Research/) — Research into TypeSafe System One / Jev (calibrated typed-decision models) as a replacement for LLM judgment calls in the harness — issue #755
 - [Guardrails/Verifier-Infrastructure](Guardrails/Verifier-Infrastructure/) — Guardrail-strength / verifier arc: the #374 salvage-advice-provisioning plan (COMPLETE 2026-08-12, 14/14 green, merged — the #193 orphaned-golden halt, the re-homed golden coverage, and harness issues #447/#448/#449 it exposed); pilot-seat model-provenance dogfood (#349), specialized-guardrail-library (#350), verifier-store handoff enabler (#351)
 
 ## Uber-Report
