@@ -547,14 +547,16 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     /// <summary>
-    /// Re-validate-only (issue #102): run JUST this task's guardrails against the CURRENT workspace
-    /// state, spawning NO action/agent attempt. The intended caller is a human who hand-fixed a
-    /// <c>needs-human</c> task's artifact and wants to confirm the gate now passes WITHOUT burning an
+    /// Re-validate-only (issue #102): run JUST this task's guardrails against the tree the caller
+    /// names, spawning NO action/agent attempt. The intended caller is a human who hand-fixed a
+    /// <c>needs-human</c> task and wants to confirm the gate now passes WITHOUT burning an
     /// agent attempt that might redo expensive work or overwrite the fix.
     /// <list type="bullet">
     ///   <item>Guardrails run with cwd = the plan <see cref="PlanDefinition.Workspace"/> (the user's
-    ///     own checkout where the fix lives) — this path is serial/shared-workspace only (the CLI
-    ///     refuses worktree mode, where a fresh segment would not contain the in-place fix).</item>
+    ///     own checkout where the fix lives) by DEFAULT. In worktree mode the CLI instead supplies the
+    ///     plan branch's tree as <paramref name="workspaceOverride"/>, for a task whose work is already
+    ///     integrated there (issue #456) — the checkout never held that work, so grading it would be
+    ///     meaningless. See that parameter.</item>
     ///   <item>The <c>GUARDRAILS_ACTION_*</c> pointers are deliberately ABSENT: no action ran, so a
     ///     verify-don't-replay guardrail (#62) that requires recorded action output fails honestly
     ///     rather than passing vacuously. <c>GUARDRAILS_STATE_IN</c> is a fresh snapshot of the
@@ -568,7 +570,15 @@ public sealed class TaskExecutor : ITaskExecutor
     /// Prompt guardrails are fully supported (same <see cref="GuardrailRunner"/> as a normal attempt);
     /// they are NEVER silently skipped.
     /// </summary>
-    public async Task<TaskResult> RevalidateAsync(TaskNode task, CancellationToken cancellationToken)
+    /// <param name="workspaceOverride">
+    /// The tree to verify in, when the caller has one (issue #456). Null — the ordinary serial case —
+    /// keeps the plan workspace, where a human's in-place fix lives. The CLI supplies a path only for a
+    /// WORKTREE-mode task whose work is already integrated on the plan branch: there the fix was never in
+    /// the operator's checkout to begin with, so verifying against the plan-branch tree is the correct
+    /// subject rather than a meaningless one.
+    /// </param>
+    public async Task<TaskResult> RevalidateAsync(
+        TaskNode task, CancellationToken cancellationToken, string? workspaceOverride = null)
     {
         var startedAt = DateTimeOffset.UtcNow;
         _observer.TaskStarting(task);
@@ -579,9 +589,11 @@ public sealed class TaskExecutor : ITaskExecutor
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
-        // Revalidate is serial-only (the CLI refuses worktree mode here), so cwd = the plan workspace
-        // where the human's in-place fix lives — never a segment worktree (issue #134 / #102).
-        string workspace = ResolveRevalidateWorkingDirectory(task);
+        // cwd = the plan workspace where a human's in-place fix lives (issue #134 / #102), UNLESS the
+        // caller named a tree (issue #456). Worktree mode is no longer refused outright: when the task's
+        // work is ALREADY integrated on the plan branch, the checkout never held it, so the CLI verifies
+        // against the plan-branch tree and passes that path here.
+        string workspace = workspaceOverride ?? ResolveRevalidateWorkingDirectory(task);
 
         // The guardrail env WITHOUT GUARDRAILS_STATE_OUT (no action) and WITHOUT the
         // GUARDRAILS_ACTION_* pointers: there is no recorded action output to verify against, so a
@@ -2993,10 +3005,18 @@ public sealed class TaskExecutor : ITaskExecutor
         || relativePath.StartsWith("../", StringComparison.Ordinal);
 
     /// <summary>
-    /// Serial-only cwd resolution for <see cref="RevalidateAsync"/> (issue #102): there is no segment
-    /// — the CLI refuses worktree mode for <c>--revalidate-task</c> (an in-place fix in the user's
-    /// checkout is invisible to a fresh segment) — so the cwd is always the plan
-    /// <see cref="PlanDefinition.Workspace"/> where the human's fix lives.
+    /// The DEFAULT cwd resolution for <see cref="RevalidateAsync"/> (issue #102): the plan
+    /// <see cref="PlanDefinition.Workspace"/> where a human's in-place fix lives, or the task's declared
+    /// <c>workingDirectory</c> resolved against the plan folder.
+    /// <para>
+    /// This is no longer the only case (issue #456). The CLI once refused worktree mode outright; it now
+    /// allows it for a task whose work is ALREADY integrated on the plan branch — where the fix was never
+    /// in the operator's checkout — and supplies that tree as <c>workspaceOverride</c>, bypassing this
+    /// resolver entirely. Note the second branch below resolves against
+    /// <see cref="PlanDefinition.PlanDirectory"/>, which sits OUTSIDE any worktree: that is why the CLI
+    /// keeps refusing a worktree-mode revalidate for a task declaring <c>workingDirectory</c>, rather than
+    /// silently verifying in the wrong tree.
+    /// </para>
     /// </summary>
     private string ResolveRevalidateWorkingDirectory(TaskNode task)
     {

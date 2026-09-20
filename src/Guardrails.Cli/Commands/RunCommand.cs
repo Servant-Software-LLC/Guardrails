@@ -81,7 +81,7 @@ public static class RunCommand
 
         var revalidateTaskOption = new Option<string?>("--revalidate-task")
         {
-            Description = "Re-validate-only (issue #102): run ONLY this task's guardrails against the current workspace, spawning NO agent attempt — for confirming a hand-fix to a needs-human task. On pass the task is marked succeeded; serial mode only."
+            Description = "Re-validate-only (issue #102): run ONLY this task's guardrails, spawning NO agent attempt — for confirming a hand-fix to a needs-human task. On pass the task is marked succeeded. Serial mode verifies your checkout; worktree mode (#456) is supported for a task whose work is ALREADY integrated on the plan branch, and verifies that tree instead."
         };
 
         var skipReviewCheckOption = new Option<bool>("--skip-review-check")
