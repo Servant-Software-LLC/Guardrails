@@ -3972,19 +3972,35 @@ must be committed on the harness's integration branch itself. Steps (verified ag
 
 ### 7.1 Re-validate-only (`guardrails run --revalidate-task <id>`)
 
-`guardrails run [folder] --revalidate-task <task-id>` runs **only that one task's guardrails**
-against the **current workspace state**, spawning **no action/agent attempt** (issue #102). The use
-case: a task hit `needs-human`, a human hand-fixed the artifact in their checkout, and they want to
-confirm the gate now passes WITHOUT burning another agent attempt that might redo expensive work or
-overwrite the fix. It is a single-task verification, **not** a run — the rest of the DAG is untouched
-(a subsequent normal `run` resumes it).
+`guardrails run [folder] --revalidate-task <task-id>` runs **only that one task's guardrails**,
+spawning **no action/agent attempt** (issue #102). The use case: a task hit `needs-human`, a human
+hand-fixed it, and they want to confirm the gate now passes WITHOUT burning another agent attempt
+that might redo expensive work or overwrite the fix. It is a single-task verification, **not** a run
+— the rest of the DAG is untouched (a subsequent normal `run` resumes it).
 
-- **Workspace / cwd.** Guardrails run with cwd = the plan `workspace` (the user's own checkout, where
-  the fix lives) — the same serial/shared-workspace path a `maxParallelism: 1` run uses.
-- **Worktree mode is refused.** When a normal run would use worktree isolation (`maxParallelism > 1`
-  on a git workspace), `--revalidate-task` exits `1` with a pointer to set `maxParallelism: 1`: an
-  in-place fix in the user's checkout is invisible to a fresh isolated segment worktree, so verifying
-  it there would be meaningless.
+- **Workspace / cwd (serial).** Guardrails run with cwd = the plan `workspace` (the user's own
+  checkout, where the fix lives) — the same shared-workspace path a `maxParallelism: 1` run uses.
+- **Worktree mode is CONDITIONALLY supported (issue #456).** It was refused outright, which was right
+  for the case the refusal named — an uncommitted fix in the operator's checkout, invisible to a tree
+  forked off the plan branch — but wrong for the common shape: a completed task stranded by a
+  DEFECTIVE GUARDRAIL, whose work is already integrated. There the checkout never held the work, so
+  the old remedy (`maxParallelism: 1`) pointed at a tree where the task's own output does not exist,
+  and the guardrail then failed for the wrong reason or passed vacuously. Eligibility is read from the
+  plan branch's `Guardrails-Task:` trailers — the same durable record the resume pre-pass trusts, never
+  the journal, which records only the sha a segment forked FROM and never the commit an attempt
+  produced:
+  - **Trailer present, a worktree already holds the plan branch** ⇒ verify in that tree. The common
+    case: a task stranded `needs-human` means the run was not wholly green, so the §2 worktree reclaim
+    kept it.
+  - **Trailer present, no worktree holds the branch** (a `--fresh` teardown, a fresh clone, or the
+    startup GC having reclaimed an abandoned run's root) ⇒ MATERIALIZE a harness-owned **detached**
+    worktree at the plan tip, verify there, and remove it on every exit path. Detached so it can
+    neither collide with a concurrent run's integration worktree nor strand the branch on a crash.
+  - **No trailer** ⇒ still refused (exit `1`): the work was never integrated, so a hand-fix really
+    does live only in the checkout. The message names THIS situation rather than the old blanket
+    "set maxParallelism to 1", which actively misled whenever the work was on the plan branch.
+  - **The task declares `action.workingDirectory`** ⇒ refused (exit `1`): it resolves against the plan
+    folder, which sits outside any worktree, so verifying there would silently grade the wrong tree.
 - **No action output, no fragment.** The `GUARDRAILS_ACTION_STDOUT` / `_STDERR` / `_RESULT` pointers
   (§5.1) are **absent** — no action ran — so a verify-don't-replay guardrail (#62) that requires them
   fails honestly rather than passing vacuously. `GUARDRAILS_STATE_IN` is a fresh snapshot of the
@@ -4006,9 +4022,9 @@ C# symbol on the CLI surface) to re-validate a WHOLE-PLAN phase instead of a tas
 already disallowed in a real task id (§3 `^[a-z0-9][a-z0-9._-]*$`), so neither can ever collide with an
 authored task.
 - **`--revalidate-task plan:guardrails`** re-runs ONLY the terminal `<plan>/guardrails/` checks (§3.3)
-  against the CURRENT merged HEAD. UNLIKE a per-task revalidate, **worktree mode IS supported**: the
-  gate's subject is the merged HEAD itself (the integration worktree the harness owns), never an
-  in-place fix in the user's own checkout, so the worktree-mode refusal above does not apply here. All
+  against the CURRENT merged HEAD. **Worktree mode is UNCONDITIONALLY supported** here — it needs no
+  trailer check at all, unlike the per-task path above: the gate's subject is the merged HEAD itself
+  (the integration worktree the harness owns), never an in-place fix in the user's own checkout. All
   checks pass ⇒ `planGuardrails` is journaled `passed`, exit `0`. Any check still fails ⇒ journaled
   `plan-guardrail-failed`, exit `2` — the same terminal-halt outcome an ordinary `run` would have
   produced. A plan with no `<plan>/guardrails/` folder has nothing to revalidate: exit `1`.

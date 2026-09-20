@@ -1921,8 +1921,14 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// runId-agnostic, since the integration path bakes in the runId
     /// (<c>&lt;worktreeRoot&gt;/&lt;runId&gt;/_integration</c>), so a path reconstruction from the
     /// worktree root alone could not find it.
+    /// <para>
+    /// PUBLIC for issue #456: <c>--revalidate-task</c> must locate the plan branch's existing tree to
+    /// verify an already-integrated task WITHOUT creating anything. <see cref="CreateIntegration"/> would
+    /// also return a usable path, but it CREATES a worktree (and the branch) as a side effect, which a
+    /// read-only verification verb must not do. Visibility only — the parse is unchanged.
+    /// </para>
     /// </summary>
-    private static string? WorktreeForBranch(string repoPath, string branch)
+    public static string? WorktreeForBranch(string repoPath, string branch)
     {
         string listing = GitIn(repoPath, "worktree", "list", "--porcelain");
         string? currentPath = null;
@@ -1939,6 +1945,53 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Materialize a harness-owned, DETACHED worktree at <paramref name="branch"/>'s tip under
+    /// <paramref name="worktreeRoot"/> and return its path (issue #456) — the tree a
+    /// <c>--revalidate-task</c> verifies in when the task's work is integrated but no worktree currently
+    /// holds the plan branch (a <c>--fresh</c> teardown, a fresh clone, or the #407 B startup GC having
+    /// reclaimed an abandoned run's root).
+    /// <para>
+    /// DETACHED, not a branch checkout, for two reasons: git refuses to check the same branch out in two
+    /// worktrees at once (so a branch checkout would collide with a concurrent run's integration
+    /// worktree), and a crash mid-verify would otherwise strand the plan branch checked out in a
+    /// throwaway tree that a later run has to untangle. A detached tree carries identical CONTENTS with
+    /// no claim on the ref. Mirrors <see cref="BuildTrialMergeCommit"/>'s harness-owned trial worktree.
+    /// </para>
+    /// <para>
+    /// The path is scoped by the worktree root alone — which is already per-PLAN and stable across
+    /// resumes (<see cref="SchedulerFactory.WorktreeRootFor"/>) — and carries NO run id, exactly as
+    /// <see cref="TrialWorktreePath"/> reasons: a later invocation recomputes the same path and can clear
+    /// a crashed predecessor without knowing its runId. It is cleared here before the add for that
+    /// reason, and a leak is additionally reclaimed by the startup GC as a stale tree under the root.
+    /// </para>
+    /// </summary>
+    public static string AddDetachedWorktreeAtBranchTip(string repoPath, string worktreeRoot, string branch)
+    {
+        string path = Path.Combine(worktreeRoot, "_revalidate");
+
+        // Idempotent: clear a predecessor a crash left at this exact path, else `git worktree add` fails
+        // on the existing directory/registration.
+        RemoveDetachedWorktree(repoPath, path);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        GitIn(repoPath, "worktree", "add", "--detach", path, branch);
+        return path;
+    }
+
+    /// <summary>
+    /// Remove a worktree created by <see cref="AddDetachedWorktreeAtBranchTip"/>, ignoring one that is
+    /// already gone — the <see cref="Discard"/> / <see cref="RemoveTrialWorktree"/> idiom (issue #109:
+    /// sweep any tree git left on disk after a Windows read-only loose object refused deletion). Deletes
+    /// no branch: the tree was detached, so there is no ref to lose.
+    /// </summary>
+    public static void RemoveDetachedWorktree(string repoPath, string worktreePath)
+    {
+        try { GitIn(repoPath, "worktree", "remove", "--force", worktreePath); }
+        catch (InvalidOperationException) { /* already gone / not registered */ }
+        SafeDelete.DeleteDirectory(worktreePath);
     }
 
     /// <summary>
