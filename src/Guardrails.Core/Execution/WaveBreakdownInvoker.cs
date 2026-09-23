@@ -520,6 +520,9 @@ public sealed record WaveBreakdownOutcome
             : "ran out of TURNS",
         PromptFailureKind.OutputCap => "hit the runner's OUTPUT-TOKEN cap",
         PromptFailureKind.Transient => "stopped on a transient runner condition (rate limit / overload)",
+        PromptFailureKind.RunnerConfiguration => Summary is { Length: > 0 } refusal
+            ? $"was refused by the runner's own configuration (#767): {refusal}"
+            : "was refused by the runner's own configuration (#767)",
         PromptFailureKind.Error => Error is { Length: > 0 } err
             ? $"FAULTED: {err}"
             : "reported an error",

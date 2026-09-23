@@ -193,6 +193,129 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         Assert.Equal(TaskOutcome.Succeeded, report.Tasks.Single().Outcome);
     }
 
+    // ── #767 / #773: a runner-configuration failure settles, and refusals reach the feedback ──────────
+
+    /// <summary>
+    /// A RunnerConfiguration failure (the admin's Run-Everything refusal, or every shell call refused) settles
+    /// the task needs-human on the FIRST attempt — with two retries in the budget, the runner is called once.
+    /// The feedback carries the runner's summary (the remedy) and every refusal with its reason.
+    /// </summary>
+    [Fact]
+    public async Task RunnerConfigurationFailure_SettlesNeedsHuman_WithoutSpendingRetries()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor);
+        var runner = new ScriptedRunner(new PromptResult
+        {
+            Completed = false,
+            IsError = true,
+            FailureKind = PromptFailureKind.RunnerConfiguration,
+            Summary = "cursor reported success, but EVERY shell command it attempted was refused — set approvalMode",
+            RefusedCommands = ["git status"],
+            BlockedWritePaths = ["git status"],
+            RefusedToolCalls = [new ToolRefusal("shell", "git status", "refused by Cursor approval policy")]
+        });
+
+        RunReport report = await RunSerialAsync(plan, runner);
+
+        TaskResult result = report.Tasks.Single();
+        Assert.Equal(TaskOutcome.NeedsHuman, result.Outcome);
+        Assert.Equal(1, runner.Calls);
+        Assert.Contains("EVERY shell command it attempted was refused", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("not retried", result.Summary, StringComparison.Ordinal);
+
+        string feedback = File.ReadAllText(SingleFeedback(plan));
+        Assert.Contains("the prompt runner's configuration cannot do this work", feedback, StringComparison.Ordinal);
+        Assert.Contains("- shell `git status` — refused by Cursor approval policy", feedback, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The control: an ordinary action Error with the same budget is retried (the runner is called 3 times) —
+    /// so the single call above is the RunnerConfiguration decision, not a fixture that never retries.
+    /// </summary>
+    [Fact]
+    public async Task AnOrdinaryActionError_IsStillRetried()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor);
+        var runner = new ScriptedRunner(new PromptResult
+        {
+            Completed = false,
+            IsError = true,
+            FailureKind = PromptFailureKind.Error,
+            Summary = "cursor exited 1"
+        });
+
+        RunReport report = await RunSerialAsync(plan, runner);
+
+        Assert.Equal(3, runner.Calls);
+        Assert.NotEqual(TaskOutcome.Succeeded, report.Tasks.Single().Outcome);
+    }
+
+    /// <summary>
+    /// A MIXED session completes and its guardrails decide; when they FAIL, the retry's feedback names each tool
+    /// call the runner refused, with its reason, even though none of them repeated.
+    /// </summary>
+    [Fact]
+    public async Task CompletedActionWithRefusals_WhoseGuardrailFails_NamesTheRefusalsInFeedback()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor, checkPasses: false);
+        var runner = new ScriptedRunner(new PromptResult
+        {
+            Completed = true,
+            IsError = false,
+            Summary = "cursor completed; 1 tool call(s) refused by Cursor: shell `rm -rf bin` — Hook blocked",
+            RefusedCommands = ["rm -rf bin"],
+            BlockedWritePaths = ["rm -rf bin"],
+            RefusedToolCalls = [new ToolRefusal("shell", "rm -rf bin", "Hook blocked with message: destructive command")]
+        });
+
+        await RunSerialAsync(plan, runner);
+
+        string firstFeedback = Directory
+            .GetFiles(Path.Combine(plan.PlanDirectory), "feedback.md", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .First();
+        string feedback = File.ReadAllText(firstFeedback);
+        Assert.Contains("## Tool calls the runner refused this attempt", feedback, StringComparison.Ordinal);
+        Assert.Contains("- shell `rm -rf bin` — Hook blocked with message: destructive command", feedback, StringComparison.Ordinal);
+    }
+
+    /// <summary>The same completed-with-refusals action whose guardrail PASSES goes green (#534/#708 parity).</summary>
+    [Fact]
+    public async Task CompletedActionWithRefusals_WhoseGuardrailPasses_Succeeds()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor);
+        var runner = new ScriptedRunner(new PromptResult
+        {
+            Completed = true,
+            IsError = false,
+            Summary = "cursor completed; 1 tool call(s) refused by Cursor",
+            RefusedCommands = ["rm -rf bin"],
+            BlockedWritePaths = ["rm -rf bin"],
+            RefusedToolCalls = [new ToolRefusal("shell", "rm -rf bin", "Hook blocked")]
+        });
+
+        RunReport report = await RunSerialAsync(plan, runner);
+
+        Assert.Equal(TaskOutcome.Succeeded, report.Tasks.Single().Outcome);
+    }
+
+    private static string SingleFeedback(PlanDefinition plan) =>
+        Assert.Single(Directory.GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories));
+
+    /// <summary>A prompt runner that returns the same result on every call, counting the calls.</summary>
+    private sealed class ScriptedRunner(PromptResult result) : IPromptRunner
+    {
+        public int Calls { get; private set; }
+
+        public string Name => "stub";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(result);
+        }
+    }
+
     // ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 
     private static string CheckFileName => Win ? "01-check.ps1" : "01-check.sh";
@@ -259,7 +382,7 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
             route: null,
             cancellationToken: Ct);
 
-    private PlanDefinition WritePlan(PromptRunnerKind kind)
+    private PlanDefinition WritePlan(PromptRunnerKind kind, bool checkPasses = true)
     {
         string planDir = Path.Combine(_root, "plan");
         string kindKey = kind == PromptRunnerKind.Cursor ? "\"kind\": \"cursor\", " : "";
@@ -280,7 +403,8 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
             """{ "description": "tamper fixture", "dependsOn": [], "writeScope": [], "action": { "path": "action.prompt.md" } }""");
         Write(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.\n");
         string check = Path.Combine(taskDir, "guardrails", CheckFileName);
-        Write(check, Win ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n");
+        string exitCode = checkPasses ? "0" : "1";
+        Write(check, Win ? $"exit {exitCode}\n" : $"#!/usr/bin/env bash\nexit {exitCode}\n");
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(check,

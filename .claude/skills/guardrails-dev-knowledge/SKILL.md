@@ -175,8 +175,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   WARNING, `validate` only, self-hosting case only, #564/SSOT §16) is TAKEN too, and is the first code on
   this ladder that reports the TOOL rather than the plan.
   **GR2080** (CursorRunnerUngoverned — a `kind: "cursor"` block runs with no tool allowlist or containment
-  hook; WARNING, one per cursor block, #764/SSOT §9.9) is TAKEN too.
-  Next free: **GR1011 / GR2081** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  hook; WARNING, one per cursor block, #764/SSOT §9.9) is TAKEN too, and so are **GR2081**
+  (CursorApprovalModeInvalid — unknown cursor `approvalMode`, reported by the LOADER, or the key on a
+  non-cursor block, reported by the VALIDATOR; ERROR, #767) and **GR2082** (CursorApprovalFlagInExtraArgs —
+  `--force`/`--yolo`/`--auto-review` in a cursor block's `extraArgs`; ERROR, #767).
+  Next free: **GR1011 / GR2083** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
@@ -215,12 +218,16 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   spawn — stdin write, live tee to the stream log + `transcript.md`, the #504 `StallWatch`, the #452 denial
   fail-fast, the Win32Exception launch catch, `ClaudeStreamParser`, and failure classification.
   `ClaudePromptRunner` and `CursorPromptRunner` own only argv, env and prompt delivery, plus a
-  `StreamJsonCliDialect` (summary label, whether to feed the permission scanner) and an optional per-run
+  `StreamJsonCliDialect` (summary label, an optional `ConfigurationRefusal` recogniser — #767), a per-run
+  `IToolDenialScanner` (Claude: `ClaudePermissionScanner.Scanner`; Cursor: `CursorToolCallScanner`, #773 —
+  it reads each completed `tool_call`'s `result.rejected`, feeding the wall tracker + #452) and an optional per-run
   line observer (Cursor's prompt-echo check). A change to that loop changes BOTH runners; Claude's summaries
   stay byte-identical because its label is `claude`. Cursor is not installed on CI: `CursorPromptRunnerTests`
   spawns a fake OS-picked `agent` through the real `ProcessRunner` that implements Cursor's MEASURED prompt
   rule (stdin is read only when there is no positional argument, and the prompt taken is echoed as a `user`
-  event), and replays two real captured streams from `TestData/cursor-live/`. The bash twin of that fake
+  event; it also writes `stderr.txt` to stderr, which is how the admin Run-Everything refusal is
+  reproduced), replays two real captured streams from `TestData/cursor-live/`, and replays the measured
+  refusal SHAPES from `TestData/cursor-refusals/` (every-shell-rejected, mixed, consecutive). The bash twin of that fake
   escapes quotes only (keep backslashes out of its test prompts). A real `agent` run is the manual
   `scripts/smoke/cursor-live-smoke.ps1`, never a test.
 - **Windows launch by bare name (#764).** `Process.Start` with `UseShellExecute = false` does NOT apply

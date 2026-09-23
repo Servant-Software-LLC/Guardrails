@@ -1181,7 +1181,7 @@ tiering as a working feature.
 - **`cursor` runner (#764, SSOT section 9.9).** A third implemented kind: Cursor's Agent CLI (`agent`)
   headless, built so a run can fail over to Cursor when Claude is quota-blocked. It serves `Action` and
   `Guardrail` but NEVER `Advisory`. A block with no `command` launches `agent`, not the block name. Argv:
-  `agent -p --output-format stream-json --force --trust --workspace <cwd> [--model <m>] --add-dir <planDir>
+  `agent -p --output-format stream-json [--force | --auto-review] --trust --workspace <cwd> [--model <m>] --add-dir <planDir>
   [extraArgs...]`, with the composed prompt on STDIN and NO positional (measured live: Cursor reads stdin only
   when there is no positional, and with one present it ignores stdin yet still ends `result/success`, exit 0 --
   a false green). The runner therefore VERIFIES delivery: the stream's first `user` event echoes the prompt,
@@ -1193,7 +1193,15 @@ tiering as a working feature.
   the UNFORKED `ClaudeStreamParser`; Cursor's camelCase `usage` is read cache-inclusive, cost and turns stay
   `null` (so `maxCostUsd` cannot trip on it), and the init `model` is a display name kept OUT of the observed
   model (it goes in the summary). The process/tee/stall/classify loop is shared with Claude in
-  `StreamJsonCliSession`. **No allowlist, no containment hook** (`--force`; `NeedsContainmentHook` false), so the
+  `StreamJsonCliSession`. **`approvalMode` (#767)** picks the approval flag: `"force"` (default, `--force` =
+  Run Everything; an account whose admin disabled it refuses the launch, classified `RunnerConfiguration` →
+  needs-human on the first attempt with the remedy), `"auto-review"` (`--auto-review`, the enterprise route),
+  `"none"` (no flag: shell refused unless `extraArgs` has `--sandbox enabled`); GR2081 bad value / wrong kind,
+  GR2082 an approval flag in `extraArgs`. **Refused tool calls are read per call (#773):** a session whose
+  EVERY shell call was `rejected` still ends `result/success`, so `CursorToolCallScanner` reads each completed
+  `tool_call`; every-shell-refused ⇒ `RunnerConfiguration` (needs-human, not retried); SOME refusals ⇒ the
+  action completes carrying them and the guardrails decide (Claude #534/#708 parity), with each refusal + reason
+  in the summary and `feedback.md` and the targets fed to the wall tracker and #452. **No allowlist, no containment hook** (`NeedsContainmentHook` false), so the
   harness compensates: advisory profiles (overwatch, ai-triage, criticality judge) never resolve to a cursor
   block (OFF for the run, with a `Note:` line), the task's own definition files are hashed around each action
   of an uncontained writer (`IsUncontainedWriter`) and any change fails + settles the task, and stale verdict
@@ -1755,7 +1763,7 @@ lands at that same path once drained.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2081**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2083**
   (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
@@ -1772,7 +1780,7 @@ lands at that same path once drained.
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
-  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9.
+  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9. **GR2081** = CursorApprovalModeInvalid and **GR2082** = CursorApprovalFlagInExtraArgs, both #767/SSOT section 9.9.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

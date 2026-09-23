@@ -1163,6 +1163,43 @@ public sealed class TaskExecutor : ITaskExecutor
                 TransientResetHint: action.ResetHint is { Length: > 0 } ? action.ResetHint : null);
         }
 
+        // --- runner configuration (#767 / #773): the runner's OWN configuration cannot do this work — Cursor
+        // refused to launch because the team disabled Run Everything, or every shell call the session attempted
+        // was refused by its approval policy. Settle needs-human on THIS attempt: no retry under the same
+        // configuration can succeed and no wait helps, so the remaining budget is left unspent rather than burned.
+        // After the transient check (a rate limit still pauses) and before the wall checks, whose remedy — grant
+        // the path — is not this one. The runner's summary names the refusal and the remedy.
+        if (!action.Succeeded && action.FailureKind == PromptFailureKind.RunnerConfiguration)
+        {
+            var configFeedback = new StringBuilder();
+            configFeedback.Append($"# Task '{task.Id}' halted: the prompt runner's configuration cannot do this work\n\n");
+            configFeedback.Append($"Task: {task.Description}\n\n");
+            configFeedback.Append($"{action.FailureSummary}\n\n");
+            configFeedback.Append(
+                "The task was settled needs-human on this attempt instead of being retried: every retry would run " +
+                "under the same runner configuration. Change what the message above names (the runner block's " +
+                "approvalMode, its sandbox, a hook, or the account's policy), then resume.\n");
+            configFeedback.Append(RetryPolicy.ForRunnerRefusals(action.RefusedToolCalls));
+            if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } configSalvage)
+            {
+                RetryPolicy.AppendSalvageSection(configFeedback, configSalvage, SalvageFraming.Escalation);
+            }
+
+            return _journaler.FailedAttempt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, configFeedback.ToString(), isFinal: true,
+                AttemptOutcome.ActionFailed,
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"{action.FailureSummary}; guardrails skipped, not retried — a runner-configuration " +
+                              "fault no retry can clear"
+                },
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action));
+        }
+
         if (!action.Succeeded)
         {
             // #86 (#708): a path or command refused across ≥2 attempts, on an attempt that could not finish, is a
@@ -1807,7 +1844,10 @@ public sealed class TaskExecutor : ITaskExecutor
                 ? TryStashFailedAttempt(task, worktree, attemptNumber)
                 : null;
             string feedback = RetryPolicy.ForGuardrailFailures(
-                task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef) + repeatedRefusalFeedback;
+                task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef) + repeatedRefusalFeedback
+                // #773: the tool calls the runner refused this attempt, each with its reason, whether or not they
+                // repeated — a refusal the retry never hears about is one it walks into again.
+                + RetryPolicy.ForRunnerRefusals(action.RefusedToolCalls);
             AttemptResult failedResult = _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                 guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,

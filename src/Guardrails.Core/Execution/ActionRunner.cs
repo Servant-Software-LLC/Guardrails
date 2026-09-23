@@ -534,6 +534,13 @@ internal sealed record ActionRun
     /// <summary>The entries of <see cref="BlockedWritePaths"/> that are refused commands rather than paths (#708).</summary>
     public IReadOnlyList<string> RefusedCommands { get; init; } = [];
 
+    /// <summary>
+    /// Every tool call the runner's approval policy refused this attempt, with its reason (#773) — a straight carry
+    /// of <see cref="PromptResult.RefusedToolCalls"/>. Rendered into <c>feedback.md</c> on a failed attempt so the
+    /// next one (and the human) sees what was refused and why. Empty for a script action and for Claude.
+    /// </summary>
+    public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
+
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
     // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
@@ -628,6 +635,7 @@ internal sealed record ActionRun
             ResetHint = result.ResetHint,
             BlockedWritePaths = result.BlockedWritePaths,
             RefusedCommands = result.RefusedCommands,
+            RefusedToolCalls = result.RefusedToolCalls,
             FailureSummary = result.Summary
         };
     }
@@ -649,6 +657,8 @@ internal sealed record ActionRun
             text.AppendLine(tail.TrimEnd());
             text.AppendLine("```");
         }
+
+        text.Append(RetryPolicy.ForRunnerRefusals(result.RefusedToolCalls));
 
         text.AppendLine();
         text.AppendLine("Fix the specific problem above on retry; do not start over.");

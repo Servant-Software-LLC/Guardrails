@@ -167,6 +167,11 @@ internal sealed class RawPromptRunner
     // OPERATOR-FACING TEXT ONLY (plan 28 §6.2): selects the model-not-found remedy sentence. Never
     // selects a code path or changes a request — see PromptRunnerConfig.Engine.
     public string? Engine { get; set; }
+
+    // The cursor approval mode (#767, SSOT §9.9): force | auto-review | none. null = the key was absent
+    // (force). A STRING, because its malformed form is a bad TOKEN: PlanLoader.ReadApprovalMode reports it
+    // (GR2081) and keeps loading; the validator reports the key on a non-cursor block.
+    public string? ApprovalMode { get; set; }
 }
 
 /// <summary>

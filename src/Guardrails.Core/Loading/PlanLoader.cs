@@ -483,8 +483,37 @@ public sealed class PlanLoader
             Wire = raw.Wire is null
                 ? null
                 : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
-            Engine = raw.Engine
+            Engine = raw.Engine,
+            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, configPath, diagnostics)
         };
+    }
+
+    /// <summary>
+    /// The cursor <c>approvalMode</c> (#767, SSOT §9.9). ABSENT ⇒ null (the runner applies
+    /// <see cref="CursorApprovalModes.Default"/>). An unrecognised token is GR2081 and loads as null — REPORTED,
+    /// never silently served as <c>force</c>, which is the one mode an enterprise account may refuse outright.
+    /// Whether the key belongs on this block's kind at all is the validator's question.
+    /// </summary>
+    private static CursorApprovalMode? ReadApprovalMode(
+        string name, string? rawMode, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (rawMode is null)
+        {
+            return null;
+        }
+
+        if (CursorApprovalModes.TryParse(rawMode, out CursorApprovalMode mode))
+        {
+            return mode;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+            $"promptRunners.{name}.approvalMode '{rawMode}' is not a recognised Cursor approval mode; expected " +
+            $"one of {CursorApprovalModes.TokenList}. 'force' (--force, Cursor's Run Everything) is the default " +
+            "when the key is omitted; 'auto-review' (--auto-review) is the route for a team whose administrator " +
+            "disabled Run Everything; 'none' passes neither flag, so shell is refused unless extraArgs enables " +
+            "Cursor's sandbox (\"--sandbox\", \"enabled\") (SSOT §9.9)."));
+        return null;
     }
 
     /// <summary>
