@@ -163,7 +163,8 @@ public sealed class PromptRunnerReliabilityTests
         int defaultRetries,
         int transientPauseBudgetSeconds = 1800,
         bool keepRoot = false,
-        bool guardrailPasses = true)
+        bool guardrailPasses = true,
+        bool promptGuardrail = false)
         where TRunner : IPromptRunner
     {
         string root = Path.Combine(Path.GetTempPath(), "gr-reliability-" + Guid.NewGuid().ToString("N"));
@@ -203,6 +204,13 @@ public sealed class PromptRunnerReliabilityTests
         {
             File.SetUnixFileMode(guardrailPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
+        if (promptGuardrail)
+        {
+            // A prompt JUDGE, run by the same fake runner after the action (#763 review): replaces the script check.
+            File.Delete(guardrailPath);
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-judge.prompt.md"), "Judge the thing.\n");
         }
 
         try
@@ -502,6 +510,45 @@ public sealed class PromptRunnerReliabilityTests
         {
             try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
         }
+    }
+
+    /// <summary>
+    /// #763 review: a JUDGE whose process exits non-zero with no terminal result, and whose first output line
+    /// happens to say "timed out", is an ordinary judge failure. Since #763 that line is quoted in the summary
+    /// ("claude exited 1: Error: Request timed out"), and GuardrailRunner used to read "timed out" out of the
+    /// summary text, which journaled the attempt as a Timeout (and would extend the next attempt's clock). The
+    /// decision now comes from the runner's FailureKind only.
+    /// </summary>
+    [Fact]
+    public async Task AJudgeWhoseQuotedOutputSaysTimedOut_IsAGuardrailFailure_NotATimeout()
+    {
+        var judgeFailure = new PromptResult
+        {
+            Completed = false,
+            IsError = false,
+            FailureKind = PromptFailureKind.Error,
+            Summary = "claude exited 1: Error: Request timed out"
+        };
+        var runner = new SequencingRunner(Success(), judgeFailure);
+
+        (RunReport report, TaskJournalEntry entry, _) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 0, promptGuardrail: true);
+
+        Assert.NotEqual(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        AttemptRecord attempt = Assert.Single(entry.Attempts);
+        Assert.Equal(AttemptOutcome.GuardrailFailed, attempt.Outcome);
+    }
+
+    /// <summary>The control for the test above: a judge the RUNNER classified as timed out is still a Timeout.</summary>
+    [Fact]
+    public async Task AJudgeTheRunnerClassifiedAsTimedOut_IsStillATimeout()
+    {
+        var runner = new SequencingRunner(Success(), Timeout());
+
+        (_, TaskJournalEntry entry, _) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 0, promptGuardrail: true);
+
+        Assert.Equal(AttemptOutcome.Timeout, Assert.Single(entry.Attempts).Outcome);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

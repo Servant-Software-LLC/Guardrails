@@ -5674,10 +5674,19 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   - **The failure summary carries the provider's own words (issue #763).** A session that exits non-zero
     with NO terminal result summarizes as `<label> exited <code>: <excerpt>` — e.g.
     `claude exited 1: You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit`
-    — where the excerpt is the first non-empty line of stderr, else of the #516-filtered non-stream stdout
-    (never a stream envelope, so an agent's content is never quoted as the refusal), capped at 200 characters
-    (the last one an ellipsis). With neither, it stays the bare `<label> exited <code>`, as does a non-zero
-    exit that DID produce a terminal result (its text travels separately). This summary is what the pause
+    — where the excerpt is one line, chosen in order: the first line (stderr's, then the #516-filtered
+    non-stream stdout's) that the classifier recognizes as a specific signal (transient, output cap, max
+    turns); else the first stderr line that is not a Node.js runtime warning (`(node:<pid>) …`); else the
+    first non-stream stdout line; else the first stderr line. It is capped at 200 characters (the last one an
+    ellipsis). A stream envelope is never quoted, so an agent's turns are not; stderr is quoted UNFILTERED,
+    so anything the process wrote there can be. With no line at all it stays the bare
+    `<label> exited <code>`, as does a non-zero exit that DID produce a terminal result (its text travels
+    separately).
+  - **A result that is not an error is never classified from its text (#763 review).** On a non-zero exit
+    whose terminal result has `is_error: false`, `result` is the agent's own closing prose ("Added the per-run
+    spend limit check"), so the classifier reads stderr and the non-stream stdout instead, leaving that result
+    envelope out, exactly as for a run with no result. Only an `is_error` result's text is classified. This
+    narrowing applies to `claude` too. This summary is what the pause
     reason, the `rate-limited`/needs-human line and the live/status detail show, so it applies to `claude`
     and `cursor` alike (one shared session, §9.9). Before #763 it was always the bare form, and the refusal
     reached only the stream log.

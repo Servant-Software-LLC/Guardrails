@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 
 namespace Guardrails.Core.Prompts;
@@ -427,9 +428,15 @@ internal static class StreamJsonCliSession
     }
 
     /// <summary>
-    /// The text to classify: the terminal result's error message when present (on an error the agent's
-    /// final <c>result</c> field carries the error description), else the captured process streams
-    /// (the no-terminal-result rejection case).
+    /// The text to classify: the terminal result's error message when the result IS an error (on an error the
+    /// agent's final <c>result</c> field carries the error description), else the captured process streams.
+    /// <para>
+    /// A result that is NOT an error is never classified from its text (#763 review). On a non-zero exit with
+    /// <c>is_error: false</c>, <c>result</c> is the agent's own closing prose ("Added the per-run spend limit
+    /// check"), and reading it would classify a real failure as a provider limit and pause the task for hours.
+    /// That case classifies from stderr plus the non-stream stdout exactly as a run with no result does, with the
+    /// result envelope itself left out of the stdout for the same reason.
+    /// </para>
     /// </summary>
     private static string ClassificationText(ProcessResult process, ClaudeResult result)
     {
@@ -451,22 +458,29 @@ internal static class StreamJsonCliSession
         // The fix is structural rather than a size cap: this fallback exists for output that is NOT A
         // STREAM AT ALL — a rejection printed before any envelope (#115's "instant rejection, no result
         // line"). So take only stdout lines that are not well-formed stream envelopes, plus the terminal
-        // `result` line. Tool-result content is excluded by construction, and a long rejection still
-        // classifies — which a tail-only or byte-capped heuristic would silently drop.
+        // `result` line when it reports an error. Tool-result content is excluded by construction, and a long
+        // rejection still classifies — which a tail-only or byte-capped heuristic would silently drop.
+        bool resultMayBeRead = !result.HasResult || result.IsError;
         return string.Join(
             "\n",
-            new[] { result.ResultText, result.Subtype, process.StandardError, NonStreamStdout(process.StandardOutput) }
+            new[]
+                {
+                    resultMayBeRead ? result.ResultText : null,
+                    result.Subtype,
+                    process.StandardError,
+                    NonStreamStdout(process.StandardOutput, includeResultEnvelope: resultMayBeRead)
+                }
                 .Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 
     /// <summary>
     /// The part of a runner's stdout that is NOT stream content (#516): lines that do not parse as a
-    /// stream envelope, plus the terminal <c>result</c> envelope. Everything an agent read or wrote
-    /// arrives as an <c>assistant</c>/<c>user</c>/<c>system</c> envelope (or, on Cursor, a
-    /// <c>tool_call</c> envelope) and is dropped here, so a file whose text happens to contain
-    /// "rate limit" can no longer be classified as a rate limit.
+    /// stream envelope, plus (unless <paramref name="includeResultEnvelope"/> is false) the terminal
+    /// <c>result</c> envelope. Everything an agent read or wrote arrives as an <c>assistant</c>/<c>user</c>/
+    /// <c>system</c> envelope (or, on Cursor, a <c>tool_call</c> envelope) and is dropped here, so a file whose
+    /// text happens to contain "rate limit" can no longer be classified as a rate limit.
     /// </summary>
-    internal static string? NonStreamStdout(string? stdout)
+    internal static string? NonStreamStdout(string? stdout, bool includeResultEnvelope = true)
     {
         if (string.IsNullOrWhiteSpace(stdout))
         {
@@ -486,7 +500,8 @@ internal static class StreamJsonCliSession
             // the stop reason) and everything that is not an envelope at all; drop assistant/user/system
             // content, which is where an agent's READING of a file would otherwise leak into the verdict.
             bool isEnvelope = trimmed[0] == '{' && trimmed.Contains("\"type\":", StringComparison.Ordinal);
-            if (!isEnvelope || trimmed.Contains("\"type\":\"result\"", StringComparison.Ordinal))
+            bool isResult = isEnvelope && trimmed.Contains("\"type\":\"result\"", StringComparison.Ordinal);
+            if (!isEnvelope || (isResult && includeResultEnvelope))
             {
                 kept.Add(trimmed);
             }
@@ -498,17 +513,33 @@ internal static class StreamJsonCliSession
     /// <summary>The longest provider excerpt a no-result exit summary carries (#763), ellipsis included.</summary>
     internal const int NoResultExcerptMaxChars = 200;
 
+    /// <summary>A Node.js runtime warning line (<c>(node:1234) [DEP0040] DeprecationWarning: …</c>), never the cause.</summary>
+    private static readonly Regex NodeRuntimeWarning = new(@"^\(node:\d+\)", RegexOptions.CultureInvariant);
+
     /// <summary>
-    /// The one line of a failed, no-terminal-result run that says why it failed (#763): the first non-empty
-    /// line of stderr, else the first non-empty line of <see cref="NonStreamStdout"/> — the same #516 filter
-    /// the classifier reads, so a stream envelope carrying an agent's file content can never be quoted as the
-    /// provider's refusal. Truncated to <see cref="NoResultExcerptMaxChars"/>; null when neither stream has
-    /// such a line.
+    /// The one line of a failed, no-terminal-result run that says why it failed (#763), chosen in this order:
+    /// <list type="number">
+    /// <item>the first line (stderr's, then the non-stream stdout's) that <see cref="ClaudeSignalClassifier"/>
+    /// recognizes as a specific signal (transient, output cap, max turns), so the provider's refusal wins over
+    /// whatever else the CLI printed around it;</item>
+    /// <item>else the first stderr line that is not a Node.js runtime warning (a <c>DeprecationWarning</c> on
+    /// stderr says nothing about why the run failed);</item>
+    /// <item>else the first non-stream stdout line;</item>
+    /// <item>else the first stderr line, warning or not, rather than nothing.</item>
+    /// </list>
+    /// Non-stream stdout is the same #516 filter the classifier reads, so a stream envelope carrying an agent's
+    /// file content is never quoted. stderr is NOT filtered: whatever the process wrote there can be quoted.
+    /// Truncated to <see cref="NoResultExcerptMaxChars"/>; null when neither stream has a non-empty line.
     /// </summary>
     internal static string? NoResultExcerpt(ProcessResult process)
     {
-        string? line = FirstNonEmptyLine(process.StandardError)
-            ?? FirstNonEmptyLine(NonStreamStdout(process.StandardOutput));
+        List<string> stderr = NonEmptyLines(process.StandardError);
+        List<string> stdout = NonEmptyLines(NonStreamStdout(process.StandardOutput));
+
+        string? line = stderr.Concat(stdout).FirstOrDefault(IsRecognizedSignal)
+            ?? stderr.FirstOrDefault(l => !NodeRuntimeWarning.IsMatch(l))
+            ?? stdout.FirstOrDefault()
+            ?? stderr.FirstOrDefault();
         if (line is null)
         {
             return null;
@@ -519,11 +550,19 @@ internal static class StreamJsonCliSession
             : string.Concat(line.AsSpan(0, NoResultExcerptMaxChars - 1).TrimEnd(), "…");
     }
 
-    private static string? FirstNonEmptyLine(string? text)
+    /// <summary>
+    /// True when the classifier names a SPECIFIC cause for <paramref name="line"/>. <see cref="PromptFailureKind.Error"/>
+    /// is the classifier's answer for any non-empty text it does not recognize, so it is not a signal.
+    /// </summary>
+    private static bool IsRecognizedSignal(string line) =>
+        ClaudeSignalClassifier.Classify(line) is not (PromptFailureKind.None or PromptFailureKind.Error);
+
+    private static List<string> NonEmptyLines(string? text)
     {
+        var lines = new List<string>();
         if (string.IsNullOrWhiteSpace(text))
         {
-            return null;
+            return lines;
         }
 
         foreach (string line in text.Split('\n'))
@@ -531,11 +570,11 @@ internal static class StreamJsonCliSession
             string trimmed = line.Trim();
             if (trimmed.Length > 0)
             {
-                return trimmed;
+                lines.Add(trimmed);
             }
         }
 
-        return null;
+        return lines;
     }
 
     private static string BuildSummary(ProcessResult process, ClaudeResult result, string label)
