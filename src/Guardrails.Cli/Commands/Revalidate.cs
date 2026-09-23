@@ -217,7 +217,14 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone.
+        output.WriteLine("Guardrails still failing.");
+        if (!GateHaltReport.TryWriteFromJournal(RunJournal.PathFor(plan.PlanDirectory), output))
+        {
+            output.WriteLine("  See \"planGuardrails\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 
@@ -248,7 +255,14 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone.
+        output.WriteLine("Guardrails still failing.");
+        if (!GateHaltReport.TryWriteFromJournal(RunJournal.PathFor(plan.PlanDirectory), output))
+        {
+            output.WriteLine("  See \"planPreflights\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 

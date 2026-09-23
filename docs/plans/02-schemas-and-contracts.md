@@ -4741,6 +4741,31 @@ sibling task dir — the loader reserves both names, so no task id ends in eithe
 The owning journal section records the containing directory as its `logDir` (§7), and the top-level `halt`
 record repeats it for the gate that stopped the run, so a post-mortem is one lookup from the bytes.
 
+**The console prints the halt record, not a pointer to it (issue #762).** When the pre-DAG plan preflight
+halts `run` (a Full Flight Check, a committed sample pair, or the `openai-compat` endpoint preflight — all three
+write `halt.kind: "plan-preflight-failed"`), and when `--revalidate-task plan:preflights` or
+`plan:guardrails` still fails, the CLI renders the `halt` record it just wrote, in this order:
+
+```
+Plan preflight FAILED — halting before scheduling any task: 01-baseline-main-ci-green   ← halt.headline, whole
+
+  FAILED: 01-baseline-main-ci-green                                                     ← one block per failedChecks[]
+    No '[CI] Bifrost' (bifrost-ci.yml) run found for main@36b912a7 - …                  ← the FULL reason, indented
+
+  Logs:  logs/2026-09-23T11-40-03Z-d61c/preflights                                      ← halt.logDir, when captured
+  State: <plan>/state/run.json ("planPreflights")                                       ← always the LAST line
+```
+
+The headline is `halt.headline` verbatim — before #762 the console printed its own shorter sentence, cut before
+the `: <check-name>` the record carries. A reason is capped by the same output tail `feedback.md` uses (the last
+60 lines, then the last 4000 characters, `OutputTail`), with a marker line naming the cut ahead of the text; the
+Full Flight Check reason is already bounded well below that at source (`GuardrailFailureReason`: the last 15
+non-empty lines, 2000 characters), so the cap is a
+backstop for the sample-pair and endpoint reasons, which are not. `revalidate` prefixes the block with
+`Guardrails still failing.`. The `run` path's terminal plan-gate halt keeps its own block (it also prints the
+#175 collision hint), and wave entry/exit gate halts keep `PrintWaveHalt`, which already names each check and its
+reason. A halt record that cannot be read back falls back to the pre-#762 pointer lines.
+
 **Why this is contract, not convenience.** A failing gate halts the run with **no retry, no `feedback.md`
 and no attempt dir** — before #432 the one-line `reason` in `run.json` was the only durable trace, and the
 observed footprint of a halted run was a `logs/<runId>/` containing nothing but viewer HTML. That breaks

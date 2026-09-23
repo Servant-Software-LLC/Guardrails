@@ -45,9 +45,6 @@ internal enum SalvageFraming
 /// </summary>
 public static class RetryPolicy
 {
-    private const int TailLines = 60;
-    private const int TailChars = 4000;
-
     /// <summary>Compose feedback for an attempt whose ACTION failed (guardrails were skipped).</summary>
     /// <param name="fileWritesRolledBack">
     /// True in worktree mode for a non-final attempt (segment reset to taskBase before the next attempt):
@@ -1715,13 +1712,7 @@ public static class RetryPolicy
             return;
         }
 
-        string[] lines = content.TrimEnd().Split('\n');
-        IEnumerable<string> tail = lines.Length > TailLines ? lines[^TailLines..] : lines;
-        string joined = string.Join('\n', tail);
-        if (joined.Length > TailChars)
-        {
-            joined = joined[^TailChars..];
-        }
+        string joined = OutputTail.Take(content).Text;
 
         text.AppendLine($"## {title}");
         text.AppendLine("```");
