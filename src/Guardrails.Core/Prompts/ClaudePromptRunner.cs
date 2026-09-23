@@ -54,14 +54,13 @@ public sealed class ClaudePromptRunner : IPromptRunner
     }
 
     /// <summary>
-    /// Claude's session dialect: the <c>claude</c> summary label, the #86/#104 permission scanner (whose
-    /// denial phrasing IS Claude's), and <see cref="ClaudeSignalClassifier.Classify"/> unwidened.
+    /// Claude's session dialect: the <c>claude</c> summary label and the #86/#104 permission scanner
+    /// (whose denial phrasing IS Claude's).
     /// </summary>
     private static readonly StreamJsonCliDialect Dialect = new()
     {
         Label = "claude",
-        ScansPermissionDenials = true,
-        Classify = ClaudeSignalClassifier.Classify
+        ScansPermissionDenials = true
     };
 
     /// <summary>

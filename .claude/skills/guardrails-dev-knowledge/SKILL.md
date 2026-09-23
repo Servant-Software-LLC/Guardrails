@@ -215,10 +215,20 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   spawn — stdin write, live tee to the stream log + `transcript.md`, the #504 `StallWatch`, the #452 denial
   fail-fast, the Win32Exception launch catch, `ClaudeStreamParser`, and failure classification.
   `ClaudePromptRunner` and `CursorPromptRunner` own only argv, env and prompt delivery, plus a
-  `StreamJsonCliDialect` (summary label, whether to feed the permission scanner, the classifier). A change
-  to that loop changes BOTH runners; Claude's summaries stay byte-identical because its label is `claude`.
-  Cursor is not installed on dev boxes: `CursorPromptRunnerTests` replays canned streams through a fake
-  OS-picked `agent` script via the real `ProcessRunner`.
+  `StreamJsonCliDialect` (summary label, whether to feed the permission scanner) and an optional per-run
+  line observer (Cursor's prompt-echo check). A change to that loop changes BOTH runners; Claude's summaries
+  stay byte-identical because its label is `claude`. Cursor is not installed on CI: `CursorPromptRunnerTests`
+  spawns a fake OS-picked `agent` through the real `ProcessRunner` that implements Cursor's MEASURED prompt
+  rule (stdin is read only when there is no positional argument, and the prompt taken is echoed as a `user`
+  event), and replays two real captured streams from `TestData/cursor-live/`. The bash twin of that fake
+  escapes quotes only (keep backslashes out of its test prompts). A real `agent` run is the manual
+  `scripts/smoke/cursor-live-smoke.ps1`, never a test.
+- **Windows launch by bare name (#764).** `Process.Start` with `UseShellExecute = false` does NOT apply
+  PATHEXT, so a `.cmd`-only install (Cursor's `agent.cmd`) cannot be launched as `agent`.
+  `PathExecutableProbe.ResolveFullPath(command, pathVariable)` returns the file the GR2009 probe found
+  (PATHEXT matches preferred over an extensionless sibling within a directory); `CursorPromptRunner` launches
+  that. Claude's launch deliberately still uses the bare command. Both the probe and the runner take the PATH
+  as a VALUE in tests (`new PathExecutableProbe(pathDir)`, `resolveCommand:`), never a process-wide mutation.
 - **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
   `ClaudeStreamParser` (terminal result), and `ClaudeTranscriptRenderer` (the deterministic
   `transcript.md` projection of the raw stream, #27). Verdicts come from files, never exit

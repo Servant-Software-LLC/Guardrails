@@ -281,9 +281,10 @@ public enum PromptRunnerKind
 
     /// <summary>
     /// Cursor's Agent CLI (<c>agent -p</c>, wire token <c>cursor</c>), served by
-    /// <see cref="CursorPromptRunner"/> (#764) for every role. An agent that writes files and runs commands,
-    /// but with NO per-tool allowlist and NO containment hook: it runs with <c>--force</c>, so a block of this
-    /// kind always draws a GR2080 validate warning saying so (SSOT §9.9).
+    /// <see cref="CursorPromptRunner"/> (#764) for the <see cref="PromptRole.Action"/> and
+    /// <see cref="PromptRole.Guardrail"/> roles — never <see cref="PromptRole.Advisory"/>. An agent that
+    /// writes files and runs commands, but with NO per-tool allowlist and NO containment hook: it runs with
+    /// <c>--force</c>, so a block of this kind always draws a GR2080 validate warning saying so (SSOT §9.9).
     /// </summary>
     Cursor
 }
@@ -368,6 +369,15 @@ public static class PromptRunnerKinds
     private static readonly IReadOnlySet<PromptRole> VerifierRoles =
         new HashSet<PromptRole> { PromptRole.Guardrail, PromptRole.Advisory };
 
+    /// <summary>
+    /// The two roles a file-writing agent with NO tool allowlist may serve (#764): it can do work and judge
+    /// work, but it is never handed an <see cref="PromptRole.Advisory"/> prompt — those (the overwatcher,
+    /// ai-triage, the criticality judge) are read-only by construction, and a runner launched with
+    /// <c>--force</c> cannot honour read-only.
+    /// </summary>
+    private static readonly IReadOnlySet<PromptRole> UngovernedAgentRoles =
+        new HashSet<PromptRole> { PromptRole.Action, PromptRole.Guardrail };
+
     /// <summary>No role at all — a reserved kind with no runner class serves nothing.</summary>
     private static readonly IReadOnlySet<PromptRole> NoRoles = new HashSet<PromptRole>();
 
@@ -393,7 +403,7 @@ public static class PromptRunnerKinds
     {
         PromptRunnerKind.Claude => AllRoles,
         PromptRunnerKind.OpenAiCompat => VerifierRoles,
-        PromptRunnerKind.Cursor => AllRoles,
+        PromptRunnerKind.Cursor => UngovernedAgentRoles,
         _ => NoRoles
     };
 
@@ -414,11 +424,22 @@ public static class PromptRunnerKinds
     /// write files, but the hook is a Claude Code PreToolUse hook passed as <c>--settings</c>, which Cursor's
     /// CLI cannot load (and would reject as an unknown option). A cursor block therefore runs WITHOUT the
     /// outer boundary — stated to the operator by the GR2080 validate warning, never silently — and its
-    /// writes are policed only by the harness's post-hoc git-diff checks. <see cref="CursorPromptRunner"/>
-    /// refuses <c>--settings</c> as the backstop, exactly as <see cref="OpenAiCompatPromptRunner"/> does.</para>
+    /// writes are policed after the fact: the worktree git-diff checks, and — keyed on exactly this fact
+    /// plus <see cref="WritesFiles"/> — the task-definition tamper check around every action
+    /// (<see cref="IsUncontainedWriter"/>). <see cref="CursorPromptRunner"/> refuses <c>--settings</c> as the
+    /// backstop, exactly as <see cref="OpenAiCompatPromptRunner"/> does.</para>
     /// </summary>
     public static bool NeedsContainmentHook(PromptRunnerKind kind) =>
         kind is not (PromptRunnerKind.OpenAiCompat or PromptRunnerKind.Cursor);
+
+    /// <summary>
+    /// True for a kind whose runner WRITES files yet runs WITHOUT the §9.4 containment hook — today only
+    /// <see cref="PromptRunnerKind.Cursor"/> (#764). Derived from the two build facts rather than naming a
+    /// kind, so a future runner of the same shape gets the same compensating check: the harness hashes the
+    /// task's own definition files around every action dispatched to such a runner and fails the attempt if
+    /// they changed (<c>TaskDefinitionTamperCheck</c>, SSOT §9.9).
+    /// </summary>
+    public static bool IsUncontainedWriter(PromptRunnerKind kind) => WritesFiles(kind) && !NeedsContainmentHook(kind);
 
     /// <summary>
     /// True when this kind's runner has a write tool and so gets the shipped verdict-file contract

@@ -197,6 +197,15 @@ internal sealed class GuardrailRunner
         string stagingVerdictPath = PromptOutputStaging.PrepareStagingPath(
             effectiveWorkspaceRoot, task.Id, attemptFolder, verdictPath);
 
+        // #764: nothing may be waiting at either verdict path when the judge starts. Both are predictable and
+        // both are writable by the ACTION that ran just before this judge — the final path sits in the plan's
+        // log dir (reachable through --add-dir), the staged one in the workspace — so an agent could plant
+        // `{"pass": true}` and a judge that then wrote nothing would be read as passing. Deleting them first
+        // makes "the judge wrote no verdict" fail honestly (GuardrailVerdictReader's no-valid-verdict path).
+        // Runner-agnostic on purpose: Cursor (--force, no hook) makes this easy, but a Claude action in SERIAL
+        // mode has no containment hook either and was never stopped from writing there.
+        PromptOutputStaging.ClearStaleOutputs(stagingVerdictPath, verdictPath);
+
         // §6.4: the verdict contract branches on ONE capability of the block this invocation will
         // actually execute on — can its runner write files? A runner that cannot is told to TRANSCRIBE
         // (emit the verdict as the last fenced JSON block; the harness writes it) instead of being handed

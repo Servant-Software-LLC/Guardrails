@@ -251,6 +251,13 @@ public sealed class ClaudeStreamParser
     /// <c>modelUsage</c> map carrying the same numbers, but on a multi-model attempt that map holds
     /// one entry per model — preferring it would report only one of them as the whole attempt.
     /// </para>
+    /// <para>
+    /// <b>Cursor's camelCase block (#764).</b> Cursor's Agent CLI reports
+    /// <c>{"inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"}</c>, with <c>inputTokens</c>
+    /// NET of cache. It is read ONLY when the block carries none of the four snake_case fields, so a
+    /// Claude block parses exactly as before, and it follows the same cache-inclusive rule:
+    /// <c>inputTokens + cacheReadTokens + cacheWriteTokens</c>.
+    /// </para>
     /// </summary>
     private static ClaudeUsage? TryGetUsage(JsonElement root)
     {
@@ -263,6 +270,15 @@ public sealed class ClaudeStreamParser
         int? cacheCreation = TryGetInt(usage, "cache_creation_input_tokens");
         int? cacheRead = TryGetInt(usage, "cache_read_input_tokens");
         int? output = TryGetInt(usage, "output_tokens");
+
+        if (input is null && cacheCreation is null && cacheRead is null && output is null)
+        {
+            // Cursor's camelCase spelling (#764) — consulted only when no snake_case field is present.
+            input = TryGetInt(usage, "inputTokens");
+            cacheCreation = TryGetInt(usage, "cacheWriteTokens");
+            cacheRead = TryGetInt(usage, "cacheReadTokens");
+            output = TryGetInt(usage, "outputTokens");
+        }
 
         if (input is null && cacheCreation is null && cacheRead is null && output is null)
         {

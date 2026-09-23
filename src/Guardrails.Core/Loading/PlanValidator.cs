@@ -400,10 +400,18 @@ public sealed class PlanValidator
                 $"promptRunners.{runner.Name} is kind 'cursor'. Cursor's print mode has no per-tool allowlist " +
                 "and cannot load the worktree containment hook, so the harness grants it FULL write and shell " +
                 "access (--force). 'permissionMode', 'allowedTools', 'maxTurns' and 'maxOutputTokens' — and any " +
-                $"'guardrailOverrides' of them — are IGNORED for this block. {declared} Write scope is enforced " +
-                "only after the fact, by the harness's git-diff checks; a prompt guardrail run on this block can " +
-                "write to the tree too. The bounds that still apply are the timeout and the stall bound " +
-                "(SSOT §9.9)."));
+                $"'guardrailOverrides' of them — are IGNORED for this block. {declared} Cursor reports no cost, " +
+                "so 'maxCostUsd' can never trip on this block's spend. What the harness DOES enforce: the git-diff " +
+                "write-scope check (worktree mode only, and only inside the worktree); the task's own definition " +
+                "files are hashed around every action and any change fails the attempt; stale verdict files are " +
+                "deleted before every prompt judge; the agent's echo of its prompt must match what was sent; and " +
+                "this block never serves the overwatcher, ai-triage or the criticality judge (if it is the " +
+                "default runner, those are OFF for the run). What it does NOT contain: writes outside the " +
+                "worktree — the plan folder via --add-dir, other worktrees, the main checkout, git stash — and " +
+                "in-scope edits a prompt guardrail on this block makes. The bounds that still apply are the " +
+                "timeout and the stall bound. Cursor's own '--sandbox enabled' can be opted into through " +
+                "'extraArgs'; it is not defaulted because its Windows behavior and its effect on network access " +
+                "(e.g. dotnet restore) are unproven (SSOT §9.9)."));
         }
     }
 

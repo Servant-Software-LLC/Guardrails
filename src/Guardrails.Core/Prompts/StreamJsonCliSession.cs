@@ -8,7 +8,8 @@ namespace Guardrails.Core.Prompts;
 /// (<see cref="ClaudePromptRunner"/>, <see cref="CursorPromptRunner"/>) once the process is launched. Every
 /// other part of a session — the stdin write, the live tee to <c>*.stream.jsonl</c> and <c>transcript.md</c>,
 /// the #504 stall watchdog, the launch-failure catch, the terminal-result parse and the failure
-/// classification — is the same code, in <see cref="StreamJsonCliSession"/>.
+/// classification (<see cref="ClaudeSignalClassifier"/>, one classifier for both) — is the same code, in
+/// <see cref="StreamJsonCliSession"/>.
 /// </summary>
 internal sealed record StreamJsonCliDialect
 {
@@ -26,13 +27,6 @@ internal sealed record StreamJsonCliDialect
     /// absent rather than fed a dialect it would misread.
     /// </summary>
     public required bool ScansPermissionDenials { get; init; }
-
-    /// <summary>
-    /// Classify a failure's text into a <see cref="PromptFailureKind"/>. Claude uses
-    /// <see cref="ClaudeSignalClassifier.Classify"/> unchanged; another CLI may widen it with its own quota
-    /// phrasing, inside its own quarantine.
-    /// </summary>
-    public required Func<string?, PromptFailureKind> Classify { get; init; }
 }
 
 /// <summary>
@@ -40,8 +34,8 @@ internal sealed record StreamJsonCliDialect
 /// <see cref="ClaudePromptRunner"/> and <see cref="CursorPromptRunner"/> (#764). The runners own their
 /// argv, environment and prompt delivery (the vendor spelling, SSOT §9); this owns everything after the
 /// spawn. Extracted from <see cref="ClaudePromptRunner"/> verbatim — with <see cref="StreamJsonCliDialect.Label"/>
-/// <c>"claude"</c>, <see cref="StreamJsonCliDialect.ScansPermissionDenials"/> true and
-/// <see cref="ClaudeSignalClassifier.Classify"/>, the result is byte-identical to the pre-#764 runner.
+/// <c>"claude"</c> and <see cref="StreamJsonCliDialect.ScansPermissionDenials"/> true, the result is
+/// byte-identical to the pre-#764 runner.
 /// </summary>
 internal static class StreamJsonCliSession
 {
@@ -57,7 +51,8 @@ internal static class StreamJsonCliSession
     /// <summary>
     /// Launch <paramref name="command"/> and drive the session to a <see cref="PromptResult"/>. Semantic
     /// disposition: a non-zero exit OR no terminal <c>result</c> message ⇒ <see cref="PromptResult.Completed"/>
-    /// = false.
+    /// = false. <paramref name="lineObserver"/> sees every stdout line in order, on the reader thread, for a
+    /// runner that must check something about the stream itself (Cursor's prompt-echo check, #764).
     /// </summary>
     public static async Task<PromptResult> RunAsync(
         ProcessRunner processRunner,
@@ -66,7 +61,8 @@ internal static class StreamJsonCliSession
         string? standardInput,
         PromptInvocation invocation,
         StreamJsonCliDialect dialect,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? lineObserver = null)
     {
         var parser = new ClaudeStreamParser();
 
@@ -140,6 +136,7 @@ internal static class StreamJsonCliSession
                 stall?.Beat();
                 parser.Feed(line);
                 permissionScanner?.Feed(line);
+                lineObserver?.Invoke(line);
                 streamWriter?.WriteLine(line);
                 transcript?.Feed(line);
 
@@ -302,7 +299,7 @@ internal static class StreamJsonCliSession
 
             bool completed = process.Succeeded && result.HasResult;
             string summary = BuildSummary(process, result, dialect.Label);
-            PromptFailureKind failureKind = ClassifyFailure(process, result, dialect.Classify);
+            PromptFailureKind failureKind = ClassifyFailure(process, result);
             string? resetHint = failureKind == PromptFailureKind.Transient
                 ? ClaudeSignalClassifier.ExtractResetHint(ClassificationText(process, result))
                 : null;
@@ -386,7 +383,7 @@ internal static class StreamJsonCliSession
             // Nothing reported an error: the agent never ran. Completed = false already fails the
             // attempt — the same shape as today's "no terminal result" outcome.
             IsError = false,
-            FailureKind = dialect.Classify(classificationText),
+            FailureKind = ClaudeSignalClassifier.Classify(classificationText),
             Summary = $"{dialect.Label} could not be launched: '{executable}' — {launchFailure.Message}"
         };
     }
@@ -396,10 +393,9 @@ internal static class StreamJsonCliSession
     /// Precedence: a process timeout is <see cref="PromptFailureKind.Timeout"/>; otherwise the error
     /// TEXT — the terminal result's error message, or, when no terminal result was produced (the
     /// "instant rejection, no result line" case in #115), the captured stdout/stderr — is classified
-    /// by the dialect's classifier. A clean success is <see cref="PromptFailureKind.None"/>.
+    /// by <see cref="ClaudeSignalClassifier"/>. A clean success is <see cref="PromptFailureKind.None"/>.
     /// </summary>
-    private static PromptFailureKind ClassifyFailure(
-        ProcessResult process, ClaudeResult result, Func<string?, PromptFailureKind> classify)
+    private static PromptFailureKind ClassifyFailure(ProcessResult process, ClaudeResult result)
     {
         if (process.TimedOut)
         {
@@ -422,7 +418,7 @@ internal static class StreamJsonCliSession
             return PromptFailureKind.MaxTurns;
         }
 
-        PromptFailureKind classified = classify(ClassificationText(process, result));
+        PromptFailureKind classified = ClaudeSignalClassifier.Classify(ClassificationText(process, result));
 
         // A recognized transient/cap signal wins. Otherwise this is a genuine error — but if there was
         // no error text at all (e.g. a clean exit with no terminal result), still report Error so the

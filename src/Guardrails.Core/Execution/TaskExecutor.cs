@@ -877,6 +877,16 @@ public sealed class TaskExecutor : ITaskExecutor
         // log artifacts and has no child-process clock to report), so reading it would hand every prompt
         // attempt a confident `0`: a wrong number wearing a measurement's clothes. The guardrail half is
         // measured inside GuardrailRunner for the mirror-image reason — see the clock there.
+        // #764 (SSOT §9.9): an action dispatched to an UNCONTAINED writer (a runner that writes files with no
+        // §9.4 hook — today `cursor`, under --force, with the plan directory granted by --add-dir) could rewrite
+        // the guardrails about to grade it. Snapshot the task's own definition files now; checked right after.
+        TaskDefinitionTamperCheck? tamperCheck =
+            task.Action.Kind == ActionKind.Prompt
+            && DispatchBlockFor(task, route) is { } dispatchBlock
+            && PromptRunnerKinds.IsUncontainedWriter(dispatchBlock.Kind)
+                ? TaskDefinitionTamperCheck.Begin(task)
+                : null;
+
         var actionClock = Stopwatch.StartNew();
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
@@ -983,6 +993,37 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.Cancelled(
                 task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
                 action.CostUsd, action.Usage, provenance: provenance, turns: action.Turns,
+                segments: AttemptJournaler.SegmentsFor(action));
+        }
+
+        // --- #764: task-definition tamper check (uncontained writers only) ---------------
+        // FAILS the attempt, and settles it: a retry would run against the rewritten definition, which is
+        // exactly what cannot be trusted. Ahead of every other outcome (needsHuman included) because every
+        // later verdict would be graded by files the agent itself may have written.
+        if (tamperCheck?.Changes() is { Count: > 0 } tampered)
+        {
+            string files = string.Join(", ", tampered);
+            string tamperFeedback =
+                $"# Task '{task.Id}' modified its own definition\n\n" +
+                "This attempt ran on a runner with no containment hook and no tool allowlist (SSOT §9.9), and " +
+                "while it ran, files in the task's own definition changed:\n\n" +
+                string.Concat(tampered.Select(t => $"- {t}\n")) +
+                "\nA task may not edit its manifest, its action prompt, its guardrails or its preflights: they are " +
+                "what grades it. The attempt is failed and the task settled needs-human rather than retried, " +
+                "because a retry would be graded by the rewritten files. Inspect the changes (git diff on the plan " +
+                "folder), restore what should not have changed, and re-run.\n";
+            return _journaler.FailedAttempt(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, tamperFeedback, isFinal: true,
+                AttemptOutcome.ActionFailed,
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"the action modified the task's own definition ({files}); guardrails skipped, " +
+                              "not retried — a retry would be graded by the rewritten files"
+                },
+                costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
                 segments: AttemptJournaler.SegmentsFor(action));
         }
 
@@ -2407,7 +2448,7 @@ public sealed class TaskExecutor : ITaskExecutor
             return null;
         }
 
-        ToolGrantResolution? grants = ResolveToolGrants(task);
+        ToolGrantResolution? grants = ResolveToolGrants(task, route);
 
         // Warmth (plan 30 §3.4): absent for a script attempt (no route resolved, so "cold" would be a
         // false first-invocation penalty on work that invoked no model), else true on every attempt
@@ -2483,15 +2524,9 @@ public sealed class TaskExecutor : ITaskExecutor
     /// (a malformed plan validation would already reject): recording a fabricated empty split there
     /// would assert "the plan declared nothing", which is not what the harness knows.
     /// </summary>
-    private ToolGrantResolution? ResolveToolGrants(TaskNode task)
+    private ToolGrantResolution? ResolveToolGrants(TaskNode task, TierResolution? route)
     {
-        if (task.Action.Kind != ActionKind.Prompt)
-        {
-            return null;
-        }
-
-        string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
-        if (runnerName is null || !_plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
+        if (task.Action.Kind != ActionKind.Prompt || DispatchBlockFor(task, route) is not { } config)
         {
             return null;
         }
@@ -2506,6 +2541,19 @@ public sealed class TaskExecutor : ITaskExecutor
         // The ACTION profile, not the guardrail one: this provenance describes the action attempt.
         return ClaudePromptRunner.ResolveToolGrants(config.EffectiveSettings(isGuardrail: false).AllowedTools);
     }
+
+    /// <summary>
+    /// The <c>promptRunners</c> block a prompt attempt of <paramref name="task"/> DISPATCHES to — asked of
+    /// <see cref="PromptRunnerRegistry.DispatchNameFor"/>, the one expression <c>ActionRunner</c> hands the
+    /// registry, so provenance and the #764 tamper check describe the runner that actually ran rather than a
+    /// second derivation of it. <c>task.Action.Runner</c> already carries the action prompt's front-matter
+    /// <c>runner:</c> pin (folded at load), so no front-matter is passed. Null when nothing resolves.
+    /// </summary>
+    private PromptRunnerConfig? DispatchBlockFor(TaskNode task, TierResolution? route) =>
+        PromptRunnerRegistry.DispatchNameFor(_plan.Config, route, task.Action.Runner, frontmatterRunner: null) is { } name
+        && _plan.Config.PromptRunners.TryGetValue(name, out PromptRunnerConfig? block)
+            ? block
+            : null;
 
     /// <summary>
     /// The declared half of a <see cref="ToolGrantResolution"/>: the effective set minus what the

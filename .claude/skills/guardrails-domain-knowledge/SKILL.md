@@ -1179,24 +1179,30 @@ tiering as a working feature.
   verified nothing. **Judge spend is recorded but NOT folded into `JournalCost.Total`** -- actor
   spend and verifier spend are two numbers on purpose. Full contract: SSOT section 9.8.
 - **`cursor` runner (#764, SSOT section 9.9).** A third implemented kind: Cursor's Agent CLI (`agent`)
-  headless, an AGENT serving all three roles, built so a run can fail over to Cursor when Claude is
-  quota-blocked. A block with no `command` launches `agent`, not the block name. Argv:
-  `agent -p <pointer> --output-format stream-json --force --trust --workspace <cwd> [--model <m>]
-  --add-dir <planDir> [extraArgs...]`. It NEVER emits `--verbose`/`--permission-mode`/`--max-turns`/
-  `--allowedTools` (Cursor exits at parse time on all four -- the #764 defect). The composed prompt goes on
-  STDIN and the positional is a short fixed pointer to it (a full positional prompt would blow the Windows
-  command-line limit). That stdin is read is the one assumption no live run has proven yet;
-  `CursorPromptRunner.Deliver` is the one method to swap. The stream is parsed by the UNFORKED
-  `ClaudeStreamParser` (init `model` echo + terminal `result`; `tool_call` events are skipped), and cost,
-  turns and usage stay `null` (Cursor reports none). The process/tee/stall/classify loop is shared with
-  Claude in `StreamJsonCliSession`. **No allowlist, no containment hook:** `--force` = full write/shell,
-  `NeedsContainmentHook(Cursor)` is false (Cursor cannot load the Claude `--settings` hook, and the runner
-  throws if it arrives), the permission scanner is not fed (so the #452 denial fail-fast is inert), and
-  `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` (and their `guardrailOverrides`) are ignored.
-  **GR2080** (`CursorRunnerUngoverned`, a WARNING on every cursor block) says so and names each of those
-  keys the block declares. Known gap it states: a prompt GUARDRAIL on a cursor block can edit the tree,
-  and no existing check catches an in-scope edit made during guardrails. `You've hit your individual spend
-  limit` is `Transient` for cursor only.
+  headless, built so a run can fail over to Cursor when Claude is quota-blocked. It serves `Action` and
+  `Guardrail` but NEVER `Advisory`. A block with no `command` launches `agent`, not the block name. Argv:
+  `agent -p --output-format stream-json --force --trust --workspace <cwd> [--model <m>] --add-dir <planDir>
+  [extraArgs...]`, with the composed prompt on STDIN and NO positional (measured live: Cursor reads stdin only
+  when there is no positional, and with one present it ignores stdin yet still ends `result/success`, exit 0 --
+  a false green). The runner therefore VERIFIES delivery: the stream's first `user` event echoes the prompt,
+  and a completed run whose echo does not open with the composed prompt's first 4 KB is failed
+  ("cursor did not receive the composed prompt"). That also catches a bare token in `extraArgs`. It NEVER
+  emits `--verbose`/`--permission-mode`/`--max-turns`/`--allowedTools` (Cursor exits at parse time on all
+  four -- the #764 defect). On Windows `command` is resolved through PATH+PATHEXT to a full path
+  (`agent.cmd`) by `PathExecutableProbe.ResolveFullPath`, the same rule GR2009 uses. The stream is parsed by
+  the UNFORKED `ClaudeStreamParser`; Cursor's camelCase `usage` is read cache-inclusive, cost and turns stay
+  `null` (so `maxCostUsd` cannot trip on it), and the init `model` is a display name kept OUT of the observed
+  model (it goes in the summary). The process/tee/stall/classify loop is shared with Claude in
+  `StreamJsonCliSession`. **No allowlist, no containment hook** (`--force`; `NeedsContainmentHook` false), so the
+  harness compensates: advisory profiles (overwatch, ai-triage, criticality judge) never resolve to a cursor
+  block (OFF for the run, with a `Note:` line), the task's own definition files are hashed around each action
+  of an uncontained writer (`IsUncontainedWriter`) and any change fails + settles the task, and stale verdict
+  files are deleted before every prompt judge (runner-agnostic). NOT contained: writes outside the worktree
+  (plan folder via `--add-dir`, other worktrees, `git stash`) and in-scope edits by a judge. **GR2080**
+  (`CursorRunnerUngoverned`, a WARNING on every cursor block) states all of this and names each ignored
+  `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` key the block declares. Claude's
+  `You've hit your individual spend limit` is now `Transient` in the SHARED classifier (a deliberate Claude
+  behavior change). Manual live smoke: `scripts/smoke/cursor-live-smoke.ps1` (spends credit; not CI).
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.

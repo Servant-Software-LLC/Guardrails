@@ -1305,8 +1305,11 @@ public static class DiagnosticCodes
     /// controls a Claude block has (#764, SSOT §9.9). Cursor's print mode has no per-tool allowlist and cannot
     /// load the Claude worktree-containment hook, so the harness launches it with <c>--force</c> (full write and
     /// shell access); <c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c> and <c>maxOutputTokens</c> —
-    /// and any <c>guardrailOverrides</c> of them — are IGNORED, and write scope is enforced only after the fact
-    /// by the harness's git-diff checks. Fires ONCE PER cursor block, always, and names every one of those keys
+    /// and any <c>guardrailOverrides</c> of them — are IGNORED, and <c>maxCostUsd</c> cannot trip on it (Cursor
+    /// reports no cost). The message states what IS enforced (the worktree-only git-diff write-scope check, the
+    /// task-definition tamper check, the stale-verdict clear, the prompt-echo check, and exclusion from the
+    /// advisory profiles) and what is NOT (writes outside the worktree: the plan folder via <c>--add-dir</c>,
+    /// other worktrees, <c>git stash</c>). Fires ONCE PER cursor block, always, and names every one of those keys
     /// the block (or its <c>guardrailOverrides</c>) declares, so a Claude block copied and flipped to
     /// <c>kind: "cursor"</c> is told exactly what stopped applying.
     /// <para>A WARNING, not an error: running a cursor block is a legitimate operator choice (the #764 recovery

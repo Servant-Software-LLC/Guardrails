@@ -134,7 +134,17 @@ public sealed class CursorRunnerValidationTests : IDisposable
         Assert.Contains("--force", warning.Message, StringComparison.Ordinal);
         Assert.Contains("git-diff", warning.Message, StringComparison.Ordinal);
 
-        string declared = warning.Message[warning.Message.IndexOf("This block declares", StringComparison.Ordinal)..];
+        // Round 2 (D9): the honest inventory — what is enforced, what is not, and the cost cap that cannot trip.
+        Assert.Contains("'maxCostUsd' can never trip", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("definition files are hashed", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("stale verdict files are deleted", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("the plan folder via --add-dir", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("never serves the overwatcher", warning.Message, StringComparison.Ordinal);
+
+        int start = warning.Message.IndexOf("This block declares", StringComparison.Ordinal);
+        int end = warning.Message.IndexOf("NO effect on a cursor runner.", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, warning.Message);
+        string declared = warning.Message[start..end];
         foreach (string key in new[]
                  {
                      "'permissionMode'", "'allowedTools'", "'maxTurns'", "'maxOutputTokens'",

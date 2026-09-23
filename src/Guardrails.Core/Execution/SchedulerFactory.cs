@@ -305,11 +305,11 @@ public static class SchedulerFactory
 
     /// <summary>Resolve the runner the overwatcher's diagnose prompt drives: the reserved <c>overwatch</c> profile, else the default/sole runner, else null.</summary>
     private static IPromptRunner? ResolveOverwatchRunner(PromptRunnerRegistry registry) =>
-        ResolveReservedRunner(registry, OverwatchRunnerProfile);
+        ResolveReservedRunner(registry, OverwatchRunnerProfile, PromptRole.Advisory);
 
     /// <summary>Resolve the runner the #360 between-wave breakdown drives: the reserved <c>breakdown</c> profile, else the default/sole runner, else null.</summary>
     private static IPromptRunner? ResolveBreakdownRunner(PromptRunnerRegistry registry) =>
-        ResolveReservedRunner(registry, BreakdownRunnerProfile);
+        ResolveReservedRunner(registry, BreakdownRunnerProfile, PromptRole.Action);
 
     /// <summary>
     /// Resolve the <see cref="IPromptRunner"/> the AI-merge worker should drive: the reserved
@@ -318,7 +318,7 @@ public static class SchedulerFactory
     /// no agent to call, so a conflict must halt to needs-human, never pass vacuously).
     /// </summary>
     private static IPromptRunner? ResolveMergeRunner(PromptRunnerRegistry registry) =>
-        ResolveReservedRunner(registry, MergeRunnerProfile);
+        ResolveReservedRunner(registry, MergeRunnerProfile, PromptRole.Action);
 
     /// <summary>
     /// Resolve the <see cref="IPromptRunner"/> the needs-human triage should drive: the reserved
@@ -327,21 +327,71 @@ public static class SchedulerFactory
     /// advisory triage — never a crash, never a verdict change).
     /// </summary>
     private static IPromptRunner? ResolveTriageRunner(PromptRunnerRegistry registry) =>
-        ResolveReservedRunner(registry, TriageRunnerProfile);
+        ResolveReservedRunner(registry, TriageRunnerProfile, PromptRole.Advisory);
 
     /// <summary>
     /// Shared resolution for a reserved prompt-runner profile: the reserved <paramref name="profile"/>
     /// when declared, else the registry's default (or sole) runner, else <c>null</c> when the plan
     /// declares no prompt runner at all.
+    ///
+    /// <para><b>…and null when the block it lands on cannot serve <paramref name="role"/> (#764).</b> A
+    /// <c>cursor</c> block runs with <c>--force</c>; the Advisory profiles (<c>overwatch</c>, which also
+    /// drives the criticality judge, and <c>ai-triage</c>) are read-only by construction, so a cursor block
+    /// is never chosen for one — neither by name nor by the default/sole fallback. The feature is then OFF
+    /// for the run, exactly as for a plan that declares no runner, and the CLI says so at run start
+    /// (<see cref="WithheldAdvisoryProfiles"/>). There is deliberately no fall-through to some OTHER block:
+    /// the operator named this block, and substituting another model is the same failure
+    /// <c>PromptRunnerRegistry</c> refuses for an unimplemented kind.</para>
     /// </summary>
-    private static IPromptRunner? ResolveReservedRunner(PromptRunnerRegistry registry, string profile)
+    internal static IPromptRunner? ResolveReservedRunner(PromptRunnerRegistry registry, string profile, PromptRole role)
     {
-        if (registry.Contains(profile))
+        string? name = registry.Contains(profile) ? profile : registry.DefaultRunnerName;
+        if (name is null)
         {
-            return registry.Resolve(profile);
+            return null;
         }
 
-        return registry.DefaultRunnerName is { } name ? registry.Resolve(name) : null;
+        return PromptRunnerKinds.ServesRoles(registry.ResolveConfig(name).Kind).Contains(role)
+            ? registry.Resolve(name)
+            : null;
+    }
+
+    /// <summary>
+    /// The operator-visible statement of what <see cref="ResolveReservedRunner"/> withholds (#764): one line
+    /// per ADVISORY feature that is OFF for this run because the block its profile resolves to — by name, or
+    /// as the default/sole block — is of a kind that does not serve the Advisory role (today: <c>cursor</c>).
+    /// Empty when nothing is withheld. Pure over the config, so the CLI can print it before the run starts and
+    /// a test can pin it without building a scheduler.
+    /// </summary>
+    public static IReadOnlyList<string> WithheldAdvisoryProfiles(RunConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        var lines = new List<string>();
+        foreach ((string profile, string feature) in new[]
+                 {
+                     (OverwatchRunnerProfile, "the overwatcher's diagnose and the autonomy criticality judge"),
+                     (TriageRunnerProfile, "the needs-human AI triage")
+                 })
+        {
+            string? name = config.PromptRunners.ContainsKey(profile) ? profile : PromptRunnerRegistry.DefaultNameFor(config);
+            if (name is null || !config.PromptRunners.TryGetValue(name, out PromptRunnerConfig? block)
+                || PromptRunnerKinds.ServesRoles(block.Kind).Contains(PromptRole.Advisory))
+            {
+                continue;
+            }
+
+            string how = name == profile
+                ? $"is declared as '{profile}'"
+                : $"is the default runner, which '{profile}' falls back to";
+            lines.Add(
+                $"'{profile}' is OFF for this run: block '{name}' (kind '{PromptRunnerKinds.Token(block.Kind)}') {how}, " +
+                $"and that kind does not serve advisory prompts — {feature} is read-only by " +
+                "construction and is never run under --force. Declare a 'claude' block named " +
+                $"'{profile}' to turn it back on (SSOT §9.9).");
+        }
+
+        return lines;
     }
 
     /// <summary>
