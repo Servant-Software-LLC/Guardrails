@@ -495,6 +495,49 @@ internal static class StreamJsonCliSession
         return kept.Count == 0 ? null : string.Join("\n", kept);
     }
 
+    /// <summary>The longest provider excerpt a no-result exit summary carries (#763), ellipsis included.</summary>
+    internal const int NoResultExcerptMaxChars = 200;
+
+    /// <summary>
+    /// The one line of a failed, no-terminal-result run that says why it failed (#763): the first non-empty
+    /// line of stderr, else the first non-empty line of <see cref="NonStreamStdout"/> — the same #516 filter
+    /// the classifier reads, so a stream envelope carrying an agent's file content can never be quoted as the
+    /// provider's refusal. Truncated to <see cref="NoResultExcerptMaxChars"/>; null when neither stream has
+    /// such a line.
+    /// </summary>
+    internal static string? NoResultExcerpt(ProcessResult process)
+    {
+        string? line = FirstNonEmptyLine(process.StandardError)
+            ?? FirstNonEmptyLine(NonStreamStdout(process.StandardOutput));
+        if (line is null)
+        {
+            return null;
+        }
+
+        return line.Length <= NoResultExcerptMaxChars
+            ? line
+            : string.Concat(line.AsSpan(0, NoResultExcerptMaxChars - 1).TrimEnd(), "…");
+    }
+
+    private static string? FirstNonEmptyLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        foreach (string line in text.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length > 0)
+            {
+                return trimmed;
+            }
+        }
+
+        return null;
+    }
+
     private static string BuildSummary(ProcessResult process, ClaudeResult result, string label)
     {
         if (process.TimedOut)
@@ -513,7 +556,16 @@ internal static class StreamJsonCliSession
 
         if (!process.Succeeded)
         {
-            return $"{label} exited {process.ExitCode}";
+            // #763: with no terminal result, the process's own words are the only account of WHY it
+            // exited — "You've hit your individual spend limit · run /usage-credits …" — and a bare
+            // "claude exited 1" dropped them. This summary becomes the pause reason, the needs-human
+            // line and the live/status detail, so the operator would otherwise have to open the stream
+            // log to learn something the harness already held. A run that DID produce a terminal result
+            // keeps the plain form: its result text already travels separately (ResultText, feedback.md).
+            string? excerpt = result.HasResult ? null : NoResultExcerpt(process);
+            return excerpt is null
+                ? $"{label} exited {process.ExitCode}"
+                : $"{label} exited {process.ExitCode}: {excerpt}";
         }
 
         if (!result.HasResult)

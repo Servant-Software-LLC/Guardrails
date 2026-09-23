@@ -5671,6 +5671,16 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     the launch fault's own text, so that shape reaches the quarantine instead of escaping as an
     exception before any text exists to classify. The signal families, and why they needed adding, are
     §9.6 "Provider unavailability".
+  - **The failure summary carries the provider's own words (issue #763).** A session that exits non-zero
+    with NO terminal result summarizes as `<label> exited <code>: <excerpt>` — e.g.
+    `claude exited 1: You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit`
+    — where the excerpt is the first non-empty line of stderr, else of the #516-filtered non-stream stdout
+    (never a stream envelope, so an agent's content is never quoted as the refusal), capped at 200 characters
+    (the last one an ellipsis). With neither, it stays the bare `<label> exited <code>`, as does a non-zero
+    exit that DID produce a terminal result (its text travels separately). This summary is what the pause
+    reason, the `rate-limited`/needs-human line and the live/status detail show, so it applies to `claude`
+    and `cursor` alike (one shared session, §9.9). Before #763 it was always the bare form, and the refusal
+    reached only the stream log.
   - **`OutputCap`** (issue #114): consumes the budget like `Error` but composes actionable feedback
     ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
     `output-cap` outcome (§7).
@@ -7381,14 +7391,16 @@ suppresses them).
 - **Failures.** A bad `--model` exits 1 with NO stream at all and plain stdout text ("Cannot use this model: X.
   Available models: …"); the live build was never seen to emit an `is_error: true` result. Both paths are
   classified by the shared `ClaudeSignalClassifier` (the #516 `NonStreamStdout` filter; a launch failure is
-  classified and names the command).
+  classified and names the command). The no-stream shape's text is also quoted in the summary
+  (`cursor exited 1: Cannot use this model: …`, §9 "The failure summary carries the provider's own words").
 - `transcript.md` renders a `started` `tool_call` as the same `● name(args)` tool line a Claude `tool_use`
   gets (`readToolCall` ⇒ `read`); its `completed` twin, and every `thinking` event, render nothing.
 
 **The session is shared code.** `StreamJsonCliSession` is the process/tee/stall/abort/classify loop both
 `ClaudePromptRunner` and `CursorPromptRunner` hand their argv, environment and stdin to; Claude's behavior
 through it is byte-identical to before #764 (one deliberate exception, the spend-limit classification, is
-shared and applies to Claude too — §9 transient signals).
+shared and applies to Claude too — §9 transient signals). Since #763 a no-result non-zero exit's summary
+also quotes the process's first line of output, for both CLIs (§9 failure classification).
 
 **Permissions and containment — what IS enforced, and what is not.**
 

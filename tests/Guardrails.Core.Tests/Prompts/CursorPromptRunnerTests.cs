@@ -375,7 +375,10 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
         Assert.False(result.Completed);
         Assert.Equal(PromptFailureKind.Error, result.FailureKind);
-        Assert.StartsWith("cursor exited 1", result.Summary, StringComparison.Ordinal);
+
+        // #763: with no terminal result the summary carries the CLI's own words — this used to be the bare
+        // "cursor exited 1", leaving the operator to open the stream log to learn the model was refused.
+        Assert.Equal("cursor exited 1: Cannot use this model: nope. Available models: auto, sonnet-4.5", result.Summary);
     }
 
     [Fact]
@@ -386,7 +389,10 @@ public sealed class CursorPromptRunnerTests : IDisposable
         PromptResult result = await Runner().RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
 
         Assert.False(result.Completed);
-        Assert.StartsWith("cursor exited 3", result.Summary, StringComparison.Ordinal);
+
+        // #763's excerpt is for a run with NO terminal result; this one produced one, so the summary stays the
+        // plain exit form (the result text travels separately).
+        Assert.Equal("cursor exited 3 (Cursor reported model: Claude 4.5 Sonnet)", result.Summary);
     }
 
     /// <summary>

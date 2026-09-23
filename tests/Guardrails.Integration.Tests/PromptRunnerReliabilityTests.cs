@@ -157,13 +157,14 @@ public sealed class PromptRunnerReliabilityTests
     /// </summary>
     private string? _lastPlanRoot;
 
-    private async Task<(RunReport Report, TaskJournalEntry Entry, SequencingRunner Runner)> RunOneTaskAsync(
-        SequencingRunner runner,
+    private async Task<(RunReport Report, TaskJournalEntry Entry, TRunner Runner)> RunOneTaskAsync<TRunner>(
+        TRunner runner,
         IRunObserver observer,
         int defaultRetries,
         int transientPauseBudgetSeconds = 1800,
         bool keepRoot = false,
         bool guardrailPasses = true)
+        where TRunner : IPromptRunner
     {
         string root = Path.Combine(Path.GetTempPath(), "gr-reliability-" + Guid.NewGuid().ToString("N"));
         if (keepRoot)
@@ -348,6 +349,159 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Contains(entry.Attempts, a => a.Outcome == AttemptOutcome.RateLimited);
         // The action retry budget (3 attempts) was NOT burned re-failing the rate limit.
         Assert.DoesNotContain(entry.Attempts, a => a.Outcome == AttemptOutcome.ActionFailed);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #763 — Claude Code's "individual spend limit" refusal, through the REAL ClaudePromptRunner
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The exact refusal a live Claude Code 2.1.276 printed as its whole output, three times, in #763.</summary>
+    private const string LiveSpendLimit =
+        "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit";
+
+    /// <summary>
+    /// A fake <c>claude</c> that behaves like #763's live one: for its first <paramref name="refusals"/>
+    /// invocations it prints <see cref="LiveSpendLimit"/> as plain stdout — NO stream envelope at all — and
+    /// exits 1; after that it emits a clean terminal result. The invocation count persists in a counter file
+    /// next to it, so the test can read how many times the runner really spawned it. OS-picked: a directly
+    /// spawnable <c>.cmd</c> forwarding to a <c>.ps1</c> on Windows, a <c>.sh</c> elsewhere.
+    /// </summary>
+    private static (string CliPath, string CounterPath, string Dir) WriteSpendLimitFakeClaude(int refusals)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "gr-spendlimit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string counter = Path.Combine(dir, "invocations.txt");
+
+        if (OperatingSystem.IsWindows())
+        {
+            string ps1 = Path.Combine(dir, "fake-claude.ps1");
+            // The middle dot is written as [char]0x00B7 so the script file's own encoding cannot mangle it, and
+            // stdout is pinned to UTF-8 because the harness decodes the child as UTF-8 (#55).
+            File.WriteAllText(ps1,
+                "$null = [Console]::In.ReadToEnd()\n" +
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" +
+                $"$counter = '{counter.Replace("'", "''")}'\n" +
+                "$n = 0; if (Test-Path $counter) { $n = [int](Get-Content -Raw $counter) }\n" +
+                "Set-Content -NoNewline -Path $counter -Value ($n + 1)\n" +
+                $"if ($n -lt {refusals}) {{\n" +
+                "    [Console]::Out.WriteLine(\"You've hit your individual spend limit $([char]0x00B7) run /usage-credits to ask your admin for a higher limit\")\n" +
+                "    exit 1\n" +
+                "}\n" +
+                "[Console]::Out.WriteLine('{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"total_cost_usd\":0.01,\"num_turns\":1}')\n" +
+                "exit 0\n");
+            string cmd = Path.Combine(dir, "fake-claude.cmd");
+            File.WriteAllText(cmd,
+                $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"{ps1}\"\r\nexit /b %ERRORLEVEL%\r\n");
+            return (cmd, counter, dir);
+        }
+
+        string sh = Path.Combine(dir, "fake-claude.sh");
+        File.WriteAllText(sh,
+            "#!/usr/bin/env bash\n" +
+            "cat > /dev/null\n" +
+            $"counter='{counter}'\n" +
+            "n=0; if [ -f \"$counter\" ]; then n=$(cat \"$counter\"); fi\n" +
+            "printf '%s' \"$((n + 1))\" > \"$counter\"\n" +
+            $"if [ \"$n\" -lt {refusals} ]; then\n" +
+            "  printf 'You'\"'\"'ve hit your individual spend limit \\xc2\\xb7 run /usage-credits to ask your admin for a higher limit\\n'\n" +
+            "  exit 1\n" +
+            "fi\n" +
+            "printf '{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"total_cost_usd\":0.01,\"num_turns\":1}\\n'\n" +
+            "exit 0\n");
+        File.SetUnixFileMode(sh,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        return (sh, counter, dir);
+    }
+
+    private static int Invocations(string counterPath) =>
+        int.Parse(File.ReadAllText(counterPath).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// #763 end to end: the live refusal — plain stdout, no stream, exit 1 — through the REAL
+    /// <see cref="ClaudePromptRunner"/> and <see cref="StreamJsonCliSession"/>, not a canned
+    /// <see cref="PromptResult"/>. Budget = ONE attempt (defaultRetries 0), and two refusals precede success.
+    /// Before the fix those refusals classified Error, so the one attempt was consumed by the first refusal and
+    /// the task settled needs-human; #511's decided behavior is that a provider limit at the task door PAUSES
+    /// without consuming the budget. Every assertion is on a decision the harness recorded — the outcome, the
+    /// journaled attempts, the pause ledger and its horizon — never on elapsed time (the delay is injected
+    /// instant).
+    /// </summary>
+    [Fact]
+    public async Task LiveSpendLimitRefusal_ThroughTheRealClaudeRunner_PausesWithoutConsumingRetryBudget()
+    {
+        (string cli, string counter, string dir) = WriteSpendLimitFakeClaude(refusals: 2);
+        try
+        {
+            var observer = new PauseRecordingObserver();
+            var runner = new ClaudePromptRunner("claude", cli, new ProcessRunner());
+
+            (RunReport report, TaskJournalEntry entry, _) =
+                await RunOneTaskAsync(runner, observer, defaultRetries: 0);
+
+            // The runner really spawned the fake three times: two refusals, then the success.
+            Assert.Equal(3, Invocations(counter));
+
+            TaskResult settled = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.Succeeded, settled.Outcome);
+            Assert.Equal(JournalTaskStatus.Succeeded, entry.Status);
+
+            // No retry budget consumed: ONE journaled attempt, and it is the succeeded one — no action-failed
+            // attempt for either refusal.
+            AttemptRecord attempt = Assert.Single(entry.Attempts);
+            Assert.Equal(AttemptOutcome.Succeeded, attempt.Outcome);
+
+            // Two transient pauses were recorded, both suspending attempt 1. The refusal names no reset time,
+            // so there is no hint and each pause took the exponential (blip) horizon, not the quota poll (#511).
+            Assert.NotNull(entry.TransientPauses);
+            Assert.Equal(2, entry.TransientPauses!.Count);
+            Assert.All(entry.TransientPauses, p =>
+            {
+                Assert.Equal(1, p.Attempt);
+                Assert.Equal("exponential", p.Horizon);
+                Assert.Null(p.ResetHint);
+
+                // #763's second half: the reason carries the provider's own words, not a bare "claude exited 1".
+                Assert.Equal($"claude exited 1: {LiveSpendLimit}", p.Reason);
+            });
+
+            Assert.Equal(2, observer.Pauses.Count);
+            Assert.All(observer.Pauses, p => Assert.Equal($"claude exited 1: {LiveSpendLimit}", p.Reason));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// The other side of the same bound: a spend limit that never clears settles the distinct
+    /// <see cref="TaskOutcome.RateLimited"/> ("re-run later") once the pause budget is spent — still without a
+    /// single action-failed attempt — and the needs-human line the operator reads names the refusal (#763).
+    /// </summary>
+    [Fact]
+    public async Task LiveSpendLimitRefusal_ThatNeverClears_SettlesRateLimited_NamingTheRefusal_WithoutBurningRetries()
+    {
+        (string cli, _, string dir) = WriteSpendLimitFakeClaude(refusals: int.MaxValue);
+        try
+        {
+            var runner = new ClaudePromptRunner("claude", cli, new ProcessRunner());
+
+            (RunReport report, TaskJournalEntry entry, _) =
+                await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2,
+                    transientPauseBudgetSeconds: 1);
+
+            TaskResult task = Assert.Single(report.Tasks);
+            Assert.Equal(TaskOutcome.RateLimited, task.Outcome);
+            Assert.Contains("re-run later", task.Summary);
+            Assert.Contains($"claude exited 1: {LiveSpendLimit}", task.Summary);
+
+            Assert.Contains(entry.Attempts, a => a.Outcome == AttemptOutcome.RateLimited);
+            Assert.DoesNotContain(entry.Attempts, a => a.Outcome == AttemptOutcome.ActionFailed);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

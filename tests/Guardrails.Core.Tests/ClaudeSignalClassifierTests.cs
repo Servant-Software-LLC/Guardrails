@@ -29,6 +29,22 @@ public sealed class ClaudeSignalClassifierTests
         Assert.True(ClaudeSignalClassifier.IsTransient(text));
     }
 
+    /// <summary>
+    /// #763: the EXACT refusal a live Claude Code 2.1.276 printed as its whole transcript on three attempts
+    /// that burned a task's retry budget in nine seconds. Pinned byte-for-byte (the middle dot included) so a
+    /// vendor rewording fails here, not in a run. It names no reset time, so it carries no reset hint and
+    /// rides the exponential horizon (#511) rather than the poll one.
+    /// </summary>
+    [Fact]
+    public void Classify_LiveIndividualSpendLimitRefusal_IsTransient()
+    {
+        const string live = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit";
+
+        Assert.True(ClaudeSignalClassifier.IsTransient(live));
+        Assert.Equal(PromptFailureKind.Transient, ClaudeSignalClassifier.Classify(live));
+        Assert.Null(ClaudeSignalClassifier.ExtractResetHint(live));
+    }
+
     [Theory]
     [InlineData("API Error: Claude's response exceeded the 32000 output token maximum")]
     [InlineData("API Error: Claude's response exceeded the 64000 output token maximum")]
