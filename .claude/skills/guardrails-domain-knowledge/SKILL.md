@@ -1083,7 +1083,7 @@ tiering as a working feature.
   and `tiering.verifier.minTier`.
 - **`promptRunners.<name>` is the registry unit** -- one block = one concrete (provider `kind`, command,
   `model`, `effort`) route. There is no `providers.json` and no `providers` section. Optional keys: `kind`
-  (default `claude`; `claude|codex|openrouter|local|openai-compat`), `effort` (opaque, runner-translated),
+  (default `claude`; `claude|codex|openrouter|local|openai-compat|cursor`), `effort` (opaque, runner-translated),
   the three axes `costly`/`strength`/`specialization`, and `routing`.
 - **`routing` is the switch.** ABSENT ⇒ the block is never a tier target. PRESENT ⇒ it opts in, and
   **tiering is CONFIGURED for the plan the moment ONE block declares it.** `routing.tiers` is REQUIRED,
@@ -1178,6 +1178,25 @@ tiering as a working feature.
   fails the attempt rather than being allowed to transcribe one -- a verifier that read nothing has
   verified nothing. **Judge spend is recorded but NOT folded into `JournalCost.Total`** -- actor
   spend and verifier spend are two numbers on purpose. Full contract: SSOT section 9.8.
+- **`cursor` runner (#764, SSOT section 9.9).** A third implemented kind: Cursor's Agent CLI (`agent`)
+  headless, an AGENT serving all three roles, built so a run can fail over to Cursor when Claude is
+  quota-blocked. A block with no `command` launches `agent`, not the block name. Argv:
+  `agent -p <pointer> --output-format stream-json --force --trust --workspace <cwd> [--model <m>]
+  --add-dir <planDir> [extraArgs...]`. It NEVER emits `--verbose`/`--permission-mode`/`--max-turns`/
+  `--allowedTools` (Cursor exits at parse time on all four -- the #764 defect). The composed prompt goes on
+  STDIN and the positional is a short fixed pointer to it (a full positional prompt would blow the Windows
+  command-line limit). That stdin is read is the one assumption no live run has proven yet;
+  `CursorPromptRunner.Deliver` is the one method to swap. The stream is parsed by the UNFORKED
+  `ClaudeStreamParser` (init `model` echo + terminal `result`; `tool_call` events are skipped), and cost,
+  turns and usage stay `null` (Cursor reports none). The process/tee/stall/classify loop is shared with
+  Claude in `StreamJsonCliSession`. **No allowlist, no containment hook:** `--force` = full write/shell,
+  `NeedsContainmentHook(Cursor)` is false (Cursor cannot load the Claude `--settings` hook, and the runner
+  throws if it arrives), the permission scanner is not fed (so the #452 denial fail-fast is inert), and
+  `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` (and their `guardrailOverrides`) are ignored.
+  **GR2080** (`CursorRunnerUngoverned`, a WARNING on every cursor block) says so and names each of those
+  keys the block declares. Known gap it states: a prompt GUARDRAIL on a cursor block can edit the tree,
+  and no existing check catches an in-scope edit made during guardrails. `You've hit your individual spend
+  limit` is `Transient` for cursor only.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
@@ -1730,7 +1749,7 @@ lands at that same path once drained.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2072**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2081**
   (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
@@ -1747,7 +1766,7 @@ lands at that same path once drained.
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
-  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39.
+  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

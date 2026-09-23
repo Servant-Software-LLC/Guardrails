@@ -174,7 +174,9 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   **GR2072** (CheckSetPredatesSourceTree — the running binary predates checks the working tree declares;
   WARNING, `validate` only, self-hosting case only, #564/SSOT §16) is TAKEN too, and is the first code on
   this ladder that reports the TOOL rather than the plan.
-  Next free: **GR1011 / GR2073** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  **GR2080** (CursorRunnerUngoverned — a `kind: "cursor"` block runs with no tool allowlist or containment
+  hook; WARNING, one per cursor block, #764/SSOT §9.9) is TAKEN too.
+  Next free: **GR1011 / GR2081** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
@@ -209,6 +211,14 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   only against output the action couldn't fabricate (a produced artifact, a runner-written TRX).
   The recorded `exitCode` is ALWAYS 0 at guardrail time (a non-zero action fails the attempt
   first), so never expose a `GUARDRAILS_ACTION_EXIT_CODE` env var — it would be tautological.
+- **Agent-CLI runners share one session loop (#764).** `StreamJsonCliSession` owns everything after the
+  spawn — stdin write, live tee to the stream log + `transcript.md`, the #504 `StallWatch`, the #452 denial
+  fail-fast, the Win32Exception launch catch, `ClaudeStreamParser`, and failure classification.
+  `ClaudePromptRunner` and `CursorPromptRunner` own only argv, env and prompt delivery, plus a
+  `StreamJsonCliDialect` (summary label, whether to feed the permission scanner, the classifier). A change
+  to that loop changes BOTH runners; Claude's summaries stay byte-identical because its label is `claude`.
+  Cursor is not installed on dev boxes: `CursorPromptRunnerTests` replays canned streams through a fake
+  OS-picked `agent` script via the real `ProcessRunner`.
 - **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
   `ClaudeStreamParser` (terminal result), and `ClaudeTranscriptRenderer` (the deterministic
   `transcript.md` projection of the raw stream, #27). Verdicts come from files, never exit

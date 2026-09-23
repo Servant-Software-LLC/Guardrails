@@ -149,7 +149,8 @@ internal static class PromptToolGrantCoverage
 
     /// <summary>
     /// Append a warning for every command a task's prompt instructs but its grants refuse. Silent — appends
-    /// nothing at all — for a task with no prompt action, an unresolvable runner, no declared
+    /// nothing at all — for a task with no prompt action, an unresolvable runner, a <c>cursor</c> runner
+    /// (#764 — no allowlist is enforced), no declared
     /// <c>allowedTools</c>, no <c>Bash(...)</c> grant among them, an unscoped Bash grant, or an unreadable
     /// prompt file.
     /// </summary>
@@ -163,6 +164,14 @@ internal static class PromptToolGrantCoverage
             }
 
             if (ResolveRunner(plan.Config, task.Action.Runner) is not { } runner)
+            {
+                continue;
+            }
+
+            // A cursor block's allowedTools are never passed to its CLI (#764): it runs with --force, so
+            // nothing refuses the command and a warning here would name a wall that does not exist. GR2080
+            // already tells the operator the grants are ignored.
+            if (runner.Kind == PromptRunnerKind.Cursor)
             {
                 continue;
             }

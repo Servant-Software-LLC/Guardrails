@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Guardrails.Core.Hashing;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Loading;
 
@@ -456,12 +457,15 @@ public sealed class PlanLoader
                     : new Dictionary<string, string>(raw.GuardrailOverrides.Env, StringComparer.Ordinal)
             };
 
+        PromptRunnerKind kind = ReadKind(name, raw.Kind, configPath, diagnostics);
+
         return new PromptRunnerConfig
         {
             Name = name,
-            Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
+            Command = string.IsNullOrWhiteSpace(raw.Command) ? DefaultCommand(name, kind) : raw.Command,
             Settings = settings,
-            Kind = ReadKind(name, raw.Kind, configPath, diagnostics),
+            Kind = kind,
+            DeclaredSettingsKeys = DeclaredSettingsKeys(raw),
             Effort = raw.Effort,
             Costly = ReadCostly(name, raw.Costly, configPath, diagnostics),
             Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
@@ -481,6 +485,52 @@ public sealed class PlanLoader
                 : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
             Engine = raw.Engine
         };
+    }
+
+    /// <summary>
+    /// The <c>command</c> a block that declares none launches: the block NAME (a block named
+    /// <c>claude</c> runs <c>claude</c>), except for <c>kind: "cursor"</c>, whose CLI binary is <c>agent</c>
+    /// whatever the block is called (#764) — so a block named <c>cursor</c> with no <c>command</c> still
+    /// reaches Cursor's Agent CLI, and GR2009's PATH probe checks the binary that would actually run.
+    /// </summary>
+    private static string DefaultCommand(string name, PromptRunnerKind kind) =>
+        kind == PromptRunnerKind.Cursor ? CursorPromptRunner.DefaultCommand : name;
+
+    /// <summary>
+    /// The settings keys the raw block declared (see <see cref="PromptRunnerConfig.DeclaredSettingsKeys"/>),
+    /// captured here because the defaults applied in <see cref="BuildRunnerConfig"/> erase the difference.
+    /// </summary>
+    private static IReadOnlyList<string> DeclaredSettingsKeys(RawPromptRunner raw)
+    {
+        var keys = new List<string>();
+        AddIfDeclared(keys, "", raw.PermissionMode, raw.AllowedTools, raw.MaxTurns, raw.Model, raw.ExtraArgs,
+            raw.MaxOutputTokens, raw.Env);
+
+        if (raw.GuardrailOverrides is { } o)
+        {
+            AddIfDeclared(keys, "guardrailOverrides.", o.PermissionMode, o.AllowedTools, o.MaxTurns, o.Model,
+                o.ExtraArgs, o.MaxOutputTokens, o.Env);
+        }
+
+        return keys;
+
+        static void AddIfDeclared(
+            List<string> into, string prefix, string? permissionMode, List<string>? allowedTools, int? maxTurns,
+            string? model, List<string>? extraArgs, int? maxOutputTokens, Dictionary<string, string>? env)
+        {
+            (string Key, bool Declared)[] candidates =
+            [
+                ("permissionMode", permissionMode is not null),
+                ("allowedTools", allowedTools is not null),
+                ("maxTurns", maxTurns is not null),
+                ("model", model is not null),
+                ("extraArgs", extraArgs is not null),
+                ("maxOutputTokens", maxOutputTokens is not null),
+                ("env", env is not null)
+            ];
+
+            into.AddRange(candidates.Where(c => c.Declared).Select(c => prefix + c.Key));
+        }
     }
 
     /// <summary>

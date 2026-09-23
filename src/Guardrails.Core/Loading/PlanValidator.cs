@@ -113,6 +113,7 @@ public sealed class PlanValidator
         ValidateOpenAiCompatBlockSchema(plan, diagnostics);
         ValidateOpenAiCompatActionReachable(plan, diagnostics);
         ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
+        ValidateCursorRunnerUngoverned(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
@@ -355,11 +356,54 @@ public sealed class PlanValidator
             diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, plan.PlanDirectory,
                 $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', which is a " +
                 "recognised runner kind but has NO implementation in this build — this build can serve " +
-                $"{PromptRunnerKinds.ImplementedTokenList} (concrete non-Claude runners are issue #223)." +
+                $"{PromptRunnerKinds.ImplementedTokenList} (the remaining reserved kinds are issue #223)." +
                 $"{redirect} Point that promptRunners block at an implemented kind, or remove it and " +
                 "route the tasks that used it to a runner this build can serve. The harness will NOT " +
                 "substitute a different model for the one the config asked for, so this is an honest halt " +
                 "at validate time rather than a surprise when the run starts (SSOT §9)."));
+        }
+    }
+
+    /// <summary>
+    /// The settings keys a <c>cursor</c> block cannot honour (#764): Cursor's CLI has no spelling for any of
+    /// them, and <see cref="Prompts.CursorPromptRunner"/> never emits them. Base key and its
+    /// <c>guardrailOverrides.</c> form are both ignored.
+    /// </summary>
+    private static readonly string[] CursorIgnoredSettingsKeys =
+        ["permissionMode", "allowedTools", "maxTurns", "maxOutputTokens"];
+
+    /// <summary>
+    /// GR2080 (WARNING, #764, SSOT §9.9): one per <c>cursor</c> block
+    /// (<see cref="DiagnosticCodes.CursorRunnerUngoverned"/>). States what the operator gives up — no tool
+    /// allowlist, no containment hook, <c>--force</c> — and names the declared keys that stopped applying.
+    /// </summary>
+    private static void ValidateCursorRunnerUngoverned(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .Where(r => r.Kind == PromptRunnerKind.Cursor)
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            string[] ignored = runner.DeclaredSettingsKeys
+                .Where(key => CursorIgnoredSettingsKeys.Contains(
+                    key.StartsWith("guardrailOverrides.", StringComparison.Ordinal)
+                        ? key["guardrailOverrides.".Length..]
+                        : key,
+                    StringComparer.Ordinal))
+                .ToArray();
+
+            string declared = ignored.Length == 0
+                ? "This block declares none of them."
+                : $"This block declares {string.Join(", ", ignored.Select(k => $"'{k}'"))} — " +
+                  (ignored.Length == 1 ? "it has" : "they have") + " NO effect on a cursor runner.";
+
+            diagnostics.Add(Warning(DiagnosticCodes.CursorRunnerUngoverned, plan.PlanDirectory,
+                $"promptRunners.{runner.Name} is kind 'cursor'. Cursor's print mode has no per-tool allowlist " +
+                "and cannot load the worktree containment hook, so the harness grants it FULL write and shell " +
+                "access (--force). 'permissionMode', 'allowedTools', 'maxTurns' and 'maxOutputTokens' — and any " +
+                $"'guardrailOverrides' of them — are IGNORED for this block. {declared} Write scope is enforced " +
+                "only after the fact, by the harness's git-diff checks; a prompt guardrail run on this block can " +
+                "write to the tree too. The bounds that still apply are the timeout and the stall bound " +
+                "(SSOT §9.9)."));
         }
     }
 

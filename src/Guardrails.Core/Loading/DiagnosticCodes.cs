@@ -1298,7 +1298,23 @@ public static class DiagnosticCodes
     /// </summary>
     public const string DeliveringWaveMissingExitGate = "GR2079";
 
-    // CURRENT next-free code: GR2080. GR2079 (DeliveringWaveMissingExitGate) is the last taken code
+    // --- the cursor prompt runner (#764, SSOT §9.9) --------------------------------------------------
+
+    /// <summary>
+    /// GR2080 (WARNING) — a <c>kind: "cursor"</c> prompt-runner block runs UNGOVERNED by the per-tool
+    /// controls a Claude block has (#764, SSOT §9.9). Cursor's print mode has no per-tool allowlist and cannot
+    /// load the Claude worktree-containment hook, so the harness launches it with <c>--force</c> (full write and
+    /// shell access); <c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c> and <c>maxOutputTokens</c> —
+    /// and any <c>guardrailOverrides</c> of them — are IGNORED, and write scope is enforced only after the fact
+    /// by the harness's git-diff checks. Fires ONCE PER cursor block, always, and names every one of those keys
+    /// the block (or its <c>guardrailOverrides</c>) declares, so a Claude block copied and flipped to
+    /// <c>kind: "cursor"</c> is told exactly what stopped applying.
+    /// <para>A WARNING, not an error: running a cursor block is a legitimate operator choice (the #764 recovery
+    /// path when Claude is quota-blocked). What must not happen is that choice being made silently.</para>
+    /// </summary>
+    public const string CursorRunnerUngoverned = "GR2080";
+
+    // CURRENT next-free code: GR2081. GR2080 (CursorRunnerUngoverned) is the last taken code
     // above; GR2077 is RESERVED BY NAME below (issue #587 check B) and is not free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the
     // plan — it reports the TOOL (issue #564). That is deliberate and not a precedent to widen: it

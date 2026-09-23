@@ -2478,7 +2478,8 @@ public sealed class TaskExecutor : ITaskExecutor
     /// The tool grants an agent attempt of <paramref name="task"/> runs under, resolved through the
     /// SAME <see cref="ClaudePromptRunner.ResolveToolGrants"/> the runner calls when it spells
     /// <c>--allowedTools</c> — so the recorded split can never drift from the set actually granted.
-    /// Null for a script task (no grants apply) or a prompt task whose runner cannot be resolved
+    /// Null for a script task (no grants apply), a <c>cursor</c> task (no allowlist exists, #764), or a
+    /// prompt task whose runner cannot be resolved
     /// (a malformed plan validation would already reject): recording a fabricated empty split there
     /// would assert "the plan declared nothing", which is not what the harness knows.
     /// </summary>
@@ -2491,6 +2492,13 @@ public sealed class TaskExecutor : ITaskExecutor
 
         string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
         if (runnerName is null || !_plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
+        {
+            return null;
+        }
+
+        // A cursor block has no tool allowlist at all (#764): it runs with --force and never receives
+        // --allowedTools, so recording a grant split would assert a restriction that did not exist.
+        if (config.Kind == PromptRunnerKind.Cursor)
         {
             return null;
         }
