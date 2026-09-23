@@ -304,9 +304,14 @@ internal sealed class GuardrailRunner
         // The prompt guardrail's stdout/stderr are not the verdict, but tee them for audit
         // (the runner already teed its stream; capture nothing more here). Timeouts surface
         // as "did not complete" → no verdict → fail, which the reader already handled.
+        //
+        // Timed out is read from the runner's classification, as ActionRunner does — never from the summary
+        // text. Since #763 a no-result exit's summary quotes the process's own output ("claude exited 1: Error:
+        // Request timed out"), so a substring test would journal an ordinary judge failure as a Timeout and
+        // extend the next attempt's clock for a failure that had nothing to do with the clock.
         return (
             result,
-            !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal),
+            !promptResult.Completed && promptResult.FailureKind == PromptFailureKind.Timeout,
             ToAttemptJudge(judge, route, promptResult));
     }
 
