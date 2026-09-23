@@ -32,7 +32,7 @@ public sealed class PreflightHaltConsoleTests
 
         Assert.Equal(ExitCodes.TaskFailed, exit);
         JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
-        string logDir = journal.Halt!.LogDir!;
+        string logDir = Path.GetFullPath(Path.Combine(planDir, journal.Halt!.LogDir!));
 
         AssertInOrder(output,
             "Plan preflight FAILED — halting before scheduling any task: 01-alpha, 02-beta",
@@ -63,13 +63,14 @@ public sealed class PreflightHaltConsoleTests
             ["run", planDir, "--revalidate-task", "plan:preflights", "--no-ui", "--no-log-server"]);
 
         Assert.Equal(ExitCodes.TaskFailed, exit);
+        // Revalidate's own lead line, not the recorded "halting before scheduling any task" headline.
         AssertInOrder(output,
-            "Guardrails still failing.",
-            "Plan preflight FAILED — halting before scheduling any task: 01-alpha",
+            "Plan preflight still failing:",
             "  FAILED: 01-alpha",
             "    ALPHA still broken",
             $"  State: {RunJournal.PathFor(planDir)} (\"planPreflights\")");
         Assert.Equal($"  State: {RunJournal.PathFor(planDir)} (\"planPreflights\")", LastNonEmptyLine(output));
+        Assert.DoesNotContain("halting before scheduling any task", output, StringComparison.Ordinal);
     }
 
     private static void AssertInOrder(string output, params string[] lines)

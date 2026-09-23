@@ -247,6 +247,53 @@ public sealed class SampleVerifierWiringTests
     }
 
     /// <summary>
+    /// #762 review: a sample-pair halt already prints its own report (every finding plus why the check exists),
+    /// so the halt block `run` prints afterwards must not print them all again. Each finding appears exactly once,
+    /// there is one headline, and the run.json pointer is still the last line.
+    /// </summary>
+    [Fact]
+    public async Task Run_ASamplePairHalt_PrintsEachFindingOnce_AndEndsWithTheStatePointer()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreatePlan(repo.RepoPath);
+        WriteTaskWithSamplePair(planDir, TaskId, PairName, reversed: true);
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("sample-verifier halt-output test root");
+        root.Add(RunCommand.Create(io));
+        int exit = await root.Parse(["run", planDir, "--no-ui", "--no-log-server"]).InvokeAsync(cancellationToken: TestContext.Current.CancellationToken);
+        string output = io.OutText.Replace("\r\n", "\n");
+
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+
+        JournalDocument journal = ReadJournal(planDir);
+        Assert.NotEmpty(journal.Halt!.FailedChecks);
+        foreach (FailedGuardrail finding in journal.Halt.FailedChecks)
+        {
+            // The reason is "<Kind>: <Message>"; the phase's report prints the message on its own line.
+            string message = finding.Reason[(finding.Reason.IndexOf(": ", StringComparison.Ordinal) + 2)..];
+            Assert.Equal(1, Occurrences(output, message));
+        }
+
+        Assert.Equal(1, Occurrences(output, "Sample-pair verification FAILED"));
+        Assert.DoesNotContain("FAILED: sample pair", output, StringComparison.Ordinal);
+
+        string last = output.Split('\n').Last(l => l.Trim().Length > 0);
+        Assert.Equal($"  State: {RunJournal.PathFor(planDir)} (\"planPreflights\")", last);
+    }
+
+    private static int Occurrences(string text, string value)
+    {
+        int count = 0;
+        for (int at = text.IndexOf(value, StringComparison.Ordinal); at >= 0; at = text.IndexOf(value, at + value.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// #530 — the fixture's OWN two-sided pair, proven to discriminate.
     ///
     /// <para>

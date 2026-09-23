@@ -1,6 +1,7 @@
 using Guardrails.Cli;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.State;
 
 namespace Guardrails.Integration.Tests;
 
@@ -8,12 +9,17 @@ namespace Guardrails.Integration.Tests;
 /// #762: the console block for a plan-gate halt. Before it, a failed plan preflight printed one generic sentence and
 /// a pointer to <c>run.json</c>, dropping the check's name, its reason, the captured-output directory and the tail
 /// of its own headline, all of which it had just journaled. These pin the rendered text exactly (#754: operator-
-/// visible wording is a contract), and the real-run tests in <see cref="PreflightHaltConsoleTests"/> prove the
-/// composition root prints it.
+/// visible wording is a contract), and the real-run tests in <see cref="PreflightHaltConsoleTests"/> and
+/// <c>SampleVerifierWiringTests</c> prove the composition root prints it.
 /// </summary>
 public sealed class GateHaltReportTests
 {
-    private const string JournalPath = "/plans/demo/state/run.json";
+    private static readonly string PlanDir = Path.Combine(Path.GetTempPath(), "gr-halt-report-demo");
+
+    private static string StateLine(string section = "planPreflights") =>
+        $"  State: {RunJournal.PathFor(PlanDir)} (\"{section}\")";
+
+    private static string LogsLine(string logDir) => $"  Logs:  {Path.GetFullPath(Path.Combine(PlanDir, logDir))}";
 
     private static RunHalt Halt(string? logDir, params (string Name, string Reason)[] checks) => new()
     {
@@ -25,10 +31,10 @@ public sealed class GateHaltReportTests
         LogDir = logDir
     };
 
-    private static string[] Render(RunHalt halt)
+    private static string[] Render(RunHalt halt, string? leadLine = null, bool pointersOnly = false)
     {
         var output = new StringWriter();
-        GateHaltReport.Write(halt, JournalPath, output);
+        Assert.True(GateHaltReport.Write(halt, PlanDir, output, leadLine, pointersOnly));
         return output.ToString().Replace("\r\n", "\n").Split('\n');
     }
 
@@ -51,11 +57,21 @@ public sealed class GateHaltReportTests
                 "  FAILED: 01-baseline-main-ci-green",
                 "    " + reason,
                 "",
-                "  Logs:  logs/2026-09-23T11-40-03Z-d61c/preflights",
-                "  State: /plans/demo/state/run.json (\"planPreflights\")",
+                LogsLine("logs/2026-09-23T11-40-03Z-d61c/preflights"),
+                StateLine(),
                 ""
             ],
             lines);
+    }
+
+    [Fact]
+    public void TheLogsLine_IsAbsolute_LikeTheStateLine()
+    {
+        string logs = Render(Halt("logs/run-1/preflights", ("01-a", "r"))).Single(l => l.StartsWith("  Logs:", StringComparison.Ordinal));
+
+        string path = logs["  Logs:  ".Length..];
+        Assert.True(Path.IsPathFullyQualified(path), path);
+        Assert.Equal(Path.GetFullPath(Path.Combine(PlanDir, "logs", "run-1", "preflights")), path);
     }
 
     [Fact]
@@ -77,8 +93,8 @@ public sealed class GateHaltReportTests
                 "  FAILED: 02-beta",
                 "    beta diagnosis",
                 "",
-                "  Logs:  logs/run-1/preflights",
-                "  State: /plans/demo/state/run.json (\"planPreflights\")",
+                LogsLine("logs/run-1/preflights"),
+                StateLine(),
                 ""
             ],
             lines);
@@ -100,7 +116,7 @@ public sealed class GateHaltReportTests
         Assert.Equal("    reason line 11", lines[name + 2]);
         Assert.Equal("    reason line 70", lines[name + 1 + OutputTail.MaxLines]);
         Assert.DoesNotContain("    reason line 10", lines);
-        Assert.Equal("  State: /plans/demo/state/run.json (\"planPreflights\")", lines[^2]);
+        Assert.Equal(StateLine(), lines[^2]);
     }
 
     [Fact]
@@ -118,11 +134,30 @@ public sealed class GateHaltReportTests
     [Fact]
     public void WithNoCapturedLogDir_TheLogsLineIsOmitted_AndTheStatePointerIsStillLast()
     {
-        // The sample-pair and openai-compat preflights halt before any capture directory exists.
-        string[] lines = Render(Halt(null, ("sample pair 'x'", "ValidRejected: the .valid half failed")));
+        string[] lines = Render(Halt(null, ("01-a", "the reason")));
 
         Assert.DoesNotContain(lines, l => l.StartsWith("  Logs:", StringComparison.Ordinal));
-        Assert.Equal("  State: /plans/demo/state/run.json (\"planPreflights\")", lines[^2]);
+        Assert.Equal(StateLine(), lines[^2]);
+    }
+
+    [Fact]
+    public void PointersOnly_PrintsNoSecondHeadlineAndNoFindings_JustLogsAndState()
+    {
+        // The sample-pair and endpoint sources printed every finding themselves; repeating them is noise.
+        string[] lines = Render(Halt("logs/run-1/preflights", ("sample pair 'x'", "ValidRejected: the .valid half failed")),
+            pointersOnly: true);
+
+        Assert.Equal(["", LogsLine("logs/run-1/preflights"), StateLine(), ""], lines);
+    }
+
+    [Fact]
+    public void ALeadLine_ReplacesTheRecordedHeadline()
+    {
+        string[] lines = Render(Halt(null, ("01-a", "still broken")), leadLine: "Plan preflight still failing:");
+
+        Assert.Equal("Plan preflight still failing:", lines[1]);
+        Assert.DoesNotContain(lines, l => l.Contains("halting before scheduling", StringComparison.Ordinal));
+        Assert.Contains("  FAILED: 01-a", lines);
     }
 
     [Fact]
@@ -134,7 +169,7 @@ public sealed class GateHaltReportTests
             Headline = "Terminal gate FAILED on the merged HEAD: 01-suite"
         };
 
-        Assert.Equal("  State: /plans/demo/state/run.json (\"planGuardrails\")", Render(halt)[^2]);
+        Assert.Equal(StateLine("planGuardrails"), Render(halt)[^2]);
     }
 
     [Fact]
@@ -143,9 +178,58 @@ public sealed class GateHaltReportTests
         var output = new StringWriter();
 
         bool wrote = GateHaltReport.TryWriteFromJournal(
-            Path.Combine(Path.GetTempPath(), "gr-no-such-" + Guid.NewGuid().ToString("N"), "run.json"), output);
+            Path.Combine(Path.GetTempPath(), "gr-no-such-" + Guid.NewGuid().ToString("N")), output);
 
         Assert.False(wrote);
         Assert.Equal(string.Empty, output.ToString());
+    }
+
+    // ── A hand-edited run.json (#762 review): nulls where the model promises none must not crash the CLI. ──
+
+    [Theory]
+    [InlineData("null", false, "")]                                                 // no list at all → fallback
+    [InlineData("[null]", false, "")]                                               // nothing usable → fallback
+    [InlineData("[null, {\"name\": \"01-kept\", \"reason\": \"r\"}]", true, "  FAILED: 01-kept")]  // null skipped
+    [InlineData("[{\"name\": null, \"reason\": \"r\"}]", false, "")]                // nameless → fallback
+    [InlineData("[{\"name\": \"01-noreason\", \"reason\": null}]", true, "    (no reason recorded)")]
+    public void AHandEditedHalt_WithNullChecks_NeverThrows(string failedChecksJson, bool expectWritten, string expectedLine)
+    {
+        string planDir = Directory.CreateTempSubdirectory("gr-halt-nulls-").FullName;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(planDir, "state"));
+            File.WriteAllText(RunJournal.PathFor(planDir),
+                $$"""
+                {
+                  "planHash": "x",
+                  "runId": "r",
+                  "tasks": {},
+                  "halt": {
+                    "kind": "plan-preflight-failed",
+                    "haltedAt": "2026-09-23T11:40:03Z",
+                    "headline": "Plan preflight FAILED — halting before scheduling any task: 01-kept",
+                    "failedChecks": {{failedChecksJson}}
+                  }
+                }
+                """);
+            Assert.NotNull(JournalReader.Read(RunJournal.PathFor(planDir)).Halt);   // the fixture parses
+
+            var output = new StringWriter();
+            bool wrote = GateHaltReport.TryWriteFromJournal(planDir, output);
+
+            Assert.Equal(expectWritten, wrote);
+            if (expectWritten)
+            {
+                Assert.Contains(expectedLine, output.ToString().Replace("\r\n", "\n").Split('\n'));
+            }
+            else
+            {
+                Assert.Equal(string.Empty, output.ToString());
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(planDir, recursive: true); } catch (IOException) { }
+        }
     }
 }
