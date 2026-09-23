@@ -678,29 +678,70 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
     /// <summary>
     /// The measured false green (enterprise account, no approval flag): the write lands, EVERY shell call is
-    /// <c>rejected</c> with an empty reason, and the session still ends <c>result/success</c>, exit 0. It must
-    /// be a RunnerConfiguration failure naming each refused command, its reason, and the approval-mode remedy.
+    /// <c>rejected</c> with an empty reason, and the session still ends <c>result/success</c>, exit 0. For an
+    /// ACTION this is outcome-aware (PR #775 W1): the run COMPLETES so the task's guardrails decide, but it is
+    /// marked AllShellRefused and carries the remedy — each refused command, its reason, the approval-mode advice —
+    /// which the harness uses to settle needs-human if the guardrails fail.
     /// </summary>
     [Fact]
-    public async Task EveryShellCallRejected_DespiteASuccessResult_IsNotClean()
+    public async Task EveryShellCallRejected_InAnAction_CompletesMarked_WithTheRemedy()
     {
         Canned(FixtureLines("every-shell-rejected.jsonl"), exitCode: 0);
 
         PromptResult result = await Runner(CursorApprovalMode.None)
             .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
 
-        Assert.False(result.Completed);
-        Assert.True(result.IsError);
-        Assert.Equal(PromptFailureKind.RunnerConfiguration, result.FailureKind);
-        Assert.Contains("EVERY shell command it attempted was refused (3 shell call(s), none ran)", result.Summary, StringComparison.Ordinal);
-        Assert.Contains("shell `git status --short` — refused by Cursor approval policy", result.Summary, StringComparison.Ordinal);
-        Assert.Contains("shell `dotnet --version`", result.Summary, StringComparison.Ordinal);
-        Assert.Contains("approvalMode \"none\" without Cursor's sandbox", result.Summary, StringComparison.Ordinal);
+        Assert.True(result.Completed, result.Summary);
+        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.True(result.AllShellRefused);
+        Assert.StartsWith("cursor completed, but EVERY shell command it attempted was refused (3 shell call(s), none ran)", result.Summary, StringComparison.Ordinal);
+        Assert.NotNull(result.RunnerConfigurationRemedy);
+        Assert.Contains("shell `git status --short` — refused by Cursor approval policy", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+        Assert.Contains("shell `dotnet --version`", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+        Assert.Contains("approvalMode \"none\" without Cursor's sandbox", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
 
         Assert.Equal(["git status --short", "echo SHELL-OK-p2", "dotnet --version"], result.RefusedCommands);
         Assert.Equal(result.RefusedCommands, result.BlockedWritePaths);
         Assert.Equal(3, result.RefusedToolCalls.Count);
         Assert.All(result.RefusedToolCalls, r => Assert.Equal("shell", r.Tool));
+    }
+
+    /// <summary>
+    /// The same session in the JUDGE role fails closed (PR #775 B1): a verifier that could run none of its checks
+    /// certifies nothing, so it is not completed and is RunnerConfiguration.
+    /// </summary>
+    [Fact]
+    public async Task EveryShellCallRejected_InAJudge_FailsClosed()
+    {
+        Canned(FixtureLines("every-shell-rejected.jsonl"), exitCode: 0);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { Role = PromptRole.Guardrail };
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview).RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, result.FailureKind);
+        Assert.True(result.AllShellRefused);
+        Assert.StartsWith("cursor reported success, but EVERY shell command", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("auto-review classifier", result.Summary, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// W1's fixture: the edits land and exactly ONE shell command (the test run) is refused. The action completes
+    /// marked AllShellRefused, so its guardrails run; the harness decides from their outcome
+    /// (CursorHarnessEnforcementTests pin both sides).
+    /// </summary>
+    [Fact]
+    public async Task EditsSucceed_AndTheOneShellCallIsRefused_CompletesMarked()
+    {
+        Canned(FixtureLines("edits-ok-one-shell-rejected.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.True(result.AllShellRefused);
+        Assert.Equal(new ToolRefusal("shell", "dotnet test", CursorToolCallScanner.NoReasonGiven), Assert.Single(result.RefusedToolCalls));
+        Assert.Contains("(1 shell call(s), none ran)", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -432,8 +432,8 @@ public sealed class PlanValidator
                 "approvalMode 'auto-review': the harness launches it with --auto-review, so Cursor's server-side " +
                 "classifier approves or refuses each command. Writes and shell run, but any single command can be " +
                 "refused; every refusal is read from the stream and named in the attempt summary and feedback, and " +
-                "a session in which every shell command was refused settles needs-human rather than passing as a " +
-                "clean action.",
+                "an action in which every shell command was refused still has its guardrails run, and settles " +
+                "needs-human if they fail (a prompt judge in that state fails closed) — never a clean action.",
             CursorApprovalMode.None when CursorPromptRunner.EnablesSandbox(runner.Settings.ExtraArgs) =>
                 "approvalMode 'none' with Cursor's sandbox ('--sandbox enabled' in extraArgs): no approval flag is " +
                 "passed, files are written and shell runs INSIDE Cursor's sandbox, whose network access is governed " +
@@ -442,7 +442,7 @@ public sealed class PlanValidator
             CursorApprovalMode.None =>
                 "approvalMode 'none' and extraArgs does NOT enable Cursor's sandbox: no approval flag is passed, " +
                 "so files are written but Cursor REFUSES EVERY SHELL COMMAND (measured on Cursor's agent " +
-                "2026.09.23), and a task that builds, tests or runs git will settle needs-human. Add \"extraArgs\": " +
+                "2026.09.23), and a task whose guardrails need its build, test or git work settles needs-human when they fail. Add \"extraArgs\": " +
                 "[\"--sandbox\", \"enabled\"], or set \"approvalMode\": \"auto-review\".",
             _ =>
                 "approvalMode 'force' (the default): the harness grants it FULL write and shell access (--force, " +

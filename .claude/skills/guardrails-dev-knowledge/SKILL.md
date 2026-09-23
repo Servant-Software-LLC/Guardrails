@@ -220,7 +220,7 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `ClaudePromptRunner` and `CursorPromptRunner` own only argv, env and prompt delivery, plus a
   `StreamJsonCliDialect` (summary label, an optional `ConfigurationRefusal` recogniser — #767), a per-run
   `IToolDenialScanner` (Claude: `ClaudePermissionScanner.Scanner`; Cursor: `CursorToolCallScanner`, #773 —
-  it reads each completed `tool_call`'s `result.rejected`, feeding the wall tracker + #452) and an optional per-run
+  it reads each completed `tool_call`'s `result.rejected`, feeding the wall tracker and the #452 counter, which is inert for cursor actions because no task-action caller sets `AbortAfterConsecutiveToolDenials`) and an optional per-run
   line observer (Cursor's prompt-echo check). A change to that loop changes BOTH runners; Claude's summaries
   stay byte-identical because its label is `claude`. Cursor is not installed on CI: `CursorPromptRunnerTests`
   spawns a fake OS-picked `agent` through the real `ProcessRunner` that implements Cursor's MEASURED prompt

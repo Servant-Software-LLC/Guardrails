@@ -484,24 +484,43 @@ public sealed class PlanLoader
                 ? null
                 : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
             Engine = raw.Engine,
-            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, configPath, diagnostics)
+            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, raw.GuardrailOverrides?.ApprovalMode, configPath, diagnostics)
         };
     }
 
     /// <summary>
     /// The cursor <c>approvalMode</c> (#767, SSOT §9.9). ABSENT ⇒ null (the runner applies
-    /// <see cref="CursorApprovalModes.Default"/>). An unrecognised token is GR2081 and loads as null — REPORTED,
-    /// never silently served as <c>force</c>, which is the one mode an enterprise account may refuse outright.
-    /// Whether the key belongs on this block's kind at all is the validator's question.
+    /// <see cref="CursorApprovalModes.Default"/>). An unrecognised token — or a value that is not a string — is
+    /// GR2081 and loads as null: REPORTED, never silently served as <c>force</c>, which is the one mode an
+    /// enterprise account may refuse outright. <c>guardrailOverrides.approvalMode</c> is GR2081 too: the key is
+    /// block-level only, and an override nothing reads is indistinguishable from one that works. Whether the key
+    /// belongs on this block's kind at all is the validator's question.
     /// </summary>
     private static CursorApprovalMode? ReadApprovalMode(
-        string name, string? rawMode, string configPath, List<Diagnostic> diagnostics)
+        string name, JsonElement? rawValue, JsonElement? overrideValue, string configPath, List<Diagnostic> diagnostics)
     {
-        if (rawMode is null)
+        if (!AbsentAxis(overrideValue, out _))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+                $"promptRunners.{name}.guardrailOverrides.approvalMode is not honoured: approvalMode is block-level " +
+                "only — Cursor's approval policy is a property of the account and the launch, not of the prompt. " +
+                $"Move it to promptRunners.{name}.approvalMode (SSOT §9.9)."));
+        }
+
+        if (AbsentAxis(rawValue, out JsonElement value))
         {
             return null;
         }
 
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, configPath,
+                $"promptRunners.{name}.approvalMode must be a string, one of {CursorApprovalModes.TokenList}, but " +
+                $"was {DescribeJson(value)} (SSOT §9.9)."));
+            return null;
+        }
+
+        string rawMode = value.GetString() ?? string.Empty;
         if (CursorApprovalModes.TryParse(rawMode, out CursorApprovalMode mode))
         {
             return mode;

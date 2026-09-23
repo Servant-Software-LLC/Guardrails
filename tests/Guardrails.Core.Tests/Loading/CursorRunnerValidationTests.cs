@@ -248,6 +248,45 @@ public sealed class CursorRunnerValidationTests : IDisposable
         Assert.Contains("'force', 'auto-review', 'none'", error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>approvalMode is block-level only: an override of it is REPORTED, never silently ignored.</summary>
+    [Fact]
+    public void Gr2081_ApprovalModeUnderGuardrailOverrides_IsAnError()
+    {
+        Loaded loaded = Load("""
+            { "version": 1, "promptRunners": { "cursor": {
+                "kind": "cursor", "guardrailOverrides": { "approvalMode": "none" } } } }
+            """);
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Contains("promptRunners.cursor.guardrailOverrides.approvalMode is not honoured", error.Message, StringComparison.Ordinal);
+        Assert.Contains("block-level only", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("3")]
+    [InlineData("[\"auto-review\"]")]
+    public void Gr2081_ANonStringApprovalMode_IsAnError_NotAParseFailure(string json)
+    {
+        Loaded loaded = Load(
+            $$"""{ "version": 1, "promptRunners": { "cursor": { "kind": "cursor", "approvalMode": {{json}} } } }""");
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Contains("approvalMode must be a string", error.Message, StringComparison.Ordinal);
+        Assert.NotNull(loaded.Plan);
+        Assert.Null(loaded.Runner("cursor").ApprovalMode);
+    }
+
+    [Fact]
+    public void AnExplicitNullApprovalMode_MeansAbsent()
+    {
+        Loaded loaded = Load(
+            """{ "version": 1, "maxParallelism": 1, "promptRunners": { "cursor": { "kind": "cursor", "approvalMode": null } } }""");
+
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Null(loaded.Runner("cursor").ApprovalMode);
+    }
+
     [Fact]
     public void Gr2081_ApprovalModeOnAClaudeBlock_IsAnError()
     {
@@ -271,6 +310,9 @@ public sealed class CursorRunnerValidationTests : IDisposable
     [InlineData("auto-review", "[\"--auto-review\"]", "extraArgs", "DUPLICATES approvalMode 'auto-review'")]
     [InlineData("none", "[\"--sandbox\", \"enabled\", \"--force\"]", "extraArgs", "contradicts approvalMode 'none'")]
     [InlineData("none", "[\"--auto-review=true\"]", "extraArgs", "contradicts approvalMode 'none'")]
+    [InlineData("auto-review", "[\"-f\"]", "extraArgs", "\"pick one\"")]
+    [InlineData("none", "[\"-f\"]", "extraArgs", "contradicts approvalMode 'none'")]
+    [InlineData("force", "[\"-f\"]", "extraArgs", "DUPLICATES approvalMode 'force'")]
     public void Gr2082_AnApprovalFlagInExtraArgs_IsAnError(string? mode, string extraArgs, string key, string expected)
     {
         string modeKey = mode is null ? string.Empty : $"\"approvalMode\": \"{mode}\", ";

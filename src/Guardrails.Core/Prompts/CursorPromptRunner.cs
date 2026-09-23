@@ -54,14 +54,15 @@ namespace Guardrails.Core.Prompts;
 /// when every shell call was refused, so the parser's verdict is not enough. <see cref="CursorToolCallScanner"/>
 /// reads each completed <c>tool_call</c>'s own result; its refusals feed
 /// <see cref="PromptResult.BlockedWritePaths"/> / <see cref="PromptResult.RefusedCommands"/> (so
-/// <c>PermissionWallTracker</c> sees them exactly as it sees Claude's), the #452 fail-fast
-/// (<see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/>, on consecutive refusals with no call that
-/// ran between them), and <see cref="PromptResult.RefusedToolCalls"/>, which names each refusal and its reason
-/// in the summary and the retry feedback. The verdict rule is in <see cref="Finish"/>: a session that attempted
-/// shell and had EVERY shell call refused is <see cref="PromptFailureKind.RunnerConfiguration"/> (needs-human,
-/// naming the approval mode), never a clean action; a session with SOME refusals completes, carrying them, and
-/// its guardrails decide — the same rule the Claude path applies to a denial the agent routed around (#534 /
-/// #708).</para>
+/// <c>PermissionWallTracker</c> sees them exactly as it sees Claude's), the #452 consecutive-refusal counter
+/// (it trips <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> when a caller sets that bound — no
+/// task-action caller does today, so for cursor actions the fail-fast is available but not active), and
+/// <see cref="PromptResult.RefusedToolCalls"/>, which names each refusal and its reason in the summary and the
+/// retry feedback. The verdict rule is in <see cref="Finish"/>: an every-shell-refused ACTION completes marked
+/// <see cref="PromptResult.AllShellRefused"/> and its guardrails decide (needs-human with the approval-mode
+/// remedy if they fail); an every-shell-refused JUDGE fails closed; a session with SOME refusals completes,
+/// carrying them — the same rule the Claude path applies to a denial the agent routed around (#534 / #708).
+/// Known gap: refusals inside a <c>taskToolCall</c> subagent's nested conversation steps are not scanned.</para>
 /// </summary>
 public sealed class CursorPromptRunner : IPromptRunner
 {
@@ -92,8 +93,11 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <summary>Cursor's classifier-reviewed approval flag — emitted for <see cref="CursorApprovalMode.AutoReview"/> only.</summary>
     internal const string AutoReviewFlag = "--auto-review";
 
-    /// <summary>The three approval flags <c>approvalMode</c> owns, which GR2082 keeps out of <c>extraArgs</c>.</summary>
-    internal static readonly IReadOnlyList<string> ApprovalFlags = [ForceFlag, YoloFlag, AutoReviewFlag];
+    /// <summary>Cursor's documented short alias of <see cref="ForceFlag"/> (<c>agent --help</c>: "-f, --force"); never emitted, refused in <c>extraArgs</c> (GR2082).</summary>
+    internal const string ForceShortFlag = "-f";
+
+    /// <summary>The approval flags <c>approvalMode</c> owns, which GR2082 keeps out of <c>extraArgs</c>. Every one but <see cref="AutoReviewFlag"/> means <c>force</c>.</summary>
+    internal static readonly IReadOnlyList<string> ApprovalFlags = [ForceFlag, ForceShortFlag, YoloFlag, AutoReviewFlag];
 
     private readonly ProcessRunner _processRunner;
     private readonly string _command;
@@ -197,7 +201,7 @@ public sealed class CursorPromptRunner : IPromptRunner
             cancellationToken,
             echo.Feed).ConfigureAwait(false);
 
-        return Finish(result, echo, refusals, _approvalMode, invocation.Settings.ExtraArgs);
+        return Finish(result, echo, refusals, _approvalMode, invocation.Settings.ExtraArgs, invocation.Role);
     }
 
     /// <summary>The most refusals a summary names one by one; the rest are counted (feedback.md lists them all).</summary>
@@ -212,13 +216,19 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <item>a run that already FAILED keeps its own, more specific failure (bad <c>--model</c>, the
     /// Run-Everything refusal, a stall, a timeout, the #452 abort);</item>
     /// <item>the prompt-echo verdict (#764 — the guard against the false green);</item>
-    /// <item><b>the #773 rule:</b> a session that attempted shell and had EVERY shell call refused is
-    /// <see cref="PromptFailureKind.RunnerConfiguration"/>, however its terminal result reads. Such a session
-    /// could run no build, no test and no git: whatever it wrote is unverified by the agent, and the next
-    /// attempt runs under the same approval policy, so a retry changes nothing only the operator can change.
-    /// A session with SOME refusals and at least one shell call that ran completes, carrying its refusals —
-    /// the task's guardrails decide, exactly as a Claude attempt that routed around a denial is judged on its
-    /// outcome (#534 / #708), and the refused targets still reach the #86 repeated-refusal tracker.</item>
+    /// <item><b>the #773 rule, outcome-aware:</b> a session that attempted shell and had EVERY shell call refused
+    /// could run no build, no test and no git, however its terminal result reads, so it is marked
+    /// <see cref="PromptResult.AllShellRefused"/> with a <see cref="PromptResult.RunnerConfigurationRemedy"/>
+    /// (each refused command, its reason, the per-mode <c>approvalMode</c> advice). For an ACTION the run still
+    /// COMPLETES: its edits may be right, so the task's guardrails decide (TaskExecutor's WEAK-4 rule — never halt
+    /// what the gates could finish). Guardrails pass ⇒ green, with the refusals named; guardrails fail ⇒ the
+    /// harness settles needs-human at once with the remedy, because the next attempt runs under the same approval
+    /// policy. For a JUDGE (<see cref="PromptRole.Guardrail"/>) it FAILS CLOSED —
+    /// <see cref="PromptFailureKind.RunnerConfiguration"/>, not completed — since a verifier that could run none
+    /// of its checks certifies nothing, whatever verdict it wrote. A session with SOME refusals and at least one
+    /// shell call that ran completes, carrying its refusals — exactly as a Claude attempt that routed around a
+    /// denial is judged on its outcome (#534 / #708), and the refused targets still reach the #86
+    /// repeated-refusal tracker.</item>
     /// </list>
     /// </summary>
     internal static PromptResult Finish(
@@ -226,7 +236,8 @@ public sealed class CursorPromptRunner : IPromptRunner
         PromptEchoCheck echo,
         CursorToolCallScanner refusals,
         CursorApprovalMode approvalMode,
-        IReadOnlyList<string> extraArgs)
+        IReadOnlyList<string> extraArgs,
+        PromptRole role = PromptRole.Action)
     {
         string? displayModel = result.ObservedModel;
         string modelNote = displayModel is { Length: > 0 } ? $" (Cursor reported model: {displayModel})" : string.Empty;
@@ -251,15 +262,33 @@ public sealed class CursorPromptRunner : IPromptRunner
 
         if (refusals.EveryShellCallRefused)
         {
+            string remedy =
+                $"EVERY shell command it attempted was refused ({refusals.ShellCallsRefused} shell call(s), none ran); " +
+                $"{DescribeRefusals(refusals.Refusals)} — {EveryShellRefusedRemedy(approvalMode, extraArgs)}";
+
+            // A JUDGE fails closed: a verifier that could run none of its checks certifies nothing, whatever
+            // verdict file it wrote (the PR #775 B1 false green).
+            if (role == PromptRole.Guardrail)
+            {
+                return result with
+                {
+                    Completed = false,
+                    IsError = true,
+                    FailureKind = PromptFailureKind.RunnerConfiguration,
+                    AllShellRefused = true,
+                    RunnerConfigurationRemedy = remedy,
+                    Summary = $"cursor reported success, but {remedy}{modelNote}"
+                };
+            }
+
+            // An ACTION completes, carrying the fact: its work may still be right, and the task's guardrails —
+            // not the refusals — decide (outcome-aware, TaskExecutor's WEAK-4 rule). If they fail, the harness
+            // settles needs-human at once with this remedy, since a retry runs under the same policy.
             return result with
             {
-                Completed = false,
-                IsError = true,
-                FailureKind = PromptFailureKind.RunnerConfiguration,
-                Summary =
-                    $"cursor reported success, but EVERY shell command it attempted was refused " +
-                    $"({refusals.ShellCallsRefused} shell call(s), none ran); {DescribeRefusals(refusals.Refusals)} — " +
-                    $"{EveryShellRefusedRemedy(approvalMode, extraArgs)}{modelNote}"
+                AllShellRefused = true,
+                RunnerConfigurationRemedy = remedy,
+                Summary = $"cursor completed, but {remedy}{modelNote}"
             };
         }
 

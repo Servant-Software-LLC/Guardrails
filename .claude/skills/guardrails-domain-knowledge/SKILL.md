@@ -1199,9 +1199,9 @@ tiering as a working feature.
   `"none"` (no flag: shell refused unless `extraArgs` has `--sandbox enabled`); GR2081 bad value / wrong kind,
   GR2082 an approval flag in `extraArgs`. **Refused tool calls are read per call (#773):** a session whose
   EVERY shell call was `rejected` still ends `result/success`, so `CursorToolCallScanner` reads each completed
-  `tool_call`; every-shell-refused ⇒ `RunnerConfiguration` (needs-human, not retried); SOME refusals ⇒ the
+  `tool_call`; every-shell-refused ACTION ⇒ completes marked `AllShellRefused`, guardrails run, pass ⇒ green (refusals named), fail ⇒ needs-human at once with the approval-mode remedy; every-shell-refused JUDGE ⇒ fails closed (`GuardrailRunner`, whatever verdict it wrote); SOME refusals ⇒ the
   action completes carrying them and the guardrails decide (Claude #534/#708 parity), with each refusal + reason
-  in the summary and `feedback.md` and the targets fed to the wall tracker and #452. **No allowlist, no containment hook** (`NeedsContainmentHook` false), so the
+  in the summary and `feedback.md` and the targets fed to the wall tracker (the #452 counter is kept but inert for cursor actions: no task-action caller sets the bound; refusals nested in `taskToolCall` subagents are NOT scanned). **No allowlist, no containment hook** (`NeedsContainmentHook` false), so the
   harness compensates: advisory profiles (overwatch, ai-triage, criticality judge) never resolve to a cursor
   block (OFF for the run, with a `Note:` line), the task's own definition files are hashed around each action
   of an uncontained writer (`IsUncontainedWriter`) and any change fails + settles the task, and stale verdict

@@ -348,17 +348,21 @@ your retries. Use `"auto-review"` instead:
 
 Or use `"none"` with the sandbox: `"approvalMode": "none", "extraArgs": ["--sandbox", "enabled"]`. Inside
 the sandbox, network access follows your team's sandbox settings, so a `dotnet restore` or `npm install`
-may be blocked. Don't put `--force`, `--yolo` or `--auto-review` in `extraArgs`. `validate` rejects them
+may be blocked. Don't put `--force` (or `-f`), `--yolo` or `--auto-review` in `extraArgs`. `validate` rejects them
 (`GR2082`), because `approvalMode` owns that flag, and Cursor itself refuses `--auto-review` together
 with `--force`.
 
 **Refused commands are never reported as success.** When Cursor refuses a command, the session can still
 end with "success". Guardrails reads each tool call's own result:
 
-- If **every** shell command the agent tried was refused, the attempt fails and the task stops as
-  needs-human, naming each command, the reason, and the `approvalMode` change to make.
+- If **every** shell command the agent tried was refused, the task's guardrails still run, because the
+  edits may be right. If they pass, the task succeeds and its summary lists the refused commands. If they
+  fail, the task stops as needs-human right away, without spending retries, and names each command, the
+  reason, and the `approvalMode` change to make.
 - If only **some** were refused, the attempt continues and the task's guardrails decide. Each refused
   command and its reason appear in the attempt summary and in the retry feedback.
+- A Cursor **prompt guardrail** (a judge) that couldn't run any shell command fails, even if it wrote a
+  passing verdict.
 
 A reason like `Hook blocked with message: …` comes from a hook, not from Cursor's policy. Cursor's
 **"Include Third-Party Configs"** setting imports your Claude Code configuration from `~/.claude`,

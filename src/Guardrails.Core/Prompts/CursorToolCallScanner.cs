@@ -30,10 +30,14 @@ namespace Guardrails.Core.Prompts;
 /// refused edit/write/delete contributes its PATH; a refused shell call its COMMAND; any other refused tool
 /// its tool NAME as a command (as Claude's scanner attributes a non-write tool), so a refused READ of a
 /// <c>.claude/</c> file is never mistaken for the structural write wall.</item>
-/// <item><see cref="ConsecutiveDenials"/>, reset by every call that ran — the #452 fail-fast counter.</item>
+/// <item><see cref="ConsecutiveDenials"/>, reset by every call that ran — the #452 fail-fast counter. It trips only
+/// when a caller sets <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/>; no task-action caller does
+/// today, so for cursor actions it is available but not active.</item>
 /// <item>Shell accounting (<see cref="ShellCallsRefused"/>, <see cref="ShellCallsRan"/>), which is what the
 /// runner's "every shell call was refused" verdict is decided from.</item>
 /// </list>
+/// <para><b>Known gap.</b> A <c>taskToolCall</c> (Cursor's subagent) carries its own nested conversation steps;
+/// refusals INSIDE them are not read — only the top-level stream's completed events are.</para>
 /// </summary>
 internal sealed class CursorToolCallScanner : IToolDenialScanner
 {

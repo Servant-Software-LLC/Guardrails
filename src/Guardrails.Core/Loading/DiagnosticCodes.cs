@@ -1323,7 +1323,8 @@ public static class DiagnosticCodes
     /// value is not one of <c>force</c> | <c>auto-review</c> | <c>none</c> (reported by the LOADER, which keeps
     /// loading and leaves the mode unset rather than silently serving <c>force</c>), or the key sits on a block
     /// whose kind is not <c>cursor</c> (reported by the VALIDATOR — a key that does nothing where it was
-    /// written is indistinguishable from one that works).
+    /// written is indistinguishable from one that works). Also a non-string value, and
+    /// <c>guardrailOverrides.approvalMode</c> (loader): the key is block-level only.
     /// </summary>
     public const string CursorApprovalModeInvalid = "GR2081";
 

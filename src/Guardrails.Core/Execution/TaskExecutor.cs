@@ -1826,6 +1826,44 @@ public sealed class TaskExecutor : ITaskExecutor
                     guardrailResults: guardrails.Results, failedGuardrails: failedList)!;
             }
 
+            // #773 (PR #775 W1): the action completed but its runner refused EVERY shell call it attempted, and now a
+            // guardrail failed. The outcome-aware rule let the gates look first (its edits might have been right);
+            // they did not pass, and the next attempt would run under the same approval policy, unable to build, test
+            // or run git. Settle needs-human now with the runner's approval-mode remedy instead of spending retries.
+            if (action.AllShellRefused)
+            {
+                var shellFeedback = new StringBuilder();
+                shellFeedback.Append($"# Task '{task.Id}' halted: its runner could run no shell command\n\n");
+                shellFeedback.Append($"Task: {task.Description}\n\n");
+                shellFeedback.Append($"A guardrail failed ({failedNames}). The action's runner reported: {action.RunnerConfigurationRemedy}\n\n");
+                shellFeedback.Append(
+                    "The task was settled needs-human on this attempt instead of being retried: every retry would run " +
+                    "under the same approval policy. Change what the message above names, then resume.\n");
+                shellFeedback.Append(RetryPolicy.ForGuardrailFailures(task, attemptNumber, guardrails.Results));
+                shellFeedback.Append(RetryPolicy.ForRunnerRefusals(action.RefusedToolCalls));
+                if (TryStashEscalatingAttempt(task, worktree, attemptNumber, enforcedWriteScope ?? []) is { } shellSalvage)
+                {
+                    RetryPolicy.AppendSalvageSection(shellFeedback, shellSalvage, SalvageFraming.Escalation);
+                }
+
+                return _journaler.FailedAttempt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, shellFeedback.ToString(), isFinal: true,
+                    guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
+                    new TaskResult
+                    {
+                        TaskId = task.Id,
+                        Outcome = TaskOutcome.NeedsHuman,
+                        ActionExitCode = action.ExitCode,
+                        Guardrails = guardrails.Results,
+                        Summary = $"guardrail(s) failed: {failedNames}; not retried — the action's runner reported: " +
+                                  $"{action.RunnerConfigurationRemedy}"
+                    },
+                    failedList,
+                    costUsd: action.CostUsd, usage: action.Usage, provenance: provenance, turns: action.Turns,
+                    segments: AttemptJournaler.SegmentsFor(action, guardrails),
+                    harnessWrite: harnessWriteRecord);
+            }
+
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
             // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
             // clean reset is still the default base; the agent chooses how much to reuse.

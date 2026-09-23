@@ -188,6 +188,23 @@ public sealed record PromptResult
     /// no separable reason (Claude's are read by <see cref="ClaudePermissionScanner"/> into the target lists).
     /// </summary>
     public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// True when the session attempted shell and NOT ONE shell call ran — every one was refused by the runner's
+    /// approval policy (#773). The session could build, test and run git in no way at all, whatever its terminal
+    /// result said. For an ACTION the run still counts as completed and the task's guardrails decide (outcome-aware,
+    /// the WEAK-4 rule); if they fail, the harness settles the task needs-human at once with
+    /// <see cref="RunnerConfigurationRemedy"/>, because a retry runs under the same policy. A JUDGE in this state
+    /// is not completed at all (it fails closed, see <c>GuardrailRunner</c>).
+    /// </summary>
+    public bool AllShellRefused { get; init; }
+
+    /// <summary>
+    /// The operator-facing remedy for a runner-configuration problem the runner detected (#767 / #773) — the
+    /// refused commands, their reasons and the per-mode <c>approvalMode</c> advice — or null when there is none.
+    /// Set with <see cref="AllShellRefused"/>; read when the harness settles the task needs-human.
+    /// </summary>
+    public string? RunnerConfigurationRemedy { get; init; }
 }
 
 /// <summary>

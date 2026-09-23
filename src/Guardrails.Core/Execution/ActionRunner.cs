@@ -541,6 +541,17 @@ internal sealed record ActionRun
     /// </summary>
     public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
 
+    /// <summary>
+    /// The runner reported that the action attempted shell and every shell call was refused (#773) — a straight
+    /// carry of <see cref="PromptResult.AllShellRefused"/>. The action still counts as succeeded so its guardrails
+    /// run; if they FAIL, <see cref="TaskExecutor"/> settles the task needs-human at once with
+    /// <see cref="RunnerConfigurationRemedy"/> instead of retrying under the same approval policy.
+    /// </summary>
+    public bool AllShellRefused { get; init; }
+
+    /// <summary>The runner's remedy text for <see cref="AllShellRefused"/> (#773), or null.</summary>
+    public string? RunnerConfigurationRemedy { get; init; }
+
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
     // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
@@ -636,6 +647,8 @@ internal sealed record ActionRun
             BlockedWritePaths = result.BlockedWritePaths,
             RefusedCommands = result.RefusedCommands,
             RefusedToolCalls = result.RefusedToolCalls,
+            AllShellRefused = result.AllShellRefused,
+            RunnerConfigurationRemedy = result.RunnerConfigurationRemedy,
             FailureSummary = result.Summary
         };
     }

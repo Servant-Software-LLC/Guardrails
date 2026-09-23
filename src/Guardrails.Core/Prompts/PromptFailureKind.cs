@@ -81,9 +81,11 @@ public enum PromptFailureKind
     /// The RUNNER'S OWN CONFIGURATION cannot do this work, and no retry under the same configuration can
     /// change that (#767 / #773, SSOT §9.9). Two shapes today, both Cursor's and both detected inside its
     /// quarantine: the CLI refused to start because the team administrator disabled "Run Everything", which
-    /// <c>approvalMode: "force"</c> requires; and a session in which the agent attempted shell and EVERY shell
-    /// call was refused by Cursor's approval policy (or by a hook Cursor loaded) — which ends
-    /// <c>result/success</c>, exit 0, and must never read as a clean action.
+    /// <c>approvalMode: "force"</c> requires; and a JUDGE session in which the agent attempted shell and EVERY
+    /// shell call was refused by Cursor's approval policy (or by a hook Cursor loaded) — which ends
+    /// <c>result/success</c>, exit 0, and must never certify anything. (An ACTION session in that state is not
+    /// failed here: it completes marked <see cref="PromptResult.AllShellRefused"/>, its guardrails decide, and a
+    /// guardrail failure then settles needs-human with <see cref="PromptResult.RunnerConfigurationRemedy"/>.)
     ///
     /// <para>The harness settles the task <c>needs-human</c> on the FIRST such attempt, without consuming the
     /// rest of the retry budget: unlike <see cref="Transient"/>, waiting does not help, and unlike

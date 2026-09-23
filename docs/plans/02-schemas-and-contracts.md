@@ -283,7 +283,7 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
       "contextTokens": null,          // OPTIONAL, openai-compat ONLY. REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader
       "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
       "wire": null,                    // OPTIONAL, openai-compat ONLY. A verbatim request-body passthrough map merged into the outgoing JSON, e.g. { "options": { "num_ctx": 32768 } } — the HTTP sibling of `env`. A key that shadows a harness-owned request field (model/messages/stream/stream_options/tools/max_tokens) is GR2065, never a runtime throw
-      "approvalMode": null,            // OPTIONAL, cursor ONLY (§9.9, issue #767). "force" | "auto-review" | "none"; absent = "force". How Cursor approves tool calls in print mode: "force" → --force (Run Everything; refused at launch where a team admin disabled it — a runner-configuration halt), "auto-review" → --auto-review (Cursor's classifier may refuse individual commands), "none" → no approval flag (shell refused unless extraArgs carries "--sandbox", "enabled"). Block-level only. Unknown value, or the key on a non-cursor block = GR2081; an approval flag (--force/--yolo/--auto-review) in extraArgs of a cursor block = GR2082
+      "approvalMode": null,            // OPTIONAL, cursor ONLY (§9.9, issue #767). "force" | "auto-review" | "none"; absent = "force". How Cursor approves tool calls in print mode: "force" → --force (Run Everything; refused at launch where a team admin disabled it — a runner-configuration halt), "auto-review" → --auto-review (Cursor's classifier may refuse individual commands), "none" → no approval flag (shell refused unless extraArgs carries "--sandbox", "enabled"). Block-level only. Unknown or non-string value, the key on a non-cursor block, or guardrailOverrides.approvalMode = GR2081; an approval flag (--force/-f/--yolo/--auto-review) in extraArgs of a cursor block = GR2082
       "engine": null,                  // OPTIONAL, openai-compat ONLY. "ollama" | "llama.cpp" | "mlx" | "lm-studio" | "vllm" | "apple-fm" — OPERATOR-FACING TEXT ONLY (§9.8): selects the model-not-found remedy sentence and nothing else, never a code path or a request field. Absent = a neutral remedy sentence naming the model and endpoint
       "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
       "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
@@ -5693,11 +5693,14 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     reached only the stream log.
   - **`RunnerConfiguration`** (issues #767 / #773, §9.9): the runner's OWN configuration cannot do this work
     and no retry under it can — today Cursor's two shapes: the CLI refused `--force` because the team
-    administrator disabled "Run Everything", or a session whose every shell call was refused by the approval
-    policy (it still ends `result/success`). Detected inside the runner quarantine (`CursorSignalClassifier`,
-    `CursorToolCallScanner`). Checked right after the `Transient` pause, it settles the task `needs-human` on
-    the FIRST such attempt (journaled `action-failed`, not retried, the remaining budget unspent), with the
-    runner's summary — the refusal and its remedy — as the needs-human line and in `feedback.md`.
+    administrator disabled "Run Everything", or a JUDGE session whose every shell call was refused by the
+    approval policy (it still ends `result/success`). Detected inside the runner quarantine
+    (`CursorSignalClassifier`, `CursorToolCallScanner`). On an ACTION it is checked right after the `Transient`
+    pause and settles the task `needs-human` on the FIRST such attempt (journaled `action-failed`, not retried,
+    the remaining budget unspent), with the runner's summary — the refusal and its remedy — as the needs-human
+    line and in `feedback.md`. On a JUDGE, `GuardrailRunner` fails the guardrail closed whatever verdict file
+    exists. An ACTION whose every shell call was refused is NOT this kind: it completes marked
+    `AllShellRefused` and is settled by its guardrails' outcome (§9.9).
   - **`OutputCap`** (issue #114): consumes the budget like `Error` but composes actionable feedback
     ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
     `output-cap` outcome (§7).
@@ -7028,8 +7031,8 @@ rather than by rule.)*
 | `GR2066` | error | `OpenAiCompatActionReachable` (plan 28 §3.7/§7, issue #223) — an `openai-compat` block is reachable for an **Action**, by any of five routes (one diagnostic per block, naming every route that reaches it): it declares `routing`; it is the **effective default** (`default` pointer **or** sole declared runner — `PromptRunnerRegistry.ResolveDefault`'s own rule); a task's `action.runner`; an action prompt's own frontmatter `runner:` (folded onto the task definition by the loader purely so this check can see it, §3.7); or the block is declared under a reserved **Action**-role profile name — `ai-merge` or `breakdown`. v1's local runner is a verifier, not an actor (§9.8), so every manifest-visible route to an ACTION is an honest halt at validate time rather than a mid-DAG failure with a task's work already in flight. The two LEGAL reachability paths — a judge guardrail's own frontmatter `runner:` pin, and the reserved **Advisory**-role profile names `overwatch`/`ai-triage` — must never fire here; GR2067's unreachable clause is the opposite failure and shares the same reserved-profile list, split by role |
 | `GR2067` | warning | `OpenAiCompatWeakOrUnreachable` (plan 28 §7, issue #223) — an `openai-compat` block is declared but practically inert, in either of two independent forms: it declares no `strength` (the §9.6 verifier-kind fallback then treats it as PERMANENTLY weak, so every judge routed to it carries a #229 advisory forever); **or** it is unreachable — neither pinned by any guardrail's frontmatter `runner:` nor named as one of the two reserved advisory profiles (`overwatch`, `ai-triage`), which is the check that catches a `triage`-for-`ai-triage` misspelling that would otherwise fail silently: the block loads, validates, and simply never runs |
 | `GR2080` | warning | `CursorRunnerUngoverned` (§9.9, issue #764) — fires ONCE PER `kind: "cursor"` block, always: Cursor's print mode has no per-tool allowlist the harness can set and cannot load the §9.4 containment hook; since #767 the message states what the block's `approvalMode` actually grants (`force`: full write and shell access via `--force`, refused at launch where a team admin disabled Run Everything; `auto-review`: the server classifier may refuse individual commands, which are read and named; `none`: shell refused unless `extraArgs` enables `--sandbox enabled`, and with it shell runs inside the sandbox) and that Cursor's "Include Third-Party Configs" imports `~/.claude` hooks; `permissionMode`, `allowedTools`, `maxTurns` and `maxOutputTokens` — and any `guardrailOverrides` of them — are IGNORED, and `maxCostUsd` can never trip on it (Cursor reports no cost). It states what IS enforced (the worktree-only git-diff write-scope check, the task-definition tamper check, the stale-verdict clear, the prompt-echo check, and the block never serving the overwatcher, ai-triage or the criticality judge — which are OFF for the run when it is the default runner) and what is NOT (writes outside the worktree: the plan folder via `--add-dir`, other worktrees, the main checkout, `git stash`; in-scope edits by a prompt guardrail on the block), and that `--sandbox` is an unproven opt-in through `extraArgs`. The message NAMES every one of those keys the block or its `guardrailOverrides` actually declares (read off `PromptRunnerConfig.DeclaredSettingsKeys`, since the loader's defaults erase the difference), so a Claude block copied and flipped to `kind: "cursor"` is told exactly what stopped applying. A warning because running Cursor is a legitimate operator choice; what must not happen is that choice being made silently |
-| `GR2081` | error | `CursorApprovalModeInvalid` (§9.9, issue #767) — a prompt-runner block's `approvalMode` cannot be honoured: the value is not one of `force` \| `auto-review` \| `none` (reported by the LOADER, which leaves the mode unset rather than silently serving `force`, the one mode an enterprise admin may refuse outright), or the key sits on a block whose `kind` is not `cursor` (reported by the VALIDATOR — a key that does nothing where it was written is indistinguishable from one that works) |
-| `GR2082` | error | `CursorApprovalFlagInExtraArgs` (§9.9, issue #767) — a `kind: "cursor"` block's `extraArgs` or `guardrailOverrides.extraArgs` carries one of Cursor's approval flags (`--force`, `--yolo`, `--auto-review`, bare or `--flag=value`). The approval flag is owned by `approvalMode`: a copy duplicates the mode or contradicts it, and one contradiction is fatal at launch — the CLI refuses `--auto-review` with `--force`/`--yolo` ("pick one"). The message names the `approvalMode` that expresses what the flag was reaching for. `--sandbox enabled` is not an approval flag and is not flagged |
+| `GR2081` | error | `CursorApprovalModeInvalid` (§9.9, issue #767) — a prompt-runner block's `approvalMode` cannot be honoured: the value is not one of `force` \| `auto-review` \| `none` (reported by the LOADER, which leaves the mode unset rather than silently serving `force`, the one mode an enterprise admin may refuse outright), a non-string value, or `guardrailOverrides.approvalMode` (loader; the key is block-level only), or the key sits on a block whose `kind` is not `cursor` (reported by the VALIDATOR — a key that does nothing where it was written is indistinguishable from one that works) |
+| `GR2082` | error | `CursorApprovalFlagInExtraArgs` (§9.9, issue #767) — a `kind: "cursor"` block's `extraArgs` or `guardrailOverrides.extraArgs` carries one of Cursor's approval flags (`--force`, its documented short alias `-f`, `--yolo`, `--auto-review`, bare or `--flag=value`). The approval flag is owned by `approvalMode`: a copy duplicates the mode or contradicts it, and one contradiction is fatal at launch — the CLI refuses `--auto-review` with `--force`/`--yolo` ("pick one"). The message names the `approvalMode` that expresses what the flag was reaching for. `--sandbox enabled` is not an approval flag and is not flagged |
 | `GR2068` | warning | `HandoffPathUnreachable` — a handoff row names a resolvable path that **no task's** `writeScope` covers, so the row cannot be delivered under any implementation. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **warning** in v1 only because `RunCommand.RunAsync` refuses to run a plan whose validation emits any error, and a correct shipped plan can carry a stale cell (plan 28 row 3) — an ERROR would be a retroactive run-blocking gate. **Promotion to ERROR** when a hand-run of this code alone across every plan carrying the convention produces only genuine defects |
 | `GR2069` | warning | `HandoffRowSplitAcrossTasks` — every path a handoff row names is writable by *some* task, but **no single task** can write them all: the row is delivered by several tasks and each half must be reachable by the task implementing *that* half. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **confirm**, not a fault: a deliberately split row legitimately triggers it, and the message says so in its own words. It is a **separate code from GR2068 by design** — it fires on 3 of 10 rows of a correct plan, and under one shared code a reviewer learns to skim the code itself, taking GR2068's precision with it (#229). **Should probably never be an ERROR**: it reports a shape the check cannot adjudicate, so blocking on it would refuse a plan whose author already made the right call. Note it is GR2069, not GR2068, that catches both plan-28 failures |
 | `GR2047` | error | a malformed `routing`: missing/empty/non-array `tiers`, or a value outside the tier enum |
@@ -7370,10 +7373,10 @@ measured on an enterprise account whose administrator disabled "Run Everything" 
 | `"auto-review"` | `--auto-review` | writes and shell (`git status`, `dotnet --version`) all `success`, exit 0, no stall. Cursor's server-side classifier may refuse an individual command |
 | `"none"` | (no approval flag) | writes succeed; EVERY `shellToolCall` completes `rejected` (reason `""`) — and the session STILL exits 0 with `result`/`subtype: "success"`. With `extraArgs: ["--sandbox", "enabled"]` shell runs inside Cursor's sandbox (also measured `success`; `--auto-review --sandbox enabled` works too) |
 
-- The key is block-level only (no `guardrailOverrides` form). An unrecognised value is **GR2081** at load (the
+- The key is block-level only: `guardrailOverrides.approvalMode` is **GR2081** at load. An unrecognised or non-string value is **GR2081** at load (the
   mode is left unset and REPORTED, never served as `force`); the key on a non-`cursor` block is **GR2081** at
   validate. An approval flag in `extraArgs` or `guardrailOverrides.extraArgs` — `--force`, `--yolo` or
-  `--auto-review`, bare or `--flag=value` — is **GR2082**: the flag is owned by `approvalMode`, and a copy
+  `--auto-review` (and `-f`, Cursor's documented alias of `--force`), bare or `--flag=value` — is **GR2082**: the flag is owned by `approvalMode`, and a copy
   either duplicates the mode or contradicts it (fatally, for `--auto-review` beside `--force`).
 - **The admin's Run-Everything refusal is a runner-configuration failure.** `CursorSignalClassifier` (the Cursor
   quarantine's sole home for that wording, anchored on "administrator has disabled the 'Run Everything'")
@@ -7402,22 +7405,47 @@ Every refusal is recorded with its reason (an empty `reason` reads "refused by C
   (§9.3, #708): a refused edit/write/delete contributes its PATH, a refused shell call its COMMAND, any other
   refused tool its tool NAME as a command (so a refused READ of a `.claude/` file is never the structural
   write wall). `PermissionWallTracker`'s #86 repeated-refusal rule therefore applies to Cursor.
-- **Bounded.** `AbortAfterConsecutiveToolDenials` (#452) counts consecutive refusals with no call that RAN
-  between them, and kills the session at the bound exactly as for Claude.
-- **The verdict rule (decided here).** A session that attempted shell and had **every** shell call refused is
-  `Completed = false`, `FailureKind = RunnerConfiguration`, however its terminal result reads — it could run no
-  build, no test and no git, and the next attempt runs under the same approval policy. The summary names each
-  refused command, its reason, and the per-mode remedy (`"none"` without the sandbox: add `--sandbox enabled` or
-  use `"auto-review"`; `"auto-review"`: the classifier or a hook refused them; `"force"`: something Cursor
-  loaded, such as an imported hook, refused them). A session with SOME refusals and at least one shell call that
-  ran — or refusals of non-shell tools only — COMPLETES carrying them: its guardrails decide, the same rule a
-  Claude attempt that routed around a denial gets (#534 / #708: a converged attempt goes green whatever was
-  refused, and a failed one retries with the refusals named and tracked). A run that already failed keeps its own
-  failure (the refusals are still named), and the prompt-echo check is applied before this rule.
-- **`RunnerConfiguration` settles on the first attempt.** `TaskExecutor` checks it right after the #115
-  transient pause and before the permission-wall checks: the attempt is journaled `action-failed`, the task
-  settles `needs-human` (not retried; the remaining budget is unspent), `feedback.md` carries the runner's
-  summary and every refusal, and a worktree attempt's tree is stashed as on any escalation (#554).
+- **Bounded — when a caller sets the bound.** The scanner keeps the #452 counter (consecutive refusals with no
+  call that RAN between them) and the shared session kills the run when `AbortAfterConsecutiveToolDenials` is
+  reached, exactly as for Claude. **No task-action caller sets that bound today** (only the advisory
+  needs-human triage and overwatch invocations do, and a cursor block never serves `Advisory`), so for cursor
+  actions and judges the fail-fast is AVAILABLE BUT NOT ACTIVE; an action's refusals are bounded instead by the
+  verdict rule below, the #86 tracker, the stall bound and the timeout.
+- **The verdict rule (decided here; outcome-aware since PR #775).** A session that attempted shell and had
+  **every** shell call refused could run no build, no test and no git, however its terminal result reads. The
+  runner marks it `PromptResult.AllShellRefused` and sets `RunnerConfigurationRemedy` — each refused command, its
+  reason, and the per-mode remedy (`"none"` without the sandbox: add `--sandbox enabled` or use `"auto-review"`;
+  `"auto-review"`: the classifier or a hook refused them; `"force"`: something Cursor loaded, such as an
+  imported hook, refused them). What happens next depends on the ROLE:
+  - **Action — the gates decide first** (TaskExecutor's WEAK-4 rule: never halt what the gates could finish).
+    The action COMPLETES (`Completed = true`), so the task's guardrails RUN. Guardrails pass ⇒ the task is green,
+    and its summary names the refusals (``…; 1 tool call(s) refused by the runner: shell `dotnet test` — …``).
+    Guardrails fail ⇒ the task settles `needs-human` on THAT attempt (journaled `guardrail-failed`, not retried,
+    the remaining budget unspent — the next attempt would run under the same approval policy), with the remedy
+    as the needs-human line and in `feedback.md` beside the guardrail verdicts and every refusal; a worktree
+    attempt's tree is stashed as on any escalation (#554). (This settle sits after the #104/#708 wall halts at
+    the guardrail-failed site; a failure at an earlier site — write scope, staging — retries as usual.)
+  - **Judge (a cursor prompt guardrail) — fails closed.** `Completed = false`,
+    `FailureKind = RunnerConfiguration`, and `GuardrailRunner` fails the guardrail
+    (`judge could not run: <summary>`) WHATEVER verdict file exists: a verifier that could run none of its checks
+    can still write `{"pass": true}`, and must certify nothing (PR #775 B1). `GuardrailRunner` applies the same
+    fail-closed rule to any judge result classified `RunnerConfiguration` (e.g. the admin's Run-Everything
+    refusal). A judge that ran with SOME refusals passes or fails on its verdict, and its refusals are appended to
+    the guardrail's reason (on a pass: `passed; N tool call(s) refused by the runner: …`).
+
+  A session with SOME refusals and at least one shell call that ran — or refusals of non-shell tools only —
+  COMPLETES carrying them: its guardrails decide, the same rule a Claude attempt that routed around a denial gets
+  (#534 / #708: a converged attempt goes green whatever was refused, and a failed one retries with the refusals
+  named and tracked). A run that already failed keeps its own failure (the refusals are still named), and the
+  prompt-echo check is applied before this rule.
+- **`RunnerConfiguration` on an ACTION settles on the first attempt.** Today that is only the admin's
+  Run-Everything refusal (the action never ran). `TaskExecutor` checks it right after the #115 transient pause and
+  before the permission-wall checks: the attempt is journaled `action-failed`, the task settles `needs-human`
+  (not retried; the remaining budget is unspent), `feedback.md` carries the runner's summary and every refusal,
+  and a worktree attempt's tree is stashed as on any escalation (#554).
+- **Known gap (not scanned).** A `taskToolCall` (Cursor's subagent) carries its own nested conversation steps;
+  refusals INSIDE them are not read — only the top-level stream's completed `tool_call` events are. A subagent's
+  refused shell call therefore neither counts toward the verdict rule nor appears in the refusal list.
 
 **Launch on Windows.** Cursor installs as `%LOCALAPPDATA%\cursor-agent\agent.cmd` (a shim that runs
 `agent.ps1` under PowerShell, which runs `node.exe`); there is no `agent.exe`, and `Process.Start` with
@@ -7534,8 +7562,10 @@ in brief, and names every `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputT
 `guardrailOverrides` declares (§9.6 validation table). Since #767 its approval sentence states what the block's
 CHOSEN mode grants: `force` = full write and shell (`--force`, Run Everything), with the admin-refusal note;
 `auto-review` = the server classifier may refuse individual commands, refusals are read and named, and an
-every-shell-refused session settles needs-human; `none` = shell refused unless `extraArgs` enables the sandbox
-(and, with it, that shell runs inside the sandbox). **GR2081** / **GR2082** (ERRORS) guard `approvalMode` itself
+every-shell-refused action still has its guardrails run and settles needs-human if they fail (a judge fails
+closed); `none` = shell refused unless `extraArgs` enables the sandbox, so a task needing shell settles needs-human
+when its guardrails fail
+(and, with the sandbox, that shell runs inside it). **GR2081** / **GR2082** (ERRORS) guard `approvalMode` itself
 (above).
 
 **Out of scope.** `agent --list-models` exists, but `cursor` is NOT in `PromptRunnerKinds.ModelEnumerable`:
