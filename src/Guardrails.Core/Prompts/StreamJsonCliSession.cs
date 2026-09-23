@@ -21,13 +21,37 @@ internal sealed record StreamJsonCliDialect
     public required string Label { get; init; }
 
     /// <summary>
-    /// Feed <see cref="ClaudePermissionScanner"/> from the stream. True only for a CLI whose denials the
-    /// scanner can actually recognise (Claude's <c>tool_result</c> denial phrasing). When false the scanner
-    /// is never constructed, so <see cref="PromptResult.BlockedWritePaths"/> stays empty and
-    /// <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> is INERT for this CLI — honestly
-    /// absent rather than fed a dialect it would misread.
+    /// A vendor-quarantined recogniser for a failure the CLI's OWN CONFIGURATION caused (#767): given the text
+    /// a failed run is classified from (see <c>ClassificationText</c>), it returns the operator-facing remedy
+    /// when the text is such a refusal, else null. A match classifies the run
+    /// <see cref="PromptFailureKind.RunnerConfiguration"/> — ahead of the shared
+    /// <see cref="ClaudeSignalClassifier"/>, because "your administrator disabled this mode" is never a rate
+    /// limit to wait out — and appends the remedy to the summary. Null = the CLI has no such refusal (Claude).
     /// </summary>
-    public required bool ScansPermissionDenials { get; init; }
+    public Func<string, string?>? ConfigurationRefusal { get; init; }
+}
+
+/// <summary>
+/// What a runner reads out of its own stream about REFUSED tool calls (#86 / #104 / #452 / #773): the
+/// de-duplicated refused targets the permission-wall tracker routes on, and the running count of refusals
+/// with no tool call that actually ran between them, which drives the #452 fail-fast. One implementation per
+/// vendor dialect, each inside its quarantine: <see cref="ClaudePermissionScanner.Scanner"/> reads Claude's
+/// <c>tool_result</c> denial phrasing, <see cref="CursorToolCallScanner"/> reads Cursor's per-call
+/// <c>rejected</c> results. Fed every stdout line, in order, on the reader thread.
+/// </summary>
+internal interface IToolDenialScanner
+{
+    /// <summary>Consume one stream line (tolerant: garbage and partial lines are skipped).</summary>
+    void Feed(string line);
+
+    /// <summary>Every distinct refused target — write paths and refused commands — in first-seen order.</summary>
+    IReadOnlyList<string> BlockedWritePaths { get; }
+
+    /// <summary>The entries of <see cref="BlockedWritePaths"/> that are commands rather than paths (#708).</summary>
+    IReadOnlyList<string> RefusedCommands { get; }
+
+    /// <summary>Refusals since the last tool call that actually ran — the #452 fail-fast counter.</summary>
+    int ConsecutiveDenials { get; }
 }
 
 /// <summary>
@@ -35,7 +59,7 @@ internal sealed record StreamJsonCliDialect
 /// <see cref="ClaudePromptRunner"/> and <see cref="CursorPromptRunner"/> (#764). The runners own their
 /// argv, environment and prompt delivery (the vendor spelling, SSOT §9); this owns everything after the
 /// spawn. Extracted from <see cref="ClaudePromptRunner"/> verbatim — with <see cref="StreamJsonCliDialect.Label"/>
-/// <c>"claude"</c> and <see cref="StreamJsonCliDialect.ScansPermissionDenials"/> true, the result is
+/// <c>"claude"</c> and a <see cref="ClaudePermissionScanner.Scanner"/> as the denial scanner, the result is
 /// byte-identical to the pre-#764 runner.
 /// </summary>
 internal static class StreamJsonCliSession
@@ -62,17 +86,18 @@ internal static class StreamJsonCliSession
         string? standardInput,
         PromptInvocation invocation,
         StreamJsonCliDialect dialect,
+        IToolDenialScanner? denialScanner,
         CancellationToken cancellationToken,
         Action<string>? lineObserver = null)
     {
         var parser = new ClaudeStreamParser();
 
-        // Mine permission-wall signals from the same stream lines (issues #86 / #104): a write/edit
-        // refused because the path is not granted. The scanner is fed in the Tee alongside the parser
-        // and transcript; its output flows out as the runner-agnostic BlockedWritePaths list. Null for a
-        // dialect whose denials the scanner cannot read (#764) — see StreamJsonCliDialect.
-        ClaudePermissionScanner.Scanner? permissionScanner =
-            dialect.ScansPermissionDenials ? new ClaudePermissionScanner.Scanner() : null;
+        // Mine permission-wall signals from the same stream lines (issues #86 / #104 / #773): a tool call
+        // refused because it is not granted (Claude) or not approved (Cursor). The scanner is the RUNNER'S —
+        // it knows its own vendor's refusal shape — and is fed in the Tee alongside the parser and transcript;
+        // its output flows out as the runner-agnostic BlockedWritePaths list. Null = the runner reads no
+        // refusals, and then the #452 bound below is inert.
+        IToolDenialScanner? permissionScanner = denialScanner;
 
         // Open both log artifacts for incremental writes before launching the process so the
         // "view log" link can tail them in real time (issue #41) — both the raw debug stream and
@@ -301,6 +326,18 @@ internal static class StreamJsonCliSession
             bool completed = process.Succeeded && result.HasResult;
             string summary = BuildSummary(process, result, dialect.Label);
             PromptFailureKind failureKind = ClassifyFailure(process, result);
+
+            // #767: the CLI's own configuration refused the run (Cursor: "your team administrator has disabled
+            // the 'Run Everything' option" under --force). Checked on the FAILED, non-timed-out run only and
+            // ahead of the shared classification, so it can never recolour a success or a timeout; the remedy
+            // rides the summary, which becomes the needs-human line.
+            if (failureKind is not (PromptFailureKind.None or PromptFailureKind.Timeout)
+                && dialect.ConfigurationRefusal?.Invoke(ClassificationText(process, result)) is { } remedy)
+            {
+                failureKind = PromptFailureKind.RunnerConfiguration;
+                summary = $"{summary} — {remedy}";
+            }
+
             string? resetHint = failureKind == PromptFailureKind.Transient
                 ? ClaudeSignalClassifier.ExtractResetHint(ClassificationText(process, result))
                 : null;

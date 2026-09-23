@@ -9,11 +9,13 @@ namespace Guardrails.Core.Prompts;
 /// The <c>kind: "cursor"</c> prompt runner (#764): Cursor's Agent CLI (<c>agent</c>) headless. ALL
 /// Cursor-specific flag spelling is confined to this class (SSOT §9.9). Invocation:
 /// <code>
-/// agent -p --output-format stream-json --force --trust --workspace &lt;cwd&gt;
+/// agent -p --output-format stream-json [--force | --auto-review] --trust --workspace &lt;cwd&gt;
 ///   [--model &lt;m&gt;] --add-dir &lt;planDir&gt; [extraArgs…]
 /// </code>
 /// with the composed prompt on STDIN and NO positional prompt (see <see cref="Deliver"/>), and cwd =
-/// workspace.
+/// workspace. The approval flag is the block's <c>approvalMode</c> (#767, <see cref="CursorApprovalMode"/>):
+/// <c>force</c> ⇒ <c>--force</c> (the default), <c>auto-review</c> ⇒ <c>--auto-review</c>, <c>none</c> ⇒
+/// neither. <c>--trust</c> is always passed.
 ///
 /// <para><b>What is deliberately NOT emitted.</b> Cursor rejects <c>--verbose</c>, <c>--permission-mode</c>,
 /// <c>--max-turns</c> and <c>--allowedTools</c> as unknown options and exits at parse time, before any model
@@ -23,14 +25,21 @@ namespace Guardrails.Core.Prompts;
 /// <see cref="PromptInvocation.Timeout"/> and <see cref="PromptInvocation.StallBound"/>, both enforced by the
 /// shared <see cref="StreamJsonCliSession"/>.</para>
 ///
-/// <para><b>Permissions are full, and said so.</b> Print mode has no per-tool allowlist, so the runner passes
-/// <c>--force</c> and <c>--trust</c>: live, a session without <c>--force</c> still writes files but has every
-/// shell command rejected. The Claude worktree-containment hook (<c>--settings</c>, SSOT §9.4) is a Claude
+/// <para><b>Approval is chosen by the operator, and said so.</b> Print mode has no per-tool allowlist the harness
+/// can set — measured, a project <c>.cursor/cli.json</c> allowlist has no effect there — so the only lever is
+/// the approval mode. Measured on an enterprise account whose administrator disabled "Run Everything" (Cursor
+/// <c>agent</c> 2026.09.23): <c>--force</c> is refused at launch (classified
+/// <see cref="PromptFailureKind.RunnerConfiguration"/> by <see cref="CursorSignalClassifier"/>, so it halts
+/// needs-human with the remedy instead of burning retries); <c>--auto-review</c>, <c>--sandbox enabled</c>, or
+/// both, run file writes AND shell; with no approval flag and no sandbox, files are written but EVERY shell
+/// call is rejected; and <c>--auto-review</c> with <c>--force</c> is a CLI error ("pick one"), which is why
+/// GR2082 keeps the approval flags out of <c>extraArgs</c>. GR2080 states what the chosen mode grants. The
+/// Claude worktree-containment hook (<c>--settings</c>, SSOT §9.4) is a Claude
 /// Code PreToolUse hook Cursor cannot load, so <see cref="PromptRunnerKinds.NeedsContainmentHook"/> is false
 /// for this kind and the flag is REFUSED here if it ever arrives. Cursor does not serve the
 /// <see cref="PromptRole.Advisory"/> role (<see cref="PromptRunnerKinds.ServesRoles"/>): the overwatcher,
-/// ai-triage and the criticality judge are read-only by construction and must never run under
-/// <c>--force</c>, so an Advisory invocation is refused before anything launches.</para>
+/// ai-triage and the criticality judge are read-only by construction and must never run on an agent with no
+/// allowlist, so an Advisory invocation is refused before anything launches.</para>
 ///
 /// <para><b>The stream is parsed by <see cref="ClaudeStreamParser"/>, unforked.</b> Cursor's
 /// <c>stream-json</c> matches Claude's envelope at the points the parser reads — the opening
@@ -41,10 +50,19 @@ namespace Guardrails.Core.Prompts;
 /// NOT reported as <see cref="PromptResult.ObservedModel"/> (which would read as a model mismatch on every
 /// attempt); it is named in the summary instead.</para>
 ///
-/// <para><b>No permission scanner.</b> <see cref="ClaudePermissionScanner"/> reads Claude's
-/// <c>tool_result</c> denial phrasing, which Cursor never emits, so it is not fed:
-/// <see cref="PromptResult.BlockedWritePaths"/> stays empty and
-/// <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> is inert for this runner.</para>
+/// <para><b>Refused tool calls are read per call (#773).</b> Cursor's terminal result says <c>success</c> even
+/// when every shell call was refused, so the parser's verdict is not enough. <see cref="CursorToolCallScanner"/>
+/// reads each completed <c>tool_call</c>'s own result; its refusals feed
+/// <see cref="PromptResult.BlockedWritePaths"/> / <see cref="PromptResult.RefusedCommands"/> (so
+/// <c>PermissionWallTracker</c> sees them exactly as it sees Claude's), the #452 consecutive-refusal counter
+/// (it trips <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> when a caller sets that bound — no
+/// task-action caller does today, so for cursor actions the fail-fast is available but not active), and
+/// <see cref="PromptResult.RefusedToolCalls"/>, which names each refusal and its reason in the summary and the
+/// retry feedback. The verdict rule is in <see cref="Finish"/>: an every-shell-refused ACTION completes marked
+/// <see cref="PromptResult.AllShellRefused"/> and its guardrails decide (needs-human with the approval-mode
+/// remedy if they fail); an every-shell-refused JUDGE fails closed; a session with SOME refusals completes,
+/// carrying them — the same rule the Claude path applies to a denial the agent routed around (#534 / #708).
+/// Known gap: refusals inside a <c>taskToolCall</c> subagent's nested conversation steps are not scanned.</para>
 /// </summary>
 public sealed class CursorPromptRunner : IPromptRunner
 {
@@ -66,30 +84,63 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// </summary>
     internal const int EchoPrefixChars = 4096;
 
+    /// <summary>Cursor's "Run Everything" flag — emitted for <see cref="CursorApprovalMode.Force"/> only.</summary>
+    internal const string ForceFlag = "--force";
+
+    /// <summary>Cursor's alias of <see cref="ForceFlag"/>; never emitted, but refused in <c>extraArgs</c> (GR2082).</summary>
+    internal const string YoloFlag = "--yolo";
+
+    /// <summary>Cursor's classifier-reviewed approval flag — emitted for <see cref="CursorApprovalMode.AutoReview"/> only.</summary>
+    internal const string AutoReviewFlag = "--auto-review";
+
+    /// <summary>Cursor's documented short alias of <see cref="ForceFlag"/> (<c>agent --help</c>: "-f, --force"); never emitted, refused in <c>extraArgs</c> (GR2082).</summary>
+    internal const string ForceShortFlag = "-f";
+
+    /// <summary>The approval flags <c>approvalMode</c> owns, which GR2082 keeps out of <c>extraArgs</c>. Every one but <see cref="AutoReviewFlag"/> means <c>force</c>.</summary>
+    internal static readonly IReadOnlyList<string> ApprovalFlags = [ForceFlag, ForceShortFlag, YoloFlag, AutoReviewFlag];
+
     private readonly ProcessRunner _processRunner;
     private readonly string _command;
+    private readonly CursorApprovalMode _approvalMode;
     private readonly Func<string, string?> _resolveCommand;
+    private readonly StreamJsonCliDialect _dialect;
 
     /// <param name="name">The <c>promptRunners</c> block name.</param>
     /// <param name="command">The block's <c>command</c> (default <see cref="DefaultCommand"/>).</param>
     /// <param name="processRunner">The shared process spawner.</param>
+    /// <param name="approvalMode">The block's <c>approvalMode</c> (#767); absent in config ⇒ <see cref="CursorApprovalModes.Default"/>.</param>
     /// <param name="resolveCommand">
     /// Resolves <paramref name="command"/> to the file to launch; null (production) uses
     /// <see cref="ResolveLaunchPath"/> against the process <c>PATH</c>. A seam so a test can point it at a
     /// fixture directory without mutating process-wide environment state.
     /// </param>
     public CursorPromptRunner(
-        string name, string command, ProcessRunner processRunner, Func<string, string?>? resolveCommand = null)
+        string name,
+        string command,
+        ProcessRunner processRunner,
+        CursorApprovalMode approvalMode = CursorApprovalModes.Default,
+        Func<string, string?>? resolveCommand = null)
     {
         Name = name;
         _command = command;
         _processRunner = processRunner;
+        _approvalMode = approvalMode;
         _resolveCommand = resolveCommand
             ?? (c => ResolveLaunchPath(c, Environment.GetEnvironmentVariable("PATH")));
+        _dialect = new StreamJsonCliDialect
+        {
+            Label = "cursor",
+            ConfigurationRefusal = text => CursorSignalClassifier.IsRunEverythingDisabled(text)
+                ? RunEverythingDisabledRemedy(name)
+                : null
+        };
     }
 
     /// <inheritdoc />
     public string Name { get; }
+
+    /// <summary>The approval mode this runner launches Cursor with (#767) — what the registry read off the block.</summary>
+    internal CursorApprovalMode ApprovalMode => _approvalMode;
 
     /// <inheritdoc />
     public async Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
@@ -108,8 +159,8 @@ public sealed class CursorPromptRunner : IPromptRunner
                 Summary =
                     $"cursor refused an invocation in the {invocation.Role} role: runner '{Name}' serves " +
                     $"{string.Join(" and ", PromptRunnerKinds.ServesRoles(PromptRunnerKind.Cursor).Order())} only. " +
-                    "An advisory prompt is read-only by construction and Cursor runs with --force (full write " +
-                    "and shell access), so it is never run on a cursor block (SSOT §9.9)."
+                    "An advisory prompt is read-only by construction and Cursor runs with no per-tool allowlist " +
+                    "(write and shell access per its approvalMode), so it is never run on a cursor block (SSOT §9.9)."
             };
         }
 
@@ -134,48 +185,195 @@ public sealed class CursorPromptRunner : IPromptRunner
             // Unresolvable ⇒ launch the command as written, so the shared launch-failure path classifies the
             // Win32Exception and names the command, exactly as before resolution existed.
             Executable = _resolveCommand(_command) ?? _command,
-            Arguments = BuildArguments(invocation)
+            Arguments = BuildArguments(invocation, _approvalMode)
         };
 
         var echo = new PromptEchoCheck(delivery.StandardInput);
+        var refusals = new CursorToolCallScanner();
         PromptResult result = await StreamJsonCliSession.RunAsync(
             _processRunner,
             command,
             BuildEnvironment(invocation),
             delivery.StandardInput,
             invocation,
-            Dialect,
+            _dialect,
+            refusals,
             cancellationToken,
             echo.Feed).ConfigureAwait(false);
 
-        return Finish(result, echo);
+        return Finish(result, echo, refusals, _approvalMode, invocation.Settings.ExtraArgs, invocation.Role);
     }
 
+    /// <summary>The most refusals a summary names one by one; the rest are counted (feedback.md lists them all).</summary>
+    internal const int SummaryRefusalLimit = 5;
+
     /// <summary>
-    /// Fold the two Cursor-specific facts onto the shared session's result: the prompt-echo verdict (#764 —
-    /// the guard against the false green) and the display-name model, which is moved from
-    /// <see cref="PromptResult.ObservedModel"/> into the summary.
+    /// Fold the Cursor-specific facts onto the shared session's result, in this order:
+    /// <list type="number">
+    /// <item>the display-name model moves from <see cref="PromptResult.ObservedModel"/> into the summary;</item>
+    /// <item>every refused tool call (#773) is carried as <see cref="PromptResult.RefusedToolCalls"/> and named in
+    /// the summary, whatever the verdict — a refusal is never silent;</item>
+    /// <item>a run that already FAILED keeps its own, more specific failure (bad <c>--model</c>, the
+    /// Run-Everything refusal, a stall, a timeout, the #452 abort);</item>
+    /// <item>the prompt-echo verdict (#764 — the guard against the false green);</item>
+    /// <item><b>the #773 rule, outcome-aware:</b> a session that attempted shell and had EVERY shell call refused
+    /// could run no build, no test and no git, however its terminal result reads, so it is marked
+    /// <see cref="PromptResult.AllShellRefused"/> with a <see cref="PromptResult.RunnerConfigurationRemedy"/>
+    /// (each refused command, its reason, the per-mode <c>approvalMode</c> advice). For an ACTION the run still
+    /// COMPLETES: its edits may be right, so the task's guardrails decide (TaskExecutor's WEAK-4 rule — never halt
+    /// what the gates could finish). Guardrails pass ⇒ green, with the refusals named; guardrails fail ⇒ the
+    /// harness settles needs-human at once with the remedy, because the next attempt runs under the same approval
+    /// policy. For a JUDGE (<see cref="PromptRole.Guardrail"/>) it FAILS CLOSED —
+    /// <see cref="PromptFailureKind.RunnerConfiguration"/>, not completed — since a verifier that could run none
+    /// of its checks certifies nothing, whatever verdict it wrote. A session with SOME refusals and at least one
+    /// shell call that ran completes, carrying its refusals — exactly as a Claude attempt that routed around a
+    /// denial is judged on its outcome (#534 / #708), and the refused targets still reach the #86
+    /// repeated-refusal tracker.</item>
+    /// </list>
     /// </summary>
-    private static PromptResult Finish(PromptResult result, PromptEchoCheck echo)
+    internal static PromptResult Finish(
+        PromptResult result,
+        PromptEchoCheck echo,
+        CursorToolCallScanner refusals,
+        CursorApprovalMode approvalMode,
+        IReadOnlyList<string> extraArgs,
+        PromptRole role = PromptRole.Action)
     {
         string? displayModel = result.ObservedModel;
         string modelNote = displayModel is { Length: > 0 } ? $" (Cursor reported model: {displayModel})" : string.Empty;
-        result = result with { ObservedModel = null };
+        string refusalNote = refusals.Refusals.Count == 0 ? string.Empty : $"; {DescribeRefusals(refusals.Refusals)}";
+        result = result with { ObservedModel = null, RefusedToolCalls = refusals.Refusals };
 
-        // Only a run that would otherwise COMPLETE is re-judged. A run that already failed (bad --model: exit 1
-        // and no stream at all; a stall; a timeout) keeps its own, more specific failure.
-        if (result.Completed && echo.Verdict is { } undelivered)
+        if (!result.Completed)
+        {
+            return result with { Summary = result.Summary + refusalNote + modelNote };
+        }
+
+        if (echo.Verdict is { } undelivered)
         {
             return result with
             {
                 Completed = false,
                 IsError = true,
                 FailureKind = PromptFailureKind.Error,
-                Summary = $"cursor did not receive the composed prompt ({undelivered}){modelNote}"
+                Summary = $"cursor did not receive the composed prompt ({undelivered}){refusalNote}{modelNote}"
             };
         }
 
-        return result with { Summary = result.Summary + modelNote };
+        if (refusals.EveryShellCallRefused)
+        {
+            string remedy =
+                $"EVERY shell command it attempted was refused ({refusals.ShellCallsRefused} shell call(s), none ran); " +
+                $"{DescribeRefusals(refusals.Refusals)} — {EveryShellRefusedRemedy(approvalMode, extraArgs)}";
+
+            // A JUDGE fails closed: a verifier that could run none of its checks certifies nothing, whatever
+            // verdict file it wrote (the PR #775 B1 false green).
+            if (role == PromptRole.Guardrail)
+            {
+                return result with
+                {
+                    Completed = false,
+                    IsError = true,
+                    FailureKind = PromptFailureKind.RunnerConfiguration,
+                    AllShellRefused = true,
+                    RunnerConfigurationRemedy = remedy,
+                    Summary = $"cursor reported success, but {remedy}{modelNote}"
+                };
+            }
+
+            // An ACTION completes, carrying the fact: its work may still be right, and the task's guardrails —
+            // not the refusals — decide (outcome-aware, TaskExecutor's WEAK-4 rule). If they fail, the harness
+            // settles needs-human at once with this remedy, since a retry runs under the same policy.
+            return result with
+            {
+                AllShellRefused = true,
+                RunnerConfigurationRemedy = remedy,
+                Summary = $"cursor completed, but {remedy}{modelNote}"
+            };
+        }
+
+        return result with { Summary = result.Summary + refusalNote + modelNote };
+    }
+
+    /// <summary>
+    /// The refusals, named: <c>2 tool call(s) refused by Cursor: shell `git status` — refused by …; …</c>, the
+    /// first <see cref="SummaryRefusalLimit"/> in full and the rest counted.
+    /// </summary>
+    internal static string DescribeRefusals(IReadOnlyList<ToolRefusal> refusals)
+    {
+        string named = string.Join("; ", refusals.Take(SummaryRefusalLimit));
+        string more = refusals.Count > SummaryRefusalLimit ? $"; and {refusals.Count - SummaryRefusalLimit} more" : string.Empty;
+        return $"{refusals.Count} tool call(s) refused by Cursor: {named}{more}";
+    }
+
+    /// <summary>
+    /// The remedy when every shell call was refused, per approval mode — the operator's next move, since the
+    /// agent cannot change the approval policy it runs under.
+    /// </summary>
+    private static string EveryShellRefusedRemedy(CursorApprovalMode mode, IReadOnlyList<string> extraArgs) => mode switch
+    {
+        CursorApprovalMode.None when !EnablesSandbox(extraArgs) =>
+            "approvalMode \"none\" without Cursor's sandbox refuses every shell command. Add \"extraArgs\": " +
+            "[\"--sandbox\", \"enabled\"] or set \"approvalMode\": \"auto-review\" on this cursor block, then resume " +
+            "(SSOT §9.9).",
+        CursorApprovalMode.None =>
+            "Cursor's sandbox did not run them. Check the reasons above and your Cursor sandbox settings, or set " +
+            "\"approvalMode\": \"auto-review\" on this cursor block, then resume (SSOT §9.9).",
+        CursorApprovalMode.AutoReview =>
+            "Cursor's auto-review classifier (or a hook Cursor loaded — see the reasons above) refused every one. " +
+            "Change the task so it needs no refused command, add Cursor's sandbox (\"extraArgs\": [\"--sandbox\", " +
+            "\"enabled\"]), or run it on a runner whose policy permits them, then resume (SSOT §9.9).",
+        _ =>
+            "approvalMode \"force\" should run every command, so something Cursor loaded refused them — a reason " +
+            "naming a hook points at one (Cursor's \"Include Third-Party Configs\" imports ~/.claude hooks). Fix or " +
+            "disable it, then resume (SSOT §9.9)."
+    };
+
+    /// <summary>The remedy appended to a launch Cursor refused because the team disabled Run Everything (#767).</summary>
+    private static string RunEverythingDisabledRemedy(string blockName) =>
+        "your Cursor team administrator has disabled 'Run Everything', which approvalMode \"force\" (--force) " +
+        $"needs, so no retry can succeed. Set \"approvalMode\": \"auto-review\" on promptRunners.{blockName} (or " +
+        "\"none\" with \"extraArgs\": [\"--sandbox\", \"enabled\"]) and resume (SSOT §9.9).";
+
+    /// <summary>
+    /// The approval flags in <paramref name="args"/>, in order — each spelled as the canonical flag, whether written
+    /// bare or as <c>--flag=value</c>. Read by GR2082.
+    /// </summary>
+    internal static IEnumerable<string> ApprovalFlagsIn(IEnumerable<string> args)
+    {
+        foreach (string arg in args)
+        {
+            string trimmed = arg.Trim();
+            foreach (string flag in ApprovalFlags)
+            {
+                if (string.Equals(trimmed, flag, StringComparison.Ordinal) ||
+                    trimmed.StartsWith(flag + "=", StringComparison.Ordinal))
+                {
+                    yield return flag;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="args"/> turn Cursor's sandbox on: <c>--sandbox enabled</c> or
+    /// <c>--sandbox=enabled</c>. Read by GR2080's per-mode sentence and the every-shell-refused remedy.
+    /// </summary>
+    internal static bool EnablesSandbox(IReadOnlyList<string> args)
+    {
+        for (int i = 0; i < args.Count; i++)
+        {
+            string arg = args[i].Trim();
+            if (string.Equals(arg, "--sandbox=enabled", StringComparison.OrdinalIgnoreCase) ||
+                (string.Equals(arg, "--sandbox", StringComparison.Ordinal) &&
+                 i + 1 < args.Count &&
+                 string.Equals(args[i + 1].Trim(), "enabled", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -201,18 +399,37 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <summary>The prompt's delivery: the stdin text. There is deliberately no positional channel.</summary>
     internal readonly record struct PromptDelivery(string StandardInput);
 
-    /// <summary>Build the <c>agent</c> argument list (SSOT §9.9). All Cursor flag spelling lives here.</summary>
-    internal static IReadOnlyList<string> BuildArguments(PromptInvocation invocation)
+    /// <summary>
+    /// Build the <c>agent</c> argument list (SSOT §9.9). All Cursor flag spelling lives here. The approval flag
+    /// follows <paramref name="approvalMode"/> (#767): <c>--force</c>, <c>--auto-review</c>, or none at all — never
+    /// both, which the CLI refuses. <c>--trust</c> (trust the workspace without prompting) is always passed.
+    /// </summary>
+    internal static IReadOnlyList<string> BuildArguments(
+        PromptInvocation invocation, CursorApprovalMode approvalMode = CursorApprovalModes.Default)
     {
         PromptRunnerSettings settings = invocation.Settings;
 
         var args = new List<string>
         {
             "-p",
-            "--output-format", "stream-json",
-            "--force",
-            "--trust"
+            "--output-format", "stream-json"
         };
+
+        switch (approvalMode)
+        {
+            case CursorApprovalMode.Force:
+                args.Add(ForceFlag);
+                break;
+            case CursorApprovalMode.AutoReview:
+                args.Add(AutoReviewFlag);
+                break;
+            case CursorApprovalMode.None:
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(approvalMode), approvalMode, "Unhandled cursor approval mode.");
+        }
+
+        args.Add("--trust");
 
         // Skipped only for an EMPTY working directory — the advisory criticality assessment's shape
         // (CriticalityJudge.BuildInvocation, issue #381), where there is no workspace to name and an empty
@@ -274,12 +491,6 @@ public sealed class CursorPromptRunner : IPromptRunner
 
         return env;
     }
-
-    private static readonly StreamJsonCliDialect Dialect = new()
-    {
-        Label = "cursor",
-        ScansPermissionDenials = false
-    };
 
     /// <summary>
     /// The delivery check (#764): Cursor echoes the prompt it received as the stream's first

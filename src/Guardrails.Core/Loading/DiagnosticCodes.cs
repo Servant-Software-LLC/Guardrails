@@ -1303,8 +1303,9 @@ public static class DiagnosticCodes
     /// <summary>
     /// GR2080 (WARNING) — a <c>kind: "cursor"</c> prompt-runner block runs UNGOVERNED by the per-tool
     /// controls a Claude block has (#764, SSOT §9.9). Cursor's print mode has no per-tool allowlist and cannot
-    /// load the Claude worktree-containment hook, so the harness launches it with <c>--force</c> (full write and
-    /// shell access); <c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c> and <c>maxOutputTokens</c> —
+    /// load the Claude worktree-containment hook; the approval flag is the block's <c>approvalMode</c> (#767 —
+    /// <c>--force</c> by default, full write and shell access), and the message states what that mode grants.
+    /// <c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c> and <c>maxOutputTokens</c> —
     /// and any <c>guardrailOverrides</c> of them — are IGNORED, and <c>maxCostUsd</c> cannot trip on it (Cursor
     /// reports no cost). The message states what IS enforced (the worktree-only git-diff write-scope check, the
     /// task-definition tamper check, the stale-verdict clear, the prompt-echo check, and exclusion from the
@@ -1317,7 +1318,27 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CursorRunnerUngoverned = "GR2080";
 
-    // CURRENT next-free code: GR2081. GR2080 (CursorRunnerUngoverned) is the last taken code
+    /// <summary>
+    /// GR2081 (ERROR) — a prompt-runner block's <c>approvalMode</c> (#767, SSOT §9.9) cannot be honoured: the
+    /// value is not one of <c>force</c> | <c>auto-review</c> | <c>none</c> (reported by the LOADER, which keeps
+    /// loading and leaves the mode unset rather than silently serving <c>force</c>), or the key sits on a block
+    /// whose kind is not <c>cursor</c> (reported by the VALIDATOR — a key that does nothing where it was
+    /// written is indistinguishable from one that works). Also a non-string value, and
+    /// <c>guardrailOverrides.approvalMode</c> (loader): the key is block-level only.
+    /// </summary>
+    public const string CursorApprovalModeInvalid = "GR2081";
+
+    /// <summary>
+    /// GR2082 (ERROR) — a <c>kind: "cursor"</c> block's <c>extraArgs</c> (base or <c>guardrailOverrides</c>)
+    /// carries one of Cursor's approval flags — <c>--force</c>, <c>--yolo</c> or <c>--auto-review</c> (#767,
+    /// SSOT §9.9). The approval flag is owned by <c>approvalMode</c>: a copy in <c>extraArgs</c> either
+    /// duplicates the mode or contradicts it, and one contradiction is fatal at launch — Cursor's CLI refuses
+    /// <c>--auto-review</c> combined with <c>--force</c>/<c>--yolo</c> ("pick one"). The message names the
+    /// <c>approvalMode</c> that expresses what the flag was reaching for.
+    /// </summary>
+    public const string CursorApprovalFlagInExtraArgs = "GR2082";
+
+    // CURRENT next-free code: GR2083. GR2082 (CursorApprovalFlagInExtraArgs) is the last taken code
     // above; GR2077 is RESERVED BY NAME below (issue #587 check B) and is not free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the
     // plan — it reports the TOOL (issue #564). That is deliberate and not a precedent to widen: it

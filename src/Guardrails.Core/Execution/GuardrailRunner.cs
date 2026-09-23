@@ -294,11 +294,31 @@ internal sealed class GuardrailRunner
             ? (verdict.Pass ? "passed" : GuardrailVerdictReader.NoValidVerdictReason)
             : verdict.Reason;
 
+        // #773 (PR #775 B1): a judge whose runner says it could not run — its configuration refused it, or it
+        // attempted shell and every call was refused — FAILS CLOSED, whatever verdict file exists. The verdict
+        // file alone is not enough: a judge that could run none of its checks can still write {"pass": true}.
+        bool judgeCouldNotRun = promptResult.FailureKind == PromptFailureKind.RunnerConfiguration
+                                || promptResult.AllShellRefused;
+        bool passed = verdict.Pass && !judgeCouldNotRun;
+        if (judgeCouldNotRun)
+        {
+            reason = $"judge could not run: {promptResult.Summary}";
+        }
+
+        // Refusals are never silent in the judge role either: a pass that got there with some tool calls refused
+        // carries them in its reason.
+        string? refusalNote = promptResult.RefusedToolCalls.Count == 0
+            ? null
+            : $"{promptResult.RefusedToolCalls.Count} tool call(s) refused by the runner: " +
+              string.Join("; ", promptResult.RefusedToolCalls.Take(5));
+
         var result = new GuardrailResult
         {
             Name = guardrail.Name,
-            Passed = verdict.Pass,
-            Reason = verdict.Pass ? null : reason
+            Passed = passed,
+            Reason = passed
+                ? (refusalNote is null ? null : $"passed; {refusalNote}")
+                : (refusalNote is null || reason.Contains(refusalNote, StringComparison.Ordinal) ? reason : $"{reason}; {refusalNote}")
         };
 
         // The prompt guardrail's stdout/stderr are not the verdict, but tee them for audit

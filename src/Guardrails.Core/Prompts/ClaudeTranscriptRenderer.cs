@@ -314,14 +314,28 @@ public static class ClaudeTranscriptRenderer
     /// <para>The live <c>tool_call</c> object carries sibling keys beside the tool (<c>toolCallId</c>,
     /// <c>startedAtMs</c>, <c>hookAdditionalContexts</c>), so the tool is the first key that ends in
     /// <c>ToolCall</c> and holds an object — never simply the first key.</para>
+    /// <para><b>One exception (#773):</b> a <c>completed</c> event whose result is <c>rejected</c> renders a
+    /// <c>⎿ REFUSED: &lt;reason&gt;</c> line under its call. That shape IS known — it is the one
+    /// <see cref="CursorToolCallScanner"/> reads — and a transcript that shows a refused <c>git status</c> as a
+    /// plain tool line reads as if it ran.</para>
     /// </summary>
     private static void RenderCursorToolCall(JsonElement root, StringBuilder text)
     {
         if (!root.TryGetProperty("subtype", out JsonElement subtype) ||
             subtype.ValueKind != JsonValueKind.String ||
-            subtype.GetString() != "started" ||
             !root.TryGetProperty("tool_call", out JsonElement call) ||
             call.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        if (subtype.GetString() == "completed")
+        {
+            RenderCursorRefusal(call, text);
+            return;
+        }
+
+        if (subtype.GetString() != "started")
         {
             return;
         }
@@ -342,6 +356,32 @@ public static class ClaudeTranscriptRenderer
                 : string.Empty;
             text.Append(ToolBullet).Append(' ').Append(name).Append('(').Append(args).Append(')').Append('\n');
             return; // one tool per event
+        }
+    }
+
+    /// <summary>The <c>⎿ REFUSED: …</c> line for a completed Cursor tool call whose result is <c>rejected</c> (#773).</summary>
+    private static void RenderCursorRefusal(JsonElement call, StringBuilder text)
+    {
+        foreach (JsonProperty tool in call.EnumerateObject())
+        {
+            if (tool.Value.ValueKind != JsonValueKind.Object ||
+                !tool.Name.EndsWith("ToolCall", StringComparison.Ordinal) ||
+                !tool.Value.TryGetProperty("result", out JsonElement result) ||
+                result.ValueKind != JsonValueKind.Object ||
+                !result.TryGetProperty("rejected", out JsonElement rejected))
+            {
+                continue;
+            }
+
+            string reason = rejected.ValueKind == JsonValueKind.Object &&
+                            rejected.TryGetProperty("reason", out JsonElement r) &&
+                            r.ValueKind == JsonValueKind.String &&
+                            !string.IsNullOrWhiteSpace(r.GetString())
+                ? CollapseWhitespace(r.GetString()!)
+                : CursorToolCallScanner.NoReasonGiven;
+            text.Append("  ").Append(ResultBullet).Append(" REFUSED: ")
+                .Append(Truncate(reason, MaxArgValueChars * 2)).Append('\n');
+            return;
         }
     }
 

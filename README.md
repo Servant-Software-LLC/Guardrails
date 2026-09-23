@@ -327,6 +327,48 @@ agent --list-models                                            # model ids you c
   having a task quietly run on Claude.
 - To go back to Claude, restore the original block.
 
+**Choose how Cursor approves commands: `approvalMode`.** Cursor has no per-tool allowlist that works in
+headless mode (a project `.cursor/cli.json` allowlist has no effect there), so this one setting decides what
+the agent may run:
+
+| `approvalMode` | Cursor flag | What happens |
+|---|---|---|
+| `"force"` (default) | `--force` | Every command runs (Cursor's "Run Everything"). |
+| `"auto-review"` | `--auto-review` | Cursor's server-side reviewer approves or refuses each command. Writes, `git` and `dotnet` ran in testing. |
+| `"none"` | none | Files are written, but Cursor refuses **every** shell command unless you also add `"extraArgs": ["--sandbox", "enabled"]`, which runs them in Cursor's sandbox. |
+
+**Enterprise teams whose administrator disabled "Run Everything"** can't use the default. Cursor refuses
+to start and prints `Your team administrator has disabled the 'Run Everything' option`. Guardrails stops
+the task right away as needs-human, quotes that message, and tells you what to change. It doesn't spend
+your retries. Use `"auto-review"` instead:
+
+```json
+"cursor": { "kind": "cursor", "approvalMode": "auto-review" }
+```
+
+Or use `"none"` with the sandbox: `"approvalMode": "none", "extraArgs": ["--sandbox", "enabled"]`. Inside
+the sandbox, network access follows your team's sandbox settings, so a `dotnet restore` or `npm install`
+may be blocked. Don't put `--force` (or `-f`), `--yolo` or `--auto-review` in `extraArgs`. `validate` rejects them
+(`GR2082`), because `approvalMode` owns that flag, and Cursor itself refuses `--auto-review` together
+with `--force`.
+
+**Refused commands are never reported as success.** When Cursor refuses a command, the session can still
+end with "success". Guardrails reads each tool call's own result:
+
+- If **every** shell command the agent tried was refused, the task's guardrails still run, because the
+  edits may be right. If they pass, the task succeeds and its summary lists the refused commands. If they
+  fail, the task stops as needs-human right away, without spending retries, and names each command, the
+  reason, and the `approvalMode` change to make.
+- If only **some** were refused, the attempt continues and the task's guardrails decide. Each refused
+  command and its reason appear in the attempt summary and in the retry feedback.
+- A Cursor **prompt guardrail** (a judge) that couldn't run any shell command fails, even if it wrote a
+  passing verdict.
+
+A reason like `Hook blocked with message: …` comes from a hook, not from Cursor's policy. Cursor's
+**"Include Third-Party Configs"** setting imports your Claude Code configuration from `~/.claude`,
+including its hooks, so a Claude hook can refuse Cursor's shell calls. Fix or disable that hook, or turn
+the setting off.
+
 **3. Validate, then run as usual:**
 
 ```bash
@@ -337,16 +379,17 @@ guardrails run <plan>/
 **What changes on Cursor.** `validate` prints one `GR2080` warning per `cursor` block, meaning the
 block runs without Claude's per-tool controls. It is expected. Here is what it means:
 
-- **Full write and shell access.** Cursor has no per-tool allowlist, so the harness launches it with
-  `--force`. `permissionMode`, `allowedTools`, `maxTurns` and `maxOutputTokens` do nothing on this
-  block, and the warning names any of them you left in.
+- **No per-tool controls.** Cursor has no per-tool allowlist, so what the agent may run is set by
+  `approvalMode` alone. The warning says what your chosen mode allows. `permissionMode`,
+  `allowedTools`, `maxTurns` and `maxOutputTokens` do nothing on this block, and the warning names any
+  of them you left in.
 - **Weaker containment.** The harness's diff checks cover the task's worktree. Cursor can't load
   the Claude hook that confines writes to that worktree. A task that edits its own task
   definition (its `task.json`, action prompt or guardrail files) fails.
 - **No cost figures.** Cursor reports token counts but no cost, so the `--max-cost-usd` ceiling (and
   the $20 `--autonomous` default) never trips on a Cursor run. Watch spend in your Cursor account.
 - **Read-only helpers switch off.** The overwatcher, needs-human AI triage and the autonomy
-  criticality judge never run under `--force`. When they would fall back to the `cursor` block, the run
+  criticality judge never run on a Cursor block. When they would fall back to the `cursor` block, the run
   turns them off and says so at startup. Declare a Claude block named `overwatch` or `ai-triage` to
   keep them.
 - **Delivery is checked.** The harness sends the prompt on stdin and checks Cursor's echo of it. If

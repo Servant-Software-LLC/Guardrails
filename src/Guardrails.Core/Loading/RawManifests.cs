@@ -167,6 +167,11 @@ internal sealed class RawPromptRunner
     // OPERATOR-FACING TEXT ONLY (plan 28 §6.2): selects the model-not-found remedy sentence. Never
     // selects a code path or changes a request — see PromptRunnerConfig.Engine.
     public string? Engine { get; set; }
+
+    // The cursor approval mode (#767, SSOT §9.9): force | auto-review | none. null = the key was absent (force).
+    // Held RAW so a non-string value is a named GR2081 rather than a generic parse failure naming a CLR type;
+    // PlanLoader.ReadApprovalMode reports a bad value and keeps loading, the validator a non-cursor block.
+    public JsonElement? ApprovalMode { get; set; }
 }
 
 /// <summary>
@@ -204,6 +209,10 @@ internal sealed class RawPromptRunnerOverrides
     public List<string>? ExtraArgs { get; set; }
     public int? MaxOutputTokens { get; set; }
     public Dictionary<string, string>? Env { get; set; }
+
+    // NOT an override (#767): approvalMode is block-level only. Bound so the loader can SEE it and report GR2081
+    // instead of silently ignoring it.
+    public JsonElement? ApprovalMode { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>

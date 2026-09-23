@@ -50,17 +50,17 @@ public sealed class ClaudePromptRunner : IPromptRunner
             standardInput: invocation.ComposedPrompt,
             invocation,
             Dialect,
+            new ClaudePermissionScanner.Scanner(),
             cancellationToken);
     }
 
     /// <summary>
-    /// Claude's session dialect: the <c>claude</c> summary label and the #86/#104 permission scanner
-    /// (whose denial phrasing IS Claude's).
+    /// Claude's session dialect: the <c>claude</c> summary label. Its #86/#104 permission scanner
+    /// (whose denial phrasing IS Claude's) is handed to the session per run.
     /// </summary>
     private static readonly StreamJsonCliDialect Dialect = new()
     {
-        Label = "claude",
-        ScansPermissionDenials = true
+        Label = "claude"
     };
 
     /// <summary>
