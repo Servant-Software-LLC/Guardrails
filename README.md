@@ -68,7 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/mas
 **Prerequisites:** for the `dotnet tool` route, the
 [.NET 10+ SDK](https://dotnet.microsoft.com/download) — the Homebrew and `install.sh`
 routes need no .NET at all. For prompt tasks, [Claude Code](https://claude.com/claude-code)
-installed and authenticated (the headless `claude -p` runner the harness drives).
+installed and authenticated (the headless `claude -p` runner the harness drives), or the
+Cursor Agent CLI (see [Running prompt tasks on Cursor](#running-prompt-tasks-on-cursor-instead-of-claude)).
 Deterministic-only plans need nothing but .NET. Restart Claude Code after `skills install`
 so it picks up the skills.
 
@@ -288,6 +289,69 @@ Watch it from anywhere with `guardrails attach <plan>/`, which tails the run's r
 **A green run is not automatically a delivered run.** If you launched with `--no-merge-on-success`,
 the work is complete and sitting on the plan branch; the summary says so at the end. Check with
 `git branch --no-merged` before assuming it shipped.
+
+### Running prompt tasks on Cursor instead of Claude
+
+Prompt tasks run on Claude Code by default. From **v1.22.0**, they can run on
+[Cursor's Agent CLI](https://cursor.com/docs/cli/overview) (`agent`) instead. That helps when your
+Claude account has hit a usage or spend limit but Cursor is installed on the same machine.
+
+**1. Install and sign in to the Cursor CLI**, then check that `agent` is on your PATH:
+
+```bash
+curl https://cursor.com/install -fsS | bash                    # macOS / Linux
+irm 'https://cursor.com/install?win32=true' | iex              # Windows (PowerShell)
+agent login
+agent --list-models                                            # model ids you can put in "model"
+```
+
+**2. Replace the plan's `promptRunners` in `guardrails.json` with one `cursor` block:**
+
+```json
+"promptRunners": {
+  "default": "cursor",
+  "cursor": {
+    "kind": "cursor",
+    "model": "claude-opus-5-5-high"
+  }
+}
+```
+
+- `command` defaults to `agent`. Set it to a full path if `agent` is not on the PATH that
+  `guardrails` sees.
+- Leave out `model` to use Cursor's own default ("Auto").
+- Use a **single** block, not a Cursor block added next to the Claude ones. A task still goes to
+  Claude when a Claude block declares `routing` (tier routing), when the task sets `action.runner`,
+  or when its prompt's front matter sets `runner:`. With only a `cursor` block left, every one of those
+  leftover references fails `guardrails validate` by name, so you can find and repoint them rather than
+  having a task quietly run on Claude.
+- To go back to Claude, restore the original block.
+
+**3. Validate, then run as usual:**
+
+```bash
+guardrails validate <plan>/
+guardrails run <plan>/
+```
+
+**What changes on Cursor.** `validate` prints one `GR2080` warning per `cursor` block, meaning the
+block runs without Claude's per-tool controls. It is expected. Here is what it means:
+
+- **Full write and shell access.** Cursor has no per-tool allowlist, so the harness launches it with
+  `--force`. `permissionMode`, `allowedTools`, `maxTurns` and `maxOutputTokens` do nothing on this
+  block, and the warning names any of them you left in.
+- **Weaker containment.** The harness's diff checks cover the task's worktree. Cursor can't load
+  the Claude hook that confines writes to that worktree. A task that edits its own task
+  definition (its `task.json`, action prompt or guardrail files) fails.
+- **No cost figures.** Cursor reports token counts but no cost, so the `--max-cost-usd` ceiling (and
+  the $20 `--autonomous` default) never trips on a Cursor run. Watch spend in your Cursor account.
+- **Read-only helpers switch off.** The overwatcher, needs-human AI triage and the autonomy
+  criticality judge never run under `--force`. When they would fall back to the `cursor` block, the run
+  turns them off and says so at startup. Declare a Claude block named `overwatch` or `ai-triage` to
+  keep them.
+- **Delivery is checked.** The harness sends the prompt on stdin and checks Cursor's echo of it. If
+  Cursor did not receive the prompt, the attempt fails. For example, a bare word in `extraArgs` would
+  make Cursor ignore stdin. That attempt is never reported as success.
 
 ### Local telemetry
 

@@ -39,6 +39,24 @@ public static class PromptOutputStaging
     }
 
     /// <summary>
+    /// Delete any file already sitting at <paramref name="stagingPath"/> or <paramref name="finalPath"/>
+    /// before the prompt that is supposed to produce them runs (#764). Whatever is there was written by
+    /// someone else — a stale attempt, or an agent planting a verdict — and must never be promoted or read as
+    /// this invocation's output. A delete that fails THROWS: a verdict path that cannot be cleared cannot be
+    /// trusted, and proceeding would risk grading on a planted file.
+    /// </summary>
+    public static void ClearStaleOutputs(string stagingPath, string finalPath)
+    {
+        foreach (string path in new[] { stagingPath, finalPath })
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    /// <summary>
     /// If the staged file exists, move it to <paramref name="finalPath"/> (creating its parent
     /// directory as needed; overwriting an existing final file — the same last-write-wins convention
     /// <see cref="StagingMover"/> uses for its own moves). Then, unconditionally and best-effort,

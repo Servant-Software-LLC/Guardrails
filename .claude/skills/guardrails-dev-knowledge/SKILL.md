@@ -174,7 +174,9 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   **GR2072** (CheckSetPredatesSourceTree — the running binary predates checks the working tree declares;
   WARNING, `validate` only, self-hosting case only, #564/SSOT §16) is TAKEN too, and is the first code on
   this ladder that reports the TOOL rather than the plan.
-  Next free: **GR1011 / GR2073** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  **GR2080** (CursorRunnerUngoverned — a `kind: "cursor"` block runs with no tool allowlist or containment
+  hook; WARNING, one per cursor block, #764/SSOT §9.9) is TAKEN too.
+  Next free: **GR1011 / GR2081** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
@@ -209,6 +211,24 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   only against output the action couldn't fabricate (a produced artifact, a runner-written TRX).
   The recorded `exitCode` is ALWAYS 0 at guardrail time (a non-zero action fails the attempt
   first), so never expose a `GUARDRAILS_ACTION_EXIT_CODE` env var — it would be tautological.
+- **Agent-CLI runners share one session loop (#764).** `StreamJsonCliSession` owns everything after the
+  spawn — stdin write, live tee to the stream log + `transcript.md`, the #504 `StallWatch`, the #452 denial
+  fail-fast, the Win32Exception launch catch, `ClaudeStreamParser`, and failure classification.
+  `ClaudePromptRunner` and `CursorPromptRunner` own only argv, env and prompt delivery, plus a
+  `StreamJsonCliDialect` (summary label, whether to feed the permission scanner) and an optional per-run
+  line observer (Cursor's prompt-echo check). A change to that loop changes BOTH runners; Claude's summaries
+  stay byte-identical because its label is `claude`. Cursor is not installed on CI: `CursorPromptRunnerTests`
+  spawns a fake OS-picked `agent` through the real `ProcessRunner` that implements Cursor's MEASURED prompt
+  rule (stdin is read only when there is no positional argument, and the prompt taken is echoed as a `user`
+  event), and replays two real captured streams from `TestData/cursor-live/`. The bash twin of that fake
+  escapes quotes only (keep backslashes out of its test prompts). A real `agent` run is the manual
+  `scripts/smoke/cursor-live-smoke.ps1`, never a test.
+- **Windows launch by bare name (#764).** `Process.Start` with `UseShellExecute = false` does NOT apply
+  PATHEXT, so a `.cmd`-only install (Cursor's `agent.cmd`) cannot be launched as `agent`.
+  `PathExecutableProbe.ResolveFullPath(command, pathVariable)` returns the file the GR2009 probe found
+  (PATHEXT matches preferred over an extensionless sibling within a directory); `CursorPromptRunner` launches
+  that. Claude's launch deliberately still uses the bare command. Both the probe and the runner take the PATH
+  as a VALUE in tests (`new PathExecutableProbe(pathDir)`, `resolveCommand:`), never a process-wide mutation.
 - **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
   `ClaudeStreamParser` (terminal result), and `ClaudeTranscriptRenderer` (the deterministic
   `transcript.md` projection of the raw stream, #27). Verdicts come from files, never exit

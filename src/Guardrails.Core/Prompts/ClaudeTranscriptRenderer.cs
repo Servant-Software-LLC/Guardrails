@@ -101,7 +101,11 @@ public static class ClaudeTranscriptRenderer
             case "result":
                 RenderResult(root, text);
                 break;
-            // system, rate_limit_event, etc. — telemetry, dropped.
+            case "tool_call":
+                RenderCursorToolCall(root, text);
+                break;
+            // system, rate_limit_event, etc. — telemetry, dropped. Cursor's `thinking` (delta/completed)
+            // events land here too and render NOTHING: a real Cursor stream carries dozens of them.
         }
     }
 
@@ -297,6 +301,48 @@ public static class ClaudeTranscriptRenderer
         }
 
         text.Append('\n').Append(FinalBullet).Append(' ').Append(final).Append('\n');
+    }
+
+    /// <summary>
+    /// Cursor's tool event (#764): <c>{"type":"tool_call","subtype":"started","tool_call":{"readToolCall":
+    /// {"args":{…}}}}</c>, the key varying per tool (<c>readToolCall</c>, <c>writeToolCall</c>,
+    /// <c>shellToolCall</c>…). Rendered as the same <c>● name(args)</c> tool line a Claude <c>tool_use</c>
+    /// gets, with the <c>ToolCall</c> suffix dropped from the name (<c>readToolCall</c> ⇒ <c>read</c>). Only
+    /// the <c>started</c> event renders — its <c>completed</c> twin repeats the call with a result whose shape
+    /// is per-tool and undocumented, so it is dropped rather than guessed at. Claude never emits this type,
+    /// so a Claude transcript is unchanged.
+    /// <para>The live <c>tool_call</c> object carries sibling keys beside the tool (<c>toolCallId</c>,
+    /// <c>startedAtMs</c>, <c>hookAdditionalContexts</c>), so the tool is the first key that ends in
+    /// <c>ToolCall</c> and holds an object — never simply the first key.</para>
+    /// </summary>
+    private static void RenderCursorToolCall(JsonElement root, StringBuilder text)
+    {
+        if (!root.TryGetProperty("subtype", out JsonElement subtype) ||
+            subtype.ValueKind != JsonValueKind.String ||
+            subtype.GetString() != "started" ||
+            !root.TryGetProperty("tool_call", out JsonElement call) ||
+            call.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        const string suffix = "ToolCall";
+        foreach (JsonProperty tool in call.EnumerateObject())
+        {
+            if (tool.Value.ValueKind != JsonValueKind.Object ||
+                !tool.Name.EndsWith(suffix, StringComparison.Ordinal) ||
+                tool.Name.Length <= suffix.Length)
+            {
+                continue;
+            }
+
+            string name = tool.Name[..^suffix.Length];
+            string args = tool.Value.TryGetProperty("args", out JsonElement input)
+                ? RenderToolArgs(input)
+                : string.Empty;
+            text.Append(ToolBullet).Append(' ').Append(name).Append('(').Append(args).Append(')').Append('\n');
+            return; // one tool per event
+        }
     }
 
     /// <summary>The <c>message.content</c> array, or empty when absent/malformed.</summary>

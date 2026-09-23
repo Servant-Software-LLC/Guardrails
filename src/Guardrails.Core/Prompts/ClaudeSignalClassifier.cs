@@ -38,6 +38,10 @@ internal static class ClaudeSignalClassifier
         "ratelimit",
         "usage limit",
         "session limit",
+        // Claude Code's quota refusal ("You've hit your individual spend limit", #764): a provider refusal
+        // no retry can fix, observed burning three attempts in seconds. Transient routes it to the #115
+        // bounded pause, which then settles needs-human "re-run later" instead of consuming the budget.
+        "spend limit",
         "too many requests",
         "service unavailable",
         "temporarily unavailable",

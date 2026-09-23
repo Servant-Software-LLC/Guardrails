@@ -14,7 +14,10 @@ public sealed record PromptRunnerConfig
     /// <summary>The runner's name (the <c>promptRunners</c> map key), e.g. "claude".</summary>
     public required string Name { get; init; }
 
-    /// <summary>The executable to launch (e.g. "claude"). Defaults to the runner name.</summary>
+    /// <summary>
+    /// The executable to launch (e.g. "claude"). Defaults to the runner name — except for a
+    /// <c>kind: "cursor"</c> block, which defaults to <c>agent</c>, Cursor's Agent CLI binary (#764).
+    /// </summary>
     public required string Command { get; init; }
 
     /// <summary>The base settings used for action prompts.</summary>
@@ -106,6 +109,17 @@ public sealed record PromptRunnerConfig
     /// inherit from <see cref="Settings"/>. Null = no overrides (guardrails use the base).
     /// </summary>
     public PromptRunnerOverrides? GuardrailOverrides { get; init; }
+
+    /// <summary>
+    /// The SETTINGS keys the block's JSON declared explicitly, as written paths — base keys by name
+    /// (<c>permissionMode</c>, <c>allowedTools</c>, <c>maxTurns</c>, <c>model</c>, <c>extraArgs</c>,
+    /// <c>maxOutputTokens</c>, <c>env</c>) and override keys as <c>guardrailOverrides.&lt;key&gt;</c>, in that
+    /// order. Needed because <see cref="Settings"/> has the loader's defaults applied, so a declared
+    /// <c>maxTurns: 50</c> and an omitted one look identical there. Read by GR2080 (#764) to name exactly which
+    /// Claude-only keys stopped applying when a block was flipped to <c>kind: "cursor"</c>. Empty for a block
+    /// built in code rather than loaded.
+    /// </summary>
+    public IReadOnlyList<string> DeclaredSettingsKeys { get; init; } = [];
 
     /// <summary>
     /// The openai-compat base URL (plan 28 §4, issue #223) — REQUIRED for
@@ -234,7 +248,7 @@ public sealed record PromptRunnerOverrides
 
 /// <summary>
 /// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224).
-/// <see cref="Claude"/> and <see cref="OpenAiCompat"/> have concrete runners; <see cref="Codex"/>,
+/// <see cref="Claude"/>, <see cref="OpenAiCompat"/> and <see cref="Cursor"/> have concrete runners; <see cref="Codex"/>,
 /// <see cref="OpenRouter"/> and <see cref="Local"/> remain RESERVED NAMES (plan 28 §3.1). Declaring one
 /// of those is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction
 /// still refuses it, but as the BACKSTOP rather than the gate (see
@@ -263,12 +277,21 @@ public enum PromptRunnerKind
     /// Served by <see cref="OpenAiCompatPromptRunner"/> (#223), for the <see cref="PromptRole.Guardrail"/>
     /// and <see cref="PromptRole.Advisory"/> roles only — see <see cref="PromptRunnerKinds.ServesRoles"/>.
     /// </summary>
-    OpenAiCompat
+    OpenAiCompat,
+
+    /// <summary>
+    /// Cursor's Agent CLI (<c>agent -p</c>, wire token <c>cursor</c>), served by
+    /// <see cref="CursorPromptRunner"/> (#764) for the <see cref="PromptRole.Action"/> and
+    /// <see cref="PromptRole.Guardrail"/> roles — never <see cref="PromptRole.Advisory"/>. An agent that
+    /// writes files and runs commands, but with NO per-tool allowlist and NO containment hook: it runs with
+    /// <c>--force</c>, so a block of this kind always draws a GR2080 validate warning saying so (SSOT §9.9).
+    /// </summary>
+    Cursor
 }
 
 /// <summary>
 /// The single source of truth for the <see cref="PromptRunnerKind"/> wire tokens
-/// (<c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c> / <c>openai-compat</c>), mirroring
+/// (<c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c> / <c>openai-compat</c> / <c>cursor</c>), mirroring
 /// <see cref="AutonomyPolicies"/>. Shared by the loader, validation, the registry's dispatch backstop,
 /// and the <c>providers init</c> generator so the spelling never forks.
 /// </summary>
@@ -284,12 +307,12 @@ public static class PromptRunnerKinds
     /// them together rather than letting them drift.
     /// </summary>
     public static IReadOnlyList<PromptRunnerKind> Implemented { get; } =
-        [PromptRunnerKind.Claude, PromptRunnerKind.OpenAiCompat];
+        [PromptRunnerKind.Claude, PromptRunnerKind.OpenAiCompat, PromptRunnerKind.Cursor];
 
     /// <summary>The recognised wire tokens, in declaration order — for diagnostic messages.</summary>
     public static IReadOnlyList<PromptRunnerKind> All { get; } =
         [PromptRunnerKind.Claude, PromptRunnerKind.Codex, PromptRunnerKind.OpenRouter,
-         PromptRunnerKind.Local, PromptRunnerKind.OpenAiCompat];
+         PromptRunnerKind.Local, PromptRunnerKind.OpenAiCompat, PromptRunnerKind.Cursor];
 
     /// <summary>True when this build carries a concrete <c>IPromptRunner</c> for <paramref name="kind"/>.</summary>
     public static bool IsImplemented(PromptRunnerKind kind) => Implemented.Contains(kind);
@@ -305,7 +328,9 @@ public static class PromptRunnerKinds
     /// endpoint preflight reads it to assert every declared model is present before a token is spent.
     /// <see cref="PromptRunnerKind.Claude"/> stays out — the Claude CLI exposes no model list at all
     /// (settled OD-E) — so <c>providers init</c> still takes its "could not enumerate" path for a
-    /// Claude-only registry, exactly as before.</para>
+    /// Claude-only registry, exactly as before. <see cref="PromptRunnerKind.Cursor"/> stays out too: its CLI
+    /// has <c>agent --list-models</c>, but no enumerator is wired for it (#764 left it out of scope), and
+    /// this list states what the build DOES, not what the CLI could.</para>
     ///
     /// <para><b>Enumerable is not the same as invented.</b> This member answers <i>can this kind be
     /// ASKED?</i>, and nothing about it licenses writing a model id no provider reported: a registry entry
@@ -344,6 +369,15 @@ public static class PromptRunnerKinds
     private static readonly IReadOnlySet<PromptRole> VerifierRoles =
         new HashSet<PromptRole> { PromptRole.Guardrail, PromptRole.Advisory };
 
+    /// <summary>
+    /// The two roles a file-writing agent with NO tool allowlist may serve (#764): it can do work and judge
+    /// work, but it is never handed an <see cref="PromptRole.Advisory"/> prompt — those (the overwatcher,
+    /// ai-triage, the criticality judge) are read-only by construction, and a runner launched with
+    /// <c>--force</c> cannot honour read-only.
+    /// </summary>
+    private static readonly IReadOnlySet<PromptRole> UngovernedAgentRoles =
+        new HashSet<PromptRole> { PromptRole.Action, PromptRole.Guardrail };
+
     /// <summary>No role at all — a reserved kind with no runner class serves nothing.</summary>
     private static readonly IReadOnlySet<PromptRole> NoRoles = new HashSet<PromptRole>();
 
@@ -369,6 +403,7 @@ public static class PromptRunnerKinds
     {
         PromptRunnerKind.Claude => AllRoles,
         PromptRunnerKind.OpenAiCompat => VerifierRoles,
+        PromptRunnerKind.Cursor => UngovernedAgentRoles,
         _ => NoRoles
     };
 
@@ -384,8 +419,27 @@ public static class PromptRunnerKinds
     /// file-writing runner whose author forgets to register it here inherits the boundary rather than
     /// silently losing it; the wrong answer is then a hook that polices nothing, not an agent writing
     /// outside its worktree unobserved.</para>
+    ///
+    /// <para><b><see cref="PromptRunnerKind.Cursor"/> is FALSE for a different reason (#764):</b> it DOES
+    /// write files, but the hook is a Claude Code PreToolUse hook passed as <c>--settings</c>, which Cursor's
+    /// CLI cannot load (and would reject as an unknown option). A cursor block therefore runs WITHOUT the
+    /// outer boundary — stated to the operator by the GR2080 validate warning, never silently — and its
+    /// writes are policed after the fact: the worktree git-diff checks, and — keyed on exactly this fact
+    /// plus <see cref="WritesFiles"/> — the task-definition tamper check around every action
+    /// (<see cref="IsUncontainedWriter"/>). <see cref="CursorPromptRunner"/> refuses <c>--settings</c> as the
+    /// backstop, exactly as <see cref="OpenAiCompatPromptRunner"/> does.</para>
     /// </summary>
-    public static bool NeedsContainmentHook(PromptRunnerKind kind) => kind != PromptRunnerKind.OpenAiCompat;
+    public static bool NeedsContainmentHook(PromptRunnerKind kind) =>
+        kind is not (PromptRunnerKind.OpenAiCompat or PromptRunnerKind.Cursor);
+
+    /// <summary>
+    /// True for a kind whose runner WRITES files yet runs WITHOUT the §9.4 containment hook — today only
+    /// <see cref="PromptRunnerKind.Cursor"/> (#764). Derived from the two build facts rather than naming a
+    /// kind, so a future runner of the same shape gets the same compensating check: the harness hashes the
+    /// task's own definition files around every action dispatched to such a runner and fails the attempt if
+    /// they changed (<c>TaskDefinitionTamperCheck</c>, SSOT §9.9).
+    /// </summary>
+    public static bool IsUncontainedWriter(PromptRunnerKind kind) => WritesFiles(kind) && !NeedsContainmentHook(kind);
 
     /// <summary>
     /// True when this kind's runner has a write tool and so gets the shipped verdict-file contract
@@ -416,13 +470,14 @@ public static class PromptRunnerKinds
         PromptRunnerKind.OpenRouter => "openrouter",
         PromptRunnerKind.Local => "local",
         PromptRunnerKind.OpenAiCompat => "openai-compat",
+        PromptRunnerKind.Cursor => "cursor",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unhandled prompt-runner kind.")
     };
 
     /// <summary>
     /// Parse a <c>kind</c> string (trim + case-insensitive, mirroring <c>AutonomyPolicies.TryParse</c>):
-    /// <c>claude</c>, <c>codex</c>, <c>openrouter</c>, <c>local</c>, or <c>openai-compat</c> (note the
-    /// hyphen — which is why this mapping is explicit rather than <c>Enum.TryParse</c>). Any other value
+    /// <c>claude</c>, <c>codex</c>, <c>openrouter</c>, <c>local</c>, <c>openai-compat</c> (note the
+    /// hyphen — which is why this mapping is explicit rather than <c>Enum.TryParse</c>), or <c>cursor</c>. Any other value
     /// returns <c>false</c> with <paramref name="kind"/> left at <see cref="Default"/> and the caller
     /// reports it — an unrecognised kind is REPORTED, never silently served by the default.
     /// </summary>
@@ -444,6 +499,9 @@ public static class PromptRunnerKinds
                 return true;
             case "openai-compat":
                 kind = PromptRunnerKind.OpenAiCompat;
+                return true;
+            case "cursor":
+                kind = PromptRunnerKind.Cursor;
                 return true;
             default:
                 kind = Default;

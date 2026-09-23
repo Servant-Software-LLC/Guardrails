@@ -278,7 +278,7 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
       "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
       "maxTurns": 50,
       "model": null,                  // null = CLI default
-      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat. "claude" AND "openai-compat" are IMPLEMENTED (#223); codex | openrouter | local remain reserved names with no runner class. An unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
+      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat | cursor. "claude", "openai-compat" (#223) AND "cursor" (#764, §9.9 — Cursor's Agent CLI; `command` defaults to "agent"; runs with --force, so every cursor block draws the GR2080 warning) are IMPLEMENTED; codex | openrouter | local remain reserved names with no runner class. An unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
       "endpoint": null,               // OPTIONAL, openai-compat ONLY (§9.8, issue #223). REQUIRED when kind is "openai-compat": an absolute http/https base URL for the chat-completions endpoint, e.g. "http://127.0.0.1:11434/v1" (GR2065) — declaring it on a block of another kind is GR2065 too. `command` is IGNORED for kind "openai-compat": there is no local executable to launch, so GR2009's PATH probe is skipped for it (§9)
       "contextTokens": null,          // OPTIONAL, openai-compat ONLY. REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader
       "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
@@ -565,7 +565,12 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
   out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
   cumulative wall-clock a single task may spend
   **paused** on transient, retryable infrastructure conditions (HTTP 429/503/529, "overloaded", a
-  usage/session/rate limit from the runner — issue #115). A transient signal does **NOT** consume the
+  usage/session/rate limit from the runner — issue #115 — and, since #764, Claude Code's quota refusal
+  `You've hit your individual spend limit`, pinned as the `"spend limit"` `TransientPhrases` entry: it used to
+  classify as a plain error and burn every retry in seconds. No failure kind halts with a "switch runner"
+  message, so Transient is the kind that stops the burn: the task pauses under this budget and then settles
+  `needs-human` "re-run later", which is where an operator switches the block to another runner). A
+  transient signal does **NOT** consume the
   retry budget: the harness backs off (bounded exponential, 2s→…→60s cap, honoring a parsed reset hint
   for display) and re-runs the **same** attempt, surfacing a distinct `PromptPaused` observer event
   (CLI: a `paused` row, not a failure). A transient pause that clears is **never journaled** —
@@ -5238,9 +5243,10 @@ reach an action, a guardrail script, or the AI-merge worker.
 ## 9. Prompt runners
 
 `promptRunners` (§2) maps names to runner configs. The `IPromptRunner` C# interface
-quarantines all CLI specifics (flag spelling, output parsing). This build ships two concrete runners:
-`claude` (`ClaudePromptRunner`, an agent) and `openai-compat` (`OpenAiCompatPromptRunner`, a read-only
-HTTP verifier — §9.8, issue #223).
+quarantines all CLI specifics (flag spelling, output parsing). This build ships three concrete runners:
+`claude` (`ClaudePromptRunner`, an agent), `openai-compat` (`OpenAiCompatPromptRunner`, a read-only
+HTTP verifier — §9.8, issue #223) and `cursor` (`CursorPromptRunner`, an agent driving Cursor's Agent CLI
+with no per-tool allowlist — §9.9, issue #764).
 
 **What a `PromptInvocation` is FOR — `PromptRole` (plan 28 §3.4).** Every `PromptInvocation` carries a
 required `Role: PromptRole` — `Action` | `Guardrail` | `Advisory` — set by the harness at every
@@ -5249,7 +5255,10 @@ anything other than its own verdict file? Yes ⇒ `Action`. No, and its output i
 `Guardrail`. No, and its output is advice the harness may not treat as a verdict ⇒ `Advisory`. A runner
 class may refuse a role it cannot honestly serve — which of the three roles a given kind's runner
 actually accepts is `PromptRunnerKinds.ServesRoles(kind)`, a fact about the BUILD, never a config key:
-`claude` serves all three (it can write files and run commands); `openai-compat` serves only
+`claude` serves all three (it can write files and run commands); `cursor` serves `Action` and `Guardrail`
+but never `Advisory` (§9.9 — an advisory prompt is read-only by construction, and a cursor block runs with
+`--force`, so `SchedulerFactory` never resolves one for an advisory profile and the runner refuses the role);
+`openai-compat` serves only
 `Guardrail`/`Advisory` (§9.8 — v1's local runner is a verifier, not an actor, so an `Action`-role
 invocation is refused before anything reaches the wire); a kind with no concrete runner serves none.
 Declaring a `roles:` key on a `promptRunners` block would invite an operator to assert a capability the
@@ -5258,19 +5267,25 @@ declares capability, and this is the single source both the runner itself and th
 fact and the refusal cannot drift apart.
 
 **Two build facts a `PromptRunnerKind` carries beside `ServesRoles` — both true for every kind except
-`openai-compat`, by design (`PromptRunnerKinds.NeedsContainmentHook` / `.WritesFiles`):**
+`openai-compat`, by design, and `NeedsContainmentHook` also false for `cursor` (§9.9)
+(`PromptRunnerKinds.NeedsContainmentHook` / `.WritesFiles`):**
 
 - **`NeedsContainmentHook(kind)`** — does this kind's runner need the §9.4 worktree-containment
   PreToolUse hook spliced onto its invocation? An agent kind (`claude`) does: it can call
   `Write`/`Edit`/`MultiEdit`/`NotebookEdit`/`Bash`, so the hook has something to police. A kind whose
   runner offers none of those tools has nothing for the hook to police — generating a Claude
   `settings.json` to pass as a CLI flag to an HTTP client is litter, not containment — so `openai-compat`
-  answers `false` and the splice (§9.4) is skipped for it. **An unlisted future kind defaults to `true`**:
+  answers `false` and the splice (§9.4) is skipped for it. `cursor` also answers `false`, for a different
+  reason: it DOES write files, but the hook is a Claude Code PreToolUse hook passed as `--settings`, which
+  Cursor's CLI cannot load — so a cursor block runs WITHOUT the outer boundary, said out loud by GR2080
+  (§9.9) rather than silently, and compensated by the task-definition tamper check
+  (`PromptRunnerKinds.IsUncontainedWriter` = `WritesFiles && !NeedsContainmentHook`). **An unlisted future
+  kind defaults to `true`**:
   a file-writing runner whose author forgets to register it here inherits the boundary rather than
   silently losing it.
 - **`WritesFiles(kind)`** — does this kind's runner have a write tool, and therefore get the shipped
   "write your verdict to this path" instruction (§4.2 Form 1) rather than "transcribe it in your final
-  message" (§4.2 Form 2)? `claude` does; `openai-compat` does not (no write tool at all). Same
+  message" (§4.2 Form 2)? `claude` and `cursor` do; `openai-compat` does not (no write tool at all). Same
   unlisted-kind-defaults-`true` rule, for the same reason: a future writing runner never registered here
   would otherwise be told to transcribe, and the verdict it wrote to the path would be silently ignored.
 
@@ -5292,7 +5307,7 @@ inert hook. See §9.4 for the mechanism this condition gates.
   substituted model would spend a real run against a provider the config never asked for. That throw is
   the BACKSTOP; the GATE is `guardrails validate`'s **GR2044** (§9.6). Adding a CLI is a new class plus
   one arm of that switch.
-- Invocation: `claude -p --output-format stream-json --verbose --permission-mode <m>
+- Invocation (`claude`; the `cursor` argv is §9.9's): `claude -p --output-format stream-json --verbose --permission-mode <m>
   --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`. **`--model` is emitted from the
   RESOLVED ROUTE** (issues #200/#201): tier resolution runs immediately before every attempt (§9.6) and
   the block/model it selects is what reaches the command line AND what per-attempt provenance records
@@ -5370,7 +5385,8 @@ inert hook. See §9.4 for the mechanism this condition gates.
 - `guardrails validate` probes each DECLARED runner's `command` on PATH and emits a
   **warning** (GR2009) if it does not resolve — not an error, since the plan may run on
   another machine where the runner is installed. **Kind-aware (plan 28 §7, issue #223):** the probe
-  runs for `kind: "claude"` (a local executable really must resolve on PATH) and is SKIPPED entirely
+  runs for `kind: "claude"` and `kind: "cursor"` (a local executable really must resolve on PATH — for
+  `cursor` that is `agent` unless the block names another `command`, §9.9) and is SKIPPED entirely
   for `kind: "openai-compat"`, whose block has no `command` to probe — `command` is ignored for that
   kind (§2) — and whose real reachability question ("does this endpoint answer, and does it serve the
   declared model?") is answered by the pre-DAG endpoint preflight instead (§9.8), not by a PATH lookup
@@ -5687,7 +5703,7 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
 ```jsonc
 "primary": {
   "command": "claude",
-  "kind": "claude",                 // OPTIONAL; DEFAULT "claude". claude | codex | openrouter | local | openai-compat
+  "kind": "claude",                 // OPTIONAL; DEFAULT "claude". claude | codex | openrouter | local | openai-compat | cursor
   "effort": "xhigh",                // OPTIONAL; opaque thinking-effort token, shape-checked (GR2050), runner-translated
   "costly": true,                   // OPTIONAL axis 1/3; boolean. ABSENT = "not stated" (≠ false)
   "strength": 7,                    // OPTIONAL axis 2/3; integer >= 1, higher = stronger. ABSENT = "not stated"
@@ -5705,7 +5721,7 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
   (`primary`, `cheap`, `reviewer`) and still be dispatched correctly, because dispatch keys on the `kind`
   FIELD, never on the map name or the `command`. The default is what keeps the change additive — an omitted
   `kind` is Claude, so every existing config validates and runs unchanged. Accepted: `claude`, `codex`,
-  `openrouter`, `local`, `openai-compat` (parsed trimmed + case-insensitively, as `autonomyPolicy` is). An
+  `openrouter`, `local`, `openai-compat`, `cursor` (parsed trimmed + case-insensitively, as `autonomyPolicy` is). An
   **unrecognised** value is **GR2044 (error)**, and the message NAMES the offending value so an operator
   with several blocks knows which one to fix; the block then falls back to `claude` only so the REST of
   validation still reports (the error blocks the run regardless).
@@ -5721,7 +5737,7 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
     remain reserved names, unassigned.
   - **A recognised-but-unimplemented kind is a `guardrails validate` ERROR (GR2044), and registry
     construction is the BACKSTOP — not the gate** (#201 Stage 1.5; Stage 1 shipped this the other way
-    round). **`claude` and `openai-compat` have concrete runners; `codex`/`openrouter`/`local` do not.** A
+    round). **`claude`, `openai-compat` and `cursor` have concrete runners; `codex`/`openrouter`/`local` do not.** A
     config declaring `codex`/`openrouter`/`local` **fails validation** naming the kind and what this build
     can serve — `local` specifically is redirected to `openai-compat` in the message text, since every
     locally-hosted engine this build actually serves speaks that wire protocol and `local` itself gets no
@@ -5732,7 +5748,7 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
     never by a run that starts and then dies composing its registry. It must **never** silently fall back
     to Claude — quietly serving a request for another provider with a different model is the one failure
     mode this seam exists to prevent. `openai-compat`'s concrete runner landed with #223 and GR2044's
-    implemented-set grew to two; the set is declared once in `PromptRunnerKinds.Implemented` and pinned to
+    implemented-set grew to two, and `cursor`'s with #764 (§9.9) grew it to three; the set is declared once in `PromptRunnerKinds.Implemented` and pinned to
     the dispatch switch by a test, so the gate and the backstop cannot drift apart.
 - **`effort` — the thinking-effort knob (issue #201).** An OPTIONAL, **opaque** per-block string (`"low"`,
   `"xhigh"`, …). The harness never interprets it: it is shape-checked only (**GR2050** — non-empty, no
@@ -6648,6 +6664,14 @@ effective workspace root (the segment worktree in worktree mode, the plan `works
 mode — mirroring `.guardrails-staging/`'s own placement exactly), so it satisfies BOTH constraints
 without any change to `WorktreeContainmentHook` and without a new `--add-dir` grant.
 
+**Stale outputs are cleared BEFORE a prompt judge runs (#764).** Both verdict paths are predictable and both
+are writable by the ACTION that ran just before the judge — the final path lives in the plan's log dir
+(reachable through `--add-dir`), the staged one in the workspace. So `GuardrailRunner` deletes any file already
+at either path before the judge is invoked (`PromptOutputStaging.ClearStaleOutputs`; a delete that fails
+throws rather than grading on a file it could not clear). A judge that then writes nothing reads as "no valid
+verdict" and FAILS; a planted `{"pass": true}` can never grade it. Runner-agnostic: a `cursor` block (§9.9,
+no hook) makes the plant trivial, but a Claude action in serial mode has no containment hook either.
+
 **Cleanup.** Because the promote step MOVES (never copies) the one expected file and nothing else
 is ever written under that leaf directory, the harness also deletes the whole per-attempt staging
 subtree afterward (belt-and-braces, mirroring `StagingMover`'s "delete the whole tree" idiom) — no
@@ -6970,12 +6994,13 @@ rather than by rule.)*
 | Code | Sev | Rule |
 |---|---|---|
 | `GR2043` | error | a tier token outside `easy`/`medium`/`hard`, at any of the four sites (§3) |
-| `GR2044` | error | a `kind` that is unrecognised, **or** recognised but not implemented in this build. `claude` and `openai-compat` are implemented; `codex`/`openrouter`/`local` are not — and for `local` specifically the message redirects to `openai-compat` by name ("'local' is a reserved name with no implementation of its own, and every locally-hosted engine this build can serve — Ollama, llama.cpp, LM Studio, vLLM, MLX — speaks the openai-compat wire protocol"), since `local` names no wire protocol of its own while `openai-compat` is the one this build actually speaks (§9.8) |
+| `GR2044` | error | a `kind` that is unrecognised, **or** recognised but not implemented in this build. `claude`, `openai-compat` and `cursor` (#764) are implemented, and the message lists all three as what this build can serve; `codex`/`openrouter`/`local` are not — and for `local` specifically the message redirects to `openai-compat` by name ("'local' is a reserved name with no implementation of its own, and every locally-hosted engine this build can serve — Ollama, llama.cpp, LM Studio, vLLM, MLX — speaks the openai-compat wire protocol"), since `local` names no wire protocol of its own while `openai-compat` is the one this build actually speaks (§9.8) |
 | `GR2045` | error | a malformed axis: non-boolean `costly`, non-integer or `< 1` `strength`, out-of-enum `specialization` |
 | `GR2046` | warning | a retired `routing.rank` key (ignored; ordering is ascending `strength`) |
 | `GR2065` | error | `OpenAiCompatBlockSchema` (plan 28 §4/§7, issue #223) — an `openai-compat` block is malformed: missing or non-absolute-http(s) `endpoint`, missing `model`, missing or `< 1` `contextTokens`, a `wire` map overriding a harness-owned request field (`model`/`messages`/`stream`/`stream_options`/`tools`/`max_tokens`) — **or** any of `endpoint`/`contextTokens`/`apiKeyEnv`/`wire` declared on a block whose `kind` is NOT `openai-compat`. Static and offline: every clause is knowable from `guardrails.json` alone, nothing opens a socket at validate time |
 | `GR2066` | error | `OpenAiCompatActionReachable` (plan 28 §3.7/§7, issue #223) — an `openai-compat` block is reachable for an **Action**, by any of five routes (one diagnostic per block, naming every route that reaches it): it declares `routing`; it is the **effective default** (`default` pointer **or** sole declared runner — `PromptRunnerRegistry.ResolveDefault`'s own rule); a task's `action.runner`; an action prompt's own frontmatter `runner:` (folded onto the task definition by the loader purely so this check can see it, §3.7); or the block is declared under a reserved **Action**-role profile name — `ai-merge` or `breakdown`. v1's local runner is a verifier, not an actor (§9.8), so every manifest-visible route to an ACTION is an honest halt at validate time rather than a mid-DAG failure with a task's work already in flight. The two LEGAL reachability paths — a judge guardrail's own frontmatter `runner:` pin, and the reserved **Advisory**-role profile names `overwatch`/`ai-triage` — must never fire here; GR2067's unreachable clause is the opposite failure and shares the same reserved-profile list, split by role |
 | `GR2067` | warning | `OpenAiCompatWeakOrUnreachable` (plan 28 §7, issue #223) — an `openai-compat` block is declared but practically inert, in either of two independent forms: it declares no `strength` (the §9.6 verifier-kind fallback then treats it as PERMANENTLY weak, so every judge routed to it carries a #229 advisory forever); **or** it is unreachable — neither pinned by any guardrail's frontmatter `runner:` nor named as one of the two reserved advisory profiles (`overwatch`, `ai-triage`), which is the check that catches a `triage`-for-`ai-triage` misspelling that would otherwise fail silently: the block loads, validates, and simply never runs |
+| `GR2080` | warning | `CursorRunnerUngoverned` (§9.9, issue #764) — fires ONCE PER `kind: "cursor"` block, always: Cursor's print mode has no per-tool allowlist and cannot load the §9.4 containment hook, so the harness runs it with `--force` (full write and shell access); `permissionMode`, `allowedTools`, `maxTurns` and `maxOutputTokens` — and any `guardrailOverrides` of them — are IGNORED, and `maxCostUsd` can never trip on it (Cursor reports no cost). It states what IS enforced (the worktree-only git-diff write-scope check, the task-definition tamper check, the stale-verdict clear, the prompt-echo check, and the block never serving the overwatcher, ai-triage or the criticality judge — which are OFF for the run when it is the default runner) and what is NOT (writes outside the worktree: the plan folder via `--add-dir`, other worktrees, the main checkout, `git stash`; in-scope edits by a prompt guardrail on the block), and that `--sandbox` is an unproven opt-in through `extraArgs`. The message NAMES every one of those keys the block or its `guardrailOverrides` actually declares (read off `PromptRunnerConfig.DeclaredSettingsKeys`, since the loader's defaults erase the difference), so a Claude block copied and flipped to `kind: "cursor"` is told exactly what stopped applying. A warning because running Cursor is a legitimate operator choice; what must not happen is that choice being made silently |
 | `GR2068` | warning | `HandoffPathUnreachable` — a handoff row names a resolvable path that **no task's** `writeScope` covers, so the row cannot be delivered under any implementation. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **warning** in v1 only because `RunCommand.RunAsync` refuses to run a plan whose validation emits any error, and a correct shipped plan can carry a stale cell (plan 28 row 3) — an ERROR would be a retroactive run-blocking gate. **Promotion to ERROR** when a hand-run of this code alone across every plan carrying the convention produces only genuine defects |
 | `GR2069` | warning | `HandoffRowSplitAcrossTasks` — every path a handoff row names is writable by *some* task, but **no single task** can write them all: the row is delivered by several tasks and each half must be reachable by the task implementing *that* half. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **confirm**, not a fault: a deliberately split row legitimately triggers it, and the message says so in its own words. It is a **separate code from GR2068 by design** — it fires on 3 of 10 rows of a correct plan, and under one shared code a reviewer learns to skim the code itself, taking GR2068's precision with it (#229). **Should probably never be an ERROR**: it reports a shape the check cannot adjudicate, so blocking on it would refuse a plan whose author already made the right call. Note it is GR2069, not GR2068, that catches both plan-28 failures |
 | `GR2047` | error | a malformed `routing`: missing/empty/non-array `tiers`, or a value outside the tier enum |
@@ -7272,6 +7297,154 @@ code makes about an OpenAI-compatible server — `stream_options.include_usage` 
 and called, `num_ctx`-style options honoured, the model-not-found body shape, SSE framing,
 `reasoning_effort` tolerance, and `GET /models` being served — each reported `met` / `unmet` / `unknown`
 (never collapsing `unknown` into `unmet`, which would misreport an inconclusive probe as a proven gap).
+
+### 9.9 The `cursor` runner (#764)
+
+**What it is.** `CursorPromptRunner` — one concrete `IPromptRunner` (§9) serving `kind: "cursor"` (§2) by
+driving Cursor's Agent CLI (`agent`) headless. It is an AGENT like `claude` (it writes files and runs
+commands), but `PromptRunnerKinds.ServesRoles(Cursor)` is **`Action` + `Guardrail` only — never
+`Advisory`** (below). It exists so a run can fail over to Cursor on the same machine when Claude Code is
+quota-blocked. A block with no `command` launches `agent` (NOT the block name, which is every other kind's
+default), so GR2009's PATH probe checks the binary that would actually run.
+
+**Invocation — the exact argv** (all Cursor flag spelling is quarantined in the class):
+
+```
+agent -p --output-format stream-json --force --trust --workspace <cwd>
+      [--model <m>] --add-dir <planDir> [extraArgs…]
+```
+
+- There is **no positional prompt**, deliberately (see delivery, below).
+- cwd = `--workspace` = the effective workspace (§5.1, exactly as for `claude`); `--add-dir <planDir>` for the
+  same reason `claude` gets it. Both are omitted only when the invocation carries an EMPTY path (the advisory
+  criticality assessment's shape, #381 — which a cursor block never serves anyway).
+- `--force` and `--trust` are UNCONDITIONAL. Print mode has no per-tool allowlist; measured live, a session
+  without `--force` still writes files but has every shell command rejected ("Shell was rejected").
+  `--trust` trusts the workspace without prompting (documented as headless-only).
+- `--model` only when the resolved route (§9.6) names a model, the same rule as `claude`.
+- **Never emitted:** `--verbose`, `--permission-mode`, `--max-turns`, `--allowedTools`. Cursor rejects all
+  four as unknown options and exits at parse time, before any model call. That is the #764 defect, and a
+  test pins it. `permissionMode`, `allowedTools`, `maxTurns` and `maxOutputTokens` have no Cursor spelling
+  and are ignored (GR2080 below); `CLAUDE_CODE_MAX_OUTPUT_TOKENS` is not set. The user's `env` passthrough
+  still applies.
+- **Bounds that DO apply:** the invocation `Timeout` and the #504 `StallBound`, through the same shared
+  session code as `claude`. Cursor's `thinking` events count as stream activity for the stall bound.
+
+**Launch on Windows.** Cursor installs as `%LOCALAPPDATA%\cursor-agent\agent.cmd` (a shim that runs
+`agent.ps1` under PowerShell, which runs `node.exe`); there is no `agent.exe`, and `Process.Start` with
+`UseShellExecute = false` does not apply PATHEXT to a bare name. On Windows the runner therefore resolves
+`command` through `PATH` + `PATHEXT` to a full path before launch, using `PathExecutableProbe.ResolveFullPath`
+— the SAME rule GR2009's probe applies, so validate and launch cannot disagree. Within a directory a PATHEXT
+match wins over an extensionless file of the same name (an npm-style install puts a POSIX `agent` script
+beside `agent.cmd`). If nothing resolves, the command is launched as written and the ordinary launch-failure
+path classifies it. The `claude` runner's launch is unchanged. Because the shim runs with
+`enabledelayedexpansion`, a literal `!` in an `extraArgs` value is eaten on Windows; the prompt is unaffected
+(it never passes through the shim's argument line).
+
+**Prompt delivery — stdin, and NO positional.** Measured against `agent` 2026.09.18: Cursor reads stdin as the
+prompt **only when there is no positional argument at all**. With any positional present, stdin is silently
+ignored — and the session still ends `{"type":"result","subtype":"success","is_error":false}` with exit 0: a
+false green. Stdin with no positional delivered a 57,226-character prompt intact (quotes, `&`, `%` and `!`
+included). A positional carrying the whole prompt is not an alternative: it routinely exceeds the Windows
+command-line limit (8191 characters through a `.cmd` shim, 32767 for `CreateProcess`). The choice lives in ONE
+method (`CursorPromptRunner.Deliver`).
+
+**Delivery verification — the guard against that false green.** Cursor echoes the prompt it received as the
+stream's first `{"type":"user","message":{"content":[{"type":"text","text":…}]}}` event. The runner compares
+that echo to the composed prompt: both line-ending-normalized and trimmed, the first 4,096 characters of the
+composed prompt must open the echo. A strong PREFIX match rather than equality because, live, the echo of the
+57,226-character prompt came back one character shorter (trailing whitespace) — a normalization the harness
+does not control — while the opening of the prompt is exactly what a false green cannot reproduce. A run that
+would otherwise COMPLETE but whose echo is missing or different is `Completed = false`, `FailureKind = Error`,
+summary `cursor did not receive the composed prompt (…)`. This is also what catches a bare token in the block's
+`extraArgs` (`"extraArgs": ["summarize"]` IS a positional prompt). Such tokens are deliberately NOT refused
+statically: `"--sandbox", "enabled"` is legitimately a flag followed by a value, and telling the two apart
+would mean re-implementing Cursor's option parser. A run that already failed (non-zero exit, stall, timeout)
+keeps its own, more specific failure.
+
+**Parsing — `ClaudeStreamParser`, unforked.** Cursor's `--output-format stream-json` is NDJSON that matches
+Claude's envelope at the points the parser reads: the opening `{"type":"system","subtype":"init",…,"model":…}`
+and the terminal `{"type":"result","subtype":"success","is_error":…,"result":…,"usage":…}`. The parser skips
+every other event, including Cursor's `tool_call` (`started`/`completed`, the tool keyed as
+`<name>ToolCall`) and `thinking` (`delta`/`completed` — dozens per run, although Cursor's docs say print mode
+suppresses them).
+
+- **Usage.** Cursor's `usage` is camelCase — `{"inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens"}`,
+  `inputTokens` NET of cache. The parser reads it only when none of Claude's four snake_case fields is present
+  (so Claude parses byte-identically) and applies the same cache-INCLUSIVE rule:
+  `InputTokens = inputTokens + cacheReadTokens + cacheWriteTokens`, `OutputTokens = outputTokens`.
+- **Cost and turns** are absent from Cursor's result, so both are recorded `null` (never `0`, §9's cost rule) —
+  and therefore **`maxCostUsd` can never trip on a cursor block's spend** (GR2080 says so).
+- **Model.** The init `model` is a DISPLAY name (`"Auto"` when no `--model` is given), not a model id. It is
+  NOT reported as the observed model (§7 `provenance.model`), which would record a false model MISMATCH on
+  every attempt; it is appended to the attempt summary instead (`… (Cursor reported model: Auto)`).
+- **Failures.** A bad `--model` exits 1 with NO stream at all and plain stdout text ("Cannot use this model: X.
+  Available models: …"); the live build was never seen to emit an `is_error: true` result. Both paths are
+  classified by the shared `ClaudeSignalClassifier` (the #516 `NonStreamStdout` filter; a launch failure is
+  classified and names the command).
+- `transcript.md` renders a `started` `tool_call` as the same `● name(args)` tool line a Claude `tool_use`
+  gets (`readToolCall` ⇒ `read`); its `completed` twin, and every `thinking` event, render nothing.
+
+**The session is shared code.** `StreamJsonCliSession` is the process/tee/stall/abort/classify loop both
+`ClaudePromptRunner` and `CursorPromptRunner` hand their argv, environment and stdin to; Claude's behavior
+through it is byte-identical to before #764 (one deliberate exception, the spend-limit classification, is
+shared and applies to Claude too — §9 transient signals).
+
+**Permissions and containment — what IS enforced, and what is not.**
+
+Enforced for a cursor block:
+
+- **No Advisory role.** `ServesRoles(Cursor)` excludes `Advisory`. The overwatcher's diagnose, the needs-human
+  AI triage and the autonomy criticality judge are read-only by construction and must never run under
+  `--force` in the host checkout, so `SchedulerFactory` never resolves a cursor block for the `overwatch` or
+  `ai-triage` profile — neither when the block is declared under that name nor when it is the default/sole
+  block the profile falls back to. The feature is then OFF for the run (no fall-through to another block —
+  substituting a model the operator did not name is refused here as everywhere), and `guardrails run` prints
+  one `Note:` line per withheld profile at run start. `CursorPromptRunner` itself refuses an Advisory
+  invocation before anything launches, so the refusal is real even for a path that bypassed that resolution.
+  `ai-merge` and `breakdown` are `Action` profiles and may use a cursor block.
+- **Task-definition tamper check.** For an attempt dispatched to an *uncontained writer*
+  (`PromptRunnerKinds.IsUncontainedWriter` = `WritesFiles && !NeedsContainmentHook` — today only `cursor`),
+  the harness hashes the task's own definition files (the `TaskDefinitionHash` set: `task.json`, the action
+  file, `guardrails/**`, `preflights/**`) before the action and after it. Any added, removed or modified file
+  FAILS the attempt, names the files, and settles the task `needs-human` without a retry (a retry would be
+  graded by the rewritten files). Narrow by design: other tasks, `guardrails.json` and plan-level gates are
+  not covered.
+- **Stale-verdict clear (runner-agnostic).** Before every prompt judge runs, any file already at its final
+  verdict path or its staged path is deleted (§9.5), so a planted `{"pass": true}` can never grade a judge
+  that wrote nothing. This also closes the same hole for a Claude action in serial mode, which has no hook.
+- **Delivery verification** (above), and the **git-diff write-scope check** (§3.4) — which runs in worktree
+  mode only, and sees the worktree only.
+
+Not contained:
+
+- **Writes outside the worktree.** The plan folder (granted by `--add-dir`) beyond the task's own definition,
+  other worktrees, the main checkout, `git stash`: nothing polices them at write time and no diff sees them.
+- **No tool allowlist.** The §9.3 permission scanner (`ClaudePermissionScanner`) reads Claude's `tool_result`
+  denial phrasing, which Cursor never emits, so it is not fed: `BlockedWritePaths` stays empty and
+  `AbortAfterConsecutiveToolDenials` (the #452 fail-fast) is INERT. GR2071 (§4.9, a prompt instructing a
+  command its grants refuse) skips cursor tasks, and attempt provenance records no tool-grant split for them.
+  Both resolve the block through `PromptRunnerRegistry.DispatchNameFor`, the real dispatch path.
+- **No containment hook.** `NeedsContainmentHook(Cursor)` is `false`: the §9.4 hook is a Claude Code
+  PreToolUse hook passed as `--settings`, which Cursor cannot load. The splice never adds it, and
+  `CursorPromptRunner` THROWS if `--settings` ever reaches it (the same backstop `openai-compat` keeps).
+- **In-scope edits by a prompt guardrail on a cursor block.** The failing write-scope check runs BEFORE
+  guardrails, and the only post-guardrail diff (worktree mode's phase-2 scope strip) reverts OUT-of-scope paths
+  without failing the attempt. An IN-scope edit made by a judge is committed unnoticed; in serial mode nothing
+  checks at all.
+- **`--sandbox`** is NOT defaulted: its Windows behavior and its effect on network access (a guardrail running
+  `dotnet restore`) are unproven. It can be opted into through `extraArgs` (`"--sandbox", "enabled"`).
+
+**GR2080 (WARNING, `CursorRunnerUngoverned`)** fires once per cursor block, always, states the inventory above
+in brief, and names every `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` key the block or its
+`guardrailOverrides` declares (§9.6 validation table).
+
+**Out of scope.** `agent --list-models` exists, but `cursor` is NOT in `PromptRunnerKinds.ModelEnumerable`:
+`providers init` wires no Cursor enumerator (§9.7). The retry-salvage feedback (§3.2) still carries its
+Claude-grant-specific lines (`git -C` refusals, "ungranted" write-side verbs) on a cursor attempt; they are
+inaccurate there but harmless, and threading the runner kind through its ten call sites was not worth it in
+this change. A manual live smoke — `scripts/smoke/cursor-live-smoke.ps1` — runs a one-task plan on a real
+`agent` and asserts green; it spends account credit and is never run by CI.
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
@@ -8755,7 +8928,7 @@ unsatisfiable-guardrail family and #459
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
 the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
-`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), so an unrelated new code should take **`GR2080`** — `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), **`GR2080`** by #764's `CursorRunnerUngoverned` (a `kind: "cursor"` block runs with no tool allowlist or containment hook, §9.9), so an unrelated new code should take **`GR2081`** — `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same

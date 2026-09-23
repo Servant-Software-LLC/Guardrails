@@ -11,7 +11,7 @@ namespace Guardrails.Core.Prompts;
 ///
 /// Each config block becomes one runner instance carrying that block's <c>command</c>, and the
 /// block's <c>kind</c> (SSOT §9, issue #224) selects the runner CLASS —
-/// <see cref="ClaudePromptRunner"/> and <see cref="OpenAiCompatPromptRunner"/> today. A kind with no
+/// <see cref="ClaudePromptRunner"/>, <see cref="OpenAiCompatPromptRunner"/> and <see cref="CursorPromptRunner"/> today. A kind with no
 /// implementation FAILS construction rather than being served by Claude (see <c>CreateRunner</c>).
 /// Adding a provider is a new class plus one arm of that switch — the seam is here, not in the harness.
 /// </summary>
@@ -61,6 +61,7 @@ public sealed class PromptRunnerRegistry
         {
             PromptRunnerKind.Claude => new ClaudePromptRunner(runner.Name, runner.Command, processRunner),
             PromptRunnerKind.OpenAiCompat => new OpenAiCompatPromptRunner(runner.Name, runner, SharedHttpClient),
+            PromptRunnerKind.Cursor => new CursorPromptRunner(runner.Name, runner.Command, processRunner),
             _ => throw new InvalidOperationException(UnimplementedKindMessage(runner))
         };
 
@@ -91,8 +92,8 @@ public sealed class PromptRunnerRegistry
             : runner.Kind.ToString();
 
         return $"Prompt runner '{runner.Name}' declares kind '{kind}', which has no implementation in " +
-            $"this build — this build serves {PromptRunnerKinds.ImplementedTokenList} (concrete " +
-            "non-Claude runners are issue #223). Point that promptRunners block at an " +
+            $"this build — this build serves {PromptRunnerKinds.ImplementedTokenList} (the remaining " +
+            "reserved kinds are issue #223). Point that promptRunners block at an " +
             "implemented kind, or remove it and route the tasks that used it to a runner this build can " +
             "serve. The harness will not substitute a different model for the one the config asked for. " +
             "(`guardrails validate` reports this as GR2044 before a run starts — reaching this message " +

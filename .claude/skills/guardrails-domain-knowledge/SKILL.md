@@ -1083,7 +1083,7 @@ tiering as a working feature.
   and `tiering.verifier.minTier`.
 - **`promptRunners.<name>` is the registry unit** -- one block = one concrete (provider `kind`, command,
   `model`, `effort`) route. There is no `providers.json` and no `providers` section. Optional keys: `kind`
-  (default `claude`; `claude|codex|openrouter|local|openai-compat`), `effort` (opaque, runner-translated),
+  (default `claude`; `claude|codex|openrouter|local|openai-compat|cursor`), `effort` (opaque, runner-translated),
   the three axes `costly`/`strength`/`specialization`, and `routing`.
 - **`routing` is the switch.** ABSENT ⇒ the block is never a tier target. PRESENT ⇒ it opts in, and
   **tiering is CONFIGURED for the plan the moment ONE block declares it.** `routing.tiers` is REQUIRED,
@@ -1178,6 +1178,31 @@ tiering as a working feature.
   fails the attempt rather than being allowed to transcribe one -- a verifier that read nothing has
   verified nothing. **Judge spend is recorded but NOT folded into `JournalCost.Total`** -- actor
   spend and verifier spend are two numbers on purpose. Full contract: SSOT section 9.8.
+- **`cursor` runner (#764, SSOT section 9.9).** A third implemented kind: Cursor's Agent CLI (`agent`)
+  headless, built so a run can fail over to Cursor when Claude is quota-blocked. It serves `Action` and
+  `Guardrail` but NEVER `Advisory`. A block with no `command` launches `agent`, not the block name. Argv:
+  `agent -p --output-format stream-json --force --trust --workspace <cwd> [--model <m>] --add-dir <planDir>
+  [extraArgs...]`, with the composed prompt on STDIN and NO positional (measured live: Cursor reads stdin only
+  when there is no positional, and with one present it ignores stdin yet still ends `result/success`, exit 0 --
+  a false green). The runner therefore VERIFIES delivery: the stream's first `user` event echoes the prompt,
+  and a completed run whose echo does not open with the composed prompt's first 4 KB is failed
+  ("cursor did not receive the composed prompt"). That also catches a bare token in `extraArgs`. It NEVER
+  emits `--verbose`/`--permission-mode`/`--max-turns`/`--allowedTools` (Cursor exits at parse time on all
+  four -- the #764 defect). On Windows `command` is resolved through PATH+PATHEXT to a full path
+  (`agent.cmd`) by `PathExecutableProbe.ResolveFullPath`, the same rule GR2009 uses. The stream is parsed by
+  the UNFORKED `ClaudeStreamParser`; Cursor's camelCase `usage` is read cache-inclusive, cost and turns stay
+  `null` (so `maxCostUsd` cannot trip on it), and the init `model` is a display name kept OUT of the observed
+  model (it goes in the summary). The process/tee/stall/classify loop is shared with Claude in
+  `StreamJsonCliSession`. **No allowlist, no containment hook** (`--force`; `NeedsContainmentHook` false), so the
+  harness compensates: advisory profiles (overwatch, ai-triage, criticality judge) never resolve to a cursor
+  block (OFF for the run, with a `Note:` line), the task's own definition files are hashed around each action
+  of an uncontained writer (`IsUncontainedWriter`) and any change fails + settles the task, and stale verdict
+  files are deleted before every prompt judge (runner-agnostic). NOT contained: writes outside the worktree
+  (plan folder via `--add-dir`, other worktrees, `git stash`) and in-scope edits by a judge. **GR2080**
+  (`CursorRunnerUngoverned`, a WARNING on every cursor block) states all of this and names each ignored
+  `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` key the block declares. Claude's
+  `You've hit your individual spend limit` is now `Transient` in the SHARED classifier (a deliberate Claude
+  behavior change). Manual live smoke: `scripts/smoke/cursor-live-smoke.ps1` (spends credit; not CI).
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
@@ -1730,7 +1755,7 @@ lands at that same path once drained.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2072**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2081**
   (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
@@ -1747,7 +1772,7 @@ lands at that same path once drained.
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
-  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39.
+  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

@@ -475,6 +475,14 @@ public static class RunCommand
         // operator must never learn from a post-mortem that the probe silently decided their isolation model.
         RenderGitProbeFailureWarning(worktreeResolution, probe.Plan, io.Out);
 
+        // #764: an advisory feature (overwatch, ai-triage, the criticality judge) that resolved to a block whose
+        // kind cannot serve advisory prompts (a cursor block runs with --force) is OFF for the run. Say so at
+        // the start, rather than letting the feature be absent without a word.
+        foreach (string withheld in SchedulerFactory.WithheldAdvisoryProfiles(probe.Plan.Config))
+        {
+            io.Out.WriteLine($"Note: {withheld}");
+        }
+
         // Plan 30 §3.4 — the machine/concurrency/version profile, probed ONCE per run and stamped
         // BEFORE SchedulerFactory.CreateExecutor's OWN, LATER RunJournal.LoadOrCreate (reached when it
         // builds the executor). That ordering is load-bearing (RunEnvironmentProbe/RunJournal.RecordEnvironment):

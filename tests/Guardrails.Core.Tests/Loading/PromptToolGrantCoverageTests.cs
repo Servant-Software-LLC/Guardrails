@@ -411,6 +411,28 @@ public sealed class PromptToolGrantCoverageTests : IDisposable
         Assert.Empty(Findings(plan));
     }
 
+    /// <summary>
+    /// #764: a <c>cursor</c> block's <c>allowedTools</c> never reach its CLI — it runs with <c>--force</c> — so
+    /// the same defect sentence that fires on a Claude block names a wall that does not exist there. Silent,
+    /// with GR2080 (the cursor block runs ungoverned) carrying the honest statement instead. The positive
+    /// control is <see cref="MeasuredDefect_Plan33Task09_Verbatim"/>: identical prompt and grants, Claude kind.
+    /// </summary>
+    [Fact]
+    public void CursorRunner_IsNotConsidered_ItsGrantsAreNeverEnforced()
+    {
+        string config = $$"""
+            {
+              "version": 1,
+              "maxParallelism": 1,
+              "promptRunners": {
+                "cursor": { "kind": "cursor", "allowedTools": {{JsonSerializer.Serialize(ReadOnlyGitGrants)}} }
+              }
+            }
+            """;
+
+        Assert.Empty(Findings(PlanFolder("cursor-plan", config, ("01-x", Task09Sentence))));
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>A one-task plan carrying <paramref name="prompt"/> and <paramref name="grants"/>.</summary>
