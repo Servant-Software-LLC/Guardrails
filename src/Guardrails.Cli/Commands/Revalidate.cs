@@ -217,7 +217,16 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone. The lead line is revalidate's
+        // own: the recorded headline says "halting before scheduling any task", which this verb never does.
+        // Without a usable halt record, the pre-#762 line is the fallback.
+        if (!GateHaltReport.TryWriteFromJournal(
+                plan.PlanDirectory, output, leadLine: "Terminal gate still failing:", checksAlreadyPrinted: null))
+        {
+            output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 
@@ -248,7 +257,16 @@ public static class Revalidate
             return ExitCodes.Success;
         }
 
-        output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
+        // #762: the same block `run` prints — each failed check's name and reason, the captured-output
+        // directory, and the run.json pointer last — instead of a pointer alone. The lead line is revalidate's
+        // own: the recorded headline says "halting before scheduling any task", which this verb never does.
+        // Without a usable halt record, the pre-#762 line is the fallback.
+        if (!GateHaltReport.TryWriteFromJournal(
+                plan.PlanDirectory, output, leadLine: "Plan preflight still failing:", checksAlreadyPrinted: PlanPreflightPhase.HaltHasOwnConsoleReport))
+        {
+            output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
+        }
+
         return ExitCodes.TaskFailed;
     }
 

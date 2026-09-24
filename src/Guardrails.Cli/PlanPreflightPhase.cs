@@ -70,6 +70,25 @@ public static class PlanPreflightPhase
     /// </summary>
     private const string ToolProbeName = "probe_tool";
 
+    /// <summary>The sample-pair halt's headline, up to its list of pair names.</summary>
+    private const string SampleHeadlinePrefix = "Sample-pair verification FAILED — halting before scheduling any task: ";
+
+    /// <summary>The openai-compat endpoint halt's headline, up to its list of findings.</summary>
+    private const string EndpointHeadlinePrefix = "openai-compat endpoint preflight FAILED — halting before scheduling any task: ";
+
+    /// <summary>
+    /// True when <paramref name="halt"/> came from a source that has ALREADY printed its own console report —
+    /// the sample-pair verification and the openai-compat endpoint preflight, each of which writes every finding
+    /// plus its rationale before returning. The caller then prints only the trailing pointers
+    /// (<see cref="GateHaltReport"/>), rather than a second copy of every finding (#762 review). The Full Flight
+    /// Checks print nothing of their own, so their halt gets the full block. Decided by the headline this class
+    /// itself writes for those two sources, so the test cannot drift from the writer.
+    /// </summary>
+    public static bool HaltHasOwnConsoleReport(RunHalt halt) =>
+        halt.Headline is { } headline
+        && (headline.StartsWith(SampleHeadlinePrefix, StringComparison.Ordinal)
+            || headline.StartsWith(EndpointHeadlinePrefix, StringComparison.Ordinal));
+
     /// <summary>
     /// Evaluate (or skip) the pre-DAG phase for <paramref name="plan"/>, whose journal
     /// <paramref name="journal"/> was just loaded/seeded by <see cref="RunJournal.LoadOrCreate"/>.
@@ -299,7 +318,7 @@ public static class PlanPreflightPhase
         {
             Kind = RunHaltKind.PlanPreflightFailed,
             HaltedAt = DateTimeOffset.UtcNow,
-            Headline = "Sample-pair verification FAILED — halting before scheduling any task: "
+            Headline = SampleHeadlinePrefix
                        + string.Join(", ", checks.Select(c => c.Name).Distinct(StringComparer.Ordinal)),
             FailedChecks = checks
                 .Select(c => new FailedGuardrail { Name = c.Name, Reason = c.Reason! })
@@ -415,7 +434,7 @@ public static class PlanPreflightPhase
         {
             Kind = RunHaltKind.PlanPreflightFailed,
             HaltedAt = DateTimeOffset.UtcNow,
-            Headline = "openai-compat endpoint preflight FAILED — halting before scheduling any task: "
+            Headline = EndpointHeadlinePrefix
                        + string.Join(", ", failures.Select(c => c.Name).Distinct(StringComparer.Ordinal)),
             FailedChecks = failures
                 .Select(c => new FailedGuardrail { Name = c.Name, Reason = c.Reason! })

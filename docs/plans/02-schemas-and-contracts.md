@@ -4742,6 +4742,49 @@ sibling task dir — the loader reserves both names, so no task id ends in eithe
 The owning journal section records the containing directory as its `logDir` (§7), and the top-level `halt`
 record repeats it for the gate that stopped the run, so a post-mortem is one lookup from the bytes.
 
+**The console prints the halt record, not a pointer to it (issue #762).** When the pre-DAG plan preflight
+halts `run` (a Full Flight Check, a committed sample pair, or the `openai-compat` endpoint preflight — all three
+write `halt.kind: "plan-preflight-failed"`), and when `--revalidate-task plan:preflights` or
+`plan:guardrails` still fails, the CLI renders the `halt` record it just wrote, in this order:
+
+```
+Plan preflight FAILED — halting before scheduling any task: 01-baseline-main-ci-green   ← halt.headline, whole
+
+  FAILED: 01-baseline-main-ci-green                                                     ← one block per failedChecks[]
+    No '[CI] Bifrost' (bifrost-ci.yml) run found for main@36b912a7 - …                  ← the FULL reason, indented
+
+  Logs:  <plan>/logs/2026-09-23T11-40-03Z-d61c/preflights                               ← halt.logDir, absolute, when captured
+  State: <plan>/state/run.json ("planPreflights")                                       ← absolute, always the LAST line
+```
+
+The headline is `halt.headline` verbatim — before #762 the console printed its own shorter sentence, cut before
+the `: <check-name>` the record carries. Both paths are printed absolute (`halt.logDir` itself stays
+plan-relative in the record). A reason is capped by the same output tail `feedback.md` uses (the last 60 lines,
+then the last 4000 characters, `OutputTail`), with a marker line naming the cut ahead of the text; the Full
+Flight Check reason is already bounded well below that at source (`GuardrailFailureReason`: the last 15 non-empty
+lines, 2000 characters), so the cap is a backstop for the sample-pair and endpoint reasons, which are not.
+
+**Sources that print their own report get only the pointers.** The sample-pair verification and the
+`openai-compat` endpoint preflight each print a report of their own before halting — every finding, plus why the
+check exists — so after them the block is just the `Logs:` (when captured) and `State:` lines: no second headline
+and no second copy of each finding. A Full Flight Check prints nothing of its own and gets the whole block.
+
+**`revalidate` leads with its own line.** The recorded headline says "halting before scheduling any task", which
+is untrue of a verb that schedules nothing, so `--revalidate-task plan:preflights` prints
+`Plan preflight still failing:` and `plan:guardrails` prints `Terminal gate still failing:` in its place, followed
+by the same failed-check blocks and pointers.
+
+**Fallback.** When the halt record cannot be used — no `run.json`, an unreadable one, or a hand-edited record
+with no headline or no named failed check (a null `failedChecks`, or null entries, are skipped rather than
+dereferenced) — `run` prints the pre-#762 pair
+`Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).` /
+`  See <plan>/state/run.json ("planPreflights") for the failed check(s).`, and `revalidate` prints its pre-#762
+line `Guardrails still failing — see "planPreflights" in state/run.json for the failed check(s).` (or
+`"planGuardrails"`).
+
+The `run` path's terminal plan-gate halt keeps its own block (it also prints the #175 collision hint), and wave
+entry/exit gate halts keep `PrintWaveHalt`, which already names each check and its reason.
+
 **Why this is contract, not convenience.** A failing gate halts the run with **no retry, no `feedback.md`
 and no attempt dir** — before #432 the one-line `reason` in `run.json` was the only durable trace, and the
 observed footprint of a halted run was a `logs/<runId>/` containing nothing but viewer HTML. That breaks

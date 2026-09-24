@@ -580,9 +580,19 @@ public static class RunCommand
             WriteDurableFinalSite(
                 Path.Combine(probe.Plan.PlanDirectory, "logs", runId), probe.Plan, probe.Plan.PlanDirectory);
 
-            io.Out.WriteLine();
-            io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
-            io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planPreflights\") for the failed check(s).");
+            // #762: print what the halt record already holds — its full headline, each failed check's name
+            // and reason, and the captured-output directory — with the run.json pointer LAST. A sample-pair or
+            // endpoint halt has already printed every finding itself, so it gets only the pointers. The generic
+            // two-line fallback remains only for a halt record that cannot be read back.
+            string preflightJournalPath = RunJournal.PathFor(probe.Plan.PlanDirectory);
+            if (!GateHaltReport.TryWriteFromJournal(
+                    probe.Plan.PlanDirectory, io.Out, checksAlreadyPrinted: PlanPreflightPhase.HaltHasOwnConsoleReport))
+            {
+                io.Out.WriteLine();
+                io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
+                io.Out.WriteLine($"  See {preflightJournalPath} (\"planPreflights\") for the failed check(s).");
+            }
+
             return ExitCodes.TaskFailed;
         }
 
