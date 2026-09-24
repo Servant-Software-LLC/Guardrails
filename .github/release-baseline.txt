@@ -1,22 +1,22 @@
 # Test-count baseline for the release gate. Comment lines are ignored by `verify`.
 #
-# Recorded from : run 35892432501 (v1.22.0)
-#                 https://github.com/Servant-Software-LLC/Guardrails/actions/runs/35892432501
-# Recorded at   : 2026-09-23T17:27:43Z
+# Recorded from : run 35936200585 (v1.23.0)
+#                 https://github.com/Servant-Software-LLC/Guardrails/actions/runs/35936200585
+# Recorded at   : 2026-09-24T00:24:41Z
 #
 # Totals must match across all three OS; SKIPS legitimately differ per platform, which is
 # exactly why they are pinned here. Re-record deliberately, never to make red go away:
 #     .github/scripts/release-preflight.sh baseline <run-id>
 #
-test (macos-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3116, Skipped: 3, Total: 3119
-test (macos-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3116, Skipped: 3, Total: 3119
-test (macos-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1619, Skipped: 12, Total: 1631
-test (macos-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1619, Skipped: 12, Total: 1631
-test (ubuntu-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3117, Skipped: 2, Total: 3119
-test (ubuntu-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3117, Skipped: 2, Total: 3119
-test (ubuntu-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1619, Skipped: 12, Total: 1631
-test (ubuntu-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1619, Skipped: 12, Total: 1631
-test (windows-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3118, Skipped: 1, Total: 3119
-test (windows-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3118, Skipped: 1, Total: 3119
-test (windows-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1627, Skipped: 4, Total: 1631
-test (windows-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1627, Skipped: 4, Total: 1631
+test (macos-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3193, Skipped: 3, Total: 3196
+test (macos-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3193, Skipped: 3, Total: 3196
+test (macos-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1623, Skipped: 12, Total: 1635
+test (macos-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1623, Skipped: 12, Total: 1635
+test (ubuntu-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3194, Skipped: 2, Total: 3196
+test (ubuntu-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3194, Skipped: 2, Total: 3196
+test (ubuntu-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1623, Skipped: 12, Total: 1635
+test (ubuntu-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1623, Skipped: 12, Total: 1635
+test (windows-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3195, Skipped: 1, Total: 3196
+test (windows-latest) | Guardrails.Core.Tests.dll | Failed: 0, Passed: 3195, Skipped: 1, Total: 3196
+test (windows-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1631, Skipped: 4, Total: 1635
+test (windows-latest) | Guardrails.Integration.Tests.dll | Failed: 0, Passed: 1631, Skipped: 4, Total: 1635
