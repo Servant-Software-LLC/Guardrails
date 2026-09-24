@@ -329,7 +329,7 @@ so it won't compile against current code — that non-zero exit IS the red), kee
 The catalogue's failure-detail-in-tail doctrine (catalogue → "Failure detail must reach the retry
 tail"), realized for .NET. The harness feeds a failed guardrail's **stdout tail** back to the next
 attempt as the retry feedback — the last 60 lines, then the last 4000 chars (a fixed harness contract,
-`RetryPolicy.AppendTail`; not something a guardrail can change). Default / minimal-verbosity
+`OutputTail.Take`; not something a guardrail can change). Default / minimal-verbosity
 `dotnet test` emits each failure's **assertion message and exception/stack trace INLINE, mid-run**,
 and ends with only `[FAIL] <name>` lines plus the `Failed: N, Passed: M` count. So a bare
 `dotnet test … ; if ($LASTEXITCODE -ne 0) { Write-Output "tests failing"; exit 1 }` puts only the
