@@ -211,6 +211,179 @@ public sealed class CursorRunnerValidationTests : IDisposable
         Assert.Equal("acceptEdits", runner.Settings.PermissionMode);
     }
 
+    // ── #767: approvalMode ───────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void TheApprovalCodesAreGr2081AndGr2082()
+    {
+        Assert.Equal("GR2081", DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Equal("GR2082", DiagnosticCodes.CursorApprovalFlagInExtraArgs);
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("\"force\"", CursorApprovalMode.Force)]
+    [InlineData("\"auto-review\"", CursorApprovalMode.AutoReview)]
+    [InlineData("\" Auto-Review \"", CursorApprovalMode.AutoReview)]
+    [InlineData("\"none\"", CursorApprovalMode.None)]
+    public void ApprovalMode_RoundTrips_AndAbsentMeansUnset(string? json, CursorApprovalMode? expected)
+    {
+        string key = json is null ? string.Empty : $"\"approvalMode\": {json}, ";
+        Loaded loaded = Load(
+            $$"""{ "version": 1, "maxParallelism": 1, "promptRunners": { "cursor": { {{key}}"kind": "cursor" } } }""");
+
+        Assert.Equal(expected, loaded.Runner("cursor").ApprovalMode);
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    /// <summary>An unrecognised mode is REPORTED and never silently served as force (the mode an admin may refuse).</summary>
+    [Fact]
+    public void Gr2081_AnUnknownApprovalMode_IsAnError_NamingTheLegalValues()
+    {
+        Loaded loaded = Load("""{ "version": 1, "promptRunners": { "cursor": { "kind": "cursor", "approvalMode": "sandbox" } } }""");
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+        Assert.Contains("'sandbox'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'force', 'auto-review', 'none'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>approvalMode is block-level only: an override of it is REPORTED, never silently ignored.</summary>
+    [Fact]
+    public void Gr2081_ApprovalModeUnderGuardrailOverrides_IsAnError()
+    {
+        Loaded loaded = Load("""
+            { "version": 1, "promptRunners": { "cursor": {
+                "kind": "cursor", "guardrailOverrides": { "approvalMode": "none" } } } }
+            """);
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Contains("promptRunners.cursor.guardrailOverrides.approvalMode is not honoured", error.Message, StringComparison.Ordinal);
+        Assert.Contains("block-level only", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("3")]
+    [InlineData("[\"auto-review\"]")]
+    public void Gr2081_ANonStringApprovalMode_IsAnError_NotAParseFailure(string json)
+    {
+        Loaded loaded = Load(
+            $$"""{ "version": 1, "promptRunners": { "cursor": { "kind": "cursor", "approvalMode": {{json}} } } }""");
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Contains("approvalMode must be a string", error.Message, StringComparison.Ordinal);
+        Assert.NotNull(loaded.Plan);
+        Assert.Null(loaded.Runner("cursor").ApprovalMode);
+    }
+
+    [Fact]
+    public void AnExplicitNullApprovalMode_MeansAbsent()
+    {
+        Loaded loaded = Load(
+            """{ "version": 1, "maxParallelism": 1, "promptRunners": { "cursor": { "kind": "cursor", "approvalMode": null } } }""");
+
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Null(loaded.Runner("cursor").ApprovalMode);
+    }
+
+    [Fact]
+    public void Gr2081_ApprovalModeOnAClaudeBlock_IsAnError()
+    {
+        Loaded loaded = Load("""{ "version": 1, "promptRunners": { "claude": { "approvalMode": "auto-review" } } }""");
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalModeInvalid);
+        Assert.Contains("promptRunners.claude.kind is 'claude'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("only a kind 'cursor' block honours", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// GR2082: an approval flag in extraArgs duplicates or contradicts approvalMode. The combination the CLI
+    /// itself refuses (--auto-review with --force) is named as such; base and guardrailOverrides are both read;
+    /// the <c>--flag=value</c> spelling counts.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "[\"--force\"]", "extraArgs", "DUPLICATES approvalMode 'force'")]
+    [InlineData("auto-review", "[\"--force\"]", "extraArgs", "\"pick one\"")]
+    [InlineData("auto-review", "[\"--yolo\"]", "extraArgs", "\"pick one\"")]
+    [InlineData("force", "[\"--auto-review\"]", "extraArgs", "\"pick one\"")]
+    [InlineData("auto-review", "[\"--auto-review\"]", "extraArgs", "DUPLICATES approvalMode 'auto-review'")]
+    [InlineData("none", "[\"--sandbox\", \"enabled\", \"--force\"]", "extraArgs", "contradicts approvalMode 'none'")]
+    [InlineData("none", "[\"--auto-review=true\"]", "extraArgs", "contradicts approvalMode 'none'")]
+    [InlineData("auto-review", "[\"-f\"]", "extraArgs", "\"pick one\"")]
+    [InlineData("none", "[\"-f\"]", "extraArgs", "contradicts approvalMode 'none'")]
+    [InlineData("force", "[\"-f\"]", "extraArgs", "DUPLICATES approvalMode 'force'")]
+    public void Gr2082_AnApprovalFlagInExtraArgs_IsAnError(string? mode, string extraArgs, string key, string expected)
+    {
+        string modeKey = mode is null ? string.Empty : $"\"approvalMode\": \"{mode}\", ";
+        Loaded loaded = Load(
+            $$"""{ "version": 1, "promptRunners": { "cursor": { {{modeKey}}"kind": "cursor", "extraArgs": {{extraArgs}} } } }""");
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalFlagInExtraArgs);
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+        Assert.Contains($"promptRunners.cursor.{key} carries", error.Message, StringComparison.Ordinal);
+        Assert.Contains(expected, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Gr2082_ReadsGuardrailOverridesExtraArgsToo()
+    {
+        Loaded loaded = Load("""
+            { "version": 1, "promptRunners": { "cursor": {
+                "kind": "cursor", "approvalMode": "auto-review",
+                "guardrailOverrides": { "extraArgs": ["--force"] } } } }
+            """);
+
+        Diagnostic error = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalFlagInExtraArgs);
+        Assert.Contains("promptRunners.cursor.guardrailOverrides.extraArgs carries '--force'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The sandbox flag is not an approval flag, and a claude block's extraArgs is not GR2082's business.</summary>
+    [Fact]
+    public void Gr2082_StaysSilent_ForTheSandboxFlag_AndForNonCursorBlocks()
+    {
+        Loaded loaded = Load("""
+            { "version": 1, "maxParallelism": 1, "promptRunners": {
+                "default": "cursor",
+                "cursor": { "kind": "cursor", "approvalMode": "none", "extraArgs": ["--sandbox", "enabled"] },
+                "claude": { "extraArgs": ["--force"] } } }
+            """);
+
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorApprovalFlagInExtraArgs);
+        Assert.DoesNotContain(loaded.Diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    /// <summary>GR2080 now states what the CHOSEN mode grants — honest per mode, not a blanket "--force".</summary>
+    [Theory]
+    [InlineData(null, "approvalMode 'force' (the default): the harness grants it FULL write and shell access (--force")]
+    [InlineData("auto-review", "approvalMode 'auto-review': the harness launches it with --auto-review")]
+    [InlineData("none", "Cursor REFUSES EVERY SHELL COMMAND")]
+    public void Gr2080_StatesWhatTheApprovalModeGrants(string? mode, string expected)
+    {
+        string modeKey = mode is null ? string.Empty : $"\"approvalMode\": \"{mode}\", ";
+        Loaded loaded = Load($$"""{ "version": 1, "promptRunners": { "cursor": { {{modeKey}}"kind": "cursor" } } }""");
+
+        Diagnostic warning = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorRunnerUngoverned);
+        Assert.Contains(expected, warning.Message, StringComparison.Ordinal);
+        if (mode is not null)
+        {
+            Assert.DoesNotContain("FULL write and shell access (--force", warning.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Gr2080_ForModeNoneWithTheSandbox_SaysShellRunsInsideIt()
+    {
+        Loaded loaded = Load("""
+            { "version": 1, "promptRunners": { "cursor": {
+                "kind": "cursor", "approvalMode": "none", "extraArgs": ["--sandbox", "enabled"] } } }
+            """);
+
+        Diagnostic warning = Assert.Single(loaded.Diagnostics, d => d.Code == DiagnosticCodes.CursorRunnerUngoverned);
+        Assert.Contains("shell runs INSIDE Cursor's sandbox", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFUSES EVERY SHELL COMMAND", warning.Message, StringComparison.Ordinal);
+    }
+
     // ── harness ──────────────────────────────────────────────────────────────────────────────────────
 
     private sealed record Loaded(PlanDefinition? Plan, IReadOnlyList<Diagnostic> Diagnostics)

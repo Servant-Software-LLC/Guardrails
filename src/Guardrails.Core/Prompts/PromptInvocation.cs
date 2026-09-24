@@ -178,6 +178,44 @@ public sealed record PromptResult
     /// as a command. Empty for a runner that refuses no commands.
     /// </summary>
     public IReadOnlyList<string> RefusedCommands { get; init; } = [];
+
+    /// <summary>
+    /// Every tool call the runner's approval policy REFUSED this run, WITH the refusal's reason (#773), in the
+    /// order they happened — the operator- and agent-facing account of what was refused and why, rendered into
+    /// the attempt summary and <c>feedback.md</c>. Distinct from <see cref="BlockedWritePaths"/>, which is the
+    /// de-duplicated TARGET list the permission-wall tracker routes on. Filled today by the Cursor runner, whose
+    /// stream carries a per-call <c>rejected</c> result with a reason; empty for a runner whose denials carry
+    /// no separable reason (Claude's are read by <see cref="ClaudePermissionScanner"/> into the target lists).
+    /// </summary>
+    public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
+
+    /// <summary>
+    /// True when the session attempted shell and NOT ONE shell call ran — every one was refused by the runner's
+    /// approval policy (#773). The session could build, test and run git in no way at all, whatever its terminal
+    /// result said. For an ACTION the run still counts as completed and the task's guardrails decide (outcome-aware,
+    /// the WEAK-4 rule); if they fail, the harness settles the task needs-human at once with
+    /// <see cref="RunnerConfigurationRemedy"/>, because a retry runs under the same policy. A JUDGE in this state
+    /// is not completed at all (it fails closed, see <c>GuardrailRunner</c>).
+    /// </summary>
+    public bool AllShellRefused { get; init; }
+
+    /// <summary>
+    /// The operator-facing remedy for a runner-configuration problem the runner detected (#767 / #773) — the
+    /// refused commands, their reasons and the per-mode <c>approvalMode</c> advice — or null when there is none.
+    /// Set with <see cref="AllShellRefused"/>; read when the harness settles the task needs-human.
+    /// </summary>
+    public string? RunnerConfigurationRemedy { get; init; }
+}
+
+/// <summary>
+/// One tool call a runner's approval policy refused (#773): the tool (<c>shell</c>, <c>edit</c>…), what it
+/// targeted (the command line, or the path), and the reason the runner gave — never empty: a refusal that
+/// carried no reason says so in words.
+/// </summary>
+public sealed record ToolRefusal(string Tool, string Target, string Reason)
+{
+    /// <summary>The one-line rendering every surface uses: <c>shell `git status` — refused by …</c>.</summary>
+    public override string ToString() => $"{Tool} `{Target}` — {Reason}";
 }
 
 /// <summary>

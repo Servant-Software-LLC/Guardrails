@@ -114,6 +114,7 @@ public sealed class PlanValidator
         ValidateOpenAiCompatActionReachable(plan, diagnostics);
         ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
         ValidateCursorRunnerUngoverned(plan, diagnostics);
+        ValidateCursorApprovalMode(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
@@ -375,7 +376,7 @@ public sealed class PlanValidator
     /// <summary>
     /// GR2080 (WARNING, #764, SSOT §9.9): one per <c>cursor</c> block
     /// (<see cref="DiagnosticCodes.CursorRunnerUngoverned"/>). States what the operator gives up — no tool
-    /// allowlist, no containment hook, <c>--force</c> — and names the declared keys that stopped applying.
+    /// allowlist, no containment hook, what the approval mode grants — and names the declared keys that stopped applying.
     /// </summary>
     private static void ValidateCursorRunnerUngoverned(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
@@ -397,9 +398,10 @@ public sealed class PlanValidator
                   (ignored.Length == 1 ? "it has" : "they have") + " NO effect on a cursor runner.";
 
             diagnostics.Add(Warning(DiagnosticCodes.CursorRunnerUngoverned, plan.PlanDirectory,
-                $"promptRunners.{runner.Name} is kind 'cursor'. Cursor's print mode has no per-tool allowlist " +
-                "and cannot load the worktree containment hook, so the harness grants it FULL write and shell " +
-                "access (--force). 'permissionMode', 'allowedTools', 'maxTurns' and 'maxOutputTokens' — and any " +
+                $"promptRunners.{runner.Name} is kind 'cursor'. Cursor's print mode has no per-tool allowlist the " +
+                "harness can set (a project .cursor/cli.json has no effect there) and cannot load the worktree " +
+                $"containment hook. {ApprovalModeSentence(runner)} 'permissionMode', 'allowedTools', 'maxTurns' and " +
+                "'maxOutputTokens' — and any " +
                 $"'guardrailOverrides' of them — are IGNORED for this block. {declared} Cursor reports no cost, " +
                 "so 'maxCostUsd' can never trip on this block's spend. What the harness DOES enforce: the git-diff " +
                 "write-scope check (worktree mode only, and only inside the worktree); the task's own definition " +
@@ -411,7 +413,103 @@ public sealed class PlanValidator
                 "in-scope edits a prompt guardrail on this block makes. The bounds that still apply are the " +
                 "timeout and the stall bound. Cursor's own '--sandbox enabled' can be opted into through " +
                 "'extraArgs'; it is not defaulted because its Windows behavior and its effect on network access " +
-                "(e.g. dotnet restore) are unproven (SSOT §9.9)."));
+                "(e.g. dotnet restore, governed by your Cursor sandbox settings) are unproven. Cursor's \"Include " +
+                "Third-Party Configs\" setting imports ~/.claude hooks, which can refuse shell calls in any mode " +
+                "(SSOT §9.9)."));
+        }
+    }
+
+    /// <summary>
+    /// GR2080's approval sentence (#767): what the block's <c>approvalMode</c> actually lets Cursor do, stated
+    /// per mode rather than as the pre-#767 blanket "--force", so the warning is honest for every mode.
+    /// </summary>
+    private static string ApprovalModeSentence(PromptRunnerConfig runner)
+    {
+        CursorApprovalMode mode = runner.ApprovalMode ?? CursorApprovalModes.Default;
+        return mode switch
+        {
+            CursorApprovalMode.AutoReview =>
+                "approvalMode 'auto-review': the harness launches it with --auto-review, so Cursor's server-side " +
+                "classifier approves or refuses each command. Writes and shell run, but any single command can be " +
+                "refused; every refusal is read from the stream and named in the attempt summary and feedback, and " +
+                "an action in which every shell command was refused still has its guardrails run, and settles " +
+                "needs-human if they fail (a prompt judge in that state fails closed) — never a clean action.",
+            CursorApprovalMode.None when CursorPromptRunner.EnablesSandbox(runner.Settings.ExtraArgs) =>
+                "approvalMode 'none' with Cursor's sandbox ('--sandbox enabled' in extraArgs): no approval flag is " +
+                "passed, files are written and shell runs INSIDE Cursor's sandbox, whose network access is governed " +
+                "by your Cursor (or team admin) sandbox settings — a NuGet restore may be blocked there. A refused " +
+                "command is read from the stream and named in the attempt summary and feedback.",
+            CursorApprovalMode.None =>
+                "approvalMode 'none' and extraArgs does NOT enable Cursor's sandbox: no approval flag is passed, " +
+                "so files are written but Cursor REFUSES EVERY SHELL COMMAND (measured on Cursor's agent " +
+                "2026.09.23), and a task whose guardrails need its build, test or git work settles needs-human when they fail. Add \"extraArgs\": " +
+                "[\"--sandbox\", \"enabled\"], or set \"approvalMode\": \"auto-review\".",
+            _ =>
+                "approvalMode 'force' (the default): the harness grants it FULL write and shell access (--force, " +
+                "Cursor's 'Run Everything'). A team whose administrator disabled Run Everything cannot launch in " +
+                "this mode — the run halts needs-human on the first attempt; set \"approvalMode\": \"auto-review\" " +
+                "for such an account."
+        };
+    }
+
+    /// <summary>
+    /// GR2081 (validator half, ERROR, #767): <c>approvalMode</c> on a block that is not <c>kind: "cursor"</c>
+    /// (<see cref="DiagnosticCodes.CursorApprovalModeInvalid"/>). The loader reports an unrecognised token.
+    /// GR2082 (ERROR, #767): a cursor block whose <c>extraArgs</c> (base or <c>guardrailOverrides</c>) carries
+    /// an approval flag (<see cref="DiagnosticCodes.CursorApprovalFlagInExtraArgs"/>) — the flag belongs to
+    /// <c>approvalMode</c>, and Cursor refuses <c>--auto-review</c> with <c>--force</c>/<c>--yolo</c> at launch.
+    /// </summary>
+    private static void ValidateCursorApprovalMode(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (runner.Kind != PromptRunnerKind.Cursor)
+            {
+                if (runner.ApprovalMode is { } misplaced)
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.CursorApprovalModeInvalid, plan.PlanDirectory,
+                        $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', but it " +
+                        $"declares approvalMode '{CursorApprovalModes.Token(misplaced)}', which only a " +
+                        "kind 'cursor' block honours — a key that does nothing where it was written is " +
+                        "indistinguishable from one that works. Remove 'approvalMode', or set \"kind\": " +
+                        "\"cursor\" if that is what was intended (SSOT §9.9)."));
+                }
+
+                continue;
+            }
+
+            CursorApprovalMode mode = runner.ApprovalMode ?? CursorApprovalModes.Default;
+            ReportApprovalFlags(runner, mode, "extraArgs", runner.Settings.ExtraArgs, plan, diagnostics);
+            if (runner.GuardrailOverrides?.ExtraArgs is { } overrideArgs)
+            {
+                ReportApprovalFlags(runner, mode, "guardrailOverrides.extraArgs", overrideArgs, plan, diagnostics);
+            }
+        }
+    }
+
+    private static void ReportApprovalFlags(
+        PromptRunnerConfig runner,
+        CursorApprovalMode mode,
+        string key,
+        IReadOnlyList<string> extraArgs,
+        PlanDefinition plan,
+        List<Diagnostic> diagnostics)
+    {
+        foreach (string flag in CursorPromptRunner.ApprovalFlagsIn(extraArgs))
+        {
+            bool isAutoReview = flag == CursorPromptRunner.AutoReviewFlag;
+            CursorApprovalMode wanted = isAutoReview ? CursorApprovalMode.AutoReview : CursorApprovalMode.Force;
+            string relation = wanted == mode
+                ? $"it DUPLICATES approvalMode '{CursorApprovalModes.Token(mode)}', which already passes it"
+                : mode == CursorApprovalMode.None
+                    ? "it contradicts approvalMode 'none', which exists to pass NO approval flag"
+                    : $"it CONTRADICTS approvalMode '{CursorApprovalModes.Token(mode)}' — Cursor's CLI refuses " +
+                      "--auto-review combined with --force/--yolo at launch (\"pick one\")";
+            diagnostics.Add(Error(DiagnosticCodes.CursorApprovalFlagInExtraArgs, plan.PlanDirectory,
+                $"promptRunners.{runner.Name}.{key} carries '{flag}', one of Cursor's approval flags; {relation}. " +
+                $"The approval flag is owned by 'approvalMode': remove '{flag}' from {key} and set \"approvalMode\": " +
+                $"\"{CursorApprovalModes.Token(wanted)}\" if that is the mode you want (SSOT §9.9)."));
         }
     }
 

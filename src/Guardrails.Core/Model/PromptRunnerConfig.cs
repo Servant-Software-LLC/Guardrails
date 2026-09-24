@@ -167,6 +167,17 @@ public sealed record PromptRunnerConfig
     /// </summary>
     public string? Engine { get; init; }
 
+    /// <summary>
+    /// How a <c>kind: "cursor"</c> block asks Cursor to approve tool calls (#767, SSOT §9.9) — see
+    /// <see cref="CursorApprovalMode"/>. Null = the key was ABSENT, which means
+    /// <see cref="CursorApprovalModes.Default"/> (<c>force</c>, the pre-#767 behavior). An unrecognised token is
+    /// a load-time GR2081 error, and the key on any other kind is a validate-time GR2081 error: a key that does
+    /// nothing where it was written is indistinguishable from one that works. Block-level only — there is no
+    /// <c>guardrailOverrides</c> form, because Cursor's approval policy is a property of the account and the
+    /// launch, not of the prompt.
+    /// </summary>
+    public CursorApprovalMode? ApprovalMode { get; init; }
+
     /// <summary>The effective settings for a prompt of the given kind (base, or base + guardrail overrides).</summary>
     public PromptRunnerSettings EffectiveSettings(bool isGuardrail) =>
         isGuardrail && GuardrailOverrides is not null
@@ -283,8 +294,8 @@ public enum PromptRunnerKind
     /// Cursor's Agent CLI (<c>agent -p</c>, wire token <c>cursor</c>), served by
     /// <see cref="CursorPromptRunner"/> (#764) for the <see cref="PromptRole.Action"/> and
     /// <see cref="PromptRole.Guardrail"/> roles — never <see cref="PromptRole.Advisory"/>. An agent that
-    /// writes files and runs commands, but with NO per-tool allowlist and NO containment hook: it runs with
-    /// <c>--force</c>, so a block of this kind always draws a GR2080 validate warning saying so (SSOT §9.9).
+    /// writes files and runs commands, but with NO per-tool allowlist and NO containment hook: its approval flag is
+    /// the block's <c>approvalMode</c> (#767), and a block of this kind always draws a GR2080 validate warning saying so (SSOT §9.9).
     /// </summary>
     Cursor
 }
@@ -372,8 +383,8 @@ public static class PromptRunnerKinds
     /// <summary>
     /// The two roles a file-writing agent with NO tool allowlist may serve (#764): it can do work and judge
     /// work, but it is never handed an <see cref="PromptRole.Advisory"/> prompt — those (the overwatcher,
-    /// ai-triage, the criticality judge) are read-only by construction, and a runner launched with
-    /// <c>--force</c> cannot honour read-only.
+    /// ai-triage, the criticality judge) are read-only by construction, and an agent with no allowlist (whatever
+    /// its <c>approvalMode</c>) cannot honour read-only.
     /// </summary>
     private static readonly IReadOnlySet<PromptRole> UngovernedAgentRoles =
         new HashSet<PromptRole> { PromptRole.Action, PromptRole.Guardrail };
@@ -644,4 +655,83 @@ public sealed record PromptRunnerRouting
     /// Empty = the key was absent.
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
+}
+
+/// <summary>
+/// How a <c>kind: "cursor"</c> block asks Cursor's Agent CLI to approve tool calls in print mode (#767,
+/// SSOT §9.9). Measured on an enterprise account whose administrator disabled "Run Everything" (Cursor
+/// <c>agent</c> 2026.09.23): <c>--force</c> is refused at launch with an admin error; <c>--auto-review</c> and
+/// <c>--sandbox enabled</c> (alone or together) run file writes AND shell; with neither flag, file writes
+/// succeed but EVERY shell call is rejected — and the session still ends <c>result/success</c>, exit 0, which
+/// is why the runner reads each tool call's own result (#773). A project <c>.cursor/cli.json</c> allowlist has
+/// no effect in print mode, so it is not an option here. The CLI spelling of each mode lives in
+/// <see cref="Prompts.CursorPromptRunner"/> alone.
+/// </summary>
+public enum CursorApprovalMode
+{
+    /// <summary>
+    /// <c>--force</c> (Cursor's "Run Everything"): every tool call runs. The default — the pre-#767 behavior.
+    /// Refused at launch on an account whose team administrator disabled Run Everything.
+    /// </summary>
+    Force,
+
+    /// <summary>
+    /// <c>--auto-review</c>, no <c>--force</c>: Cursor's server-side classifier approves or refuses each
+    /// command. The route for a team that disabled Run Everything. Individual refusals are possible and are
+    /// detected from the stream (#773).
+    /// </summary>
+    AutoReview,
+
+    /// <summary>
+    /// Neither flag. File writes run; shell is refused unless the block also opts into Cursor's sandbox through
+    /// <c>extraArgs: ["--sandbox", "enabled"]</c>, which then runs shell inside the sandbox.
+    /// </summary>
+    None
+}
+
+/// <summary>
+/// The single source of truth for the <see cref="CursorApprovalMode"/> wire tokens (<c>force</c> /
+/// <c>auto-review</c> / <c>none</c>), mirroring <see cref="PromptRunnerKinds"/>: shared by the loader, the
+/// validator's messages and the runner so the spelling never forks.
+/// </summary>
+public static class CursorApprovalModes
+{
+    /// <summary>The mode an absent <c>approvalMode</c> means: <see cref="CursorApprovalMode.Force"/>.</summary>
+    public const CursorApprovalMode Default = CursorApprovalMode.Force;
+
+    /// <summary>Every mode, in declaration order — for diagnostic messages.</summary>
+    public static IReadOnlyList<CursorApprovalMode> All { get; } =
+        [CursorApprovalMode.Force, CursorApprovalMode.AutoReview, CursorApprovalMode.None];
+
+    /// <summary>The recognised tokens as a comma-separated quoted list, for diagnostic messages.</summary>
+    public static string TokenList => string.Join(", ", All.Select(m => $"'{Token(m)}'"));
+
+    /// <summary>The canonical wire token for <paramref name="mode"/>.</summary>
+    public static string Token(CursorApprovalMode mode) => mode switch
+    {
+        CursorApprovalMode.Force => "force",
+        CursorApprovalMode.AutoReview => "auto-review",
+        CursorApprovalMode.None => "none",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unhandled cursor approval mode.")
+    };
+
+    /// <summary>
+    /// Parse an <c>approvalMode</c> string (trim + case-insensitive, like <see cref="PromptRunnerKinds.TryParse"/>).
+    /// Any other value returns <c>false</c> with <paramref name="mode"/> left at <see cref="Default"/>, and the
+    /// caller REPORTS it — an unrecognised mode is never silently served as <c>force</c>.
+    /// </summary>
+    public static bool TryParse(string? value, out CursorApprovalMode mode)
+    {
+        foreach (CursorApprovalMode candidate in All)
+        {
+            if (string.Equals(value?.Trim(), Token(candidate), StringComparison.OrdinalIgnoreCase))
+            {
+                mode = candidate;
+                return true;
+            }
+        }
+
+        mode = Default;
+        return false;
+    }
 }

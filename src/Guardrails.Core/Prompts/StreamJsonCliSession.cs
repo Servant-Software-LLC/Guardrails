@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 
 namespace Guardrails.Core.Prompts;
@@ -20,13 +21,37 @@ internal sealed record StreamJsonCliDialect
     public required string Label { get; init; }
 
     /// <summary>
-    /// Feed <see cref="ClaudePermissionScanner"/> from the stream. True only for a CLI whose denials the
-    /// scanner can actually recognise (Claude's <c>tool_result</c> denial phrasing). When false the scanner
-    /// is never constructed, so <see cref="PromptResult.BlockedWritePaths"/> stays empty and
-    /// <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> is INERT for this CLI — honestly
-    /// absent rather than fed a dialect it would misread.
+    /// A vendor-quarantined recogniser for a failure the CLI's OWN CONFIGURATION caused (#767): given the text
+    /// a failed run is classified from (see <c>ClassificationText</c>), it returns the operator-facing remedy
+    /// when the text is such a refusal, else null. A match classifies the run
+    /// <see cref="PromptFailureKind.RunnerConfiguration"/> — ahead of the shared
+    /// <see cref="ClaudeSignalClassifier"/>, because "your administrator disabled this mode" is never a rate
+    /// limit to wait out — and appends the remedy to the summary. Null = the CLI has no such refusal (Claude).
     /// </summary>
-    public required bool ScansPermissionDenials { get; init; }
+    public Func<string, string?>? ConfigurationRefusal { get; init; }
+}
+
+/// <summary>
+/// What a runner reads out of its own stream about REFUSED tool calls (#86 / #104 / #452 / #773): the
+/// de-duplicated refused targets the permission-wall tracker routes on, and the running count of refusals
+/// with no tool call that actually ran between them, which drives the #452 fail-fast. One implementation per
+/// vendor dialect, each inside its quarantine: <see cref="ClaudePermissionScanner.Scanner"/> reads Claude's
+/// <c>tool_result</c> denial phrasing, <see cref="CursorToolCallScanner"/> reads Cursor's per-call
+/// <c>rejected</c> results. Fed every stdout line, in order, on the reader thread.
+/// </summary>
+internal interface IToolDenialScanner
+{
+    /// <summary>Consume one stream line (tolerant: garbage and partial lines are skipped).</summary>
+    void Feed(string line);
+
+    /// <summary>Every distinct refused target — write paths and refused commands — in first-seen order.</summary>
+    IReadOnlyList<string> BlockedWritePaths { get; }
+
+    /// <summary>The entries of <see cref="BlockedWritePaths"/> that are commands rather than paths (#708).</summary>
+    IReadOnlyList<string> RefusedCommands { get; }
+
+    /// <summary>Refusals since the last tool call that actually ran — the #452 fail-fast counter.</summary>
+    int ConsecutiveDenials { get; }
 }
 
 /// <summary>
@@ -34,7 +59,7 @@ internal sealed record StreamJsonCliDialect
 /// <see cref="ClaudePromptRunner"/> and <see cref="CursorPromptRunner"/> (#764). The runners own their
 /// argv, environment and prompt delivery (the vendor spelling, SSOT §9); this owns everything after the
 /// spawn. Extracted from <see cref="ClaudePromptRunner"/> verbatim — with <see cref="StreamJsonCliDialect.Label"/>
-/// <c>"claude"</c> and <see cref="StreamJsonCliDialect.ScansPermissionDenials"/> true, the result is
+/// <c>"claude"</c> and a <see cref="ClaudePermissionScanner.Scanner"/> as the denial scanner, the result is
 /// byte-identical to the pre-#764 runner.
 /// </summary>
 internal static class StreamJsonCliSession
@@ -61,17 +86,18 @@ internal static class StreamJsonCliSession
         string? standardInput,
         PromptInvocation invocation,
         StreamJsonCliDialect dialect,
+        IToolDenialScanner? denialScanner,
         CancellationToken cancellationToken,
         Action<string>? lineObserver = null)
     {
         var parser = new ClaudeStreamParser();
 
-        // Mine permission-wall signals from the same stream lines (issues #86 / #104): a write/edit
-        // refused because the path is not granted. The scanner is fed in the Tee alongside the parser
-        // and transcript; its output flows out as the runner-agnostic BlockedWritePaths list. Null for a
-        // dialect whose denials the scanner cannot read (#764) — see StreamJsonCliDialect.
-        ClaudePermissionScanner.Scanner? permissionScanner =
-            dialect.ScansPermissionDenials ? new ClaudePermissionScanner.Scanner() : null;
+        // Mine permission-wall signals from the same stream lines (issues #86 / #104 / #773): a tool call
+        // refused because it is not granted (Claude) or not approved (Cursor). The scanner is the RUNNER'S —
+        // it knows its own vendor's refusal shape — and is fed in the Tee alongside the parser and transcript;
+        // its output flows out as the runner-agnostic BlockedWritePaths list. Null = the runner reads no
+        // refusals, and then the #452 bound below is inert.
+        IToolDenialScanner? permissionScanner = denialScanner;
 
         // Open both log artifacts for incremental writes before launching the process so the
         // "view log" link can tail them in real time (issue #41) — both the raw debug stream and
@@ -300,6 +326,18 @@ internal static class StreamJsonCliSession
             bool completed = process.Succeeded && result.HasResult;
             string summary = BuildSummary(process, result, dialect.Label);
             PromptFailureKind failureKind = ClassifyFailure(process, result);
+
+            // #767: the CLI's own configuration refused the run (Cursor: "your team administrator has disabled
+            // the 'Run Everything' option" under --force). Checked on the FAILED, non-timed-out run only and
+            // ahead of the shared classification, so it can never recolour a success or a timeout; the remedy
+            // rides the summary, which becomes the needs-human line.
+            if (failureKind is not (PromptFailureKind.None or PromptFailureKind.Timeout)
+                && dialect.ConfigurationRefusal?.Invoke(ClassificationText(process, result)) is { } remedy)
+            {
+                failureKind = PromptFailureKind.RunnerConfiguration;
+                summary = $"{summary} — {remedy}";
+            }
+
             string? resetHint = failureKind == PromptFailureKind.Transient
                 ? ClaudeSignalClassifier.ExtractResetHint(ClassificationText(process, result))
                 : null;
@@ -427,9 +465,15 @@ internal static class StreamJsonCliSession
     }
 
     /// <summary>
-    /// The text to classify: the terminal result's error message when present (on an error the agent's
-    /// final <c>result</c> field carries the error description), else the captured process streams
-    /// (the no-terminal-result rejection case).
+    /// The text to classify: the terminal result's error message when the result IS an error (on an error the
+    /// agent's final <c>result</c> field carries the error description), else the captured process streams.
+    /// <para>
+    /// A result that is NOT an error is never classified from its text (#763 review). On a non-zero exit with
+    /// <c>is_error: false</c>, <c>result</c> is the agent's own closing prose ("Added the per-run spend limit
+    /// check"), and reading it would classify a real failure as a provider limit and pause the task for hours.
+    /// That case classifies from stderr plus the non-stream stdout exactly as a run with no result does, with the
+    /// result envelope itself left out of the stdout for the same reason.
+    /// </para>
     /// </summary>
     private static string ClassificationText(ProcessResult process, ClaudeResult result)
     {
@@ -451,22 +495,29 @@ internal static class StreamJsonCliSession
         // The fix is structural rather than a size cap: this fallback exists for output that is NOT A
         // STREAM AT ALL — a rejection printed before any envelope (#115's "instant rejection, no result
         // line"). So take only stdout lines that are not well-formed stream envelopes, plus the terminal
-        // `result` line. Tool-result content is excluded by construction, and a long rejection still
-        // classifies — which a tail-only or byte-capped heuristic would silently drop.
+        // `result` line when it reports an error. Tool-result content is excluded by construction, and a long
+        // rejection still classifies — which a tail-only or byte-capped heuristic would silently drop.
+        bool resultMayBeRead = !result.HasResult || result.IsError;
         return string.Join(
             "\n",
-            new[] { result.ResultText, result.Subtype, process.StandardError, NonStreamStdout(process.StandardOutput) }
+            new[]
+                {
+                    resultMayBeRead ? result.ResultText : null,
+                    result.Subtype,
+                    process.StandardError,
+                    NonStreamStdout(process.StandardOutput, includeResultEnvelope: resultMayBeRead)
+                }
                 .Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 
     /// <summary>
     /// The part of a runner's stdout that is NOT stream content (#516): lines that do not parse as a
-    /// stream envelope, plus the terminal <c>result</c> envelope. Everything an agent read or wrote
-    /// arrives as an <c>assistant</c>/<c>user</c>/<c>system</c> envelope (or, on Cursor, a
-    /// <c>tool_call</c> envelope) and is dropped here, so a file whose text happens to contain
-    /// "rate limit" can no longer be classified as a rate limit.
+    /// stream envelope, plus (unless <paramref name="includeResultEnvelope"/> is false) the terminal
+    /// <c>result</c> envelope. Everything an agent read or wrote arrives as an <c>assistant</c>/<c>user</c>/
+    /// <c>system</c> envelope (or, on Cursor, a <c>tool_call</c> envelope) and is dropped here, so a file whose
+    /// text happens to contain "rate limit" can no longer be classified as a rate limit.
     /// </summary>
-    internal static string? NonStreamStdout(string? stdout)
+    internal static string? NonStreamStdout(string? stdout, bool includeResultEnvelope = true)
     {
         if (string.IsNullOrWhiteSpace(stdout))
         {
@@ -486,13 +537,81 @@ internal static class StreamJsonCliSession
             // the stop reason) and everything that is not an envelope at all; drop assistant/user/system
             // content, which is where an agent's READING of a file would otherwise leak into the verdict.
             bool isEnvelope = trimmed[0] == '{' && trimmed.Contains("\"type\":", StringComparison.Ordinal);
-            if (!isEnvelope || trimmed.Contains("\"type\":\"result\"", StringComparison.Ordinal))
+            bool isResult = isEnvelope && trimmed.Contains("\"type\":\"result\"", StringComparison.Ordinal);
+            if (!isEnvelope || (isResult && includeResultEnvelope))
             {
                 kept.Add(trimmed);
             }
         }
 
         return kept.Count == 0 ? null : string.Join("\n", kept);
+    }
+
+    /// <summary>The longest provider excerpt a no-result exit summary carries (#763), ellipsis included.</summary>
+    internal const int NoResultExcerptMaxChars = 200;
+
+    /// <summary>A Node.js runtime warning line (<c>(node:1234) [DEP0040] DeprecationWarning: …</c>), never the cause.</summary>
+    private static readonly Regex NodeRuntimeWarning = new(@"^\(node:\d+\)", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The one line of a failed, no-terminal-result run that says why it failed (#763), chosen in this order:
+    /// <list type="number">
+    /// <item>the first line (stderr's, then the non-stream stdout's) that <see cref="ClaudeSignalClassifier"/>
+    /// recognizes as a specific signal (transient, output cap, max turns), so the provider's refusal wins over
+    /// whatever else the CLI printed around it;</item>
+    /// <item>else the first stderr line that is not a Node.js runtime warning (a <c>DeprecationWarning</c> on
+    /// stderr says nothing about why the run failed);</item>
+    /// <item>else the first non-stream stdout line;</item>
+    /// <item>else the first stderr line, warning or not, rather than nothing.</item>
+    /// </list>
+    /// Non-stream stdout is the same #516 filter the classifier reads, so a stream envelope carrying an agent's
+    /// file content is never quoted. stderr is NOT filtered: whatever the process wrote there can be quoted.
+    /// Truncated to <see cref="NoResultExcerptMaxChars"/>; null when neither stream has a non-empty line.
+    /// </summary>
+    internal static string? NoResultExcerpt(ProcessResult process)
+    {
+        List<string> stderr = NonEmptyLines(process.StandardError);
+        List<string> stdout = NonEmptyLines(NonStreamStdout(process.StandardOutput));
+
+        string? line = stderr.Concat(stdout).FirstOrDefault(IsRecognizedSignal)
+            ?? stderr.FirstOrDefault(l => !NodeRuntimeWarning.IsMatch(l))
+            ?? stdout.FirstOrDefault()
+            ?? stderr.FirstOrDefault();
+        if (line is null)
+        {
+            return null;
+        }
+
+        return line.Length <= NoResultExcerptMaxChars
+            ? line
+            : string.Concat(line.AsSpan(0, NoResultExcerptMaxChars - 1).TrimEnd(), "…");
+    }
+
+    /// <summary>
+    /// True when the classifier names a SPECIFIC cause for <paramref name="line"/>. <see cref="PromptFailureKind.Error"/>
+    /// is the classifier's answer for any non-empty text it does not recognize, so it is not a signal.
+    /// </summary>
+    private static bool IsRecognizedSignal(string line) =>
+        ClaudeSignalClassifier.Classify(line) is not (PromptFailureKind.None or PromptFailureKind.Error);
+
+    private static List<string> NonEmptyLines(string? text)
+    {
+        var lines = new List<string>();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return lines;
+        }
+
+        foreach (string line in text.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length > 0)
+            {
+                lines.Add(trimmed);
+            }
+        }
+
+        return lines;
     }
 
     private static string BuildSummary(ProcessResult process, ClaudeResult result, string label)
@@ -513,7 +632,16 @@ internal static class StreamJsonCliSession
 
         if (!process.Succeeded)
         {
-            return $"{label} exited {process.ExitCode}";
+            // #763: with no terminal result, the process's own words are the only account of WHY it
+            // exited — "You've hit your individual spend limit · run /usage-credits …" — and a bare
+            // "claude exited 1" dropped them. This summary becomes the pause reason, the needs-human
+            // line and the live/status detail, so the operator would otherwise have to open the stream
+            // log to learn something the harness already held. A run that DID produce a terminal result
+            // keeps the plain form: its result text already travels separately (ResultText, feedback.md).
+            string? excerpt = result.HasResult ? null : NoResultExcerpt(process);
+            return excerpt is null
+                ? $"{label} exited {process.ExitCode}"
+                : $"{label} exited {process.ExitCode}: {excerpt}";
         }
 
         if (!result.HasResult)

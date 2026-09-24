@@ -375,7 +375,10 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
         Assert.False(result.Completed);
         Assert.Equal(PromptFailureKind.Error, result.FailureKind);
-        Assert.StartsWith("cursor exited 1", result.Summary, StringComparison.Ordinal);
+
+        // #763: with no terminal result the summary carries the CLI's own words — this used to be the bare
+        // "cursor exited 1", leaving the operator to open the stream log to learn the model was refused.
+        Assert.Equal("cursor exited 1: Cannot use this model: nope. Available models: auto, sonnet-4.5", result.Summary);
     }
 
     [Fact]
@@ -386,7 +389,10 @@ public sealed class CursorPromptRunnerTests : IDisposable
         PromptResult result = await Runner().RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
 
         Assert.False(result.Completed);
-        Assert.StartsWith("cursor exited 3", result.Summary, StringComparison.Ordinal);
+
+        // #763's excerpt is for a run with NO terminal result; this one produced one, so the summary stays the
+        // plain exit form (the result text travels separately).
+        Assert.Equal("cursor exited 3 (Cursor reported model: Claude 4.5 Sonnet)", result.Summary);
     }
 
     /// <summary>
@@ -553,6 +559,347 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.True(result.Completed, result.Summary);
     }
 
+    // ── #767: approvalMode → argv ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Each mode's approval flag, and only that one: <c>--auto-review</c> and <c>none</c> must never carry
+    /// <c>--force</c> (the enterprise admin refuses it, and the CLI refuses it beside <c>--auto-review</c>).
+    /// <c>--trust</c> is kept in every mode.
+    /// </summary>
+    [Theory]
+    [InlineData(CursorApprovalMode.Force, "--force")]
+    [InlineData(CursorApprovalMode.AutoReview, "--auto-review")]
+    [InlineData(CursorApprovalMode.None, null)]
+    public void Argv_CarriesExactlyTheApprovalModesFlag(CursorApprovalMode mode, string? expectedFlag)
+    {
+        IReadOnlyList<string> args = CursorPromptRunner.BuildArguments(Invocation(new PromptRunnerSettings()), mode);
+
+        string[] expected = expectedFlag is null
+            ? ["-p", "--output-format", "stream-json", "--trust", "--workspace", _workDir, "--add-dir", _planDir]
+            : ["-p", "--output-format", "stream-json", expectedFlag, "--trust", "--workspace", _workDir, "--add-dir", _planDir];
+        Assert.Equal(expected, args);
+        Assert.Equal(expectedFlag is null ? 0 : 1, args.Count(a => CursorPromptRunner.ApprovalFlags.Contains(a)));
+    }
+
+    /// <summary>The mode handed to the runner (by the registry, from the block) is what the CLI receives.</summary>
+    [Fact]
+    public async Task AutoReviewRunner_LaunchesWithAutoReview_AndWithoutForce()
+    {
+        Canned(SuccessStream, exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        string[] argv = ReceivedArgv();
+        Assert.Contains("--auto-review", argv);
+        Assert.DoesNotContain("--force", argv);
+        Assert.Contains("--trust", argv);
+    }
+
+    [Fact]
+    public void Registry_BuildsTheCursorRunnerWithTheBlocksApprovalMode()
+    {
+        var config = new RunConfig
+        {
+            Version = 1,
+            DefaultPromptRunner = "cursor",
+            PromptRunnerNames = new HashSet<string>(["cursor"], StringComparer.Ordinal),
+            PromptRunners = new Dictionary<string, PromptRunnerConfig>(StringComparer.Ordinal)
+            {
+                ["cursor"] = new()
+                {
+                    Name = "cursor",
+                    Command = "agent",
+                    Settings = new PromptRunnerSettings(),
+                    Kind = PromptRunnerKind.Cursor,
+                    ApprovalMode = CursorApprovalMode.None
+                }
+            }
+        };
+
+        IPromptRunner runner = PromptRunnerRegistry.FromConfig(config, new ProcessRunner()).Resolve("cursor");
+
+        Assert.IsType<CursorPromptRunner>(runner);
+        Assert.Equal("none", CursorApprovalModes.Token(Assert.IsType<CursorPromptRunner>(runner).ApprovalMode));
+    }
+
+    // ── #767: the admin's Run-Everything refusal ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The measured enterprise refusal: <c>--force</c> ⇒ exit 1, the admin error on stderr, no stream. It must
+    /// classify RunnerConfiguration (the harness settles needs-human without spending retries), quote the
+    /// stderr line, and name the remedy — never Error (burns every retry in seconds) or Transient (waits for
+    /// something that will not change).
+    /// </summary>
+    [Fact]
+    public async Task RunEverythingDisabledByAdmin_IsARunnerConfigurationFailure_QuotingStderr_AndNamingTheRemedy()
+    {
+        const string adminError =
+            "Error: Your team administrator has disabled the 'Run Everything' option. Please run without '--force' " +
+            "or contact your administrator.\n";
+        Canned([], exitCode: 1, echo: false, stderr: adminError);
+
+        PromptResult result = await Runner().RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, result.FailureKind);
+        Assert.StartsWith(
+            "cursor exited 1: Error: Your team administrator has disabled the 'Run Everything' option.",
+            result.Summary, StringComparison.Ordinal);
+        Assert.Contains("\"approvalMode\": \"auto-review\"", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("promptRunners.cursor", result.Summary, StringComparison.Ordinal);
+    }
+
+    /// <summary>The classifier's anchor: the administrator sentence, not a bare mention of "Run Everything".</summary>
+    [Theory]
+    [InlineData("Error: Your team administrator has disabled the 'Run Everything' option.", true)]
+    [InlineData("Your team administrator has disabled the ‘Run Everything’ option", true)]
+    [InlineData("the administrator has disabled the Run Everything option", true)]
+    [InlineData("I will not use Run Everything mode for this change.", false)]
+    [InlineData("Error: rate limit", false)]
+    [InlineData("", false)]
+    public void RunEverythingClassifier_MatchesTheAdminSentenceOnly(string text, bool expected) =>
+        Assert.Equal(expected, CursorSignalClassifier.IsRunEverythingDisabled(text));
+
+    /// <summary>An ordinary failure of the same shape is NOT recoloured: only the admin text is configuration.</summary>
+    [Fact]
+    public async Task AnUnrelatedStderrFailure_StaysAnError()
+    {
+        Canned([], exitCode: 1, echo: false, stderr: "Error: something else broke\n");
+
+        PromptResult result = await Runner().RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.Equal(PromptFailureKind.Error, result.FailureKind);
+        Assert.DoesNotContain("approvalMode", result.Summary, StringComparison.Ordinal);
+    }
+
+    // ── #773: refused tool calls must not read as success ──────────────────────────────────────────
+
+    /// <summary>
+    /// The measured false green (enterprise account, no approval flag): the write lands, EVERY shell call is
+    /// <c>rejected</c> with an empty reason, and the session still ends <c>result/success</c>, exit 0. For an
+    /// ACTION this is outcome-aware (PR #775 W1): the run COMPLETES so the task's guardrails decide, but it is
+    /// marked AllShellRefused and carries the remedy — each refused command, its reason, the approval-mode advice —
+    /// which the harness uses to settle needs-human if the guardrails fail.
+    /// </summary>
+    [Fact]
+    public async Task EveryShellCallRejected_InAnAction_CompletesMarked_WithTheRemedy()
+    {
+        Canned(FixtureLines("every-shell-rejected.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.None)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.True(result.AllShellRefused);
+        Assert.StartsWith("cursor completed, but EVERY shell command it attempted was refused (3 shell call(s), none ran)", result.Summary, StringComparison.Ordinal);
+        Assert.NotNull(result.RunnerConfigurationRemedy);
+        Assert.Contains("shell `git status --short` — refused by Cursor approval policy", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+        Assert.Contains("shell `dotnet --version`", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+        Assert.Contains("approvalMode \"none\" without Cursor's sandbox", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+
+        Assert.Equal(["git status --short", "echo SHELL-OK-p2", "dotnet --version"], result.RefusedCommands);
+        Assert.Equal(result.RefusedCommands, result.BlockedWritePaths);
+        Assert.Equal(3, result.RefusedToolCalls.Count);
+        Assert.All(result.RefusedToolCalls, r => Assert.Equal("shell", r.Tool));
+    }
+
+    /// <summary>
+    /// The same session in the JUDGE role fails closed (PR #775 B1): a verifier that could run none of its checks
+    /// certifies nothing, so it is not completed and is RunnerConfiguration.
+    /// </summary>
+    [Fact]
+    public async Task EveryShellCallRejected_InAJudge_FailsClosed()
+    {
+        Canned(FixtureLines("every-shell-rejected.jsonl"), exitCode: 0);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { Role = PromptRole.Guardrail };
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview).RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, result.FailureKind);
+        Assert.True(result.AllShellRefused);
+        Assert.StartsWith("cursor reported success, but EVERY shell command", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("auto-review classifier", result.Summary, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// W1's fixture: the edits land and exactly ONE shell command (the test run) is refused. The action completes
+    /// marked AllShellRefused, so its guardrails run; the harness decides from their outcome
+    /// (CursorHarnessEnforcementTests pin both sides).
+    /// </summary>
+    [Fact]
+    public async Task EditsSucceed_AndTheOneShellCallIsRefused_CompletesMarked()
+    {
+        Canned(FixtureLines("edits-ok-one-shell-rejected.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.True(result.AllShellRefused);
+        Assert.Equal(new ToolRefusal("shell", "dotnet test", CursorToolCallScanner.NoReasonGiven), Assert.Single(result.RefusedToolCalls));
+        Assert.Contains("(1 shell call(s), none ran)", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A MIXED session — one shell call ran, one was refused by a hook, the edit landed — COMPLETES (the task's
+    /// guardrails decide, as for a Claude attempt that routed around a denial), but the refusal is never silent:
+    /// it is in the summary with its reason, in RefusedToolCalls, and in the tracker's target lists.
+    /// </summary>
+    [Fact]
+    public async Task MixedSession_Completes_CarryingEveryRefusalAndItsReason()
+    {
+        Canned(FixtureLines("mixed-shell.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.StartsWith(
+            "cursor completed; 1 tool call(s) refused by Cursor: shell `rm -rf bin` — Hook blocked with message: destructive command",
+            result.Summary, StringComparison.Ordinal);
+        ToolRefusal refusal = Assert.Single(result.RefusedToolCalls);
+        Assert.Equal(new ToolRefusal("shell", "rm -rf bin", "Hook blocked with message: destructive command"), refusal);
+        Assert.Equal(["rm -rf bin"], result.RefusedCommands);
+    }
+
+    /// <summary>
+    /// #452 on Cursor: consecutive refusals with nothing that ran between them trip the fail-fast, which kills a
+    /// session that would otherwise sit there (the fake hangs after its last line). Asserts the DECISION — the
+    /// abort summary, with the timeout far beyond anything the test waits — not a duration.
+    /// </summary>
+    [Fact]
+    public async Task ConsecutiveRefusals_TripTheFailFast()
+    {
+        Canned(FixtureLines("consecutive-rejections.jsonl"), exitCode: 0, hang: true);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
+        {
+            AbortAfterConsecutiveToolDenials = 3,
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview).RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.StartsWith("aborted after 3 consecutive permission-denied tool calls", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("edit `/outside/notes.txt` — outside the workspace", result.Summary, StringComparison.Ordinal);
+
+        // The refused EDIT is a path; the two refused shell calls are commands (#708's split).
+        Assert.Equal(["dotnet build", "/outside/notes.txt", "dotnet test"], result.BlockedWritePaths);
+        Assert.Equal(["dotnet build", "dotnet test"], result.RefusedCommands);
+    }
+
+    /// <summary>
+    /// The threshold is on CONSECUTIVE refusals: below it, the same refusals do not abort — the fixture's three
+    /// refusals under a bound of four leave the session to end on its own (here, with no terminal result).
+    /// </summary>
+    [Fact]
+    public async Task RefusalsBelowTheBound_DoNotAbort()
+    {
+        Canned(FixtureLines("consecutive-rejections.jsonl"), exitCode: 0);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { AbortAfterConsecutiveToolDenials = 4 };
+
+        PromptResult result = await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("aborted after", result.Summary, StringComparison.Ordinal);
+        Assert.StartsWith("cursor produced no terminal result message", result.Summary, StringComparison.Ordinal);
+        Assert.Equal(3, result.RefusedToolCalls.Count);
+    }
+
+    /// <summary>The transcript shows a refused call as refused, not as a tool line that looks like it ran.</summary>
+    [Fact]
+    public async Task Transcript_MarksARefusedCallRefused()
+    {
+        Canned(FixtureLines("mixed-shell.jsonl"), exitCode: 0);
+        string transcriptPath = Path.Combine(_root, "t.md");
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { TranscriptLogPath = transcriptPath };
+
+        await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        string transcript = File.ReadAllText(transcriptPath);
+        Assert.Contains("⎿ REFUSED: Hook blocked with message: destructive command", transcript, StringComparison.Ordinal);
+        Assert.Equal(1, transcript.Split("REFUSED:").Length - 1);
+    }
+
+    // ── #773: the scanner (pure) ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Scanner_ReadsTheMeasuredRejectedShape_WithAndWithoutArgs()
+    {
+        var scanner = new CursorToolCallScanner();
+        foreach (string line in FixtureLines("every-shell-rejected.jsonl"))
+        {
+            scanner.Feed(line);
+        }
+
+        Assert.Equal(3, scanner.ShellCallsRefused);
+        Assert.Equal(0, scanner.ShellCallsRan);
+        Assert.True(scanner.EveryShellCallRefused);
+        Assert.Equal(3, scanner.ConsecutiveDenials); // the edit and the MCP call RAN before the first refusal
+        Assert.Equal(CursorToolCallScanner.NoReasonGiven, scanner.Refusals[0].Reason);
+    }
+
+    [Fact]
+    public void Scanner_ACallThatRanBreaksTheStreak_AndStartedEventsCountForNothing()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed(Rejected("shellToolCall", """{"command":"a"}"""));
+        scanner.Feed(Rejected("shellToolCall", """{"command":"b"}"""));
+        Assert.Equal(2, scanner.ConsecutiveDenials);
+
+        scanner.Feed("""{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"c"}}}}""");
+        Assert.Equal(2, scanner.ConsecutiveDenials);
+
+        scanner.Feed("""{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"args":{"path":"x"},"result":{"success":{}}}}}""");
+        Assert.Equal(0, scanner.ConsecutiveDenials);
+        Assert.True(scanner.EveryShellCallRefused, "a READ that ran breaks the streak but is not a shell call that ran");
+        Assert.Equal(2, scanner.ShellCallsRefused);
+        Assert.Equal(0, scanner.ShellCallsRan);
+    }
+
+    /// <summary>
+    /// A refused READ of a <c>.claude/</c> file is attributed to the tool, as a command — never as a write
+    /// path, which PermissionWallTracker would read as the structural <c>.claude/</c> write wall.
+    /// </summary>
+    [Fact]
+    public void Scanner_ARefusedReadIsNotAWritePath()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed(Rejected("readToolCall", """{"path":".claude/settings.json","reason":"denied"}""", args: """{"path":".claude/settings.json"}"""));
+
+        Assert.Equal(["read"], scanner.BlockedWritePaths);
+        Assert.Equal(["read"], scanner.RefusedCommands);
+        Assert.Equal(new ToolRefusal("read", ".claude/settings.json", "denied"), Assert.Single(scanner.Refusals));
+        Assert.False(scanner.EveryShellCallRefused);
+    }
+
+    [Fact]
+    public void RunnerRefusalFeedback_ListsEachRefusal_AndIsEmptyWhenNone()
+    {
+        Assert.Equal(string.Empty, RetryPolicy.ForRunnerRefusals([]));
+
+        string text = RetryPolicy.ForRunnerRefusals(
+            [new ToolRefusal("shell", "git status", CursorToolCallScanner.NoReasonGiven), new ToolRefusal("edit", "/x", "outside")]);
+
+        Assert.Contains("## Tool calls the runner refused this attempt", text, StringComparison.Ordinal);
+        Assert.Contains("- shell `git status` — refused by Cursor approval policy", text, StringComparison.Ordinal);
+        Assert.Contains("- edit `/x` — outside", text, StringComparison.Ordinal);
+    }
+
+    private static string[] FixtureLines(string name) =>
+        File.ReadAllLines(TestPaths.Fixture(Path.Combine("cursor-refusals", name)))
+            .Where(l => l.Length > 0)
+            .ToArray();
+
+    private static string Rejected(string toolKey, string rejected, string? args = null) =>
+        "{\"type\":\"tool_call\",\"subtype\":\"completed\",\"tool_call\":{\"" + toolKey + "\":{" +
+        (args is null ? string.Empty : "\"args\":" + args + ",") +
+        "\"result\":{\"rejected\":" + rejected + "}}}}";
+
     // ── build facts ──────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -578,7 +925,8 @@ public sealed class CursorPromptRunnerTests : IDisposable
 
     // ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 
-    private CursorPromptRunner Runner() => new("cursor", _fakeCli, new ProcessRunner(), resolveCommand: c => c);
+    private CursorPromptRunner Runner(CursorApprovalMode approvalMode = CursorApprovalModes.Default) =>
+        new("cursor", _fakeCli, new ProcessRunner(), approvalMode, resolveCommand: c => c);
 
     private PromptInvocation Invocation(PromptRunnerSettings settings) => new()
     {
@@ -617,9 +965,14 @@ public sealed class CursorPromptRunnerTests : IDisposable
     /// The fake emits <paramref name="streamLines"/>, injecting its prompt echo after the FIRST line (the init)
     /// unless <paramref name="echo"/> is false.
     /// </summary>
-    private void Canned(string[] streamLines, int exitCode, bool hang = false, bool echo = true)
+    private void Canned(string[] streamLines, int exitCode, bool hang = false, bool echo = true, string? stderr = null)
     {
         File.WriteAllText(Path.Combine(_root, "stream.jsonl"), string.Join("\n", streamLines) + "\n");
+        if (stderr is not null)
+        {
+            File.WriteAllText(Path.Combine(_root, "stderr.txt"), stderr);
+        }
+
         File.WriteAllText(Path.Combine(_root, "exit.txt"), exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (hang)
         {
@@ -650,7 +1003,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
     /// Write a fake <c>agent</c> named <paramref name="name"/> into <paramref name="dir"/> that implements
     /// Cursor's prompt rule: a token that is neither a flag nor a value-flag's value is a POSITIONAL prompt,
     /// and stdin is read (and recorded to <c>stdin.txt</c>) ONLY when there is none. It records its argv,
-    /// then replays <c>stream.jsonl</c>, injecting <c>{"type":"user",…}</c> carrying the prompt it took after
+    /// writes <c>stderr.txt</c> (if present) to stderr, then replays <c>stream.jsonl</c>, injecting <c>{"type":"user",…}</c> carrying the prompt it took after
     /// the first line (unless <c>noecho.txt</c> exists), optionally hangs, and exits with <c>exit.txt</c>.
     /// OS-picked: a <c>.cmd</c> over PowerShell on Windows, an executable bash script elsewhere. The bash
     /// echo escapes quotes only, so test prompts carry no backslashes.
@@ -669,6 +1022,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
                 "foreach ($a in $args) { if ($skip) { $skip = $false; continue }; if ($valueFlags -contains $a) { $skip = $true; continue }; if ($a.StartsWith('-')) { continue }; $pos += $a }\r\n" +
                 "[IO.File]::WriteAllLines(\"$d\\args.txt\", [string[]]$args)\r\n" +
                 "if ($pos.Count -eq 0) { $prompt = [Console]::In.ReadToEnd(); [IO.File]::WriteAllText(\"$d\\stdin.txt\", $prompt) } else { $prompt = ($pos -join ' ') }\r\n" +
+                "if (Test-Path \"$d\\stderr.txt\") { [Console]::Error.Write([IO.File]::ReadAllText(\"$d\\stderr.txt\")); [Console]::Error.Flush() }\r\n" +
                 "$lines = [IO.File]::ReadAllLines(\"$d\\stream.jsonl\")\r\n" +
                 "$echo = -not (Test-Path \"$d\\noecho.txt\")\r\n" +
                 "for ($i = 0; $i -lt $lines.Count; $i++) {\r\n" +
@@ -696,6 +1050,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
             "printf '%s\\n' \"$@\" > \"$d/args.txt\"\n" +
             "if [ ${#pos[@]} -eq 0 ]; then cat > \"$d/stdin.txt\"; pf=\"$d/stdin.txt\"; else printf '%s' \"${pos[*]}\" > \"$d/positional.txt\"; pf=\"$d/positional.txt\"; fi\n" +
             "esc=$(sed -e 's/\"/\\\\\"/g' \"$pf\" | awk 'BEGIN{ORS=\"\"} { if (NR>1) printf \"%c%c\", 92, 110; print }')\n" +
+            "if [ -f \"$d/stderr.txt\" ]; then cat \"$d/stderr.txt\" >&2; fi\n" +
             "n=0\n" +
             "while IFS= read -r line || [ -n \"$line\" ]; do\n" +
             "  printf '%s\\n' \"$line\"\n" +

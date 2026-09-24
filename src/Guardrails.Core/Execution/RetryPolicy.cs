@@ -1547,6 +1547,36 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// #773: the section naming every tool call the runner's approval policy refused this attempt, WITH its reason,
+    /// appended to the feedback of any failed attempt that had one (action failed or guardrails failed). A refusal
+    /// the agent never hears about is one it walks into again; one the human never sees reads as a clean action.
+    /// Empty when nothing was refused — every runner but Cursor today.
+    /// </summary>
+    public static string ForRunnerRefusals(IReadOnlyList<Prompts.ToolRefusal> refusals)
+    {
+        if (refusals.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine("## Tool calls the runner refused this attempt");
+        text.AppendLine();
+        foreach (Prompts.ToolRefusal refusal in refusals)
+        {
+            text.AppendLine($"- {refusal}");
+        }
+
+        text.AppendLine();
+        text.AppendLine("These never ran. The same call will be refused again under the same approval policy: reach the");
+        text.AppendLine("result without it, and let the task's guardrails verify the outcome. If the deliverable cannot");
+        text.AppendLine("land without one of them, write {\"needsHuman\": \"<which one, and why>\"} to GUARDRAILS_STATE_OUT");
+        text.AppendLine("and stop.");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// #329: feedback for the OUTCOME-AWARE structural <c>.claude/</c>-wall halt (needs-human). #326
     /// settles a NON-converged attempt that carries a structural <c>.claude/</c> wall to
     /// <c>needs-human</c> on ONE attempt (the #104 fast-halt). When the non-convergence has a

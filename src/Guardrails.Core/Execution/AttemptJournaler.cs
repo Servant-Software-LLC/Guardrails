@@ -185,6 +185,11 @@ internal sealed class AttemptJournaler
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
                       + costSegment
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
+                      // #773: a converged attempt whose runner REFUSED tool calls says so — green, but never silent.
+                      + (action.RefusedToolCalls.Count == 0
+                          ? ""
+                          : $"; {action.RefusedToolCalls.Count} tool call(s) refused by the runner: " +
+                            string.Join("; ", action.RefusedToolCalls.Take(5)))
         }, FeedbackPath: null);
     }
 

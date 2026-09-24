@@ -41,6 +41,17 @@ internal static class ClaudeSignalClassifier
         // Claude Code's quota refusal ("You've hit your individual spend limit", #764): a provider refusal
         // no retry can fix, observed burning three attempts in seconds. Transient routes it to the #115
         // bounded pause, which then settles needs-human "re-run later" instead of consuming the budget.
+        //
+        // Kept as the two-word "spend limit" rather than the longer "hit your individual spend limit" (#763
+        // weighed both). The longer form would guard against an agent's own text mentioning a spend limit, and
+        // that exposure is narrow but NOT zero. Where it is closed: the #516 NonStreamStdout filter drops every
+        // stream envelope, so what an agent read or wrote in its turns never reaches this list; and since the
+        // #763 review a result that is not is_error is never read either. Where it remains: an is_error result's
+        // text, and the process's stderr, which is read unfiltered, so a tool or wrapper that prints "spend
+        // limit" to stderr on a failed run would pause the task. That is the same exposure the equally generic
+        // "usage limit" and "rate limit" already carry. Against it: the vendor has reworded this refusal before
+        // ("session limit", "usage limit"), and "individual" names one plan tier, so an org or team quota that
+        // says "your spend limit" would silently fall back to Error and burn the budget again.
         "spend limit",
         "too many requests",
         "service unavailable",

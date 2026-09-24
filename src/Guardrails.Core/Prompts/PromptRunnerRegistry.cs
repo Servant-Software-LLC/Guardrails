@@ -61,7 +61,8 @@ public sealed class PromptRunnerRegistry
         {
             PromptRunnerKind.Claude => new ClaudePromptRunner(runner.Name, runner.Command, processRunner),
             PromptRunnerKind.OpenAiCompat => new OpenAiCompatPromptRunner(runner.Name, runner, SharedHttpClient),
-            PromptRunnerKind.Cursor => new CursorPromptRunner(runner.Name, runner.Command, processRunner),
+            PromptRunnerKind.Cursor => new CursorPromptRunner(
+                runner.Name, runner.Command, processRunner, runner.ApprovalMode ?? CursorApprovalModes.Default),
             _ => throw new InvalidOperationException(UnimplementedKindMessage(runner))
         };
 
