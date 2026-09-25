@@ -7437,7 +7437,34 @@ every shell call was refused still ends `result/success`, `CursorToolCallScanner
 `{"type":"tool_call","subtype":"completed","tool_call":{"<kind>ToolCall":{"args":{…},"result":{"success":{…}} |
 {"rejected":{…}}}}}`. A `result.rejected` is a REFUSAL; any other completed result RAN. For a refused shell call
 `args` may be absent and the command is `result.rejected.command`; an edit/write call's target is `args.path`.
-Every refusal is recorded with its reason (an empty `reason` reads "refused by Cursor approval policy"):
+Every refusal is recorded with its reason (an empty `reason` reads "refused by Cursor approval policy").
+
+**Abandoned calls (#778) — a `started` with no `completed` is a refusal too.** Measured under `--auto-review`
+(#776 T1): a `git commit` the classifier held for human approval emitted
+`{"type":"tool_call","subtype":"started","call_id":"<id>","tool_call":{"shellToolCall":{"args":{"command":"git commit …"}}}}`
+and NEVER a `completed` event — no `rejected` anywhere — while the session still ended `result/success`, exit 0,
+and the commit was not made. The scanner therefore pairs `started` and `completed` by the top-level `call_id`
+(an exact ordinal string compare; measured ids contain a newline, `"call-…-0\nfc_…_0"`):
+
+- **Open at the terminal `result` ⇒ refused.** A call still open when the terminal `result` event arrives is a
+  REFUSAL with reason `abandoned: started but never completed (awaiting an approval Cursor print mode cannot
+  give)`, its tool, command and path taken from the `started` event's `args`. It is handled EXACTLY like a
+  `rejected` completion: in `RefusedToolCalls`, the summary and `feedback.md`; its target in `BlockedWritePaths` /
+  `RefusedCommands`; and an abandoned SHELL call counts as refused, not ran, for the `AllShellRefused` verdict
+  below. One exception: it does not feed the #452 consecutive-refusal counter — that bounds a LIVE streak, and an
+  abandoned call is only known once the session is over, when tripping the bound would turn a finished session
+  into an abort. `transcript.md` renders it as ``⎿ REFUSED: shell `<command>` — abandoned: …`` just before the final
+  message (the call's own `started` line is further up).
+- **No terminal result ⇒ named, never re-classified.** A stream that ends with NO terminal `result` — the harness
+  killed the session (timeout, stall, cancel, the #452 abort) or it crashed — is already a failed attempt with its
+  own failure kind, and keeps it. Calls it left open are named in `RefusedToolCalls` (so in the summary and
+  `feedback.md`) and `transcript.md` with reason `abandoned: started but never completed (the session ended
+  without a result, so it may only have been in flight)`, but they reach neither the wall lists (a command the
+  harness killed was not refused, so the #86 tracker must not count it) nor the shell accounting.
+- A `started` event with no `call_id` cannot be paired and is not tracked; a `completed` event arriving after its
+  call was already reported abandoned is ignored.
+
+Every refusal, rejected or abandoned:
 
 - **Surfaced.** `PromptResult.RefusedToolCalls` (runner-agnostic `ToolRefusal(Tool, Target, Reason)`) names each
   refusal in the attempt summary (``…; 2 tool call(s) refused by Cursor: shell `git status` — refused by Cursor
@@ -7489,6 +7516,11 @@ Every refusal is recorded with its reason (an empty `reason` reads "refused by C
 - **Known gap (not scanned).** A `taskToolCall` (Cursor's subagent) carries its own nested conversation steps;
   refusals INSIDE them are not read — only the top-level stream's completed `tool_call` events are. A subagent's
   refused shell call therefore neither counts toward the verdict rule nor appears in the refusal list.
+- **Known gap (`isBackground`).** A shell completion whose result carries `isBackground` beside `success` counts
+  as RAN. Measured (#776 T2/T3, `--sandbox enabled`), such a `success` with exit 0 can mean only "launched in the
+  background": a sandboxed `dotnet restore` completed that way and never produced `project.assets.json`. The
+  flag is NOT read as a refusal or as "not run", because ordinary successful `--auto-review` shell calls carry it
+  too (the same measurement); the task's deterministic guardrails remain what proves the work happened.
 
 **Launch on Windows.** Cursor installs as `%LOCALAPPDATA%\cursor-agent\agent.cmd` (a shim that runs
 `agent.ps1` under PowerShell, which runs `node.exe`); there is no `agent.exe`, and `Process.Start` with

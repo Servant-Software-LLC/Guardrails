@@ -48,16 +48,19 @@ public static class ClaudeTranscriptRenderer
     public static string Render(string streamJsonl)
     {
         var text = new StringBuilder();
+        var cursorCalls = new CursorCallState();
         foreach (string line in streamJsonl.Replace("\r\n", "\n").Split('\n'))
         {
-            RenderLine(line, text);
+            RenderLine(line, text, cursorCalls);
         }
+
+        cursorCalls.RenderStillOpen(text);
 
         // Collapse any run of 3+ blank lines to a single blank line, trim trailing whitespace.
         return Normalize(text.ToString());
     }
 
-    private static void RenderLine(string line, StringBuilder text)
+    private static void RenderLine(string line, StringBuilder text, CursorCallState cursorCalls)
     {
         if (string.IsNullOrWhiteSpace(line))
         {
@@ -76,12 +79,12 @@ public static class ClaudeTranscriptRenderer
 
         using (document)
         {
-            RenderDocument(document.RootElement, text);
+            RenderDocument(document.RootElement, text, cursorCalls);
         }
     }
 
     /// <summary>Map one parsed stream object to its transcript fragment (shared by batch and streaming).</summary>
-    private static void RenderDocument(JsonElement root, StringBuilder text)
+    private static void RenderDocument(JsonElement root, StringBuilder text, CursorCallState cursorCalls)
     {
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("type", out JsonElement typeElement) ||
@@ -89,6 +92,8 @@ public static class ClaudeTranscriptRenderer
         {
             return;
         }
+
+        cursorCalls.Observe(root, typeElement.GetString(), text);
 
         switch (typeElement.GetString())
         {
@@ -133,6 +138,7 @@ public static class ClaudeTranscriptRenderer
     public sealed class StreamingWriter
     {
         private readonly TextWriter _writer;
+        private readonly CursorCallState _cursorCalls = new();
         private int _pendingNewlines;
         private bool _wroteContent;
         private bool _completed;
@@ -163,7 +169,7 @@ public static class ClaudeTranscriptRenderer
             using (document)
             {
                 var fragment = new StringBuilder();
-                RenderDocument(document.RootElement, fragment);
+                RenderDocument(document.RootElement, fragment, _cursorCalls);
                 EmitClamped(fragment.ToString());
             }
 
@@ -179,6 +185,12 @@ public static class ClaudeTranscriptRenderer
             }
 
             _completed = true;
+
+            // Calls a stream with no terminal result left open (#778) — the same lines Render appends at its end.
+            var fragment = new StringBuilder();
+            _cursorCalls.RenderStillOpen(fragment);
+            EmitClamped(fragment.ToString());
+
             if (_wroteContent)
             {
                 _writer.Write('\n'); // Normalize ends a non-empty transcript with exactly one newline.
@@ -222,6 +234,54 @@ public static class ClaudeTranscriptRenderer
             catch (JsonException)
             {
                 return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one piece of cross-line state a transcript keeps (#778): Cursor's open tool calls, paired by
+    /// <c>call_id</c> through the same <see cref="CursorCallPairing"/> the verdict uses. A call still open when the
+    /// terminal <c>result</c> arrives renders <c>⎿ REFUSED: shell `git commit …` — abandoned: …</c> just before the
+    /// final message (its <c>started</c> line is already written, so the call is named); one still open when a stream
+    /// with no result ends renders the same line with <see cref="CursorToolCallScanner.InFlightReason"/>. Per-line
+    /// independence is unchanged — a malformed line is still skipped on its own and poisons nothing — and
+    /// <see cref="Render"/> and <see cref="StreamingWriter"/> share this class, so byte-identity holds. A Claude
+    /// stream has no <c>tool_call</c> events and renders nothing here.
+    /// </summary>
+    private sealed class CursorCallState
+    {
+        private readonly CursorCallPairing _pairing = new();
+        private bool _resultSeen;
+
+        public void Observe(JsonElement root, string? type, StringBuilder text)
+        {
+            if (type == "result")
+            {
+                _resultSeen = true;
+                RenderAbandoned(_pairing.Drain(), CursorToolCallScanner.AbandonedReason, text);
+                return;
+            }
+
+            if (type == "tool_call")
+            {
+                _pairing.Observe(root);
+            }
+        }
+
+        public void RenderStillOpen(StringBuilder text) =>
+            RenderAbandoned(
+                _pairing.Drain(),
+                _resultSeen ? CursorToolCallScanner.AbandonedReason : CursorToolCallScanner.InFlightReason,
+                text);
+
+        private static void RenderAbandoned(IReadOnlyList<CursorCallPairing.OpenCall> calls, string reason, StringBuilder text)
+        {
+            foreach (CursorCallPairing.OpenCall call in calls)
+            {
+                ToolRefusal refusal = CursorToolCallScanner.Describe(call.Kind, call.Args, rejected: default, reason).Refusal;
+                text.Append("  ").Append(ResultBullet).Append(" REFUSED: ")
+                    .Append(Truncate(CollapseWhitespace(refusal.ToString()), MaxResultLineChars + MaxArgValueChars))
+                    .Append('\n');
             }
         }
     }
@@ -317,7 +377,8 @@ public static class ClaudeTranscriptRenderer
     /// <para><b>One exception (#773):</b> a <c>completed</c> event whose result is <c>rejected</c> renders a
     /// <c>⎿ REFUSED: &lt;reason&gt;</c> line under its call. That shape IS known — it is the one
     /// <see cref="CursorToolCallScanner"/> reads — and a transcript that shows a refused <c>git status</c> as a
-    /// plain tool line reads as if it ran.</para>
+    /// plain tool line reads as if it ran. A call that STARTED and never completed (#778) gets its
+    /// <c>REFUSED</c> line from <see cref="CursorCallState"/> instead, at the terminal result.</para>
     /// </summary>
     private static void RenderCursorToolCall(JsonElement root, StringBuilder text)
     {

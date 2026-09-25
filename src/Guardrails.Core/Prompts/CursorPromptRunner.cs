@@ -52,7 +52,9 @@ namespace Guardrails.Core.Prompts;
 ///
 /// <para><b>Refused tool calls are read per call (#773).</b> Cursor's terminal result says <c>success</c> even
 /// when every shell call was refused, so the parser's verdict is not enough. <see cref="CursorToolCallScanner"/>
-/// reads each completed <c>tool_call</c>'s own result; its refusals feed
+/// reads each completed <c>tool_call</c>'s own result, and pairs <c>started</c>/<c>completed</c> by <c>call_id</c>
+/// so a call still open at the terminal result counts as an ABANDONED refusal (#778 — auto-review holding a command
+/// for an approval print mode cannot give); its refusals feed
 /// <see cref="PromptResult.BlockedWritePaths"/> / <see cref="PromptResult.RefusedCommands"/> (so
 /// <c>PermissionWallTracker</c> sees them exactly as it sees Claude's), the #452 consecutive-refusal counter
 /// (it trips <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> when a caller sets that bound — no
@@ -214,7 +216,8 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <item>every refused tool call (#773) is carried as <see cref="PromptResult.RefusedToolCalls"/> and named in
     /// the summary, whatever the verdict — a refusal is never silent;</item>
     /// <item>a run that already FAILED keeps its own, more specific failure (bad <c>--model</c>, the
-    /// Run-Everything refusal, a stall, a timeout, the #452 abort);</item>
+    /// Run-Everything refusal, a stall, a timeout, the #452 abort) — calls it left in flight are named with
+    /// <see cref="CursorToolCallScanner.InFlightReason"/> but never change its failure kind (#778);</item>
     /// <item>the prompt-echo verdict (#764 — the guard against the false green);</item>
     /// <item><b>the #773 rule, outcome-aware:</b> a session that attempted shell and had EVERY shell call refused
     /// could run no build, no test and no git, however its terminal result reads, so it is marked
@@ -239,6 +242,10 @@ public sealed class CursorPromptRunner : IPromptRunner
         IReadOnlyList<string> extraArgs,
         PromptRole role = PromptRole.Action)
     {
+        // The stream is over: calls still open are abandoned (#778). With a terminal result they are refusals like
+        // any other; without one the run already failed on its own, and they are only named (never re-classified).
+        refusals.EndOfStream();
+
         string? displayModel = result.ObservedModel;
         string modelNote = displayModel is { Length: > 0 } ? $" (Cursor reported model: {displayModel})" : string.Empty;
         string refusalNote = refusals.Refusals.Count == 0 ? string.Empty : $"; {DescribeRefusals(refusals.Refusals)}";
