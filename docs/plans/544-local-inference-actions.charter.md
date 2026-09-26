@@ -9,6 +9,18 @@ charter-format-version: 1
 token cap), #760 (silent model substitution), #764/#773 (the Cursor precedent for an agent without the hook).
 **Binds to:** `master` at `7bbdf384`.
 
+> **Revision note (round 1).** A non-authoring adversarial pass of the first draft (`a80e6288`) returned
+> *revise first*, with three blockers:
+> 1. The draft treated worktree mode as the main case, but the maintainer's configuration
+>    (`maxParallelism: 1`) runs in **serial mode**. There the plan folder and the run state sit inside the
+>    write root, so "the plan folder is read-only" was false.
+> 2. `needsHarnessWrite` could carry out writes that the new write policy refuses.
+> 3. Path canonicalization had four bypasses: case on macOS, 8.3 short names, trailing dots, and a vacuous
+>    `.git` test.
+>
+> This revision makes serial mode the primary case throughout and closes all three blockers (§5.3, §6). It
+> also adopts the nine weaker findings, each noted where it lands, and adds one question (`self-grading`).
+
 ---
 
 ## What's being asked
@@ -18,37 +30,46 @@ or LM Studio), **perform task actions**, meaning write files and run commands, w
 (Claude Code, Cursor) between the model and the repository.
 
 Today a local model can only judge. Every action goes through a vendor CLI, including the `claude-local` bridge
-the maintainer uses now (#570, last comment): Claude Code pointed at LiteLLM in front of `llama-server`. That
-bridge works and stays supported. This design is about where the destination is: **the harness's own prompt
-runner executes every tool call itself.**
+(#570, last comment): Claude Code pointed at LiteLLM in front of `llama-server`. That bridge works and stays
+supported. This design is about the destination: **the harness's own prompt runner executes every tool call
+itself.**
 
-The decider is containment, not effort (#544, plan 28 §3.2(a)). A write-capable local actor must never produce
-**a green run over a tree the harness cannot account for.**
+The decider is containment (#544, plan 28 §3.2(a)). A write-capable local actor must never produce **a green
+run over a tree the harness cannot account for.**
 
-**Narrowing, stated up front.** "Run commands" is read as *"give the model a build/test feedback loop"*, not
-*"give the model a shell."* §4 argues that the two differ, and that only the first can be contained on all
-three operating systems in v1. The shell posture is question `shell-posture`.
+**The primary deployment is serial mode.** The maintainer's configuration is `maxParallelism: 1` (one
+`llama-server`, one loaded model), and `SchedulerFactory` therefore runs **serial**
+(`SchedulerFactory.cs:431`, `SerialByConfiguration`). That means:
+
+- the write root is the workspace, including its real `.git` directory;
+- there is no phase-1 git-diff check (`enforcedWriteScope` is null in serial mode, `TaskExecutor.cs:868`);
+- the plan folder, its `logs/` and the run state usually sit **inside** that root.
+
+Every claim in this document is made for serial mode first. Worktree mode is the secondary case.
+
+**Narrowing.** "Run commands" is read as *"give the model a build/test feedback loop"*, not *"give the model a
+shell"*. §3.3 explains why only the first can be contained on three operating systems in v1. Question
+`shell-posture` decides it.
 
 ### Goals
 
-1. A task action can be routed to an `openai-compat` block and produce a real diff, in worktree mode and in
-   serial mode, on Windows, macOS and Linux.
-2. The containment boundary for **writes** is enforced in .NET, in-process, at the moment of the tool call. It
-   must be at least as strong as the Claude hook, and stronger where it can be.
-3. Every mechanism the Claude path relies on (the permission wall, salvage, staging, the state fragment, retry
-   feedback, the transcript, cost, stalls, context overflow) has a stated answer (§6).
-4. The claim is proven by plan 28's adversarial `FakeOpenAiServer` suite extended with write-side and
-   command-side attacks. Each attack row asserts on bytes on disk, not on a refusal message (§9).
+1. A task action routed to an `openai-compat` block produces a real diff, in serial mode (primary) and in
+   worktree mode, on Windows, macOS and Linux.
+2. The write boundary is **enforced in-process at the moment of the tool call**. It holds in serial mode,
+   where the Claude path has no containment hook at all.
+3. Every mechanism the Claude path relies on has a stated answer (§6).
+4. The boundary is proven by plan 28's `FakeOpenAiServer` suite, extended with attack rows that each assert on
+   bytes on disk (§9), and by a real-Qwen dogfood run as the exit gate for Phase 1.
 
 ### Non-goals (v1)
 
-- A general shell, or any tool that takes a model-authored command line.
-- OS-level sandboxing (Seatbelt, bubblewrap/landlock, AppContainer).
-- `routing` (tier candidacy) on an actor-capable local block.
-- The `ai-merge` and `breakdown` profiles on a local block (Phase 2).
-- Context compaction or summarization of a long session.
-- Any change to the verifier path plan 28 shipped. A `Guardrail` or `Advisory` invocation on this runner must
-  put the same bytes on the wire after this change as before it.
+- A general shell, or any tool that takes a model-authored command.
+- OS-level sandboxing.
+- `routing` on an actor-capable local block.
+- The `ai-merge` and `breakdown` profiles on a local block.
+- Summarizing context to fit a long session. (Deterministically shortening superseded check results is in
+  scope, §6.)
+- Any change to what plan 28's judge and advisory paths put on the wire.
 
 ---
 
@@ -56,57 +77,51 @@ three operating systems in v1. The shell posture is question `shell-posture`.
 
 | Area | What lands there |
 |---|---|
-| **Harness** (`Guardrails.Core`) | The write tools, the `WritePolicy` primitive, the `RunCheck` capability, `PromptInvocation` fields, build facts, validator changes |
-| **Schema / SSOT** | §9.8 gains an "Actions" part; §9.4, §9.3, §4.9, §3.4, §2 and §9.6 edits; one new code (`GR2083`) |
-| **Skills** | `plan-breakdown` routing advice for a local actor (commands belong in script actions or script guardrails); `guardrails-domain-knowledge` |
-| **v2 bets** | OS sandbox plus a general argv `Run` tool; `routing` for actors; sandboxing guardrail scripts harness-wide. Tracked as #544 Phase 3 (§10) until each has its own `03-roadmap.md` entry |
-| **Out of scope** | A second wire protocol, auto-pulling models, and managing `llama-server` lifecycle (that stays `claude-local`'s or the operator's job) |
+| **Harness** (`Guardrails.Core`, `Guardrails.Cli`) | Write tools, the `WritePolicy` primitive, `RunCheck`, `PromptInvocation.Writes`, build facts, validator, `needsHarnessWrite` refusal, breakdown-command guard |
+| **Schema / SSOT** | §9.8 gains an "Actions" part. Edits to §2, §3.4, §4.9, §5.1, §8, §9, §9.3, §9.4 and §9.6. One new code: `GR2083` |
+| **Skills** | `plan-breakdown` guidance for local actors (§7.1); `guardrails-domain-knowledge` |
+| **v2 bets** | OS sandbox plus a general argv `Run` tool; `routing` for actors; sandboxing guardrail scripts harness-wide. Tracked as #544 Phase 3 (§10) until each has a `03-roadmap.md` entry |
+| **Out of scope** | A second wire protocol; managing the lifecycle of `llama-server` |
 
-**No new kind.** The capability is added to `openai-compat`. §3.4 records why a sibling kind was rejected.
+**No new kind.** §3.4 records why a sibling kind was rejected.
 
 ## 2. Invariants in play
 
 | # | Invariant | How this design treats it |
 |---|---|---|
-| 1 | Deterministic guardrails over prompt judges | **Strengthened.** In-session feedback comes only from the task's own **script** guardrails (`RunCheck`), and the gate still runs after the action exactly as before. A `RunCheck` result is never a verdict. |
-| 2 | Harness is the single writer of merged state | **Strengthened.** The model never touches the filesystem. The harness performs every write, after checking the target against policy. The plan folder is not writable by the actor at all. |
-| 3 | Verdicts from files, never exit codes | Untouched. Actions produce no verdict. `RunCheck` reports an exit code **to the model**, never to the gate. |
-| 4 | SSOT lands with the contract change | §8 lists the exact edits. They land with stage 1 of §10. |
-| 5 | Honest halts | A refused write is named, tracked, and can settle `needs-human`. A dialect failure (tool calls emitted as text) settles `needs-human` with a remedy, never as a silent no-op. |
-| 6 | Plain files, light setup | No daemon or container. The only external process is the operator's model server, which plan 28 already requires. |
+| 1 | Deterministic guardrails over prompt judges | In-session feedback comes only from the task's own **script** guardrails (`RunCheck`), and the gate still runs afterwards. **Strained by the default route**, because an unpinned judge may grade its own actor's model. §6.3 and question `self-grading` cover this. |
+| 2 | Harness is the single writer of merged state | The model never touches the filesystem. The plan folder, the run log root and the journal are **hard exclusions** in every mode (§5.3 step 6). `needsHarnessWrite` is refused for this runner, so the harness cannot be used to launder a write (§6). |
+| 3 | Verdicts from files, never exit codes | Untouched. `RunCheck`'s exit code goes to the model only. It is never journaled and never shown as a guardrail event. |
+| 4 | SSOT lands with the contract | The edits are listed in §8. |
+| 5 | Honest halts | Refusals are named and tracked. An action that makes no tool calls is an error, not a success. Repeated context overflow settles `needs-human`. |
+| 6 | Plain files, light setup | No daemon and no container. The one addition is an OS process-reaping primitive (§3.3). |
 
 ---
 
 ## 3. The chosen architecture
 
-### 3.1 The one idea: the harness is the policy point
+### 3.1 The harness is the policy point
 
-With Claude Code, the model asks Claude Code to write a file and Claude Code writes it. The harness can only
-intervene through a `PreToolUse` hook script, a separate OS process that re-implements the containment rule in
-shell or PowerShell and guesses at Bash command text (SSOT §9.4 calls this *"not a security sandbox"*). Cursor
-has no hook at all. Its writes are only checked afterwards (§9.9).
+With Claude Code, the model asks Claude Code to write and Claude Code writes. The harness can only intervene
+through a `PreToolUse` hook script, which re-implements the rule in shell or PowerShell and guesses at Bash
+command text (SSOT §9.4: *"not a security sandbox"*). The hook exists **only in worktree mode**. Cursor has no
+hook at all.
 
-With a chat-completion endpoint, **the model cannot do anything.** It can only emit a structured `tool_calls`
-entry. The harness parses the call, decides, and performs the effect itself. That removes the hook's weak
-points, because there is:
-
-- no second implementation of the rule in another language;
-- no command text to parse, because there is no shell;
-- no vendor runtime between the decision and the syscall;
-- no chance for the policy to be skipped silently. The code that would perform the write is the same code
-  that checks it.
+With a chat-completion endpoint, the model can only emit structured `tool_calls`. The harness decides and then
+performs the effect itself. The rule therefore lives in one implementation, in-process, with no command text to
+parse, in serial mode as well as worktree mode.
 
 :::diagram
 ```mermaid
 flowchart LR
   M[local model<br/>llama-server] -- tool_calls JSON --> R[OpenAiCompatPromptRunner<br/>turn loop]
   R -- Read / Glob / Grep --> RP[PromptToolContainment<br/>read roots]
-  R -- Write / Edit / Delete --> WP[WritePolicy<br/>grant + protected paths + no-follow]
+  R -- Write / Edit / Delete --> WP[WritePolicy.Decide<br/>canonicalize, exclude, scope, no-follow]
   R -- RunCheck name --> CK[InSessionCheck<br/>harness-built closure]
-  WP -- allowed --> FS[(worktree / workspace)]
+  WP -- allowed --> FS[(workspace or worktree)]
   WP -- refused --> RF[ToolRefusal<br/>BlockedWritePaths]
-  CK --> SG[task's own script guardrail<br/>same script, env, timeout as the gate]
-  SG --> ST[post-check strip<br/>out-of-scope side effects]
+  CK --> SG[task's own script guardrail<br/>job object or process group, reaped]
+  SG --> ST[worktree only: patch saved, then out-of-scope strip]
   RF --> PW[PermissionWallTracker]
   R --> TL[stream log + transcript.md]
 ```
@@ -114,120 +129,127 @@ flowchart LR
 
 ### 3.2 The tool surface
 
-Tool names follow Claude Code's wherever a Claude tool exists. Plan 28 §3.2(c) set that rule: harness-owned
-prose and plan prompts already use these names, and a schema whose names disagree with the prompt is a
-contradiction handed to the weakest model in the system.
+Tool names follow Claude Code's wherever a Claude tool exists (plan 28 §3.2(c)).
 
 | Tool | Offered to | Arguments | Semantics |
 |---|---|---|---|
-| `Read` | all roles (shipped) | `file_path`, `offset?`, `limit?`, **`revision?` (new, Action only)** | Unchanged for judges. With `revision`, the harness runs `git show <revision>:<path>` itself, with fixed argv; `revision` must match `^[A-Za-z0-9][A-Za-z0-9._/@{}~^-]*$`. This replaces the `Bash(git show*)` salvage grant. |
+| `Read` | all roles (shipped) | `file_path`, `offset?`, `limit?`, **`revision?` (Action only)** | Judges are unchanged. **For actions the default `limit` is 400 lines** (§6 convergence). With `revision`, the harness runs `git show <revision>:<path>` with fixed argv; `revision` must match `^[A-Za-z0-9][A-Za-z0-9._/@{}~^-]*$` and never starts with `-`. This replaces the `Bash(git show*)` salvage grant. |
 | `Glob`, `Grep` | all roles (shipped) | unchanged | unchanged |
-| `Write` | Action | `file_path`, `content` | Create or replace a UTF-8 text file. Replacing an existing file requires that it was `Read` or written earlier in this session (a guard against blind overwrites). The write is atomic (temp file plus rename). |
-| `Edit` | Action | `file_path`, `old_string`, `new_string`, `replace_all?` | `old_string` must occur exactly once unless `replace_all` is set. Matching tolerates line-ending differences, and the file keeps its dominant line ending and its BOM. A non-UTF-8 file is a tool error. |
-| `Delete` | Action | `file_path` | Deletes a single file. Directories are never deleted. Claude has no equivalent because it deletes through Bash, and without a shell a model would have no way to delete. |
-| `RunCheck` | Action | `name` (a JSON-schema `enum` of the task's **script** guardrail names) | The harness runs that guardrail script exactly as the gate would (same script, cwd, §5.1 env, timeout) and returns its exit code plus the output tail (last 200 lines or 16 KiB; failure detail is at the end since #179). It is **not a verdict**: it is never journaled as a guardrail result and never skips the gate. Limited to 8 calls per attempt (a constant, disclosed in the `runner-notice`). |
+| `Write` | Action | `file_path`, `content` | Creates or replaces a UTF-8 text file. Replacing an existing file requires that it was read or written earlier in this session. The write goes to a temp file created with `CreateNew` in the same directory, which then replaces the target by rename. The target's `UnixFileMode` is preserved. |
+| `Edit` | Action | `file_path`, `old_string`, `new_string`, `replace_all?` | `old_string` must occur exactly once unless `replace_all` is set. Matching tolerates line-ending differences, and the file keeps its line ending and BOM. A non-UTF-8 file is a tool error. The write path is the same as `Write`'s. |
+| `Delete` | Action | `file_path` | Single files only, under the same policy as `Write`. |
+| `RunCheck` | Action | `name`, a JSON-schema `enum` of the task's **eligible** script guardrails (§3.3) | Runs that script as the gate would and returns the exit code plus the output tail (last 200 lines or 16 KiB). **Not a verdict:** never journaled, and emits no observer or live-UI guardrail event. Capped at 8 calls per attempt. |
 
-**What is not offered: `Bash`, or any tool that takes a command string or argv.** Question `shell-posture`
-asks whether v1 should stop here.
+**Not offered:** `Bash`, or anything that takes a command.
 
-**The judge path is unchanged by construction.** Write tools, `RunCheck` and `Read.revision` are offered only
-when the invocation carries a `WriteGrant` (§5.2). No `Guardrail` or `Advisory` call site sets one, so plan
-28's catalogue and wire bytes stay the same. §9 asserts this byte-for-byte.
+**The judge path is unchanged by construction.** Write tools, `RunCheck` and `Read.revision` exist only when
+the invocation carries a `WriteGrant` (§5.2). No judge or advisory call site sets one (attack row A20).
 
-### 3.3 `RunCheck`: why the model may run only what the reviewer already approved
+**Tool-call ids.** A server that returns an empty `id` gets one synthesized (`call_<turn>_<index>`), so tool
+results always pair with their calls.
 
-A coding model without a feedback loop is blind. It cannot see a compile error until a whole attempt has
-failed and been retried. `RunCheck` gives it the loop without accepting a single model-authored command:
+### 3.3 `RunCheck`: the model may run only what the reviewer already approved
 
-- **The commands are reviewed.** A script guardrail is part of the plan definition, so it is covered by
-  `PlanDefinitionHash` and the review attestation. The model chooses *which* reviewed script runs and *when*.
-  It never chooses *what* runs.
-- **It adds no new kind of exposure.** The gate runs the same scripts over the same model-authored code after
-  every action, on every runner. `RunCheck` only moves that execution earlier.
-- **Side effects are stripped the way phase 2 already strips them.** Because `Write`/`Edit`/`Delete` enforce
-  `writeScope` at call time, the model cannot have created an out-of-scope diff itself. Any out-of-scope
-  change present after a `RunCheck` must come from the check. The harness therefore runs the existing
-  phase-2 `ScopedRevert` (SSOT §3.4, #280) right after each `RunCheck` in worktree mode, which keeps phase
-  1's later verdict about the **model's** writes only. In-scope side effects (for example a formatter
-  rewriting a file) are kept, exactly as they are at gate time.
-- **Evidence.** Each call records the check name, exit code, duration, and a content hash of every changed
-  file at that moment (`run-check` lines in the stream log, `● RunCheck(name)` in `transcript.md`). Code the
-  model wrote, ran, and then deleted therefore still leaves a trace.
+A coding model without a feedback loop cannot see a compile error until a whole attempt fails. `RunCheck`
+provides the loop without accepting a single model-authored command.
 
-`RunCheck` covers only the task's **own** `guardrails/` scripts. It excludes prompt judges, preflights, and
-wave- or plan-level gates, because those are the gate's business and running them inside a session would
-blur what certified what.
+- **The commands are reviewed.** Script guardrails are part of the plan definition, covered by
+  `PlanDefinitionHash` and the review attestation. The model picks *which* reviewed script runs and *when*,
+  never *what* runs.
+- **Eligibility (W2).** The gate's inputs do not exist mid-session: `GUARDRAILS_ACTION_RESULT` has no
+  `action-result.json` yet, and this task's own state fragment has not been promoted. So a script whose text
+  mentions `GUARDRAILS_ACTION_RESULT` or `GUARDRAILS_STATE_IN` is **excluded from the enum**. This is a
+  conservative substring scan, and the `runner-notice` lists what it excluded. Eligible scripts get the gate's
+  §5.1 environment, with any output paths redirected to a per-call scratch directory under the attempt log
+  directory.
+- **Reaped after every call (W3).** The script runs inside a Windows **job object** with
+  kill-on-job-close, or on Unix as the leader of a **new process group**. After it exits, or on timeout or
+  cancel, the whole job or group is killed. Otherwise a daemon started by model-authored test code would
+  outlive the call and keep writing. **Residual, disclosed:** on Unix, a process that calls `setsid()` leaves
+  the group and escapes the kill.
+- **Side effects (W1, corrected rationale).** An out-of-scope change after a `RunCheck` comes from
+  *model-authored code that the check executed*. It cannot come from the model's own tools, which enforce
+  scope.
+  - **Worktree mode:** the harness saves the out-of-scope diff as evidence (`AttemptArtifacts.WriteOutOfScopePatch`,
+    #705) and then runs the phase-2 `ScopedRevert`, so phase 1 later judges only the model's own writes.
+  - **Serial mode:** nothing strips these changes. The same is true at the gate in serial mode today. It is
+    disclosed as part of T18.
+- **Evidence (T19).** Each call logs the check name, exit code, duration, and a content hash of every
+  "changed" file. In worktree mode, changed means the diff against `taskBase`. In serial mode, it means the
+  files this session wrote, plus the `git status --porcelain` difference from a snapshot taken at session
+  start when the workspace is a git repository. The stream log also keeps the **full arguments** of every
+  `Write` and `Edit`.
 
 ### 3.4 Rejected alternatives
 
 :::comparison
 | Alternative | Why rejected |
 |---|---|
-| **Keep using `claude-local` (Claude Code in front of LiteLLM)** | It works and remains the supported bridge. It is not the destination: the maintainer's position is that local actions belong in the harness's own runner, and the bridge needs Claude Code installed plus a LiteLLM model map that fails silently (#570 items 1 and 2). |
-| **Wrap an open-source agent CLI (Aider, OpenHands, opencode, Goose) as a new `kind`** | Same shape as Cursor: an uncontained writer policed after the fact (§9.9), plus a new dialect to quarantine. It puts a vendor harness back in the loop, which is exactly what #544 is meant to remove. |
-| **A new sibling kind (`local-agent`) beside `openai-compat`** | Same wire protocol and same class. Plan 28 §3.1 rejected `local` on those grounds. What differs is *capability per invocation*, and the `WriteGrant` expresses that more precisely than a kind can. |
-| **Generate a hook script for the local runner too** | This would add back the out-of-process re-implementation the in-process policy removes. §9.4's weaknesses (no symlink resolution, heuristic command text) would come back with nothing gained. |
-| **Post-hoc only: let writes land, then diff (the Cursor model)** | The git diff sees only the worktree. Writes to the plan folder, the main checkout or another worktree go unseen. We control the call site, so enforcing is cheaper than detecting. |
-| **Patch mode: the model emits one unified diff and the harness `git apply`s it** | No read loop and no feedback. Weak models are poor at the diff format, and one bad hunk wastes the whole attempt. It could come back later as a cheap tier for tiny edits. |
-| **General shell with a command-text allowlist** | Fails open by construction; SSOT §9.4 admits this about the Claude matcher. |
-| **Structured argv `Run` tool with a program allowlist, unsandboxed** | Blocks *direct* escapes (`rm -rf ~`), but `dotnet build` or `npm test` runs whatever code the model just wrote. An allowlist on `argv[0]` contains nothing once the program executes model code. It is only sound together with an OS sandbox (Phase 3). |
-| **OS sandbox now** | macOS `sandbox-exec` (Seatbelt) works but is a deprecated interface. Linux needs bubblewrap or landlock (kernel-dependent). Windows has no practical per-process filesystem-write sandbox without AppContainer ACL work. The 3-OS CI would split into three different guarantees. Deferred to Phase 3, where the deployment target (macOS) goes first. |
+| **Keep `claude-local` as the destination** | It stays the supported bridge. It needs Claude Code and a LiteLLM model map that fails silently (#570 items 1–2), and the maintainer's position is that local actions belong in the harness's own runner. |
+| **Wrap an open-source agent CLI (Aider, OpenHands, opencode, Goose)** | That is the Cursor shape: an uncontained writer checked after the fact (§9.9), plus a new dialect to quarantine. It puts a vendor harness back in the loop. |
+| **A sibling kind (`local-agent`)** | Same wire protocol and same class; plan 28 §3.1 rejected `local` on those grounds. What varies is capability per invocation, which the `WriteGrant` expresses. |
+| **Generate a hook for this runner too** | Brings back the out-of-process re-implementation, and a hook would still be absent in serial mode, which is the primary case. |
+| **Post-hoc only (the Cursor model)** | Serial mode has no diff check at all, so nothing would be seen. |
+| **Patch mode (one unified diff per attempt)** | No read loop and no feedback, and weak models handle the diff format poorly. A possible later tier for tiny edits. |
+| **Command-text allowlist, or an unsandboxed argv `Run` tool** | An allowlist on `argv[0]` contains nothing once `dotnet` or `npm` runs model-written code. It is only sound inside an OS sandbox (Phase 3). |
+| **OS sandbox now** | Seatbelt is a deprecated interface; landlock depends on the kernel; Windows has no practical per-process write sandbox without AppContainer ACL work. That gives three different guarantees under a 3-OS CI. Phase 3, with macOS first. |
 :::
 
 ---
 
 ## 4. Threat model
 
-**Actors.** The model is the adversary in three strengths:
+**Actors.** The model is the adversary, in three strengths:
 
-- **wrong:** a weak model making ordinary mistakes (wrong path, clobbered file);
-- **confused:** prompt-injected by content it reads, such as a file or README containing instructions;
+- **wrong:** a weak model making ordinary mistakes;
+- **confused:** prompt-injected by content it reads;
 - **hostile:** model weights that behave adversarially. Unlikely for company-approved Qwen, but the boundary
   must not depend on that.
 
-The operator and the plan author are trusted. The model server is trusted to relay, but not to be honest
-about capabilities (plan 28 §6.6).
+The operator and the plan author are trusted. The model server relays but is not trusted about its
+capabilities (plan 28 §6.6).
 
-**Assets.** The main checkout; other tasks' worktrees; the plan folder (task definitions, guardrails,
-`guardrails.json`, logs, verdicts); the git object store, refs, stash and hooks; agent configuration that
-*another* runner will load (`.claude/`, `.cursor/`); anything outside the repository.
+**Assets.** The workspace's `.git` directory (hooks, config, refs, stash); the plan folder (task definitions,
+guardrails, `guardrails.json`); the run's `logs/` and journal; other worktrees; agent config that another
+runner loads; files that change how git or the build behaves (`.gitignore`, `.gitattributes`, `obj/*.targets`);
+anything outside the repository.
 
-**Labels used below:**
-- **ENFORCED**: the harness refuses before any effect happens.
-- **DETECTED**: the effect can happen, but a deterministic check sees it and fails the attempt.
-- **DISCLOSED**: not contained. The operator is told, by `GR2083` and the `runner-notice`.
+**Labels.** **ENFORCED**: refused before any effect. **DETECTED**: the effect can happen, but a
+deterministic check fails the attempt. **DISCLOSED**: not contained; the operator is told by `GR2083` and the
+`runner-notice`.
 
-| # | Attack | Mechanism | Label |
+| # | Attack (serial mode unless noted) | Mechanism | Label |
 |---|---|---|---|
-| T1 | `Write` to an absolute path outside the worktree (`/Users/x/.zshrc`, `C:\Windows\…`) | `WritePolicy`: normalized target must fall under a grant root | ENFORCED |
-| T2 | `..` traversal, mixed separators, trailing dots or spaces, doubled separators | `Path.GetFullPath` normalization before matching; the result must match a root on a directory boundary | ENFORCED |
-| T3 | Write through a symlink or junction inside the worktree that points outside | **No-follow:** any *existing* path component under the root that is a reparse point or symlink is refused | ENFORCED |
-| T4 | Write through a hard link whose other name is outside | Atomic replace (temp plus rename) replaces the directory entry and never writes through the inode | ENFORCED (by construction) |
-| T5 | Windows path tricks: `\\?\` / `\\.\` prefixes, UNC, alternate data streams (`a.cs:evil`), device names (`CON`, `NUL`), 8.3 short names | Refuse any `:` after the drive, `\\?\` / `\\.\` / UNC forms, and reserved device names. Short names are expanded by `GetFullPath` or the no-follow walk; residual risk noted in §7 | ENFORCED |
-| T6 | Write `.git/hooks/pre-commit` (code execution the next time the harness commits), `.git/config`, a `.git` file | A `.git` segment anywhere in the path is refused, case-insensitively where the filesystem is | ENFORCED |
-| T7 | Write `.claude/settings.json` with a hook, or `.cursor/…`, which a *different* runner in this worktree later loads (cross-runner escalation) | Agent-config segments are refused unless the task's `writeScope` names that prefix **literally**; a `**` wildcard never grants them (§5.3) | ENFORCED |
-| T8 | Rewrite the task's own `task.json` or `guardrails/` to weaken its gate | The plan folder is never a write root. The task-definition tamper check also runs as a second line | ENFORCED + DETECTED |
-| T9 | Write inside the worktree but outside `writeScope` | `WritePolicy` applies the same `IsInScope` matcher at call time. The phase-1 git-diff check still runs afterwards | ENFORCED + DETECTED |
-| T10 | Plant `{"pass": true}` at the judge's staged verdict path | The grant allows exactly this attempt's `STATE_OUT` file, not the agent-io directory. The stale-verdict clear (§9.5) runs before every judge | ENFORCED + DETECTED |
-| T11 | Delete tracked files out of scope, or delete a directory | `Delete` uses the same policy as `Write` and deletes single files only | ENFORCED |
-| T12 | Disk fill: a huge `Write`, or a loop of writes | 1 MiB per call and 32 MiB per attempt (constants), both reported as a tool error; `maxTurns`; `Timeout` | ENFORCED |
-| T13 | Read secrets outside the roots (`~/.ssh`) | `PromptToolContainment.IsReadable` (shipped, plan 28 §5) | ENFORCED |
-| T14 | Read secrets *inside* the roots (`.env`) and send them out | The only channel is the model endpoint. On loopback, nowhere. On a remote endpoint, the model sees them | DISCLOSED |
-| T15 | Prompt injection: a file contains a `<tool_call>` block or "now write to ~/…" | Tool calls are taken **only** from structured `tool_calls`, never parsed from content. Injected intent still meets `WritePolicy` | ENFORCED |
-| T16 | A tool call for a tool that was not offered (`Bash`, `Write` on a judge) | Refused. Counts toward the #452 denial streak and is named | ENFORCED |
-| T17 | `RunCheck` with an unknown name or extra arguments | The schema `enum` and a harness lookup both refuse it; the tool takes no arguments | ENFORCED |
-| T18 | **Model-authored code writes outside the tree when `RunCheck` or the gate executes it** (a test that writes `~/x`, a hostile `Directory.Build.targets`) | Not contained. **This exposure predates #544 and applies to every runner**, because the gate always executes model-authored code. `RunCheck` only moves it earlier, and per-call change hashes record what ran | DISCLOSED (Phase 3 sandbox) |
-| T19 | Write-then-run-then-delete, leaving no trace in the final diff | The `run-check` evidence lines record a content hash of every changed file at each call | DETECTED (evidence only; nothing fails) |
-| T20 | TOCTOU: a path component is swapped for a symlink between check and write | Only another process could do this. `RunCheck` is synchronous and finished, and parallel tasks live in their own worktrees. Residual risk accepted | DISCLOSED |
-| T21 | The server accepts `tools` and never calls one; the action "completes" having done nothing | Gates decide (invariant 1). The preflight tool probe (plan 28 §7) halts a server that cannot call tools | DETECTED |
-| T22 | The model emits tool calls as text (a server whose chat template does not parse them, e.g. `llama-server` without `--jinja`) | Never executed (T15). A session with **zero** structured calls whose content has the tool-call shape settles `needs-human` with a server-template remedy (§6) | DETECTED |
+| T1 | `Write` to an absolute path outside the workspace | `WritePolicy` step 5 | ENFORCED |
+| T2 | `..` traversal, mixed separators | step 2 normalization, then step 3 canonical compare | ENFORCED |
+| T3 | Write through a symlink or junction under the root that points outside | step 3 canonicalization plus the step 9 no-follow walk | ENFORCED |
+| T4 | Write through a hard link | the atomic temp-plus-rename replaces the directory entry | ENFORCED (by construction) |
+| T5 | Windows forms: `\\?\`, `\\.\`, UNC, `a.cs:stream`, `CON`, 8.3 short names (`GIT~1\hooks\pre-commit`), trailing dots or spaces (`.git.\hooks\x`) | step 1 syntactic refusals | ENFORCED |
+| T6 | `.git/hooks/pre-commit`, `.git/config`, `.GIT/…` on case-insensitive APFS, Unicode-ignorable spellings, `Write` to the `.git` path itself | step 7, a case-insensitive `.git` segment match on **every** OS, with git's `is_ntfs_dotgit` / `is_hfs_dotgit` equivalences reduced by step 1 | ENFORCED |
+| T7 | `.claude/settings.json` or `.cursor/…` loaded later by another runner | step 7: a **literal** scope entry is required | ENFORCED |
+| T8 | Rewrite this task's or a downstream task's `guardrails/`, `task.json`, `guardrails.json`, or the journal, **with the plan folder inside the workspace and `writeScope: ["**"]`** | step 6 hard exclusions, whatever the scope says; the tamper check as a second line | ENFORCED + DETECTED |
+| T9 | In the workspace but outside `writeScope` | step 8 `IsInScope`. Worktree mode adds the phase-1 diff | ENFORCED (+ DETECTED in worktree mode) |
+| T10 | Plant `{"pass": true}` at a judge's staged verdict path | the grant holds this attempt's exact `STATE_OUT` file only; the stale-verdict clear (§9.5) | ENFORCED + DETECTED |
+| T11 | `.gitignore` / `.gitattributes` edited to hide output or add filters | step 7: a literal scope entry is required | ENFORCED |
+| T12 | An in-scope but **git-ignored** target, e.g. `obj/X.Tests.csproj.evil.targets` that turns VSTest into a no-op. Ignored files are invisible to `git add -A` (`SegmentStaging.cs`), so the gate goes green and nothing is committed | step 8: an ignored target is refused (`git check-ignore`). If the workspace is not a git repository, this is DISCLOSED instead | ENFORCED |
+| T13 | Disk fill | 1 MiB per call and 32 MiB per attempt; `maxTurns`; `Timeout` | ENFORCED |
+| T14 | Launder a refused write through `needsHarnessWrite` in the state fragment (`HarnessWrite.Resolve` has no `.git`, no-follow or plan-folder rule) | `needsHarnessWrite` is refused outright for `HarnessMediatedTools` runners (§6) | ENFORCED |
+| T15 | Read secrets outside the roots | `PromptToolContainment.IsReadable` | ENFORCED for tools |
+| T16 | Read secrets **through `RunCheck`**: model-authored test code prints `~/.ssh/id_rsa` into the output tail, or sends it over the network | not contained. The iteration loop makes this a **new oracle for reads**, which the gate-only path did not have | DISCLOSED (T18) |
+| T17 | Prompt injection: a file contains `<tool_call>…` or "now write to ~/…" | tool calls come only from structured `tool_calls`; injected intent still meets `WritePolicy` | ENFORCED |
+| T18 | Model-authored code writes outside the tree, or phones home, when `RunCheck` or the gate executes it | predates #544 and applies to every runner. `RunCheck` moves it earlier and repeats it, which is why T16 exists | DISCLOSED (Phase 3 sandbox) |
+| T19 | Write, run, then delete, so nothing shows in the final diff | full `Write`/`Edit` arguments plus per-`RunCheck` change hashes in the stream log | DETECTED (evidence only) |
+| T20 | A path component swapped between check and write | `RunCheck` children are reaped after every call (§3.3), so no model-started process survives into a later check. Residual: a `setsid()` escapee on Unix, or another run's process | DISCLOSED (narrow) |
+| T21 | A tool that was not offered (`Bash`; `Write` on a judge); a `RunCheck` with an unknown name or extra arguments | refused and counted toward the denial bound | ENFORCED |
+| T22 | The action makes zero tool calls (server ignores `tools`, or the model answers in prose) and "completes" | `Error` (§6) | DETECTED |
+| T23 | Tool calls emitted as text (`llama-server` without `--jinja`) | never executed; `needs-human` with a server-template remedy (§6) | DETECTED |
 
 :::warn
-**T18 is the honest limit of v1, and it is not new.** Every Guardrails run already executes model-authored
-code, unsandboxed, when a `dotnet test` guardrail runs. #544's promise is that the *actor's tools* cannot
-escape. It is not a promise that *code the actor wrote* cannot escape when the gate runs it. That second
-boundary is harness-wide (it covers Claude and Cursor runs equally). It belongs to a Phase 3 sandbox bet that
-wraps guardrail scripts and `RunCheck` alike, and v1 must not claim it.
+**T16 and T18 are the honest limit of v1.** Every run already executes model-authored code, unsandboxed, when
+a `dotnet test` guardrail runs. `RunCheck` adds **repetition and an output channel back to the model**. That is
+a real increase in read exposure, and `GR2083` says so. #544 promises that the *actor's tools* cannot escape.
+It does not promise that *code the actor wrote* cannot escape, or cannot read. That second boundary is the
+Phase 3 sandbox bet, which covers every runner.
 :::
 
 ---
@@ -236,73 +258,83 @@ wraps guardrail scripts and `RunCheck` alike, and v1 must not claim it.
 
 ### 5.1 Summary
 
-| Surface | Worktree mode | Serial mode | Label |
+| Surface | **Serial mode (primary)** | Worktree mode | Label |
 |---|---|---|---|
-| **Reads** | roots = worktree + plan folder | roots = workspace + plan folder | ENFORCED (shipped primitive) |
-| **Writes** | worktree ∩ `writeScope`, plus this attempt's `STATE_OUT` file, plus declared `stagingOutputs` staging paths, minus protected segments; no-follow; atomic | same, with the workspace as root | ENFORCED |
-| **Writes, second line** | phase-1 git-diff check; task-definition tamper check | tamper check only (serial mode has no diff check today) | DETECTED |
-| **Commands** | none. `RunCheck` runs reviewed scripts only | same | ENFORCED (no tool exists) |
-| **Code the model wrote, when executed** | not contained | not contained | DISCLOSED |
+| **Reads** | workspace + plan folder | worktree + plan folder | ENFORCED for tools; DISCLOSED through `RunCheck` (T16) |
+| **Writes** | workspace ∩ grant scope, minus hard exclusions (the plan folder, run logs, journal, other worktrees, `.git`) and protected segments, minus git-ignored targets; no-follow; atomic | the same, with the worktree as root | ENFORCED |
+| **Writes, second line** | task-definition tamper check | the same, plus the phase-1 diff | DETECTED |
+| **`needsHarnessWrite`** | refused | refused | ENFORCED |
+| **Commands** | none; `RunCheck` runs eligible reviewed scripts, reaped after every call | the same, plus out-of-scope strip with the patch preserved | ENFORCED (no tool exists) |
+| **Code the model wrote, when executed** | not contained, not stripped | not contained; out-of-scope effects stripped | DISCLOSED |
 
-**Serial mode is where this design gains the most.** A Claude action in serial mode has no containment hook at
-all (§9.4: `--settings` is absent there). A native local action in serial mode is still limited to its
-`writeScope`, at call time.
+Serial mode is where the design gains most: a Claude action in serial mode has no containment at all.
 
 ### 5.2 The `WriteGrant`: capability per invocation, set by the call site
 
-`PromptInvocation` gains one optional member:
-
 ```csharp
-/// <summary>What this invocation may WRITE (issue #544). Null ⇒ no write tools are offered and an Action
-/// invocation is refused. Set by the call site, never inferred by the runner.</summary>
+/// <summary>What this invocation may WRITE (#544). Null ⇒ no write tools, and an Action is refused.</summary>
 public WriteGrant? Writes { get; init; }
 
 public sealed record WriteGrant(
-    string Root,                          // absolute: the worktree (worktree mode) or the workspace (serial)
-    IReadOnlyList<string>? Scope,         // the task's writeScope, root-relative; [] = writes nothing to the repo
-    IReadOnlyList<string> ExactFiles,     // absolute: this attempt's STATE_OUT staging file, stagingOutputs staging paths
-    IReadOnlyList<InSessionCheck> Checks);// RunCheck targets: the task's own script guardrails
-
-public sealed record InSessionCheck(string Name, Func<CancellationToken, Task<CheckOutcome>> Run);
+    string Root,                          // absolute: the workspace (serial) or the worktree
+    IReadOnlyList<string> Scope,          // task.WriteScope ?? [] plus the stagingOutputs destinations, BOTH modes
+    IReadOnlyList<string> Excluded,       // absolute: plan folder, run log root, journal dir, the worktrees root
+    IReadOnlyList<string> ExactFiles,     // absolute: this attempt's STATE_OUT staging file
+    IReadOnlyList<string> ExactDirs,      // absolute: stagingOutputs staging directories (directory form)
+    IReadOnlyList<InSessionCheck> Checks);
 ```
 
-- **Null is the restrictive default.** Plan 28 made `Role` `required` so that a new call site could not
-  silently receive the permissive value. Here the default is already the safe one, so the member stays
-  optional and no fixture breaks.
-- **The runner refuses an `Action` invocation with `Writes == null`.** This is what keeps `ai-merge` and
-  `breakdown` unservable in Phase 1 (§6.3) even if a route to them is missed: their call sites set no grant.
-- **`Checks` are closures built by `ActionRunner`** from the existing script-guardrail execution path, so the
-  runner never learns how a script runs. It stays a vendor-free HTTP client, and the §9 quarantine holds.
-- **`Scope == null` fails closed to `[]`**, the same coalescing `WriteScopeCheck.Check` already does (#389).
+- **The grant's scope source is the same in both modes (W8).** `ActionRunner` builds `Scope` from
+  `task.WriteScope ?? []` plus the staging destinations, using `WithImplicitStagingScope`. It does not read
+  `enforcedWriteScope`, which is null in serial mode. For a `HarnessMediatedTools` runner, the prompt's
+  "harness-enforced scope" section is **rendered in serial mode too**, because for this runner it is now true.
+- **Null is the restrictive default.** The runner refuses an Action with `Writes == null`, so a call site that
+  forgets to build a grant fails loudly.
+- **`Checks`** are closures `ActionRunner` builds from the script-guardrail execution path. The runner never
+  learns how a script runs, which keeps it a vendor-free HTTP client.
 
-### 5.3 The `WritePolicy` decision, in order
+### 5.3 `WritePolicy.Decide`, in order
 
-`WritePolicy.Decide(WriteGrant grant, string requestedPath) → Allowed | Refused(reason)` is a pure function
-apart from filesystem reads. It lives beside `PromptToolContainment`.
+`WritePolicy.Decide(WriteGrant grant, string requestedPath) → Allowed | Refused(reason)`. It is pure apart
+from filesystem and `git check-ignore` reads, and lives beside `PromptToolContainment`.
 
-1. Reject rooted-path forms the platform cannot compare safely (T5). Then normalize with `Path.GetFullPath`,
-   resolving relative paths against `Root`.
-2. If the path equals one of `ExactFiles` → **allowed** (skip to step 6).
-3. The path must be under `Root` on a directory boundary (`RealPath.Comparison`, which is case-insensitive
-   on Windows and macOS).
-4. Reject protected segments:
-   - `.git` anywhere in the path;
-   - `.guardrails-agent-io` and `.guardrails-staging` except for `ExactFiles`;
-   - agent-config segments (`.claude`, `.cursor`), unless a `Scope` entry names that prefix **literally**,
-     without a `*`, so that a broad glob can never grant them.
-5. The root-relative path must satisfy `IsInScope(path, Scope)`, the plan 08 matcher the phase-1 check uses.
-6. **No-follow walk:** every existing component from `Root` down to the target must be neither a symlink nor
-   a reparse point. The target itself may exist only as a regular file.
+1. **Syntactic refusals, on every OS:**
+   - control characters and Unicode `Cf` code points;
+   - a segment ending in `.` or a space;
+   - on Unix, a backslash in the path;
+   - on Windows: any `:` after the drive, `\\?\`, `\\.\`, UNC paths, reserved device names, and 8.3-shaped
+     segments (`~` followed by digits).
+2. **Normalize** with `Path.GetFullPath`, resolving relative paths against `Root`.
+3. **Canonicalize.** Resolve the deepest *existing* ancestor to its final path (`GetFinalPathNameByHandle`
+   on Windows, `F_GETPATH` on macOS, `realpath` on Linux), then append the not-yet-existing tail. Compare it
+   to `Root`'s final path, accepting both the `WorktreeJunction` alias and its real form. This defeats short
+   names and symlinked ancestors, and removes any dependence on `RealPath.Comparison`, which is
+   case-sensitive on macOS.
+4. **Exact grants.** A path equal to one of `ExactFiles`, or under one of `ExactDirs`, is allowed; go to
+   step 9.
+5. **Under `Root`**, on a directory boundary, comparing final paths.
+6. **Hard exclusions, whatever the scope says (B1).** Refuse anything under the final path of:
+   - an entry in `Excluded`: the plan folder, the run log root, the journal directory, and every other
+     worktree;
+   - `Root`'s git directory (`git rev-parse --git-dir`).
+7. **Protected segments,** matched **case-insensitively on every OS:**
+   - `.git`: always refused;
+   - `.guardrails-agent-io` and `.guardrails-staging`: refused unless step 4 matched;
+   - `.claude`, `.cursor`, `.gitignore`, `.gitattributes`, `.gitmodules`: refused unless a `Scope` entry
+     names that prefix **literally**, with no `*`.
+8. **Scope.** The target must satisfy `IsInScope(relative, Scope)` and must not be git-ignored
+   (`git -C Root check-ignore -q`). The ignore check is skipped only when `Root` is not in a git repository,
+   which is disclosed.
+9. **No-follow walk.** Every existing component below `Root` must be neither a symlink nor a reparse point.
+   An existing target must be a regular file.
 
-A refusal becomes a `ToolRefusal(tool, path, reason)` whose reason names the rule and the enforced scope, for
-example `outside writeScope [src/Foo/**] — ask for the scope to be widened, or write within it`. The refused
-path is added to `BlockedWritePaths`.
+A refusal becomes a `ToolRefusal(tool, path, reason)` naming the rule and the enforced scope, and the path is
+added to `BlockedWritePaths`.
 
-**On agent-config paths (T7):** this is decided here rather than asked. Refusing them unconditionally would
-break plans that legitimately author skills under `.claude/skills/`, and this repository is one of them.
-Treating them like any other path would let an actor plant a hook that a later Claude judge in the same
-worktree executes. Requiring a literal scope entry mirrors the reason Claude Code itself protects `.claude/`,
-and it keeps the grant visible in the reviewed `task.json`.
+**On agent-config and git-behavior files:** requiring a literal scope entry is decided here, not asked.
+Refusing these files unconditionally would break plans that author `.claude/skills/` (this repository among
+them). Treating them as ordinary files would let an actor plant a hook for a later Claude judge, or hide
+output from git.
 
 ---
 
@@ -310,24 +342,28 @@ and it keeps the grant visible in the reviewed `task.json`.
 
 | Claude-path mechanism | Native actor answer |
 |---|---|
-| Permission denial → `BlockedWritePaths` → `PermissionWallTracker` (#86 / #104 / #708) | Policy refusals fill `BlockedWritePaths` and `RefusedToolCalls` (with reasons). `RefusedCommands` stays empty because there is no shell. The #86 repeated-target rule applies: the same out-of-scope path refused on two attempts means the plan's scope is wrong, so the task settles `needs-human`. **The #104 structural `.claude/` rule must not fire here**, because it describes Claude Code's own runtime wall, which this runner does not have. It becomes conditioned on a new build fact, `PromptRunnerKinds.HasVendorClaudeDirWall(kind)` (Claude and Cursor keep today's behavior). A `.claude/` refusal from this runner is the ordinary T7 rule, and its remedy names the literal scope entry. |
-| The #452 consecutive-denial abort | Unchanged: already implemented in the turn loop and counted over write refusals too. It is active only where a caller sets the bound. No task action does today, so actions are bounded by #86, `maxTurns` and `Timeout`, as Cursor actions are (§9.9). |
-| Salvage grant `Bash(git show*)` | `Read` with `revision` (§3.2). The salvage section of retry feedback becomes **capability-aware** through a new build fact, `PromptRunnerKinds.OffersShell(kind)`. It tells a shell-less actor to use `Read` with `revision: <ref>` instead of `git show`. This also fixes the inaccuracy §9.9 accepted for Cursor. |
-| `--add-dir` reach to the plan folder | Reads: the plan folder is a read root (shipped). Writes: **none**. The plan folder is read-only to this actor, which is stricter than Claude. |
-| `stagingOutputs` | Honored: the declared staging paths are in `ExactFiles`, and the harness's move is unchanged. They are unnecessary here (no vendor `.claude/` wall) but harmless. |
-| `needsHarnessWrite` | Unchanged. The harness reads the fragment and performs the write. |
-| State-out fragment | The action writes `GUARDRAILS_STATE_OUT` through `Write` to its #266 staged path, which is in `ExactFiles`. The composer's shipped "write to this path" text is correct as-is, because this action does have `Write`. |
-| `## Worktree safety` section (git stash advice) | Omitted when `!OffersShell(kind)`. With no shell it would be advice about a tool the actor does not have: noise at best, and a contradiction at worst. |
-| Retry feedback | Unchanged pipeline. The #773 `## Tool calls the runner refused this attempt` section renders `RefusedToolCalls`. `RunCheck` outputs are not repeated there, because the gate's own feedback already carries the failure tail. |
-| `transcript.md` / stream log | Both are already written by the runner. **The action's `transcript.md` is read by dependent tasks** (`DependencyContextBuilder`), so the renderer adds a line per `Write` / `Edit` / `Delete` (path, bytes, +/− lines), per `RunCheck` (name, exit, duration), and per refusal. Stream-log `tool-result` lines gain `bytesWritten` and, for `RunCheck`, the change-hash evidence (T19). |
-| Token and cost accounting | `Usage` is summed per turn (shipped). `CostUsd` is `null`. **`maxCostUsd` therefore cannot bind on local-actor spend**, and plan 28 finding 2's reassurance ("actions stay on Claude") no longer holds. It is not a liveness hole, because the run stays bounded by tasks × `maxAttempts` × `timeoutSeconds`, but `GR2083` states it, as `GR2080` does for Cursor. |
-| Stall and timeout | `Timeout` covers the whole session, `RunCheck` included; the check's process tree is killed on cancel. `StallBound` is honored by the SSE watchdog (shipped) and is suspended while a `RunCheck` runs, because a running build is not a silent model. |
-| Context-window overflow | The per-turn pessimistic refusal (plan 28 §6.1) applies unchanged and will fire more often on long action sessions. Mitigations: tool results are capped (`Read` 2,000 lines, `RunCheck` 16 KiB tail, `Write` / `Edit` results are one line), and reasoning text is kept out of the history (next row). **No compaction in v1**: a summary silently drops evidence the model read, which is a correctness risk. `ContextOverflow` fails the attempt with feedback advising smaller reads. |
-| Reasoning models (Qwen `<think>`) | `reasoning_content` is never sent back. Inline `<think>…</think>` spans are stripped from assistant content before it re-enters the history; they remain in `transcript.md`. Prerequisite: **#759** (the probe's 64-token cap makes a reasoning model fail the tool probe). |
-| Tool-calling reliability | Tool calls come only from structured `tool_calls` (T15). Arguments that do not parse as JSON produce a **tool error** result naming the parse error: not a refusal, and not counted as a denial. Parallel tool calls run sequentially in the order emitted. A session with zero structured calls whose content has the tool-call shape settles `needs-human` as `RunnerConfiguration` with the remedy "the server is not parsing tool calls; for llama.cpp start `llama-server` with `--jinja`" (T22). A text-shaped call that follows some structured calls is an ordinary `Error` and is retried. |
-| Silent model substitution (#760) | Unchanged from plan 28: the preflight asserts every declared model is listed. `llama-server` lists only the loaded model, so two blocks naming two models on **one** `llama-server` port halt at preflight instead of both silently running the loaded one. Run two servers on two ports, or put a model-swapping proxy in front. |
+| **`needsHarnessWrite` (B2)** | **Refused for `HarnessMediatedTools` runners.** A fragment that carries it fails the attempt with the remedy *"this runner has a Write tool — write the file directly; needsHarnessWrite exists to route around vendor write walls this runner does not have"*. The alternative, sending each entry through `WritePolicy.Decide`, would work, but it would leave two paths to one effect, and the escape hatch has no purpose here. |
+| Permission wall (#86 / #104 / #708) | Refusals fill `BlockedWritePaths` and `RefusedToolCalls`. The #86 repeated-target halt applies. **The #104 structural `.claude/` halt is conditioned on the new fact `HasVendorClaudeDirWall`** (false for this runner), because that wall is Claude Code's own, and a `.claude/` refusal here is the ordinary step 7 rule with its own remedy. |
+| #452 consecutive-denial abort | **Set for local actions (W7).** `ActionRunner` sets `AbortAfterConsecutiveToolDenials = 5` for a `HarnessMediatedTools` runner. A weak model that keeps hitting the same wall stops early instead of running to the turn cap. |
+| Salvage `Bash(git show*)` | `Read` with `revision`. The salvage feedback becomes capability-aware through the new fact `OffersShell`. |
+| `--add-dir` plan folder | Readable, and never writable in either mode (step 6). |
+| `stagingOutputs` | Its staging directories go in `ExactDirs` and its destinations in `Scope`; the harness's move is unchanged. |
+| State-out fragment | Written with `Write` to its #266 staged path (`ExactFiles`). The composer's shipped text is correct as-is. |
+| `## Worktree safety` (git stash advice) | Omitted when `!OffersShell`. |
+| Retry feedback | Unchanged pipeline, plus the #773 refused-calls section and a **"made no writes"** line when the session wrote nothing but its fragment (W5). |
+| `transcript.md` / stream log | Dependent tasks read the transcript, so it gets a line per write (path, bytes, +/− lines), per `RunCheck` (name, exit, duration), and per refusal. The stream log keeps full `Write`/`Edit` arguments and the `RunCheck` evidence (T19). |
+| Cost | `CostUsd` is null, so **`maxCostUsd` cannot bind**. The run is still bounded by tasks × `maxAttempts` × `timeoutSeconds`. `GR2083` states this. |
+| Stall and timeout | `Timeout` covers the whole session. `StallBound` is suspended while a `RunCheck` runs. Checks are reaped (§3.3). |
+| **Zero tool calls (W5)** | An Action session with **zero structured tool calls** is `Error` (*"the model made no tool calls; it did no work"*). The Guardrail-only rule plan 28 §6.6 added (`MustReadItsEvidence`) does not cover actions. When the content has the tool-call shape, the settlement is `RunnerConfiguration` → `needs-human` instead (next row). |
+| **Tool calls as text (T23, W5)** | Detected on the **raw** content, before any `<think>` stripping. The detector looks for `<tool_call>` tags, and for fenced or bare JSON objects that have both `name` and `arguments`. Such calls are never executed. With zero structured calls in the session, the attempt settles `needs-human` with the remedy *"the server is not parsing tool calls; for llama.cpp start `llama-server` with `--jinja`"*. After some structured calls it is an ordinary `Error` and is retried. |
+| **Reasoning text (W5)** | `reasoning_content` is never sent back to the server. Inline reasoning is stripped from the history: a `<think>…</think>` span; everything before an **orphan `</think>`** (Qwen's template opens the tag inside the prompt); and an **unterminated `<think>`** through to the end of the message. A message that was nothing but unterminated reasoning, with no tool calls, is `Error` (*"reasoning never finished — likely the output cap"*). The raw text stays in `transcript.md`. Depends on #759. |
+| **Context convergence (W7)** | Four measures: (1) the `Read` default limit for actions is 400 lines; (2) **older results of the same `RunCheck` name are replaced by a one-line stub** (*"superseded by RunCheck(<name>) at turn N"*). This is a deterministic substitution, not a summary: the latest result stays whole, and the replaced text was a stale build log, not evidence the model read. The cost is lost prompt-cache reuse on the server, which is accepted; (3) `ContextOverflow` on **two** attempts of one task settles `needs-human` with the remedy *"raise `contextTokens` and the server's `-c`, or split the task"*; (4) plan 28's per-turn pre-send refusal stays unchanged. |
+| Malformed arguments | A tool **error** result naming the parse error. Not a refusal. |
+| Parallel tool calls | Executed in the order emitted, with result ids matched to call ids. |
+| Silent substitution (#760) | Unchanged: the preflight asserts every declared model is listed. |
+| Context shift | `providers check` gains an assertion that the server will not silently drop context: it reads `GET /props` where `llama-server` exposes it, and reports `unknown` elsewhere. `llama-server`'s context shift discards tokens when the window fills, which is plan 28 §6.1's truncation by another name. |
 
-### 6.1 Build facts, restated
+### 6.1 Build facts
 
 | Fact | Claude | Cursor | OpenAiCompat (after) |
 |---|---|---|---|
@@ -336,195 +372,186 @@ and it keeps the grant visible in the reviewed `task.json`.
 | `HarnessMediatedTools` **(new)** | false | false | **true** |
 | `OffersShell` **(new)** | true | true | **false** |
 | `HasVendorClaudeDirWall` **(new)** | true | true | **false** |
-| `WritesFiles` (judge verdict contract) | true | true | false: **unchanged, doc narrowed** to "a *judge* on this kind has a write tool" |
-| `ServesActionProfiles` **(new)** (`ai-merge`, `breakdown`) | true | true | **false in Phase 1** |
+| `ServesActionProfiles` **(new)** | true | true | **false (Phase 1)** |
+| `WritesFiles` | true | true | false. **Unchanged**; its documentation narrows to "a *judge* on this kind has a write tool" |
 
-The tamper check keys on `IsUncontainedWriter || HarnessMediatedTools`. For this runner it is a belt that
-should never fire: a firing means `WritePolicy` has a bug.
+Unlisted kinds default to the safe side on every new fact. The tamper check keys on
+`IsUncontainedWriter || HarnessMediatedTools`; for this runner it should never fire, and if it does,
+`WritePolicy` has a bug. `ServesRoles` is pinned by construction over the pair `(Role, Writes != null)`.
 
-**Unlisted kinds default to the safe side on every new fact:** `HarnessMediatedTools` false, `OffersShell`
-true, `HasVendorClaudeDirWall` true, `ServesActionProfiles` false. This is the same fail-safe direction
-`NeedsContainmentHook` already uses.
+### 6.2 Every Action entry point, enumerated
 
-### 6.2 `ServesRoles` grows by construction
-
-`ServesRoles(OpenAiCompat)` becomes all roles, pinned by constructing the real runner as plan 28 §3.5 requires.
-The capability, though, is really the **pair** `(Role == Action, Writes != null)`. The by-construction pin
-therefore covers the new refusal as well: an Action with no grant is refused, and an Action with a grant
-proceeds.
+| Entry point | Phase 1 behavior |
+|---|---|
+| `ActionRunner` (task actions) | Builds the `WriteGrant`; served. |
+| `SchedulerFactory` `ai-merge` / `breakdown` resolution (`:346-356`) | Checks `ServesActionProfiles`; a local block is withheld with a `Note:`. A new `WithheldActionProfiles`, sibling to `WithheldAdvisoryProfiles` (`:366`), prints it before the run. A conflict then settles `needs-human`; a JIT checkpoint honest-halts. #557 is not widened. |
+| **`guardrails breakdown --runner-config`** (`BreakdownCommand.cs:328`, `registry.Resolve(null)`) | Bypasses `SchedulerFactory`. It gains the same `ServesActionProfiles` check and refuses before invoking, with *"block '<name>' is openai-compat; breakdown on a local runner is Phase 2 — pass a claude or cursor block"*. |
+| Any future Action call site | Sets no grant, so the runner refuses loudly. |
 
 ### 6.3 Reachability: GR2066 narrows, GR2083 discloses
 
-Plan 28's five routes, re-decided:
+| Route | v1 of #544 |
+|---|---|
+| 1. `routing` | **still GR2066 (error)**; question `routing-for-actors` |
+| 2. effective default (the `default` pointer, or the sole runner) | legal |
+| 3. `action.runner` | legal |
+| 4. action prompt frontmatter `runner:` | legal |
+| 5. declared under `ai-merge` / `breakdown` | **still GR2066 (error)**; question `harness-action-profiles` |
 
-| Route | v1 of #544 | Why |
-|---|---|---|
-| 1. declares `routing` | **still GR2066 (error)** | That would be the harness *choosing* a local actor. It needs the measurement plan 28 §3.7 named. Question `routing-for-actors`. |
-| 2. effective default (the `default` pointer, or the sole runner) | **legal** | A human act. This is the maintainer's configuration today. |
-| 3. a task's `action.runner` | **legal** | A human act. |
-| 4. an action prompt's frontmatter `runner:` | **legal** | A human act (the fold plan 28 §3.7 added keeps it visible to validation). |
-| 5. declared under `ai-merge` / `breakdown` | **still GR2066 (error)** | Phase 2 (§10). |
+**Legalizing route 2 has a consequence the first draft missed (W6).** With `default: <local block>`, every
+**unpinned prompt judge** also resolves to that block, so the actor's own model grades its own work. Plan 28's
+Finding 1 accepted local judges on the premise that *"a local judge happens only where a human pinned one."*
+Route 2 breaks that premise. `GR2083` therefore **counts and names** every prompt guardrail that resolves to
+the same block as its task's actor. Whether that should be a warning or an error is question `self-grading`.
 
-When a local block is the default runner, `SchedulerFactory` **withholds** it from the `ai-merge` and
-`breakdown` fallback, the same pattern it uses to withhold a Cursor block from the Advisory profiles (§9.9).
-It prints one `Note:` per withheld profile and uses the existing OFF paths:
+**GR2083 (WARNING, `OpenAiCompatActorContainment`)** fires once per `openai-compat` block reachable by routes
+2–4. It states:
 
-- a merge conflict settles `needs-human`, as with no merge runner;
-- a JIT checkpoint honest-halts, as with no breakdown runner.
+- writes are enforced in-process against `writeScope`, in serial mode too;
+- the plan folder, logs and `.git` are never writable;
+- there is no shell, and `RunCheck` runs eligible script guardrails;
+- `needsHarnessWrite` is refused;
+- code the model writes runs unsandboxed and can read and emit anything the user can (T16/T18);
+- `maxCostUsd` cannot bind;
+- `ai-merge` and `breakdown` are withheld;
+- the list of self-grading judges.
 
-This also means #557's plan-wide JIT write hole is **not widened** by this change.
-
-**GR2083 (WARNING, `OpenAiCompatActorContainment`)** fires once per `openai-compat` block reachable for an
-Action by routes 2, 3 or 4. Its message states the §5.1 inventory in brief:
-
-- writes are enforced in-process against `writeScope`;
-- the plan folder is read-only to the actor;
-- there is no shell, and `RunCheck` runs the task's own script guardrails;
-- code the model writes is executed unsandboxed when checks and gates run (T18);
-- `maxCostUsd` cannot bind (cost is `null`);
-- `ai-merge` and `breakdown` are withheld.
-
-It is a warning because running a local actor is a legitimate operator choice. What must not happen is that
-choice being made silently.
-
-**GR2071 extends to this runner** (§4.9, still a warning). For a task whose action resolves to an
-`openai-compat` block, the grant set for commands is **definitively empty**, not a floor (#252 does not
-apply, because there is no operator `settings.json` behind it). Every command candidate in the action prompt
-therefore fires, with this runner's own remedy: *"this runner has no shell. The model can run the task's
-script guardrails through `RunCheck` (<names>); move any other command into a script action or a script
-guardrail."*
+**GR2071 extends to this runner** (a warning). For a task whose action resolves to a local block, the command
+grant set is definitively empty. Every command candidate in the prompt fires, with the remedy *"no shell —
+`RunCheck` runs <eligible names>; move any other command into a script action or a script guardrail"*.
 
 ---
 
 ## 7. Config shape
 
-**No new keys.** Actions are reached by the routes in §6.3, and every bound in this design is a constant
-disclosed in the `runner-notice`. That keeps `guardrails.json` byte-identical for every existing plan, so no
-review attestation is invalidated.
-
-The maintainer's Mac, by way of illustration:
+**No new keys.** Bounds are constants disclosed in the `runner-notice`, so no existing `guardrails.json`
+changes and no attestation goes stale.
 
 ```jsonc
-"maxParallelism": 1,                        // one llama-server, one loaded model
+"maxParallelism": 1,                        // one llama-server ⇒ serial mode (the primary case)
 "promptRunners": {
   "default": "qwen36",
   "qwen36": {
     "kind": "openai-compat",
-    "endpoint": "http://127.0.0.1:8080/v1", // llama-server --jinja -c 65536 ...
-    "model": "qwen3.6-35b-a3b",             // must match what GET /models lists
-    "contextTokens": 65536,                 // must match the server's -c, or the §6.1 after-check fails
+    "endpoint": "http://127.0.0.1:8080/v1", // llama-server --jinja -c 65536 (no context shift)
+    "model": "qwen3.6-35b-a3b",             // must match GET /models
+    "contextTokens": 65536,                 // must match -c
     "maxOutputTokens": 8192,
-    "maxTurns": 80,                         // action sessions need far more turns than judges
+    "maxTurns": 80,
     "strength": 2,
     "engine": "llama.cpp"
   },
-  "qwen38": {                               // a second llama-server on :8081 if memory allows
+  "qwen38": {                               // a second server on :8081 if memory allows
     "kind": "openai-compat", "endpoint": "http://127.0.0.1:8081/v1",
     "model": "qwen3.8-27b", "contextTokens": 65536, "maxOutputTokens": 8192,
     "maxTurns": 80, "strength": 3, "engine": "llama.cpp"
   }
 }
-// hard tasks: "action": { "runner": "qwen38", ... }
+// hard tasks: "action": { "runner": "qwen38" }; judges: pin to the OTHER model (see self-grading)
 ```
 
-A judge pinned to the same model as the actor is self-grading. This design does not forbid it, but
-`plan-breakdown` should prefer deterministic guardrails even more strongly for a local-actor plan, which is
-already its default lean.
+### 7.1 `plan-breakdown` guidance for a local-actor plan (W9)
 
-**Residual Windows note (T5).** 8.3 short names resolve only for components that exist. A not-yet-existing
-leaf with a `~1`-shaped name is matched literally. It cannot reach outside the root, because every existing
-parent is resolved and walked, so the worst case is a strangely named file inside scope.
+- **Goodhart guard.** An implementation task's `writeScope` **excludes its guarding tests**; that is
+  test-protection (§3.4), already the default. Its tests-pass guardrails assert **named tests or a minimum
+  count**, so deleting or skipping tests cannot turn them green. A weak model given 8 `RunCheck`s and
+  `Delete`/`Edit` will find the cheapest green.
+- **Commands go elsewhere.** `dotnet new`, `npm install` and code generators become **script actions**, and
+  the build and test steps become **script guardrails** that do not read `GUARDRAILS_ACTION_RESULT`, so
+  `RunCheck` can offer them.
+- **Pin judges** to a different model than the actor's when the plan declares one.
+- `.claude/…`, `.gitignore` and `.gitattributes` deliverables need a **literal** `writeScope` entry.
 
 ---
 
 ## 8. Contract and SSOT changes (`02-schemas-and-contracts.md`)
 
-These land in the same change as the code (invariant 4).
-
-1. **§2, the `promptRunners` `kind` comment.** `openai-compat` serves Actions (§9.8), is reachable by the
-   default, `action.runner` and frontmatter routes, and adds no keys. Keep the `canonical-schema:promptRunners`
-   mirror (`.claude/skills/plan-breakdown/references/schemas.md`) byte-identical.
-2. **§3.4, write-scope.** Add one paragraph: for an `openai-compat` action the same `IsInScope` predicate is
-   *also* enforced at call time (§9.8). Phase 1 still runs and is the independent observation of the actual
-   tree. Phase-2 strip semantics also run after each `RunCheck`.
-3. **§4.9, GR2071.** Add the `openai-compat` clause: definitively empty command grants, with the `RunCheck`
-   remedy.
-4. **§5.1, env.** `RunCheck` runs a script guardrail with the env that guardrail gets at gate time. Any output
-   paths it would write are redirected to a per-call scratch directory under the attempt log directory, so no
-   gate artifact collides.
-5. **§8, log layout.** Add the `tool-result` fields (`bytesWritten`, `run-check` evidence) and the transcript
-   lines for write tools and `RunCheck`.
-6. **§9 intro.** Add `PromptInvocation.Writes` (`WriteGrant`), the null-refuses-Action rule, and the four new
-   build facts with their fail-safe defaults.
-7. **§9.3, permission wall.** The #104 structural rule is conditioned on `HasVendorClaudeDirWall`.
-8. **§9.4.** Add a paragraph: a runner with `HarnessMediatedTools` needs no hook, because its policy is
-   in-process (§9.8). Its containment is not weaker than the hook: the rule runs in one implementation, with
-   no command text and with no-follow.
-9. **§9.8.** A new part, **"Actions (#544)"**: the tool table (§3.2), `WritePolicy` (§5.3), `RunCheck`
-   (§3.3), the enforced / detected / disclosed inventory (§5.1), dialect handling (§6), and the withheld
-   profiles. The plan-28 text "serves the `Guardrail` and `Advisory` roles only" is amended where it
-   appears, **not deleted** (the historical record stays; live status changes).
-10. **§9.6 validation table.** Amend the `GR2066` row to routes 1 and 5 only. Add:
+1. **§2** `kind` comment: `openai-compat` serves Actions through the default, `action.runner` and frontmatter
+   routes, and adds no keys. The mirror at `.claude/skills/plan-breakdown/references/schemas.md` stays
+   byte-identical.
+2. **§3.4:** for this runner `IsInScope` is also enforced at call time, **in serial mode too**. After each
+   `RunCheck` in worktree mode, the out-of-scope patch is saved and the strip runs.
+3. **§4.9:** GR2071's local-runner clause.
+4. **§5.1:** `RunCheck` eligibility and environment (§3.3).
+5. **§8:** the `tool-result` fields, full `Write`/`Edit` arguments, `run-check` evidence, and transcript
+   lines.
+6. **§9 intro:** `PromptInvocation.Writes`; the null-grant refusal; the four new facts; the #452 bound for
+   local actions; zero tool calls in an Action is `Error`.
+7. **§9 `needsHarnessWrite`:** refused for `HarnessMediatedTools` runners.
+8. **§9.3:** the #104 rule is conditioned on `HasVendorClaudeDirWall`.
+9. **§9.4:** a `HarnessMediatedTools` runner needs no hook; its policy is in-process and applies in serial
+   mode.
+10. **§9.8:** a new part, "Actions (#544)", covering §3.2, §3.3, §5, §6 and §6.2. Plan 28's "serves Guardrail
+    and Advisory only" is amended where it appears, not deleted.
+11. **§9.6:** the `GR2066` row is narrowed to routes 1 and 5. Add:
 
 | Code | Sev | Rule |
 |---|---|---|
-| `GR2083` | warning | `OpenAiCompatActorContainment` (#544, §9.8) — once per `openai-compat` block reachable for an **Action** by the default, `action.runner` or frontmatter route. States what is enforced (in-process write policy against `writeScope`; plan folder read-only; no shell; protected `.git` / agent-config segments), what is detected (phase-1 diff, tamper check), and what is not contained (model-authored code when `RunCheck` or the gate executes it). Also states that `maxCostUsd` cannot bind (cost `null`) and that `ai-merge` / `breakdown` are withheld from the block. A warning because a local actor is a legitimate operator choice, made visibly. |
+| `GR2083` | warning | `OpenAiCompatActorContainment` (#544, §9.8) — once per `openai-compat` block reachable for an **Action** by the default, `action.runner` or frontmatter route. States what is enforced (the in-process write policy against `writeScope` in serial and worktree mode; the plan folder, run logs and `.git` never writable; no shell; `needsHarnessWrite` refused), what is detected (the tamper check, and the phase-1 diff in worktree mode), and what is not contained (model-authored code executed by `RunCheck` or the gate can write and read anything the user can, and `RunCheck` returns its output to the model). Also states that `maxCostUsd` cannot bind, that `ai-merge`/`breakdown` are withheld, and **names every prompt guardrail that resolves to the same block as its task's actor**. |
 
-11. **`DiagnosticCodes.cs`.** Take `GR2083`; advance the marker to `GR2084`.
+12. **`DiagnosticCodes.cs`:** take `GR2083`; the marker advances to `GR2084`.
 
 ---
 
-## 9. How it is proven: extending the adversarial suite
+## 9. How it is proven
 
-**The seam is the OpenAI HTTP wire and the real filesystem**, per the #382 doctrine. Every row below drives the
-real `OpenAiCompatPromptRunner`, with a real `WritePolicy`, against `FakeOpenAiServer` scripting the attack as
-`tool_calls`, inside a real git worktree created by the real provider.
+The seam is the **OpenAI wire plus the real filesystem**. Every row drives the real runner, with the real
+`WritePolicy`, against `FakeOpenAiServer`.
 
-**Assertion rule (rung 1):** each attack asserts on **disk**:
-- a sentinel file outside the root has unchanged bytes and timestamp;
-- the target is absent, or has its original bytes.
+**The primary fixture is serial mode:** a real git workspace with the **plan folder inside it** and
+`writeScope: ["**"]` unless the row says otherwise. Worktree-mode twins are marked **(WT)**.
 
-**Firing control:** each row has a twin in which the same scripted call targets an *allowed* path and the
-write is asserted to **happen**. This proves the fixture really performs writes, so a refusal row cannot pass
-simply because nothing ever writes.
+**Assertions:** each row asserts on **disk**: sentinel bytes and timestamps unchanged, and target files absent
+or unchanged. Each row also has a **firing-control twin** in which the same call targets an allowed path and
+the write is asserted to happen. Windows rows must create their junctions or short names and **fail, never
+skip**, when they cannot.
 
 | # | The server scripts | The test asserts |
 |---|---|---|
-| A1 | `Write` to an absolute path in a sibling temp dir | sentinel unchanged; `ToolRefusal` names the grant; path in `BlockedWritePaths` |
-| A2 | `Write` to `src/../../outside.txt`, and a mixed-separator variant | nothing is created outside the root |
-| A3 | `Write` to `link/evil.cs`, where `link` is a committed symlink (a junction on Windows) to outside | the outside dir is unchanged. **Windows CI must create the junction, never skip**; a failure to create one fails the test (skipped tests are lost evidence) |
-| A4 | `Write` to a file that is a hard link to an outside file | the outside inode's bytes are unchanged; the in-root name has the new bytes |
-| A5 | (Windows) `a.cs:stream`, `CON`, `\\?\C:\…`, UNC | refused; no stream or device write |
-| A6 | `Write` `.git/hooks/pre-commit`, `.GIT/config`, `sub/.git/x` | none written; a later harness commit runs no hook |
-| A7 | `Write` `.claude/settings.json` with `writeScope: ["**"]`, then with `writeScope: [".claude/skills/"]` | refused in both; `.claude/skills/x/SKILL.md` is allowed in the second |
-| A8 | `Write` the task's own `task.json` and `guardrails/01.sh` via the plan-folder path | plan-folder bytes unchanged; the tamper check did not fire (policy held first) |
-| A9 | `Write` in-worktree but out of `writeScope` | refused at call time; phase 1 reports **no** offense (proving the call-time layer caught it) |
-| A10 | `Write` the judge's staged `VERDICT_OUT` path | refused; a following judge that writes nothing **fails** |
-| A11 | `Delete` a tracked out-of-scope file; `Delete` a directory | both refused; files present |
-| A12 | 1 MiB + 1 byte `Write`; 33 × 1 MiB writes | tool errors; bytes on disk ≤ caps |
-| A13 | content containing `<tool_call>{"name":"Write","arguments":{…outside…}}</tool_call>` with no structured call | nothing written; with zero structured calls in the session: `RunnerConfiguration`, `needs-human`, `--jinja` remedy |
-| A14 | a structured `Bash` call; a `Write` on a **Guardrail** invocation | refused; counted toward #452 |
-| A15 | `RunCheck` with `name: "../../x"` and with an extra `args` field | refused; no process started (a process-start counter on the injected closure) |
-| A16 | `RunCheck` of a guardrail whose script creates an out-of-scope file | file stripped after the call; phase 1 reports no offense; evidence line present |
-| A17 | the same out-of-scope path refused on attempts 1 and 2 | the #86 halt settles `needs-human` on attempt 2; **no #104 structural halt** on a `.claude/` refusal |
-| A18 | arguments that are not JSON | tool-error result; not in `RefusedToolCalls`; the session continues |
-| A19 | `<think>` in content across three turns | turn-3 request carries no `<think>` text; `transcript.md` does |
-| A20 | a Guardrail invocation, before and after this change | **byte-identical request bodies** (the judge path is untouched) |
-| A21 | an Action invocation with `Writes == null` | refused before any byte reaches the wire |
-| A22 | two parallel `tool_calls` in one turn | executed in emitted order; both results returned with matching ids |
+| A1 | `Write` to an absolute path outside the workspace | sentinel unchanged; refusal names the rule |
+| A2 | `src/../../outside.txt`, mixed separators | nothing outside |
+| A3 | a write through a committed symlink (junction on Windows) to outside | outside dir unchanged |
+| A4 | a hard link to an outside file | outside inode unchanged |
+| A5 | (Win) `a.cs:s`, `CON`, `\\?\…`, UNC, `GIT~1\hooks\pre-commit`, `.git.\hooks\x` | none written; `.git/hooks` unchanged |
+| A6 | `.git/hooks/pre-commit`, `.GIT/config`, `Write` to `.git` itself, `.git` with a U+200D inside it; **(WT)** `.git` as a file | none written; a following harness commit runs no hook |
+| A7 | `.claude/settings.json` under `["**"]`, then under `[".claude/skills/"]` | refused both times; `.claude/skills/x/SKILL.md` allowed in the second |
+| A8 | **(B1)** with the plan folder inside the workspace and scope `**`: own `guardrails/01.sh`, a **downstream** task's `guardrails/`, `guardrails.json`, and the journal under `logs/` | all unchanged; the tamper check did not fire (policy held first) |
+| A9 | out-of-scope in-workspace write; **(WT)** phase 1 reports no offense | refused at call time |
+| A10 | a judge's staged `VERDICT_OUT` | refused; a following judge that writes nothing fails |
+| A11 | `Delete` out of scope; `Delete` a directory | refused |
+| A12 | **(W1)** `obj/X.Tests.csproj.evil.targets`, in scope and git-ignored | refused; the test run still executes tests |
+| A13 | `.gitignore` edit under `["**"]` | refused without a literal entry |
+| A14 | **(B2)** the state fragment carries `needsHarnessWrite` for `.git/hooks/pre-commit` and for an in-scope file | attempt fails; neither is written |
+| A15 | over-cap writes | tool errors; bytes on disk ≤ caps |
+| A16 | `<tool_call>` text and a fenced `{"name","arguments"}` block, with zero structured calls | nothing written; `needs-human` with the `--jinja` remedy |
+| A17 | **(W5)** a prose-only final message from an Action | `Error`, not success |
+| A18 | **(W5)** an orphan `</think>`; an unterminated `<think>` | history stripped correctly; the second is `Error` |
+| A19 | a `Bash` call; `Write` on a Guardrail; `RunCheck` `../x`; `RunCheck` with extra arguments | refused; no process started (counter on the injected closure) |
+| A20 | Guardrail invocation before and after the change | byte-identical request bodies |
+| A21 | Action with `Writes == null` | refused before any wire byte |
+| A22 | **(W3)** a `RunCheck` script that starts a background writer | no write lands after the call returns (sentinel polled for 5 s) |
+| A23 | **(W2)** a guardrail that reads `GUARDRAILS_ACTION_RESULT` | absent from the enum; listed in the `runner-notice` |
+| A24 | **(W1, WT)** a `RunCheck` whose script creates an out-of-scope file | patch saved in the attempt log; file stripped; phase 1 clean |
+| A25 | **(W7)** three `RunCheck(build)` results in one session | turn-4 request carries one full result and two stubs |
+| A26 | **(W7)** `ContextOverflow` on attempts 1 and 2 | `needs-human` on attempt 2 |
+| A27 | the same out-of-scope path refused on attempts 1 and 2; a `.claude/` refusal | #86 halt on attempt 2; **no** #104 halt |
+| A28 | five consecutive refusals | the #452 abort fires |
+| A29 | tool calls with empty `id`s; two parallel calls | ids synthesized; executed in order |
 
-**Harness-level acceptances (integration, real CLI composition root, per the #382 lesson):**
+**Harness-level acceptances (real CLI composition root, per #382):**
 
-- A one-task plan with `default: local` runs green in **worktree mode** and in **serial mode**, producing a
-  commit whose diff is exactly the in-scope writes.
-- `validate` reports `GR2083` for routes 2, 3 and 4, with one test per route; `GR2066` for routes 1 and 5; and
-  GR2071's local-runner remedy.
-- With a local default, `ai-merge` and `breakdown` print the withheld `Note:` lines and take their OFF paths.
-- The salvage section and the `## Worktree safety` omission are asserted on the composed bytes, both ways.
+- A one-task plan with `default: local` runs green in **serial mode** (primary) and in worktree mode.
+- `validate` reports `GR2083` for routes 2–4 (one test each, **including the self-grading judge count**);
+  `GR2066` for routes 1 and 5; GR2071's local remedy.
+- The `ai-merge`/`breakdown` `Note:` lines are printed, and **`guardrails breakdown --runner-config` against a
+  local default refuses**.
+- The prompt renders the enforced-scope section in serial mode, and the salvage and `## Worktree safety`
+  sections are capability-aware.
 
-**What the fake cannot prove:** that Qwen on `llama-server --jinja` emits well-formed `tool_calls` reliably
-across an 80-turn session. That is dialect and model risk. It is retired by `guardrails providers check` (with
-#759 fixed) plus a Phase 1 dogfood on the Mac, the same posture plan 28 §8 took.
+**Phase 1 exit gate: a real-Qwen dogfood run.** A Bifrost-shaped .NET task (edit two source files, add a test,
+build, run tests) with `default: qwen36` in **serial mode** on the maintainer's Mac, run by the maintainer
+with the live UI. It must reach green through `RunCheck` iterations, and its `transcript.md` must show the
+write and check lines. No loopback fake retires model and dialect risk; this run does.
 
 ---
 
@@ -532,10 +559,10 @@ across an 80-turn session. That is dialect and model risk. It is retired by `gua
 
 | Phase | Ships | Gate to start |
 |---|---|---|
-| **0: prerequisites** | #759 fixed (a reasoning model can pass the tool probe). `providers check` against `llama-server --jinja` + Qwen 3.6 on the Mac reports tool calling met. | now |
-| **1: v1, task actions** | Everything in §3–§9 for task actions only | Phase 0; this design reviewed |
-| **2: harness Action profiles** | `ai-merge` (grant = the one `GUARDRAILS_MERGE_OUT` file) and `breakdown` (grant = the wave folder being authored, which also closes #557 for this runner by construction). `ServesActionProfiles` flips, and GR2066 route 5 relaxes. | Phase 1 dogfooded; #557 fixed for the Claude path, so the scopes agree |
-| **3: v2 bets** | (a) `routing` for actors, relaxing route 1 once the telemetry corpus (§15) shows local-actor pass rates per task class; (b) OS sandbox for `RunCheck` **and** guardrail scripts (macOS Seatbelt first, then Linux bubblewrap/landlock; Windows disclosed as unsandboxed) closing T18; (c) a general argv `Run` tool, only inside that sandbox | a named roadmap entry in `03-roadmap.md` |
+| **0: prerequisites** | #759 fixed; `providers check` against `llama-server --jinja` + Qwen 3.6 reports tool calling met and context shift off | now |
+| **1: task actions** | §3–§9 | Phase 0 and this review. **Exit:** the real-Qwen dogfood (§9) |
+| **2: harness Action profiles** | `ai-merge` (grant: the one `GUARDRAILS_MERGE_OUT` file) and `breakdown` (grant: the wave folder being authored, which closes #557 for this runner by construction); `ServesActionProfiles` flips | Phase 1 exit; #557 fixed on the Claude path |
+| **3: v2 bets** | (a) `routing` for actors, from telemetry pass rates; (b) an OS sandbox for `RunCheck` **and** guardrail scripts, closing T16/T18 (Seatbelt first, then bubblewrap/landlock; Windows disclosed); (c) a general argv `Run` tool, only inside that sandbox | `03-roadmap.md` entries |
 
 ### 10.1 Implementation handoff (Phase 1)
 
@@ -543,77 +570,79 @@ Sequenced; each stage green before the next.
 
 | # | Agent | filesTouched | Deliverable |
 |---|---|---|---|
-| 1 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/FakeOpenAiServer.cs` | Scripted write/check tool-call responses (A1–A22 shapes). **Authored before the runner**, as in plan 28. |
-| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/PromptInvocation.cs`, `src/Guardrails.Core/Prompts/WritePolicy.cs`, `src/Guardrails.Core/Model/PromptRunnerConfig.cs` | `WriteGrant`, `InSessionCheck`, `WritePolicy` (§5.3), the four build facts, `ServesRoles` growth |
-| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs` | Write / Edit / Delete / RunCheck / `Read.revision`; null-grant refusal; think-stripping; text-tool-call detection; transcript and stream-log lines |
-| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs`, `src/Guardrails.Core/Execution/PermissionWallTracker.cs`, `src/Guardrails.Core/Execution/RetryPolicy.cs`, `src/Guardrails.Core/Prompts/PromptComposer.cs`, `src/Guardrails.Core/Execution/SchedulerFactory.cs` | Grant construction; RunCheck closures and the post-check strip; tamper-check belt; the #104 condition; capability-aware salvage and worktree-safety sections; withheld profiles |
-| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | GR2066 narrowing, GR2083, GR2071 extension |
-| 6 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionContainmentTests.cs`, `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionPlanTests.cs` | The §9 table and harness-level acceptances |
-| 7 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/plan-breakdown/references/schemas.md` | §8's SSOT edits, both halves of the drift-tested mirror |
-| 8 | `guardrails-skill-author` | `.claude/skills/plan-breakdown/SKILL.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | Local-actor routing guidance; domain knowledge |
+| 1 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/FakeOpenAiServer.cs` | Scripted write/check/think/text-call responses for A1–A29. Authored before the runner. |
+| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/PromptInvocation.cs`, `src/Guardrails.Core/Prompts/WritePolicy.cs`, `src/Guardrails.Core/Io/RealPath.cs`, `src/Guardrails.Core/Model/PromptRunnerConfig.cs` | `WriteGrant`; `WritePolicy` (§5.3) with the final-path canonicalizer; build facts |
+| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/OpenAiCompatPromptRunner.cs` | The tools; null-grant refusal; zero-call `Error`; text-call detection; think-stripping; `RunCheck` stubbing; id synthesis; transcript and stream-log lines |
+| 4 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/TaskExecutor.cs`, `src/Guardrails.Core/Execution/HarnessWrite.cs`, `src/Guardrails.Core/Execution/PermissionWallTracker.cs`, `src/Guardrails.Core/Execution/RetryPolicy.cs`, `src/Guardrails.Core/Prompts/PromptComposer.cs` | Grant construction (both modes); `RunCheck` closures with reaping, eligibility and the worktree strip with the saved patch; the `needsHarnessWrite` refusal; the #104 condition; the #452 bound; the two-overflow halt; capability-aware prompt sections |
+| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/SchedulerFactory.cs`, `src/Guardrails.Cli/Commands/BreakdownCommand.cs` | `ServesActionProfiles` at resolution, `WithheldActionProfiles`, the `--runner-config` refusal |
+| 6 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | GR2066 narrowing; GR2083 with the self-grading count; GR2071 extension |
+| 7 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/ProvidersCommand.cs` | The context-shift assertion in `providers check` |
+| 8 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionContainmentTests.cs`, `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionPlanTests.cs` | §9's table and acceptances, serial mode first |
+| 9 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/plan-breakdown/references/schemas.md` | §8's edits, both halves of the mirror |
+| 10 | `guardrails-skill-author` | `.claude/skills/plan-breakdown/SKILL.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | §7.1 guidance; domain knowledge |
 
-Stage 4 is wide on purpose: it is the composition-root wiring, and splitting it is how the #378/#382 class
-(a green unit layer over a broken real path) happened. It is gated by the stage-6 harness-level acceptances.
+Stage 4 is wide on purpose. It is the composition-root wiring, and splitting that is how the #378/#382 class
+of bug happened. It is gated by stage 8's acceptances.
 
 ---
 
 ## 11. Devil's advocate
 
-**Strongest counter-argument: "`RunCheck` is a shell in disguise. The model writes code and makes the harness
-run it, so the containment claim is hollow."**
-*Response:* it is code execution, and §4 T18 says so in a warning callout rather than a footnote. Code
-execution, though, is not the boundary #544 names. The failure #544 names is the *actor's tools* producing
-state the harness cannot account for. Every run already executes model-authored code at the gate, on every
-runner, and #544 does not change that exposure. It changes its timing, and T19 records what ran each time.
-Sandboxing that execution is a harness-wide bet (Phase 3b) that would cover Claude and Cursor too, and it
-should not be smuggled in as a local-runner feature.
+**"`RunCheck` is a shell in disguise, and now also a read oracle."**
+Both are true, and both are labeled (T16, T18, and the warning callout in §4). What #544 names is the
+*actor's tools* producing state the harness cannot account for, and those tools are enforced. The
+execution and read exposure of model-authored code exists on every runner at the gate. `RunCheck` adds
+repetition and an output channel back to the model, which is a genuine increase, and `GR2083` says so. The fix
+is a harness-wide sandbox (Phase 3b). Question `shell-posture` lets the maintainer drop `RunCheck` if that
+trade is not wanted.
 
-**"The call-time check and phase 1 share `IsInScope`, so a matcher bug is common-mode."**
-*Response:* true for the *predicate*. The observations are independent, though: phase 1 reads the actual tree
-through git, so it also sees `RunCheck` side effects, and anything else that wrote. The matcher carries plan
-08's 27-row truth table and fuzz properties. The residual risk is a scope-matcher bug that affects every
-runner equally.
+**"Serial mode has no second line."**
+Mostly true. In serial mode the only DETECTED layer is the tamper check. The write policy is the whole
+boundary, which is why §5.3 canonicalizes to final paths, why the protected-segment matching is
+case-insensitive everywhere, and why A5, A6 and A8 run in serial mode first. It is still strictly more than
+a Claude action in serial mode gets, which is nothing.
 
-**"No shell makes the local actor too weak to be worth shipping."**
-*Response:* possibly, and this is measurable rather than arguable. Most edit-the-code tasks need
-read → write → build → test, and `RunCheck` provides the last two. Tasks that need `dotnet new` or
-`npm install` belong in script actions, which `plan-breakdown` can emit. If the Phase 1 dogfood shows
-otherwise, question `shell-posture` names the next step, and Phase 3c is where it lands safely.
+**"The call-time check and phase 1 share `IsInScope`."**
+The predicate is shared; the observation is not. Phase 1 reads the actual tree through git. The matcher
+carries plan 08's truth table and fuzz properties.
 
-**"Relaxing GR2066 without an opt-in key lets a copied plan route actions local by accident."**
-*Response:* each legal route is an explicit human edit (`default`, `action.runner`, frontmatter), and GR2083
-fires on every one of them. Plans that validate today do not change behavior. The one plan shape whose
-behavior changes is a sole local runner, which today is a hard error. Question `action-declaration` offers
-the stricter alternative.
+**"No shell makes the actor too weak."**
+Measurable. The Phase 1 exit gate is a real-Qwen dogfood run on a Bifrost-shaped task, not an argument.
 
 ---
 
 ## 12. Decisions for the maintainer
 
 :::question
-{ "id": "shell-posture", "title": "What command capability does a local actor get in v1?", "mode": "single", "options": ["RunCheck only: the task's own reviewed script guardrails, no model-authored commands", "Nothing: file tools only, the gate is the only build/test", "RunCheck plus an unsandboxed argv Run tool with a per-task program allowlist"], "recommended": "RunCheck only: the task's own reviewed script guardrails, no model-authored commands", "rationale": "RunCheck gives the model a build/test loop while every command it can cause is one a reviewer already approved, and it adds no execution the gate would not do anyway. File tools alone make a weak model wait a full retry to see a compile error. An unsandboxed argv tool contains nothing once dotnet or npm runs model-written code, so it only becomes honest inside the Phase 3 sandbox.", "target": "human" }
+{ "id": "shell-posture", "title": "What command capability does a local actor get in v1?", "mode": "single", "options": ["RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "Nothing: file tools only, the gate is the only build/test", "RunCheck plus an unsandboxed argv Run tool with a per-task program allowlist"], "recommended": "RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "rationale": "RunCheck gives the model a build/test loop in which every command is one a reviewer approved. Its cost, stated plainly in T16, is that model-written test code can print what it reads back to the model, a read oracle the gate-only path lacks. File tools alone remove that at the price of a full retry per compile error. An unsandboxed argv tool contains nothing once dotnet or npm runs model-written code.", "target": "human" }
 :::
 
 :::question
-{ "id": "action-declaration", "title": "What makes an openai-compat block legal for task actions?", "mode": "single", "options": ["The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "An explicit opt-in key on the block, e.g. \"actions\": true, else GR2066 stays an error"], "recommended": "The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "rationale": "Each legal route is already a deliberate edit, and no plan that validates today changes behavior. An opt-in key re-creates what plan 28 section 3.5 rejected, a config key that reads like a capability declaration, and it adds a step that a local-only operator will always take anyway.", "target": "human" }
+{ "id": "action-declaration", "title": "What makes an openai-compat block legal for task actions?", "mode": "single", "options": ["The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "An explicit opt-in key on the block, e.g. \"actions\": true, else GR2066 stays an error"], "recommended": "The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "rationale": "Each legal route is already a deliberate edit, and no plan that validates today changes behavior. An opt-in key re-creates the capability-sounding config key plan 28 section 3.5 rejected, and a local-only operator would always set it anyway.", "target": "human" }
 :::
 
 :::question
-{ "id": "harness-action-profiles", "title": "When may ai-merge and breakdown run on a local block?", "mode": "single", "options": ["Phase 2, after the Phase 1 dogfood and after #557 is fixed", "In v1, with exact write grants (the merge-out file; the wave folder)"], "recommended": "Phase 2, after the Phase 1 dogfood and after #557 is fixed", "rationale": "The grant mechanism makes both cheap, but breakdown's correct scope is exactly what #557 says the Claude path gets wrong today. Shipping a local breakdown before that is settled would give two runners two different answers to the same question. Until then a local default leaves AI-merge off (conflicts settle needs-human) and JIT breakdown honest-halts, both announced at run start.", "target": "human" }
+{ "id": "self-grading", "title": "Plan 28 Finding 1 assumed a local judge only exists where a human pinned one. With default: local, every unpinned prompt judge grades its own actor's model. What should validate do?", "mode": "single", "options": ["Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "Error: every prompt judge in a task whose actor is local must be pinned to a different block", "Accept silently: deterministic guardrails carry the gate and prompt judges are advisory in practice"], "recommended": "Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "rationale": "An error would make a single-model local setup unusable, and today that is the maintainer's only option on some days. Silence would re-open the exact premise Finding 1 rested on. A named warning, plus the skill pinning judges to the other Qwen when both are declared, keeps the choice visible and makes the better configuration the default output.", "target": "human" }
 :::
 
 :::question
-{ "id": "routing-for-actors", "title": "When may routing make a local block a tier candidate for actions?", "mode": "single", "options": ["Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "With Phase 1, requiring strength and costly to be declared on the block"], "recommended": "Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "rationale": "Pinning covers the immediate need (Claude and Cursor budgets exhausted, so default local). Routing is the harness choosing a local model on its own, and plan 28 section 3.7 set that bar at measurement. Phase 1 dogfood runs are exactly what produce that measurement.", "target": "human" }
+{ "id": "harness-action-profiles", "title": "When may ai-merge and breakdown run on a local block?", "mode": "single", "options": ["Phase 2, after the Phase 1 dogfood and after #557 is fixed", "In v1, with exact write grants (the merge-out file; the wave folder)"], "recommended": "Phase 2, after the Phase 1 dogfood and after #557 is fixed", "rationale": "The grant mechanism makes both cheap, but breakdown's correct scope is what #557 says the Claude path gets wrong today. Until then a local default leaves AI-merge off (conflicts settle needs-human), JIT breakdown honest-halts, and guardrails breakdown --runner-config refuses, all announced.", "target": "human" }
+:::
+
+:::question
+{ "id": "routing-for-actors", "title": "When may routing make a local block a tier candidate for actions?", "mode": "single", "options": ["Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "With Phase 1, requiring strength and costly to be declared on the block"], "recommended": "Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "rationale": "Pinning covers the immediate need. Routing is the harness choosing a local model on its own, and plan 28 section 3.7 set that bar at measurement, which the Phase 1 runs produce.", "target": "human" }
 :::
 
 ---
 
 ## 13. What v1 deliberately does not do
 
-- Give the model a shell or any model-authored command (§3.2, `shell-posture`).
-- Contain code the model wrote when that code is executed (T18, Phase 3b).
-- Serve `ai-merge` or `breakdown` (Phase 2), or declare `routing` (Phase 3a).
-- Compact context. `ContextOverflow` fails the attempt honestly.
-- Parse tool calls out of free text, ever.
-- Manage the model server: start or stop `llama-server`, load models, or swap between them.
-- Change a single byte of the judge or advisory path plan 28 shipped (A20).
+- Give the model a shell or any model-authored command.
+- Contain code the model wrote when it runs, including what that code reads (T16, T18).
+- Strip `RunCheck` side effects in serial mode.
+- Serve `ai-merge` or `breakdown`, or declare `routing`.
+- Summarize context. It only replaces superseded `RunCheck` results with a stub.
+- Honor `needsHarnessWrite` for this runner.
+- Parse tool calls out of free text.
+- Manage the model server.
+- Change a byte of plan 28's judge or advisory wire traffic.
