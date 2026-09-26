@@ -18,16 +18,35 @@ public sealed class ClaudePromptRunner : IPromptRunner
 {
     private readonly ProcessRunner _processRunner;
     private readonly string _command;
+    private readonly ClaudeGatewayRunContext? _gatewayRun;
 
-    public ClaudePromptRunner(string name, string command, ProcessRunner processRunner)
+    /// <param name="name">The <c>promptRunners</c> key.</param>
+    /// <param name="command">The executable to launch.</param>
+    /// <param name="processRunner">The process seam.</param>
+    /// <param name="gateway">
+    /// The block's gateway configuration (#782, D3), or null for an ordinary claude block — which launches
+    /// byte-identically to before gateways existed.
+    /// </param>
+    /// <param name="gatewayRun">The run's gateway state (config directory, resolved backend identities), or null.</param>
+    public ClaudePromptRunner(
+        string name,
+        string command,
+        ProcessRunner processRunner,
+        ClaudeGatewayConfig? gateway = null,
+        ClaudeGatewayRunContext? gatewayRun = null)
     {
         Name = name;
         _command = command;
         _processRunner = processRunner;
+        Gateway = gateway;
+        _gatewayRun = gatewayRun;
     }
 
     /// <inheritdoc />
     public string Name { get; }
+
+    /// <summary>The gateway this instance dispatches through (#782), or null for an ordinary claude block.</summary>
+    public ClaudeGatewayConfig? Gateway { get; }
 
     /// <inheritdoc />
     /// <remarks>
