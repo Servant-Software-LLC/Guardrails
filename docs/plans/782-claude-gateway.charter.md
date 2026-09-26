@@ -8,219 +8,320 @@ charter-format-version: 1
 ([`544-local-inference-actions.charter.md` §10, on branch `design/544-local-inference-actions`](https://github.com/Servant-Software-LLC/Guardrails/blob/design/544-local-inference-actions/docs/plans/544-local-inference-actions.charter.md)).
 **Epic:** #786. **Replaces:** the `claude-local` wrapper runbook in #570. **Binds to:** `master` at `812cab3c`.
 
+> **Revision note (round 1).** An adversarial pass of `041fae10` returned *revise*. It checked Claude Code's
+> public docs. Its main finding was that the environment variables are not the only authority Claude Code
+> reads: user settings, project settings, `apiKeyHelper`, OAuth credentials and `fallbackModel` can each
+> override or bypass them. It also found the backend model's identity was asserted and never proven. The
+> lead decided three points, recorded as D1–D3 below and implemented as given:
+> - **D1**, how the harness takes authority over the child's routing and credentials (§1.2);
+> - **D2**, how the backend model is identified (§3.2);
+> - **D3**, where gateway-ness lives (§1.1).
+>
+> Items the reviewer confirmed from the docs are treated as confirmed. Items it could not verify are
+> assigned to the live smoke (§5).
+
 ## What's being asked
 
-The approved #544 sequencing answer is "gateway first". That means Claude Code, pointed through an
-Anthropic-compatible gateway (LiteLLM) at a local model (`llama-server` running Qwen), becomes a **supported,
-validated** configuration of the existing `kind: "claude"` runner. The dogfood results from that path then
-decide how hard to push native #544.
+The approved #544 sequencing answer is "gateway first". Claude Code pointed through an Anthropic-compatible
+gateway (LiteLLM) at a local model (`llama-server` running Qwen) becomes a **supported, validated**
+configuration of the `kind: "claude"` runner. Its dogfood results then decide how hard to push native #544.
+Today it works only through an operator wrapper script (`claude-local`), and #570 lists five ways that fails
+silently.
 
-Today it works only through an operator wrapper script (`claude-local`), and #570 lists five ways it fails
-silently. This design moves the wrapper's job into two block keys. It adds checks for those traps, a preflight,
-and provenance so the dogfood numbers can be attributed. It builds no new runner.
+**Placement:** harness (config, child launch, validation, preflight, provenance), SSOT §2, §9.6 and a new §9.10,
+README, and a live smoke. **Invariants:**
+- **1 (deterministic gates):** untouched.
+- **5 (honest halts):** a wrong backend, a dead gateway or an unresolved token halts before any task runs.
+- **6 (light setup):** the operator still runs `llama-server` and LiteLLM; the harness never starts either.
 
-**Placement:** harness (config, env, validation, preflight, provenance), SSOT §2 and a new §9.10, README, and a
-live smoke script. No skill changes beyond the schema mirror.
+**Support posture, disclosed.** Anthropic documents gateways for its own models. Running non-Claude models
+through one is outside what Claude Code supports. The smoke records `claude --version` and is re-run on every
+CLI upgrade (§5).
 
-**Invariants in play:**
-- **1 (deterministic gates):** untouched. The gateway changes which model answers, not how the gate decides.
-- **5 (honest halts):** a dead gateway or a missing token halts before any task runs.
-- **6 (light setup):** the operator still runs `llama-server` and LiteLLM. The harness never starts or
-  manages them.
-
-## 1. Config contract
+## 1. Contract
 
 ```jsonc
 "qwen36": {
   "kind": "claude",
-  "baseUrl": "http://127.0.0.1:4000",   // NEW. Absolute http/https, WITHOUT a trailing /v1 (Claude Code appends /v1/messages)
-  "authTokenEnv": "LITELLM_KEY",        // NEW, optional. The NAME of an env var; its value becomes ANTHROPIC_AUTH_TOKEN
-  "model": "Qwen"                       // REQUIRED on a gateway block (GR2084)
+  "baseUrl": "http://127.0.0.1:4000",   // NEW. Absolute http/https; no userinfo, no query; trailing "/" normalized
+  "authTokenEnv": "LITELLM_KEY",        // NEW, optional. The NAME of an env var whose value becomes ANTHROPIC_AUTH_TOKEN
+  "model": "Qwen",                      // REQUIRED on a gateway block
+  "contextTokens": 32768,               // widened from openai-compat: the PER-SLOT window of the backend (§1.3)
+  "backendModel": "qwen3.6-35b-a3b"     // NEW, optional. What the backend must have loaded (§3.2)
 }
 ```
 
-Both keys are **block-level only** and apply only to `kind: "claude"`. Declaring either key under
-`guardrailOverrides`, or on any other kind, is `GR2084`. A block with `baseUrl` is a **gateway block**. A
-`claude` block without one is byte-identical to today, down to the child environment.
+All four gateway keys are **block-level only** and allowed only on `kind: "claude"`. A block with `baseUrl` is a
+**gateway block**. A `claude` block without one launches byte-identically to today.
 
-### 1.1 The child environment of a gateway block
+### 1.1 Where gateway-ness lives (D3)
 
-`ClaudePromptRunner.BuildEnvironment` currently overlays the harness `GUARDRAILS_*` set, the output-token cap,
-and then the user's `env` map, which wins last. Everything else is inherited from the operator's shell
-(`ProcessRunner.ApplyEnvironment` scrubs only undeclared `GUARDRAILS_*`). For a gateway block it gains three
-steps, in this order.
+`PromptRunnerRegistry` builds the `ClaudePromptRunner` instance with the block's gateway configuration. Every
+invocation dispatched **to that instance** is a gateway dispatch, whichever call site produced it: a task
+action, a tier route, a judge, `ai-merge` (`AiMergeResolver`), `breakdown`, `ai-triage` or `overwatch`. The
+instance owns all of the following, in one place:
 
-1. **Scrub the inherited routing and credentials.** Remove every inherited `ANTHROPIC_*` variable, plus
-   `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`. The failures this prevents:
-   - an ambient `ANTHROPIC_API_KEY` would be sent to the gateway as `x-api-key`, leaking a real Anthropic key
-     to a server that may not be local;
-   - an ambient `ANTHROPIC_BASE_URL` or `ANTHROPIC_MODEL` could route around the block;
-   - a Bedrock or Vertex switch would send the request to a cloud provider entirely.
+- the launch (§1.2);
+- the provenance fields `Gateway` and `BackendModel` (§4);
+- the null cost (§4), which also makes `AiMergeResolver`'s `AddOverheadCost` a no-op for a gateway merge.
 
-   This needs `ApplyEnvironment` to accept removals. Today it only overlays values.
-2. **Set the harness-owned values:**
+**An invocation's settings can come from a different block** (for example `runnerConfig` A routed to gateway
+runner B). The instance therefore **drops** any owned or scrubbed variable from `invocation.Settings.Env`,
+compared case-insensitively, and records the drop in the stream log's first line. Those settings can never
+re-introduce what the gateway removed.
+
+### 1.2 Taking authority over the child (D1)
+
+Claude Code reads routing, credentials and model choice from several places besides its environment. So every
+gateway dispatch uses **both** of the following layers.
+
+**(a) An isolated config directory.** The child runs with `CLAUDE_CONFIG_DIR` pointing at a per-run scratch
+directory (`logs/<runId>/claude-config/`, created empty). That removes the user-level settings `env`,
+`apiKeyHelper`, stored OAuth credentials, `fallbackModel`, and user agents and hooks.
+
+- **The cost, stated:** the child also gets no user `CLAUDE.md`, user skills, memory or user MCP servers.
+  For a harness actor that is arguably desirable: a hermetic child is one whose behavior the plan, not the
+  operator's home directory, determines.
+
+**(b) A harness `--settings` file on every gateway dispatch.** Command-line settings outrank **project**
+settings, which (a) does not remove. A target repository's `.claude/settings.json` could otherwise set
+`ANTHROPIC_BASE_URL` in its own `env` and redirect the child. The harness writes **one** composed settings
+file into the attempt log directory, containing:
+
+- `env`: the owned values (below);
+- `model` and `fallbackModel`: both the block's `model`, so no fallback chain can leave the gateway;
+- `hooks`: the worktree containment hook, when that splice applies (`ActionRunner.cs:193-197` today appends
+  its own `--settings`). For a gateway dispatch the instance **merges** that hook into the composed file and
+  passes a single `--settings`. It never passes two, because whether the CLI merges repeated flags is
+  unverified.
+
+A user `--settings` in a gateway block's `extraArgs` is `GR2084`, because on a gateway dispatch the harness
+owns that flag.
+
+**Managed settings outrank both layers.** The preflight (§3) therefore reads the documented managed-settings
+sources for the host OS and **halts** if any of them sets a routing, credential or model-alias variable. The
+harness cannot override those, so it refuses to pretend it can.
+
+**The child environment,** built by the instance in this order:
+
+1. **Scrub,** comparing names with the OS's `EnvNameComparison` (case-insensitive on Windows):
+   - every inherited `ANTHROPIC_*` variable;
+   - every `CLAUDE_CODE_USE_*` variable (Bedrock, Vertex and the rest);
+   - `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`;
+   - any inherited `CLAUDE_CONFIG_DIR`.
+2. **Apply the harness set and the user's `env` map** as today, minus owned and scrubbed keys (§1.1).
+3. **Set the owned values.** The same values also go into the composed settings file's `env`:
    - `ANTHROPIC_BASE_URL` = `baseUrl`;
-   - `ANTHROPIC_AUTH_TOKEN` = the value of `$authTokenEnv`. If `authTokenEnv` is absent, it is set to the
-     fixed, non-secret string `guardrails-gateway-no-auth`. Always setting the token means Claude Code never
-     falls back to the operator's own login and sends that credential to the gateway (asserted by the live
-     smoke, §5);
-   - `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` = the block's `model`. Claude Code's
-     background small-model calls then go to the same model instead of a `claude-haiku-*` name that LiteLLM
-     cannot route (#570's open unknown);
-   - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Only local models are approved, so Claude Code's
-     telemetry, error reporting and update checks should not leave the machine. This one is a default, and
-     the `env` map may override it.
-3. **Apply the user's `env` map last,** as today. An entry for one of the three owned credential and routing
-   variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`) is `GR2084`: two sources for
-   one value is a surprise whichever one wins. Other `ANTHROPIC_*` entries (for example
-   `ANTHROPIC_CUSTOM_HEADERS`) are passed through.
+   - `ANTHROPIC_AUTH_TOKEN` = the value of `$authTokenEnv`, or the fixed non-secret
+     `guardrails-gateway-no-auth` when `authTokenEnv` is absent;
+   - `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+     `ANTHROPIC_DEFAULT_FABLE_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` = the block's `model`, so that aliases,
+     background calls and subagents all resolve to it (#570 trap 1);
+   - `CLAUDE_CODE_MAX_CONTEXT_TOKENS` = `contextTokens`, when it is declared;
+   - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
+   - `CLAUDE_CONFIG_DIR` = the scratch directory.
 
-**`guardrailOverrides.env` replaces `env` wholesale** (`PromptRunnerSettings.With`). Steps 1 and 2 still run
-for judges on a gateway block, because they come from block-level keys and not from the settings merge.
+**Every owned variable is owned outright.** Setting one in the block's `env` is `GR2084`, and the check is
+always case-insensitive. That includes `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Claude Code treats any
+non-empty value as "set", including `"0"`, so there is no value an operator could supply that re-enables the
+traffic. The key is owned rather than offered as an override that could not work.
 
-**`authTokenEnv` names a variable that is unset or empty at run start:** the run halts in preflight (§3) and
-names the variable. It never proceeds with the placeholder, because the operator declared that a token is
-needed.
+**What still leaves the machine, disclosed.** The documentation says some features call `api.anthropic.com`
+directly, not the base URL (for example fast-mode checks and WebFetch's safety check). Whether
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` suppresses those is **unverified**. The smoke records any such
+request (§5). The design does **not** claim that nothing leaves the machine.
 
-The Claude Code environment variable names above are quarantined in `ClaudePromptRunner`, next to
-`CLAUDE_CODE_MAX_OUTPUT_TOKENS`. They are Claude Code's documented names at the time of writing. The live
-smoke is what proves the installed CLI honors them.
+**Agent shells inherit `ANTHROPIC_AUTH_TOKEN`,** because the Bash tool's subprocesses get the child
+environment. For a local gateway without authentication that value is the placeholder and harmless. For a
+remote gateway with a real token, commands the model runs can read it. This is disclosed in the SSOT and
+README.
+
+`authTokenEnv` naming a variable that is **unset or empty** at run start is a preflight halt that names the
+variable.
+
+### 1.3 Context window (W5)
+
+`contextTokens` (already an `openai-compat` key, and widened here to gateway blocks) sets
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, so Claude Code compacts before the backend's window fills.
+
+- **It must be the per-slot window.** `llama-server -c C -np N` gives each slot `C / N` tokens.
+- **The preflight checks it.** When §3.2 resolves the backend, the preflight halts if `contextTokens`
+  exceeds the per-slot `n_ctx` reported by `/props`.
+- **Unverified, and assigned to the dogfood:** whether Claude Code honors the variable on a non-Anthropic
+  model. §7 records compaction events for this reason.
 
 ## 2. Validation (static, offline)
 
-`GR2083` is reserved by name for #544. This design takes **GR2084–GR2086** and moves the marker to `GR2087`.
+`GR2083` is reserved by name for #544 and is not yet in `master`. This work **lands that reservation** as a
+comment in `DiagnosticCodes.cs` and in the SSOT §9.6 marker, takes **GR2084–GR2086**, and advances the marker
+to `GR2087`.
 
 | Code | Sev | Rule |
 |---|---|---|
-| `GR2084` | error | `ClaudeGatewayBlockInvalid`: `baseUrl` is not an absolute http/https URL, or its path ends in `/v1`; `authTokenEnv` is not a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`, which also rejects a pasted `sk-…` secret); either key appears on a non-`claude` block or under `guardrailOverrides`; a gateway block has no `model`; or the `env` map sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` on a gateway block |
-| `GR2085` | warning | `ClaudeModelNameToGateway`: a model string that is a Claude id (`claude-*`) or alias (`sonnet`, `opus`, `haiku`, `opusplan`) would reach a gateway block, from the block's own `model`, a `routing` tier, a task's `action.model`, or a judge's frontmatter pin. This is #570 trap 1. It is a warning rather than an error because a LiteLLM `model_list` may alias that name on purpose |
-| `GR2086` | warning | `ClaudeGatewayModelsShareEndpoint`: `maxParallelism > 1` and two or more distinct models resolve to one `baseUrl`. Two models behind one gateway work if each has its own backend. They fail or thrash if both share one single-model `llama-server` |
+| `GR2084` | error | `ClaudeGatewayBlockInvalid`. Covers: `baseUrl` not absolute http/https, carrying userinfo or a query, or with a path ending `/v1` or `/v1/messages` (Claude Code appends `/v1/messages`); `authTokenEnv` not a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`, which rejects a pasted `sk-…` secret); a gateway key on a non-`claude` block or under `guardrailOverrides`; a gateway block with no `model`; an **owned variable** (§1.2) in `env`, checked case-insensitively; or `--settings` in the block's `extraArgs` |
+| `GR2085` | warning | `ClaudeModelNameToGateway`. A model string would reach a gateway block and is a Claude model, meaning it contains `claude` anywhere (so `anthropic.claude-…` and `us.anthropic.claude-…` count too) or is an alias (`sonnet`, `opus`, `haiku`, `fable`, `opusplan`, `default`), case-insensitively and with any `[1m]`-style suffix removed first. Sources scanned: the block's `model`; a `routing` tier; `action.model`; a judge's frontmatter pin; and `--model` or `--fallback-model` in `extraArgs` (base and `guardrailOverrides`). A warning, because a LiteLLM `model_list` may map that name on purpose |
+| `GR2086` | warning | `ClaudeGatewayModelsShareEndpoint`. `maxParallelism > 1`, and two or more distinct models resolve to one gateway. Gateways are compared after normalizing the host (`localhost` / `127.0.0.1` / `::1`) and a trailing `/`. The static half of §3.2's halt |
 
-A **gateway block's `model` is required** because without `--model` Claude Code sends its own default model id.
-A **gateway block also draws a run-start `Note:`** stating that cost is not recorded (§4). GR2009's PATH probe
-of `command` still applies, because Claude Code is still what gets launched.
+`GR2009`'s PATH probe of `command` still applies, because Claude Code is still what gets launched.
 
-## 3. Preflight and mid-run failures
+## 3. Preflight
 
-**Run preflight.** This joins `PlanPreflightPhase` beside the openai-compat endpoint check, with the same
-pattern: pre-DAG, so it burns no task retries; it halts the run before any task is scheduled; and it is
-recorded as the journal's top-level `halt`. It runs once per distinct `baseUrl`, and then once per distinct
-(`baseUrl`, `model`):
+This joins `PlanPreflightPhase` beside the openai-compat endpoint check, using the same pattern: it runs
+before the DAG, burns no retries, and records a halt as the journal's top-level `halt`. A plan with no gateway
+block makes **zero** connections, proven with a loopback listener that fails on any accepted connection.
 
-| Probe | Pass | Halt | Warn |
-|---|---|---|---|
-| `authTokenEnv` resolves to a non-empty value | yes | unset or empty, naming the variable | — |
-| `GET {baseUrl}/v1/models`, with the token as `Authorization: Bearer` | 200, with `model` among `data[].id` | refused, DNS, timeout, TLS, 5xx, 401/403; or the model is not listed | 404/405: the listing is not offered, so the model assertion is skipped |
-| `POST {baseUrl}/v1/messages`, one user turn, `max_tokens: 256` | 200 with at least one content block | any non-200, with the gateway's error text quoted | — |
+### 3.1 Reachability
 
-The message probe exists because LiteLLM answering `/v1/models` says nothing about whether `llama-server`
-behind it is up and has the model loaded. `max_tokens` is 256 rather than a handful because a reasoning model
-spends its first tokens thinking (#759). A plan with no gateway block makes **zero** connections, proven by a
-loopback listener that fails on any accepted connection, exactly as plan 28 proves it.
+| Probe | Once per | Halt when |
+|---|---|---|
+| Managed-settings sources for this OS | run | any of them sets an owned or scrubbed variable (§1.2) |
+| `authTokenEnv` | gateway block | unset or empty |
+| `GET {baseUrl}/v1/models`, sending `Authorization: Bearer` | `baseUrl` | refused, DNS, timeout, TLS, 5xx, 401/403, or `model` not in `data[].id`. A 404/405 downgrades to a warning and skips the model check |
+| `POST {baseUrl}/v1/messages`, `max_tokens: 256` | (`baseUrl`, `model`) | not a 200 with a content block (the error text is quoted). The larger `max_tokens` leaves room for a reasoning model's thinking (#759) |
 
-**`guardrails providers check <block>`** gains a gateway mode. It performs a `tool_use` round trip through the
-gateway, which exercises the Anthropic-to-OpenAI tool-call translation. It is manual and not in CI, like the
-rest of `providers check`.
+### 3.2 Backend identity (D2)
 
-**Mid-run failures keep the shipped classification.** `ClaudeSignalClassifier` already treats `connection
-refused/reset/error` and 429/503/529 as `Transient`, which is the bounded #115 pause with no retry burn.
-Examples:
-- a LiteLLM restart is classified correctly;
-- a crashed `llama-server` behind a live LiteLLM comes back as a 5xx carrying "connection refused", and is
-  also `Transient`;
-- a model LiteLLM does not know is a 400, and is `Error`.
+LiteLLM answering says nothing about which model is actually loaded behind it. That is how #760's silent
+substitution happens: a `Qwen3.8` alias served by a `llama-server` that still has 3.6 loaded. So the preflight
+resolves the backend identity deterministically, for each (`baseUrl`, `model`):
 
-The one change is that a gateway block's attempt summary and pause notice add `(via gateway <baseUrl>)`, so
-the operator knows which server to restart. The classifier's vendor quarantine is not touched.
+1. **`GET {baseUrl}/model/info`** (LiteLLM). Find the entry for `model` and read `litellm_params.api_base`
+   and `litellm_params.model`.
+2. **Ask that backend what it has loaded:** `GET {api_base}/props` (`llama-server`: the model path or alias,
+   and the per-slot `n_ctx`), or failing that `GET {api_base}/v1/models`.
+3. **The identity** is the pair (normalized `api_base`, loaded model id). It is recorded in provenance as
+   `BackendModel` (§4).
 
-## 4. Provenance, cost and telemetry
+The preflight **halts** when:
+- two distinct `model` strings in one plan resolve to the **same** backend identity (#760);
+- an operator-declared `backendModel` does not match the loaded model id;
+- `contextTokens` exceeds the backend's per-slot `n_ctx` (§1.3).
 
-- **`AttemptProvenance.Gateway`** (a new string field) holds the `baseUrl` with any userinfo removed. It is set
-  for every attempt and judge that ran on a gateway block. `Runner`, `Model` and `RequestedModel` already
-  record the block and the model string. The telemetry row (SSOT §15.2) gains the same field. Without it, the
-  #544 dogfood numbers could not be told apart from Claude runs.
-- **Cost is recorded as `null` for gateway blocks.** Claude Code's `total_cost_usd` is computed from
-  Anthropic's price list for whatever model name it believes it used. Against Qwen it is fiction, and a
-  fictional number would feed `maxCostUsd` and the telemetry corpus as if real. The cost is `null`, not `0`,
-  because a zero would claim the run was free (§9's cost rule). `Usage` (token counts) is kept, because the
-  gateway reports real counts. The consequence is that `maxCostUsd` cannot bind on a gateway block, as with
-  `cursor` and `openai-compat`. The run-start `Note:` says so. Question `gateway-cost`.
+**When the identity cannot be resolved** (the gateway is not LiteLLM, `/model/info` is absent, or the backend
+does not answer), nothing is claimed:
+- provenance records `BackendModel: "unverified"`, and the run header says **"backend identity unverified"**
+  for that block;
+- a declared `backendModel` is reported as **"declared, not verified"**, never as matched.
+
+**`ObservedModel` is a CLI echo on this path.** It is the model name Claude Code says it asked for, not
+evidence of what served the request. Provenance labels it that way, and `BackendModel` is the only field that
+makes a claim about the backend.
+
+**Point-in-time.** This is checked once, before the DAG. A backend that swaps models mid-run is not detected.
+D2 narrows #760's window; it does not close it.
+
+### 3.3 Mid-run failures
+
+These keep the shipped `ClaudeSignalClassifier` classification:
+- connection refused, reset or error, and 429/503/529 → `Transient` (the bounded #115 pause);
+- a model LiteLLM does not know → `Error`.
+
+Summaries and pause notices gain `(via gateway <baseUrl>)`. The quarantine is untouched.
+
+`guardrails providers check <block>` gains a manual `tool_use` round trip through the gateway, which exercises
+the Anthropic-to-OpenAI tool-call translation.
+
+## 4. Provenance, cost, telemetry
+
+- **`AttemptProvenance.Gateway`:** the normalized `baseUrl`, without userinfo.
+- **`AttemptProvenance.BackendModel`:** the resolved identity, or `"unverified"`.
+
+Both are set by the gateway instance for every dispatch, so attempts, judges and overhead calls all carry them.
+`TelemetryRow` gains the same two fields. Without them the #544 dogfood numbers could not be told apart from
+Claude runs.
+
+**Cost is `null` at the source.** The gateway instance never reports Claude Code's `total_cost_usd`, which is
+priced from Anthropic's list and is fiction for Qwen. Token counts are kept. Because the cost is null at the
+source, every consumer sees nothing: the attempt, the judge, and `AiMergeResolver.AddOverheadCost`.
+
+The run-start `Note:` says how far `maxCostUsd` still applies:
+- it **does not bind** when every prompt dispatch resolves to a gateway block;
+- it **partially binds** when a tier can escalate to a non-gateway Claude block. Only that spend counts.
+
+(Question `gateway-cost`.)
 
 ## 5. Tests and the live smoke
 
-- **Unit (`ClaudePromptRunner`):**
-  - the gateway environment exactly: scrub set, owned values, placeholder token, background-model aliasing,
-    and that the `env` map wins for non-owned keys;
-  - a non-gateway block's environment is byte-identical to before;
-  - a judge under `guardrailOverrides.env` still gets steps 1 and 2.
-- **Unit (`ApplyEnvironment`):** removals are applied, and an inherited `ANTHROPIC_API_KEY` is absent from the
-  child.
-- **Validator:** one test per `GR2084` clause, and per `GR2085` source (block `model`, routing tier,
-  `action.model`, judge pin). `GR2086` fires at `maxParallelism: 2` and not at 1.
-- **Preflight (integration, loopback fake gateway):** each row of the §3 table; zero connections with no
-  gateway block; one probe per distinct (`baseUrl`, `model`), counted at the listener.
-- **Provenance:** `Gateway` and `CostUsd: null` are read back from the bytes of `run.json`, not from the
-  in-memory object.
-- **Live smoke, `scripts/smoke/claude-gateway-live-smoke.ps1`** (manual, never CI, the same posture as
-  `cursor-live-smoke.ps1`):
-  - it starts a small recording proxy in front of the operator's LiteLLM and runs a one-task plan through it;
-  - it asserts the run is green;
-  - it asserts every `/v1/messages` request carried the block's model, a Bearer token and **no** `x-api-key`;
-  - it asserts no request named a `claude-*` model.
+- **Unit (`ClaudePromptRunner`, `StreamJsonCliSession`):**
+  - the exact scrub (including case variants on Windows), the owned values, the placeholder token, the alias
+    set and `CLAUDE_CODE_SUBAGENT_MODEL`;
+  - the composed `--settings` file, which carries `env`, `model`/`fallbackModel` and the merged containment
+    hook, with exactly one `--settings` flag;
+  - owned keys dropped when they arrive from a different block's settings;
+  - a non-gateway block launches byte-identically to before.
+- **Validator:** one test per `GR2084` clause (including a lowercase `anthropic_base_url` in `env` on
+  Windows); per `GR2085` source and alias form (`us.anthropic.claude-…`, `Sonnet[1m]`, `--fallback-model`);
+  `GR2086` with `localhost` versus `127.0.0.1`.
+- **Preflight (integration):** a loopback fake gateway that serves `/v1/models`, `/model/info` and
+  `/v1/messages`, plus a fake backend `/props`. Each §3.1 and §3.2 halt is covered, and so is the
+  "unverified" disclosure. Zero connections with no gateway block. One probe per key, counted at the listener.
+  The managed-settings halt uses a test-injected source path.
+- **Provenance:** `Gateway`, `BackendModel` and `CostUsd: null` are read from the bytes of `run.json` and a
+  telemetry row, including for an `ai-merge` dispatch.
+- **Live smoke, `scripts/smoke/claude-gateway-live-smoke.ps1`.** Manual, never CI, and re-run on every
+  Claude Code upgrade. It records `claude --version`.
+  1. **Seeds hostile configuration:**
+     - a hostile **user** config in the operator's real config dir: a canary `ANTHROPIC_API_KEY` in settings
+       `env`, a canary `apiKeyHelper`, a redirecting `ANTHROPIC_BASE_URL`, and a `fallbackModel`;
+     - the same set as **project** settings in the target repository.
+  2. **Runs a one-task plan** through a recording proxy in front of LiteLLM. The run must be green.
+  3. **Asserts over every recorded request** (`/v1/models`, `HEAD /api/hello`, `count_tokens`,
+     `/v1/messages`, and subagent requests identified by `x-claude-code-agent-id`):
+     - no canary appears in any header;
+     - every request hit the declared gateway;
+     - no request named a `claude-*` model;
+     - every request carried a Bearer token and no `x-api-key`.
+  4. **Records separately** any connection to `api.anthropic.com` (§1.2's disclosure).
 
-  The smoke is what proves the environment names in §1.1 against the installed Claude Code.
+  The smoke proves the unverified items: the environment names, the precedence of `CLAUDE_CONFIG_DIR` and
+  `--settings`, and whether the subagent and background model aliases take effect.
 
 ## 6. Docs and the runbook replacement
 
-- **README:** a new "Running prompt tasks on a local model through a gateway" section, beside the existing
-  Cursor section.
+- **README:** a "Running prompt tasks on a local model through a gateway" section, beside the Cursor section.
+  It includes the §1.2 disclosures.
 - **SSOT:**
-  - §2 gains `baseUrl` and `authTokenEnv` in the canonical block, mirrored byte-identically into
-    `.claude/skills/plan-breakdown/references/schemas.md`;
-  - a new **§9.10**, "The `claude` runner over a gateway (#782)", holds §1–§4 of this document;
-  - §9.6 gains `GR2084`–`GR2086`.
-- **The #570 runbook, replaced** (posted to #570 and #786 once this ships). The operator still runs
-  `llama-server` and LiteLLM; only the wrapper script goes away.
+  - §2 gains the new keys, mirrored into `.claude/skills/plan-breakdown/references/schemas.md`;
+  - a new **§9.10**, "The `claude` runner over a gateway (#782)", holds §1–§4;
+  - §9.6 gains `GR2084`–`GR2086` and the `GR2083` reservation.
+- **The #570 runbook, replaced** (posted to #570 and #786 when this ships). The operator still runs
+  `llama-server` and LiteLLM.
 
 ```jsonc
 "maxParallelism": 1,
 "promptRunners": {
   "default": "qwen36",
-  "qwen36": { "kind": "claude", "baseUrl": "http://127.0.0.1:4000", "model": "Qwen" },
-  // Qwen 3.8 needs its own backend: a second llama-server on another port, with LiteLLM's
-  // model_list mapping "Qwen3.8" to it. One llama-server holds one model; GR2086 warns
-  // if both are used in one parallel run.
-  "qwen38": { "kind": "claude", "baseUrl": "http://127.0.0.1:4000", "model": "Qwen3.8" }
+  "qwen36": { "kind": "claude", "baseUrl": "http://127.0.0.1:4000", "model": "Qwen",
+              "backendModel": "qwen3.6-35b-a3b", "contextTokens": 65536 },
+  // 3.8 needs its OWN llama-server (another port), mapped in LiteLLM's model_list.
+  // The preflight halts if "Qwen3.8" resolves to the server that has 3.6 loaded.
+  "qwen38": { "kind": "claude", "baseUrl": "http://127.0.0.1:4000", "model": "Qwen3.8",
+              "backendModel": "qwen3.8-27b", "contextTokens": 65536 }
 }
 ```
 
-Three of the five #570 traps are closed by this change:
-- **trap 1** (a Claude model name reaching LiteLLM) by `GR2085` and the background-model aliasing;
-- **trap 2** (`claude-local` choosing the model from its first argument) by construction, since there is no
-  wrapper;
-- **trap 4** (services not started) by the preflight.
+How the five #570 traps end up:
+- **Trap 1** (Claude model names reaching LiteLLM): `GR2085`, plus the owned alias and subagent variables, plus
+  the neutralized `fallbackModel`.
+- **Trap 2** (the wrapper picking the model): gone, because there is no wrapper.
+- **Trap 3** (parallel launches racing): `GR2086` warns, and §3.2's backend-identity check halts.
+- **Trap 4** (services not started): the §3.1 preflight.
+- **Trap 5** (timeouts): remains operator guidance.
 
-Trap 3 (parallel launches racing to start the server) disappears, because the harness starts nothing, and
-`GR2086` covers the model-sharing half. Trap 5 (timeouts on the slower model) remains operator guidance.
+## 7. The Bifrost dogfood
 
-## 7. The Bifrost dogfood, and what it must record
+It is **gated on D2 and §1.3 shipping**, because without backend identity and the context setting its numbers
+cannot be attributed. The maintainer runs it with the live UI. Its scope is question `dogfood-scope`.
 
-This is the evidence the #544 decision point is waiting for.
+| Metric | Source |
+|---|---|
+| turns to green; attempts per task | `run.json` (`NumTurns`, attempt count) |
+| context overflows and compactions | attempts with a context-length error; compaction events in `claude-stream.jsonl`; whether `CLAUDE_CODE_MAX_CONTEXT_TOKENS` moved compaction earlier (§1.3) |
+| malformed tool-call rate | `tool_use` blocks whose result is an input-validation or parse error, divided by all `tool_use` blocks, from `claude-stream.jsonl` |
+| wall time | per attempt and per task, from the journal |
+| backend identity | `BackendModel` on every attempt (it must be verified, not `"unverified"`) |
 
-- **Run:** see question `dogfood-scope`. It runs serial, with the maintainer using the live UI, and the
-  maintainer launches it.
-- **Metrics:**
-
-  | Metric | Source |
-  |---|---|
-  | turns to green | `NumTurns` per attempt, plus attempts per task, from `run.json` |
-  | context overflows | attempts whose summary carries a context-length error, and whether Claude Code auto-compacted in time for a 64K backend (Claude Code does not know the backend's window, which is the #544 hypothesis being tested) |
-  | malformed tool-call rate | `tool_use` blocks whose result is an input-validation or parse error, divided by all `tool_use` blocks, from `claude-stream.jsonl` |
-  | wall time | per attempt and per task, from the journal |
-
-  All of it is attributable through `Gateway` (§4) and lands in the telemetry corpus automatically.
-- **Recorded:** as a short results table in a comment on #786, with the run IDs, so the decision point cites
-  data rather than impressions.
+Results are recorded as a table in a comment on #786, with the run IDs.
 
 ## 8. Implementation handoff
 
@@ -228,38 +329,40 @@ Sequenced; each stage green before the next.
 
 | # | Agent | filesTouched | Deliverable |
 |---|---|---|---|
-| 1 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/PromptRunnerConfig.cs`, `src/Guardrails.Core/Loading/RawManifests.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs` | The two keys and the gateway-block predicate |
-| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/ClaudePromptRunner.cs`, `src/Guardrails.Core/Execution/ProcessRunner.cs` | §1.1 environment steps; removals in `ApplyEnvironment`; the `(via gateway …)` summary suffix |
-| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | `GR2084`–`GR2086` |
-| 4 | `guardrails-harness-developer` | `src/Guardrails.Cli/PlanPreflightPhase.cs`, `src/Guardrails.Cli/Commands/ProvidersCommand.cs` | The §3 preflight and the `providers check` gateway mode |
-| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Journal/JournalModel.cs`, `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/GuardrailRunner.cs` | `AttemptProvenance.Gateway`; null cost for gateway blocks |
+| 1 | `guardrails-harness-developer` | `src/Guardrails.Core/Model/PromptRunnerConfig.cs`, `src/Guardrails.Core/Loading/RawManifests.cs`, `src/Guardrails.Core/Loading/PlanLoader.cs`, `src/Guardrails.Core/Prompts/PromptRunnerRegistry.cs` | The keys; gateway configuration handed to the runner instance (D3) |
+| 2 | `guardrails-harness-developer` | `src/Guardrails.Core/Prompts/ClaudePromptRunner.cs`, `src/Guardrails.Core/Prompts/StreamJsonCliSession.cs`, `src/Guardrails.Core/Execution/ProcessRunner.cs`, `src/Guardrails.Core/Prompts/WorktreeContainmentHook.cs` | §1.2: scrub, owned values, `CLAUDE_CONFIG_DIR`, the composed `--settings` with the merged hook, owned-key drops, the gateway summary suffix, null cost |
+| 3 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | `GR2084`–`GR2086`; the `GR2083` reservation |
+| 4 | `guardrails-harness-developer` | `src/Guardrails.Cli/PlanPreflightPhase.cs`, `src/Guardrails.Cli/Commands/ProvidersCommand.cs` | §3.1–§3.2 preflight; the `providers check` gateway mode |
+| 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Journal/JournalModel.cs`, `src/Guardrails.Core/Telemetry/TelemetryRow.cs`, `src/Guardrails.Core/Execution/ActionRunner.cs`, `src/Guardrails.Core/Execution/GuardrailRunner.cs`, `src/Guardrails.Core/Execution/AiMergeResolver.cs` | `Gateway` / `BackendModel` provenance and telemetry; the ActionRunner splice handed to the gateway instance to compose |
 | 6 | `guardrails-test-author` | `tests/Guardrails.Core.Tests/ClaudeGatewayEnvironmentTests.cs`, `tests/Guardrails.Integration.Tests/ClaudeGateway/ClaudeGatewayPreflightTests.cs` | §5's unit, validator, preflight and provenance tests |
-| 7 | `guardrails-harness-developer` | `scripts/smoke/claude-gateway-live-smoke.ps1` | The live smoke with its recording proxy |
+| 7 | `guardrails-harness-developer` | `scripts/smoke/claude-gateway-live-smoke.ps1` | The hostile-config live smoke |
 | 8 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/plan-breakdown/references/schemas.md`, `README.md` | §6's documentation edits |
 
 ## 9. Devil's advocate
 
-**"This is sugar over the `env` map, which already works."** Partly. The `env` map can set
-`ANTHROPIC_BASE_URL` today. What it cannot do:
-- remove an inherited `ANTHROPIC_API_KEY`, which then leaks to the gateway;
-- tell `validate` that a block is a gateway, so trap 1 cannot be warned about;
-- give the preflight an endpoint to probe;
-- give provenance a fact to record.
+**"Two isolation layers plus a managed-settings check is heavy for a config feature."** Each layer closes a
+different authority:
+- the config directory removes user settings, `apiKeyHelper` and OAuth;
+- `--settings` outranks project settings;
+- managed settings cannot be outranked at all, so the harness can only detect them and refuse.
 
-Every one of those is a failure that is silent today. The keys exist so the harness knows what the operator
-meant.
+Dropping any one of the three leaves a path by which a request reaches a server the plan did not name, with
+a credential it did not grant.
 
-**"Setting Claude Code environment variables couples us to vendor names that can change."** True, and it is
-already the case for `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. The names are quarantined in one class, and the live
-smoke is the check that catches a rename, because a renamed variable shows up there as a `claude-haiku-*`
-request or an `x-api-key` header.
+**"The backend probe is LiteLLM-specific."** Yes, and it says so. A gateway it cannot see through is
+recorded as unverified instead of being assumed correct. `backendModel` gives the operator a way to state
+the expectation, and the harness only claims it matched when it has checked.
+
+**"The config directory strips the child's user skills and `CLAUDE.md`."** That is intended. A harness actor's
+behavior should come from the plan and the repository, not from the operator's home directory, and the gateway
+path is where that matters most, since the dogfood results must be reproducible.
 
 ## 10. Decisions for the maintainer
 
 :::question
-{ "id": "gateway-cost", "title": "What cost should a gateway block record?", "mode": "single", "options": ["null: record no cost; tokens are kept; maxCostUsd cannot bind on gateway blocks and the run-start Note says so", "Keep Claude Code's computed total_cost_usd"], "recommended": "null: record no cost; tokens are kept; maxCostUsd cannot bind on gateway blocks and the run-start Note says so", "rationale": "Claude Code prices the call from Anthropic's list for the model name it thinks it used; against local Qwen that number is fiction. Feeding it to maxCostUsd would halt or not halt a run on a made-up figure, and feeding it to the telemetry corpus would corrupt the cost column the #544 decision reads. Tokens are real and stay. The cost is that the budget brake does not apply to local work, which is already true of cursor and openai-compat.", "target": "human" }
+{ "id": "gateway-cost", "title": "What cost should a gateway dispatch record?", "mode": "single", "options": ["null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "Keep Claude Code's computed total_cost_usd"], "recommended": "null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "rationale": "Claude Code prices each call from Anthropic's list for the model name it thinks it used, which is fiction for local Qwen. Nulling it in the runner instance, not at each consumer, means the attempt, the judge and the ai-merge overhead sink all see the same null, and the telemetry cost column the #544 decision reads stays honest. Tokens are real and stay. The Note tells the operator exactly how much of the budget brake still applies.", "target": "human" }
 :::
 
 :::question
-{ "id": "dogfood-scope", "title": "What Bifrost run should the #544 decision point rest on?", "mode": "single", "options": ["One Bifrost-shaped task (edit two files, add a test, build, test), run once on Qwen 3.6 and once on Qwen 3.8, serial", "A real slice of a Bifrost plan (3 to 5 dependent tasks) on Qwen 3.6, serial", "Both: the single task on each model first, then the plan slice on the better model"], "recommended": "Both: the single task on each model first, then the plan slice on the better model", "rationale": "The single task isolates tool-calling and context behavior per model cheaply, which is what distinguishes the gateway path from native. But the decision is really about whether Qwen through Claude Code can carry real work, which only dependent tasks show, with state passing, retries and dependents reading transcripts. Running the slice only on the better model keeps the attended time down.", "target": "human" }
+{ "id": "dogfood-scope", "title": "What Bifrost run should the #544 decision point rest on?", "mode": "single", "options": ["One Bifrost-shaped task on Qwen 3.6 and on Qwen 3.8, at least 3 runs per model, serial", "A 3 to 5 task Bifrost plan slice on Qwen 3.6, at least 3 runs, serial", "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping"], "recommended": "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping", "rationale": "The single task isolates tool-calling and context behavior per model cheaply. Only dependent tasks show whether Qwen through Claude Code carries real work, with state passing, retries and dependents reading transcripts. One run per cell is an anecdote. Three is the minimum that separates the model from luck, and elapsed time is not the constraint. The gate exists because numbers from an unverified backend or an unset context window could not be attributed.", "target": "human" }
 :::
