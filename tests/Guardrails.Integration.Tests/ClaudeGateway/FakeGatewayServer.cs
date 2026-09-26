@@ -60,7 +60,11 @@ public sealed class FakeGatewayServer : IAsyncDisposable
             {
                 client = await _listener.AcceptTcpClientAsync(_stop.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
+            // InvalidOperationException ("Not listening"): DisposeAsync can stop the listener between the
+            // cancellation check above and this call, which a test that halts before connecting hits on
+            // macOS. That is a clean stop, not a failure.
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException
+                                       or InvalidOperationException)
             {
                 return;
             }
