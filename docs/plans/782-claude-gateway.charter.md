@@ -297,6 +297,21 @@ The run-start `Note:` says how far `maxCostUsd` still applies:
 - it **does not bind** when every prompt dispatch resolves to a gateway block;
 - it **partially binds** when a tier can escalate to a non-gateway Claude block. Only that spend counts.
 
+**Tokens stand in for cost on every surface that shows cost** (maintainer's answer to `gateway-cost`). A
+null cost must never render as a blank or as `$0.00`, which would read as "free". Where an attempt, task or
+run would show a dollar figure, a gateway dispatch shows its **token usage instead**, abbreviated in
+thousands. Input plus output counts as usage, and cache reads are shown separately only where cost
+breakdowns already are. For example: `48.2k tok` for an attempt, `1.3M tok` above 999.9k.
+
+The rules:
+- **Mixed totals keep the two units apart.** A run with both gateway and paid Claude dispatches shows
+  `$1.84 + 310.5k tok (gateway)`, never a dollar figure that silently omits the gateway spend.
+- **Surfaces:** the live table, the `--no-ui` summary, `status`, the log viewer (live and static), and the
+  webhook/event `detail` that carries cost. The implementer enumerates every cost-rendering site with a grep
+  over `CostUsd` and pins each one with a test that a gateway attempt renders tokens, not `$0.00` or a blank.
+- **`run.json` and telemetry keep `CostUsd: null` plus the raw token counts.** The `k` abbreviation is a
+  rendering concern only, never stored.
+
 (Question `gateway-cost`.)
 
 ## 5. Tests and the live smoke
@@ -432,9 +447,9 @@ path is where that matters most, since the dogfood results must be reproducible.
 ## 10. Decisions for the maintainer
 
 :::question
-{ "id": "gateway-cost", "title": "What cost should a gateway dispatch record?", "mode": "single", "options": ["null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "Keep Claude Code's computed total_cost_usd"], "recommended": "null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "rationale": "Claude Code prices each call from Anthropic's list for the model name it thinks it used, which is fiction for local Qwen. Nulling it in the runner instance, not at each consumer, means the attempt, the judge and the ai-merge overhead sink all see the same null, and the telemetry cost column the #544 decision reads stays honest. Tokens are real and stay. The Note tells the operator exactly how much of the budget brake still applies.", "target": "human" }
+{ "id": "gateway-cost", "title": "What cost should a gateway dispatch record?", "mode": "single", "options": ["null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "Keep Claude Code's computed total_cost_usd"], "recommended": "null at the source: the gateway runner instance never reports Claude Code's computed cost; tokens are kept; the run-start Note says maxCostUsd does not bind, or only partially binds when a tier can escalate to a non-gateway Claude block", "rationale": "Claude Code prices each call from Anthropic's list for the model name it thinks it used, which is fiction for local Qwen. Nulling it in the runner instance, not at each consumer, means the attempt, the judge and the ai-merge overhead sink all see the same null, and the telemetry cost column the #544 decision reads stays honest. Tokens are real and stay. The Note tells the operator exactly how much of the budget brake still applies.", "target": "human", "answer": ["If we don\u0027t display tokens used, we could display it in 1000s or 10000s of tokens, otherwise null at the source is fine."] }
 :::
 
 :::question
-{ "id": "dogfood-scope", "title": "What Bifrost run should the #544 decision point rest on?", "mode": "single", "options": ["One Bifrost-shaped task on Qwen 3.6 and on Qwen 3.8, at least 3 runs per model, serial", "A 3 to 5 task Bifrost plan slice on Qwen 3.6, at least 3 runs, serial", "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping"], "recommended": "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping", "rationale": "The single task isolates tool-calling and context behavior per model cheaply. Only dependent tasks show whether Qwen through Claude Code carries real work, with state passing, retries and dependents reading transcripts. One run per cell is an anecdote. Three is the minimum that separates the model from luck, and elapsed time is not the constraint. The gate exists because numbers from an unverified backend or an unset context window could not be attributed.", "target": "human" }
+{ "id": "dogfood-scope", "title": "What Bifrost run should the #544 decision point rest on?", "mode": "single", "options": ["One Bifrost-shaped task on Qwen 3.6 and on Qwen 3.8, at least 3 runs per model, serial", "A 3 to 5 task Bifrost plan slice on Qwen 3.6, at least 3 runs, serial", "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping"], "recommended": "Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping", "rationale": "The single task isolates tool-calling and context behavior per model cheaply. Only dependent tasks show whether Qwen through Claude Code carries real work, with state passing, retries and dependents reading transcripts. One run per cell is an anecdote. Three is the minimum that separates the model from luck, and elapsed time is not the constraint. The gate exists because numbers from an unverified backend or an unset context window could not be attributed.", "target": "human", "answer": ["Both: the single task on each model first (at least 3 runs per model), then the plan slice on the better model (at least 3 runs), all serial, gated on backend identity and the context setting shipping"] }
 :::
