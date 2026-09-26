@@ -7452,15 +7452,20 @@ the open call ANY of its ids names, so a pair still matches when one side lacks 
 - **Open at the terminal `result` ⇒ refused (ABANDONED).** A call still open when the terminal `result` event
   arrives is a REFUSAL with reason `abandoned: started but never completed (awaiting an approval Cursor print mode
   cannot give)`, its tool, command and path taken from the `started` event's `args`. Like a `rejected` completion
-  it is in `RefusedToolCalls`, the summary and `feedback.md`, and its target in `BlockedWritePaths` /
-  `RefusedCommands` (so the #86/#708 repeated-refusal tracker sees it). `transcript.md` renders it as
-  ``⎿ REFUSED: shell `<command>` — abandoned: …`` just before the final message (the call's own `started` line is
-  further up). Two deliberate differences from `rejected`:
+  it is NAMED: in `RefusedToolCalls`, the summary and `feedback.md` (`## Tool calls the runner refused this
+  attempt`), and `transcript.md` renders it as ``⎿ REFUSED: shell `<command>` — abandoned: …`` just before the
+  final message (the call's own `started` line is further up). Three deliberate differences from `rejected`, all
+  because under auto-review Cursor habitually tries a `git commit` — which Guardrails never needs, the harness
+  commits — on EVERY attempt, and it is abandoned every time:
+  - **Role-aware wall targets.** For an ACTION an abandoned call's target is NOT in `BlockedWritePaths` /
+    `RefusedCommands`, so neither the structural `.claude/` wall halt nor the #86/#708 repeated-refusal tracker
+    sees it: fed there, the same abandoned commit on two failed attempts would halt a converging task as a
+    permission wall. For a JUDGE the abandoned targets are added to both lists. Explicit `rejected` completions
+    feed the lists in both roles, as before.
   - **The every-shell-refused verdict below is role-aware.** For an ACTION only explicit `rejected` shell calls
-    count: under auto-review Cursor habitually tries a `git commit` — which Guardrails never needs, the harness
-    commits — and it is abandoned, so a lone abandoned commit must not turn an ordinary guardrail failure into a
-    no-retry needs-human. The refusal is still named everywhere, and the attempt retries as usual. For a JUDGE
-    abandoned shell calls count too, so a judge whose only shell call was abandoned still FAILS CLOSED.
+    count, so a lone abandoned commit cannot turn an ordinary guardrail failure into a no-retry needs-human; the
+    attempt retries as usual with its full budget. For a JUDGE abandoned shell calls count too, so a judge whose
+    only shell call was abandoned still FAILS CLOSED.
   - It does not feed the #452 consecutive-refusal counter — that bounds a LIVE streak, and an abandoned call is only
     known once the session is over, when tripping the bound would turn a finished session into an abort.
 - **No terminal result ⇒ in flight, NOT refused.** A stream that ends with NO terminal `result` — the harness

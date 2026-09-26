@@ -223,7 +223,7 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <item><b>the #773 rule, outcome-aware:</b> a session that attempted shell and had EVERY shell call refused
     /// could run no build, no test and no git, however its terminal result reads, so it is marked
     /// (for an ACTION only explicit <c>rejected</c> shell calls count — an ABANDONED call, #778, is named as a
-    /// refusal but does not make the session every-shell-refused, since a lone abandoned <c>git commit</c> under
+    /// refusal but neither reaches the action's wall lists nor makes the session every-shell-refused, since a lone abandoned <c>git commit</c> under
     /// auto-review must not turn an ordinary guardrail failure into a no-retry halt; for a JUDGE abandoned calls
     /// count too, so it still fails closed)
     /// <see cref="PromptResult.AllShellRefused"/> with a <see cref="PromptResult.RunnerConfigurationRemedy"/>
@@ -254,11 +254,21 @@ public sealed class CursorPromptRunner : IPromptRunner
         string? displayModel = result.ObservedModel;
         string modelNote = displayModel is { Length: > 0 } ? $" (Cursor reported model: {displayModel})" : string.Empty;
         string refusalNote = refusals.Refusals.Count == 0 ? string.Empty : $"; {DescribeRefusals(refusals.Refusals)}";
+        // Wall targets are role-aware (#778): an ACTION's lists carry explicit rejections only (the shared session
+        // already took them from the scanner), so an abandoned `git commit` repeated on every attempt never reads as a
+        // repeated permission wall; a JUDGE's also carry its abandoned targets.
+        bool isJudge = role == PromptRole.Guardrail;
         result = result with
         {
             ObservedModel = null,
             RefusedToolCalls = refusals.Refusals,
-            InFlightToolCalls = refusals.InFlightCalls
+            InFlightToolCalls = refusals.InFlightCalls,
+            BlockedWritePaths = isJudge
+                ? Union(refusals.BlockedWritePaths, refusals.AbandonedBlockedWritePaths)
+                : refusals.BlockedWritePaths,
+            RefusedCommands = isJudge
+                ? Union(refusals.RefusedCommands, refusals.AbandonedCommands)
+                : refusals.RefusedCommands
         };
 
         if (!result.Completed)
@@ -281,7 +291,6 @@ public sealed class CursorPromptRunner : IPromptRunner
             };
         }
 
-        bool isJudge = role == PromptRole.Guardrail;
         if (isJudge ? refusals.EveryShellCallRefusedOrAbandoned : refusals.EveryShellCallRefused)
         {
             int refusedShell = refusals.ShellCallsRefused + (isJudge ? refusals.ShellCallsAbandoned : 0);
@@ -317,6 +326,9 @@ public sealed class CursorPromptRunner : IPromptRunner
 
         return result with { Summary = result.Summary + refusalNote + modelNote };
     }
+
+    private static IReadOnlyList<string> Union(IReadOnlyList<string> first, IReadOnlyList<string> second) =>
+        second.Count == 0 ? first : first.Concat(second).Distinct(StringComparer.Ordinal).ToList();
 
     /// <summary>
     /// The refusals, named: <c>2 tool call(s) refused by Cursor: shell `git status` — refused by …; …</c>, the

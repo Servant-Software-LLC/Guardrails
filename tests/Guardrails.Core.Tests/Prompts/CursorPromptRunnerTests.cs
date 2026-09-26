@@ -862,8 +862,10 @@ public sealed class CursorPromptRunnerTests : IDisposable
             $"1 tool call(s) refused by Cursor: shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}",
             result.Summary, StringComparison.Ordinal);
 
-        Assert.Equal([AbandonedCommit], result.RefusedCommands);
-        Assert.Equal([AbandonedCommit], result.BlockedWritePaths);
+        // An ACTION's wall lists never carry an abandoned target: the same abandoned commit on every attempt must not
+        // read as a repeated permission wall.
+        Assert.Empty(result.RefusedCommands);
+        Assert.Empty(result.BlockedWritePaths);
     }
 
     /// <summary>
@@ -883,12 +885,17 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.True(result.AllShellRefused);
         Assert.Contains("(1 shell call(s), none ran)", result.Summary, StringComparison.Ordinal);
         Assert.Contains($"shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+
+        // A JUDGE keeps the abandoned target in its wall lists.
+        Assert.Equal([AbandonedCommit], result.RefusedCommands);
+        Assert.Equal([AbandonedCommit], result.BlockedWritePaths);
     }
 
     /// <summary>
     /// The live T1 session in full: restore, build, test, edit, add and log RAN; the commit was abandoned. The
     /// session COMPLETES — not every shell call was refused, so the task's guardrails decide — and the abandoned
-    /// commit is named with its reason in the summary, RefusedToolCalls and the wall lists.
+    /// commit is named with its reason in the summary and RefusedToolCalls — but, for an action, kept out of the wall
+    /// lists.
     /// </summary>
     [Fact]
     public async Task MixedSession_WithOneAbandonedCommit_Completes_NamingIt_AndTheGuardrailsDecide()
@@ -908,7 +915,8 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.Contains(
             $"1 tool call(s) refused by Cursor: shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}",
             result.Summary, StringComparison.Ordinal);
-        Assert.Equal([AbandonedCommit], result.RefusedCommands);
+        Assert.Empty(result.RefusedCommands);
+        Assert.Empty(result.BlockedWritePaths);
 
         // The retry feedback carries it like any other refusal.
         Assert.Contains(
@@ -1155,16 +1163,21 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.True(scanner.EveryShellCallRefusedOrAbandoned, "the JUDGE rule counts abandoned calls too");
     }
 
-    /// <summary>An abandoned EDIT contributes its path, as a rejected edit does.</summary>
+    /// <summary>
+    /// An abandoned EDIT contributes its path — to the ABANDONED target lists (a judge's only), never to the lists
+    /// the session hands an action's permission-wall tracker.
+    /// </summary>
     [Fact]
-    public void Scanner_AnAbandonedEdit_IsAWritePath()
+    public void Scanner_AnAbandonedEdit_IsAnAbandonedWritePath_NotAnActionWallTarget()
     {
         var scanner = new CursorToolCallScanner();
         scanner.Feed("""{"type":"tool_call","subtype":"started","call_id":"e1","tool_call":{"editToolCall":{"args":{"path":"/w/.claude/settings.json"}}}}""");
         scanner.Feed(SuccessResultLine);
 
-        Assert.Equal(["/w/.claude/settings.json"], scanner.BlockedWritePaths);
+        Assert.Empty(scanner.BlockedWritePaths);
         Assert.Empty(scanner.RefusedCommands);
+        Assert.Equal(["/w/.claude/settings.json"], scanner.AbandonedBlockedWritePaths);
+        Assert.Empty(scanner.AbandonedCommands);
         Assert.False(scanner.EveryShellCallRefused);
     }
 

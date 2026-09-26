@@ -358,9 +358,12 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
 
     /// <summary>
     /// The recorded T1 shape — an edit that landed and the agent's own <c>git commit</c> abandoned by auto-review, the
-    /// only shell call — run through the REAL Cursor fold, and its guardrail FAILS. This is an ordinary guardrail
-    /// failure: the task is RETRIED, never settled needs-human on the first attempt by the every-shell-refused rule;
-    /// the abandoned commit is still named in the feedback.
+    /// only shell call — run through the REAL Cursor fold, and its guardrail FAILS on every attempt. This is an
+    /// ordinary guardrail failure: the task gets its FULL retry budget — no every-shell-refused halt on attempt 1, and
+    /// no repeated-permission-wall halt on attempt 2 although the same commit is abandoned every time (an action's
+    /// wall lists never carry abandoned targets). The runner writes a different state fragment each attempt (as a
+    /// converging agent changes something), so the #174 no-op escalation does not fire either. The abandoned commit
+    /// is still named in the feedback.
     /// </summary>
     [Fact]
     public async Task ActionWithOnlyAnAbandonedCommit_WhoseGuardrailFails_IsRetried_NamingTheRefusal()
@@ -369,18 +372,19 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         PromptResult folded = FoldCursorFixture("abandoned-commit-only-shell.jsonl", PromptRole.Action);
         Assert.True(folded.Completed, folded.Summary);
         Assert.False(folded.AllShellRefused);
-        var runner = new ScriptedRunner(folded);
+        Assert.Empty(folded.BlockedWritePaths);
+        Assert.Empty(folded.RefusedCommands);
+        var runner = new ScriptedRunner(folded, varyEachAttempt: true);
 
         RunReport report = await RunSerialAsync(plan, runner);
 
-        // RETRIED: the every-shell-refused rule would have settled on attempt 1 without retrying. The scripted runner
-        // changes nothing between attempts, so attempt 2 is identical and the ordinary #174 no-op escalation settles
-        // it; a real agent that edits differently keeps its whole budget.
-        Assert.Equal(2, runner.Calls);
+        Assert.Equal(3, runner.Calls); // one attempt + defaultRetries 2: the whole budget
         TaskResult result = report.Tasks.Single();
         Assert.NotEqual(TaskOutcome.Succeeded, result.Outcome);
         Assert.DoesNotContain("its runner could run no shell command", result.Summary ?? string.Empty, StringComparison.Ordinal);
         Assert.DoesNotContain("not retried", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("permission wall", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("no-op", result.Summary ?? string.Empty, StringComparison.Ordinal);
 
         string firstFeedback = Directory
             .GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories)
@@ -513,7 +517,11 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         Assert.Single(Directory.GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories));
 
     /// <summary>A prompt runner that returns the same result on every call, counting the calls.</summary>
-    private sealed class ScriptedRunner(PromptResult result) : IPromptRunner
+    /// <param name="varyEachAttempt">
+    /// Write a state fragment that differs per call to <c>GUARDRAILS_STATE_OUT</c> — an observable change each attempt,
+    /// as an agent that is converging makes, so the #174 no-op escalation (identical no-op attempts) cannot fire.
+    /// </param>
+    private sealed class ScriptedRunner(PromptResult result, bool varyEachAttempt = false) : IPromptRunner
     {
         public int Calls { get; private set; }
 
@@ -522,6 +530,12 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
         {
             Calls++;
+            if (varyEachAttempt && invocation.Environment.TryGetValue("GUARDRAILS_STATE_OUT", out string? stateOut))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(stateOut)!);
+                File.WriteAllText(stateOut, $$"""{ "attempt{{Calls}}": {{Calls}} }""");
+            }
+
             return Task.FromResult(result);
         }
     }

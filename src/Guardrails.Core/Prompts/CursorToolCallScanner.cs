@@ -29,14 +29,18 @@ namespace Guardrails.Core.Prompts;
 /// NEVER <c>completed</c> — no <c>rejected</c> anywhere — and the session still ended <c>result/success</c>, exit 0,
 /// with the commit not made. So a call still open when the terminal <c>result</c> event arrives is a REFUSAL with
 /// reason <see cref="AbandonedReason"/>, taken from the <c>started</c> event's <c>args</c>: it is in
-/// <see cref="Refusals"/> and its target in the wall lists, exactly like a <c>rejected</c> completion. Two
-/// differences, both deliberate:</para>
+/// <see cref="Refusals"/>, named like a <c>rejected</c> completion. Three differences, all deliberate — each because
+/// under auto-review Cursor habitually tries a <c>git commit</c> (which Guardrails never needs: the harness commits)
+/// on EVERY attempt, and it is abandoned every time:</para>
 /// <list type="bullet">
+/// <item>Its target is NOT in <see cref="BlockedWritePaths"/> / <see cref="RefusedCommands"/> — the lists the shared
+/// session hands the permission-wall tracker for an ACTION. Fed there, the same abandoned commit on two failed
+/// attempts would halt a converging task as a repeated permission wall (#86/#708). It is kept in
+/// <see cref="AbandonedBlockedWritePaths"/> / <see cref="AbandonedCommands"/> instead, which
+/// <see cref="CursorPromptRunner.Finish"/> merges into a JUDGE's lists only.</item>
 /// <item>An abandoned SHELL call counts in <see cref="ShellCallsAbandoned"/>, not <see cref="ShellCallsRefused"/>.
-/// The every-shell-refused verdict for an ACTION reads only explicit refusals (<see cref="EveryShellCallRefused"/>):
-/// under auto-review Cursor habitually tries a <c>git commit</c> — which Guardrails never needs, the harness
-/// commits — and it is abandoned, so a lone abandoned commit must not turn an ordinary guardrail failure into a
-/// no-retry needs-human. A JUDGE counts abandoned calls too (<see cref="EveryShellCallRefusedOrAbandoned"/>): a
+/// The every-shell-refused verdict for an ACTION reads only explicit refusals (<see cref="EveryShellCallRefused"/>),
+/// so a lone abandoned commit cannot turn an ordinary guardrail failure into a no-retry needs-human. A JUDGE counts abandoned calls too (<see cref="EveryShellCallRefusedOrAbandoned"/>): a
 /// verifier that ran none of its checks fails closed however they were stopped.</item>
 /// <item>It does NOT feed <see cref="ConsecutiveDenials"/>: that counter bounds a LIVE streak, and after a terminal
 /// result there is nothing left to abort (tripping it there would turn a finished session into an abort).</item>
@@ -53,8 +57,9 @@ namespace Guardrails.Core.Prompts;
 /// <list type="bullet">
 /// <item>Every refusal, in order, with its reason (<see cref="Refusals"/>); an empty reason reads
 /// <see cref="NoReasonGiven"/>.</item>
-/// <item><see cref="BlockedWritePaths"/> / <see cref="RefusedCommands"/> for <c>PermissionWallTracker</c>: a
-/// refused edit/write/delete contributes its PATH; a refused shell call its COMMAND; any other refused tool
+/// <item><see cref="BlockedWritePaths"/> / <see cref="RefusedCommands"/> for <c>PermissionWallTracker</c> (explicit
+/// <c>rejected</c> completions only; abandoned targets are in <see cref="AbandonedBlockedWritePaths"/> /
+/// <see cref="AbandonedCommands"/>): a refused edit/write/delete contributes its PATH; a refused shell call its COMMAND; any other refused tool
 /// its tool NAME as a command (as Claude's scanner attributes a non-write tool), so a refused READ of a
 /// <c>.claude/</c> file is never mistaken for the structural write wall.</item>
 /// <item><see cref="ConsecutiveDenials"/>, reset by every call that ran — the #452 fail-fast counter. It trips only
@@ -93,9 +98,8 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
 
     private readonly List<ToolRefusal> _refusals = new();
     private readonly List<InFlightToolCall> _inFlight = new();
-    private readonly List<string> _blocked = new();
-    private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
-    private readonly List<string> _commands = new();
+    private readonly WallTargets _rejectedTargets = new();
+    private readonly WallTargets _abandonedTargets = new();
     private readonly CursorCallPairing _pairing = new();
     private bool _terminalResultSeen;
     private bool _ended;
@@ -110,10 +114,17 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
     public IReadOnlyList<InFlightToolCall> InFlightCalls => _inFlight;
 
     /// <inheritdoc />
-    public IReadOnlyList<string> BlockedWritePaths => _blocked;
+    /// <remarks>Explicit <c>rejected</c> completions only — never abandoned calls (see the class docs).</remarks>
+    public IReadOnlyList<string> BlockedWritePaths => _rejectedTargets.Blocked;
 
     /// <inheritdoc />
-    public IReadOnlyList<string> RefusedCommands => _commands;
+    public IReadOnlyList<string> RefusedCommands => _rejectedTargets.Commands;
+
+    /// <summary>The targets of ABANDONED calls (#778), shaped like <see cref="BlockedWritePaths"/>; a judge's only.</summary>
+    public IReadOnlyList<string> AbandonedBlockedWritePaths => _abandonedTargets.Blocked;
+
+    /// <summary>The entries of <see cref="AbandonedBlockedWritePaths"/> that are commands.</summary>
+    public IReadOnlyList<string> AbandonedCommands => _abandonedTargets.Commands;
 
     /// <inheritdoc />
     public int ConsecutiveDenials { get; private set; }
@@ -211,7 +222,7 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
                 ShellCallsAbandoned++;
             }
 
-            Record(call.Kind, call.Args, rejected: default, AbandonedReason);
+            Record(call.Kind, call.Args, rejected: default, AbandonedReason, _abandonedTargets);
         }
     }
 
@@ -242,25 +253,42 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
         JsonElement args = body.TryGetProperty("args", out JsonElement a) && a.ValueKind == JsonValueKind.Object
             ? a
             : startedArgs;
-        Record(kind, args, rejected.ValueKind == JsonValueKind.Object ? rejected : default, reason: null);
+        Record(kind, args, rejected.ValueKind == JsonValueKind.Object ? rejected : default, reason: null, _rejectedTargets);
     }
 
     /// <summary>
-    /// Record one refusal — a <c>rejected</c> completion or an abandoned call — in the list and the wall targets. A
-    /// non-null <paramref name="reason"/> stands in for <c>rejected.reason</c>.
+    /// Record one refusal — a <c>rejected</c> completion or an abandoned call — in the list and in
+    /// <paramref name="targets"/>. A non-null <paramref name="reason"/> stands in for <c>rejected.reason</c>.
     /// </summary>
-    private void Record(string kind, JsonElement args, JsonElement rejected, string? reason)
+    private void Record(string kind, JsonElement args, JsonElement rejected, string? reason, WallTargets targets)
     {
         (ToolRefusal refusal, string wallTarget, bool isCommand) = Describe(kind, args, rejected, reason);
         _refusals.Add(refusal);
+        targets.Add(isCommand ? wallTarget.Trim() : wallTarget.Trim().Trim('"', '\'', '`'), isCommand);
+    }
 
-        string target = isCommand ? wallTarget.Trim() : wallTarget.Trim().Trim('"', '\'', '`');
-        if (target.Length > 0 && _seen.Add(target))
+    /// <summary>
+    /// A distinct, first-seen-ordered target list in the <c>BlockedWritePaths</c> / <c>RefusedCommands</c> shape.
+    /// </summary>
+    private sealed class WallTargets
+    {
+        private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+        private readonly List<string> _blocked = new();
+        private readonly List<string> _commands = new();
+
+        public IReadOnlyList<string> Blocked => _blocked;
+
+        public IReadOnlyList<string> Commands => _commands;
+
+        public void Add(string target, bool isCommand)
         {
-            _blocked.Add(target);
-            if (isCommand)
+            if (target.Length > 0 && _seen.Add(target))
             {
-                _commands.Add(target);
+                _blocked.Add(target);
+                if (isCommand)
+                {
+                    _commands.Add(target);
+                }
             }
         }
     }
