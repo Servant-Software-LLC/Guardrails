@@ -560,9 +560,35 @@ public static class RunCommand
             io.Out.WriteLine("Full Flight Checks: running...");
         }
 
+        // #782: the claude-gateway preflight runs inside this phase; what it resolves (each backend's identity)
+        // is handed to every gateway runner instance below through the run config's GatewayRun context.
+        var gatewayOptions = new ClaudeGatewayPreflightOptions { WorktreeMode = worktreeResolution.Enabled };
         bool preflightsPassed = await PlanPreflightPhase
-            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution)
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun, worktreeResolution,
+                gatewayOptions)
             .ConfigureAwait(false);
+
+        if (preflightsPassed && probe.Plan.Config.PromptRunners.Values.Any(b => b.IsClaudeGateway))
+        {
+            // §1.2 (a): one scratch CLAUDE_CONFIG_DIR per run, created empty, beside the run's other logs — never the
+            // operator's ~/.claude. A plan with no gateway block leaves GatewayRun null and launches exactly as before.
+            string gatewayConfigDir = Path.Combine(probe.Plan.PlanDirectory, "logs", runId, "claude-config");
+            Directory.CreateDirectory(gatewayConfigDir);
+            probe = probe with
+            {
+                Plan = probe.Plan with
+                {
+                    Config = probe.Plan.Config with
+                    {
+                        GatewayRun = new Core.Prompts.ClaudeGatewayRunContext
+                        {
+                            ConfigDirectory = gatewayConfigDir,
+                            BackendIdentities = gatewayOptions.ResolvedIdentities
+                        }
+                    }
+                }
+            };
+        }
 
         if (hasPlanPreflights && preflightsPassed)
         {

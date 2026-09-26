@@ -87,7 +87,8 @@ public static class PlanPreflightPhase
     public static bool HaltHasOwnConsoleReport(RunHalt halt) =>
         halt.Headline is { } headline
         && (headline.StartsWith(SampleHeadlinePrefix, StringComparison.Ordinal)
-            || headline.StartsWith(EndpointHeadlinePrefix, StringComparison.Ordinal));
+            || headline.StartsWith(EndpointHeadlinePrefix, StringComparison.Ordinal)
+            || headline.StartsWith(ClaudeGatewayPreflight.HeadlinePrefix, StringComparison.Ordinal));
 
     /// <summary>
     /// Evaluate (or skip) the pre-DAG phase for <paramref name="plan"/>, whose journal
@@ -108,7 +109,8 @@ public static class PlanPreflightPhase
         TextWriter? heartbeatOut,
         CancellationToken cancellationToken,
         string? junctionRoot = null,
-        WorktreeModeResolution? worktreeMode = null)
+        WorktreeModeResolution? worktreeMode = null,
+        ClaudeGatewayPreflightOptions? gatewayOptions = null)
     {
         // Committed sample pairs come FIRST — before BOTH short-circuits below — and this placement is
         // the whole point of the step (plan of record 26 §3/§7, issue #510).
@@ -144,6 +146,16 @@ public static class PlanPreflightPhase
         // HttpClient at all, which is what makes that a property of the code rather than of a guard that
         // happened to be hit first.
         if (!await OpenAiCompatEndpointsPassAsync(plan, journal, heartbeatOut, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        // The claude-gateway preflight (#782 §3), beside the openai-compat check and BEFORE both short-circuits
+        // for the same reasons: a wrong backend, a dead gateway or an unresolved token is fatal to every dispatch
+        // through that block, and re-probing it on resume can never false-halt a healthy run. A plan with no
+        // gateway block returns having opened zero connections.
+        if (!await ClaudeGatewayPreflight.EvaluateAsync(plan, journal, heartbeatOut, gatewayOptions, cancellationToken)
                 .ConfigureAwait(false))
         {
             return false;
