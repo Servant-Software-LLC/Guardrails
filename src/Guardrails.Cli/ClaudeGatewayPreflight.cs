@@ -583,11 +583,11 @@ public static class ClaudeGatewayPreflight
             notes.Add($"WARNING: {target.Display} answered HTTP {listing.Status} for GET /v1/models, so the declared " +
                       "model(s) cannot be confirmed present; the /v1/messages probe still runs.");
         }
-        else if (listing.Status is 401 or 403)
+        else if (IsCredentialRefusal(listing.Status, listing.Body))
         {
             failures.Add(Check($"claude gateway {target.Display}",
                 $"GET {target.Display}/v1/models answered HTTP {listing.Status}: the gateway refused the credential. " +
-                $"Check the block's authTokenEnv and the gateway's keys. {Snippet(listing.Body)}"));
+                $"{CredentialRemedy(target.Token)} {Snippet(listing.Body)}"));
             return;
         }
         else if (listing.Status is < 200 or >= 300)
@@ -636,6 +636,14 @@ public static class ClaudeGatewayPreflight
             if (messages.TransportFailure is { } messagesTransport)
             {
                 failures.Add(Check(check, $"POST {target.Display}/v1/messages for '{model}' failed — {messagesTransport}."));
+                continue;
+            }
+
+            if (IsCredentialRefusal(messages.Status, messages.Body))
+            {
+                failures.Add(Check(check,
+                    $"POST {target.Display}/v1/messages for '{model}' ({where}) answered HTTP {messages.Status}: the gateway " +
+                    $"refused the credential. {CredentialRemedy(token)} {Snippet(messages.Body)}"));
                 continue;
             }
 
@@ -901,6 +909,31 @@ public static class ClaudeGatewayPreflight
 
     /// <summary>One probe's outcome: a status and body, or the transport failure that prevented one.</summary>
     private sealed record Probe(int Status, string Body, string? TransportFailure);
+
+    /// <summary>
+    /// True when a gateway answer means "this credential is not accepted": 401/403, or LiteLLM's 400
+    /// <c>no_db_connection</c> ("No connected db."). A LiteLLM with a <c>master_key</c> treats any OTHER key as a
+    /// virtual key and looks it up in its database. Without one, it answers 400, not 401 (#791). Reading that 400 as
+    /// "the gateway is broken" sent an operator after the wrong fix, when the real problem was a missing
+    /// <c>authTokenEnv</c>.
+    /// </summary>
+    public static bool IsCredentialRefusal(int status, string body) =>
+        status is 401 or 403
+        || (status == 400
+            && (body.Contains("no_db_connection", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("No connected db", StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// The remedy for a refused credential. When the block set no <c>authTokenEnv</c>, the harness sent its fixed
+    /// placeholder token, so the cause is almost certainly a gateway that requires a key.
+    /// </summary>
+    internal static string CredentialRemedy(string token) =>
+        token == ClaudeGatewayEnvironment.PlaceholderToken
+            ? "The block sets no authTokenEnv, so Guardrails sent its placeholder token, and this gateway requires a key. " +
+              "Export the gateway's key (for LiteLLM, its master_key; a claude-local setup keeps it as LITELLM_MASTER_KEY " +
+              "in its .env) and set \"authTokenEnv\" on the block to that variable's NAME, never the key itself."
+            : "Check that the variable the block's authTokenEnv names holds a key this gateway accepts (for LiteLLM, its " +
+              "master_key or a valid virtual key).";
 
     private static async Task<Probe> SendAsync(
         HttpClient http, HttpMethod method, string url, string? token, string? body, TimeSpan timeout, CancellationToken cancellationToken)

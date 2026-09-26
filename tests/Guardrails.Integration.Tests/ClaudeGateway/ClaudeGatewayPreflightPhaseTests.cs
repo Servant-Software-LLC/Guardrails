@@ -188,6 +188,75 @@ public sealed class ClaudeGatewayPreflightPhaseTests : IDisposable
         Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains(expected, StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// #791: a LiteLLM with a master_key answers an unknown key (here Guardrails' placeholder, because the block sets no
+    /// authTokenEnv) with 400 no_db_connection. That is a refused credential, and the halt must say so and name
+    /// authTokenEnv, never call the gateway broken.
+    /// </summary>
+    [Fact]
+    public async Task LiteLlmNoDbConnection400_WithoutAuthTokenEnv_HaltsAsARefusedCredential_NamingAuthTokenEnv()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] =
+            (400, """{"error":{"message":"No connected db.","type":"no_db_connection","param":null,"code":"400"}}""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        Assert.False(await RunAsync(plan));
+        FailedGuardrail check = Assert.Single(HaltOf(plan)!.FailedChecks!);
+        Assert.Contains("refused the credential", check.Reason, StringComparison.Ordinal);
+        Assert.Contains("authTokenEnv", check.Reason, StringComparison.Ordinal);
+        Assert.Contains("placeholder token", check.Reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("reporting itself broken", check.Reason, StringComparison.Ordinal);
+        Assert.Equal(0, gateway.Count("POST /v1/messages"));
+    }
+
+    /// <summary>The same refusal with an authTokenEnv set points at the key's value, not at a missing setting.</summary>
+    [Fact]
+    public async Task LiteLlmNoDbConnection400_WithAuthTokenEnv_PointsAtTheKeysValue()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (400, """{"error":{"message":"No connected db.","type":"no_db_connection"}}""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen", "authTokenEnv": "GR_TEST_GATEWAY_KEY" }
+            """);
+
+        Assert.False(await RunAsync(plan, Options(env: name => name == "GR_TEST_GATEWAY_KEY" ? "sk-wrong" : null)));
+        FailedGuardrail check = Assert.Single(HaltOf(plan)!.FailedChecks!);
+        Assert.Contains("refused the credential", check.Reason, StringComparison.Ordinal);
+        Assert.Contains("holds a key this gateway accepts", check.Reason, StringComparison.Ordinal);
+        Assert.DoesNotContain("placeholder token", check.Reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>A refusal that only the /v1/messages probe sees (the listing is open) is named the same way.</summary>
+    [Fact]
+    public async Task MessagesProbeRefusal_IsARefusedCredential_NamingAuthTokenEnv()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"Qwen"}]}""");
+        gateway.Routes["POST /v1/messages"] = (401, """{"error":{"message":"Authentication Error"}}""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        Assert.False(await RunAsync(plan));
+        FailedGuardrail check = Assert.Single(HaltOf(plan)!.FailedChecks!);
+        Assert.Contains("refused the credential", check.Reason, StringComparison.Ordinal);
+        Assert.Contains("authTokenEnv", check.Reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>A plain 400 without LiteLLM's signature is still a broken gateway, not a credential refusal.</summary>
+    [Theory]
+    [InlineData(400, """{"error":"bad request"}""", false)]
+    [InlineData(400, """{"error":{"type":"no_db_connection"}}""", true)]
+    [InlineData(400, "No connected db.", true)]
+    [InlineData(401, "", true)]
+    [InlineData(403, "", true)]
+    [InlineData(500, "No connected db.", false)]
+    public void IsCredentialRefusal_RecognizesLiteLlmsNoDbSignatureOnlyOn400(int status, string body, bool expected) =>
+        Assert.Equal(expected, ClaudeGatewayPreflight.IsCredentialRefusal(status, body));
+
     [Fact]
     public async Task ListingNotOffered_404_DowngradesToAWarning_AndStillProbesMessages()
     {
