@@ -24,6 +24,7 @@ public sealed class ClaudeGatewayValidationTests : IDisposable
         Assert.Equal("GR2084", DiagnosticCodes.ClaudeGatewayBlockInvalid);
         Assert.Equal("GR2085", DiagnosticCodes.ClaudeModelNameToGateway);
         Assert.Equal("GR2086", DiagnosticCodes.ClaudeGatewayModelsShareEndpoint);
+        Assert.Equal("GR2087", DiagnosticCodes.GuardrailOverridesKeyIgnored);
     }
 
     [Fact]
@@ -189,16 +190,43 @@ public sealed class ClaudeGatewayValidationTests : IDisposable
     }
 
     [Theory]
-    [InlineData("\"--model\", \"claude-opus-4-1\"")]
-    [InlineData("\"--fallback-model\", \"sonnet\"")]
-    [InlineData("\"--fallback-model=haiku\"")]
-    public void Gr2085_ModelFlagsInExtraArgs(string args)
+    [InlineData("\"extraArgs\": [\"--model\", \"claude-opus-4-1\"]", "extraArgs")]
+    [InlineData("\"extraArgs\": [\"--fallback-model\", \"sonnet\"]", "extraArgs")]
+    [InlineData("\"extraArgs\": [\"--fallback-model=haiku\"]", "extraArgs")]
+    [InlineData("\"extraArgs\": [\"--model\", \"Qwen\"]", "extraArgs")]
+    [InlineData("\"guardrailOverrides\": { \"extraArgs\": [\"--model=Qwen3.8\"] }", "guardrailOverrides.extraArgs")]
+    public void Gr2084_AModelFlagInAGatewayBlocksExtraArgs_IsAnError_NotAWarning(string fragment, string key)
     {
-        Diagnostic warning = Assert.Single(
-            Validate(Block($"\"baseUrl\": \"http://127.0.0.1:4000\", \"model\": \"Qwen\", \"extraArgs\": [{args}]")),
-            x => x.Code == "GR2085");
+        IReadOnlyList<Diagnostic> d = Validate(Block($"\"baseUrl\": \"http://127.0.0.1:4000\", \"model\": \"Qwen\", {fragment}"));
 
-        Assert.Contains("promptRunners.qwen.extraArgs", warning.Message, StringComparison.Ordinal);
+        Diagnostic error = Assert.Single(d, x => x.Code == "GR2084");
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+        Assert.Contains($"promptRunners.qwen.{key} passes a model flag", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(d, x => x.Code == "GR2085");
+    }
+
+    [Fact]
+    public void Gr2087_AGatewayKeyUnderAnOpenAiCompatBlocksOverrides_IsAWarning_NotAGatewayError()
+    {
+        IReadOnlyList<Diagnostic> d = Validate("""
+            { "version": 1, "maxParallelism": 1, "promptRunners": { "judge": {
+                "kind": "openai-compat", "endpoint": "http://127.0.0.1:11434/v1", "model": "m", "contextTokens": 8192,
+                "guardrailOverrides": { "baseUrl": "http://x:1", "contextTokens": 4096 } } } }
+            """);
+
+        Assert.DoesNotContain(d, x => x.Code == "GR2084");
+        Assert.Equal(2, d.Count(x => x.Code == "GR2087" && x.Severity == DiagnosticSeverity.Warning));
+        Assert.Contains(d, x => x.Code == "GR2087"
+                                && x.Message.Contains("has no effect on a 'openai-compat' block", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Gr2065_ContextTokensOnAPlainClaudeBlock_SaysToAddBaseUrl()
+    {
+        Diagnostic error = Assert.Single(
+            Validate(Block("\"model\": \"claude-sonnet-4-5\", \"contextTokens\": 1000")),
+            x => x.Code == "GR2065");
+        Assert.Contains("\"baseUrl\"", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -558,6 +558,16 @@ public sealed class PlanValidator
                         continue;
                     }
 
+                    if (key == "contextTokens" && runner.Kind == PromptRunnerKind.Claude)
+                    {
+                        // #782: on a claude block the key is meaningful — but only on a GATEWAY block.
+                        diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
+                            $"promptRunners.{runner.Name} declares 'contextTokens' but no 'baseUrl', so it does nothing: " +
+                            "on a claude block it is the per-slot context window of a GATEWAY backend. Add the gateway's " +
+                            "\"baseUrl\" if this block should route through one (SSOT §9.10), or remove 'contextTokens'."));
+                        continue;
+                    }
+
                     diagnostics.Add(Error(DiagnosticCodes.OpenAiCompatBlockSchema, plan.PlanDirectory,
                         $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', " +
                         $"but it declares '{key}', which is an openai-compat-only key and does nothing on " +

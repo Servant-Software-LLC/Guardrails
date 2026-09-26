@@ -1376,7 +1376,16 @@ public static class DiagnosticCodes
     /// </summary>
     public const string ClaudeGatewayModelsShareEndpoint = "GR2086";
 
-    // CURRENT next-free code: GR2087. GR2086 (ClaudeGatewayModelsShareEndpoint) is the last taken code
+    /// <summary>
+    /// GR2087 (WARNING) — a <c>guardrailOverrides</c> sub-block on a NON-claude prompt runner carries a key that is not a
+    /// per-prompt setting and so does nothing there (#782 review): today the claude-gateway keys <c>baseUrl</c>,
+    /// <c>authTokenEnv</c>, <c>backendModel</c> and <c>contextTokens</c>. On a claude block the same keys are GR2084 (an
+    /// ERROR, because they would otherwise silently fail to redirect a gateway); on any other kind the block can never be a
+    /// gateway, so the finding is a warning that adds no error to a path unrelated to gateways.
+    /// </summary>
+    public const string GuardrailOverridesKeyIgnored = "GR2087";
+
+    // CURRENT next-free code: GR2088. GR2087 (GuardrailOverridesKeyIgnored) is the last taken code
     // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
     // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the

@@ -26,7 +26,7 @@ internal static partial class ClaudeGatewayValidation
             ValidateBlock(block, plan.PlanDirectory, diagnostics);
         }
 
-        ValidateModelsReachingGateways(plan, blocks, diagnostics);
+        ValidateModelsReachingGateways(plan, diagnostics);
     }
 
     /// <summary>GR2084, one block at a time.</summary>
@@ -36,9 +36,20 @@ internal static partial class ClaudeGatewayValidation
 
         foreach (string key in block.GatewayKeysInOverrides)
         {
-            diagnostics.Add(Error(DiagnosticCodes.ClaudeGatewayBlockInvalid, path,
-                $"{where}.guardrailOverrides.{key} is not honoured: the gateway keys are block-level only — an action " +
-                $"and a judge on one block reach one gateway. Move it to {where}.{key} (SSOT §9.10)."));
+            if (block.Kind == PromptRunnerKind.Claude)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.ClaudeGatewayBlockInvalid, path,
+                    $"{where}.guardrailOverrides.{key} is not honoured: the gateway keys are block-level only — an action " +
+                    $"and a judge on one block reach one gateway. Move it to {where}.{key} (SSOT §9.10)."));
+            }
+            else
+            {
+                // Not a gateway block and never could be one: say the key does nothing, without adding an ERROR to a
+                // path that has nothing to do with gateways (#782 review, corr W3).
+                diagnostics.Add(Warning(DiagnosticCodes.GuardrailOverridesKeyIgnored, path,
+                    $"{where}.guardrailOverrides.{key} has no effect on a '{PromptRunnerKinds.Token(block.Kind)}' block: " +
+                    "guardrailOverrides carries only per-prompt settings, and this key is not one of them. Remove it."));
+            }
         }
 
         (string Key, bool Present)[] gatewayOnly =
@@ -124,6 +135,12 @@ internal static partial class ClaudeGatewayValidation
         {
             ReportSettingsFlag(overrideArgs, $"{where}.guardrailOverrides.extraArgs", path, diagnostics);
         }
+
+        ReportModelFlags(block.Settings.ExtraArgs, $"{where}.extraArgs", path, diagnostics);
+        if (block.GuardrailOverrides?.ExtraArgs is { } overrideModelArgs)
+        {
+            ReportModelFlags(overrideModelArgs, $"{where}.guardrailOverrides.extraArgs", path, diagnostics);
+        }
     }
 
     /// <summary>GR2084's <c>baseUrl</c> clauses.</summary>
@@ -176,6 +193,24 @@ internal static partial class ClaudeGatewayValidation
         }
     }
 
+    /// <summary>
+    /// GR2084: <c>--model</c> / <c>--fallback-model</c> in a gateway block's <c>extraArgs</c> (#782 review, sec W3). The
+    /// harness pins the model itself; a flag here would make the child request a model the provenance does not record,
+    /// so a backend identity verified for the block's model would be claimed for a request that never named it.
+    /// </summary>
+    private static void ReportModelFlags(
+        IReadOnlyList<string> extraArgs, string key, string path, List<Diagnostic> diagnostics)
+    {
+        foreach (string model in ClaudeGatewayReach.ModelFlagValues(extraArgs))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.ClaudeGatewayBlockInvalid, path,
+                $"{key} passes a model flag naming '{model}', but on a gateway block the harness owns the model: it pins " +
+                "--model, the alias and subagent variables and fallbackModel to the block's `model`, and records the " +
+                "backend identity verified for THAT model. Remove the flag; set the block's `model`, or pin the task " +
+                "with `action.model` (SSOT §9.10)."));
+        }
+    }
+
     /// <summary>GR2084: <c>--settings</c>, in either spelling, in an <c>extraArgs</c> list.</summary>
     private static void ReportSettingsFlag(
         IReadOnlyList<string> extraArgs, string key, string path, List<Diagnostic> diagnostics)
@@ -191,88 +226,45 @@ internal static partial class ClaudeGatewayValidation
         }
     }
 
-    /// <summary>GR2085 and GR2086: which model strings reach which gateway.</summary>
-    private static void ValidateModelsReachingGateways(
-        PlanDefinition plan, PromptRunnerConfig[] blocks, List<Diagnostic> diagnostics)
+    /// <summary>
+    /// GR2085 and GR2086 over THE reach set (<see cref="ClaudeGatewayReach.Of"/>) — the same pairs the preflight
+    /// probes. A model flag in a gateway block's <c>extraArgs</c> is GR2084 (reported per block above), so it is not
+    /// reported again here.
+    /// </summary>
+    private static void ValidateModelsReachingGateways(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        Dictionary<string, PromptRunnerConfig> gateways = blocks
-            .Where(b => b.IsClaudeGateway)
-            .ToDictionary(b => b.Name, StringComparer.Ordinal);
-        if (gateways.Count == 0)
-        {
-            return;
-        }
-
         // (gateway endpoint key) → distinct models reaching it, in first-seen order, for GR2086.
         var modelsByEndpoint = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var endpointDisplay = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        void Reach(PromptRunnerConfig gateway, string? model, string source)
+        foreach (ClaudeGatewayModelReach reach in ClaudeGatewayReach.Of(plan))
         {
-            if (string.IsNullOrWhiteSpace(model))
+            if (reach.Source == ClaudeGatewayModelSource.ExtraArgs)
             {
-                return;
+                continue;
             }
 
-            if (IsClaudeModelName(model))
+            string display = ClaudeGatewayConfig.RedactUserInfo(ClaudeGatewayConfig.NormalizeBaseUrl(reach.Block.BaseUrl!));
+            if (IsClaudeModelName(reach.Model))
             {
                 diagnostics.Add(Warning(DiagnosticCodes.ClaudeModelNameToGateway, plan.PlanDirectory,
-                    $"{source} names '{model}', a Claude model name, and it reaches gateway block '{gateway.Name}' " +
-                    $"({ClaudeGatewayConfig.RedactUserInfo(ClaudeGatewayConfig.NormalizeBaseUrl(gateway.BaseUrl!))}). " +
-                    "Unless the gateway's model_list maps that name on purpose, the request will fail or be served by a " +
-                    "model you did not intend (#570 trap 1). Point it at the gateway's model, or route this dispatch to " +
-                    "a non-gateway claude block (SSOT §9.10)."));
+                    $"{reach.Where} names '{reach.Model}', a Claude model name, and it reaches gateway block " +
+                    $"'{reach.Block.Name}' ({display}). Unless the gateway's model_list maps that name on purpose, the " +
+                    "request will fail or be served by a model you did not intend (#570 trap 1). Point it at the " +
+                    "gateway's model, or route this dispatch to a non-gateway claude block (SSOT §9.10)."));
             }
 
-            string key = ClaudeGatewayConfig.EndpointKey(gateway.BaseUrl!);
-            endpointDisplay.TryAdd(key, ClaudeGatewayConfig.RedactUserInfo(ClaudeGatewayConfig.NormalizeBaseUrl(gateway.BaseUrl!)));
+            string key = ClaudeGatewayConfig.EndpointKey(reach.Block.BaseUrl!);
+            endpointDisplay.TryAdd(key, display);
             if (!modelsByEndpoint.TryGetValue(key, out List<string>? models))
             {
                 models = [];
                 modelsByEndpoint[key] = models;
             }
 
-            if (!models.Contains(model, StringComparer.Ordinal))
+            if (!models.Contains(reach.Model, StringComparer.Ordinal))
             {
-                models.Add(model);
-            }
-        }
-
-        foreach (PromptRunnerConfig gateway in gateways.Values)
-        {
-            string where = $"promptRunners.{gateway.Name}";
-            Reach(gateway, gateway.Settings.Model, $"{where}.model");
-            Reach(gateway, gateway.GuardrailOverrides?.Model, $"{where}.guardrailOverrides.model");
-
-            foreach (string model in ModelFlagValues(gateway.Settings.ExtraArgs))
-            {
-                Reach(gateway, model, $"{where}.extraArgs");
-            }
-
-            if (gateway.GuardrailOverrides?.ExtraArgs is { } overrideArgs)
-            {
-                foreach (string model in ModelFlagValues(overrideArgs))
-                {
-                    Reach(gateway, model, $"{where}.guardrailOverrides.extraArgs");
-                }
-            }
-        }
-
-        // An action.model pin overrides the model STRING on the block the action dispatches to (TierResolver §6.1
-        // item 1: action.runner ?? the default), so a pin whose block is a gateway sends that string there. A
-        // routing tier or a judge's runner pin resolves to a block's OWN model, which the loop above already read.
-        string? defaultName = PromptRunnerRegistry.DefaultNameFor(plan.Config);
-        foreach (TaskNode task in plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal))
-        {
-            if (task.Action.Kind != ActionKind.Prompt || task.Action.Model is not { } pinned)
-            {
-                continue;
-            }
-
-            string? dispatch = task.Action.Runner ?? defaultName;
-            if (dispatch is not null && gateways.TryGetValue(dispatch, out PromptRunnerConfig? target))
-            {
-                Reach(target, pinned, $"tasks/{task.Id}/task.json action.model");
+                models.Add(reach.Model);
             }
         }
 
@@ -305,26 +297,6 @@ internal static partial class ClaudeGatewayValidation
     {
         string bare = BracketSuffixRegex().Replace(model.Trim(), string.Empty).Trim();
         return bare.Contains("claude", StringComparison.OrdinalIgnoreCase) || ClaudeAliases.Contains(bare);
-    }
-
-    /// <summary>The values of <c>--model</c> / <c>--fallback-model</c> in either spelling.</summary>
-    private static IEnumerable<string> ModelFlagValues(IReadOnlyList<string> args)
-    {
-        string[] flags = ["--model", "--fallback-model"];
-        for (int i = 0; i < args.Count; i++)
-        {
-            foreach (string flag in flags)
-            {
-                if (string.Equals(args[i], flag, StringComparison.Ordinal) && i + 1 < args.Count)
-                {
-                    yield return args[i + 1];
-                }
-                else if (args[i].StartsWith(flag + "=", StringComparison.Ordinal))
-                {
-                    yield return args[i][(flag.Length + 1)..];
-                }
-            }
-        }
     }
 
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*$")]
