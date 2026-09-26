@@ -184,7 +184,7 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   reach a gateway block; WARNING) and **GR2086** (ClaudeGatewayModelsShareEndpoint — two models share one
   gateway under `maxParallelism > 1`; WARNING) are TAKEN by #782/SSOT §9.10. **GR2083 is RESERVED BY NAME
   for #544** (native local-inference actions) and is NOT free: #782 took the codes around it.
-  Next free: **GR1011 / GR2087** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  Next free: **GR1011 / GR2088** (GR2087 = GuardrailOverridesKeyIgnored, #782; GR2083 reserved for #544) — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is

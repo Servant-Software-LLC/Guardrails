@@ -181,7 +181,8 @@ LiteLLM and local model, and a breakdown has no way to know which backend is loa
 change for a task that runs on such a block:
 - Don't put `ANTHROPIC_*`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CONFIG_DIR` or the model-alias variables in its
-  `env`, and don't put `--settings` in its `extraArgs`. The harness owns them (`GR2084`).
+  `env`, and don't put `--settings`, `--model` or `--fallback-model` in its `extraArgs` or
+  `guardrailOverrides.extraArgs`. The harness owns them (`GR2084`).
 - Don't pin a Claude model name (`action.model: "sonnet"`, anything containing `claude`) to a task
   that dispatches to a gateway block. It reaches the gateway's model list, not Claude (`GR2085`).
 
