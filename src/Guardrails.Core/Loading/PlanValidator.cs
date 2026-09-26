@@ -115,6 +115,7 @@ public sealed class PlanValidator
         ValidateOpenAiCompatWeakOrUnreachable(plan, diagnostics);
         ValidateCursorRunnerUngoverned(plan, diagnostics);
         ValidateCursorApprovalMode(plan, diagnostics);
+        ClaudeGatewayValidation.Validate(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
@@ -521,7 +522,9 @@ public sealed class PlanValidator
     private static readonly (string Key, Func<PromptRunnerConfig, bool> IsPresent)[] OpenAiCompatOnlyKeys =
     [
         ("endpoint", r => r.Endpoint is not null),
-        ("contextTokens", r => r.ContextTokens is not null),
+        // Widened by #782: a claude GATEWAY block declares the backend's per-slot window here too (SSOT §9.10), so
+        // the key is legal there; a claude block with no baseUrl still gets this error.
+        ("contextTokens", r => r.ContextTokens is not null && !r.IsClaudeGateway),
         ("apiKeyEnv", r => r.ApiKeyEnv is not null),
         ("wire", r => r.Wire is not null)
     ];

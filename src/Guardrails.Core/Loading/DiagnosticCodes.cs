@@ -1338,8 +1338,47 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CursorApprovalFlagInExtraArgs = "GR2082";
 
-    // CURRENT next-free code: GR2083. GR2082 (CursorApprovalFlagInExtraArgs) is the last taken code
-    // above; GR2077 is RESERVED BY NAME below (issue #587 check B) and is not free.
+    // GR2083 is RESERVED BY NAME for issue #544 (native local-inference actions, the approved
+    // docs/plans/544-local-inference-actions.charter.md) and is not yet allocated in master. #782 lands the
+    // reservation here and takes GR2084–GR2086 around it. Do not allocate GR2083 for anything else.
+
+    /// <summary>
+    /// GR2084 (ERROR) — a claude GATEWAY block (#782, SSOT §9.10) is malformed, or a gateway key is where it does
+    /// nothing: <c>baseUrl</c> not an absolute http/https URL, carrying userinfo or a query, or with a path ending
+    /// <c>/v1</c> or <c>/v1/messages</c> (Claude Code appends <c>/v1/messages</c> itself); <c>authTokenEnv</c> not a
+    /// valid environment-variable NAME (which rejects a pasted secret); a <c>backendModel</c> shorter than 4
+    /// characters; a gateway <c>contextTokens</c> below 1; a gateway key on a non-<c>claude</c> block, on a claude
+    /// block with no <c>baseUrl</c>, or under <c>guardrailOverrides</c>; a gateway block with no <c>model</c>; an
+    /// OWNED variable (<c>ANTHROPIC_BASE_URL</c>, <c>ANTHROPIC_AUTH_TOKEN</c>, the model-alias and subagent pins,
+    /// <c>CLAUDE_CODE_MAX_CONTEXT_TOKENS</c>, <c>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC</c>,
+    /// <c>CLAUDE_CONFIG_DIR</c>) in the block's <c>env</c>, compared case-insensitively; or <c>--settings</c> in
+    /// either spelling in the block's <c>extraArgs</c> or <c>guardrailOverrides.extraArgs</c> — on a gateway
+    /// dispatch the harness owns that flag.
+    /// </summary>
+    public const string ClaudeGatewayBlockInvalid = "GR2084";
+
+    /// <summary>
+    /// GR2085 (WARNING) — a Claude model name would reach a claude GATEWAY block (#782 §2, #570 trap 1): a string
+    /// containing <c>claude</c> anywhere (so <c>anthropic.claude-…</c> and <c>us.anthropic.claude-…</c> count) or
+    /// an alias (<c>sonnet</c>, <c>opus</c>, <c>haiku</c>, <c>fable</c>, <c>opusplan</c>, <c>default</c>), compared
+    /// case-insensitively after removing any <c>[1m]</c>-style suffix. Sources: the block's <c>model</c> (and
+    /// <c>guardrailOverrides.model</c>), an <c>action.model</c> pin dispatched to the block, and <c>--model</c> or
+    /// <c>--fallback-model</c> in its <c>extraArgs</c>. A warning, because a LiteLLM <c>model_list</c> may map the
+    /// name on purpose.
+    /// </summary>
+    public const string ClaudeModelNameToGateway = "GR2085";
+
+    /// <summary>
+    /// GR2086 (WARNING) — <c>maxParallelism &gt; 1</c> and two or more distinct models resolve to ONE gateway
+    /// (#782 §2, #570 trap 3), gateways compared after folding the loopback host spellings and a trailing
+    /// <c>/</c>. A single <c>llama-server</c> holds one model, so parallel dispatches can race it; the pre-DAG
+    /// backend-identity check is the halting half.
+    /// </summary>
+    public const string ClaudeGatewayModelsShareEndpoint = "GR2086";
+
+    // CURRENT next-free code: GR2087. GR2086 (ClaudeGatewayModelsShareEndpoint) is the last taken code
+    // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
+    // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the
     // plan — it reports the TOOL (issue #564). That is deliberate and not a precedent to widen: it
     // lives here because the codes are the greppable, test-assertable surface a reviewer already
