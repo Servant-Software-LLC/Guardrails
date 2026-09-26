@@ -282,7 +282,13 @@ internal static class ClaudeGatewayLaunch
         return directory;
     }
 
-    /// <summary>The inherited-environment scrub predicate (§1.2 step 1), using the OS's name comparison.</summary>
+    /// <summary>
+    /// The inherited-environment scrub predicate (§1.2 step 1), using the OS's name comparison. An inherited OWNED
+    /// name is removed too: most owned values are re-set by the overlay anyway, but one the block leaves unset
+    /// (<c>CLAUDE_CODE_MAX_CONTEXT_TOKENS</c> with no <c>contextTokens</c>) would otherwise reach the child from the
+    /// operator's shell — and "every owned variable is owned outright" (§1.2).
+    /// </summary>
     internal static bool ScrubInherited(string name) =>
-        ClaudeGatewayEnvironment.IsScrubbed(name, ProcessRunner.EnvironmentNameComparison);
+        ClaudeGatewayEnvironment.IsScrubbed(name, ProcessRunner.EnvironmentNameComparison)
+        || ClaudeGatewayEnvironment.OwnedNames.Any(owned => string.Equals(name, owned, ProcessRunner.EnvironmentNameComparison));
 }
