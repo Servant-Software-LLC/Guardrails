@@ -10,13 +10,23 @@ task runs. You still run `llama-server` and LiteLLM yourself.
 
 ## 1. Start the services
 
-One `llama-server` holds one model, so each Qwen version needs its own server on its own port. Adjust the
-model paths to yours:
+One `llama-server` holds one model, so each Qwen version needs its own server on its own port. The paths below
+match the maintainer's existing `claude-local` layout (`<repo>` is the folder `claude-local` lives in: its
+`llama.cpp/build/bin/llama-server` and `models/`). The Qwen 3.6 file is the MXFP4 MoE build, and it keeps the
+multi-token-prediction draft flag `claude-local` used:
 
 ```bash
-llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_M.gguf --alias Qwen3.6-35B-A3B --jinja -c 65536 -np 1 --port 8080
-llama-server -m /models/Qwen3.8-27B-Q4_K_M.gguf     --alias Qwen3.8-27B     --jinja -c 65536 -np 1 --port 8081
+<repo>/llama.cpp/build/bin/llama-server -m <repo>/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf \
+  --spec-type draft-mtp --alias Qwen3.6-35B-A3B --jinja -c 65536 -np 1 --metrics --port 8080
+<repo>/llama.cpp/build/bin/llama-server -m <repo>/models/Qwen3.8-27B-Q4_K_M.gguf \
+  --alias Qwen3.8-27B --jinja -c 65536 -np 1 --metrics --port 8081
 ```
+
+Running both at once needs memory for both models. If that is too much, run one server on 8080 and point
+only the block you are using at it. Never let a second model name resolve to the same server: the preflight
+halts on that, and it is exactly the silent 3.6-for-3.8 substitution `claude-local` could produce. `--jinja`
+turns on the chat template's tool-call support. `claude-local` did not pass it, so if your `llama-server`
+build does not enable it by default, tool calls will arrive as plain text without it.
 
 - `--alias` gives the backend a name the preflight can match exactly. Without it, `llama-server` reports its
   model path, and `backendModel` is matched as a substring of the file name instead.
