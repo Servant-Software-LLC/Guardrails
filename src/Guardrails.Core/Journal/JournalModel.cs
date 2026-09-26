@@ -114,6 +114,14 @@ public sealed record JournalDocument
     public decimal? OverheadCostUsd { get; init; }
 
     /// <summary>
+    /// OPTIONAL: every overhead prompt dispatch that went through a claude gateway (#782 §4) — its gateway, backend
+    /// identity and token usage, since a gateway dispatch adds nothing to <see cref="OverheadCostUsd"/>. Additive and
+    /// backward-compatible: absent until the first such dispatch.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<OverheadGatewayDispatch>? OverheadGatewayDispatches { get; init; }
+
+    /// <summary>
     /// OPTIONAL machine-readable reason the run STOPPED at a deterministic GATE (SSOT §7, issue #432): the
     /// pre-DAG Full Flight Checks, a wave ENTRY/EXIT gate, or the terminal plan gate. A gate halt settles no
     /// task, so without this section a halted run's <c>tasks{}</c> is a wall of silent <c>pending</c>
@@ -1151,6 +1159,25 @@ public sealed record AttemptProvenance
     public string? ModelDigest { get; init; }
 
     /// <summary>
+    /// The claude GATEWAY this attempt dispatched through (#782 §4, SSOT §9.10) — its normalized <c>baseUrl</c>, never
+    /// carrying userinfo. Absent for every non-gateway attempt. Its presence also says two things about the rest of
+    /// this record: <see cref="AttemptRecord.CostUsd"/> is absent because no honest price exists (tokens stand in for
+    /// it), and <see cref="Model"/> is only the CLI's ECHO of the model name it asked for — <see cref="BackendModel"/>
+    /// is the one field that makes a claim about what served the request. Rides the provenance on the same D32
+    /// terms as <see cref="ModelDigest"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Gateway { get; init; }
+
+    /// <summary>
+    /// The backend identity behind <see cref="Gateway"/> (#782 §3.2): the pre-DAG preflight's resolved
+    /// <c>"&lt;backend base&gt; &lt;loaded model&gt;"</c>, or <c>"unverified"</c> when it could not be resolved — never
+    /// a guess. Absent whenever <see cref="Gateway"/> is.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BackendModel { get; init; }
+
+    /// <summary>
     /// Whether the attempt's resolved route was already WARM (plan 30 §3.4) when it launched. <c>bool?</c>
     /// rather than <c>bool</c> for the same class of reason <see cref="TierSource"/> is nullable: "not
     /// known" is not "cold", and a script action resolved no route at all, so there is nothing to report.
@@ -1386,6 +1413,36 @@ public sealed record AttemptJudge
     /// <see cref="AttemptRecord.Usage"/>, so a costless judge provider still shows how much work it did.
     /// Absent (never a zeroed record) when the judge runner reports no usage.
     /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptUsage? Usage { get; init; }
+
+    /// <summary>The claude gateway the JUDGE dispatched through (#782 §4), or absent — see <see cref="AttemptProvenance.Gateway"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Gateway { get; init; }
+
+    /// <summary>The judge's backend identity behind <see cref="Gateway"/> (#782 §3.2), or <c>"unverified"</c>; absent with it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BackendModel { get; init; }
+}
+
+/// <summary>
+/// One OVERHEAD prompt dispatch — ai-merge, ai-triage or the overwatcher — that went through a claude gateway (#782
+/// §4). Overhead spend is otherwise recorded only as <see cref="JournalDocument.OverheadCostUsd"/>, and a gateway
+/// dispatch reports no cost, so without this record its gateway, backend and token usage would leave no trace in
+/// <c>run.json</c> at all.
+/// </summary>
+public sealed record OverheadGatewayDispatch
+{
+    /// <summary>What dispatched it: <c>ai-merge</c>, <c>ai-triage</c> or <c>overwatch</c>.</summary>
+    public required string Source { get; init; }
+
+    /// <summary>The gateway's normalized <c>baseUrl</c>, without userinfo.</summary>
+    public required string Gateway { get; init; }
+
+    /// <summary>The resolved backend identity, or <c>"unverified"</c>.</summary>
+    public required string BackendModel { get; init; }
+
+    /// <summary>The dispatch's token volume; absent when the runner reported none. Its cost is never recorded — there is none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AttemptUsage? Usage { get; init; }
 }

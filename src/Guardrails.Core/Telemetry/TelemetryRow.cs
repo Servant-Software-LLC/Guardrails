@@ -109,6 +109,17 @@ public sealed record TelemetryRow
     /// </summary>
     public string? ModelDigest { get; init; }
 
+    /// <summary>
+    /// The claude gateway the attempt dispatched through (#782 §4), from the attempt's provenance; null for every
+    /// non-gateway attempt. With <see cref="BackendModel"/>, it is what tells a gateway (local-model) row apart from a
+    /// Claude row — without it the #544 dogfood numbers could not be separated. A gateway row's
+    /// <see cref="CostUsd"/> is null by design; its token counts are real.
+    /// </summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>The backend identity behind <see cref="Gateway"/> (#782 §3.2), or <c>"unverified"</c>; null with it.</summary>
+    public string? BackendModel { get; init; }
+
     /// <summary>Turns the attempt used, or null when the runner never reported it (charter §6 null-versus-zero; §15.2).</summary>
     public int? Turns { get; init; }
 

@@ -470,6 +470,15 @@ internal sealed record ActionRun
     /// </summary>
     public string? ModelDigest { get; init; }
 
+    /// <summary>
+    /// The claude gateway the action dispatched through (#782 §4) — <see cref="PromptResult.Gateway"/> carried one hop
+    /// further, on the same terms as <see cref="ModelDigest"/> — or null for every non-gateway action.
+    /// </summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>The backend identity behind <see cref="Gateway"/> (#782 §3.2), or <c>"unverified"</c>; null with it.</summary>
+    public string? BackendModel { get; init; }
+
     public string? NeedsHumanQuestion { get; init; }
 
     /// <summary>
@@ -642,6 +651,9 @@ internal sealed record ActionRun
             // and a fabricated digest would make two different quantizations of one model look like one
             // sample.
             ModelDigest = result.ModelDigest,
+            // #782 §4: the gateway facts, a straight carry — the gateway runner instance set them on every dispatch.
+            Gateway = result.Gateway,
+            BackendModel = result.BackendModel,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             NeedsHumanKind = needsHuman?.Kind,

@@ -3940,9 +3940,10 @@ public static class RunCommand
         }
 
         JournalDocument document = JournalReader.Read(journalPath);
-        if (JournalCost.Total(document) is { } total)
+        // #782 §4: a gateway run's spend is its token usage, kept apart from the dollars ("$X + Nk tok (gateway)").
+        if (JournalCost.Render(document) is { } total)
         {
-            output.WriteLine($"Total prompt cost: ${total:F4}");
+            output.WriteLine($"Total prompt cost: {total}");
         }
 
         // The per-tier split is ADDITIVE to the total above, never a replacement — the two answer

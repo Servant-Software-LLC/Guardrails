@@ -592,6 +592,35 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <inheritdoc cref="Execution.ISchedulerJournal.AddOverheadDispatch"/>
+    public void AddOverheadDispatch(string source, Prompts.PromptResult result)
+    {
+        AddOverheadCost(result.CostUsd);
+        if (result.Gateway is not { } gateway)
+        {
+            return;
+        }
+
+        var dispatch = new OverheadGatewayDispatch
+        {
+            Source = source,
+            Gateway = gateway,
+            BackendModel = result.BackendModel ?? Prompts.ClaudeGatewayConfig.UnverifiedBackend,
+            Usage = result.Usage is { } usage
+                ? new AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+                : null
+        };
+
+        lock (_gate)
+        {
+            _document = _document with
+            {
+                OverheadGatewayDispatches = [.. _document.OverheadGatewayDispatches ?? [], dispatch]
+            };
+            Persist();
+        }
+    }
+
     // Issue #419: RecordWorktreeJunctionRoot is REMOVED. The Windows short-junction is a process-scoped cwd
     // alias (WorktreeJunctionLifetime), not resume state — nothing to persist.
 

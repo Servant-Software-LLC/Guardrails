@@ -156,10 +156,11 @@ public static class StatusCommand
 
         // Run-level cost (SSOT §7 costUsd) — omitted entirely when no attempt recorded a
         // cost, so deterministic-only plans stay noise-free.
-        if (JournalCost.Total(document) is { } total)
+        // #782 §4: gateway token usage stands in for the cost it cannot have, kept apart from the dollars.
+        if (JournalCost.Render(document) is { } total)
         {
             output.WriteLine();
-            output.WriteLine($"Total prompt cost: ${total:F4}");
+            output.WriteLine($"Total prompt cost: {total}");
         }
 
         return ExitCodes.Success;

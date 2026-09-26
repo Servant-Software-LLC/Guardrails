@@ -374,7 +374,10 @@ internal sealed class GuardrailRunner
         CostUsd = promptResult.CostUsd,
         Usage = promptResult.Usage is { } usage
             ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
-            : null
+            : null,
+        // #782 §4: a judge dispatched to a gateway instance records it too (its cost is already null at the source).
+        Gateway = promptResult.Gateway,
+        BackendModel = promptResult.BackendModel
     };
 
     /// <summary>

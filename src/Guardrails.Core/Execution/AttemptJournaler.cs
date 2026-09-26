@@ -174,7 +174,7 @@ internal sealed class AttemptJournaler
         // model; a prompt whose cost wasn't reported says exactly that.
         string costSegment = task.Action.Kind == ActionKind.Script
             ? "; no LLM used (script)"
-            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+            : CostSegment(action);
 
         return new AttemptResult(new TaskResult
         {
@@ -279,7 +279,7 @@ internal sealed class AttemptJournaler
 
         string costSegment = task.Action.Kind == ActionKind.Script
             ? "; no LLM used (script)"
-            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+            : CostSegment(action);
 
         // #196: carry the not-yet-journaled attempt data to the Scheduler's B1 settle. The settle
         // records a real AttemptRecord (built from these fields — the SAME shape the serial success
@@ -929,6 +929,22 @@ internal sealed class AttemptJournaler
             ActionExitCode = actionResult.ExitCode,
             Summary = "cancelled mid-attempt; journaled back to pending"
         }, FeedbackPath: null);
+    }
+
+    /// <summary>
+    /// A prompt attempt's spend in its summary line. A GATEWAY attempt (#782 §4) shows its token usage instead of the
+    /// cost it cannot have — never <c>$0.00</c>, never a blank: <c>"; 48.2k tok (gateway)"</c>.
+    /// </summary>
+    private static string CostSegment(ActionRun action)
+    {
+        if (action.Gateway is not null)
+        {
+            return action.Usage is { } usage
+                ? $"; {Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)} (gateway)"
+                : "; token usage not reported (gateway)";
+        }
+
+        return action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
     }
 }
 

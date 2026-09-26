@@ -57,6 +57,16 @@ public interface ISchedulerJournal
     void AddOverheadCost(decimal? cost) { }
 
     /// <summary>
+    /// Record one OVERHEAD prompt dispatch's spend (#782): its cost through <see cref="AddOverheadCost"/>, and — when
+    /// the dispatch went through a claude gateway (<see cref="Prompts.PromptResult.Gateway"/>) — its gateway, backend
+    /// identity and token usage, which a null cost would otherwise leave unrecorded. The default forwards the cost
+    /// only, so fakes that do not model cost need not change.
+    /// </summary>
+    /// <param name="source"><c>ai-merge</c>, <c>ai-triage</c> or <c>overwatch</c>.</param>
+    /// <param name="result">The dispatch's result.</param>
+    void AddOverheadDispatch(string source, Prompts.PromptResult result) => AddOverheadCost(result.CostUsd);
+
+    /// <summary>
     /// The run's cumulative journaled cost in USD, used to enforce the per-run cost cap
     /// (<see cref="Model.RunConfig.MaxCostUsd"/>). Defaults to 0 — a journal that records no cost
     /// never trips a cap, so existing implementations need not change; <see cref="Journal.RunJournal"/>

@@ -220,7 +220,10 @@ public sealed class WaveBreakdownInvoker
             // line telling them the run is healthy and will resume at 03:00 — needs it, and none of it was
             // possible while the value stopped at the invoker.
             ResetHint = result.ResetHint,
-            CostUsd = result.CostUsd
+            CostUsd = result.CostUsd,
+            // #782 §4: a gateway session has no cost; its token usage and gateway are what the operator is shown.
+            Usage = result.Usage,
+            Gateway = result.Gateway
         };
     }
 
@@ -481,6 +484,12 @@ public sealed record WaveBreakdownOutcome
     /// <c>guardrails breakdown</c> that silently spent money would be the worst kind of quiet.
     /// </summary>
     public decimal? CostUsd { get; init; }
+
+    /// <summary>The session's token usage, or null when the runner reported none (#782 §4: a gateway session's spend).</summary>
+    public PromptUsage? Usage { get; init; }
+
+    /// <summary>The claude gateway the session went through (#782), or null.</summary>
+    public string? Gateway { get; init; }
 
     /// <summary>
     /// True only when the authoring session reached a clean terminal result. A session that was CUT OFF —

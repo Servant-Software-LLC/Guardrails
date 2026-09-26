@@ -163,6 +163,13 @@ public static class BreakdownCommand
         {
             io.Out.WriteLine($"Breakdown spend: ${cost:0.00}");
         }
+        else if (outcome.Gateway is not null)
+        {
+            // #782 §4: a gateway session has no honest cost; its token usage stands in, never a blank or $0.00.
+            io.Out.WriteLine(outcome.Usage is { } usage
+                ? $"Breakdown spend: {Core.Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)} (gateway {outcome.Gateway})"
+                : $"Breakdown spend: token usage not reported (gateway {outcome.Gateway})");
+        }
 
         if (!outcome.TerminatedCleanly)
         {

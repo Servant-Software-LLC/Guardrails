@@ -46,4 +46,47 @@ public static class JournalCost
 
         return any ? sum : null;
     }
+
+    /// <summary>
+    /// The token usage of every dispatch that went through a claude gateway (#782 §4) — task attempts whose
+    /// provenance names a gateway, plus overhead gateway dispatches — or null when none reported any. This is the
+    /// gateway half of a run's spend, which <see cref="Total"/> cannot carry because a gateway dispatch has no cost;
+    /// rendered beside it by <see cref="SpendFormat.Total"/>. Judge spend stays out, exactly as it stays out of
+    /// <see cref="Total"/>.
+    /// </summary>
+    public static long? GatewayTokens(JournalDocument document)
+    {
+        long sum = 0;
+        bool any = false;
+
+        foreach (TaskJournalEntry entry in document.Tasks.Values)
+        {
+            foreach (AttemptRecord attempt in entry.Attempts)
+            {
+                if (attempt.Provenance?.Gateway is not null && attempt.Usage is { } usage)
+                {
+                    sum += (long)usage.InputTokens + usage.OutputTokens;
+                    any = true;
+                }
+            }
+        }
+
+        foreach (OverheadGatewayDispatch dispatch in document.OverheadGatewayDispatches ?? [])
+        {
+            if (dispatch.Usage is { } usage)
+            {
+                sum += (long)usage.InputTokens + usage.OutputTokens;
+                any = true;
+            }
+        }
+
+        return any ? sum : null;
+    }
+
+    /// <summary>
+    /// The run's spend as ONE rendered figure (#782 §4): <see cref="Total"/> and <see cref="GatewayTokens"/> kept in
+    /// their own units by <see cref="SpendFormat.Total"/>, or null when neither has anything to report.
+    /// </summary>
+    public static string? Render(JournalDocument document) =>
+        SpendFormat.Total(Total(document), GatewayTokens(document));
 }
