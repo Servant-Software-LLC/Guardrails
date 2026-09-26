@@ -505,33 +505,46 @@ stops the run with the reason, before a task spends a turn:
 - your machine's managed Claude Code settings, and the target repo's `.claude/settings.json` and
   `.claude/settings.local.json`, don't set anything that could send requests elsewhere or with another
   credential, such as `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK` or `apiKeyHelper`.
-  The message names the file and the key. Managed settings are read from the `managed-settings.json` files
-  only, not from Windows registry policies or macOS configuration profiles;
+  The message names the file and the key. Every managed source Claude Code documents is read — the
+  `managed-settings.json` file and `managed-settings.d/` drop-ins, the Windows `HKLM`/`HKCU` policy registry value,
+  and the macOS `com.anthropic.claudecode` configuration profile. Server-managed settings (pushed from the
+  claude.ai console) can't be read from here, and the run header says so. The integration worktree a resumed run
+  continues from is checked too;
 - the `authTokenEnv` variable, if any, is set;
 - the gateway answers, lists each declared model, and returns a real reply to a short message;
 - the server behind each model has the `backendModel` you declared loaded, `contextTokens` fits its per-slot
-  window, and no two model names are served by the same loaded model.
+  window, and no two model names are served by the same loaded model. That includes a model a task pins with
+  `action.model`: every model a run can send to the gateway is checked. The server is asked what it loaded
+  WITHOUT your gateway key, and only when it is on this machine or a private network address; a server elsewhere
+  is reported as not probed rather than sent a request. If you start `llama-server` with `--alias`, keep the alias
+  honest: the match trusts it.
 
 The run header then shows the identity it found, for example
 `Gateway: block 'qwen36' → http://127.0.0.1:4000, model 'Qwen': backend http://127.0.0.1:8080 Qwen3.6-35B-A3B (backendModel 'qwen3.6-35b-a3b' matched).`
 When the gateway isn't LiteLLM, or the server doesn't say what it loaded, it reads `backend identity
 unverified`, and a declared `backendModel` is reported as "declared, not verified", never as matched. This check
-runs once, at the start. A server that swaps models mid-run isn't detected.
+runs once, at the start. A server that swaps models mid-run isn't detected. `guardrails breakdown --runner-config`
+and `guardrails run --revalidate-task` run the same checks before they use a gateway block.
 
 **What changes on a gateway block:**
 
 - **Tokens instead of cost.** Claude Code prices every call from Anthropic's list, which is meaningless for a
   local model, so Guardrails records no cost and shows token usage wherever it would show a dollar figure:
   `48.2k tok (gateway)`. A mixed run shows both, for example `Total prompt cost: $1.8400 + 310.5k tok (gateway)`.
+  A gateway dispatch that reported no token usage is counted, not dropped: `+ 1 dispatch(es) without usage (gateway)`.
   `--max-cost-usd` (and the $20 `--autonomous` default) doesn't limit gateway spend; the run says so at startup.
 - **A clean Claude Code profile.** Each run gives Claude Code its own empty config directory under
   `logs/<runId>/claude-config/`, so your `~/.claude` settings, `CLAUDE.md`, skills, memory, MCP servers and
   stored login aren't used, and session transcripts land there instead of `~/.claude/projects/`. Claude Code
   also starts without a record of trusting the repo, so some project settings may not apply. Treat the block's
-  `allowedTools` as the agent's whole permission grant.
+  `allowedTools` as the agent's whole permission grant. That directory is served by the local log viewer with the
+  rest of the run's logs, so anything an agent prints into its session — including a token — can be read there.
+  All of a run's gateway sessions share its one `.claude.json`; at `maxParallelism` above 1, watch for it being
+  corrupted.
 - **The token is visible to the agent's shell commands.** Commands the model runs inherit the child's
-  environment, including `ANTHROPIC_AUTH_TOKEN`. Without `authTokenEnv` that is a harmless placeholder. With a
-  real key for a remote gateway, any command the model runs can read it.
+  environment, including `ANTHROPIC_AUTH_TOKEN` and the variable `authTokenEnv` names (which Guardrails leaves in
+  place). Without `authTokenEnv` the token is a harmless placeholder. With a real key for a remote gateway, any
+  command the model runs can read it.
 - **Some traffic may still leave the machine.** Guardrails turns off Claude Code's nonessential traffic, but
   some features (such as fast-mode checks and WebFetch's safety check) are documented to call
   `api.anthropic.com` directly, and whether that switch stops them is unverified.

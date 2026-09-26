@@ -37,9 +37,15 @@
     It separately RECORDS (does not assert) any TCP connection to api.anthropic.com seen while the run was in
     flight — machine-wide, so another process on this machine can appear there too.
 
+    It also ASSERTS where Claude Code's state went: the session transcripts landed under
+    logs/<runId>/claude-config/projects; nothing for the smoke's target appeared under the real ~/.claude/projects,
+    and the real ~/.claude.json neither appeared nor names the target; the hostile user config directory gained no
+    projects/ and no .claude.json (the inherited CLAUDE_CONFIG_DIR was really replaced).
+
     It prints what it observed for the design's unverified items: `claude --version`; the request paths, models
-    and agent ids seen (whether the subagent/background aliases took effect); whether a blanked "" variable was
-    treated as unset (no x-api-key, no canary); where the session transcripts landed (logs/<runId>/claude-config).
+    and agent ids seen (whether the subagent/background aliases took effect). Whether Claude Code treats a blanked
+    "" variable as unset is NOT exercised: the composed settings file's "" belt is only reached if a project settings
+    file sets one of those names, and the preflight halts on exactly that before any child runs.
 
 .PARAMETER GatewayUrl
     The LiteLLM gateway to forward to. Default http://127.0.0.1:4000. Must already be running, with its backend.
@@ -98,6 +104,12 @@ function Get-FileHashOrNull([string] $path) {
 }
 $realSettings = Join-Path $realClaudeDir 'settings.json'
 $realSettingsHashBefore = Get-FileHashOrNull $realSettings
+$realProjectsDir = Join-Path $realClaudeDir 'projects'
+$realClaudeJson = Join-Path $HOME '.claude.json'
+$realClaudeJsonExisted = Test-Path $realClaudeJson
+# The smoke's folder name is unique, and Claude Code names a project's transcript folder after its path — so any
+# entry naming it under the REAL ~/.claude could only have come from this smoke's child.
+$smokeToken = Split-Path $root -Leaf
 
 # ─────────────────────────── recording proxy (in-process, C#) ───────────────────────────
 Add-Type -Language CSharp -TypeDefinition @'
@@ -415,6 +427,26 @@ foreach ($r in $requests) {
 $tripwire = Get-FileHashOrNull $realSettings
 if ($tripwire -ne $realSettingsHashBefore) { $failures.Add("the REAL $realSettings changed during the smoke") }
 
+# ── where Claude Code's own state went (never the operator's ~/.claude, never the hostile directory) ──
+$configDirs = @(Get-ChildItem -Directory -Recurse -Filter 'claude-config' -Path (Join-Path $planDir 'logs') -ErrorAction SilentlyContinue)
+if (@($configDirs | Where-Object { Test-Path (Join-Path $_.FullName 'projects') }).Count -eq 0) {
+    $failures.Add('no session transcripts landed under logs/<runId>/claude-config/projects')
+}
+if ((Test-Path $realProjectsDir) -and @(Get-ChildItem -Directory $realProjectsDir -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$smokeToken*" }).Count -gt 0) {
+    $failures.Add("a transcript folder for the smoke's target appeared under the REAL $realProjectsDir")
+}
+if (-not $realClaudeJsonExisted -and (Test-Path $realClaudeJson)) {
+    $failures.Add("the REAL $realClaudeJson did not exist before the smoke and does now")
+}
+elseif ((Test-Path $realClaudeJson) -and (Select-String -Path $realClaudeJson -SimpleMatch -Quiet -Pattern $smokeToken)) {
+    $failures.Add("the REAL $realClaudeJson now names the smoke's target ($smokeToken)")
+}
+foreach ($leak in 'projects', '.claude.json') {
+    if (Test-Path (Join-Path $hostileUserDir $leak)) {
+        $failures.Add("the hostile user config directory gained '$leak' — the inherited CLAUDE_CONFIG_DIR was used, not replaced")
+    }
+}
+
 # ─────────────────────────── what the smoke observed (the design's unverified items) ───────────────────────────
 Write-Host ''
 Write-Host "Observed (claude $claudeVersion):"
@@ -423,8 +455,6 @@ Write-Host "  models named: $((($requests | Where-Object model | Select-Object -
 Write-Host "  subagent requests (x-claude-code-agent-id): $(@($requests | Where-Object agentId).Count)"
 Write-Host "  HEAD /api/hello seen: $(@($requests | Where-Object { $_.method -eq 'HEAD' -and $_.path -like '/api/hello*' }).Count -gt 0)"
 Write-Host "  count_tokens seen: $(@($requests | Where-Object { $_.path -like '*count_tokens*' }).Count -gt 0)"
-$configDirs = Get-ChildItem -Directory -Recurse -Filter 'claude-config' -Path (Join-Path $planDir 'logs') -ErrorAction SilentlyContinue
-Write-Host "  session transcripts under logs/<runId>/claude-config/projects: $(@($configDirs | Where-Object { Test-Path (Join-Path $_.FullName 'projects') }).Count -gt 0)"
 if (Test-Path "$requestLog.errors") {
     Write-Host "  recording-proxy forwarding errors (a client that hung up mid-stream lands here too): $requestLog.errors"
 }

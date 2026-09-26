@@ -7113,8 +7113,9 @@ rather than by rule.)*
 | `GR2081` | error | `CursorApprovalModeInvalid` (§9.9, issue #767) — a prompt-runner block's `approvalMode` cannot be honoured: the value is not one of `force` \| `auto-review` \| `none` (reported by the LOADER, which leaves the mode unset rather than silently serving `force`, the one mode an enterprise admin may refuse outright), a non-string value, or `guardrailOverrides.approvalMode` (loader; the key is block-level only), or the key sits on a block whose `kind` is not `cursor` (reported by the VALIDATOR — a key that does nothing where it was written is indistinguishable from one that works) |
 | `GR2082` | error | `CursorApprovalFlagInExtraArgs` (§9.9, issue #767) — a `kind: "cursor"` block's `extraArgs` or `guardrailOverrides.extraArgs` carries one of Cursor's approval flags (`--force`, its documented short alias `-f`, `--yolo`, `--auto-review`, bare or `--flag=value`). The approval flag is owned by `approvalMode`: a copy duplicates the mode or contradicts it, and one contradiction is fatal at launch — the CLI refuses `--auto-review` with `--force`/`--yolo` ("pick one"). The message names the `approvalMode` that expresses what the flag was reaching for. `--sandbox enabled` is not an approval flag and is not flagged |
 | `GR2083` | — | RESERVED BY NAME for issue #544 (native local-inference actions, `docs/plans/544-local-inference-actions.charter.md`) and not allocated. #782 landed the reservation in `DiagnosticCodes.cs` and took `GR2084`–`GR2086` around it. Never allocate it for anything else |
-| `GR2084` | error | `ClaudeGatewayBlockInvalid` (§9.10, issue #782) — a claude GATEWAY block is malformed, or a gateway key is somewhere it does nothing. One diagnostic per fault: `baseUrl` not an absolute http/https URL, carrying userinfo (`user:password@`), carrying a query, or with a path ending `/v1` or `/v1/messages` (Claude Code appends `/v1/messages` itself); `authTokenEnv` not a valid variable NAME (`[A-Za-z_][A-Za-z0-9_]*`, which rejects a pasted `sk-…` secret); a `backendModel` shorter than 4 characters after trimming; a gateway `contextTokens` below 1; `baseUrl` / `authTokenEnv` / `backendModel` on a non-`claude` block, `authTokenEnv` / `backendModel` on a claude block with no `baseUrl`, or an empty `baseUrl`; any of `baseUrl` / `authTokenEnv` / `backendModel` / `contextTokens` under `guardrailOverrides` (the LOADER records each and the validator reports it, so none is dropped silently); a gateway block with no `model`; an OWNED variable (§9.10: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CONFIG_DIR`) in the block's `env` or `guardrailOverrides.env`, compared case-insensitively on every OS; or `--settings` in either spelling (`--settings <path>`, `--settings=<path>`) in `extraArgs` or `guardrailOverrides.extraArgs`, because on a gateway dispatch the harness passes exactly one composed settings file. Static and offline |
-| `GR2085` | warning | `ClaudeModelNameToGateway` (§9.10, issue #782, #570 trap 1) — a Claude model name would reach a gateway block: a string containing `claude` anywhere (so `anthropic.claude-…` and `us.anthropic.claude-…` count) or an alias (`sonnet`, `opus`, `haiku`, `fable`, `opusplan`, `default`), compared case-insensitively after removing any trailing `[…]` suffix such as `[1m]`. Sources scanned: the gateway block's `model` and `guardrailOverrides.model`; `--model` / `--fallback-model` values (either spelling) in its `extraArgs` and `guardrailOverrides.extraArgs`; and a task's `action.model` pin when that task's action dispatches to the block (`action.runner`, else the effective default). A `routing` tier or a judge's `runner:` pin resolves to the block's OWN `model`, which the first source already covers. A WARNING, because a LiteLLM `model_list` may map that name on purpose. An `action.model` pin is warned here but NOT probed by the preflight (§9.10) |
+| `GR2084` | error | `ClaudeGatewayBlockInvalid` (§9.10, issue #782) — a claude GATEWAY block is malformed, or a gateway key is somewhere it does nothing. One diagnostic per fault: `baseUrl` not an absolute http/https URL, carrying userinfo (`user:password@`), carrying a query, or with a path ending `/v1` or `/v1/messages` (Claude Code appends `/v1/messages` itself); `authTokenEnv` not a valid variable NAME (`[A-Za-z_][A-Za-z0-9_]*`, which rejects a pasted `sk-…` secret); a `backendModel` shorter than 4 characters after trimming; a gateway `contextTokens` below 1; `baseUrl` / `authTokenEnv` / `backendModel` on a non-`claude` block, `authTokenEnv` / `backendModel` on a claude block with no `baseUrl`, or an empty `baseUrl`; any of `baseUrl` / `authTokenEnv` / `backendModel` / `contextTokens` under `guardrailOverrides` (the LOADER records each and the validator reports it, so none is dropped silently); a gateway block with no `model`; an OWNED variable (§9.10: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CONFIG_DIR`) in the block's `env` or `guardrailOverrides.env`, compared case-insensitively on every OS; `--settings` in either spelling (`--settings <path>`, `--settings=<path>`) in `extraArgs` or `guardrailOverrides.extraArgs`, because on a gateway dispatch the harness passes exactly one composed settings file; or `--model` / `--fallback-model` (either spelling) in a gateway block's `extraArgs` or `guardrailOverrides.extraArgs`, because the harness owns the model and records the backend identity verified for IT (a flag would make the child request a model provenance does not name). The `guardrailOverrides` clause applies to a `claude` block only; on any other kind the same keys are `GR2087`. Static and offline |
+| `GR2085` | warning | `ClaudeModelNameToGateway` (§9.10, issue #782, #570 trap 1) — a Claude model name would reach a gateway block: a string containing `claude` anywhere (so `anthropic.claude-…` and `us.anthropic.claude-…` count) or an alias (`sonnet`, `opus`, `haiku`, `fable`, `opusplan`, `default`), compared case-insensitively after removing any trailing `[…]` suffix such as `[1m]`. Sources scanned — THE reach set (`ClaudeGatewayReach`), the same pairs the preflight probes: the gateway block's `model` and `guardrailOverrides.model`, and a task's `action.model` pin when that task's action dispatches to the block (`action.runner`, else the effective default). A `routing` tier or a judge's `runner:` pin resolves to the block's OWN `model`, which the first source already covers. A model flag in a gateway block's `extraArgs` is `GR2084`, not this. A WARNING, because a LiteLLM `model_list` may map that name on purpose |
+| `GR2087` | warning | `GuardrailOverridesKeyIgnored` (§9.10, issue #782 review) — a `guardrailOverrides` sub-block on a NON-`claude` prompt runner carries a key that is not a per-prompt setting and so does nothing there: today the gateway keys `baseUrl`, `authTokenEnv`, `backendModel` and `contextTokens`. On a `claude` block the same keys are `GR2084` (an error, since they would silently fail to redirect a gateway); on any other kind the block can never be a gateway, so the finding adds no error to a path unrelated to gateways |
 | `GR2086` | warning | `ClaudeGatewayModelsShareEndpoint` (§9.10, issue #782, #570 trap 3) — `maxParallelism > 1`, and two or more distinct model strings (from the same sources as `GR2085`) reach one gateway. Gateways are compared by an endpoint key: scheme, host and port lower-cased, `localhost` / `127.0.0.1` / `::1` folded to one loopback host, the path kept, a trailing `/` dropped. A single `llama-server` holds one model, so parallel dispatches can race it. This is the static half; the preflight's backend-identity check (§9.10) is the halting half |
 | `GR2068` | warning | `HandoffPathUnreachable` — a handoff row names a resolvable path that **no task's** `writeScope` covers, so the row cannot be delivered under any implementation. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **warning** in v1 only because `RunCommand.RunAsync` refuses to run a plan whose validation emits any error, and a correct shipped plan can carry a stale cell (plan 28 row 3) — an ERROR would be a retroactive run-blocking gate. **Promotion to ERROR** when a hand-run of this code alone across every plan carrying the convention produces only genuine defects |
 | `GR2069` | warning | `HandoffRowSplitAcrossTasks` — every path a handoff row names is writable by *some* task, but **no single task** can write them all: the row is delivered by several tasks and each half must be reachable by the task implementing *that* half. Shared extraction (plan 31 §4, issue #553): candidates are backticked code spans in the plan document's implementation-handoff table carrying a `/` or a file extension; a candidate is **resolvable** only when its first path segment equals a **whole** path segment of some `writeScope` entry in the plan (so a vague fragment like `Cli/Commands/` — where the real segment is `Guardrails.Cli` — is dropped silently rather than reported). A **concrete** candidate is covered by `WriteScope.IsInScope(candidate, [entry])`, by equality, or by a **segment-aligned path suffix** of an entry; a **glob** candidate is covered when `IsInScope(entry, [candidate])` or `IsInScope(entry, ["**/" + candidate])` — **arguments swapped**, the only direction the primitive supports. Both suffix arms resolve a relative cell **without touching the repo tree**, which is required because a handoff table names files the plan will CREATE. The verdict is **per row, against ONE task**. **Silent** when the sibling `<plan-folder>.md` is absent, when it carries no `filesTouched` column, or when no candidate resolves. Static and offline. The two codes are **mutually exclusive per row**. A **confirm**, not a fault: a deliberately split row legitimately triggers it, and the message says so in its own words. It is a **separate code from GR2068 by design** — it fires on 3 of 10 rows of a correct plan, and under one shared code a reviewer learns to skim the code itself, taking GR2068's precision with it (#229). **Should probably never be an ERROR**: it reports a shape the check cannot adjudicate, so blocking on it would refuse a plan whose author already made the right call. Note it is GR2069, not GR2068, that catches both plan-28 failures |
@@ -7727,8 +7728,8 @@ non-Claude model through a gateway is outside what Claude Code supports. Several
 are Claude Code behaviors the harness cannot pin, so the manual live smoke (§9.10.5) records
 `claude --version` and is re-run on every Claude Code upgrade.
 
-**The keys** (§2). All are block-level only: each is `GR2084` under `guardrailOverrides` and on a
-non-`claude` block.
+**The keys** (§2). All are block-level only: each is `GR2084` under a claude block's `guardrailOverrides` and
+on a non-`claude` block (under a non-`claude` block's `guardrailOverrides` it is the `GR2087` warning).
 
 | Key | Required | Meaning |
 |---|---|---|
@@ -7760,9 +7761,9 @@ harness builds. Each is closed differently:
 
 **The isolated config directory.** `guardrails run` creates `logs/<runId>/claude-config/` empty once the
 preflight passes, and every gateway dispatch of that run uses it as `CLAUDE_CONFIG_DIR`. A caller with no run
-context (`guardrails breakdown`, an embedded caller) gets a `claude-config/` directory beside the attempt's
-stream log, or a fresh temp directory when there is no stream log. It is **never** the operator's `~/.claude`.
-Consequences, disclosed:
+context (`guardrails breakdown --runner-config`, `run --revalidate-task`, an embedded caller) gets a
+`claude-config/` directory beside the attempt's stream log, or a fresh temp directory when there is no stream log.
+It is **never** the operator's `~/.claude`. Consequences, disclosed:
 - The child gets no user `CLAUDE.md`, user skills, memory or user MCP servers. This is intended: a harness
   actor's behavior comes from the plan and the repository, not from the operator's home directory.
 - Claude Code starts with a fresh `.claude.json` (onboarding and workspace-trust state) on every run.
@@ -7771,6 +7772,12 @@ Consequences, disclosed:
   `~/.claude/settings.json` permissions no longer merge with `allowedTools` either: treat `allowedTools` as the
   whole grant.
 - Session transcripts land under `logs/<runId>/claude-config/projects/` instead of `~/.claude/projects/`.
+  **That directory is served by the loopback log viewer** like the rest of `logs/<runId>/`, so anything an agent
+  echoes into its session — including the gateway token, if a command prints its environment — is readable there
+  by anyone who can reach the viewer's port on this machine.
+- **Parallel children share one fresh `.claude.json`** in that directory (every gateway dispatch of a run uses the
+  same `CLAUDE_CONFIG_DIR`). Claude Code writes it as it runs; whether concurrent children corrupt it is unverified,
+  so the #544 dogfood at `maxParallelism > 1` watches for a malformed `.claude.json` or lost trust state.
 
 **The child environment,** built in this order:
 
@@ -7832,9 +7839,10 @@ never as a retryable blip.
   URL (for example fast-mode checks and WebFetch's safety check). Whether
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` suppresses those calls is unverified, and the live smoke records any
   such connection. This contract does NOT claim that nothing leaves the machine.
-- **Agent shells inherit `ANTHROPIC_AUTH_TOKEN`.** The Bash tool's subprocesses get the child's environment.
-  For a local gateway without authentication that value is the harmless placeholder. For a remote gateway with a
-  real token, any command the model runs can read it.
+- **Agent shells inherit `ANTHROPIC_AUTH_TOKEN`** — and the variable `authTokenEnv` names, which the harness
+  inherited and does not scrub (it is an ordinary operator variable, not an `ANTHROPIC_*` name). The Bash tool's
+  subprocesses get the child's environment. For a local gateway without authentication the token is the harmless
+  placeholder. For a remote gateway with a real token, any command the model runs can read it under either name.
 
 #### 9.10.2 The preflight
 
@@ -7850,29 +7858,44 @@ any gateway, so a run that must halt anyway never spends a remote gateway's key.
 
 | Check | Once per | Halts when |
 |---|---|---|
-| Managed settings | run | a managed-settings file sets an owned or scrubbed `env` variable, `apiKeyHelper`, `fallbackModel`, `model`, `availableModels`, `forceLoginMethod: "gateway"` or `forceLoginGatewayUrl`, or cannot be parsed |
-| Project settings | run | `.claude/settings.json` or `.claude/settings.local.json` in the workspace (and, in worktree mode, the same files as committed at the workspace's `HEAD`, the base the worktrees are built from) sets an owned or scrubbed `env` key, `apiKeyHelper`, `forceLoginMethod` or `forceLoginGatewayUrl`, or cannot be parsed. The halt names the file and the key |
+| Managed settings | run | any documented managed source (below) sets an owned or scrubbed `env` variable, `apiKeyHelper`, `fallbackModel`, `model`, `availableModels`, `forceLoginMethod: "gateway"` or `forceLoginGatewayUrl`, or exists but cannot be read or parsed |
+| Project settings | run | `.claude/settings.json` or `.claude/settings.local.json` in the workspace, in the resolved integration worktree (the plan-branch tip `guardrails run` resumes from), and — in worktree mode — as committed at the workspace's `HEAD`, sets an owned or scrubbed `env` key, `apiKeyHelper`, `forceLoginMethod` or `forceLoginGatewayUrl`, or exists but cannot be read or parsed. The halt names the file and the key |
 | `authTokenEnv` | gateway block | the variable is unset or empty; the halt names it |
 | `GET {baseUrl}/v1/models` | gateway | refused, DNS, timeout (10 s), TLS, or any non-2xx other than 404/405 (401/403 and 5xx included); or a declared model not in `data[].id`. A 404/405 is a WARNING that skips only the model-listed check |
 | `POST {baseUrl}/v1/messages`, `max_tokens: 256` | (gateway, model) | anything but a 200 with a non-empty `content` array (timeout 120 s). The response body is quoted. 256 leaves room for a reasoning model's thinking (#759) |
 | Backend identity (D2, §9.10.3) | (gateway, model) | a declared `backendModel` does not match; `contextTokens` exceeds the per-slot `n_ctx`; two distinct models resolve to one loaded model |
 
-- Gateways are grouped by the `GR2086` endpoint key, so `localhost` and `127.0.0.1` are probed once. The models
-  probed are each gateway block's `model` and `guardrailOverrides.model`. **An `action.model` pin or a `--model`
-  in `extraArgs` is warned by `GR2085` but not probed.**
-- Every probe sends `Authorization: Bearer <token>` and `anthropic-version: 2023-06-01`.
-- **Managed settings are read from these JSON files only:** on Windows,
-  `C:\Program Files\ClaudeCode\managed-settings.json` and `C:\ProgramData\ClaudeCode\managed-settings.json`; on
-  macOS, `/Library/Application Support/ClaudeCode/managed-settings.json`; elsewhere,
-  `/etc/claude-code/managed-settings.json`. **Not read, disclosed:** Windows registry policies, macOS MDM
-  configuration profiles, and any other managed source Claude Code supports. A policy delivered that way is not
-  detected.
+- Gateways are grouped by the `GR2086` endpoint key, so `localhost` and `127.0.0.1` are probed once. **The models
+  probed are THE reach set** (`ClaudeGatewayReach`, shared with `GR2085`/`GR2086`): each gateway block's `model`
+  and `guardrailOverrides.model`, and every task `action.model` pin dispatched to the block — so a pin gets its
+  own `/v1/messages` probe, its own backend identity, and is in the #760 shared-identity halt.
+- Every GATEWAY probe sends `Authorization: Bearer <token>` and `anthropic-version: 2023-06-01`. **A BACKEND probe
+  (`/props`, `/v1/models` on the `api_base`) sends no `Authorization` header**, and is made only when the
+  `api_base` host is loopback or a private address (RFC 1918, IPv6 ULA `fc00::/7`, link-local `169.254/16` and
+  `fe80::/10`; every address a host NAME resolves to must be one) — the `api_base` is whatever the gateway
+  reports, possibly a third party or Anthropic itself. Otherwise the identity is recorded as
+  `unverified (backend not probed: non-private host)`.
+- **Managed settings: every documented source is read** (code.claude.com/docs/en/managed-settings, "Where each
+  mechanism stores the policy"): `managed-settings.json` and each `managed-settings.d/*.json` in the system
+  directory (`C:\Program Files\ClaudeCode\`, `/Library/Application Support/ClaudeCode/`, `/etc/claude-code/`); on
+  Windows the `Settings` value under `HKLM\SOFTWARE\Policies\ClaudeCode` and the user-writable `HKCU` fallback;
+  on macOS the `com.anthropic.claudecode` managed-preferences plist (machine and per-user, under
+  `/Library/Managed Preferences/`), converted with `plutil -convert json`. The legacy
+  `C:\ProgramData\ClaudeCode\` path is not read (Claude Code no longer reads it). **Not checkable, disclosed in a
+  run-header `Note:`:** SERVER-managed settings (fetched from the claude.ai console or a Claude apps gateway and
+  cached by Claude Code) and settings an embedding host supplies. A gateway child has no stored credentials, so
+  it has no signed-in organization to fetch a server policy for.
+- An unreadable settings source (access denied, an I/O error) is a journaled halt, never a crash.
+- `guardrails breakdown --runner-config` and `run --revalidate-task` run the SAME full preflight before they
+  dispatch through a gateway block (nothing is journaled; a halt is printed and the command exits non-zero), and
+  thread the resolved identities into their runner exactly as a run does.
 - The project-settings halt's remedy is to remove the key from the project settings for this run (for example,
   by moving it to user settings, which a gateway dispatch does not read).
 
-**The run header, on a pass.** One line per gateway block:
+**The run header, on a pass.** One line per (gateway, model) pair in the reach set:
 `Gateway: block '<name>' → <baseUrl>, model '<model>': backend <identity> (backendModel '<x>' matched).`, or
-`…: backend identity unverified.` Then any warnings (a 404/405 listing; `backendModel '<x>' declared, not
+`…: backend identity unverified.` A model that is not the block's own names where it came from:
+`model 'qwen3.8' (tasks/01/task.json action.model): …`. Then any warnings (a 404/405 listing; `backendModel '<x>' declared, not
 verified`), then the `maxCostUsd` `Note:` (§9.10.4).
 
 #### 9.10.3 Backend identity (D2)
@@ -7899,7 +7922,9 @@ preflight resolves the identity like this:
 **The `backendModel` match rule.** The declared value matches when (a) it equals the reported alias,
 case-insensitively; or (b) there is no alias and it is a case-insensitive substring of the basename of
 `model_path` (the file name without its directory, with either separator). With neither reported, nothing
-matches. A `/v1/models` id stands in for the alias under (a), or for `model_path` if it looks like a path.
+matches. **A stale `llama-server --alias` defeats rule (a):** the alias is whatever the operator typed at launch,
+so a server started with `--alias qwen3.8` over a 3.6 file matches `backendModel: "qwen3.8"`. Start the server
+without `--alias` (rule (b) then reads the file name) or keep the alias honest. A `/v1/models` id stands in for the alias under (a), or for `model_path` if it looks like a path.
 
 | Declared `backendModel` | Backend reports | Result |
 |---|---|---|
@@ -7909,7 +7934,9 @@ matches. A `/v1/models` id stands in for the alias under (a), or for `model_path
 | `qwen` | no alias; `model_path` `/models/qwen3.6-35b.gguf` | match (b), but weak: declare the version |
 
 **Halts:** a declared `backendModel` that does not match; a `contextTokens` above the reported per-slot
-`n_ctx`; two distinct model strings that resolve to the SAME identity (#760).
+`n_ctx`; two distinct model strings that resolve to the SAME identity (#760). "The same" is compared on the
+backend's endpoint key (`localhost` / `127.0.0.1` / `::1` folded, nothing else — `127.0.0.2` is another socket)
+plus the loaded model, so two spellings of one backend's `api_base` are one backend.
 
 **When the identity cannot be resolved** (the gateway is not LiteLLM, there is no `/model/info` or no entry,
 there are several `api_base`s, or the backend does not answer), nothing is claimed. Provenance records
@@ -7929,7 +7956,9 @@ detected. D2 narrows #760's window; it does not close it.
 **Mid-run failures** keep the shipped `ClaudeSignalClassifier` classification: connection refused, reset or
 error, and 429/503/529 are `Transient` (the bounded #115 pause); a model LiteLLM does not know is an `Error`.
 Every summary a gateway dispatch's session produces (success, failure, stall, fail-fast, launch failure) ends with
-` (via gateway <baseUrl>)`. The quarantine is untouched.
+` (via gateway <baseUrl>)`, and where a plain claude summary would say `, cost $X` it says `, 48.2k tok` (or
+`, token usage not reported`) — so a judge, a failed action, a needs-human or an overhead line still shows the
+spend. The quarantine is untouched.
 
 **`guardrails providers check <plan> <block>`** on a gateway block runs a manual `tool_use` round trip through
 the gateway's `/v1/messages`, which exercises the gateway's Anthropic-to-OpenAI tool-call translation. Step 1
@@ -7945,12 +7974,12 @@ carry them. Every URL is the base URL without userinfo.
 | `run.json` `tasks.*.attempts[].provenance` (`AttemptProvenance`) | `gateway` | the normalized `baseUrl`; absent on every non-gateway attempt |
 | same | `backendModel` | the resolved identity, or `"unverified"`; absent with `gateway` |
 | `provenance.judge` (`AttemptJudge`) | `gateway`, `backendModel` | the same, for a judge dispatched to a gateway block |
-| `run.json` top level | `overheadGatewayDispatches[]` | one `{ source, gateway, backendModel, usage? }` per `ai-merge`, `ai-triage` or `overwatch` dispatch through a gateway. Overhead spend is otherwise recorded only in `overheadCostUsd`, which a null cost leaves untouched, so without this array such a dispatch would leave no trace. Absent until the first one |
+| `run.json` top level | `overheadGatewayDispatches[]` | one `{ source, gateway, backendModel, usage? }` per `ai-merge`, `ai-triage`, `overwatch` or `breakdown` (a between-wave JIT breakdown) dispatch through a gateway. Overhead spend is otherwise recorded only in `overheadCostUsd`, which a null cost leaves untouched, so without this array such a dispatch would leave no trace. Absent until the first one |
 | `TelemetryRow` (§15.2) | `gateway`, `backendModel` | copied from the attempt provenance; what tells a local-model row from a Claude row |
 | `events.jsonl` `attempt-finished` (§8.1) | `tokens`, `gateway` | `tokens` = input + output tokens, present whenever the attempt reported usage (on any runner); `gateway` only on a gateway attempt |
 | `observer.jsonl` `AttemptFinished` (§8.2) | `inputTokens`, `outputTokens`, `gateway`, `backendModel` | the same facts, for `attach`'s replay |
 
-The standalone `guardrails breakdown` command runs no gateway preflight, so a breakdown session through a gateway records `"unverified"` (a between-wave breakdown inside `guardrails run` uses the run's resolved identities).
+`guardrails breakdown --runner-config` and `run --revalidate-task` run the full gateway preflight themselves (§9.10.2) and pass its resolved identities through, so their dispatches carry the same `backendModel` a run's would. A gateway dispatch **refused before launch** records a usage of zero (a known zero: nothing was sent), not a missing usage, so it is never counted as a dispatch whose usage went unmeasured.
 
 **Cost is `null` at the source.** Claude Code's `total_cost_usd` is priced from Anthropic's list for the model
 name it thinks it used, which is fiction for a local model. The session nulls it before any summary or consumer
@@ -7959,7 +7988,7 @@ Token usage is kept. `run.json` and telemetry keep `costUsd: null` plus the raw 
 
 **How far `maxCostUsd` still applies** is stated in a run-start `Note:` when a cap is set and the plan has a
 gateway block. The cap does **not bind** when every prompt runner is a gateway block. Otherwise it binds only
-**partially**, and the note names the non-gateway claude blocks whose spend counts. The `--autonomous` built-in
+**partially**, and the note names every non-gateway prompt runner of any kind (`'fallback' (cursor)`) whose REPORTED cost counts — a runner that reports no cost adds nothing. The `--autonomous` built-in
 $20 default is a `maxCostUsd` like any other, so it does not bind on gateway spend either.
 
 **Tokens stand in for cost on every surface that shows cost** (the maintainer's `gateway-cost` answer). A null
@@ -7975,6 +8004,9 @@ never stored:
   A gateway-only run therefore always prints a `Total prompt cost:` line. The count covers task attempts whose
   provenance names a gateway and `overheadGatewayDispatches` entries with no `usage`.
 - **the `telemetry report` stratum key** separates gateway rows from Claude rows (§15.5).
+- **the per-tier spend line labels gateway tokens:** `hard: 42k tok / $1.2000 + 12k tok (gateway)`, `easy: 5k tok
+  (gateway)` — the `tok / $` pair counts only non-gateway attempts, so a mixed rung never reads as though the
+  gateway's volume cost the paid runner's dollars. A rung with no gateway attempt renders exactly as before.
 
 The surfaces: the attempt summary's spend segment (`; 48.2k tok (gateway)`, or `; token usage not reported
 (gateway)`); the `Total prompt cost:` line of the `run` summary and of `guardrails status` (gateway tokens from
@@ -8004,7 +8036,11 @@ over every recorded request: no canary in any header; nothing reached the trap; 
 `claude-*` model; every Claude Code request carried a Bearer token and no `x-api-key`. It RECORDS, without
 asserting, TCP connections to `api.anthropic.com` seen during the run (machine-wide). It prints what it observed
 for the unverified items: the request paths, models and agent ids (whether the subagent and background aliases
-took effect), whether a blanked `""` behaved as unset, and where the transcripts landed.
+took effect). It ASSERTS where Claude Code's state went: transcripts under `logs/<runId>/claude-config/projects`;
+nothing for the target under the real `~/.claude/projects`; no new `~/.claude.json`, and none naming the target;
+no `projects/` or `.claude.json` in the hostile user config directory. Whether Claude Code treats a blanked `""`
+as unset is **not exercised**: the belt is only reached when a project settings file sets one of those names, and
+the preflight halts on exactly that before any child runs.
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
@@ -9488,7 +9524,7 @@ unsatisfiable-guardrail family and #459
 (`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), **`GR2071` by #587's
 `PromptInstructsUngrantedCommand`** (§4.9), and **`GR2072` by #564's `CheckSetPredatesSourceTree`** (§16 —
 the first code on this ladder that reports the TOOL rather than the plan), and **`GR2073` by #540's
-`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), **`GR2080`** by #764's `CursorRunnerUngoverned` (a `kind: "cursor"` block runs with no tool allowlist or containment hook, §9.9), **`GR2081`** by #767's `CursorApprovalModeInvalid` and **`GR2082`** by its `CursorApprovalFlagInExtraArgs` (a cursor `approvalMode` that cannot be honoured, and an approval flag in a cursor block's `extraArgs`, §9.9), **`GR2084`** by #782's `ClaudeGatewayBlockInvalid`, **`GR2085`** by its `ClaudeModelNameToGateway` and **`GR2086`** by its `ClaudeGatewayModelsShareEndpoint` (a malformed claude gateway block, a Claude model name reaching a gateway, and two models sharing one gateway under parallelism, §9.10), so an unrelated new code should take **`GR2087`** — `GR2083` is RESERVED BY NAME for #544 (native local-inference actions) and `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
+`MixedWriteMechanisms`** (§3.4), **`GR2074`** by #521's `ClauseProvesMentionNotCall` and **`GR2075`** by its `TaskGradesItsOwnAuthoredTest` (§4), and **`GR2076`** by #601's `CrossTaskClauseCollision` (§4), **`GR2078`** by #525's `PostDeliveryWaveMissingEntryPreflight` (a post-delivery wave with no entry preflight of its own, §14.12) and **`GR2079`** by its sibling `DeliveringWaveMissingExitGate` (a `delivers: true` wave with no `guardrails/` exit gate, so it can never deliver, §14.12), **`GR2080`** by #764's `CursorRunnerUngoverned` (a `kind: "cursor"` block runs with no tool allowlist or containment hook, §9.9), **`GR2081`** by #767's `CursorApprovalModeInvalid` and **`GR2082`** by its `CursorApprovalFlagInExtraArgs` (a cursor `approvalMode` that cannot be honoured, and an approval flag in a cursor block's `extraArgs`, §9.9), **`GR2084`** by #782's `ClaudeGatewayBlockInvalid`, **`GR2085`** by its `ClaudeModelNameToGateway` and **`GR2086`** by its `ClaudeGatewayModelsShareEndpoint` (a malformed claude gateway block, a Claude model name reaching a gateway, and two models sharing one gateway under parallelism, §9.10), **`GR2087`** by the #782 review's `GuardrailOverridesKeyIgnored` (a non-claude block's `guardrailOverrides` carrying a key that does nothing there, §9.10), so an unrelated new code should take **`GR2088`** — `GR2083` is RESERVED BY NAME for #544 (native local-inference actions) and `GR2077` is RESERVED BY NAME by #587 check B (`UnownedRequiredChange`, DESIGNED AND DECLINED in both readings; what shipped instead is the failure-time `UnownedFailingTestAttribution`, which needs no code). Still RESERVED BY NAME and not to be re-used: `GR2054` for the v2 `#227` probes work
 (`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2061` (`docs/plans/18-integration-proof-proximity.md`
 §3.4), and `GR2070` (DESIGNED AND DECLINED per `docs/plans/33-unproducible-requirements.md` §6.3, a guardrail requiring a named argument whose declaring member no task may widen; it has never fired on a real defect at any commit in this repository — see §3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
 #472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same

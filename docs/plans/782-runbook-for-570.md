@@ -29,7 +29,9 @@ turns on the chat template's tool-call support. `claude-local` did not pass it, 
 build does not enable it by default, tool calls will arrive as plain text without it.
 
 - `--alias` gives the backend a name the preflight can match exactly. Without it, `llama-server` reports its
-  model path, and `backendModel` is matched as a substring of the file name instead.
+  model path, and `backendModel` is matched as a substring of the file name instead. **The match trusts the
+  alias:** it is whatever you typed at launch, so if you reuse a launch line with `--alias Qwen3.8-27B` over the
+  3.6 file, the check passes. Keep the alias honest, or drop `--alias` and let the file name speak.
 - `contextTokens` below must be the **per-slot** window: `-c` divided by `-np`. With `-c 65536 -np 1` that is
   65536. With `-np 2` it would be 32768, and a `contextTokens` above the per-slot window halts the run.
 
@@ -100,8 +102,9 @@ In the plan's `guardrails.json`:
   `"runner": "qwen38"` in that task's `action`.
 - Don't put `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the `ANTHROPIC_DEFAULT_*_MODEL` variables,
   `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` or
-  `CLAUDE_CONFIG_DIR` in `env`, or `--settings` in `extraArgs`. Guardrails owns them, and `validate` rejects them
-  (`GR2084`, a malformed gateway block).
+  `CLAUDE_CONFIG_DIR` in `env`, or `--settings`, `--model` or `--fallback-model` in `extraArgs`. Guardrails owns
+  them, and `validate` rejects them (`GR2084`, a malformed gateway block). To send one task to another model name,
+  use `action.model` or `"runner"`; a task's `action.model` is probed and identity-checked like the block's own.
 
 ## 3. Check, then run
 
@@ -117,7 +120,8 @@ LiteLLM's Anthropic-to-OpenAI tool-call translation. An "UNMET" step there means
 work through that model either.
 
 Before any task runs, the preflight halts the run, with the reason, when:
-- a managed Claude Code settings file on this machine, or the target repo's `.claude/settings.json` or
+- a managed Claude Code setting on this machine (a `managed-settings.json` or drop-in file, the Windows policy
+  registry value, or the macOS configuration profile), or the target repo's `.claude/settings.json` or
   `.claude/settings.local.json`, sets anything that could send a request elsewhere or with another credential
   (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `apiKeyHelper` and the like). The
   message names the file and the key;
@@ -141,7 +145,7 @@ before using the run for the #544 decision.
 
 | Trap | Now |
 |---|---|
-| 1. Claude model names reaching LiteLLM | Every model alias, the subagent model and `fallbackModel` are pinned to the block's `model`. A Claude name that would still reach a gateway block (a task's `action.model`, a `--model` in `extraArgs`) draws a `GR2085` warning at `validate`. |
+| 1. Claude model names reaching LiteLLM | Every model alias, the subagent model and `fallbackModel` are pinned to the block's `model`. A Claude name a task's `action.model` would still send to a gateway block draws a `GR2085` warning at `validate`; a `--model` in the block's `extraArgs` is a `GR2084` error. |
 | 2. The wrapper picking the model | Gone: there is no wrapper. The block's `model` is the model. |
 | 3. Parallel launches racing one server | `GR2086` warns when `maxParallelism > 1` and two models share a gateway, and the preflight halts if two model names are served by the same loaded model. |
 | 4. Services not started | The preflight halts before any task, naming the unreachable gateway or the failing model. |
@@ -155,12 +159,19 @@ before using the run for the #544 decision.
   `logs/<runId>/claude-config/`, so your `~/.claude` settings, `CLAUDE.md`, skills, memory, MCP servers and
   stored login aren't used. Session transcripts land there too. Claude Code also has no record of trusting the
   repo, so some project settings may not apply; treat the block's `allowedTools` as the whole grant.
-- **The token is visible to the agent's shell commands.** With the placeholder that is harmless. With a real key
-  for a remote gateway, any command the model runs can read it.
+- **The token is visible to the agent's shell commands** — as `ANTHROPIC_AUTH_TOKEN` and under the name
+  `authTokenEnv` gives (`LITELLM_KEY`), which Guardrails leaves in place. With the placeholder that is harmless.
+  With a real key for a remote gateway, any command the model runs can read it.
+- **Session transcripts are served by the log viewer.** `logs/<runId>/claude-config/` is part of the run's logs,
+  so anything an agent prints into its session, a token included, is readable through the local log viewer.
+- **One shared `.claude.json` per run.** Every gateway session of a run uses the same config directory. Keep
+  `maxParallelism: 1` for the dogfood; if you raise it, check that `.claude.json` stays valid JSON.
 - **Some traffic may still leave the machine.** Claude Code's nonessential traffic is turned off, but some
   features (fast-mode checks, WebFetch's safety check) are documented to call `api.anthropic.com` directly.
 - **The identity check is point-in-time.** It runs once, at the start. Don't reload a server with a different
   model while a run is in progress.
+- **The backend is asked without your key.** The identity check calls the `llama-server` directly, with no
+  `Authorization` header, and only when LiteLLM's `api_base` is on this machine or a private network address.
 - **Not supported by Anthropic.** Claude Code calling a non-Claude model through a gateway is outside what Claude
   Code supports. Re-run `scripts/smoke/claude-gateway-live-smoke.ps1` after every Claude Code upgrade.
 - Each attempt's provenance in `run.json`, its telemetry row and its `attempt-finished` event carry `gateway`
