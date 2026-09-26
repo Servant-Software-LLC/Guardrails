@@ -63,10 +63,8 @@ public sealed class ClaudeGatewaySpendRenderingTests : IDisposable
     [Fact]
     public async Task Run_AMixedPlanThroughAFakeGateway_PrintsTheMixedTotal_AndStatusAgrees()
     {
-        // `guardrails run` reads the host's REAL managed-settings sources (there is no CLI override). A machine that
-        // has one is not a machine this test can speak for — say so, rather than asserting on its contents.
-        string? managed = ClaudeGatewayPreflight.DefaultManagedSettingsPaths().FirstOrDefault(File.Exists);
-        Assert.SkipWhen(managed is not null, $"this host has a Claude Code managed-settings file ({managed}); the gateway preflight would read it");
+        // The host's REAL managed-settings sources are replaced by none, so the test speaks for every machine.
+        using IDisposable noManagedSettings = ClaudeGatewayPreflight.OverrideManagedSettingsSources([]);
 
         await using FakeGatewayServer gateway = FakeGatewayServer.Start();
         gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"Qwen"}]}""");
@@ -99,6 +97,38 @@ public sealed class ClaudeGatewaySpendRenderingTests : IDisposable
         Assert.DoesNotContain("310.5k", run.RootElement.GetRawText(), StringComparison.Ordinal);
 
         Assert.Equal(TotalLine(output), TotalLine(await InvokeAsync("status", plan.PlanDir)));
+    }
+
+    /// <summary>
+    /// #782 review (corr W5): the RESOLVED backend identity reaches <c>run.json</c> through the real CLI path — preflight
+    /// → <c>RunCommand</c> → <c>RunConfig.GatewayRun</c> → the registry's gateway instance → the attempt's provenance.
+    /// </summary>
+    [Fact]
+    public async Task Run_TheResolvedBackendIdentity_ReachesRunJson_ThroughTheRealCliPath()
+    {
+        using IDisposable noManagedSettings = ClaudeGatewayPreflight.OverrideManagedSettingsSources([]);
+
+        await using FakeGatewayServer backend = FakeGatewayServer.Start();
+        backend.Routes["GET /props"] = (200, """{"model_path":"/models/Qwen3.6-35B-A3B-Q4_K_M.gguf","default_generation_settings":{"n_ctx":65536}}""");
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"Qwen"}]}""");
+        gateway.Routes["POST /v1/messages"] = (200, """{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}]}""");
+        gateway.Routes["GET /model/info"] = (200,
+            $$$"""{"data":[{"model_name":"Qwen","litellm_params":{"model":"openai/q","api_base":"{{{backend.BaseUrl}}}/v1"}}]}""");
+
+        using var plan = new FakeClaudePlanBuilder()
+            .AddPromptTask("01-gw", cost: "5.00", env: new Dictionary<string, string> { ["FAKE_INPUT_TOKENS"] = "1000" });
+        AddGatewayBlock(plan, gateway.BaseUrl);
+        PinRunner(plan, "01-gw", "qwen");
+
+        string output = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        string identity = $"{backend.BaseUrl} Qwen3.6-35B-A3B-Q4_K_M.gguf";
+        Assert.Contains($"model 'Qwen': backend {identity}.", output, StringComparison.Ordinal);
+        using JsonDocument run = JsonDocument.Parse(File.ReadAllText(plan.RunJsonPath));
+        JsonElement provenance = run.RootElement.GetProperty("tasks").GetProperty("01-gw").GetProperty("attempts")[0].GetProperty("provenance");
+        Assert.Equal(gateway.BaseUrl, provenance.GetProperty("gateway").GetString());
+        Assert.Equal(identity, provenance.GetProperty("backendModel").GetString());
     }
 
     // ───────────────────────────── telemetry COST column ─────────────────────────────

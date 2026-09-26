@@ -89,9 +89,9 @@ public sealed record ClaudeGatewayConfig
             return normalized;
         }
 
-        string host = uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
-            ? "loopback"
-            : uri.Host.ToLowerInvariant();
+        // Only the three spellings of THE loopback host fold (#782 review, N6): 127.0.0.2 is a different socket.
+        string lowerHost = uri.Host.ToLowerInvariant();
+        string host = lowerHost is "localhost" or "127.0.0.1" or "[::1]" or "::1" ? "loopback" : lowerHost;
         string path = uri.AbsolutePath.TrimEnd('/');
         return $"{uri.Scheme.ToLowerInvariant()}://{host}:{uri.Port}{path}";
     }
@@ -103,8 +103,12 @@ public sealed record ClaudeGatewayConfig
 /// </summary>
 public sealed record ClaudeGatewayRunContext
 {
-    /// <summary>The per-run scratch <c>CLAUDE_CONFIG_DIR</c>: <c>logs/&lt;runId&gt;/claude-config/</c>, created empty (§1.2 a).</summary>
-    public required string ConfigDirectory { get; init; }
+    /// <summary>
+    /// The per-run scratch <c>CLAUDE_CONFIG_DIR</c>: <c>logs/&lt;runId&gt;/claude-config/</c>, created empty (§1.2 a). Null for
+    /// an entry point with no run (<c>guardrails breakdown</c>, <c>run --revalidate-task</c>): the runner then isolates the
+    /// child in a <c>claude-config</c> directory beside the dispatch's own stream log — never <c>~/.claude</c>.
+    /// </summary>
+    public string? ConfigDirectory { get; init; }
 
     /// <summary>
     /// The resolved backend identities (§3.2), keyed by <see cref="IdentityKey"/>. A pair absent from the map was

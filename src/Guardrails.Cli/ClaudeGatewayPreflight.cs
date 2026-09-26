@@ -17,10 +17,24 @@ namespace Guardrails.Cli;
 public sealed class ClaudeGatewayPreflightOptions
 {
     /// <summary>
-    /// The managed-settings files to read, or null for the documented sources of the host OS
-    /// (<see cref="ClaudeGatewayPreflight.DefaultManagedSettingsPaths"/>). Tests inject a path here.
+    /// When set, the ONLY managed-settings sources read are these JSON files (tests inject a path, or <c>[]</c> to read
+    /// none). Null (production) reads every documented source for the host OS — see
+    /// <see cref="ClaudeGatewayPreflight.DefaultManagedSettingsSources"/>.
     /// </summary>
     public IReadOnlyList<string>? ManagedSettingsPaths { get; init; }
+
+    /// <summary>
+    /// When set, the ONLY managed-settings sources read (tests inject a drop-in directory or an unreadable source).
+    /// Takes precedence over <see cref="ManagedSettingsPaths"/>.
+    /// </summary>
+    public IReadOnlyList<ManagedSettingsSource>? ManagedSettingsSources { get; init; }
+
+    /// <summary>
+    /// Extra directories whose <c>.claude/settings.json</c> and <c>.claude/settings.local.json</c> are checked beside the
+    /// workspace's — <c>guardrails run</c> passes the resolved integration worktree (the plan-branch tip), whose files
+    /// the segment worktrees are built from on a resume or after a delivering wave (#782 review, sec W1).
+    /// </summary>
+    public IReadOnlyList<string> ProjectSettingsRoots { get; init; } = [];
 
     /// <summary>Reads an environment variable (the <c>authTokenEnv</c> check). Defaults to the process environment.</summary>
     public Func<string, string?> ReadEnvironment { get; init; } = Environment.GetEnvironmentVariable;
@@ -66,6 +80,26 @@ public static class ClaudeGatewayPreflight
     /// <summary>The halt headline's fixed prefix — also how <see cref="PlanPreflightPhase.HaltHasOwnConsoleReport"/> recognises it.</summary>
     public const string HeadlinePrefix = "claude gateway preflight FAILED — halting before scheduling any task: ";
 
+    /// <summary>
+    /// Test seam for the entry points that build their own options (<c>guardrails run</c>, <c>breakdown</c>, revalidate):
+    /// an ambient, flow-scoped override of the managed-settings sources, so a CLI-driven test does not read — or depend
+    /// on — the host's real managed policy. Async-local, so parallel tests cannot see each other's override.
+    /// </summary>
+    private static readonly AsyncLocal<IReadOnlyList<ManagedSettingsSource>?> ManagedSourcesOverride = new();
+
+    /// <summary>Scope <paramref name="sources"/> as the ONLY managed-settings sources for this async flow (tests).</summary>
+    public static IDisposable OverrideManagedSettingsSources(IReadOnlyList<ManagedSettingsSource> sources)
+    {
+        IReadOnlyList<ManagedSettingsSource>? previous = ManagedSourcesOverride.Value;
+        ManagedSourcesOverride.Value = sources;
+        return new Restore(() => ManagedSourcesOverride.Value = previous);
+    }
+
+    private sealed class Restore(Action restore) : IDisposable
+    {
+        public void Dispose() => restore();
+    }
+
     /// <summary>The short timeout on each listing/identity probe: this runs before the DAG, and slow is worth knowing now.</summary>
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
 
@@ -75,30 +109,68 @@ public static class ClaudeGatewayPreflight
     /// <summary>§3.1: 256, not 1 — room for a reasoning model's thinking before a content block appears (#759).</summary>
     private const int MessagesProbeMaxTokens = 256;
 
-    /// <summary>The documented managed-settings sources for the host OS (Claude Code's settings documentation).</summary>
-    public static IReadOnlyList<string> DefaultManagedSettingsPaths()
+    /// <summary>
+    /// The managed-settings source Claude Code documents but the harness cannot read, stated in the run header so the
+    /// operator knows what was NOT checked (#782 review, sec W4).
+    /// </summary>
+    internal const string UncheckedManagedSourcesNote =
+        "Note: the gateway preflight cannot check SERVER-managed settings (fetched from the claude.ai admin console or a " +
+        "Claude apps gateway and cached by Claude Code) or settings an embedding host supplies. A gateway child runs with an " +
+        "isolated config directory and no stored credentials, so it has no signed-in organization to fetch a policy for; " +
+        "if your organization pushes one, confirm with `/status` in an interactive session that it sets no env, " +
+        "apiKeyHelper, model or login keys.";
+
+    /// <summary>
+    /// Every DOCUMENTED managed-settings source for the host OS (code.claude.com/docs/en/managed-settings, "Where each
+    /// mechanism stores the policy"), highest-ranked first:
+    /// <list type="bullet">
+    /// <item>macOS: the <c>com.anthropic.claudecode</c> managed-preferences domain (machine and per-user profiles under
+    /// <c>/Library/Managed Preferences/</c>), read through <c>plutil -convert json</c>;</item>
+    /// <item>Windows: the <c>Settings</c> value under <c>HKLM\SOFTWARE\Policies\ClaudeCode</c>, and the user-writable
+    /// <c>HKCU</c> fallback of the same value (read too — it can carry a policy when no admin source does);</item>
+    /// <item>every OS: <c>managed-settings.json</c> and each <c>managed-settings.d/*.json</c> in the system directory
+    /// (<c>/Library/Application Support/ClaudeCode/</c>, <c>/etc/claude-code/</c>, <c>C:\Program Files\ClaudeCode\</c>).
+    /// The legacy <c>C:\ProgramData\ClaudeCode</c> path is not read — Claude Code no longer reads it either.</item>
+    /// </list>
+    /// Server-managed settings are not readable here; <see cref="UncheckedManagedSourcesNote"/> says so.
+    /// </summary>
+    public static IReadOnlyList<ManagedSettingsSource> DefaultManagedSettingsSources()
     {
+        var sources = new List<ManagedSettingsSource>();
+        string systemDirectory;
+
         if (OperatingSystem.IsWindows())
         {
-            return
-            [
-                @"C:\Program Files\ClaudeCode\managed-settings.json",
-                @"C:\ProgramData\ClaudeCode\managed-settings.json"
-            ];
+            sources.Add(ManagedSettingsSource.Registry(hive: "HKLM"));
+            sources.Add(ManagedSettingsSource.Registry(hive: "HKCU"));
+            systemDirectory = @"C:\Program Files\ClaudeCode";
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            sources.Add(ManagedSettingsSource.Plist("/Library/Managed Preferences/com.anthropic.claudecode.plist"));
+            sources.Add(ManagedSettingsSource.Plist(
+                $"/Library/Managed Preferences/{Environment.UserName}/com.anthropic.claudecode.plist"));
+            systemDirectory = "/Library/Application Support/ClaudeCode";
+        }
+        else
+        {
+            systemDirectory = "/etc/claude-code";
         }
 
-        return OperatingSystem.IsMacOS()
-            ? ["/Library/Application Support/ClaudeCode/managed-settings.json"]
-            : ["/etc/claude-code/managed-settings.json"];
+        sources.Add(ManagedSettingsSource.File(Path.Combine(systemDirectory, "managed-settings.json")));
+        sources.Add(ManagedSettingsSource.DropInDirectory(Path.Combine(systemDirectory, "managed-settings.d")));
+        return sources;
     }
 
     /// <summary>
     /// Run the preflight. Returns true when scheduling may proceed. On a halt, the failures are journaled (a
     /// plan-preflight-failed section plus the top-level <c>halt</c>) and printed before this returns.
     /// </summary>
+    /// <param name="journal">The run journal the halt is recorded in, or null for an entry point with no run (the halt is
+    /// then only printed).</param>
     public static async Task<bool> EvaluateAsync(
         PlanDefinition plan,
-        RunJournal journal,
+        RunJournal? journal,
         TextWriter? consoleOut,
         ClaudeGatewayPreflightOptions? options,
         CancellationToken cancellationToken)
@@ -118,8 +190,18 @@ public static class ClaudeGatewayPreflight
         var failures = new List<PlanPreflightCheck>();
         var notes = new List<string>();
 
-        CheckManagedSettings(options.ManagedSettingsPaths ?? DefaultManagedSettingsPaths(), failures);
-        CheckProjectSettings(plan.Workspace, options.WorktreeMode, failures);
+        IReadOnlyList<ManagedSettingsSource>? injected = options.ManagedSettingsSources ?? ManagedSourcesOverride.Value;
+        IReadOnlyList<ManagedSettingsSource> managedSources = injected
+            ?? (options.ManagedSettingsPaths is { } paths
+                ? [.. paths.Select(ManagedSettingsSource.File)]
+                : DefaultManagedSettingsSources());
+        CheckManagedSettings(managedSources, failures);
+        if (options.ManagedSettingsPaths is null && injected is null)
+        {
+            notes.Add(UncheckedManagedSourcesNote);
+        }
+
+        CheckProjectSettings(plan.Workspace, options.WorktreeMode, options.ProjectSettingsRoots, failures);
 
         var tokens = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (PromptRunnerConfig block in gateways)
@@ -145,56 +227,108 @@ public static class ClaudeGatewayPreflight
         // Configuration halts come first and alone: probing a gateway on behalf of a run that must halt anyway
         // would spend the operator's time (and, for a remote gateway, their key) for nothing.
         var identities = new Dictionary<string, string>(StringComparer.Ordinal);
+        var sharedKeys = new Dictionary<string, (string CompareKey, string Identity)>(StringComparer.Ordinal);
         if (failures.Count == 0)
         {
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            foreach (GatewayTarget target in GroupByGateway(gateways, tokens))
+            foreach (GatewayTarget target in GroupByGateway(ClaudeGatewayReach.Of(plan), tokens))
             {
-                await ProbeGatewayAsync(http, target, failures, notes, identities, cancellationToken).ConfigureAwait(false);
+                await ProbeGatewayAsync(http, target, failures, notes, identities, sharedKeys, cancellationToken)
+                    .ConfigureAwait(false);
             }
 
-            CheckSharedIdentities(identities, failures);
+            CheckSharedIdentities(sharedKeys, failures);
         }
 
         if (failures.Count > 0)
         {
-            RecordHalt(plan, journal, failures);
+            if (journal is not null)
+            {
+                RecordHalt(plan, journal, failures);
+            }
+
             WriteFailureReport(failures, consoleOut);
             return false;
         }
 
         options.ResolvedIdentities = identities;
-        WriteSuccessReport(plan, gateways, identities, notes, consoleOut);
+        WriteSuccessReport(plan, identities, notes, consoleOut);
         return true;
+    }
+
+    /// <summary>
+    /// The gateway preflight for an entry point that dispatches prompts WITHOUT a <c>guardrails run</c> (#782 review, sec
+    /// W2): <c>guardrails breakdown --runner-config</c> and <c>run --revalidate-task</c>. The FULL preflight runs (settings
+    /// authorities, reachability, backend identity), nothing is journaled, and on success the plan comes back with its
+    /// <see cref="RunConfig.GatewayRun"/> carrying the resolved identities. Null = a halt, already printed. A plan with no
+    /// gateway block is returned unchanged, having opened no connection.
+    /// </summary>
+    public static async Task<PlanDefinition?> PrepareStandaloneAsync(
+        PlanDefinition plan, TextWriter output, bool worktreeMode, CancellationToken cancellationToken)
+    {
+        if (!plan.Config.PromptRunners.Values.Any(b => b.IsClaudeGateway))
+        {
+            return plan;
+        }
+
+        var options = new ClaudeGatewayPreflightOptions { WorktreeMode = worktreeMode };
+        if (!await EvaluateAsync(plan, journal: null, output, options, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return plan with
+        {
+            Config = plan.Config with
+            {
+                GatewayRun = new ClaudeGatewayRunContext { BackendIdentities = options.ResolvedIdentities }
+            }
+        };
     }
 
     // ───────────────────────────── settings authorities ─────────────────────────────
 
-    /// <summary>§1.2: managed settings outrank both isolation layers, so the harness can only detect and refuse.</summary>
-    private static void CheckManagedSettings(IReadOnlyList<string> paths, List<PlanPreflightCheck> failures)
+    /// <summary>
+    /// §1.2: managed settings outrank both isolation layers, so the harness can only detect and refuse. Every source is
+    /// read; a source that EXISTS but cannot be read or parsed halts too — it could carry anything (#782 review, N5).
+    /// </summary>
+    private static void CheckManagedSettings(IReadOnlyList<ManagedSettingsSource> sources, List<PlanPreflightCheck> failures)
     {
-        foreach (string path in paths)
+        foreach (ManagedSettingsSource source in sources)
         {
-            if (!File.Exists(path))
+            IReadOnlyList<(string Label, string Text)> documents;
+            try
             {
+                documents = source.Read();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException
+                                           or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                failures.Add(Check($"managed settings {source.Label}",
+                    $"the managed-settings source '{source.Label}' exists but could not be read ({ex.Message}). Managed " +
+                    "settings outrank everything the harness passes, so a source it cannot read could redirect a gateway " +
+                    "dispatch; make it readable (or remove it), then re-run."));
                 continue;
             }
 
-            if (!TryReadJsonObject(File.ReadAllText(path), out JsonObject? settings, out string? error))
+            foreach ((string label, string text) in documents)
             {
-                failures.Add(Check($"managed settings {path}",
-                    $"the managed-settings file '{path}' could not be parsed ({error}). Managed settings outrank " +
-                    "everything the harness passes, so a file it cannot read could redirect a gateway dispatch; " +
-                    "fix or remove it, then re-run."));
-                continue;
-            }
+                if (!TryReadJsonObject(text, out JsonObject? settings, out string? error))
+                {
+                    failures.Add(Check($"managed settings {label}",
+                        $"the managed-settings source '{label}' could not be parsed ({error}). Managed settings outrank " +
+                        "everything the harness passes, so a source it cannot read could redirect a gateway dispatch; " +
+                        "fix or remove it, then re-run."));
+                    continue;
+                }
 
-            foreach (string finding in ManagedFindings(settings!))
-            {
-                failures.Add(Check($"managed settings {path}",
-                    $"'{path}' sets {finding}. Managed settings outrank the harness's isolated config directory and its " +
-                    "--settings file, so a gateway dispatch cannot be guaranteed to reach the gateway the plan names " +
-                    "with the credential it grants. Remove the setting, or run this plan on a machine without it."));
+                foreach (string finding in ManagedFindings(settings!))
+                {
+                    failures.Add(Check($"managed settings {label}",
+                        $"'{label}' sets {finding}. Managed settings outrank the harness's isolated config directory and its " +
+                        "--settings file, so a gateway dispatch cannot be guaranteed to reach the gateway the plan names " +
+                        "with the credential it grants. Remove the setting, or run this plan on a machine without it."));
+                }
             }
         }
     }
@@ -223,21 +357,56 @@ public static class ClaudeGatewayPreflight
         }
     }
 
-    /// <summary>§1.2: <c>--settings</c> wins only for the keys it sets, so project keys it does not set are refused.</summary>
-    private static void CheckProjectSettings(string workspace, bool worktreeMode, List<PlanPreflightCheck> failures)
+    /// <summary>
+    /// §1.2: <c>--settings</c> wins only for the keys it sets, so project keys it does not set are refused. Checked in the
+    /// workspace, in every extra root (the integration worktree at the plan-branch tip), and — in worktree mode — as
+    /// committed at the workspace's HEAD. An unreadable file halts rather than crashing the run.
+    /// </summary>
+    private static void CheckProjectSettings(
+        string workspace, bool worktreeMode, IReadOnlyList<string> extraRoots, List<PlanPreflightCheck> failures)
     {
         string[] relative = [".claude/settings.json", ".claude/settings.local.json"];
-        foreach (string file in relative)
-        {
-            string path = Path.Combine(workspace, file.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(path))
-            {
-                ReportProjectFile(path, File.ReadAllText(path), failures);
-            }
+        IEnumerable<string> roots = new[] { workspace }
+            .Concat(extraRoots)
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(Path.GetFullPath)
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
-            if (worktreeMode && GitShowHead(workspace, file) is { } committed)
+        foreach (string root in roots)
+        {
+            foreach (string file in relative)
             {
-                ReportProjectFile($"{file} (committed at HEAD of {workspace})", committed, failures);
+                string path = Path.Combine(root, file.Replace('/', Path.DirectorySeparatorChar));
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    failures.Add(Check($"project settings {path}",
+                        $"'{path}' exists but could not be read ({ex.Message}), so the preflight cannot prove it sets " +
+                        "nothing that would redirect a gateway dispatch. Make it readable, then re-run."));
+                    continue;
+                }
+
+                ReportProjectFile(path, text, failures);
+            }
+        }
+
+        if (worktreeMode)
+        {
+            foreach (string file in relative)
+            {
+                if (GitShowHead(workspace, file) is { } committed)
+                {
+                    ReportProjectFile($"{file} (committed at HEAD of {workspace})", committed, failures);
+                }
             }
         }
     }
@@ -347,17 +516,23 @@ public static class ClaudeGatewayPreflight
         public string BaseUrl { get; } = baseUrl;
         public string Display { get; } = ClaudeGatewayConfig.RedactUserInfo(baseUrl);
         public string Token { get; } = token;
-        public List<(PromptRunnerConfig Block, string Model, string Token)> Models { get; } = [];
+        public List<(PromptRunnerConfig Block, string Model, string Token, string Where)> Models { get; } = [];
     }
 
+    /// <summary>
+    /// Group THE reach set (<see cref="ClaudeGatewayReach.Of"/> — block models, override models, task <c>action.model</c>
+    /// pins, extraArgs model flags) by gateway, de-duplicated on (gateway, model): every model a run can dispatch is
+    /// probed and its backend resolved, so the #760 halt and provenance see pinned models too (#782 review, sec B2).
+    /// </summary>
     private static List<GatewayTarget> GroupByGateway(
-        List<PromptRunnerConfig> gateways, IReadOnlyDictionary<string, string> tokens)
+        IReadOnlyList<ClaudeGatewayModelReach> reach, IReadOnlyDictionary<string, string> tokens)
     {
         var byKey = new Dictionary<string, GatewayTarget>(StringComparer.Ordinal);
         var ordered = new List<GatewayTarget>();
 
-        foreach (PromptRunnerConfig block in gateways)
+        foreach (ClaudeGatewayModelReach pair in reach)
         {
+            PromptRunnerConfig block = pair.Block;
             string baseUrl = ClaudeGatewayConfig.NormalizeBaseUrl(block.BaseUrl!);
             string key = ClaudeGatewayConfig.EndpointKey(baseUrl);
             string token = tokens.TryGetValue(block.Name, out string? t) ? t : ClaudeGatewayEnvironment.PlaceholderToken;
@@ -368,12 +543,9 @@ public static class ClaudeGatewayPreflight
                 ordered.Add(target);
             }
 
-            foreach (string? model in new[] { block.Settings.Model, block.GuardrailOverrides?.Model })
+            if (!target.Models.Any(m => m.Model == pair.Model))
             {
-                if (!string.IsNullOrWhiteSpace(model) && !target.Models.Any(m => m.Model == model))
-                {
-                    target.Models.Add((block, model, token));
-                }
+                target.Models.Add((block, pair.Model, token, pair.Where));
             }
         }
 
@@ -386,6 +558,7 @@ public static class ClaudeGatewayPreflight
         List<PlanPreflightCheck> failures,
         List<string> notes,
         Dictionary<string, string> identities,
+        Dictionary<string, (string CompareKey, string Identity)> sharedKeys,
         CancellationToken cancellationToken)
     {
         // ── GET /v1/models ──
@@ -433,14 +606,14 @@ public static class ClaudeGatewayPreflight
 
         var backendCache = new Dictionary<string, BackendReport?>(StringComparer.Ordinal);
 
-        foreach ((PromptRunnerConfig block, string model, string token) in target.Models)
+        foreach ((PromptRunnerConfig block, string model, string token, string where) in target.Models)
         {
             string check = $"claude gateway {target.Display} (model '{model}')";
 
             if (listed is not null && !listed.Contains(model, StringComparer.Ordinal))
             {
                 failures.Add(Check(check,
-                    $"{target.Display} does not list the model '{model}' that block '{block.Name}' declares — it reported " +
+                    $"{target.Display} does not list the model '{model}' ({where}) — it reported " +
                     $"{(listed.Count == 0 ? "no models at all" : string.Join(", ", listed.Select(i => $"'{i}'")))}. " +
                     "Add it to the gateway's model_list, or correct the block's model."));
                 continue;
@@ -464,14 +637,28 @@ public static class ClaudeGatewayPreflight
             if (messages.Status != 200 || !HasContentBlock(messages.Body))
             {
                 failures.Add(Check(check,
-                    $"POST {target.Display}/v1/messages for '{model}' (block '{block.Name}') answered HTTP {messages.Status} " +
+                    $"POST {target.Display}/v1/messages for '{model}' ({where}) answered HTTP {messages.Status} " +
                     $"without a content block, so Claude Code's requests would fail the same way. {Snippet(messages.Body)}"));
                 continue;
             }
 
             // ── D2: backend identity ──
             BackendReport? backend = await ResolveBackendAsync(
-                http, modelInfoData, model, token, backendCache, cancellationToken).ConfigureAwait(false);
+                http, modelInfoData, model, backendCache, cancellationToken).ConfigureAwait(false);
+            if (backend is { NotProbedReason: { } notProbed })
+            {
+                // §3.2 + #782 review (sec B1): a backend on a public host is never probed, so nothing is claimed.
+                identities[ClaudeGatewayRunContext.IdentityKey(target.BaseUrl, model)] =
+                    $"{ClaudeGatewayConfig.UnverifiedBackend} (backend not probed: {notProbed})";
+                if (block.BackendModel is { } declaredNotProbed)
+                {
+                    notes.Add($"gateway block '{block.Name}': backendModel '{declaredNotProbed}' declared, not verified " +
+                              $"(the backend {backend.Base} was not probed: {notProbed}).");
+                }
+
+                continue;
+            }
+
             if (backend is null)
             {
                 if (block.BackendModel is { } declaredUnverified)
@@ -484,6 +671,7 @@ public static class ClaudeGatewayPreflight
             }
 
             identities[ClaudeGatewayRunContext.IdentityKey(target.BaseUrl, model)] = backend.Identity;
+            sharedKeys[model] = (backend.CompareKey, backend.Identity);
 
             if (block.BackendModel is { } declared && !ClaudeGatewayBackendIdentity.Matches(declared, backend.Alias, backend.ModelPath))
             {
@@ -503,41 +691,43 @@ public static class ClaudeGatewayPreflight
         }
     }
 
-    /// <summary>§3.2: two distinct model strings resolving to the SAME loaded model is #760's silent substitution.</summary>
+    /// <summary>
+    /// §3.2: two distinct model strings resolving to the SAME loaded model is #760's silent substitution. Compared on the
+    /// backend's normalized endpoint (<see cref="ClaudeGatewayConfig.EndpointKey"/>: <c>localhost</c> / <c>127.0.0.1</c>
+    /// / <c>::1</c> folded) plus the loaded model, so two spellings of one backend are one backend. Every model in the
+    /// reach set is here — a task's <c>action.model</c> pin included.
+    /// </summary>
     private static void CheckSharedIdentities(
-        IReadOnlyDictionary<string, string> identities, List<PlanPreflightCheck> failures)
+        IReadOnlyDictionary<string, (string CompareKey, string Identity)> byModel, List<PlanPreflightCheck> failures)
     {
-        var modelsByIdentity = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
-        foreach ((string key, string identity) in identities)
+        foreach (IGrouping<string, KeyValuePair<string, (string CompareKey, string Identity)>> group in byModel
+                     .GroupBy(p => p.Value.CompareKey, StringComparer.Ordinal)
+                     .OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            string model = key[(key.IndexOf('\n', StringComparison.Ordinal) + 1)..];
-            if (!modelsByIdentity.TryGetValue(identity, out SortedSet<string>? models))
-            {
-                models = new SortedSet<string>(StringComparer.Ordinal);
-                modelsByIdentity[identity] = models;
-            }
-
-            models.Add(model);
-        }
-
-        foreach ((string identity, SortedSet<string> models) in modelsByIdentity.OrderBy(p => p.Key, StringComparer.Ordinal))
-        {
-            if (models.Count < 2)
+            string[] models = [.. group.Select(p => p.Key).Order(StringComparer.Ordinal)];
+            if (models.Length < 2)
             {
                 continue;
             }
 
+            string identity = group.First().Value.Identity;
             failures.Add(Check($"claude gateway backend {identity}",
-                $"{models.Count} distinct models — {string.Join(", ", models.Select(m => $"'{m}'"))} — resolve to ONE loaded " +
+                $"{models.Length} distinct models — {string.Join(", ", models.Select(m => $"'{m}'"))} — resolve to ONE loaded " +
                 $"backend model ({identity}). Every dispatch naming any of them would be served by the same model " +
                 "(#760). Give each model its own backend (another llama-server port in the gateway's model_list)."));
         }
     }
 
     /// <summary>What the backend reported about the model it has loaded.</summary>
-    private sealed record BackendReport(string Base, string? Alias, string? ModelPath, int? PerSlotContext)
+    private sealed record BackendReport(
+        string Base, string? Alias, string? ModelPath, int? PerSlotContext, string? NotProbedReason = null)
     {
         public string Identity => ClaudeGatewayBackendIdentity.Describe(Base, Alias, ModelPath);
+
+        /// <summary>The #760 comparison key: the folded endpoint plus the loaded model id.</summary>
+        public string CompareKey =>
+            $"{ClaudeGatewayConfig.EndpointKey(Base)} " +
+            (Alias ?? ClaudeGatewayBackendIdentity.Basename(ModelPath ?? "?"));
 
         public string Describe() =>
             Alias is not null
@@ -553,7 +743,6 @@ public static class ClaudeGatewayPreflight
         HttpClient http,
         JsonArray? modelInfoData,
         string model,
-        string token,
         Dictionary<string, BackendReport?> cache,
         CancellationToken cancellationToken)
     {
@@ -568,8 +757,17 @@ public static class ClaudeGatewayPreflight
             return cached;
         }
 
+        // #782 review (sec B1): the api_base is whatever the GATEWAY reports — possibly a third party or Anthropic
+        // itself. The backend is probed only on a loopback or private host, and never with the gateway's token.
+        if (await NonPrivateHostReasonAsync(backendBase, cancellationToken).ConfigureAwait(false) is { } reason)
+        {
+            var notProbed = new BackendReport(backendBase, null, null, null, reason);
+            cache[backendBase] = notProbed;
+            return notProbed;
+        }
+
         BackendReport? report = null;
-        Probe props = await SendAsync(http, HttpMethod.Get, backendBase + "/props", token, body: null,
+        Probe props = await SendAsync(http, HttpMethod.Get, backendBase + "/props", token: null, body: null,
             ProbeTimeout, cancellationToken).ConfigureAwait(false);
         if (props is { TransportFailure: null, Status: >= 200 and < 300 }
             && TryReadJsonObject(props.Body, out JsonObject? propsObject, out _))
@@ -593,7 +791,7 @@ public static class ClaudeGatewayPreflight
         {
             // Router mode (several models) may answer /props only with ?model=; v1 does not attempt that. It falls
             // back to /v1/models, and anything but exactly one loaded model stays unverified.
-            Probe models = await SendAsync(http, HttpMethod.Get, backendBase + "/v1/models", token, body: null,
+            Probe models = await SendAsync(http, HttpMethod.Get, backendBase + "/v1/models", token: null, body: null,
                 ProbeTimeout, cancellationToken).ConfigureAwait(false);
             if (models is { TransportFailure: null, Status: >= 200 and < 300 }
                 && ListedIds(models.Body) is { Count: 1 } single)
@@ -607,6 +805,68 @@ public static class ClaudeGatewayPreflight
 
         cache[backendBase] = report;
         return report;
+    }
+
+    /// <summary>
+    /// Null when <paramref name="backendBase"/>'s host is loopback or a private address (RFC 1918, IPv6 ULA
+    /// <c>fc00::/7</c>, link-local <c>169.254/16</c> / <c>fe80::/10</c>) — every address a host NAME resolves to must be
+    /// one — else the reason it is not probed. An unparseable URL or a name that does not resolve is not probed either.
+    /// </summary>
+    internal static async Task<string?> NonPrivateHostReasonAsync(string backendBase, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(backendBase, UriKind.Absolute, out Uri? uri))
+        {
+            return "not an absolute URL";
+        }
+
+        if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        System.Net.IPAddress[] addresses;
+        if (System.Net.IPAddress.TryParse(uri.IdnHost.Trim('[', ']'), out System.Net.IPAddress? literal))
+        {
+            addresses = [literal];
+        }
+        else
+        {
+            try
+            {
+                addresses = await System.Net.Dns.GetHostAddressesAsync(uri.IdnHost, cancellationToken).ConfigureAwait(false);
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+                return "non-private host (its name did not resolve)";
+            }
+        }
+
+        return addresses.Length > 0 && addresses.All(IsPrivate) ? null : "non-private host";
+    }
+
+    /// <summary>Loopback, RFC 1918, IPv6 ULA, or link-local.</summary>
+    public static bool IsPrivate(System.Net.IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (System.Net.IPAddress.IsLoopback(address) || address.IsIPv6LinkLocal || address.IsIPv6UniqueLocal)
+        {
+            return true;
+        }
+
+        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return false;
+        }
+
+        byte[] b = address.GetAddressBytes();
+        return b[0] == 10
+               || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+               || (b[0] == 192 && b[1] == 168)
+               || (b[0] == 169 && b[1] == 254);
     }
 
     /// <summary>
@@ -633,7 +893,7 @@ public static class ClaudeGatewayPreflight
     private sealed record Probe(int Status, string Body, string? TransportFailure);
 
     private static async Task<Probe> SendAsync(
-        HttpClient http, HttpMethod method, string url, string token, string? body, TimeSpan timeout, CancellationToken cancellationToken)
+        HttpClient http, HttpMethod method, string url, string? token, string? body, TimeSpan timeout, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
         {
@@ -641,7 +901,10 @@ public static class ClaudeGatewayPreflight
         }
 
         using var request = new HttpRequestMessage(method, uri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (token is not null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
         request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
         if (body is not null)
         {
@@ -751,7 +1014,6 @@ public static class ClaudeGatewayPreflight
     /// </summary>
     private static void WriteSuccessReport(
         PlanDefinition plan,
-        List<PromptRunnerConfig> gateways,
         IReadOnlyDictionary<string, string> identities,
         List<string> notes,
         TextWriter? consoleOut)
@@ -761,15 +1023,30 @@ public static class ClaudeGatewayPreflight
             return;
         }
 
-        foreach (PromptRunnerConfig block in gateways)
+        // One line per (gateway, model) pair in the reach set — a task's action.model pin gets its own line, since it
+        // is dispatched and its backend was resolved like any other (#782 review, sec B2).
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ClaudeGatewayModelReach pair in ClaudeGatewayReach.Of(plan))
         {
+            PromptRunnerConfig block = pair.Block;
+            string key = ClaudeGatewayRunContext.IdentityKey(block.BaseUrl!, pair.Model);
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+
             string display = ClaudeGatewayConfig.RedactUserInfo(ClaudeGatewayConfig.NormalizeBaseUrl(block.BaseUrl!));
-            string? identity = identities.TryGetValue(
-                ClaudeGatewayRunContext.IdentityKey(block.BaseUrl!, block.Settings.Model), out string? found) ? found : null;
+            string? identity = identities.TryGetValue(key, out string? found) ? found : null;
             string backend = identity is null
                 ? "backend identity unverified"
-                : $"backend {identity}" + (block.BackendModel is { } declared ? $" (backendModel '{declared}' matched)" : string.Empty);
-            consoleOut.WriteLine($"Gateway: block '{block.Name}' → {display}, model '{block.Settings.Model}': {backend}.");
+                : identity.StartsWith(ClaudeGatewayConfig.UnverifiedBackend, StringComparison.Ordinal)
+                    ? $"backend identity {identity}"
+                    : $"backend {identity}"
+                      + (pair.Source == ClaudeGatewayModelSource.BlockModel && block.BackendModel is { } declared
+                          ? $" (backendModel '{declared}' matched)"
+                          : string.Empty);
+            string origin = pair.Source == ClaudeGatewayModelSource.BlockModel ? string.Empty : $" ({pair.Where})";
+            consoleOut.WriteLine($"Gateway: block '{block.Name}' → {display}, model '{pair.Model}'{origin}: {backend}.");
         }
 
         foreach (string note in notes)
@@ -795,15 +1072,17 @@ public static class ClaudeGatewayPreflight
             return null;
         }
 
-        string[] paid = [.. config.PromptRunners.Values
-            .Where(b => !b.IsClaudeGateway && b.Kind == PromptRunnerKind.Claude)
-            .Select(b => b.Name)
+        // Every non-gateway block, whatever its kind (#782 review, corr W6): only their reported cost can count.
+        string[] others = [.. config.PromptRunners.Values
+            .Where(b => !b.IsClaudeGateway)
+            .Select(b => $"'{b.Name}' ({PromptRunnerKinds.Token(b.Kind)})")
             .Order(StringComparer.Ordinal)];
 
-        return paid.Length == 0
+        return others.Length == 0
             ? $"maxCostUsd (${cap}) does NOT bind this run: every prompt runner is a claude gateway block, and a gateway " +
               "dispatch reports no cost (its token usage is shown instead)."
-            : $"maxCostUsd (${cap}) binds only PARTIALLY: gateway dispatches report no cost, so only spend on the " +
-              $"non-gateway claude block(s) {string.Join(", ", paid.Select(n => $"'{n}'"))} counts toward it.";
+            : $"maxCostUsd (${cap}) binds only PARTIALLY: gateway dispatches report no cost, so only the cost reported " +
+              $"by the non-gateway prompt runner(s) {string.Join(", ", others)} counts toward it (a runner that reports " +
+              "no cost adds nothing).";
     }
 }

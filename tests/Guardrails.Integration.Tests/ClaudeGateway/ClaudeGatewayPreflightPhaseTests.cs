@@ -335,6 +335,259 @@ public sealed class ClaudeGatewayPreflightPhaseTests : IDisposable
         Assert.Null(ClaudeGatewayPreflight.MaxCostNote(allGateway with { MaxCostUsd = null }));
     }
 
+    // ───────────────────────────── #782 review follow-ups ─────────────────────────────
+
+    [Fact]
+    public async Task BackendProbes_NeverCarryTheGatewayToken()
+    {
+        await using FakeGatewayServer backend = Backend("/models/Qwen3.6.gguf", nCtx: 65536);
+        await using FakeGatewayServer gateway = Gateway(backend, "Qwen");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen", "authTokenEnv": "GR_TEST_GATEWAY_KEY" }
+            """);
+
+        var options = Options(env: name => name == "GR_TEST_GATEWAY_KEY" ? "sk-real-gateway-key" : null);
+        Assert.True(await RunAsync(plan, options));
+
+        Assert.NotEmpty(backend.Requests);
+        Assert.All(backend.Requests, r => Assert.False(r.Headers.ContainsKey("Authorization"), $"{r.Key} carried an Authorization header"));
+        Assert.All(gateway.Requests, r => Assert.Equal("Bearer sk-real-gateway-key", r.Headers["Authorization"]));
+        Assert.Single(options.ResolvedIdentities);
+    }
+
+    [Fact]
+    public async Task ABackendOnANonPrivateHost_IsNotProbed_AndRecordedUnverified()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"Qwen"}]}""");
+        gateway.Routes["POST /v1/messages"] = (200, Content());
+        // 203.0.113.0/24 is TEST-NET-3: public address space nothing answers on — a probe would only time out.
+        gateway.Routes["GET /model/info"] = (200,
+            """{"data":[{"model_name":"Qwen","litellm_params":{"model":"openai/q","api_base":"http://203.0.113.10:8080/v1"}}]}""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen", "backendModel": "qwen3.6" }
+            """);
+
+        var options = Options();
+        var console = new StringWriter();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(await RunAsync(plan, options, console));
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(8), "the non-private backend was probed (the probe waited out its timeout)");
+        Assert.Equal("unverified (backend not probed: non-private host)", Assert.Single(options.ResolvedIdentities.Values));
+        Assert.Contains("backendModel 'qwen3.6' declared, not verified", console.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("10.1.2.3", true)]
+    [InlineData("172.16.0.1", true)]
+    [InlineData("172.31.255.255", true)]
+    [InlineData("192.168.1.10", true)]
+    [InlineData("169.254.1.1", true)]
+    [InlineData("::1", true)]
+    [InlineData("fd00::1", true)]
+    [InlineData("fe80::1", true)]
+    [InlineData("172.32.0.1", false)]
+    [InlineData("8.8.8.8", false)]
+    [InlineData("2001:4860::1", false)]
+    public void IsPrivate_CoversLoopbackRfc1918UlaAndLinkLocal(string address, bool expected) =>
+        Assert.Equal(expected, ClaudeGatewayPreflight.IsPrivate(IPAddress.Parse(address)));
+
+    [Fact]
+    public async Task ATaskPinAndTheBlockModel_AliasingOneLoadedModel_Halt_EvenSerially()
+    {
+        await using FakeGatewayServer backend = Backend("/models/Qwen3.6-35B.gguf", nCtx: 65536);
+        await using FakeGatewayServer gateway = Gateway(backend, "qwen3.6", "qwen3.8");
+        WriteTask("01-pinned", """{ "description": "t", "dependsOn": [], "action": { "model": "qwen3.8" } }""");
+        PlanDefinition plan = Load($$"""
+            "default": "q", "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "qwen3.6" }
+            """);
+
+        Assert.Equal(1, plan.Config.MaxParallelism);
+        Assert.False(await RunAsync(plan));
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains("'qwen3.6', 'qwen3.8'", StringComparison.Ordinal)
+                                                         && c.Reason.Contains("resolve to ONE loaded", StringComparison.Ordinal));
+        Assert.Equal(2, gateway.Count("POST /v1/messages"));
+    }
+
+    [Fact]
+    public async Task ATaskPin_IsProbedAndListedInTheRunHeader()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"qwen3.6"},{"id":"qwen3.8"}]}""");
+        gateway.Routes["POST /v1/messages"] = (200, Content());
+        WriteTask("01-pinned", """{ "description": "t", "dependsOn": [], "action": { "model": "qwen3.8" } }""");
+        PlanDefinition plan = Load($$"""
+            "default": "q", "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "qwen3.6" }
+            """);
+
+        var console = new StringWriter();
+        Assert.True(await RunAsync(plan, Options(), console));
+        Assert.Equal(2, gateway.Count("POST /v1/messages"));
+        Assert.Contains("model 'qwen3.8' (tasks/01-pinned/task.json action.model): backend identity unverified", console.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TwoSpellingsOfOneBackend_AreOneBackend_ForTheSharedIdentityHalt()
+    {
+        await using FakeGatewayServer backend = Backend("/models/Qwen3.6.gguf", nCtx: 65536);
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        gateway.Routes["GET /v1/models"] = (200, """{"data":[{"id":"a"},{"id":"b"}]}""");
+        gateway.Routes["POST /v1/messages"] = (200, Content());
+        gateway.Routes["GET /model/info"] = (200,
+            $$$"""{"data":[{"model_name":"a","litellm_params":{"api_base":"http://127.0.0.1:{{{backend.Port}}}/v1"}},{"model_name":"b","litellm_params":{"api_base":"http://localhost:{{{backend.Port}}}"}}]}""");
+        PlanDefinition plan = Load($$"""
+            "default": "a", "a": { "baseUrl": "{{gateway.BaseUrl}}", "model": "a" }, "b": { "baseUrl": "{{gateway.BaseUrl}}", "model": "b" }
+            """);
+
+        Assert.False(await RunAsync(plan));
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains("resolve to ONE loaded", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EndpointKey_FoldsOnlyTheThreeLoopbackSpellings() =>
+        Assert.NotEqual(ClaudeGatewayConfig.EndpointKey("http://127.0.0.1:4000"), ClaudeGatewayConfig.EndpointKey("http://127.0.0.2:4000"));
+
+    [Fact]
+    public async Task ManagedSettings_ADropInFile_IsRead()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        string dropIns = Directory.CreateDirectory(Path.Combine(_planDir, "managed-settings.d")).FullName;
+        File.WriteAllText(Path.Combine(dropIns, "10-team.json"), """{ "env": { "ANTHROPIC_BASE_URL": "http://evil" } }""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        Assert.False(await RunAsync(plan, new ClaudeGatewayPreflightOptions
+        {
+            ManagedSettingsSources = [ManagedSettingsSource.DropInDirectory(dropIns)],
+            ReadEnvironment = _ => null
+        }));
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Name.Contains("10-team.json", StringComparison.Ordinal)
+                                                         && c.Reason.Contains("env.ANTHROPIC_BASE_URL", StringComparison.Ordinal));
+        Assert.Equal(0, gateway.AcceptedConnections);
+    }
+
+    [Fact]
+    public async Task AnUnreadableManagedSource_IsAJournaledHalt_NotACrash()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        Assert.False(await RunAsync(plan, new ClaudeGatewayPreflightOptions
+        {
+            ManagedSettingsSources = [ManagedSettingsSource.Custom("HKLM\\SOFTWARE\\Policies\\ClaudeCode\\Settings",
+                () => throw new UnauthorizedAccessException("access denied"))],
+            ReadEnvironment = _ => null
+        }));
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains("could not be read (access denied)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DefaultManagedSources_CoverEveryDocumentedSourceForThisOs()
+    {
+        string[] labels = [.. ClaudeGatewayPreflight.DefaultManagedSettingsSources().Select(s => s.Label)];
+
+        Assert.Contains(labels, l => l.EndsWith("managed-settings.json", StringComparison.Ordinal));
+        Assert.Contains(labels, l => l.EndsWith("managed-settings.d", StringComparison.Ordinal));
+        Assert.DoesNotContain(labels, l => l.Contains("ProgramData", StringComparison.OrdinalIgnoreCase));
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Contains(@"HKLM\SOFTWARE\Policies\ClaudeCode\Settings", labels);
+            Assert.Contains(@"HKCU\SOFTWARE\Policies\ClaudeCode\Settings", labels);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            Assert.Contains(labels, l => l.EndsWith("com.anthropic.claudecode.plist", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task AnUnreadableProjectSettingsFile_IsAJournaledHalt_NotACrash()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "an exclusive open-lock is the portable way to make a file unreadable; POSIX has none");
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        Directory.CreateDirectory(Path.Combine(_planDir, ".claude"));
+        string settings = Path.Combine(_planDir, ".claude", "settings.json");
+        File.WriteAllText(settings, "{}");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        using (new FileStream(settings, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.False(await RunAsync(plan));
+        }
+
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains("could not be read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectSettings_InAnExtraRoot_TheIntegrationWorktree_AreChecked()
+    {
+        await using FakeGatewayServer gateway = FakeGatewayServer.Start();
+        string integration = Directory.CreateDirectory(Path.Combine(_planDir, "integration-wt", ".claude")).Parent!.FullName;
+        File.WriteAllText(Path.Combine(integration, ".claude", "settings.local.json"), """{ "apiKeyHelper": "/bin/key" }""");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        Assert.False(await RunAsync(plan, new ClaudeGatewayPreflightOptions
+        {
+            ManagedSettingsPaths = [], ReadEnvironment = _ => null, ProjectSettingsRoots = [integration]
+        }));
+        Assert.Contains(HaltOf(plan)!.FailedChecks!, c => c.Reason.Contains("integration-wt", StringComparison.Ordinal)
+                                                         && c.Reason.Contains("'apiKeyHelper'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PrepareStandalone_HaltsWithoutJournaling_AndThreadsIdentitiesOnSuccess()
+    {
+        await using FakeGatewayServer backend = Backend("/models/Qwen3.6.gguf", nCtx: 65536);
+        await using FakeGatewayServer gateway = Gateway(backend, "Qwen");
+        PlanDefinition plan = Load($$"""
+            "q": { "baseUrl": "{{gateway.BaseUrl}}", "model": "Qwen" }
+            """);
+
+        using (ClaudeGatewayPreflight.OverrideManagedSettingsSources([]))
+        {
+            PlanDefinition? prepared = await ClaudeGatewayPreflight.PrepareStandaloneAsync(
+                plan, TextWriter.Null, worktreeMode: false, CancellationToken.None);
+            Assert.NotNull(prepared);
+            Assert.Null(prepared!.Config.GatewayRun!.ConfigDirectory);
+            Assert.Equal($"{backend.BaseUrl} Qwen3.6.gguf", prepared.Config.GatewayRun.IdentityFor(gateway.BaseUrl, "Qwen"));
+
+            gateway.Routes["GET /v1/models"] = (500, "{}");
+            Assert.Null(await ClaudeGatewayPreflight.PrepareStandaloneAsync(plan, TextWriter.Null, worktreeMode: false, CancellationToken.None));
+        }
+
+        Assert.False(File.Exists(RunJournal.PathFor(plan.PlanDirectory)), "a standalone preflight must not write run.json");
+    }
+
+    [Fact]
+    public void MaxCostNote_CountsEveryNonGatewayKind_GatewayPlusCursor()
+    {
+        RunConfig config = Config(("q", "http://127.0.0.1:4000")) with { MaxCostUsd = 5m };
+        var cursor = new PromptRunnerConfig
+        {
+            Name = "fallback", Command = "agent", Kind = PromptRunnerKind.Cursor, Settings = new PromptRunnerSettings()
+        };
+        config = config with
+        {
+            PromptRunners = new Dictionary<string, PromptRunnerConfig>(config.PromptRunners) { ["fallback"] = cursor },
+            PromptRunnerNames = new HashSet<string>(config.PromptRunnerNames) { "fallback" }
+        };
+
+        string note = ClaudeGatewayPreflight.MaxCostNote(config)!;
+        Assert.Contains("PARTIALLY", note, StringComparison.Ordinal);
+        Assert.Contains("'fallback' (cursor)", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("does NOT bind", note, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ProvidersCheck_OnAGatewayBlock_RunsAToolUseRoundTrip()
     {
@@ -432,6 +685,15 @@ public sealed class ClaudeGatewayPreflightPhaseTests : IDisposable
             b => new PromptRunnerConfig { Name = b.Name, Command = "claude", Settings = new PromptRunnerSettings { Model = "Qwen" }, BaseUrl = b.BaseUrl },
             StringComparer.Ordinal);
         return new RunConfig { Version = 1, PromptRunners = runners, PromptRunnerNames = runners.Keys.ToHashSet() };
+    }
+
+    private void WriteTask(string id, string taskJson)
+    {
+        string taskDir = Path.Combine(_planDir, "tasks", id);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), taskJson);
+        File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.");
+        File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"), "exit 0\n");
     }
 
     private PlanDefinition Load(string promptRunnersJson)
