@@ -179,7 +179,12 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   (CursorApprovalModeInvalid — unknown cursor `approvalMode`, reported by the LOADER, or the key on a
   non-cursor block, reported by the VALIDATOR; ERROR, #767) and **GR2082** (CursorApprovalFlagInExtraArgs —
   `--force`/`--yolo`/`--auto-review` in a cursor block's `extraArgs`; ERROR, #767).
-  Next free: **GR1011 / GR2083** — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
+  **GR2084** (ClaudeGatewayBlockInvalid — a malformed claude gateway block, an owned env var in its `env`, or
+  `--settings` in its `extraArgs`; ERROR), **GR2085** (ClaudeModelNameToGateway — a Claude model name would
+  reach a gateway block; WARNING) and **GR2086** (ClaudeGatewayModelsShareEndpoint — two models share one
+  gateway under `maxParallelism > 1`; WARNING) are TAKEN by #782/SSOT §9.10. **GR2083 is RESERVED BY NAME
+  for #544** (native local-inference actions) and is NOT free: #782 took the codes around it.
+  Next free: **GR1011 / GR2088** (GR2087 = GuardrailOverridesKeyIgnored, #782; GR2083 reserved for #544) — and `DiagnosticCodes.cs` WINS, so re-verify there before allocating.
   GR1010 is taken (`WaveFolderIsNotALoadablePlan`, #472); GR2038–GR2059 and GR2062–GR2071 are taken. RESERVED BY NAME and
   not to be re-used: GR2051–GR2054 (model tiering, doc 17 §13.2), GR2060 + GR2062 (doc 19), GR2061
   (doc 18), GR2063 (doc 20). The two ladders advance INDEPENDENTLY — a note stating only one of them is
@@ -230,6 +235,24 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   refusal SHAPES from `TestData/cursor-refusals/` (every-shell-rejected, mixed, consecutive). The bash twin of that fake
   escapes quotes only (keep backslashes out of its test prompts). A real `agent` run is the manual
   `scripts/smoke/cursor-live-smoke.ps1`, never a test.
+- **A claude GATEWAY block is the same runner, not a new kind (#782, SSOT §9.10).** A `kind: "claude"` block
+  with `baseUrl` gets its `ClaudePromptRunner` built with a `ClaudeGatewayConfig` (+ the run's
+  `ClaudeGatewayRunContext`) by `PromptRunnerRegistry`, so EVERY dispatch to that instance (action, tier route,
+  judge, ai-merge, breakdown, ai-triage, overwatch) takes the gateway path; a claude block without `baseUrl`
+  must stay byte-identical, and tests pin that. Where things live: owned/scrubbed/blanked NAME lists in
+  `Prompts/ClaudeGateway.cs` (`ClaudeGatewayEnvironment`, read by the runner, the validator and the preflight —
+  one list); the launch pieces (scrub predicate on `ResolvedCommand.ScrubInheritedEnvironment`, the ONE
+  composed `--settings` file with the containment hook merged in, owned-key drops, stream-log preamble) in
+  `Prompts/ClaudeGatewayLaunch.cs`; the pure identity/match rules in `Prompts/ClaudeGatewayBackendIdentity.cs`;
+  GR2084–GR2086 in `Loading/ClaudeGatewayValidation.cs`; the pre-DAG preflight in
+  `Cli/ClaudeGatewayPreflight.cs` (called from `PlanPreflightPhase`, injectable `ManagedSettingsPaths` and
+  `ReadEnvironment` for tests); the cost is nulled in `StreamJsonCliSession` via
+  `StreamJsonCliDialect.CostIsFiction`, and spend renders through `Journal/SpendFormat.cs` (tokens instead of
+  `$0.00`). Two rules to keep: a REAL token is never written into the composed settings file (the log viewer
+  serves that directory; only the placeholder is written), and the child's `CLAUDE_CONFIG_DIR` is never
+  `~/.claude`. Tests use a loopback fake gateway (`tests/Guardrails.Integration.Tests/ClaudeGateway/`
+  `FakeGatewayServer.cs`); a real gateway is the manual `scripts/smoke/claude-gateway-live-smoke.ps1`, which
+  never writes into the operator's `~/.claude` and is re-run on every Claude Code upgrade.
 - **Windows launch by bare name (#764).** `Process.Start` with `UseShellExecute = false` does NOT apply
   PATHEXT, so a `.cmd`-only install (Cursor's `agent.cmd`) cannot be launched as `agent`.
   `PathExecutableProbe.ResolveFullPath(command, pathVariable)` returns the file the GR2009 probe found

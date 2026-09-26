@@ -563,7 +563,7 @@ public sealed class Overwatch
             // §9.2, WEAK-1): the spend is REAL regardless of whether the body parses, so it is charged here —
             // BEFORE the parse — so it BOTH counts toward the maxCostUsd gate (bounding subsequent eager
             // fires) AND appears in the reported total. A null CostUsd is a no-op.
-            journal.AddOverheadCost(result.CostUsd);
+            journal.AddOverheadDispatch("overwatch", result);
 
             if (!result.Completed || result.IsError || result.ResultText is null)
             {

@@ -10,7 +10,8 @@ namespace Guardrails.Integration.Tests;
 /// Scenario control flows through env vars set on the action (which the harness propagates to
 /// guardrails too): <c>FAKE_MODE</c> = fragment | nofragment | needshuman | iserror;
 /// <c>FAKE_COST</c> = a cost string, or <c>none</c> to omit <c>total_cost_usd</c> from the result
-/// line (models a succeeded prompt whose runner reported no cost → null CostUsd); <c>FAKE_VERDICT</c>
+/// line (models a succeeded prompt whose runner reported no cost → null CostUsd); optional
+/// <c>FAKE_INPUT_TOKENS</c>/<c>FAKE_OUTPUT_TOKENS</c> add a <c>usage</c> object (unset = no usage, as before); <c>FAKE_VERDICT</c>
 /// = pass | fail (read by guardrail invocations). <c>nofragment</c> succeeds cleanly but contributes NO state fragment — the
 /// shape a task takes when a reset + re-run produces a later succeeded attempt that does not
 /// touch <c>state.json</c>.
@@ -243,6 +244,12 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         "}\n" +
         """
         $cost = $env:FAKE_COST; if (-not $cost) { $cost = '0' }
+        # Optional token usage (#782): FAKE_INPUT_TOKENS / FAKE_OUTPUT_TOKENS add a `usage` object to the result line.
+        $usage = ''
+        if ($env:FAKE_INPUT_TOKENS) {
+            $out = $env:FAKE_OUTPUT_TOKENS; if (-not $out) { $out = '0' }
+            $usage = ',"usage":{"input_tokens":' + $env:FAKE_INPUT_TOKENS + ',"output_tokens":' + $out + '}'
+        }
         if ($env:GUARDRAILS_VERDICT_OUT) {
             if ($env:FAKE_VERDICT -eq 'fail') {
                 $body = '{"pass": false, "reason": "the thing is wrong: fix the X"}'
@@ -270,9 +277,9 @@ public sealed class FakeClaudePlanBuilder : IDisposable
             $err = if ($env:FAKE_MODE -eq 'iserror') { 'true' } else { 'false' }
             if ($cost -eq 'none') {
                 # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
-                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","num_turns":2}')
+                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","num_turns":2' + $usage + '}')
             } else {
-                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2}')
+                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2' + $usage + '}')
             }
         }
         """;
@@ -289,6 +296,11 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         "fi\n" +
         """
         cost="${FAKE_COST:-0}"
+        # Optional token usage (#782): FAKE_INPUT_TOKENS / FAKE_OUTPUT_TOKENS add a `usage` object to the result line.
+        usage=""
+        if [ -n "$FAKE_INPUT_TOKENS" ]; then
+          usage=",\"usage\":{\"input_tokens\":$FAKE_INPUT_TOKENS,\"output_tokens\":${FAKE_OUTPUT_TOKENS:-0}}"
+        fi
         if [ -n "$GUARDRAILS_VERDICT_OUT" ]; then
           if [ "$FAKE_VERDICT" = "fail" ]; then
             printf '{"pass": false, "reason": "the thing is wrong: fix the X"}' > "$GUARDRAILS_VERDICT_OUT"
@@ -314,9 +326,9 @@ public sealed class FakeClaudePlanBuilder : IDisposable
           if [ "$FAKE_MODE" = "iserror" ]; then err=true; else err=false; fi
           if [ "$cost" = "none" ]; then
             # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
-            printf '{"type":"result","is_error":%s,"result":"fake done","num_turns":2}\n' "$err"
+            printf '{"type":"result","is_error":%s,"result":"fake done","num_turns":2%s}\n' "$err" "$usage"
           else
-            printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2}\n' "$err" "$cost"
+            printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2%s}\n' "$err" "$cost" "$usage"
           fi
         fi
         """;

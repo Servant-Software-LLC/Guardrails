@@ -206,7 +206,7 @@ public sealed class TelemetryModelAttributionTests : IDisposable
             string? token = StringOrNull(row, "modelAttribution");
             Assert.NotNull(token);
             Assert.Contains(token, ModelAttribution.AllTokens);
-            Assert.Equal(3, row.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal(TelemetryRow.CurrentSchemaVersion, row.GetProperty("schemaVersion").GetInt32());
         }
     }
 

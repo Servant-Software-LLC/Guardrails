@@ -126,7 +126,9 @@ public static class BreakdownCommand
             return ExitCodes.HarnessError;
         }
 
-        if (!TryResolveRunner(runnerConfigPath, io, out IPromptRunner? runner, out string runnerDescription))
+        (bool resolved, IPromptRunner? runner, string runnerDescription) =
+            await ResolveRunnerAsync(runnerConfigPath, io, ct).ConfigureAwait(false);
+        if (!resolved)
         {
             return ExitCodes.HarnessError;
         }
@@ -162,6 +164,13 @@ public static class BreakdownCommand
         if (outcome.CostUsd is { } cost)
         {
             io.Out.WriteLine($"Breakdown spend: ${cost:0.00}");
+        }
+        else if (outcome.Gateway is not null)
+        {
+            // #782 §4: a gateway session has no honest cost; its token usage stands in, never a blank or $0.00.
+            io.Out.WriteLine(outcome.Usage is { } usage
+                ? $"Breakdown spend: {Core.Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)} (gateway {outcome.Gateway})"
+                : $"Breakdown spend: token usage not reported (gateway {outcome.Gateway})");
         }
 
         if (!outcome.TerminatedCleanly)
@@ -286,27 +295,24 @@ public static class BreakdownCommand
     /// So it is <c>--runner-config</c> (borrow one) first, else a bundled default <c>claude</c> runner —
     /// which is what an interactive session would have used anyway.
     /// </summary>
-    private static bool TryResolveRunner(
-        string? runnerConfigPath,
-        IConsoleIo io,
-        out IPromptRunner? runner,
-        out string description)
+    private static async Task<(bool Resolved, IPromptRunner? Runner, string Description)> ResolveRunnerAsync(
+        string? runnerConfigPath, IConsoleIo io, CancellationToken ct)
     {
-        runner = null;
-        description = "";
+        IPromptRunner? runner;
+        string description;
 
         if (string.IsNullOrWhiteSpace(runnerConfigPath))
         {
             runner = new ClaudePromptRunner("claude", "claude", new ProcessRunner());
             description = "claude (built-in default; pass --runner-config to borrow a configured one)";
-            return true;
+            return (true, runner, description);
         }
 
         string configPath = Path.GetFullPath(runnerConfigPath);
         if (!File.Exists(configPath))
         {
             io.Out.WriteLine($"ERROR: --runner-config not found: {configPath}");
-            return false;
+            return (false, null, "");
         }
 
         // Borrow the promptRunners of an existing plan by loading it and asking its registry for the
@@ -319,15 +325,25 @@ public static class BreakdownCommand
             io.Out.WriteLine(
                 $"ERROR: could not load a plan from {configFolder} to borrow promptRunners from.\n" +
                 "  --runner-config expects a guardrails.json inside a loadable plan folder.");
-            return false;
+            return (false, null, "");
         }
 
         try
         {
-            PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(probe.Plan.Config, new ProcessRunner());
+            // #782 review (sec W2): a borrowed claude GATEWAY block gets the full gateway preflight first, and its
+            // resolved backend identities ride into the runner exactly as they would in a run.
+            if (await ClaudeGatewayPreflight
+                    .PrepareStandaloneAsync(probe.Plan, io.Out, worktreeMode: false, ct)
+                    .ConfigureAwait(false) is not { } gatewayPlan)
+            {
+                io.Out.WriteLine($"ERROR: the claude gateway preflight for {configPath} failed — nothing was dispatched.");
+                return (false, null, "");
+            }
+
+            PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(gatewayPlan.Config, new ProcessRunner());
             runner = registry.Resolve(null);
             description = $"{registry.DefaultRunnerName ?? "(default)"} (borrowed from {configPath})";
-            return true;
+            return (true, runner, description);
         }
         catch (Exception ex)
         {
@@ -335,7 +351,7 @@ public static class BreakdownCommand
             // default. That is exactly the pre-run signal worth having, so report it rather than falling
             // back to the built-in runner and silently ignoring what the operator asked for.
             io.Out.WriteLine($"ERROR: {configPath} does not yield a usable prompt runner: {ex.Message}");
-            return false;
+            return (false, null, "");
         }
     }
 }

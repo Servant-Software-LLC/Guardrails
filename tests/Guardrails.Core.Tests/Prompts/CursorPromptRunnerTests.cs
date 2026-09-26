@@ -1004,7 +1004,11 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Canned([InitLine, InFlightShellLine], exitCode: 0, hang: true);
         PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
         {
-            StallBound = TimeSpan.FromSeconds(2),
+            // The stall clock runs from launch, so the bound must comfortably exceed the fake agent's
+            // start-up plus the time to print its two lines. 2s was enough alone but not under full-suite
+            // load, where the PowerShell fake can take longer than that to emit anything: the session was
+            // then declared stalled before the in-flight call was seen, and InFlightToolCalls was empty.
+            StallBound = TimeSpan.FromSeconds(15),
             Timeout = TimeSpan.FromMinutes(5)
         };
 

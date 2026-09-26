@@ -178,6 +178,42 @@ public sealed record PromptRunnerConfig
     /// </summary>
     public CursorApprovalMode? ApprovalMode { get; init; }
 
+    /// <summary>
+    /// The Anthropic-compatible gateway a <c>kind: "claude"</c> block routes through (#782, SSOT §9.10) — an
+    /// absolute http/https base URL with no userinfo and no query (GR2084), handed to the child as
+    /// <c>ANTHROPIC_BASE_URL</c>. A claude block carrying it is a GATEWAY block (<see cref="IsClaudeGateway"/>);
+    /// one without it launches byte-identically to before #782. Null = the key was absent. Block-level only.
+    /// </summary>
+    public string? BaseUrl { get; init; }
+
+    /// <summary>
+    /// The NAME of an environment variable whose value becomes the child's <c>ANTHROPIC_AUTH_TOKEN</c> on a
+    /// gateway block (#782) — never the secret itself, because <c>guardrails.json</c> is committed and hashed.
+    /// Null = no token: the child gets a fixed non-secret placeholder. Block-level only.
+    /// </summary>
+    public string? AuthTokenEnv { get; init; }
+
+    /// <summary>
+    /// What the backend behind a gateway block must have LOADED (#782 §3.2) — matched by the pre-DAG preflight
+    /// against the backend's own report, never asserted. Null = the operator declared no expectation.
+    /// Block-level only.
+    /// </summary>
+    public string? BackendModel { get; init; }
+
+    /// <summary>
+    /// The gateway keys (<c>baseUrl</c>, <c>authTokenEnv</c>, <c>backendModel</c>, <c>contextTokens</c>) the block
+    /// declared under <c>guardrailOverrides</c>, where they are NOT honoured (#782: block-level only). Recorded so
+    /// the validator can report each as GR2084 rather than the loader silently dropping it. Empty for a block
+    /// built in code rather than loaded.
+    /// </summary>
+    public IReadOnlyList<string> GatewayKeysInOverrides { get; init; } = [];
+
+    /// <summary>
+    /// True for a <c>kind: "claude"</c> block that declares a <see cref="BaseUrl"/> — a GATEWAY block (#782 §1),
+    /// whose runner instance takes authority over the child's routing, credentials and model choice.
+    /// </summary>
+    public bool IsClaudeGateway => Kind == PromptRunnerKind.Claude && !string.IsNullOrWhiteSpace(BaseUrl);
+
     /// <summary>The effective settings for a prompt of the given kind (base, or base + guardrail overrides).</summary>
     public PromptRunnerSettings EffectiveSettings(bool isGuardrail) =>
         isGuardrail && GuardrailOverrides is not null

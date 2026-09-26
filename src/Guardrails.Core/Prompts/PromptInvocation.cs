@@ -142,6 +142,21 @@ public sealed record PromptResult
     public string? ModelDigest { get; init; }
 
     /// <summary>
+    /// The gateway this dispatch went through (#782 §4) — the normalized <c>baseUrl</c>, never carrying userinfo —
+    /// set by a claude GATEWAY runner instance on every dispatch, and null for every other runner. Its presence is
+    /// also what tells a reader that <see cref="CostUsd"/> is null because no honest price exists, and that
+    /// <see cref="ObservedModel"/> is only the CLI's echo of the name it asked for.
+    /// </summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>
+    /// The backend identity behind <see cref="Gateway"/> (#782 §3.2) as the pre-DAG preflight resolved it — the
+    /// only field that makes a claim about what actually served the request — or <c>"unverified"</c> when it could
+    /// not be resolved. Null whenever <see cref="Gateway"/> is.
+    /// </summary>
+    public string? BackendModel { get; init; }
+
+    /// <summary>
     /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
     /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
     /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever

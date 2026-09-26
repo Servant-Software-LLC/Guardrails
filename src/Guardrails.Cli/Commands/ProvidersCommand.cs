@@ -383,6 +383,159 @@ public static class ProvidersCommand
     private const int DetailIndent = 13;
     private const int ReportWidth = 96;
 
+    /// <summary>The trivial tool the gateway round trip offers (#782 §3.3); its only correct response is to call it.</summary>
+    private const string GatewayProbeTool = "probe_tool";
+
+    /// <summary>
+    /// <c>providers check</c> on a claude GATEWAY block (#782 §3.3): a manual <c>tool_use</c> ROUND TRIP through the
+    /// gateway's Anthropic Messages surface, which exercises the gateway's Anthropic-to-OpenAI tool-call translation —
+    /// the part a plain reachability probe cannot see. Step 1 offers one no-op tool and expects a <c>tool_use</c>
+    /// block; step 2 returns a <c>tool_result</c> for it and expects a content block back. Exit code: non-zero only
+    /// when the gateway cannot be reached (or the token is unset); an unmet step is a fact reported calmly, exit 0.
+    /// </summary>
+    private static async Task<int> RunGatewayCheckAsync(PromptRunnerConfig block, IConsoleIo io, CancellationToken cancellationToken)
+    {
+        string baseUrl = Core.Prompts.ClaudeGatewayConfig.NormalizeBaseUrl(block.BaseUrl!);
+        string display = Core.Prompts.ClaudeGatewayConfig.RedactUserInfo(baseUrl);
+        string? model = block.Settings.Model;
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            io.Error.WriteLine($"Gateway block '{block.Name}' declares no `model` (GR2084), so there is nothing to probe FOR.");
+            return ExitCodes.HarnessError;
+        }
+
+        string token = Core.Prompts.ClaudeGatewayEnvironment.PlaceholderToken;
+        if (!string.IsNullOrWhiteSpace(block.AuthTokenEnv))
+        {
+            string? value = Environment.GetEnvironmentVariable(block.AuthTokenEnv.Trim());
+            if (string.IsNullOrEmpty(value))
+            {
+                io.Error.WriteLine($"authTokenEnv names '{block.AuthTokenEnv}', which is unset or empty in this shell. Export it, then re-run.");
+                return ExitCodes.HarnessError;
+            }
+
+            token = value;
+        }
+
+        io.Out.WriteLine($"providers check: claude gateway block '{block.Name}' → {display}, model '{model}'");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+
+        JsonObject tool = new()
+        {
+            ["name"] = GatewayProbeTool,
+            ["description"] = "A no-op capability probe. Call it once, with no arguments.",
+            ["input_schema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+        };
+        var first = new JsonObject
+        {
+            ["model"] = model,
+            ["max_tokens"] = 512,
+            ["tools"] = new JsonArray(tool.DeepClone()),
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = $"Call the `{GatewayProbeTool}` tool once, with no arguments. Calling it is the only correct response."
+            })
+        };
+
+        (int status, string body, string? transport) = await PostMessagesAsync(http, baseUrl, token, first, cancellationToken)
+            .ConfigureAwait(false);
+        if (transport is not null)
+        {
+            io.Out.WriteLine($"  unreachable: POST {display}/v1/messages — {transport}");
+            return ExitCodes.HarnessError;
+        }
+
+        JsonObject? response = ParseObject(body);
+        JsonObject? toolUse = (response?["content"] as JsonArray)?
+            .OfType<JsonObject>()
+            .FirstOrDefault(b => (string?)b["type"] == "tool_use");
+        if (status != 200 || toolUse is null)
+        {
+            io.Out.WriteLine($"  tool_use (step 1): UNMET — HTTP {status}, no tool_use block. The gateway (or the model behind it) " +
+                             "did not translate the offered tool into a call, so Claude Code's tool calls will not work there.");
+            io.Out.WriteLine($"    {Truncate(body)}");
+            return ExitCodes.Success;
+        }
+
+        io.Out.WriteLine($"  tool_use (step 1): met — the model called '{(string?)toolUse["name"]}'.");
+
+        var second = new JsonObject
+        {
+            ["model"] = model,
+            ["max_tokens"] = 512,
+            ["tools"] = new JsonArray(tool.DeepClone()),
+            ["messages"] = new JsonArray(
+                first["messages"]![0]!.DeepClone(),
+                new JsonObject { ["role"] = "assistant", ["content"] = response!["content"]!.DeepClone() },
+                new JsonObject
+                {
+                    ["role"] = "user",
+                    ["content"] = new JsonArray(new JsonObject
+                    {
+                        ["type"] = "tool_result",
+                        ["tool_use_id"] = toolUse["id"]?.DeepClone(),
+                        ["content"] = "ok"
+                    })
+                })
+        };
+
+        (status, body, transport) = await PostMessagesAsync(http, baseUrl, token, second, cancellationToken).ConfigureAwait(false);
+        if (transport is not null)
+        {
+            io.Out.WriteLine($"  unreachable: POST {display}/v1/messages (step 2) — {transport}");
+            return ExitCodes.HarnessError;
+        }
+
+        bool answered = status == 200 && ParseObject(body)?["content"] is JsonArray { Count: > 0 };
+        io.Out.WriteLine(answered
+            ? "  tool_result (step 2): met — the gateway carried the tool result back and the model answered."
+            : $"  tool_result (step 2): UNMET — HTTP {status}; the tool result did not round-trip. {Truncate(body)}");
+        return ExitCodes.Success;
+    }
+
+    private static async Task<(int Status, string Body, string? Transport)> PostMessagesAsync(
+        HttpClient http, string baseUrl, string token, JsonObject payload, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/v1/messages")
+        {
+            Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        try
+        {
+            using HttpResponseMessage response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            return ((int)response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false), null);
+        }
+        catch (HttpRequestException ex)
+        {
+            return (0, string.Empty, ex.Message);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            return (0, string.Empty, $"no answer in time ({ex.Message})");
+        }
+    }
+
+    private static JsonObject? ParseObject(string body)
+    {
+        try
+        {
+            return JsonNode.Parse(body) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string Truncate(string body)
+    {
+        string trimmed = body.Trim();
+        return trimmed.Length <= 400 ? trimmed : trimmed[..400] + "…";
+    }
+
     private static Command BuildCheckLeaf(IConsoleIo io)
     {
         // FolderArgument first, then the required block name — `reset`'s own two-positional convention,
@@ -393,7 +546,7 @@ public static class ProvidersCommand
 
         var blockArgument = new Argument<string>("block-name")
         {
-            Description = "The promptRunners block to probe. Must be an `openai-compat` block."
+            Description = "The promptRunners block to probe: an `openai-compat` block, or a claude gateway block (one with a `baseUrl`)."
         };
 
         var command = new Command(
@@ -444,6 +597,11 @@ public static class ProvidersCommand
             io.Error.WriteLine(
                 "  Nothing was probed: a block this command cannot find is a block whose endpoint it does not know.");
             return ExitCodes.HarnessError;
+        }
+
+        if (block.IsClaudeGateway)
+        {
+            return await RunGatewayCheckAsync(block, io, cancellationToken).ConfigureAwait(false);
         }
 
         if (block.Kind != PromptRunnerKind.OpenAiCompat)

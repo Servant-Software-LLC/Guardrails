@@ -937,8 +937,12 @@ public sealed class TaskExecutor : ITaskExecutor
         // ObservedModel is absent, `observedModel` below is null, so Model and RequestedModel fall
         // through to their launch-time values unchanged — silence about the model stays silence,
         // exactly as before this fold existed at all.
+        // #782 §4: the gateway facts ride the SAME fold (one `with`, for the reason given above), and widen its guard
+        // the same way the digest did — a gateway dispatch whose stream echoed no model must still record which
+        // gateway, and which backend, served it.
         string? observedModel = action.ObservedModel;
-        if (provenance is { } launched && (observedModel is { } || action.ModelDigest is { }))
+        if (provenance is { } launched
+            && (observedModel is { } || action.ModelDigest is { } || action.Gateway is { }))
         {
             provenance = launched with
             {
@@ -946,7 +950,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 RequestedModel = observedModel is { } && launched.Model != observedModel
                     ? launched.Model
                     : launched.RequestedModel,
-                ModelDigest = action.ModelDigest ?? launched.ModelDigest
+                ModelDigest = action.ModelDigest ?? launched.ModelDigest,
+                Gateway = action.Gateway ?? launched.Gateway,
+                BackendModel = action.BackendModel ?? launched.BackendModel
             };
 
             // Re-mirror it, for the reason the judge fold re-mirrors below: on the guardrail-FAILED path
@@ -2750,6 +2756,15 @@ public sealed class TaskExecutor : ITaskExecutor
         if (provenance.RequestedModel is { } requestedModel)
         {
             sb.Append("requested model: ").AppendLine(requestedModel);
+        }
+
+        // #782 §3.2: on a gateway dispatch `model:` above is only the CLI's ECHO of the name it asked for — label it,
+        // and name the backend, the one field that makes a claim about what actually served the request.
+        if (provenance.Gateway is { } gateway)
+        {
+            sb.Append("gateway: ").AppendLine(gateway);
+            sb.Append("backend model: ").AppendLine(provenance.BackendModel ?? Prompts.ClaudeGatewayConfig.UnverifiedBackend);
+            sb.AppendLine("note: through a gateway, `model:` is the CLI's echo of the name it asked for, not evidence of what served it; `backend model:` is.");
         }
 
         sb.Append("effort: ").AppendLine(route.Effort ?? "(none — the runner's own default applies)");

@@ -18,16 +18,35 @@ public sealed class ClaudePromptRunner : IPromptRunner
 {
     private readonly ProcessRunner _processRunner;
     private readonly string _command;
+    private readonly ClaudeGatewayRunContext? _gatewayRun;
 
-    public ClaudePromptRunner(string name, string command, ProcessRunner processRunner)
+    /// <param name="name">The <c>promptRunners</c> key.</param>
+    /// <param name="command">The executable to launch.</param>
+    /// <param name="processRunner">The process seam.</param>
+    /// <param name="gateway">
+    /// The block's gateway configuration (#782, D3), or null for an ordinary claude block — which launches
+    /// byte-identically to before gateways existed.
+    /// </param>
+    /// <param name="gatewayRun">The run's gateway state (config directory, resolved backend identities), or null.</param>
+    public ClaudePromptRunner(
+        string name,
+        string command,
+        ProcessRunner processRunner,
+        ClaudeGatewayConfig? gateway = null,
+        ClaudeGatewayRunContext? gatewayRun = null)
     {
         Name = name;
         _command = command;
         _processRunner = processRunner;
+        Gateway = gateway;
+        _gatewayRun = gatewayRun;
     }
 
     /// <inheritdoc />
     public string Name { get; }
+
+    /// <summary>The gateway this instance dispatches through (#782), or null for an ordinary claude block.</summary>
+    public ClaudeGatewayConfig? Gateway { get; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -37,6 +56,11 @@ public sealed class ClaudePromptRunner : IPromptRunner
     /// </remarks>
     public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
     {
+        if (Gateway is { } gateway)
+        {
+            return RunThroughGatewayAsync(gateway, invocation, cancellationToken);
+        }
+
         var command = new ResolvedCommand
         {
             Executable = _command,
@@ -53,6 +77,125 @@ public sealed class ClaudePromptRunner : IPromptRunner
             new ClaudePermissionScanner.Scanner(),
             cancellationToken);
     }
+
+    /// <summary>
+    /// A GATEWAY dispatch (#782 §1.2, D1): the child is launched with the inherited <c>ANTHROPIC_*</c> /
+    /// <c>CLAUDE_CODE_USE_*</c> / OAuth / config-dir variables scrubbed, the owned values set, an isolated
+    /// <c>CLAUDE_CONFIG_DIR</c>, and exactly ONE <c>--settings</c> — the composed file, which carries the owned
+    /// <c>env</c>, pins <c>model</c> and <c>fallbackModel</c> to the block's model, and merges the containment hook
+    /// the harness spliced into <c>extraArgs</c>. The cost is nulled at the source (§4), every summary names the
+    /// gateway (§3.3), and the result carries <see cref="PromptResult.Gateway"/> and
+    /// <see cref="PromptResult.BackendModel"/> for provenance.
+    /// <para>Every refusal here fails CLOSED — the child is never launched with a partial authority.</para>
+    /// </summary>
+    private async Task<PromptResult> RunThroughGatewayAsync(
+        ClaudeGatewayConfig gateway, PromptInvocation invocation, CancellationToken cancellationToken)
+    {
+        string suffix = $" (via gateway {gateway.DisplayBaseUrl})";
+
+        if (gateway.Model is null)
+        {
+            return GatewayRefusal(gateway, suffix,
+                $"gateway block '{gateway.BlockName}' declares no `model` (GR2084): with no model to pin, a Claude " +
+                "model alias could reach the gateway.");
+        }
+
+        string token = ClaudeGatewayEnvironment.PlaceholderToken;
+        if (gateway.AuthTokenEnv is { } tokenVariable)
+        {
+            string? value = Environment.GetEnvironmentVariable(tokenVariable);
+            if (string.IsNullOrEmpty(value))
+            {
+                return GatewayRefusal(gateway, suffix,
+                    $"authTokenEnv names '{tokenVariable}', which is unset or empty in the harness's environment; " +
+                    "export it before `guardrails run`.");
+            }
+
+            token = value;
+        }
+
+        (IReadOnlyList<string> remainingArgs, IReadOnlyList<string> settingsPaths, string? argRefusal) =
+            ClaudeGatewayLaunch.SplitSettingsArgs(invocation.Settings.ExtraArgs);
+        if (argRefusal is not null)
+        {
+            return GatewayRefusal(gateway, suffix, argRefusal);
+        }
+
+        (System.Text.Json.Nodes.JsonObject? hooks, string? hookRefusal) = ClaudeGatewayLaunch.MergeHooks(settingsPaths);
+        if (hookRefusal is not null)
+        {
+            return GatewayRefusal(gateway, suffix, hookRefusal);
+        }
+
+        string configDirectory = ClaudeGatewayLaunch.ConfigDirectory(_gatewayRun, invocation);
+        IReadOnlyList<KeyValuePair<string, string>> owned = ClaudeGatewayLaunch.OwnedValues(gateway, token, configDirectory);
+        (IReadOnlyDictionary<string, string> environment, IReadOnlyList<string> dropped) =
+            ClaudeGatewayLaunch.BuildEnvironment(invocation, owned);
+
+        string settingsPath = ClaudeGatewayLaunch.WriteSettingsFile(
+            invocation,
+            ClaudeGatewayLaunch.ComposeSettingsJson(gateway, owned, hooks, tokenIsSecret: gateway.AuthTokenEnv is not null));
+
+        PromptInvocation stripped = invocation with { Settings = invocation.Settings with { ExtraArgs = remainingArgs } };
+        var command = new ResolvedCommand
+        {
+            Executable = _command,
+            Arguments = [.. BuildArguments(stripped), "--settings", settingsPath],
+            ScrubInheritedEnvironment = ClaudeGatewayLaunch.ScrubInherited
+        };
+
+        var dialect = new StreamJsonCliDialect
+        {
+            Label = "claude",
+            CostIsFiction = true,
+            SummarySuffix = suffix,
+            StreamLogPreamble = ClaudeGatewayLaunch.StreamLogPreamble(gateway, dropped)
+        };
+
+        PromptResult result = await StreamJsonCliSession.RunAsync(
+                _processRunner,
+                command,
+                environment,
+                standardInput: invocation.ComposedPrompt,
+                invocation,
+                dialect,
+                new ClaudePermissionScanner.Scanner(),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return WithGatewayProvenance(result, gateway, invocation.Settings.Model);
+    }
+
+    /// <summary>
+    /// Stamp the gateway facts onto a result (#782 §4): the gateway without userinfo, and the backend identity the
+    /// preflight resolved for (gateway, model) — or <c>"unverified"</c>, which claims nothing. The cost stays null.
+    /// </summary>
+    private PromptResult WithGatewayProvenance(PromptResult result, ClaudeGatewayConfig gateway, string? model) =>
+        result with
+        {
+            CostUsd = null,
+            Gateway = gateway.DisplayBaseUrl,
+            BackendModel = _gatewayRun?.IdentityFor(gateway.BaseUrl, model ?? gateway.Model)
+                           ?? ClaudeGatewayConfig.UnverifiedBackend
+        };
+
+    /// <summary>A gateway dispatch refused before launch: not completed, a configuration fault, never a retryable blip.</summary>
+    private PromptResult GatewayRefusal(ClaudeGatewayConfig gateway, string suffix, string reason) =>
+        WithGatewayProvenance(
+            new PromptResult
+            {
+                Completed = false,
+                IsError = true,
+                FailureKind = PromptFailureKind.RunnerConfiguration,
+                RunnerConfigurationRemedy = reason,
+
+                // KNOWN zero, not "not reported" (#782 review, N14): nothing was sent, so this refusal consumed no tokens
+                // and must not be counted among the gateway dispatches whose usage went unmeasured.
+                Usage = new PromptUsage { InputTokens = 0, OutputTokens = 0 },
+                Summary = $"claude gateway dispatch refused before launch — {reason}{suffix}"
+            },
+            gateway,
+            model: null);
 
     /// <summary>
     /// Claude's session dialect: the <c>claude</c> summary label. Its #86/#104 permission scanner

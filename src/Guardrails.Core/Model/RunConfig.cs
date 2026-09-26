@@ -291,6 +291,15 @@ public sealed record RunConfig
     /// </summary>
     public IReadOnlyDictionary<string, PromptRunnerConfig> PromptRunners { get; init; } =
         new Dictionary<string, PromptRunnerConfig>();
+
+    /// <summary>
+    /// RUNTIME state for the run's claude-gateway blocks (#782, SSOT §9.10) — never read from
+    /// <c>guardrails.json</c>. <c>guardrails run</c> sets it once the pre-DAG gateway preflight has resolved each
+    /// backend's identity, and it carries the per-run scratch <c>CLAUDE_CONFIG_DIR</c>. Null (every loaded plan,
+    /// and any caller that ran no gateway preflight) is safe: a gateway runner then records its backend as
+    /// <c>"unverified"</c> and isolates the child in a config directory beside the attempt's own logs.
+    /// </summary>
+    public Prompts.ClaudeGatewayRunContext? GatewayRun { get; init; }
 }
 
 /// <summary>

@@ -144,7 +144,7 @@ internal sealed class AiMergeResolver
             // §7/§9.1, #314): the spend is REAL regardless of the gate verdict (pass/fail/retry), so it is
             // charged here — BEFORE the gates read GUARDRAILS_MERGE_OUT — so it BOTH counts toward the
             // maxCostUsd gate AND appears in the reported total. A null CostUsd is a no-op.
-            journal.AddOverheadCost(result.CostUsd);
+            journal.AddOverheadDispatch("ai-merge", result);
 
             if (!File.Exists(outPath)) return false;
             string mergedContent = File.ReadAllText(outPath);

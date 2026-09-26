@@ -484,8 +484,36 @@ public sealed class PlanLoader
                 ? null
                 : new Dictionary<string, JsonElement>(raw.Wire, StringComparer.Ordinal),
             Engine = raw.Engine,
-            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, raw.GuardrailOverrides?.ApprovalMode, configPath, diagnostics)
+            ApprovalMode = ReadApprovalMode(name, raw.ApprovalMode, raw.GuardrailOverrides?.ApprovalMode, configPath, diagnostics),
+
+            // The claude-gateway keys (#782, SSOT §9.10). Bound verbatim; every shape rule is GR2084 at validate.
+            BaseUrl = raw.BaseUrl,
+            AuthTokenEnv = raw.AuthTokenEnv,
+            BackendModel = raw.BackendModel,
+            GatewayKeysInOverrides = GatewayKeysInOverrides(raw.GuardrailOverrides)
         };
+    }
+
+    /// <summary>
+    /// The gateway keys written under <c>guardrailOverrides</c> (#782) — block-level only, so each one found is
+    /// carried to the validator (GR2084) instead of being dropped here without a word.
+    /// </summary>
+    private static IReadOnlyList<string> GatewayKeysInOverrides(RawPromptRunnerOverrides? overrides)
+    {
+        if (overrides is null)
+        {
+            return [];
+        }
+
+        (string Key, JsonElement? Value)[] candidates =
+        [
+            ("baseUrl", overrides.BaseUrl),
+            ("authTokenEnv", overrides.AuthTokenEnv),
+            ("backendModel", overrides.BackendModel),
+            ("contextTokens", overrides.ContextTokens)
+        ];
+
+        return candidates.Where(c => !AbsentAxis(c.Value, out _)).Select(c => c.Key).ToList();
     }
 
     /// <summary>

@@ -172,6 +172,21 @@ internal sealed class RawPromptRunner
     // Held RAW so a non-string value is a named GR2081 rather than a generic parse failure naming a CLR type;
     // PlanLoader.ReadApprovalMode reports a bad value and keeps loading, the validator a non-cursor block.
     public JsonElement? ApprovalMode { get; set; }
+
+    // The claude-gateway keys (#782, SSOT §9.10). All OPTIONAL, null = the key was absent — additive, so a
+    // claude block written before gateways existed binds byte-identically. A block carrying `baseUrl` is a
+    // GATEWAY block; shape checks (absolute http/https, no userinfo/query, no /v1 suffix, a valid env-var
+    // NAME, backendModel >= 4 chars, the keys on a non-claude block) are GR2084, a validator concern.
+    // `contextTokens` above is shared with openai-compat and widened to gateway blocks (§1.3).
+
+    // Absolute http/https base URL of the Anthropic-compatible gateway; becomes ANTHROPIC_BASE_URL.
+    public string? BaseUrl { get; set; }
+
+    // The NAME of an env var whose value becomes ANTHROPIC_AUTH_TOKEN — never the secret itself.
+    public string? AuthTokenEnv { get; set; }
+
+    // What the backend behind the gateway must have loaded (§3.2's match rule). Checked by the preflight.
+    public string? BackendModel { get; set; }
 }
 
 /// <summary>
@@ -213,6 +228,13 @@ internal sealed class RawPromptRunnerOverrides
     // NOT an override (#767): approvalMode is block-level only. Bound so the loader can SEE it and report GR2081
     // instead of silently ignoring it.
     public JsonElement? ApprovalMode { get; set; }
+
+    // NOT overrides (#782): the gateway keys are block-level only — a judge and an action on one block reach one
+    // gateway. Bound RAW so the validator can SEE a misplaced one and report GR2084 instead of ignoring it.
+    public JsonElement? BaseUrl { get; set; }
+    public JsonElement? AuthTokenEnv { get; set; }
+    public JsonElement? BackendModel { get; set; }
+    public JsonElement? ContextTokens { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>

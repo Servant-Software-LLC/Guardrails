@@ -404,6 +404,155 @@ block runs without Claude's per-tool controls. It is expected. Here is what it m
   Cursor did not receive the prompt, the attempt fails. For example, a bare word in `extraArgs` would
   make Cursor ignore stdin. That attempt is never reported as success.
 
+### Running prompt tasks on a local model through a gateway
+
+Prompt tasks can run on Claude Code pointed at a local model, such as Qwen served by
+[`llama-server`](https://github.com/ggml-org/llama.cpp), through an Anthropic-compatible gateway such as
+[LiteLLM](https://docs.litellm.ai/). Give a `claude` block a `baseUrl`, and Guardrails configures the Claude
+Code child itself. You don't need a `claude-local` wrapper script. You still start `llama-server` and LiteLLM
+yourself; Guardrails never starts either one.
+
+> Anthropic documents gateways for its own models. Running Claude Code against a non-Claude model through a
+> gateway is outside what Claude Code supports. It works, and Guardrails checks as much of it as it can before
+> any task runs, but treat it as experimental.
+
+**1. Start one `llama-server` per model, and LiteLLM in front of them.** One `llama-server` holds one model,
+so Qwen 3.6 and Qwen 3.8 each need their own server on their own port. Adjust the model paths to yours:
+
+```bash
+llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_M.gguf --alias Qwen3.6-35B-A3B --jinja -c 65536 -np 1 --port 8080
+llama-server -m /models/Qwen3.8-27B-Q4_K_M.gguf     --alias Qwen3.8-27B     --jinja -c 65536 -np 1 --port 8081
+```
+
+`-c 65536 -np 1` gives the single slot a 65,536-token window. With `-np N`, each slot gets `-c` divided by `N`,
+and that per-slot figure is what goes in `contextTokens` below.
+
+```yaml
+# litellm.yaml
+model_list:
+  - model_name: Qwen                       # what the Guardrails block's "model" names
+    litellm_params:
+      model: openai/Qwen3.6-35B-A3B
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+  - model_name: Qwen3.8
+    litellm_params:
+      model: openai/Qwen3.8-27B
+      api_base: http://127.0.0.1:8081/v1
+      api_key: none
+```
+
+```bash
+litellm --config litellm.yaml --port 4000
+```
+
+If your LiteLLM has a `master_key`, export it under a name of your choice before you run Guardrails, for example
+`export LITELLM_KEY=sk-...` (PowerShell: `$env:LITELLM_KEY = 'sk-...'`), and add `"authTokenEnv": "LITELLM_KEY"`
+to the block. Put the variable's **name** in `guardrails.json`, never the key itself.
+
+**2. Point the plan's `promptRunners` at the gateway:**
+
+```json
+"maxParallelism": 1,
+"promptRunners": {
+  "default": "qwen36",
+  "qwen36": {
+    "kind": "claude",
+    "command": "claude",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "Qwen",
+    "backendModel": "qwen3.6-35b-a3b",
+    "contextTokens": 65536
+  },
+  "qwen38": {
+    "kind": "claude",
+    "command": "claude",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "Qwen3.8",
+    "backendModel": "qwen3.8-27b",
+    "contextTokens": 65536
+  }
+}
+```
+
+- Keep `"command": "claude"`. A block's `command` defaults to the block's name, so without it Guardrails
+  would try to launch a program called `qwen36`.
+- `baseUrl` is the gateway's root. Don't add `/v1`; Claude Code appends `/v1/messages` itself.
+- `model` is required. It must be a name in LiteLLM's `model_list`, and every Claude Code model alias,
+  background model and subagent model is pinned to it.
+- `backendModel` is optional but recommended. It is what the server behind the gateway must have **loaded**,
+  and the run stops before any task if it doesn't match. Include the version (`qwen3.6-35b-a3b`, not `qwen`).
+- `contextTokens` is optional. It tells Claude Code to compact before the backend's per-slot window fills, and
+  the run stops if it is larger than the slot.
+- `permissionMode`, `allowedTools`, `maxTurns`, `env` and `extraArgs` work as on any `claude` block, with two
+  exceptions: `ANTHROPIC_*` and the other variables Guardrails sets, and `--settings`, are rejected by
+  `validate` (`GR2084`).
+- Keep `maxParallelism` at 1 when two models share one gateway. `validate` warns otherwise (`GR2086`).
+- A Claude model name (`sonnet`, `claude-…`) that would reach a gateway block, for example through a task's
+  `action.model`, draws a `GR2085` warning.
+
+**3. Validate, check tool calling, then run:**
+
+```bash
+guardrails validate <plan>/
+guardrails providers check <plan>/ qwen36     # a tool_use round trip through the gateway
+guardrails run <plan>/
+```
+
+**What the run checks before any task starts.** A plan with a gateway block runs a preflight, and any failure
+stops the run with the reason, before a task spends a turn:
+
+- your machine's managed Claude Code settings, and the target repo's `.claude/settings.json` and
+  `.claude/settings.local.json`, don't set anything that could send requests elsewhere or with another
+  credential, such as `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK` or `apiKeyHelper`.
+  The message names the file and the key. Every managed source Claude Code documents is read — the
+  `managed-settings.json` file and `managed-settings.d/` drop-ins, the Windows `HKLM`/`HKCU` policy registry value,
+  and the macOS `com.anthropic.claudecode` configuration profile. Server-managed settings (pushed from the
+  claude.ai console) can't be read from here, and the run header says so. The integration worktree a resumed run
+  continues from is checked too;
+- the `authTokenEnv` variable, if any, is set;
+- the gateway answers, lists each declared model, and returns a real reply to a short message;
+- the server behind each model has the `backendModel` you declared loaded, `contextTokens` fits its per-slot
+  window, and no two model names are served by the same loaded model. That includes a model a task pins with
+  `action.model`: every model a run can send to the gateway is checked. The server is asked what it loaded
+  WITHOUT your gateway key, and only when it is on this machine or a private network address; a server elsewhere
+  is reported as not probed rather than sent a request. If you start `llama-server` with `--alias`, keep the alias
+  honest: the match trusts it.
+
+The run header then shows the identity it found, for example
+`Gateway: block 'qwen36' → http://127.0.0.1:4000, model 'Qwen': backend http://127.0.0.1:8080 Qwen3.6-35B-A3B (backendModel 'qwen3.6-35b-a3b' matched).`
+When the gateway isn't LiteLLM, or the server doesn't say what it loaded, it reads `backend identity
+unverified`, and a declared `backendModel` is reported as "declared, not verified", never as matched. This check
+runs once, at the start. A server that swaps models mid-run isn't detected. `guardrails breakdown --runner-config`
+and `guardrails run --revalidate-task` run the same checks before they use a gateway block.
+
+**What changes on a gateway block:**
+
+- **Tokens instead of cost.** Claude Code prices every call from Anthropic's list, which is meaningless for a
+  local model, so Guardrails records no cost and shows token usage wherever it would show a dollar figure:
+  `48.2k tok (gateway)`. A mixed run shows both, for example `Total prompt cost: $1.8400 + 310.5k tok (gateway)`.
+  A gateway dispatch that reported no token usage is counted, not dropped: `+ 1 dispatch(es) without usage (gateway)`.
+  `--max-cost-usd` (and the $20 `--autonomous` default) doesn't limit gateway spend; the run says so at startup.
+- **A clean Claude Code profile.** Each run gives Claude Code its own empty config directory under
+  `logs/<runId>/claude-config/`, so your `~/.claude` settings, `CLAUDE.md`, skills, memory, MCP servers and
+  stored login aren't used, and session transcripts land there instead of `~/.claude/projects/`. Claude Code
+  also starts without a record of trusting the repo, so some project settings may not apply. Treat the block's
+  `allowedTools` as the agent's whole permission grant. That directory is served by the local log viewer with the
+  rest of the run's logs, so anything an agent prints into its session — including a token — can be read there.
+  All of a run's gateway sessions share its one `.claude.json`; at `maxParallelism` above 1, watch for it being
+  corrupted.
+- **The token is visible to the agent's shell commands.** Commands the model runs inherit the child's
+  environment, including `ANTHROPIC_AUTH_TOKEN` and the variable `authTokenEnv` names (which Guardrails leaves in
+  place). Without `authTokenEnv` the token is a harmless placeholder. With a real key for a remote gateway, any
+  command the model runs can read it.
+- **Some traffic may still leave the machine.** Guardrails turns off Claude Code's nonessential traffic, but
+  some features (such as fast-mode checks and WebFetch's safety check) are documented to call
+  `api.anthropic.com` directly, and whether that switch stops them is unverified.
+- Every provenance record, telemetry row and event for a gateway dispatch names the gateway and the backend
+  identity, so a local-model attempt can always be told apart from a Claude one.
+
+The full contract is in [`docs/plans/02-schemas-and-contracts.md`](docs/plans/02-schemas-and-contracts.md) §9.10.
+
 ### Local telemetry
 
 **Every run records what it cost and which model ran each task, into a file on your own machine.**

@@ -134,10 +134,13 @@ first guardrail are cheap sanity checks.
       "model": null,                  // null = CLI default
       "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat | cursor. "claude", "openai-compat" (#223) AND "cursor" (#764, §9.9 — Cursor's Agent CLI; `command` defaults to "agent"; runs with no per-tool allowlist, its approval flag chosen by `approvalMode`, so every cursor block draws the GR2080 warning) are IMPLEMENTED; codex | openrouter | local remain reserved names with no runner class. An unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
       "endpoint": null,               // OPTIONAL, openai-compat ONLY (§9.8, issue #223). REQUIRED when kind is "openai-compat": an absolute http/https base URL for the chat-completions endpoint, e.g. "http://127.0.0.1:11434/v1" (GR2065) — declaring it on a block of another kind is GR2065 too. `command` is IGNORED for kind "openai-compat": there is no local executable to launch, so GR2009's PATH probe is skipped for it (§9)
-      "contextTokens": null,          // OPTIONAL, openai-compat ONLY. REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader
+      "contextTokens": null,          // OPTIONAL, openai-compat AND claude gateway blocks (#782). REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader. On a claude GATEWAY block (one with `baseUrl`, §9.10) it is the backend's PER-SLOT window (llama-server -c C -np N gives each slot C/N), set as CLAUDE_CODE_MAX_CONTEXT_TOKENS and checked by the preflight against the backend's per-slot n_ctx; < 1 there is GR2084. On a claude block WITHOUT `baseUrl` it is still GR2065
       "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
       "wire": null,                    // OPTIONAL, openai-compat ONLY. A verbatim request-body passthrough map merged into the outgoing JSON, e.g. { "options": { "num_ctx": 32768 } } — the HTTP sibling of `env`. A key that shadows a harness-owned request field (model/messages/stream/stream_options/tools/max_tokens) is GR2065, never a runtime throw
       "approvalMode": null,            // OPTIONAL, cursor ONLY (§9.9, issue #767). "force" | "auto-review" | "none"; absent = "force". How Cursor approves tool calls in print mode: "force" → --force (Run Everything; refused at launch where a team admin disabled it — a runner-configuration halt), "auto-review" → --auto-review (Cursor's classifier may refuse individual commands), "none" → no approval flag (shell refused unless extraArgs carries "--sandbox", "enabled"). Block-level only. Unknown or non-string value, the key on a non-cursor block, or guardrailOverrides.approvalMode = GR2081; an approval flag (--force/-f/--yolo/--auto-review) in extraArgs of a cursor block = GR2082
+      "baseUrl": null,                 // OPTIONAL, claude ONLY (§9.10, issue #782). Makes the block a claude GATEWAY block: an Anthropic-compatible gateway (e.g. LiteLLM at "http://127.0.0.1:4000") that the child reaches as ANTHROPIC_BASE_URL. Absolute http/https, no userinfo, no query, and NOT ending in /v1 or /v1/messages (Claude Code appends /v1/messages); a trailing "/" is normalized. A gateway block REQUIRES `model`. Absent = the block launches byte-identically to a pre-#782 claude block. Block-level only. Every shape fault, the key on a non-claude block, or under guardrailOverrides = GR2084
+      "authTokenEnv": null,            // OPTIONAL, claude gateway blocks ONLY (§9.10, #782). The NAME of an env var whose value becomes the child's ANTHROPIC_AUTH_TOKEN — NEVER the token itself ([A-Za-z_][A-Za-z0-9_]*, GR2084). Absent = the fixed non-secret placeholder "guardrails-gateway-no-auth" is sent. Unset or empty at run start = a preflight halt naming the variable
+      "backendModel": null,            // OPTIONAL, claude gateway blocks ONLY (§9.10, #782). What the backend behind the gateway must have LOADED, e.g. "qwen3.6-35b-a3b": matched by the pre-DAG preflight against the backend's own report (alias, else model_path basename), a mismatch halts. At least 4 characters (GR2084). Absent = no expectation; the resolved identity is still recorded, or "unverified"
       "engine": null,                  // OPTIONAL, openai-compat ONLY. "ollama" | "llama.cpp" | "mlx" | "lm-studio" | "vllm" | "apple-fm" — OPERATOR-FACING TEXT ONLY (§9.8): selects the model-not-found remedy sentence and nothing else, never a code path or a request field. Absent = a neutral remedy sentence naming the model and endpoint
       "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
       "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
@@ -170,6 +173,19 @@ classification lines in the breakdown report** — a single-model user's breakdo
 byte-identical to one produced before tiering existed (#201 Invariant 7). Registering providers
 is a deliberate, separate act by the human, not something a breakdown infers.
 
+**The gateway keys (`baseUrl` / `authTokenEnv` / `backendModel`, plus `contextTokens` on a claude
+block) are operator configuration, never breakdown output (#782, SSOT §9.10).** Emit them `null`
+or omit them. When the plan folder's existing `guardrails.json` already has a gateway block (a
+`kind: "claude"` block with a `baseUrl`), keep it byte-for-byte: it points at the operator's own
+LiteLLM and local model, and a breakdown has no way to know which backend is loaded. Two things
+change for a task that runs on such a block:
+- Don't put `ANTHROPIC_*`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `CLAUDE_CONFIG_DIR` or the model-alias variables in its
+  `env`, and don't put `--settings`, `--model` or `--fallback-model` in its `extraArgs` or
+  `guardrailOverrides.extraArgs`. The harness owns them (`GR2084`).
+- Don't pin a Claude model name (`action.model: "sonnet"`, anything containing `claude`) to a task
+  that dispatches to a gateway block. It reaches the gateway's model list, not Claude (`GR2085`).
+
 **Multi-task plans (≥2 tasks joined by `dependsOn`) should default-include read-only git
 inspection (#252).** Add `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`,
 `Bash(git status*)` to the default alongside the stack-specific entries, so a downstream
@@ -183,7 +199,10 @@ burning turns on rejected `git log`/`git diff` attempts and falling back to broa
 already allow it. Author the read-only default because it is the whole grant on a clean
 box or in CI, not because it blocks anything — and never rely on a state-mutating verb
 being absent. A single-task plan has nothing yet to inspect — omit the git entries
-there.
+there. **The exception is a claude gateway block (`baseUrl`, #782, SSOT §9.10).** Its child
+runs with an isolated, empty `CLAUDE_CONFIG_DIR`, so the operator's `~/.claude/settings.json`
+is not read, and a project's own permissions may not apply without recorded workspace trust.
+Treat `allowedTools` as the whole grant there, on every machine, just as on a clean box.
 
 ## `tasks/<id>/task.json`
 

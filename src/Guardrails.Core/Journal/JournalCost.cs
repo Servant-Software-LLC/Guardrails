@@ -46,4 +46,58 @@ public static class JournalCost
 
         return any ? sum : null;
     }
+
+    /// <summary>
+    /// The token usage of every dispatch that went through a claude gateway (#782 §4) — task attempts whose
+    /// provenance names a gateway, plus overhead gateway dispatches — or null when none reported any. This is the
+    /// gateway half of a run's spend, which <see cref="Total"/> cannot carry because a gateway dispatch has no cost;
+    /// rendered beside it by <see cref="SpendFormat.Total"/>. Judge spend stays out, exactly as it stays out of
+    /// <see cref="Total"/>.
+    /// </summary>
+    public static long? GatewayTokens(JournalDocument document)
+    {
+        long sum = 0;
+        bool any = false;
+
+        foreach (TaskJournalEntry entry in document.Tasks.Values)
+        {
+            foreach (AttemptRecord attempt in entry.Attempts)
+            {
+                if (attempt.Provenance?.Gateway is not null && attempt.Usage is { } usage)
+                {
+                    sum += (long)usage.InputTokens + usage.OutputTokens;
+                    any = true;
+                }
+            }
+        }
+
+        foreach (OverheadGatewayDispatch dispatch in document.OverheadGatewayDispatches ?? [])
+        {
+            if (dispatch.Usage is { } usage)
+            {
+                sum += (long)usage.InputTokens + usage.OutputTokens;
+                any = true;
+            }
+        }
+
+        return any ? sum : null;
+    }
+
+    /// <summary>
+    /// The run's spend as ONE rendered figure (#782 §4): <see cref="Total"/> and <see cref="GatewayTokens"/> kept in
+    /// their own units by <see cref="SpendFormat.Total"/>, or null when neither has anything to report.
+    /// </summary>
+    public static string? Render(JournalDocument document) =>
+        SpendFormat.Total(
+            Total(document), GatewayTokens(document), gatewayDispatchesWithoutUsage: GatewayDispatchesWithoutUsage(document));
+
+    /// <summary>
+    /// How many gateway dispatches — task attempts whose provenance names a gateway, plus overhead gateway dispatches
+    /// — reported NO token usage (#782 §4). Their spend was never measured, and <see cref="Render"/> says so rather
+    /// than letting them vanish from the total (or, on a gateway-only run, printing no total line at all).
+    /// </summary>
+    public static int GatewayDispatchesWithoutUsage(JournalDocument document) =>
+        document.Tasks.Values.SelectMany(entry => entry.Attempts)
+            .Count(attempt => attempt.Provenance?.Gateway is not null && attempt.Usage is null)
+        + (document.OverheadGatewayDispatches ?? []).Count(dispatch => dispatch.Usage is null);
 }

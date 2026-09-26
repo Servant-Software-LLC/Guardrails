@@ -92,7 +92,7 @@ public sealed class ProcessRunner
             startInfo.ArgumentList.Add(argument);
         }
 
-        ApplyEnvironment(startInfo.Environment, environment);
+        ApplyEnvironment(startInfo.Environment, environment, command.ScrubInheritedEnvironment);
 
         using var process = new Process { StartInfo = startInfo };
 
@@ -161,6 +161,13 @@ public sealed class ProcessRunner
     /// </summary>
     private static readonly StringComparison EnvNameComparison =
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>
+    /// The platform's environment-variable NAME comparison (case-insensitive on Windows, ordinal elsewhere), exposed
+    /// for a <see cref="ResolvedCommand.ScrubInheritedEnvironment"/> predicate so a scrub agrees with the OS about
+    /// which inherited names it matches (#782).
+    /// </summary>
+    public static StringComparison EnvironmentNameComparison => EnvNameComparison;
 
     /// <summary><see cref="EnvNameComparison"/> as a comparer, for the declared-key set.</summary>
     private static readonly StringComparer EnvNameComparer =
@@ -275,15 +282,22 @@ public sealed class ProcessRunner
     /// </summary>
     /// <param name="childEnvironment">The child's environment block — inherited copy, mutated in place.</param>
     /// <param name="overlay">The harness's complete, authoritative <c>GUARDRAILS_*</c> declaration (plus any non-harness vars the caller wants set).</param>
+    /// <param name="scrubInherited">
+    /// Optional (#782): every INHERITED name it matches is removed before the overlay is applied, whether or not
+    /// the overlay then re-sets it — so an owned value always comes from the overlay, never from the harness's own
+    /// environment. Null = no scrub beyond the hermetic <c>GUARDRAILS_*</c> sweep.
+    /// </param>
     internal static void ApplyEnvironment(
         IDictionary<string, string?> childEnvironment,
-        IReadOnlyDictionary<string, string> overlay)
+        IReadOnlyDictionary<string, string> overlay,
+        Func<string, bool>? scrubInherited = null)
     {
         var declared = new HashSet<string>(overlay.Keys, EnvNameComparer);
 
         // Materialize first: Keys is a live view over the dictionary being mutated.
         List<string> inheritedButUndeclared = childEnvironment.Keys
-            .Where(name => name.StartsWith(HarnessEnvPrefix, EnvNameComparison) && !declared.Contains(name))
+            .Where(name => (name.StartsWith(HarnessEnvPrefix, EnvNameComparison) && !declared.Contains(name))
+                           || (scrubInherited is not null && scrubInherited(name)))
             .ToList();
 
         foreach (string name in inheritedButUndeclared)

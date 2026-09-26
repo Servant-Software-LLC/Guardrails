@@ -144,6 +144,19 @@ public static class Revalidate
             // Reuse the exact run-wiring for the executor (state init, journal load+resume, interpreter
             // map, prompt-runner registry, triage). Serial path: cwd = the user's checkout where the fix
             // lives. Worktree path (#456): cwd = the plan branch's tree, supplied as the override.
+            // #782 review (sec W2): a judge dispatched through a claude gateway gets the same preflight a run gives it.
+            if (await ClaudeGatewayPreflight
+                    .PrepareStandaloneAsync(
+                        plan, output, worktreeTarget is not null, cancellationToken,
+                        // The plan branch's tree is where a committed .claude/settings*.json lives in worktree mode.
+                        worktreeTarget is not null ? [worktreeTarget.Path] : null)
+                    .ConfigureAwait(false) is not { } gatewayPlan)
+            {
+                output.WriteLine("\nThe claude gateway preflight failed — nothing was revalidated.");
+                return ExitCodes.HarnessError;
+            }
+
+            plan = gatewayPlan;
             (TaskExecutor executor, _) = SchedulerFactory.CreateExecutor(
                 plan, new ProcessRunner(), new PathExecutableProbe(), new ConsoleRunObserver(output));
 

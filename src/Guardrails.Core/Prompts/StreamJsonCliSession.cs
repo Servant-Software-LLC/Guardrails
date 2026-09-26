@@ -29,6 +29,27 @@ internal sealed record StreamJsonCliDialect
     /// limit to wait out — and appends the remedy to the summary. Null = the CLI has no such refusal (Claude).
     /// </summary>
     public Func<string, string?>? ConfigurationRefusal { get; init; }
+
+    /// <summary>
+    /// True when the CLI's own <c>total_cost_usd</c> is FICTION for this dispatch and must never be reported (#782
+    /// §4): a claude gateway prices each call from Anthropic's list for a model that is not what served it. The
+    /// session nulls the cost at the source — before the summary is built — so no consumer ever sees a number.
+    /// Token usage is kept.
+    /// </summary>
+    public bool CostIsFiction { get; init; }
+
+    /// <summary>
+    /// Appended to every summary the session produces (#782 §3.3: <c>" (via gateway &lt;baseUrl&gt;)"</c>), so a
+    /// failure, a pause notice or a needs-human line names the gateway it went through. Null = nothing appended.
+    /// </summary>
+    public string? SummarySuffix { get; init; }
+
+    /// <summary>
+    /// A line written as the FIRST line of the stream log, before any child output (#782 §1.1: which owned or
+    /// scrubbed names the gateway dropped from the invocation's settings). Never fed to the parser, the scanner or
+    /// the transcript. Null = no preamble — the stream log is byte-for-byte the child's output.
+    /// </summary>
+    public string? StreamLogPreamble { get; init; }
 }
 
 /// <summary>
@@ -90,6 +111,27 @@ internal static class StreamJsonCliSession
         CancellationToken cancellationToken,
         Action<string>? lineObserver = null)
     {
+        PromptResult result = await RunCoreAsync(
+                processRunner, command, environment, standardInput, invocation, dialect, denialScanner,
+                cancellationToken, lineObserver)
+            .ConfigureAwait(false);
+
+        // #782 §3.3: ONE place appends the gateway suffix, so every summary shape below — stall, fail-fast, launch
+        // failure, success — names the gateway, and a new shape cannot forget to.
+        return dialect.SummarySuffix is { } suffix ? result with { Summary = result.Summary + suffix } : result;
+    }
+
+    private static async Task<PromptResult> RunCoreAsync(
+        ProcessRunner processRunner,
+        ResolvedCommand command,
+        IReadOnlyDictionary<string, string> environment,
+        string? standardInput,
+        PromptInvocation invocation,
+        StreamJsonCliDialect dialect,
+        IToolDenialScanner? denialScanner,
+        CancellationToken cancellationToken,
+        Action<string>? lineObserver)
+    {
         var parser = new ClaudeStreamParser();
 
         // Mine permission-wall signals from the same stream lines (issues #86 / #104 / #773): a tool call
@@ -121,6 +163,10 @@ internal static class StreamJsonCliSession
         {
             Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
             streamWriter = new StreamWriter(invocation.StreamLogPath, append: false, Utf8NoBom) { AutoFlush = true };
+            if (dialect.StreamLogPreamble is { } preamble)
+            {
+                streamWriter.WriteLine(preamble);
+            }
         }
 
         // transcript.md is rendered incrementally from the same lines via StreamingWriter, which
@@ -263,6 +309,12 @@ internal static class StreamJsonCliSession
 
             ClaudeResult result = parser.Build();
 
+            // #782 §4: a fictional cost is nulled HERE, at the source, before any summary or result reads it.
+            if (dialect.CostIsFiction)
+            {
+                result = result with { CostUsd = null };
+            }
+
             // #504: a stall abort, re-derived AFTER the process returned (the flag's write is final by
             // now), and reported as its own kind. `!result.HasResult` keeps it from ever DISCARDING a
             // verdict — if the child raced the kill and produced a terminal result anyway, that result
@@ -324,7 +376,7 @@ internal static class StreamJsonCliSession
             }
 
             bool completed = process.Succeeded && result.HasResult;
-            string summary = BuildSummary(process, result, dialect.Label);
+            string summary = BuildSummary(process, result, dialect.Label, dialect.CostIsFiction);
             PromptFailureKind failureKind = ClassifyFailure(process, result);
 
             // #767: the CLI's own configuration refused the run (Cursor: "your team administrator has disabled
@@ -614,7 +666,7 @@ internal static class StreamJsonCliSession
         return lines;
     }
 
-    private static string BuildSummary(ProcessResult process, ClaudeResult result, string label)
+    private static string BuildSummary(ProcessResult process, ClaudeResult result, string label, bool costIsFiction = false)
     {
         if (process.TimedOut)
         {
@@ -649,7 +701,13 @@ internal static class StreamJsonCliSession
             return $"{label} produced no terminal result message";
         }
 
-        string cost = result.CostUsd is { } c ? $", cost ${c:0.0000}" : string.Empty;
+        // #782 review (corr W1): a gateway dispatch has no cost to show, so its token usage stands in — every line that
+        // quotes this summary (a judge, a failed action, a needs-human or overhead line) then still shows its spend.
+        string cost = costIsFiction
+            ? result.Usage is { } usage
+                ? $", {Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)}"
+                : ", token usage not reported"
+            : result.CostUsd is { } c ? $", cost ${c:0.0000}" : string.Empty;
         string turns = result.NumTurns is { } t ? $", {t} turn(s)" : string.Empty;
         return result.IsError
             ? $"{label} reported is_error{cost}{turns}"

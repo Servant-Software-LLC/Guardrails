@@ -197,6 +197,10 @@ public sealed class RunEventStream : IRunObserver
             Attempt = record.Attempt,
             Outcome = Journal.JournalJson.OutcomeToken(record.Outcome),
             CostUsd = record.CostUsd,
+            // #782 §4: a gateway attempt has no cost, so its token usage and gateway ride beside it — a consumer
+            // must never read the absent cost as "free".
+            Tokens = record.Usage is { } usage ? (long)usage.InputTokens + usage.OutputTokens : null,
+            Gateway = record.Provenance?.Gateway,
             Turns = record.Turns,
             Model = record.Provenance?.Model,
             Tier = record.Provenance?.Tier,
@@ -514,6 +518,15 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.CostUsd"/>.</summary>
         public decimal? CostUsd { get; init; }
+
+        /// <summary>
+        /// <c>attempt-finished</c>: the attempt's input plus output tokens (<see cref="Journal.AttemptRecord.Usage"/>),
+        /// when reported. For a gateway attempt (#782 §4) this is the spend figure, since its cost is null.
+        /// </summary>
+        public long? Tokens { get; init; }
+
+        /// <summary><c>attempt-finished</c>: the claude gateway the attempt went through (#782), when it did.</summary>
+        public string? Gateway { get; init; }
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.Turns"/>.</summary>
         public int? Turns { get; init; }
