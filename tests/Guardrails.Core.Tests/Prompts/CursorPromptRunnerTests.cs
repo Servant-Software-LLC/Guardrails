@@ -825,6 +825,371 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.Equal(1, transcript.Split("REFUSED:").Length - 1);
     }
 
+    // ── #778: a call that STARTS and never COMPLETES ─────────────────────────────────────────────────
+
+    /// <summary>The measured T1 command (#776): held by auto-review for an approval print mode cannot give.</summary>
+    private const string AbandonedCommit =
+        "git commit --trailer \"Co-authored-by: Cursor <cursoragent@cursor.com>\" -m probe-commit";
+
+    /// <summary>
+    /// The recorded shape (#776 T1): the commit emits <c>started</c> and never <c>completed</c>, no <c>rejected</c>
+    /// anywhere, and the session still ends <c>result/success</c>, exit 0. That is a REFUSAL with the abandoned
+    /// reason, named in the summary, RefusedToolCalls and the wall lists. For an ACTION it does NOT make the session
+    /// every-shell-refused even as the only shell call: under auto-review Cursor habitually tries a <c>git commit</c>
+    /// the harness never needs, and a lone abandoned commit must not turn an ordinary guardrail failure into a
+    /// no-retry halt. (A judge fails closed — the next test.)
+    /// </summary>
+    [Fact]
+    public async Task AbandonedShellCall_AtTheTerminalResult_IsARefusal_ButNotEveryShellRefused_ForAnAction()
+    {
+        Canned(FixtureLines("abandoned-commit-only-shell.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.Equal(
+            new ToolRefusal("shell", AbandonedCommit, CursorToolCallScanner.AbandonedReason),
+            Assert.Single(result.RefusedToolCalls));
+        Assert.Equal(
+            "abandoned: started but never completed (awaiting an approval Cursor print mode cannot give)",
+            CursorToolCallScanner.AbandonedReason);
+
+        Assert.False(result.AllShellRefused);
+        Assert.Null(result.RunnerConfigurationRemedy);
+        Assert.Contains(
+            $"1 tool call(s) refused by Cursor: shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}",
+            result.Summary, StringComparison.Ordinal);
+
+        // An ACTION's wall lists never carry an abandoned target: the same abandoned commit on every attempt must not
+        // read as a repeated permission wall.
+        Assert.Empty(result.RefusedCommands);
+        Assert.Empty(result.BlockedWritePaths);
+    }
+
+    /// <summary>
+    /// The same session in the JUDGE role fails closed, exactly as a rejected-only session does: a verifier that ran
+    /// none of its checks certifies nothing, however they were stopped.
+    /// </summary>
+    [Fact]
+    public async Task AbandonedShellCall_AsTheOnlyShellCall_InAJudge_FailsClosed()
+    {
+        Canned(FixtureLines("abandoned-commit-only-shell.jsonl"), exitCode: 0);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { Role = PromptRole.Guardrail };
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview).RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, result.FailureKind);
+        Assert.True(result.AllShellRefused);
+        Assert.Contains("(1 shell call(s), none ran)", result.Summary, StringComparison.Ordinal);
+        Assert.Contains($"shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}", result.RunnerConfigurationRemedy, StringComparison.Ordinal);
+
+        // A JUDGE keeps the abandoned target in its wall lists.
+        Assert.Equal([AbandonedCommit], result.RefusedCommands);
+        Assert.Equal([AbandonedCommit], result.BlockedWritePaths);
+    }
+
+    /// <summary>
+    /// The live T1 session in full: restore, build, test, edit, add and log RAN; the commit was abandoned. The
+    /// session COMPLETES — not every shell call was refused, so the task's guardrails decide — and the abandoned
+    /// commit is named with its reason in the summary and RefusedToolCalls — but, for an action, kept out of the wall
+    /// lists.
+    /// </summary>
+    [Fact]
+    public async Task MixedSession_WithOneAbandonedCommit_Completes_NamingIt_AndTheGuardrailsDecide()
+    {
+        Canned(FixtureLines("abandoned-commit-mixed.jsonl"), exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Completed, result.Summary);
+        Assert.Equal(PromptFailureKind.None, result.FailureKind);
+        Assert.False(result.AllShellRefused);
+        Assert.Null(result.RunnerConfigurationRemedy);
+        Assert.Equal(
+            new ToolRefusal("shell", AbandonedCommit, CursorToolCallScanner.AbandonedReason),
+            Assert.Single(result.RefusedToolCalls));
+        Assert.Contains(
+            $"1 tool call(s) refused by Cursor: shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}",
+            result.Summary, StringComparison.Ordinal);
+        Assert.Empty(result.RefusedCommands);
+        Assert.Empty(result.BlockedWritePaths);
+
+        // The retry feedback carries it like any other refusal.
+        Assert.Contains(
+            $"- shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}",
+            RetryPolicy.ForRunnerRefusals(result.RefusedToolCalls), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The transcript names the abandoned call REFUSED — the call itself, since its <c>started</c> line is far
+    /// above — before the final message, and marks nothing else refused.
+    /// </summary>
+    [Fact]
+    public async Task Transcript_NamesAnAbandonedCallRefused_BeforeTheFinalMessage()
+    {
+        Canned(FixtureLines("abandoned-commit-mixed.jsonl"), exitCode: 0);
+        string transcriptPath = Path.Combine(_root, "t.md");
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with { TranscriptLogPath = transcriptPath };
+
+        await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        string transcript = File.ReadAllText(transcriptPath);
+        int refused = transcript.IndexOf(
+            $"⎿ REFUSED: shell `{AbandonedCommit}` — {CursorToolCallScanner.AbandonedReason}", StringComparison.Ordinal);
+        Assert.True(refused >= 0, transcript);
+        Assert.Equal(1, transcript.Split("REFUSED:").Length - 1);
+        Assert.True(refused < transcript.IndexOf("⏺ Restore, build, test", StringComparison.Ordinal), transcript);
+    }
+
+    /// <summary>Batch and streaming transcripts stay byte-identical with the new cross-line state.</summary>
+    [Theory]
+    [InlineData("abandoned-commit-mixed.jsonl")]
+    [InlineData("abandoned-commit-only-shell.jsonl")]
+    [InlineData("every-shell-rejected.jsonl")]
+    public void Transcript_StreamingEqualsBatch_WithAbandonedCalls(string fixture)
+    {
+        string[] lines = FixtureLines(fixture);
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+        foreach (string line in lines)
+        {
+            streaming.Feed(line);
+        }
+
+        streaming.Complete();
+
+        Assert.Equal(ClaudeTranscriptRenderer.Render(string.Join("\n", lines)), buffer.ToString());
+    }
+
+    /// <summary>
+    /// The rule for a session the harness KILLED or that crashed (no terminal result): it already failed on its
+    /// own, and keeps that failure kind. Its in-flight call is carried as InFlightToolCalls and named in the summary
+    /// as still running — but it is NOT a refusal: not in RefusedToolCalls (whose retry feedback says "the same call
+    /// will be refused again"), the wall lists or the shell accounting. A command the harness killed was not refused.
+    /// </summary>
+    [Fact]
+    public async Task NoTerminalResult_WithACallInFlight_KeepsItsFailureKind_AndOnlyNamesTheCall()
+    {
+        Canned([InitLine, InFlightShellLine], exitCode: 0);
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview)
+            .RunAsync(Invocation(new PromptRunnerSettings()), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.Error, result.FailureKind);
+        Assert.StartsWith("cursor produced no terminal result message", result.Summary, StringComparison.Ordinal);
+        Assert.Empty(result.RefusedToolCalls);
+        Assert.Equal(new InFlightToolCall("shell", "dotnet test"), Assert.Single(result.InFlightToolCalls));
+        Assert.Contains(
+            "1 tool call(s) still running when the session was stopped (not refused): shell `dotnet test`",
+            result.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("refused by Cursor", result.Summary, StringComparison.Ordinal);
+        Assert.False(result.AllShellRefused);
+        Assert.Null(result.RunnerConfigurationRemedy);
+        Assert.Empty(result.RefusedCommands);
+        Assert.Empty(result.BlockedWritePaths);
+    }
+
+    /// <summary>
+    /// The same rule when the harness's stall watchdog kills the session mid-call: it stays STALLED. Asserts the
+    /// decision — the failure kind — with the timeout far beyond the stall bound.
+    /// </summary>
+    [Fact]
+    public async Task StalledSession_WithACallInFlight_StaysStalled()
+    {
+        Canned([InitLine, InFlightShellLine], exitCode: 0, hang: true);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
+        {
+            StallBound = TimeSpan.FromSeconds(2),
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+
+        PromptResult result = await Runner(CursorApprovalMode.AutoReview).RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Completed);
+        Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
+        Assert.False(result.AllShellRefused);
+        Assert.Empty(result.RefusedToolCalls);
+        Assert.Equal(new InFlightToolCall("shell", "dotnet test"), Assert.Single(result.InFlightToolCalls));
+        Assert.Empty(result.RefusedCommands);
+    }
+
+    /// <summary>
+    /// The feedback a TIMED-OUT action's retry reads: its in-flight <c>dotnet test</c> is under the neutral heading,
+    /// never under "refused this attempt", and nothing tells the agent it will be refused again or to escalate.
+    /// </summary>
+    [Fact]
+    public void TimedOutAction_FeedbackNamesTheInFlightCallNeutrally_NeverAsARefusal()
+    {
+        ActionRun run = ActionRun.FromPrompt(
+            new PromptResult
+            {
+                Completed = false,
+                IsError = true,
+                FailureKind = PromptFailureKind.Timeout,
+                Summary = "cursor timed out; 1 tool call(s) still running when the session was stopped (not refused): shell `dotnet test`",
+                InFlightToolCalls = [new InFlightToolCall("shell", "dotnet test")]
+            },
+            needsHuman: null);
+
+        Assert.Empty(run.RefusedToolCalls);
+        Assert.Equal(new InFlightToolCall("shell", "dotnet test"), Assert.Single(run.InFlightToolCalls));
+        string feedback = run.FailureFeedback!;
+        Assert.Contains(RetryPolicy.InFlightCallsHeading, feedback, StringComparison.Ordinal);
+        Assert.Contains("- shell `dotnet test`", feedback, StringComparison.Ordinal);
+        Assert.DoesNotContain("refused this attempt", feedback, StringComparison.Ordinal);
+        Assert.DoesNotContain("will be refused again", feedback, StringComparison.Ordinal);
+        Assert.DoesNotContain("needsHuman", feedback, StringComparison.Ordinal);
+    }
+
+    /// <summary>The transcript of a cut-off session shows the call as still running, never as REFUSED.</summary>
+    [Fact]
+    public void Transcript_OfACutOffSession_ShowsTheCallStillRunning_NotRefused()
+    {
+        string transcript = ClaudeTranscriptRenderer.Render(InitLine + "\n" + InFlightShellLine + "\n");
+
+        Assert.Contains("⎿ STILL RUNNING when the session ended (not refused): shell `dotnet test`", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFUSED", transcript, StringComparison.Ordinal);
+    }
+
+    private const string InFlightShellLine =
+        """{"type":"tool_call","subtype":"started","call_id":"call-9-0\nfc_9_0","tool_call":{"shellToolCall":{"args":{"command":"dotnet test"}},"toolCallId":"t-9"},"session_id":"s-1"}""";
+
+    /// <summary>
+    /// Regression (#778): every EXISTING recorded stream — the #773 refusal fixtures and the live probes, all of
+    /// whose <c>started</c> events complete — yields no abandoned refusal, and exactly the refusals it did before.
+    /// </summary>
+    [Theory]
+    [InlineData("cursor-refusals", "every-shell-rejected.jsonl", 3)]
+    [InlineData("cursor-refusals", "edits-ok-one-shell-rejected.jsonl", 1)]
+    [InlineData("cursor-refusals", "mixed-shell.jsonl", 1)]
+    [InlineData("cursor-refusals", "consecutive-rejections.jsonl", 3)]
+    [InlineData("cursor-live", "probe3-file-pointer-success.jsonl", 0)]
+    [InlineData("cursor-live", "probe5-stdin-only-success.jsonl", 0)]
+    public void ExistingStreams_WhoseCallsAllComplete_YieldNoAbandonedRefusal(string folder, string fixture, int refusals)
+    {
+        string path = TestPaths.Fixture(Path.Combine(folder, fixture));
+        var scanner = new CursorToolCallScanner();
+        foreach (string line in File.ReadLines(path))
+        {
+            scanner.Feed(line);
+        }
+
+        scanner.EndOfStream();
+
+        Assert.Equal(refusals, scanner.Refusals.Count);
+        Assert.DoesNotContain(scanner.Refusals, r => r.Reason.StartsWith("abandoned:", StringComparison.Ordinal));
+        Assert.DoesNotContain("abandoned:", ClaudeTranscriptRenderer.Render(File.ReadAllText(path)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Scanner_PairsByTheExactCallId_NewlineIncluded()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed(Started("a\\nb", "git status"));
+        scanner.Feed(Completed("a\\nb", "git status"));
+        scanner.Feed(Started("c\\nd", "git commit -m x"));
+        scanner.Feed(Completed("c\\nd ", "git commit -m x")); // a different id: does not close c\nd
+        Assert.Empty(scanner.Refusals);
+
+        scanner.Feed(SuccessResultLine);
+
+        Assert.Equal(new ToolRefusal("shell", "git commit -m x", CursorToolCallScanner.AbandonedReason), Assert.Single(scanner.Refusals));
+        Assert.Equal(1, scanner.ShellCallsAbandoned);
+        Assert.Equal(0, scanner.ShellCallsRefused);
+        Assert.Equal(2, scanner.ShellCallsRan);
+    }
+
+    /// <summary>
+    /// With NO top-level <c>call_id</c>, the pair is matched by the <c>toolCallId</c> the measured streams carry
+    /// beside the tool (or, defensively, inside its args) — on either side of the pair — so the call is still
+    /// tracked, closed, or abandoned.
+    /// </summary>
+    [Fact]
+    public void Scanner_WithoutACallId_PairsByTheToolCallId()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed("""{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"dotnet build"}},"toolCallId":"tc-1"}}""");
+        scanner.Feed("""{"type":"tool_call","subtype":"completed","call_id":"c-1","tool_call":{"shellToolCall":{"args":{"command":"dotnet build"},"result":{"success":{"exitCode":0}}},"toolCallId":"tc-1"}}""");
+        scanner.Feed("""{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"git commit -m x"}},"toolCallId":"tc-2"}}""");
+        scanner.Feed("""{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"git push","toolCallId":"tc-3"}}}}""");
+        scanner.Feed("""{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"args":{"command":"git push","toolCallId":"tc-3"},"result":{"success":{"exitCode":0}}}}}""");
+        scanner.Feed(SuccessResultLine);
+
+        Assert.Equal(new ToolRefusal("shell", "git commit -m x", CursorToolCallScanner.AbandonedReason), Assert.Single(scanner.Refusals));
+        Assert.Equal(2, scanner.ShellCallsRan);
+        Assert.Equal(1, scanner.ShellCallsAbandoned);
+    }
+
+    /// <summary>A started event with no id at all cannot be paired, so it is never reported abandoned or in flight.</summary>
+    [Fact]
+    public void Scanner_AStartedEventWithNoIdAtAll_IsNotTracked()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed("""{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"git commit -m x"}}}}""");
+        scanner.Feed(SuccessResultLine);
+        scanner.EndOfStream();
+
+        Assert.Empty(scanner.Refusals);
+        Assert.Empty(scanner.InFlightCalls);
+    }
+
+    /// <summary>
+    /// Abandoned calls are known only at the end, so they never feed the #452 counter (a live-streak bound — tripping
+    /// it after the terminal result would turn a finished session into an abort). A late completion of an abandoned
+    /// call is ignored, and EndOfStream after a result adds nothing twice.
+    /// </summary>
+    [Fact]
+    public void Scanner_AbandonedCalls_DoNotFeedTheFailFastCounter_AndAreReportedOnce()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed(Started("x", "rm -rf bin"));
+        scanner.Feed(Started("y", "dotnet test"));
+        scanner.Feed(SuccessResultLine);
+        scanner.Feed(Completed("x", "rm -rf bin"));
+        scanner.EndOfStream();
+        scanner.EndOfStream();
+
+        Assert.Equal(0, scanner.ConsecutiveDenials);
+        Assert.Equal(["rm -rf bin", "dotnet test"], scanner.Refusals.Select(r => r.Target));
+        Assert.Equal(2, scanner.ShellCallsAbandoned);
+        Assert.Equal(0, scanner.ShellCallsRefused);
+        Assert.Equal(0, scanner.ShellCallsRan);
+        Assert.False(scanner.EveryShellCallRefused, "the ACTION rule counts only explicit rejections");
+        Assert.True(scanner.EveryShellCallRefusedOrAbandoned, "the JUDGE rule counts abandoned calls too");
+    }
+
+    /// <summary>
+    /// An abandoned EDIT contributes its path — to the ABANDONED target lists (a judge's only), never to the lists
+    /// the session hands an action's permission-wall tracker.
+    /// </summary>
+    [Fact]
+    public void Scanner_AnAbandonedEdit_IsAnAbandonedWritePath_NotAnActionWallTarget()
+    {
+        var scanner = new CursorToolCallScanner();
+        scanner.Feed("""{"type":"tool_call","subtype":"started","call_id":"e1","tool_call":{"editToolCall":{"args":{"path":"/w/.claude/settings.json"}}}}""");
+        scanner.Feed(SuccessResultLine);
+
+        Assert.Empty(scanner.BlockedWritePaths);
+        Assert.Empty(scanner.RefusedCommands);
+        Assert.Equal(["/w/.claude/settings.json"], scanner.AbandonedBlockedWritePaths);
+        Assert.Empty(scanner.AbandonedCommands);
+        Assert.False(scanner.EveryShellCallRefused);
+    }
+
+    private static string Started(string callId, string command) =>
+        "{\"type\":\"tool_call\",\"subtype\":\"started\",\"call_id\":\"" + callId +
+        "\",\"tool_call\":{\"shellToolCall\":{\"args\":{\"command\":\"" + command + "\"}}}}";
+
+    private static string Completed(string callId, string command) =>
+        "{\"type\":\"tool_call\",\"subtype\":\"completed\",\"call_id\":\"" + callId +
+        "\",\"tool_call\":{\"shellToolCall\":{\"args\":{\"command\":\"" + command +
+        "\"},\"result\":{\"success\":{\"exitCode\":0},\"isBackground\":false}}}}";
+
     // ── #773: the scanner (pure) ─────────────────────────────────────────────────────────────────────
 
     [Fact]

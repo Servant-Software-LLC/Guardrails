@@ -1577,6 +1577,39 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// #778: the tool calls a session was still running when it was stopped with no result (a timeout, a stall, a
+    /// cancel, a crash). Deliberately NOT <see cref="ForRunnerRefusals"/>: nothing refused them, so the retry must not
+    /// be told they "will be refused again" or to escalate — a <c>dotnet test</c> the timeout cut short may simply
+    /// need more time. Empty when there are none.
+    /// </summary>
+    public static string ForInFlightCalls(IReadOnlyList<Prompts.InFlightToolCall> calls)
+    {
+        if (calls.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine(InFlightCallsHeading);
+        text.AppendLine();
+        foreach (Prompts.InFlightToolCall call in calls)
+        {
+            text.AppendLine($"- {call}");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The session was stopped while these were still running, so their results never came back. They");
+        text.AppendLine("were not refused — they may simply need more time. If one is slow, run it once rather than");
+        text.AppendLine("repeatedly, or narrow it (for example, a filtered test run).");
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForInFlightCalls"/> opens with (pinned by tests).</summary>
+    internal const string InFlightCallsHeading =
+        "## Calls still running when the session was stopped (not refused — they may simply need more time)";
+
+    /// <summary>
     /// #329: feedback for the OUTCOME-AWARE structural <c>.claude/</c>-wall halt (needs-human). #326
     /// settles a NON-converged attempt that carries a structural <c>.claude/</c> wall to
     /// <c>needs-human</c> on ONE attempt (the #104 fast-halt). When the non-convergence has a

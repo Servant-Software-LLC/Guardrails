@@ -354,6 +354,97 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         Assert.Contains("- shell `dotnet test` — refused by Cursor approval policy", feedback, StringComparison.Ordinal);
     }
 
+    // ── #778: an ABANDONED git commit is a refusal, but not an every-shell-refused halt for an action ────
+
+    /// <summary>
+    /// The recorded T1 shape — an edit that landed and the agent's own <c>git commit</c> abandoned by auto-review, the
+    /// only shell call — run through the REAL Cursor fold, and its guardrail FAILS on every attempt. This is an
+    /// ordinary guardrail failure: the task gets its FULL retry budget — no every-shell-refused halt on attempt 1, and
+    /// no repeated-permission-wall halt on attempt 2 although the same commit is abandoned every time (an action's
+    /// wall lists never carry abandoned targets). The runner writes a different state fragment each attempt (as a
+    /// converging agent changes something), so the #174 no-op escalation does not fire either. The abandoned commit
+    /// is still named in the feedback.
+    /// </summary>
+    [Fact]
+    public async Task ActionWithOnlyAnAbandonedCommit_WhoseGuardrailFails_IsRetried_NamingTheRefusal()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor, checkPasses: false);
+        PromptResult folded = FoldCursorFixture("abandoned-commit-only-shell.jsonl", PromptRole.Action);
+        Assert.True(folded.Completed, folded.Summary);
+        Assert.False(folded.AllShellRefused);
+        Assert.Empty(folded.BlockedWritePaths);
+        Assert.Empty(folded.RefusedCommands);
+        var runner = new ScriptedRunner(folded, varyEachAttempt: true);
+
+        RunReport report = await RunSerialAsync(plan, runner);
+
+        Assert.Equal(3, runner.Calls); // one attempt + defaultRetries 2: the whole budget
+        TaskResult result = report.Tasks.Single();
+        Assert.NotEqual(TaskOutcome.Succeeded, result.Outcome);
+        Assert.DoesNotContain("its runner could run no shell command", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("not retried", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("permission wall", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("no-op", result.Summary ?? string.Empty, StringComparison.Ordinal);
+
+        string firstFeedback = Directory
+            .GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .First();
+        string feedback = File.ReadAllText(firstFeedback);
+        Assert.DoesNotContain("its runner could run no shell command", feedback, StringComparison.Ordinal);
+        Assert.Contains("## Tool calls the runner refused this attempt", feedback, StringComparison.Ordinal);
+        Assert.Contains($"— {CursorToolCallScanner.AbandonedReason}", feedback, StringComparison.Ordinal);
+    }
+
+    /// <summary>The same stream folded for a JUDGE fails closed, and GuardrailRunner fails the guardrail.</summary>
+    [Fact]
+    public async Task JudgeWithOnlyAnAbandonedShellCall_FailsClosed()
+    {
+        PromptResult folded = FoldCursorFixture("abandoned-commit-only-shell.jsonl", PromptRole.Guardrail);
+        Assert.False(folded.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, folded.FailureKind);
+        Assert.True(folded.AllShellRefused);
+
+        (GuardrailRunner runner, TaskNode task, PlanDefinition plan, string logDir) = GuardrailFixture(new VerdictWritingJudge(folded));
+
+        GuardrailRunResult result = await RunGuardrailsAsync(runner, task, plan, logDir);
+
+        GuardrailResult verdict = result.Results.Single();
+        Assert.False(verdict.Passed, "a judge whose only shell call was abandoned certified the work");
+        Assert.StartsWith("judge could not run: cursor reported success, but EVERY shell command", verdict.Reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A recorded cursor-refusals stream folded exactly as <see cref="CursorPromptRunner"/> folds a live session
+    /// (the scanner fed every line, the echo check satisfied, then <c>Finish</c>) — without launching a process.
+    /// </summary>
+    private static PromptResult FoldCursorFixture(string fixture, PromptRole role)
+    {
+        const string prompt = "the composed prompt";
+        var echo = new CursorPromptRunner.PromptEchoCheck(prompt);
+        echo.Feed(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            type = "user",
+            message = new { role = "user", content = new[] { new { type = "text", text = prompt } } }
+        }));
+
+        var scanner = new CursorToolCallScanner();
+        foreach (string line in File.ReadLines(TestPaths.Fixture(Path.Combine("cursor-refusals", fixture))))
+        {
+            scanner.Feed(line);
+        }
+
+        var session = new PromptResult
+        {
+            Completed = true,
+            IsError = false,
+            Summary = "cursor completed",
+            BlockedWritePaths = scanner.BlockedWritePaths,
+            RefusedCommands = scanner.RefusedCommands
+        };
+        return CursorPromptRunner.Finish(session, echo, scanner, CursorApprovalMode.AutoReview, [], role);
+    }
+
     // ── PR #775 B1: a judge that could not run fails closed, whatever verdict it wrote ──────────────
 
     [Fact]
@@ -426,7 +517,11 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         Assert.Single(Directory.GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories));
 
     /// <summary>A prompt runner that returns the same result on every call, counting the calls.</summary>
-    private sealed class ScriptedRunner(PromptResult result) : IPromptRunner
+    /// <param name="varyEachAttempt">
+    /// Write a state fragment that differs per call to <c>GUARDRAILS_STATE_OUT</c> — an observable change each attempt,
+    /// as an agent that is converging makes, so the #174 no-op escalation (identical no-op attempts) cannot fire.
+    /// </param>
+    private sealed class ScriptedRunner(PromptResult result, bool varyEachAttempt = false) : IPromptRunner
     {
         public int Calls { get; private set; }
 
@@ -435,6 +530,12 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
         {
             Calls++;
+            if (varyEachAttempt && invocation.Environment.TryGetValue("GUARDRAILS_STATE_OUT", out string? stateOut))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(stateOut)!);
+                File.WriteAllText(stateOut, $$"""{ "attempt{{Calls}}": {{Calls}} }""");
+            }
+
             return Task.FromResult(result);
         }
     }

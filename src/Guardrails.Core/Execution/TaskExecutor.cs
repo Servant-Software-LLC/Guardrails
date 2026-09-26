@@ -1257,9 +1257,14 @@ public sealed class TaskExecutor : ITaskExecutor
 
             string feedback = action.FailureKind switch
             {
-                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber, salvageRef, fileWritesRolledBack),
-                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack, salvageRef),
-                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack, salvageRef),
+                // #778: the kind-specific texts do not carry the action's own feedback, so a call the session was
+                // still running when it was stopped is named here (neutrally — it was cut off, not refused).
+                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber, salvageRef, fileWritesRolledBack)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
+                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack, salvageRef)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
+                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack, salvageRef)
+                    + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
 

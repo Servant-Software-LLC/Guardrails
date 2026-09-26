@@ -52,7 +52,9 @@ namespace Guardrails.Core.Prompts;
 ///
 /// <para><b>Refused tool calls are read per call (#773).</b> Cursor's terminal result says <c>success</c> even
 /// when every shell call was refused, so the parser's verdict is not enough. <see cref="CursorToolCallScanner"/>
-/// reads each completed <c>tool_call</c>'s own result; its refusals feed
+/// reads each completed <c>tool_call</c>'s own result, and pairs <c>started</c>/<c>completed</c> by <c>call_id</c>
+/// so a call still open at the terminal result counts as an ABANDONED refusal (#778 — auto-review holding a command
+/// for an approval print mode cannot give); its refusals feed
 /// <see cref="PromptResult.BlockedWritePaths"/> / <see cref="PromptResult.RefusedCommands"/> (so
 /// <c>PermissionWallTracker</c> sees them exactly as it sees Claude's), the #452 consecutive-refusal counter
 /// (it trips <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/> when a caller sets that bound — no
@@ -214,10 +216,16 @@ public sealed class CursorPromptRunner : IPromptRunner
     /// <item>every refused tool call (#773) is carried as <see cref="PromptResult.RefusedToolCalls"/> and named in
     /// the summary, whatever the verdict — a refusal is never silent;</item>
     /// <item>a run that already FAILED keeps its own, more specific failure (bad <c>--model</c>, the
-    /// Run-Everything refusal, a stall, a timeout, the #452 abort);</item>
+    /// Run-Everything refusal, a stall, a timeout, the #452 abort) — calls it was still running are carried as
+    /// <see cref="PromptResult.InFlightToolCalls"/> and named as such (never as refusals), and never change its
+    /// failure kind (#778);</item>
     /// <item>the prompt-echo verdict (#764 — the guard against the false green);</item>
     /// <item><b>the #773 rule, outcome-aware:</b> a session that attempted shell and had EVERY shell call refused
     /// could run no build, no test and no git, however its terminal result reads, so it is marked
+    /// (for an ACTION only explicit <c>rejected</c> shell calls count — an ABANDONED call, #778, is named as a
+    /// refusal but neither reaches the action's wall lists nor makes the session every-shell-refused, since a lone abandoned <c>git commit</c> under
+    /// auto-review must not turn an ordinary guardrail failure into a no-retry halt; for a JUDGE abandoned calls
+    /// count too, so it still fails closed)
     /// <see cref="PromptResult.AllShellRefused"/> with a <see cref="PromptResult.RunnerConfigurationRemedy"/>
     /// (each refused command, its reason, the per-mode <c>approvalMode</c> advice). For an ACTION the run still
     /// COMPLETES: its edits may be right, so the task's guardrails decide (TaskExecutor's WEAK-4 rule — never halt
@@ -239,14 +247,37 @@ public sealed class CursorPromptRunner : IPromptRunner
         IReadOnlyList<string> extraArgs,
         PromptRole role = PromptRole.Action)
     {
+        // The stream is over (#778). With a terminal result, calls still open were abandoned — refusals; without
+        // one the run already failed on its own, and its open calls were merely cut off (InFlightCalls).
+        refusals.EndOfStream();
+
         string? displayModel = result.ObservedModel;
         string modelNote = displayModel is { Length: > 0 } ? $" (Cursor reported model: {displayModel})" : string.Empty;
         string refusalNote = refusals.Refusals.Count == 0 ? string.Empty : $"; {DescribeRefusals(refusals.Refusals)}";
-        result = result with { ObservedModel = null, RefusedToolCalls = refusals.Refusals };
+        // Wall targets are role-aware (#778): an ACTION's lists carry explicit rejections only (the shared session
+        // already took them from the scanner), so an abandoned `git commit` repeated on every attempt never reads as a
+        // repeated permission wall; a JUDGE's also carry its abandoned targets.
+        bool isJudge = role == PromptRole.Guardrail;
+        result = result with
+        {
+            ObservedModel = null,
+            RefusedToolCalls = refusals.Refusals,
+            InFlightToolCalls = refusals.InFlightCalls,
+            BlockedWritePaths = isJudge
+                ? Union(refusals.BlockedWritePaths, refusals.AbandonedBlockedWritePaths)
+                : refusals.BlockedWritePaths,
+            RefusedCommands = isJudge
+                ? Union(refusals.RefusedCommands, refusals.AbandonedCommands)
+                : refusals.RefusedCommands
+        };
 
         if (!result.Completed)
         {
-            return result with { Summary = result.Summary + refusalNote + modelNote };
+            string inFlightNote = refusals.InFlightCalls.Count == 0
+                ? string.Empty
+                : $"; {refusals.InFlightCalls.Count} tool call(s) still running when the session was stopped (not refused): " +
+                  string.Join("; ", refusals.InFlightCalls.Take(SummaryRefusalLimit));
+            return result with { Summary = result.Summary + refusalNote + inFlightNote + modelNote };
         }
 
         if (echo.Verdict is { } undelivered)
@@ -260,15 +291,16 @@ public sealed class CursorPromptRunner : IPromptRunner
             };
         }
 
-        if (refusals.EveryShellCallRefused)
+        if (isJudge ? refusals.EveryShellCallRefusedOrAbandoned : refusals.EveryShellCallRefused)
         {
+            int refusedShell = refusals.ShellCallsRefused + (isJudge ? refusals.ShellCallsAbandoned : 0);
             string remedy =
-                $"EVERY shell command it attempted was refused ({refusals.ShellCallsRefused} shell call(s), none ran); " +
+                $"EVERY shell command it attempted was refused ({refusedShell} shell call(s), none ran); " +
                 $"{DescribeRefusals(refusals.Refusals)} — {EveryShellRefusedRemedy(approvalMode, extraArgs)}";
 
             // A JUDGE fails closed: a verifier that could run none of its checks certifies nothing, whatever
             // verdict file it wrote (the PR #775 B1 false green).
-            if (role == PromptRole.Guardrail)
+            if (isJudge)
             {
                 return result with
                 {
@@ -294,6 +326,9 @@ public sealed class CursorPromptRunner : IPromptRunner
 
         return result with { Summary = result.Summary + refusalNote + modelNote };
     }
+
+    private static IReadOnlyList<string> Union(IReadOnlyList<string> first, IReadOnlyList<string> second) =>
+        second.Count == 0 ? first : first.Concat(second).Distinct(StringComparer.Ordinal).ToList();
 
     /// <summary>
     /// The refusals, named: <c>2 tool call(s) refused by Cursor: shell `git status` — refused by …; …</c>, the
