@@ -5422,7 +5422,8 @@ inert hook. See §9.4 for the mechanism this condition gates.
   never `0`** (plan 28 §11 finding 3) — `0` would claim a measurement the runner never took, and a
   costless local provider must be distinguishable from one that billed nothing this attempt.
   **A claude gateway dispatch (#782) reports `null` by design, and its token usage renders in its place:**
-  `Total prompt cost: $1.8400 + 310.5k tok (gateway)` keeps the two units apart (§9.10.4).
+  `Total prompt cost: $1.8400 + 310.5k tok (gateway)` keeps the two units apart, and a gateway dispatch that
+  reported no usage is counted rather than dropped (`+ 1 dispatch(es) without usage (gateway)`, §9.10.4).
 - **Judge spend is recorded but not summed into the actor total (plan 28 §11 finding 3, issue #223).**
   Every attempt whose guardrail set resolved a prompt judge through routing (§9.6) records that judge's
   own `costUsd`/`usage` on `AttemptProvenance.Judge` (`AttemptJudge.CostUsd`/`.Usage`, §7) — recorded
@@ -7968,6 +7969,12 @@ never stored:
   of millions above that (`1.3M tok`), in invariant culture;
 - **mixed totals keep the two units apart:** `$1.8400 + 310.5k tok (gateway)`, or `310.5k tok (gateway)` when
   everything went through a gateway. Never a dollar figure that silently omits gateway spend.
+- **a gateway dispatch that reported NO token usage is counted, never dropped:** the total names how many there
+  were — `$1.8400 + 310.5k tok + 2 dispatch(es) without usage (gateway)`, `$1.8400 + 1 dispatch(es) without usage
+  (gateway)`, or, on a gateway-only run whose dispatches reported nothing, `1 dispatch(es) without usage (gateway)`.
+  A gateway-only run therefore always prints a `Total prompt cost:` line. The count covers task attempts whose
+  provenance names a gateway and `overheadGatewayDispatches` entries with no `usage`.
+- **the `telemetry report` stratum key** separates gateway rows from Claude rows (§15.5).
 
 The surfaces: the attempt summary's spend segment (`; 48.2k tok (gateway)`, or `; token usage not reported
 (gateway)`); the `Total prompt cost:` line of the `run` summary and of `guardrails status` (gateway tokens from
@@ -9790,11 +9797,12 @@ profile `host` / `os` / `cpuCount` / `totalMemoryBytes` / `maxParallelism` / `ha
 under one version number would be unreadable by a later analysis — the version is what lets a reader tell
 "this row predates the column" apart from "this row's value is genuinely absent".
 
-**`gateway` and `backendModel` (#782, §9.10.4) were added WITHOUT a `schemaVersion` bump.** Both are copied
-from the attempt's provenance and are null on every non-gateway row; a gateway row's `costUsd` is null by
-design and its token counts are real. Because the version did not move, a row's lack of `gateway` does not
-tell "not a gateway attempt" from "written before #782". In particular, rows from #570-era runs through the
-`claude-local` wrapper went through a gateway and carry neither field.
+**`schemaVersion` is 4 as of #782 (§9.10.4).** Version 4 adds `gateway` and `backendModel`, both copied from the
+attempt's provenance and null on every non-gateway row; a gateway row's `costUsd` is null by design and its token
+counts are real. Rows of versions 1–3 read unchanged: both fields are absent, and such a row is stratified as a
+non-gateway row. The version is what tells "not a gateway attempt" (a version-4 row with no `gateway`) apart from
+"written before #782" (a row below version 4). In particular, rows from #570-era runs through the `claude-local`
+wrapper went through a gateway, are version 3 or lower, and carry neither field.
 
 **A `TelemetryRow`'s `costUsd`, `inputTokens` and `outputTokens` are independently nullable, and null
 means "never reported" — which is not the claim zero makes.** A costless local provider reports volume
@@ -9990,7 +9998,11 @@ The constraints are the point, and they are structural rather than conventions a
   operative rather than aspirational. The fingerprint folds in `modelDigest` when the row carries one
   (`kind/runner/model@digest`), so a re-quantized model under a stable tag no longer pools with its
   predecessor. A row with no digest fingerprints exactly as it always has, so no existing corpus row's
-  stratum moves.
+  stratum moves. **A claude gateway row (#782) is its own stratum:** its fingerprint appends
+  ` via gateway <endpoint> backend <backendModel>` (`endpoint` is the gateway's `EndpointKey` — loopback
+  spellings folded, trailing `/` dropped; a missing backend reads `unverified`), so a gateway that deliberately
+  maps a Claude model name never pools with real Claude rows under that name, and two backends behind one
+  gateway never pool with each other. A row with no `gateway` fingerprints exactly as before.
 
 **The fingerprint bucket, named.** The task-fingerprint bucket is one of six values, verbatim as the
 harness writes them: `test-authoring`, `implementation`, `structural`, `code+tests`, `documentation`,

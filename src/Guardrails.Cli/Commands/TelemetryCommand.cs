@@ -549,22 +549,10 @@ public static class TelemetryCommand
     }
 
     /// <summary>
-    /// The strongest model identity the corpus carries: the resolved route <c>kind/runner/model</c>, plus
-    /// <c>@</c><see cref="TelemetryRow.ModelDigest"/> when the row carries one — see the class doc for why
-    /// a digest is a provider fact, not a gap. A row with no digest fingerprints exactly as it always has,
-    /// so no existing corpus row's stratum moves. A component the row left null is spelled <c>?</c>
-    /// rather than silently collapsed, and a row with no route at all (a script attempt) says so.
+    /// The stratum's model identity — <see cref="TelemetryFingerprint.Of"/>, which also keeps a claude GATEWAY row
+    /// (#782) in a stratum of its own.
     /// </summary>
-    private static string Fingerprint(TelemetryRow row)
-    {
-        if (row.Kind is null && row.Runner is null && row.Model is null)
-        {
-            return NoRouteRecorded;
-        }
-
-        string route = $"{row.Kind ?? "?"}/{row.Runner ?? "?"}/{row.Model ?? "?"}";
-        return row.ModelDigest is { } digest ? $"{route}@{digest}" : route;
-    }
+    private static string Fingerprint(TelemetryRow row) => TelemetryFingerprint.Of(row);
 
     /// <summary>
     /// Render the report as a fixed-width table. Column widths are measured over the headers and the

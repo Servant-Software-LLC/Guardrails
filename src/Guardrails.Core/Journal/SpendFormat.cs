@@ -40,10 +40,25 @@ public static class SpendFormat
     /// <param name="costUsd">The summed reported cost, or null when none was reported.</param>
     /// <param name="gatewayTokens">The summed gateway token usage, or null when no gateway dispatch reported any.</param>
     /// <param name="costFormat">The dollar format of the surface (<c>F4</c> for the run and status totals).</param>
-    public static string? Total(decimal? costUsd, long? gatewayTokens, string costFormat = "F4")
+    /// <param name="gatewayDispatchesWithoutUsage">
+    /// How many gateway dispatches reported NO token usage. They are counted, never dropped: a run whose gateway spend
+    /// went unmeasured must still say so — <c>"$1.8400 + 310.5k tok + 2 dispatch(es) without usage (gateway)"</c>, or
+    /// <c>"2 dispatch(es) without usage (gateway)"</c> when nothing else was reported.
+    /// </param>
+    public static string? Total(
+        decimal? costUsd, long? gatewayTokens, string costFormat = "F4", int gatewayDispatchesWithoutUsage = 0)
     {
         string? money = costUsd is { } cost ? "$" + cost.ToString(costFormat, CultureInfo.InvariantCulture) : null;
-        string? tokens = gatewayTokens is { } count ? Tokens(count) + " (gateway)" : null;
+        string? unreported = gatewayDispatchesWithoutUsage > 0
+            ? gatewayDispatchesWithoutUsage.ToString(CultureInfo.InvariantCulture) + " dispatch(es) without usage"
+            : null;
+        string? tokens = (gatewayTokens, unreported) switch
+        {
+            ({ } count, { } u) => $"{Tokens(count)} + {u} (gateway)",
+            ({ } count, null) => Tokens(count) + " (gateway)",
+            (null, { } u) => u + " (gateway)",
+            _ => null
+        };
 
         return (money, tokens) switch
         {

@@ -88,5 +88,16 @@ public static class JournalCost
     /// their own units by <see cref="SpendFormat.Total"/>, or null when neither has anything to report.
     /// </summary>
     public static string? Render(JournalDocument document) =>
-        SpendFormat.Total(Total(document), GatewayTokens(document));
+        SpendFormat.Total(
+            Total(document), GatewayTokens(document), gatewayDispatchesWithoutUsage: GatewayDispatchesWithoutUsage(document));
+
+    /// <summary>
+    /// How many gateway dispatches — task attempts whose provenance names a gateway, plus overhead gateway dispatches
+    /// — reported NO token usage (#782 §4). Their spend was never measured, and <see cref="Render"/> says so rather
+    /// than letting them vanish from the total (or, on a gateway-only run, printing no total line at all).
+    /// </summary>
+    public static int GatewayDispatchesWithoutUsage(JournalDocument document) =>
+        document.Tasks.Values.SelectMany(entry => entry.Attempts)
+            .Count(attempt => attempt.Provenance?.Gateway is not null && attempt.Usage is null)
+        + (document.OverheadGatewayDispatches ?? []).Count(dispatch => dispatch.Usage is null);
 }

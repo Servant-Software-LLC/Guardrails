@@ -128,6 +128,30 @@ public sealed class ClaudeGatewayProvenanceTests : IDisposable
     }
 
     [Fact]
+    public async Task AGatewayOnlyRun_WhoseDispatchReportedNoUsage_StillPrintsATotal()
+    {
+        (_, PlanDefinition plan) = await RunSerialAsync(GatewayResult() with { Usage = null });
+
+        JournalDocument document = JournalReader.Read(RunJournal.PathFor(plan.PlanDirectory));
+        Assert.Equal(1, JournalCost.GatewayDispatchesWithoutUsage(document));
+        Assert.Equal("1 dispatch(es) without usage (gateway)", JournalCost.Render(document));
+    }
+
+    [Fact]
+    public async Task AMixedRun_KeepsAGatewayDispatchWithoutUsage_InTheTotal()
+    {
+        (_, PlanDefinition plan) = await RunSerialAsync(GatewayResult() with { Usage = null });
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        journal.AddOverheadDispatch("ai-triage", GatewayResult() with { Gateway = null, BackendModel = null, CostUsd = 1.84m });
+        journal.AddOverheadDispatch("ai-merge", GatewayResult() with { Usage = new PromptUsage { InputTokens = 300_000, OutputTokens = 10_500 } });
+
+        Assert.Equal(
+            "$1.8400 + 310.5k tok + 1 dispatch(es) without usage (gateway)",
+            JournalCost.Render(JournalReader.Read(RunJournal.PathFor(plan.PlanDirectory))));
+    }
+
+    [Fact]
     public void ANonGatewayOverheadDispatch_OnlyChargesItsCost()
     {
         WriteConfig();

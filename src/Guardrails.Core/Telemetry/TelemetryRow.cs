@@ -13,7 +13,9 @@ namespace Guardrails.Core.Telemetry;
 public sealed record TelemetryRow
 {
     /// <summary>The current row shape. Bump whenever a field is added, renamed, or reinterpreted.</summary>
-    public const int CurrentSchemaVersion = 3;
+    /// <remarks>4 as of #782: adds <see cref="Gateway"/> and <see cref="BackendModel"/>. Rows of versions 1–3 read
+    /// unchanged — both fields are simply absent, and such a row is stratified as a non-gateway row.</remarks>
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>The shape of this row — see <see cref="CurrentSchemaVersion"/>.</summary>
     public required int SchemaVersion { get; init; }
