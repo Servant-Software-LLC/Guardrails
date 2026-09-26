@@ -95,12 +95,46 @@ file into the attempt log directory, containing:
   passes a single `--settings`. It never passes two, because whether the CLI merges repeated flags is
   unverified.
 
-A user `--settings` in a gateway block's `extraArgs` is `GR2084`, because on a gateway dispatch the harness
-owns that flag.
+A user `--settings` in a gateway block's `extraArgs` or `guardrailOverrides.extraArgs`, in either spelling
+(`--settings <path>` or `--settings=<path>`), is `GR2084`, because on a gateway dispatch the harness owns that
+flag. The unit test asserts exactly one `--settings` reaches the child. Nothing is lost in the merge, because
+`WorktreeContainmentHook.SettingsJson` emits only `hooks.PreToolUse`.
 
-**Managed settings outrank both layers.** The preflight (§3) therefore reads the documented managed-settings
-sources for the host OS and **halts** if any of them sets a routing, credential or model-alias variable. The
-harness cannot override those, so it refuses to pretend it can.
+**`--settings` wins only for the keys it sets.** A project's `.claude/settings.json` or
+`.claude/settings.local.json` can still set a key the composed file does not. For example:
+- a **scrubbed-but-not-owned** variable such as `ANTHROPIC_API_KEY`, which would be sent as `x-api-key` on
+  Claude Code's startup `GET /v1/models`;
+- `CLAUDE_CODE_USE_BEDROCK=1`, which would send requests to AWS using the operator's ambient AWS
+  credentials;
+- `apiKeyHelper`.
+
+So:
+- **The preflight reads project settings and halts** (§3.1), naming the file and the key, when either file in
+  the workspace, or in the worktree base in worktree mode, has any of the following: an `env` key in the owned
+  or scrubbed set, `apiKeyHelper`, `forceLoginMethod`, or `forceLoginGatewayUrl`.
+- **Belt:** the composed file also sets every scrubbed-but-not-owned name the harness knows about to `""`.
+  Whether Claude Code treats `""` as unset is unverified, so this is never the only defense; the smoke records
+  whether it holds.
+- **Residual, disclosed:** Claude Code reloads settings while running. An agent that writes
+  `.claude/settings.local.json` in its worktree during an attempt changes the settings of later attempts in
+  that worktree. The write-scope check sees that write only after the fact. The preflight reads the base
+  before the DAG and does not re-read between attempts.
+
+**Managed settings outrank both layers.** The preflight therefore reads the documented managed-settings
+sources for the host OS and **halts** if any of them sets:
+- an owned or scrubbed `env` variable;
+- `apiKeyHelper`, `fallbackModel`, `model` or `availableModels`;
+- `forceLoginMethod: "gateway"` or `forceLoginGatewayUrl`.
+
+The harness cannot override those, so it refuses to pretend it can.
+
+**What the scratch config directory changes, disclosed:**
+- Claude Code starts with a fresh `.claude.json` (onboarding and workspace-trust state) on every run.
+- Anthropic's docs say most project `env` and permission settings wait for the workspace to be trusted. So a
+  gateway run may apply **less** project configuration than a non-gateway run of the same plan. The smoke
+  records what applies.
+- Session transcripts now land under `logs/<runId>/claude-config/projects/` instead of the operator's
+  `~/.claude/projects/`.
 
 **The child environment,** built by the instance in this order:
 
@@ -158,7 +192,7 @@ to `GR2087`.
 
 | Code | Sev | Rule |
 |---|---|---|
-| `GR2084` | error | `ClaudeGatewayBlockInvalid`. Covers: `baseUrl` not absolute http/https, carrying userinfo or a query, or with a path ending `/v1` or `/v1/messages` (Claude Code appends `/v1/messages`); `authTokenEnv` not a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`, which rejects a pasted `sk-…` secret); a gateway key on a non-`claude` block or under `guardrailOverrides`; a gateway block with no `model`; an **owned variable** (§1.2) in `env`, checked case-insensitively; or `--settings` in the block's `extraArgs` |
+| `GR2084` | error | `ClaudeGatewayBlockInvalid`. Covers: `baseUrl` not absolute http/https, carrying userinfo or a query, or with a path ending `/v1` or `/v1/messages` (Claude Code appends `/v1/messages`); `authTokenEnv` not a valid variable name (`[A-Za-z_][A-Za-z0-9_]*`, which rejects a pasted `sk-…` secret); a `backendModel` shorter than 4 characters; a gateway key on a non-`claude` block or under `guardrailOverrides`; a gateway block with no `model`; an **owned variable** (§1.2) in `env`, checked case-insensitively; or `--settings` (either spelling, `--settings <path>` or `--settings=<path>`) in the block's `extraArgs` or `guardrailOverrides.extraArgs` |
 | `GR2085` | warning | `ClaudeModelNameToGateway`. A model string would reach a gateway block and is a Claude model, meaning it contains `claude` anywhere (so `anthropic.claude-…` and `us.anthropic.claude-…` count too) or is an alias (`sonnet`, `opus`, `haiku`, `fable`, `opusplan`, `default`), case-insensitively and with any `[1m]`-style suffix removed first. Sources scanned: the block's `model`; a `routing` tier; `action.model`; a judge's frontmatter pin; and `--model` or `--fallback-model` in `extraArgs` (base and `guardrailOverrides`). A warning, because a LiteLLM `model_list` may map that name on purpose |
 | `GR2086` | warning | `ClaudeGatewayModelsShareEndpoint`. `maxParallelism > 1`, and two or more distinct models resolve to one gateway. Gateways are compared after normalizing the host (`localhost` / `127.0.0.1` / `::1`) and a trailing `/`. The static half of §3.2's halt |
 
@@ -174,7 +208,8 @@ block makes **zero** connections, proven with a loopback listener that fails on 
 
 | Probe | Once per | Halt when |
 |---|---|---|
-| Managed-settings sources for this OS | run | any of them sets an owned or scrubbed variable (§1.2) |
+| Managed-settings sources for this OS | run | any of them sets an owned or scrubbed `env` variable, `apiKeyHelper`, `fallbackModel`, `model`, `availableModels`, `forceLoginMethod: "gateway"` or `forceLoginGatewayUrl` (§1.2) |
+| Project settings: `.claude/settings.json` and `.claude/settings.local.json` in the workspace (and the worktree base) | run | any `env` key in the owned or scrubbed set, `apiKeyHelper`, `forceLoginMethod` or `forceLoginGatewayUrl`; the halt names the file and the key (§1.2) |
 | `authTokenEnv` | gateway block | unset or empty |
 | `GET {baseUrl}/v1/models`, sending `Authorization: Bearer` | `baseUrl` | refused, DNS, timeout, TLS, 5xx, 401/403, or `model` not in `data[].id`. A 404/405 downgrades to a warning and skips the model check |
 | `POST {baseUrl}/v1/messages`, `max_tokens: 256` | (`baseUrl`, `model`) | not a 200 with a content block (the error text is quoted). The larger `max_tokens` leaves room for a reasoning model's thinking (#759) |
@@ -187,10 +222,34 @@ resolves the backend identity deterministically, for each (`baseUrl`, `model`):
 
 1. **`GET {baseUrl}/model/info`** (LiteLLM). Find the entry for `model` and read `litellm_params.api_base`
    and `litellm_params.model`.
-2. **Ask that backend what it has loaded:** `GET {api_base}/props` (`llama-server`: the model path or alias,
-   and the per-slot `n_ctx`), or failing that `GET {api_base}/v1/models`.
-3. **The identity** is the pair (normalized `api_base`, loaded model id). It is recorded in provenance as
+2. **Normalize `api_base`** by stripping a trailing `/`, and then a trailing `/v1`. LiteLLM's `api_base` for
+   `llama-server` is typically `http://127.0.0.1:8080/v1`. Without this, the next step would request
+   `/v1/props` and `/v1/v1/models`, both would 404, and the identity would always read "unverified", which
+   would block the §7 dogfood gate for good.
+3. **Ask that backend what it has loaded:** `GET {base}/props` (`llama-server`: the model alias, `model_path`
+   and the per-slot `n_ctx`), or failing that `GET {base}/v1/models`.
+   - A `llama-server` in **router mode** (several models) may answer `/props` only with `?model=`. v1 does not
+     attempt that. It falls back to `/v1/models` and, if that does not resolve to one loaded model, records
+     "unverified".
+4. **The identity** is the pair (normalized base, loaded model id). It is recorded in provenance as
    `BackendModel` (§4).
+
+**The `backendModel` match rule.** The declared value matches when either:
+- (a) it equals the `/props` model **alias**, case-insensitively; or
+- (b) there is no alias, and it is a case-insensitive **substring of the basename** of `model_path`, the
+  file name without its directory.
+
+If `/props` is unavailable, the `/v1/models` id stands in for the alias under rule (a). Examples:
+
+| Declared `backendModel` | Backend reports | Result |
+|---|---|---|
+| `qwen3.6-35b-a3b` | alias `Qwen3.6-35B-A3B` | match (a) |
+| `qwen3.6-35b` | no alias; `model_path` `/models/Qwen3.6-35B-A3B-Q4_K_M.gguf` | match (b) |
+| `qwen3.8` | no alias; `model_path` `/models/Qwen3.6-35B-A3B-Q4_K_M.gguf` | **halt**: no match |
+| `qwen` | no alias; `model_path` `/models/qwen3.6-35b.gguf` | match (b), but deliberately weak |
+
+The last row is legal but proves little. The runbook recommends declaring the version, and `GR2084` rejects a
+`backendModel` shorter than 4 characters.
 
 The preflight **halts** when:
 - two distinct `model` strings in one plan resolve to the **same** backend identity (#760);
@@ -255,15 +314,23 @@ The run-start `Note:` says how far `maxCostUsd` still applies:
 - **Preflight (integration):** a loopback fake gateway that serves `/v1/models`, `/model/info` and
   `/v1/messages`, plus a fake backend `/props`. Each §3.1 and §3.2 halt is covered, and so is the
   "unverified" disclosure. Zero connections with no gateway block. One probe per key, counted at the listener.
-  The managed-settings halt uses a test-injected source path.
+  The managed-settings halt uses a test-injected source path. Also covered: the project-settings halt for each listed key in both files; `api_base` normalization (`…:8080/v1` resolves via `/props`); and each `backendModel` example row.
 - **Provenance:** `Gateway`, `BackendModel` and `CostUsd: null` are read from the bytes of `run.json` and a
   telemetry row, including for an `ai-merge` dispatch.
 - **Live smoke, `scripts/smoke/claude-gateway-live-smoke.ps1`.** Manual, never CI, and re-run on every
   Claude Code upgrade. It records `claude --version`.
-  1. **Seeds hostile configuration:**
-     - a hostile **user** config in the operator's real config dir: a canary `ANTHROPIC_API_KEY` in settings
-       `env`, a canary `apiKeyHelper`, a redirecting `ANTHROPIC_BASE_URL`, and a `fallbackModel`;
-     - the same set as **project** settings in the target repository.
+  1. **Seeds hostile configuration, never in the operator's real `~/.claude`.** Claude Code reloads
+     settings while running, so writing there would redirect the operator's live interactive sessions, and a
+     crashed smoke would leave the directory poisoned.
+     - The hostile **user** config goes in a throwaway directory. The smoke exports `CLAUDE_CONFIG_DIR`
+       pointing at it in the environment `guardrails` is launched from, which also tests that the harness
+       scrubs an inherited `CLAUDE_CONFIG_DIR`. The config holds a canary `ANTHROPIC_API_KEY` in settings
+       `env`, a canary `apiKeyHelper`, a redirecting `ANTHROPIC_BASE_URL`, and a `fallbackModel`.
+     - **Project** settings in the target repository hold only the keys the composed `--settings` overrides:
+       a redirecting `ANTHROPIC_BASE_URL`, a `claude-*` model alias, and a `fallbackModel`.
+     - A **separate step** plants a project `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK=1` and
+       `apiKeyHelper`, one at a time, and asserts that the **preflight halts** on each, naming the file and
+       the key.
   2. **Runs a one-task plan** through a recording proxy in front of LiteLLM. The run must be green.
   3. **Asserts over every recorded request** (`/v1/models`, `HEAD /api/hello`, `count_tokens`,
      `/v1/messages`, and subagent requests identified by `x-claude-code-agent-id`):
@@ -273,8 +340,13 @@ The run-start `Note:` says how far `maxCostUsd` still applies:
      - every request carried a Bearer token and no `x-api-key`.
   4. **Records separately** any connection to `api.anthropic.com` (§1.2's disclosure).
 
-  The smoke proves the unverified items: the environment names, the precedence of `CLAUDE_CONFIG_DIR` and
-  `--settings`, and whether the subagent and background model aliases take effect.
+  The smoke proves the unverified items and records what they show:
+  - the environment names;
+  - the precedence of `CLAUDE_CONFIG_DIR` and `--settings`;
+  - whether the subagent and background model aliases take effect;
+  - whether `""` unsets a variable;
+  - the scratch directory's first-run and trust behavior in `-p` mode;
+  - which project `env` and permissions apply without recorded trust.
 
 ## 6. Docs and the runbook replacement
 
