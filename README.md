@@ -412,6 +412,11 @@ Prompt tasks can run on Claude Code pointed at a local model, such as Qwen serve
 Code child itself. You don't need a `claude-local` wrapper script. You still start `llama-server` and LiteLLM
 yourself; Guardrails never starts either one.
 
+**New to this? Follow the step-by-step guide: [Local inference setup](docs/local-inference.md).** It goes from a
+bare Mac to a verified local-only run, and also covers pointing the interactive `/plan-breakdown` and
+`/guardrails-review` skills at the same models, plus the troubleshooting table. The rest of this section is the
+reference.
+
 > Anthropic documents gateways for its own models. Running Claude Code against a non-Claude model through a
 > gateway is outside what Claude Code supports. It works, and Guardrails checks as much of it as it can before
 > any task runs, but treat it as experimental.
