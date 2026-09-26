@@ -7872,7 +7872,7 @@ any gateway, so a run that must halt anyway never spends a remote gateway's key.
 - Every GATEWAY probe sends `Authorization: Bearer <token>` and `anthropic-version: 2023-06-01`. **A BACKEND probe
   (`/props`, `/v1/models` on the `api_base`) sends no `Authorization` header**, and is made only when the
   `api_base` host is loopback or a private address (RFC 1918, IPv6 ULA `fc00::/7`, link-local `169.254/16` and
-  `fe80::/10`; every address a host NAME resolves to must be one) — the `api_base` is whatever the gateway
+  `fe80::/10`, and the RFC 6598 shared range `100.64.0.0/10` that Tailscale assigns to tailnet peers; every address a host NAME resolves to must be one) — the `api_base` is whatever the gateway
   reports, possibly a third party or Anthropic itself. Otherwise the identity is recorded as
   `unverified (backend not probed: non-private host)`.
 - **Managed settings: every documented source is read** (code.claude.com/docs/en/managed-settings, "Where each

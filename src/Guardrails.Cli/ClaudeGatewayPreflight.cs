@@ -264,14 +264,19 @@ public static class ClaudeGatewayPreflight
     /// gateway block is returned unchanged, having opened no connection.
     /// </summary>
     public static async Task<PlanDefinition?> PrepareStandaloneAsync(
-        PlanDefinition plan, TextWriter output, bool worktreeMode, CancellationToken cancellationToken)
+        PlanDefinition plan, TextWriter output, bool worktreeMode, CancellationToken cancellationToken,
+        IReadOnlyList<string>? projectSettingsRoots = null)
     {
         if (!plan.Config.PromptRunners.Values.Any(b => b.IsClaudeGateway))
         {
             return plan;
         }
 
-        var options = new ClaudeGatewayPreflightOptions { WorktreeMode = worktreeMode };
+        var options = new ClaudeGatewayPreflightOptions
+        {
+            WorktreeMode = worktreeMode,
+            ProjectSettingsRoots = projectSettingsRoots ?? []
+        };
         if (!await EvaluateAsync(plan, journal: null, output, options, cancellationToken).ConfigureAwait(false))
         {
             return null;
@@ -844,7 +849,11 @@ public static class ClaudeGatewayPreflight
         return addresses.Length > 0 && addresses.All(IsPrivate) ? null : "non-private host";
     }
 
-    /// <summary>Loopback, RFC 1918, IPv6 ULA, or link-local.</summary>
+    /// <summary>
+    /// Loopback, RFC 1918, IPv6 ULA, link-local, or the RFC 6598 shared range 100.64.0.0/10. The last is the
+    /// carrier-grade-NAT block Tailscale assigns to tailnet peers, and a backend on another of the operator's machines
+    /// is reached over it. It is not publicly routable.
+    /// </summary>
     public static bool IsPrivate(System.Net.IPAddress address)
     {
         if (address.IsIPv4MappedToIPv6)
@@ -866,7 +875,8 @@ public static class ClaudeGatewayPreflight
         return b[0] == 10
                || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
                || (b[0] == 192 && b[1] == 168)
-               || (b[0] == 169 && b[1] == 254);
+               || (b[0] == 169 && b[1] == 254)
+               || (b[0] == 100 && b[1] >= 64 && b[1] <= 127);
     }
 
     /// <summary>
