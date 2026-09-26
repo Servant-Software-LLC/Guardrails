@@ -156,17 +156,26 @@ provides the loop without accepting a single model-authored command.
 - **The commands are reviewed.** Script guardrails are part of the plan definition, covered by
   `PlanDefinitionHash` and the review attestation. The model picks *which* reviewed script runs and *when*,
   never *what* runs.
-- **Eligibility (W2).** The gate's inputs do not exist mid-session: `GUARDRAILS_ACTION_RESULT` has no
-  `action-result.json` yet, and this task's own state fragment has not been promoted. So a script whose text
-  mentions `GUARDRAILS_ACTION_RESULT` or `GUARDRAILS_STATE_IN` is **excluded from the enum**. This is a
-  conservative substring scan, and the `runner-notice` lists what it excluded. Eligible scripts get the gate's
-  §5.1 environment, with any output paths redirected to a per-call scratch directory under the attempt log
-  directory.
+- **Eligibility (W2).** One gate input does not exist mid-session: `GUARDRAILS_ACTION_RESULT` has no
+  `action-result.json` until the action ends. A script whose text mentions `GUARDRAILS_ACTION_RESULT` is
+  therefore **excluded from the enum**. `GUARDRAILS_STATE_IN` is **not** a reason to exclude a script,
+  because it is the upstream snapshot and exists before the action starts.
+  - **The scan is text-only**, and the `runner-notice` says so and lists what it excluded. A script that
+    reads the variable through a sourced helper escapes the scan. In that case it runs against a missing
+    file and fails. The consequence is slower convergence, never a containment gap, because the gate
+    re-runs the script with the real file.
+  - Eligible scripts get the gate's §5.1 environment, with any output paths redirected to a per-call scratch
+    directory under the attempt log directory.
 - **Reaped after every call (W3).** The script runs inside a Windows **job object** with
   kill-on-job-close, or on Unix as the leader of a **new process group**. After it exits, or on timeout or
   cancel, the whole job or group is killed. Otherwise a daemon started by model-authored test code would
-  outlive the call and keep writing. **Residual, disclosed:** on Unix, a process that calls `setsid()` leaves
-  the group and escapes the kill.
+  outlive the call and keep writing.
+  - **Build servers are turned off for `RunCheck`,** so that reaping after each call is the expected case
+    rather than a fight with tooling. The check runs with `MSBUILDDISABLENODEREUSE=1` and
+    `DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER=1`, the environment equivalent of `--disable-build-servers`.
+  - **Residual, disclosed:** a process that deliberately leaves the tree escapes the kill. On Unix that
+    means `setsid()` or a double fork. On Windows it means creation through WMI (`Win32_Process.Create`) or
+    Task Scheduler, both of which parent the process outside the job.
 - **Side effects (W1, corrected rationale).** An out-of-scope change after a `RunCheck` comes from
   *model-authored code that the check executed*. It cannot come from the model's own tools, which enforce
   scope.
@@ -227,11 +236,11 @@ deterministic check fails the attempt. **DISCLOSED**: not contained; the operato
 | T5 | Windows forms: `\\?\`, `\\.\`, UNC, `a.cs:stream`, `CON`, 8.3 short names (`GIT~1\hooks\pre-commit`), trailing dots or spaces (`.git.\hooks\x`) | step 1 syntactic refusals | ENFORCED |
 | T6 | `.git/hooks/pre-commit`, `.git/config`, `.GIT/…` on case-insensitive APFS, Unicode-ignorable spellings, `Write` to the `.git` path itself | step 7, a case-insensitive `.git` segment match on **every** OS, with git's `is_ntfs_dotgit` / `is_hfs_dotgit` equivalences reduced by step 1 | ENFORCED |
 | T7 | `.claude/settings.json` or `.cursor/…` loaded later by another runner | step 7: a **literal** scope entry is required | ENFORCED |
-| T8 | Rewrite this task's or a downstream task's `guardrails/`, `task.json`, `guardrails.json`, or the journal, **with the plan folder inside the workspace and `writeScope: ["**"]`** | step 6 hard exclusions, whatever the scope says; the tamper check as a second line | ENFORCED + DETECTED |
+| T8 | Rewrite this task's or a downstream task's `guardrails/`, `task.json`, `guardrails.json`, or the journal, **with the plan folder inside the workspace and `writeScope: ["**"]`**, or through its committed image in a segment worktree | step 6 hard exclusions (real and Root-relative image), whatever the scope says; the tamper check as a second line | ENFORCED + DETECTED |
 | T9 | In the workspace but outside `writeScope` | step 8 `IsInScope`. Worktree mode adds the phase-1 diff | ENFORCED (+ DETECTED in worktree mode) |
 | T10 | Plant `{"pass": true}` at a judge's staged verdict path | the grant holds this attempt's exact `STATE_OUT` file only; the stale-verdict clear (§9.5) | ENFORCED + DETECTED |
 | T11 | `.gitignore` / `.gitattributes` edited to hide output or add filters | step 7: a literal scope entry is required | ENFORCED |
-| T12 | An in-scope but **git-ignored** target, e.g. `obj/X.Tests.csproj.evil.targets` that turns VSTest into a no-op. Ignored files are invisible to `git add -A` (`SegmentStaging.cs`), so the gate goes green and nothing is committed | step 8: an ignored target is refused (`git check-ignore`). If the workspace is not a git repository, this is DISCLOSED instead | ENFORCED |
+| T12 | An in-scope but **git-ignored** target, e.g. `obj/X.Tests.csproj.evil.targets` that turns VSTest into a no-op. Ignored files are invisible to `git add -A` (`SegmentStaging.cs`), so the gate goes green and nothing is committed | step 8: an ignored target is refused (`git check-ignore`, failing closed). Only in a serial workspace the harness determined at grant time is not a git repository is this DISCLOSED instead | ENFORCED |
 | T13 | Disk fill | 1 MiB per call and 32 MiB per attempt; `maxTurns`; `Timeout` | ENFORCED |
 | T14 | Launder a refused write through `needsHarnessWrite` in the state fragment (`HarnessWrite.Resolve` has no `.git`, no-follow or plan-folder rule) | `needsHarnessWrite` is refused outright for `HarnessMediatedTools` runners (§6) | ENFORCED |
 | T15 | Read secrets outside the roots | `PromptToolContainment.IsReadable` | ENFORCED for tools |
@@ -239,7 +248,7 @@ deterministic check fails the attempt. **DISCLOSED**: not contained; the operato
 | T17 | Prompt injection: a file contains `<tool_call>…` or "now write to ~/…" | tool calls come only from structured `tool_calls`; injected intent still meets `WritePolicy` | ENFORCED |
 | T18 | Model-authored code writes outside the tree, or phones home, when `RunCheck` or the gate executes it | predates #544 and applies to every runner. `RunCheck` moves it earlier and repeats it, which is why T16 exists | DISCLOSED (Phase 3 sandbox) |
 | T19 | Write, run, then delete, so nothing shows in the final diff | full `Write`/`Edit` arguments plus per-`RunCheck` change hashes in the stream log | DETECTED (evidence only) |
-| T20 | A path component swapped between check and write | `RunCheck` children are reaped after every call (§3.3), so no model-started process survives into a later check. Residual: a `setsid()` escapee on Unix, or another run's process | DISCLOSED (narrow) |
+| T20 | A path component swapped between check and write | `RunCheck` children are reaped after every call (§3.3), so no model-started process survives into a later check. Residual: a process that deliberately leaves the tree (§3.3: `setsid()` on Unix; WMI or Task Scheduler on Windows), or another run's process | DISCLOSED (narrow) |
 | T21 | A tool that was not offered (`Bash`; `Write` on a judge); a `RunCheck` with an unknown name or extra arguments | refused and counted toward the denial bound | ENFORCED |
 | T22 | The action makes zero tool calls (server ignores `tools`, or the model answers in prose) and "completes" | `Error` (§6) | DETECTED |
 | T23 | Tool calls emitted as text (`llama-server` without `--jinja`) | never executed; `needs-human` with a server-template remedy (§6) | DETECTED |
@@ -278,7 +287,9 @@ public WriteGrant? Writes { get; init; }
 public sealed record WriteGrant(
     string Root,                          // absolute: the workspace (serial) or the worktree
     IReadOnlyList<string> Scope,          // task.WriteScope ?? [] plus the stagingOutputs destinations, BOTH modes
-    IReadOnlyList<string> Excluded,       // absolute: plan folder, run log root, journal dir, the worktrees root
+    IReadOnlyList<string> Excluded,       // absolute: plan folder + log root + journal dir (real AND Root-relative
+                                          // image), every OTHER worktree (the worktrees root minus Root)
+    bool RootIsGitRepository,             // decided ONCE at grant time (§5.3 step 6), never from a failed call
     IReadOnlyList<string> ExactFiles,     // absolute: this attempt's STATE_OUT staging file
     IReadOnlyList<string> ExactDirs,      // absolute: stagingOutputs staging directories (directory form)
     IReadOnlyList<InSessionCheck> Checks);
@@ -314,17 +325,38 @@ from filesystem and `git check-ignore` reads, and lives beside `PromptToolContai
    step 9.
 5. **Under `Root`**, on a directory boundary, comparing final paths.
 6. **Hard exclusions, whatever the scope says (B1).** Refuse anything under the final path of:
-   - an entry in `Excluded`: the plan folder, the run log root, the journal directory, and every other
-     worktree;
-   - `Root`'s git directory (`git rev-parse --git-dir`).
+   - an entry in `Excluded`:
+     - the plan folder, the run log root and the journal directory, at their **real** locations;
+     - their **Root-relative images**, `Root + relpath(repoRoot, dir)`. In worktree mode a committed plan
+       folder has a copy inside every segment worktree, under `Root` and allowed by a `**` scope. A write to
+       a downstream task's guardrails there would be committed and delivered.
+     - **every other worktree** (the worktrees root minus `Root`);
+   - `Root`'s git directory (`git rev-parse --absolute-git-dir`).
+
+   **Git calls fail closed.** If `rev-parse` fails (spawn failure, exit 128), every write is refused, and the
+   refusal names the error. In worktree mode the repository is certified by `GR2015`. In serial mode (where
+   `GR2015` does not apply, because a serial run does not require git) `RootIsGitRepository` is decided once,
+   when the grant is built, by walking `Root`'s ancestors for a `.git` entry. A failed call is never read as
+   "not a repository".
 7. **Protected segments,** matched **case-insensitively on every OS:**
    - `.git`: always refused;
    - `.guardrails-agent-io` and `.guardrails-staging`: refused unless step 4 matched;
-   - `.claude`, `.cursor`, `.gitignore`, `.gitattributes`, `.gitmodules`: refused unless a `Scope` entry
-     names that prefix **literally**, with no `*`.
-8. **Scope.** The target must satisfy `IsInScope(relative, Scope)` and must not be git-ignored
-   (`git -C Root check-ignore -q`). The ignore check is skipped only when `Root` is not in a git repository,
-   which is disclosed.
+   - these are refused unless a `Scope` entry names that prefix **literally**, with no `*`:
+     - `.claude` and `.cursor`;
+     - `.gitignore`, `.gitattributes` and `.gitmodules`;
+     - `node_modules`, which `SegmentStaging.ReconstructableExclusions` makes invisible to the diff and to
+       the commit;
+     - **the resolved `core.hooksPath` directory** (for example a tracked `.husky/`). It is resolved at grant
+       time from the user's repository. The harness's own delivery commit runs hooks from it
+       (`GitWorktreeProvider.cs:2224`, deliberately without `--no-verify`), so a model-written hook there
+       would be executed by the harness.
+8. **Scope.** The target must satisfy `IsInScope(relative, Scope)` and must not be git-ignored. The ignore
+   check runs `git -C Root check-ignore -q -- <path>` and **fails closed**:
+   - exit 0 (ignored) → refuse;
+   - exit 1 (not ignored) → continue;
+   - anything else (spawn failure, 128) → refuse, naming the error.
+
+   It is skipped only when `RootIsGitRepository` is false, and the `runner-notice` discloses that.
 9. **No-follow walk.** Every existing component below `Root` must be neither a symlink nor a reparse point.
    An existing target must be a regular file.
 
@@ -516,6 +548,10 @@ skip**, when they cannot.
 | A6 | `.git/hooks/pre-commit`, `.GIT/config`, `Write` to `.git` itself, `.git` with a U+200D inside it; **(WT)** `.git` as a file | none written; a following harness commit runs no hook |
 | A7 | `.claude/settings.json` under `["**"]`, then under `[".claude/skills/"]` | refused both times; `.claude/skills/x/SKILL.md` allowed in the second |
 | A8 | **(B1)** with the plan folder inside the workspace and scope `**`: own `guardrails/01.sh`, a **downstream** task's `guardrails/`, `guardrails.json`, and the journal under `logs/` | all unchanged; the tamper check did not fire (policy held first) |
+| A8-WT | **(B1, WT)** the same targets through the plan folder's **image inside the segment worktree** (committed plan folder, scope `**`) | refused; after the segment commit and delivery, the downstream task's `guardrails/` in the main checkout is byte-identical |
+| A8b | **(WT)** a write under a sibling segment worktree; a write under `Root` itself | sibling refused; `Root` write allowed (the worktrees-root exclusion does not swallow `Root`) |
+| A8c | `git` made unspawnable mid-session (a `PATH` without git); then `check-ignore` stubbed to exit 128 | every write refused, naming the error; nothing written |
+| A8d | a tracked `.husky/pre-commit` with `core.hooksPath=.husky`, scope `**`; `node_modules/x/index.js` under `**` | both refused without a literal scope entry |
 | A9 | out-of-scope in-workspace write; **(WT)** phase 1 reports no offense | refused at call time |
 | A10 | a judge's staged `VERDICT_OUT` | refused; a following judge that writes nothing fails |
 | A11 | `Delete` out of scope; `Delete` a directory | refused |
@@ -529,8 +565,8 @@ skip**, when they cannot.
 | A19 | a `Bash` call; `Write` on a Guardrail; `RunCheck` `../x`; `RunCheck` with extra arguments | refused; no process started (counter on the injected closure) |
 | A20 | Guardrail invocation before and after the change | byte-identical request bodies |
 | A21 | Action with `Writes == null` | refused before any wire byte |
-| A22 | **(W3)** a `RunCheck` script that starts a background writer | no write lands after the call returns (sentinel polled for 5 s) |
-| A23 | **(W2)** a guardrail that reads `GUARDRAILS_ACTION_RESULT` | absent from the enum; listed in the `runner-notice` |
+| A22 | **(W3)** a `RunCheck` script that starts a **plain** background writer (`&` on Unix, `Start-Process` on Windows), with no `setsid` and no WMI | no write lands after the call returns (sentinel polled for 5 s) |
+| A23 | **(W2)** a guardrail that reads `GUARDRAILS_ACTION_RESULT`; one that reads only `GUARDRAILS_STATE_IN` | the first is absent from the enum and listed in the `runner-notice`; the second is offered |
 | A24 | **(W1, WT)** a `RunCheck` whose script creates an out-of-scope file | patch saved in the attempt log; file stripped; phase 1 clean |
 | A25 | **(W7)** three `RunCheck(build)` results in one session | turn-4 request carries one full result and two stubs |
 | A26 | **(W7)** `ContextOverflow` on attempts 1 and 2 | `needs-human` on attempt 2 |
