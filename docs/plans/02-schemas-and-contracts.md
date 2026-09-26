@@ -7441,28 +7441,39 @@ Every refusal is recorded with its reason (an empty `reason` reads "refused by C
 
 **Abandoned calls (#778) — a `started` with no `completed` is a refusal too.** Measured under `--auto-review`
 (#776 T1): a `git commit` the classifier held for human approval emitted
-`{"type":"tool_call","subtype":"started","call_id":"<id>","tool_call":{"shellToolCall":{"args":{"command":"git commit …"}}}}`
+`{"type":"tool_call","subtype":"started","call_id":"<id>","tool_call":{"shellToolCall":{"args":{"command":"git commit …"}},"toolCallId":"<id>"}}`
 and NEVER a `completed` event — no `rejected` anywhere — while the session still ended `result/success`, exit 0,
-and the commit was not made. The scanner therefore pairs `started` and `completed` by the top-level `call_id`
-(an exact ordinal string compare; measured ids contain a newline, `"call-…-0\nfc_…_0"`):
+and the commit was not made. The scanner therefore pairs `started` and `completed` (`CursorCallPairing`). A call is
+known by EVERY id its event carries, each an exact ordinal string compare (measured `call_id`s contain a newline,
+`"call-…-0\nfc_…_0"`): the top-level `call_id`, then the `toolCallId` the measured streams put beside the tool
+inside `tool_call`, and defensively a `toolCallId` inside the tool object or its `args`. A `completed` event closes
+the open call ANY of its ids names, so a pair still matches when one side lacks `call_id`.
 
-- **Open at the terminal `result` ⇒ refused.** A call still open when the terminal `result` event arrives is a
-  REFUSAL with reason `abandoned: started but never completed (awaiting an approval Cursor print mode cannot
-  give)`, its tool, command and path taken from the `started` event's `args`. It is handled EXACTLY like a
-  `rejected` completion: in `RefusedToolCalls`, the summary and `feedback.md`; its target in `BlockedWritePaths` /
-  `RefusedCommands`; and an abandoned SHELL call counts as refused, not ran, for the `AllShellRefused` verdict
-  below. One exception: it does not feed the #452 consecutive-refusal counter — that bounds a LIVE streak, and an
-  abandoned call is only known once the session is over, when tripping the bound would turn a finished session
-  into an abort. `transcript.md` renders it as ``⎿ REFUSED: shell `<command>` — abandoned: …`` just before the final
-  message (the call's own `started` line is further up).
-- **No terminal result ⇒ named, never re-classified.** A stream that ends with NO terminal `result` — the harness
+- **Open at the terminal `result` ⇒ refused (ABANDONED).** A call still open when the terminal `result` event
+  arrives is a REFUSAL with reason `abandoned: started but never completed (awaiting an approval Cursor print mode
+  cannot give)`, its tool, command and path taken from the `started` event's `args`. Like a `rejected` completion
+  it is in `RefusedToolCalls`, the summary and `feedback.md`, and its target in `BlockedWritePaths` /
+  `RefusedCommands` (so the #86/#708 repeated-refusal tracker sees it). `transcript.md` renders it as
+  ``⎿ REFUSED: shell `<command>` — abandoned: …`` just before the final message (the call's own `started` line is
+  further up). Two deliberate differences from `rejected`:
+  - **The every-shell-refused verdict below is role-aware.** For an ACTION only explicit `rejected` shell calls
+    count: under auto-review Cursor habitually tries a `git commit` — which Guardrails never needs, the harness
+    commits — and it is abandoned, so a lone abandoned commit must not turn an ordinary guardrail failure into a
+    no-retry needs-human. The refusal is still named everywhere, and the attempt retries as usual. For a JUDGE
+    abandoned shell calls count too, so a judge whose only shell call was abandoned still FAILS CLOSED.
+  - It does not feed the #452 consecutive-refusal counter — that bounds a LIVE streak, and an abandoned call is only
+    known once the session is over, when tripping the bound would turn a finished session into an abort.
+- **No terminal result ⇒ in flight, NOT refused.** A stream that ends with NO terminal `result` — the harness
   killed the session (timeout, stall, cancel, the #452 abort) or it crashed — is already a failed attempt with its
-  own failure kind, and keeps it. Calls it left open are named in `RefusedToolCalls` (so in the summary and
-  `feedback.md`) and `transcript.md` with reason `abandoned: started but never completed (the session ended
-  without a result, so it may only have been in flight)`, but they reach neither the wall lists (a command the
-  harness killed was not refused, so the #86 tracker must not count it) nor the shell accounting.
-- A `started` event with no `call_id` cannot be paired and is not tracked; a `completed` event arriving after its
-  call was already reported abandoned is ignored.
+  own failure kind, and keeps it (`Finish` never re-classifies a run that did not complete). Calls it left open
+  were cut off, not refused: they go to `PromptResult.InFlightToolCalls` (runner-agnostic
+  `InFlightToolCall(Tool, Target)`), never `RefusedToolCalls`, the wall lists or the shell accounting. The summary
+  names them (``…; 1 tool call(s) still running when the session was stopped (not refused): shell `dotnet test` ``),
+  `feedback.md` lists them under `## Calls still running when the session was stopped (not refused — they may
+  simply need more time)` with NO "refused again / write needsHuman" advice (`RetryPolicy.ForInFlightCalls` — on
+  the action-failed paths, timeout / output-cap / max-turns included), and `transcript.md` renders
+  ``⎿ STILL RUNNING when the session ended (not refused): shell `<command>` ``.
+- A `started` event with no id at all cannot be paired and is not tracked.
 
 Every refusal, rejected or abandoned:
 
@@ -7516,6 +7527,9 @@ Every refusal, rejected or abandoned:
 - **Known gap (not scanned).** A `taskToolCall` (Cursor's subagent) carries its own nested conversation steps;
   refusals INSIDE them are not read — only the top-level stream's completed `tool_call` events are. A subagent's
   refused shell call therefore neither counts toward the verdict rule nor appears in the refusal list.
+- **Known gap (late completions).** Pairing is decided at the terminal `result`: a `completed` event that arrives
+  AFTER it for a call already reported abandoned is ignored, so the call stays abandoned (it is not observed or
+  re-judged live). No measured stream has shown one.
 - **Known gap (`isBackground`).** A shell completion whose result carries `isBackground` beside `success` counts
   as RAN. Measured (#776 T2/T3, `--sandbox enabled`), such a `success` with exit 0 can mean only "launched in the
   background": a sandboxed `dotnet restore` completed that way and never produced `project.assets.json`. The

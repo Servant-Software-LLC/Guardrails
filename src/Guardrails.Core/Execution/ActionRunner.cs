@@ -542,6 +542,12 @@ internal sealed record ActionRun
     public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
 
     /// <summary>
+    /// Tool calls still running when the session was stopped with no result (#778) — a straight carry of
+    /// <see cref="PromptResult.InFlightToolCalls"/>. Not refusals: rendered under their own neutral heading.
+    /// </summary>
+    public IReadOnlyList<InFlightToolCall> InFlightToolCalls { get; init; } = [];
+
+    /// <summary>
     /// The runner reported that the action attempted shell and every shell call was refused (#773) — a straight
     /// carry of <see cref="PromptResult.AllShellRefused"/>. The action still counts as succeeded so its guardrails
     /// run; if they FAIL, <see cref="TaskExecutor"/> settles the task needs-human at once with
@@ -647,6 +653,7 @@ internal sealed record ActionRun
             BlockedWritePaths = result.BlockedWritePaths,
             RefusedCommands = result.RefusedCommands,
             RefusedToolCalls = result.RefusedToolCalls,
+            InFlightToolCalls = result.InFlightToolCalls,
             AllShellRefused = result.AllShellRefused,
             RunnerConfigurationRemedy = result.RunnerConfigurationRemedy,
             FailureSummary = result.Summary
@@ -672,6 +679,7 @@ internal sealed record ActionRun
         }
 
         text.Append(RetryPolicy.ForRunnerRefusals(result.RefusedToolCalls));
+        text.Append(RetryPolicy.ForInFlightCalls(result.InFlightToolCalls));
 
         text.AppendLine();
         text.AppendLine("Fix the specific problem above on retry; do not start over.");

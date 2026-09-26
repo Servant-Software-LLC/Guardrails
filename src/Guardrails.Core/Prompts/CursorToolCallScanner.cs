@@ -23,24 +23,31 @@ namespace Guardrails.Core.Prompts;
 /// (or the paired <c>started</c> event's <c>args.command</c>). An edit/write call names its target in
 /// <c>args.path</c>.</para>
 ///
-/// <para><b>Abandoned calls (#778).</b> <c>started</c> and <c>completed</c> share the top-level <c>call_id</c>
-/// (compared as an exact string — measured ids carry an escaped newline, <c>"call-…-0\nfc_…_0"</c>). Measured under
+/// <para><b>Abandoned calls (#778).</b> <c>started</c> and <c>completed</c> are paired by
+/// <see cref="CursorCallPairing"/> (the top-level <c>call_id</c>, else the <c>toolCallId</c>). Measured under
 /// <c>--auto-review</c>: a <c>git commit</c> the classifier sent to human approval emitted <c>started</c> and
 /// NEVER <c>completed</c> — no <c>rejected</c> anywhere — and the session still ended <c>result/success</c>, exit 0,
 /// with the commit not made. So a call still open when the terminal <c>result</c> event arrives is a REFUSAL with
-/// reason <see cref="AbandonedReason"/>, taken from the <c>started</c> event's <c>args</c> and handled exactly like
-/// a <c>rejected</c> completion: it is in <see cref="Refusals"/>, its target in the wall lists, and a shell call
-/// counts in <see cref="ShellCallsRefused"/>, never in <see cref="ShellCallsRan"/>. It is found only at the end, so
-/// it does NOT feed <see cref="ConsecutiveDenials"/>: that counter bounds a LIVE streak, and after a terminal
-/// result there is nothing left to abort (tripping it there would turn a finished session into an abort).</para>
+/// reason <see cref="AbandonedReason"/>, taken from the <c>started</c> event's <c>args</c>: it is in
+/// <see cref="Refusals"/> and its target in the wall lists, exactly like a <c>rejected</c> completion. Two
+/// differences, both deliberate:</para>
+/// <list type="bullet">
+/// <item>An abandoned SHELL call counts in <see cref="ShellCallsAbandoned"/>, not <see cref="ShellCallsRefused"/>.
+/// The every-shell-refused verdict for an ACTION reads only explicit refusals (<see cref="EveryShellCallRefused"/>):
+/// under auto-review Cursor habitually tries a <c>git commit</c> — which Guardrails never needs, the harness
+/// commits — and it is abandoned, so a lone abandoned commit must not turn an ordinary guardrail failure into a
+/// no-retry needs-human. A JUDGE counts abandoned calls too (<see cref="EveryShellCallRefusedOrAbandoned"/>): a
+/// verifier that ran none of its checks fails closed however they were stopped.</item>
+/// <item>It does NOT feed <see cref="ConsecutiveDenials"/>: that counter bounds a LIVE streak, and after a terminal
+/// result there is nothing left to abort (tripping it there would turn a finished session into an abort).</item>
+/// </list>
 ///
 /// <para><b>A session with no terminal result</b> (killed by the harness on a timeout, a stall or a cancel, or
-/// crashed) is already a failed attempt with its own failure kind. <see cref="EndOfStream"/> reports its still-open
-/// calls in <see cref="Refusals"/> with reason <see cref="InFlightReason"/> — named in the summary and the retry
-/// feedback — but they touch nothing else: not the wall lists (a command the harness killed was not refused, and the
-/// #86 repeated-refusal tracker must not count it), not the shell accounting, not the counter. The failure kind is
-/// the session's own; <see cref="CursorPromptRunner.Finish"/> never re-classifies a run that did not complete.
-/// A <c>started</c> event with no <c>call_id</c> cannot be paired and is not tracked.</para>
+/// crashed) is already a failed attempt with its own failure kind, which <see cref="CursorPromptRunner.Finish"/>
+/// never re-classifies. <see cref="EndOfStream"/> puts its still-open calls in <see cref="InFlightCalls"/> — NOT in
+/// <see cref="Refusals"/>: nothing refused them, and the retry feedback for a refusal ("the same call will be refused
+/// again") would be wrong advice about, say, a <c>dotnet test</c> the timeout cut short. They touch nothing else: not
+/// the wall lists, not the shell accounting, not the counter.</para>
 ///
 /// <para><b>What it produces.</b></para>
 /// <list type="bullet">
@@ -53,14 +60,18 @@ namespace Guardrails.Core.Prompts;
 /// <item><see cref="ConsecutiveDenials"/>, reset by every call that ran — the #452 fail-fast counter. It trips only
 /// when a caller sets <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/>; no task-action caller does
 /// today, so for cursor actions it is available but not active.</item>
-/// <item>Shell accounting (<see cref="ShellCallsRefused"/>, <see cref="ShellCallsRan"/>), which is what the
-/// runner's "every shell call was refused" verdict is decided from.</item>
+/// <item>Shell accounting (<see cref="ShellCallsRefused"/>, <see cref="ShellCallsAbandoned"/>,
+/// <see cref="ShellCallsRan"/>), which is what the runner's "every shell call was refused" verdict is decided
+/// from.</item>
+/// <item>Calls cut off by a session that ended with no result (<see cref="InFlightCalls"/>).</item>
 /// </list>
 /// <para><b>Known gaps.</b> A <c>taskToolCall</c> (Cursor's subagent) carries its own nested conversation steps;
-/// refusals INSIDE them are not read — only the top-level stream's events are. And a shell <c>success</c> whose
+/// refusals INSIDE them are not read — only the top-level stream's events are. A shell <c>success</c> whose
 /// result carries <c>isBackground</c> counts as RAN, although it may only mean "launched in the background" (a
 /// sandboxed <c>dotnet restore</c> was measured completing that way without producing its output); ordinary
-/// successful <c>--auto-review</c> shell calls carry the flag too, so it is not read as a refusal.</para>
+/// successful <c>--auto-review</c> shell calls carry the flag too, so it is not read as a refusal. And a
+/// <c>completed</c> event that arrives AFTER the terminal result for a call already reported abandoned is ignored:
+/// the call stays abandoned (the verdict is decided at the result, not revised afterwards).</para>
 /// </summary>
 internal sealed class CursorToolCallScanner : IToolDenialScanner
 {
@@ -74,13 +85,6 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
     internal const string AbandonedReason =
         "abandoned: started but never completed (awaiting an approval Cursor print mode cannot give)";
 
-    /// <summary>
-    /// The reason recorded for a call still open when a stream with NO terminal result ended (#778): the session was
-    /// killed or crashed, so the call may only have been in flight. Reported, never tracked (see the class docs).
-    /// </summary>
-    internal const string InFlightReason =
-        "abandoned: started but never completed (the session ended without a result, so it may only have been in flight)";
-
     private const string ToolCallSuffix = "ToolCall";
 
     /// <summary>The tool kinds (suffix dropped) whose target is a PATH being written.</summary>
@@ -88,6 +92,7 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
         new(StringComparer.OrdinalIgnoreCase) { "edit", "write", "delete", "multiEdit", "notebookEdit" };
 
     private readonly List<ToolRefusal> _refusals = new();
+    private readonly List<InFlightToolCall> _inFlight = new();
     private readonly List<string> _blocked = new();
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
     private readonly List<string> _commands = new();
@@ -95,8 +100,14 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
     private bool _terminalResultSeen;
     private bool _ended;
 
-    /// <summary>Every refused call, in the order it was known to be refused, with its reason.</summary>
+    /// <summary>Every refused call — rejected or abandoned — in the order it was known to be refused, with its reason.</summary>
     public IReadOnlyList<ToolRefusal> Refusals => _refusals;
+
+    /// <summary>
+    /// Calls still running when a stream with NO terminal result ended (#778) — cut off, not refused. Filled by
+    /// <see cref="EndOfStream"/>.
+    /// </summary>
+    public IReadOnlyList<InFlightToolCall> InFlightCalls => _inFlight;
 
     /// <inheritdoc />
     public IReadOnlyList<string> BlockedWritePaths => _blocked;
@@ -107,17 +118,23 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
     /// <inheritdoc />
     public int ConsecutiveDenials { get; private set; }
 
-    /// <summary>Shell calls that completed with a <c>rejected</c> result, or were abandoned at the terminal result (#778).</summary>
+    /// <summary>Shell calls that completed with a <c>rejected</c> result — an explicit refusal.</summary>
     public int ShellCallsRefused { get; private set; }
+
+    /// <summary>Shell calls still open at the terminal result (#778) — refused by abandonment.</summary>
+    public int ShellCallsAbandoned { get; private set; }
 
     /// <summary>Shell calls that completed with any other result (they RAN — success or not).</summary>
     public int ShellCallsRan { get; private set; }
 
     /// <summary>
-    /// True when the agent attempted shell and not ONE shell call ran: the session could do none of the
-    /// building, testing or git work shell exists for, whatever its terminal result says.
+    /// The ACTION rule: the agent had shell calls explicitly <c>rejected</c> and not ONE shell call ran. Abandoned
+    /// calls do not count toward it (a lone abandoned <c>git commit</c> is not a policy that refuses all shell).
     /// </summary>
     public bool EveryShellCallRefused => ShellCallsRefused > 0 && ShellCallsRan == 0;
+
+    /// <summary>The JUDGE rule: shell was attempted and not ONE call ran, whether rejected or abandoned.</summary>
+    public bool EveryShellCallRefusedOrAbandoned => ShellCallsRefused + ShellCallsAbandoned > 0 && ShellCallsRan == 0;
 
     /// <inheritdoc />
     public void Feed(string line)
@@ -149,7 +166,7 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
             {
                 // The terminal result: every call still open was abandoned (#778).
                 _terminalResultSeen = true;
-                AbandonOpenCalls(AbandonedReason, tracked: true);
+                AbandonOpenCalls();
                 return;
             }
 
@@ -161,9 +178,9 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
     }
 
     /// <summary>
-    /// The stream ended (idempotent). Calls still open are abandoned: with the full refusal treatment when a terminal
-    /// result was seen (a call that started after it), else REPORTED ONLY with <see cref="InFlightReason"/> — a session
-    /// with no terminal result already failed on its own, and a call the harness killed was not refused (#778).
+    /// The stream ended (idempotent). With a terminal result, a call still open (one that started after it) is
+    /// abandoned like any other; without one, the still-open calls were cut off by a session that already failed on
+    /// its own, and go to <see cref="InFlightCalls"/> only (#778).
     /// </summary>
     public void EndOfStream()
     {
@@ -173,21 +190,28 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
         }
 
         _ended = true;
-        AbandonOpenCalls(_terminalResultSeen ? AbandonedReason : InFlightReason, tracked: _terminalResultSeen);
+        if (_terminalResultSeen)
+        {
+            AbandonOpenCalls();
+            return;
+        }
+
+        foreach (CursorCallPairing.OpenCall call in _pairing.Drain())
+        {
+            _inFlight.Add(DescribeInFlight(call));
+        }
     }
 
-    private void AbandonOpenCalls(string reason, bool tracked)
+    private void AbandonOpenCalls()
     {
         foreach (CursorCallPairing.OpenCall call in _pairing.Drain())
         {
-            if (tracked)
+            if (IsShell(call.Kind))
             {
-                Refuse(call.Kind, call.Args, rejected: default, reason);
+                ShellCallsAbandoned++;
             }
-            else
-            {
-                _refusals.Add(Describe(call.Kind, call.Args, rejected: default, reason).Refusal);
-            }
+
+            Record(call.Kind, call.Args, rejected: default, AbandonedReason);
         }
     }
 
@@ -210,23 +234,23 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
         }
 
         ConsecutiveDenials++;
-        JsonElement args = body.TryGetProperty("args", out JsonElement a) && a.ValueKind == JsonValueKind.Object
-            ? a
-            : startedArgs;
-        Refuse(kind, args, rejected.ValueKind == JsonValueKind.Object ? rejected : default, reason: null);
-    }
-
-    /// <summary>
-    /// Record one refusal — a <c>rejected</c> completion or an abandoned call — in the list, the wall targets and the
-    /// shell accounting. A non-null <paramref name="reason"/> stands in for <c>rejected.reason</c>.
-    /// </summary>
-    private void Refuse(string kind, JsonElement args, JsonElement rejected, string? reason)
-    {
         if (IsShell(kind))
         {
             ShellCallsRefused++;
         }
 
+        JsonElement args = body.TryGetProperty("args", out JsonElement a) && a.ValueKind == JsonValueKind.Object
+            ? a
+            : startedArgs;
+        Record(kind, args, rejected.ValueKind == JsonValueKind.Object ? rejected : default, reason: null);
+    }
+
+    /// <summary>
+    /// Record one refusal — a <c>rejected</c> completion or an abandoned call — in the list and the wall targets. A
+    /// non-null <paramref name="reason"/> stands in for <c>rejected.reason</c>.
+    /// </summary>
+    private void Record(string kind, JsonElement args, JsonElement rejected, string? reason)
+    {
         (ToolRefusal refusal, string wallTarget, bool isCommand) = Describe(kind, args, rejected, reason);
         _refusals.Add(refusal);
 
@@ -267,6 +291,13 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
         return (refusal, wallTarget, isCommand);
     }
 
+    /// <summary>A call cut off by a session with no result, named as <see cref="Describe"/> names its target.</summary>
+    internal static InFlightToolCall DescribeInFlight(CursorCallPairing.OpenCall call)
+    {
+        ToolRefusal named = Describe(call.Kind, call.Args, rejected: default, reason: null).Refusal;
+        return new InFlightToolCall(named.Tool, named.Target);
+    }
+
     private static bool IsShell(string kind) => string.Equals(kind, "shell", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
@@ -298,17 +329,23 @@ internal sealed class CursorToolCallScanner : IToolDenialScanner
 }
 
 /// <summary>
-/// Pairs Cursor's <c>tool_call</c> <c>started</c> and <c>completed</c> events by their top-level <c>call_id</c>
-/// (#778), compared as an exact ordinal string (measured ids carry a newline). One instance per stream, fed every
-/// parsed event in order; shared by <see cref="CursorToolCallScanner"/> (the verdict) and the transcript renderer
-/// (the <c>REFUSED</c> line), so the two cannot disagree about which calls were abandoned. A <c>started</c> event
-/// with no <c>call_id</c> is not tracked; a <c>completed</c> event for a call already drained as abandoned is ignored
-/// (it was already reported).
+/// Pairs Cursor's <c>tool_call</c> <c>started</c> and <c>completed</c> events (#778). One instance per stream, fed
+/// every parsed event in order; shared by <see cref="CursorToolCallScanner"/> (the verdict) and the transcript
+/// renderer (the <c>REFUSED</c> line), so the two cannot disagree about which calls were left open.
+///
+/// <para><b>Identity.</b> A call is known by EVERY id its event carries, each compared as an exact ordinal string
+/// (measured <c>call_id</c>s contain a newline): the top-level <c>call_id</c>, then the <c>toolCallId</c> — which the
+/// measured streams put beside the tool inside <c>tool_call</c> — and, defensively, a <c>toolCallId</c> inside the
+/// tool object or its <c>args</c>. A <c>completed</c> event closes the open call that ANY of its ids names, so a
+/// stream that drops <c>call_id</c> on one of the pair still pairs. A <c>started</c> event with no id at all cannot
+/// be paired and is not tracked; a <c>completed</c> event for a call already drained as abandoned is ignored (it was
+/// already reported).</para>
 /// </summary>
 internal sealed class CursorCallPairing
 {
     private readonly List<string> _order = new();
     private readonly Dictionary<string, OpenCall> _open = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _alias = new(StringComparer.Ordinal);
     private readonly HashSet<string> _drained = new(StringComparer.Ordinal);
 
     /// <summary>A call that started and has not completed: its tool kind and the <c>started</c> event's <c>args</c>.</summary>
@@ -335,34 +372,37 @@ internal sealed class CursorCallPairing
             return null;
         }
 
-        // Read raw, not through StringProp: an id is compared exactly, whitespace and newlines included.
-        string? id = root.TryGetProperty("call_id", out JsonElement idElement) && idElement.ValueKind == JsonValueKind.String
-            ? idElement.GetString()
-            : null;
+        JsonElement args = tool.Body.TryGetProperty("args", out JsonElement a) && a.ValueKind == JsonValueKind.Object
+            ? a
+            : default;
+        List<string> ids = Ids(root, call, tool.Body, args);
         switch (CursorToolCallScanner.StringProp(root, "subtype"))
         {
             case "started":
-                if (id is not null && !_open.ContainsKey(id) && !_drained.Contains(id))
+                if (ids.Count > 0 && !ids.Any(_alias.ContainsKey))
                 {
-                    JsonElement args = tool.Body.TryGetProperty("args", out JsonElement a) && a.ValueKind == JsonValueKind.Object
-                        ? a.Clone() // outlives the event's JsonDocument
-                        : default;
-                    _open[id] = new OpenCall(tool.Kind, args);
-                    _order.Add(id);
+                    string key = ids[0];
+                    _open[key] = new OpenCall(tool.Kind, args.ValueKind == JsonValueKind.Object ? args.Clone() : default);
+                    _order.Add(key);
+                    foreach (string id in ids)
+                    {
+                        _alias[id] = key;
+                    }
                 }
 
                 return null;
 
             case "completed":
-                if (id is not null && _drained.Contains(id))
+                string? primary = ids.Select(id => _alias.GetValueOrDefault(id)).FirstOrDefault(k => k is not null);
+                if (primary is not null && _drained.Contains(primary))
                 {
                     return null;
                 }
 
                 JsonElement startedArgs = default;
-                if (id is not null && _open.Remove(id, out OpenCall? started))
+                if (primary is not null && _open.Remove(primary, out OpenCall? started))
                 {
-                    _order.Remove(id);
+                    _order.Remove(primary);
                     startedArgs = started.Args;
                 }
 
@@ -377,14 +417,37 @@ internal sealed class CursorCallPairing
     public IReadOnlyList<OpenCall> Drain()
     {
         var calls = new List<OpenCall>(_order.Count);
-        foreach (string id in _order)
+        foreach (string key in _order)
         {
-            calls.Add(_open[id]);
-            _drained.Add(id);
+            calls.Add(_open[key]);
+            _drained.Add(key);
         }
 
         _order.Clear();
         _open.Clear();
         return calls;
+    }
+
+    /// <summary>The event's ids, most specific first, distinct. Read raw: an id is compared exactly, whitespace included.</summary>
+    private static List<string> Ids(JsonElement root, JsonElement call, JsonElement body, JsonElement args)
+    {
+        var ids = new List<string>(2);
+        Add(root, "call_id");
+        Add(call, "toolCallId");
+        Add(body, "toolCallId");
+        Add(args, "toolCallId");
+        return ids;
+
+        void Add(JsonElement obj, string name)
+        {
+            if (obj.ValueKind == JsonValueKind.Object &&
+                obj.TryGetProperty(name, out JsonElement value) &&
+                value.ValueKind == JsonValueKind.String &&
+                value.GetString() is { Length: > 0 } id &&
+                !ids.Contains(id, StringComparer.Ordinal))
+            {
+                ids.Add(id);
+            }
+        }
     }
 }

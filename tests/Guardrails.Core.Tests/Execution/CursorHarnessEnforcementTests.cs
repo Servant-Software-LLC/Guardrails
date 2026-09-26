@@ -354,6 +354,93 @@ public sealed class CursorHarnessEnforcementTests : IDisposable
         Assert.Contains("- shell `dotnet test` — refused by Cursor approval policy", feedback, StringComparison.Ordinal);
     }
 
+    // ── #778: an ABANDONED git commit is a refusal, but not an every-shell-refused halt for an action ────
+
+    /// <summary>
+    /// The recorded T1 shape — an edit that landed and the agent's own <c>git commit</c> abandoned by auto-review, the
+    /// only shell call — run through the REAL Cursor fold, and its guardrail FAILS. This is an ordinary guardrail
+    /// failure: the task is RETRIED, never settled needs-human on the first attempt by the every-shell-refused rule;
+    /// the abandoned commit is still named in the feedback.
+    /// </summary>
+    [Fact]
+    public async Task ActionWithOnlyAnAbandonedCommit_WhoseGuardrailFails_IsRetried_NamingTheRefusal()
+    {
+        PlanDefinition plan = WritePlan(PromptRunnerKind.Cursor, checkPasses: false);
+        PromptResult folded = FoldCursorFixture("abandoned-commit-only-shell.jsonl", PromptRole.Action);
+        Assert.True(folded.Completed, folded.Summary);
+        Assert.False(folded.AllShellRefused);
+        var runner = new ScriptedRunner(folded);
+
+        RunReport report = await RunSerialAsync(plan, runner);
+
+        // RETRIED: the every-shell-refused rule would have settled on attempt 1 without retrying. The scripted runner
+        // changes nothing between attempts, so attempt 2 is identical and the ordinary #174 no-op escalation settles
+        // it; a real agent that edits differently keeps its whole budget.
+        Assert.Equal(2, runner.Calls);
+        TaskResult result = report.Tasks.Single();
+        Assert.NotEqual(TaskOutcome.Succeeded, result.Outcome);
+        Assert.DoesNotContain("its runner could run no shell command", result.Summary ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("not retried", result.Summary ?? string.Empty, StringComparison.Ordinal);
+
+        string firstFeedback = Directory
+            .GetFiles(plan.PlanDirectory, "feedback.md", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .First();
+        string feedback = File.ReadAllText(firstFeedback);
+        Assert.DoesNotContain("its runner could run no shell command", feedback, StringComparison.Ordinal);
+        Assert.Contains("## Tool calls the runner refused this attempt", feedback, StringComparison.Ordinal);
+        Assert.Contains($"— {CursorToolCallScanner.AbandonedReason}", feedback, StringComparison.Ordinal);
+    }
+
+    /// <summary>The same stream folded for a JUDGE fails closed, and GuardrailRunner fails the guardrail.</summary>
+    [Fact]
+    public async Task JudgeWithOnlyAnAbandonedShellCall_FailsClosed()
+    {
+        PromptResult folded = FoldCursorFixture("abandoned-commit-only-shell.jsonl", PromptRole.Guardrail);
+        Assert.False(folded.Completed);
+        Assert.Equal(PromptFailureKind.RunnerConfiguration, folded.FailureKind);
+        Assert.True(folded.AllShellRefused);
+
+        (GuardrailRunner runner, TaskNode task, PlanDefinition plan, string logDir) = GuardrailFixture(new VerdictWritingJudge(folded));
+
+        GuardrailRunResult result = await RunGuardrailsAsync(runner, task, plan, logDir);
+
+        GuardrailResult verdict = result.Results.Single();
+        Assert.False(verdict.Passed, "a judge whose only shell call was abandoned certified the work");
+        Assert.StartsWith("judge could not run: cursor reported success, but EVERY shell command", verdict.Reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A recorded cursor-refusals stream folded exactly as <see cref="CursorPromptRunner"/> folds a live session
+    /// (the scanner fed every line, the echo check satisfied, then <c>Finish</c>) — without launching a process.
+    /// </summary>
+    private static PromptResult FoldCursorFixture(string fixture, PromptRole role)
+    {
+        const string prompt = "the composed prompt";
+        var echo = new CursorPromptRunner.PromptEchoCheck(prompt);
+        echo.Feed(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            type = "user",
+            message = new { role = "user", content = new[] { new { type = "text", text = prompt } } }
+        }));
+
+        var scanner = new CursorToolCallScanner();
+        foreach (string line in File.ReadLines(TestPaths.Fixture(Path.Combine("cursor-refusals", fixture))))
+        {
+            scanner.Feed(line);
+        }
+
+        var session = new PromptResult
+        {
+            Completed = true,
+            IsError = false,
+            Summary = "cursor completed",
+            BlockedWritePaths = scanner.BlockedWritePaths,
+            RefusedCommands = scanner.RefusedCommands
+        };
+        return CursorPromptRunner.Finish(session, echo, scanner, CursorApprovalMode.AutoReview, [], role);
+    }
+
     // ── PR #775 B1: a judge that could not run fails closed, whatever verdict it wrote ──────────────
 
     [Fact]

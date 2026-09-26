@@ -243,7 +243,8 @@ public static class ClaudeTranscriptRenderer
     /// <c>call_id</c> through the same <see cref="CursorCallPairing"/> the verdict uses. A call still open when the
     /// terminal <c>result</c> arrives renders <c>⎿ REFUSED: shell `git commit …` — abandoned: …</c> just before the
     /// final message (its <c>started</c> line is already written, so the call is named); one still open when a stream
-    /// with no result ends renders the same line with <see cref="CursorToolCallScanner.InFlightReason"/>. Per-line
+    /// with no result ends was cut off, not refused, and renders <c>⎿ STILL RUNNING when the session ended (not
+    /// refused): shell `dotnet test`</c>. Per-line
     /// independence is unchanged — a malformed line is still skipped on its own and poisons nothing — and
     /// <see cref="Render"/> and <see cref="StreamingWriter"/> share this class, so byte-identity holds. A Claude
     /// stream has no <c>tool_call</c> events and renders nothing here.
@@ -268,11 +269,22 @@ public static class ClaudeTranscriptRenderer
             }
         }
 
-        public void RenderStillOpen(StringBuilder text) =>
-            RenderAbandoned(
-                _pairing.Drain(),
-                _resultSeen ? CursorToolCallScanner.AbandonedReason : CursorToolCallScanner.InFlightReason,
-                text);
+        public void RenderStillOpen(StringBuilder text)
+        {
+            if (_resultSeen)
+            {
+                RenderAbandoned(_pairing.Drain(), CursorToolCallScanner.AbandonedReason, text);
+                return;
+            }
+
+            foreach (CursorCallPairing.OpenCall call in _pairing.Drain())
+            {
+                InFlightToolCall cut = CursorToolCallScanner.DescribeInFlight(call);
+                text.Append("  ").Append(ResultBullet).Append(" STILL RUNNING when the session ended (not refused): ")
+                    .Append(Truncate(CollapseWhitespace(cut.ToString()), MaxResultLineChars + MaxArgValueChars))
+                    .Append('\n');
+            }
+        }
 
         private static void RenderAbandoned(IReadOnlyList<CursorCallPairing.OpenCall> calls, string reason, StringBuilder text)
         {

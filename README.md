@@ -356,9 +356,12 @@ with `--force`.
 end with "success". Guardrails reads each tool call's own result. A command that Cursor started but never
 finished before the session ended also counts as refused. Under `"auto-review"` this happens when Cursor's
 reviewer holds a command for an approval that headless mode can't give, such as the agent's own `git commit`.
-Such a command is reported as `abandoned: started but never completed`. If Guardrails stopped the session
-itself (a timeout or a stall), the unfinished command is listed in the feedback, but the attempt keeps its own
-failure reason.
+Such a command is reported as `abandoned: started but never completed`. It's named like any refused
+command, but it doesn't count toward "every shell command was refused" for a task's own agent, so the task
+retries as usual. A Cursor prompt guardrail (a judge) whose commands were all refused or abandoned still fails.
+If Guardrails stopped the session itself (a timeout or a stall), a command that was still running is not
+treated as refused. The retry feedback lists it as still running, and the attempt keeps its own failure
+reason.
 
 - If **every** shell command the agent tried was refused, the task's guardrails still run, because the
   edits may be right. If they pass, the task succeeds and its summary lists the refused commands. If they

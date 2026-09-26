@@ -190,6 +190,14 @@ public sealed record PromptResult
     public IReadOnlyList<ToolRefusal> RefusedToolCalls { get; init; } = [];
 
     /// <summary>
+    /// Tool calls still RUNNING when a session that produced no terminal result was stopped — killed by the harness
+    /// (timeout, stall, cancel) or crashed (#778). NOT refusals: nothing refused them, their results simply never came
+    /// back, so they never feed <see cref="RefusedToolCalls"/>, the wall lists or the every-shell-refused verdict.
+    /// Named in the summary and, under a neutral heading, in <c>feedback.md</c>. Filled today by the Cursor runner.
+    /// </summary>
+    public IReadOnlyList<InFlightToolCall> InFlightToolCalls { get; init; } = [];
+
+    /// <summary>
     /// True when the session attempted shell and NOT ONE shell call ran — every one was refused by the runner's
     /// approval policy (#773). The session could build, test and run git in no way at all, whatever its terminal
     /// result said. For an ACTION the run still counts as completed and the task's guardrails decide (outcome-aware,
@@ -216,6 +224,18 @@ public sealed record ToolRefusal(string Tool, string Target, string Reason)
 {
     /// <summary>The one-line rendering every surface uses: <c>shell `git status` — refused by …</c>.</summary>
     public override string ToString() => $"{Tool} `{Target}` — {Reason}";
+}
+
+/// <summary>
+/// One tool call still running when its session was stopped with no terminal result (#778) — see
+/// <see cref="PromptResult.InFlightToolCalls"/>. Not a refusal.
+/// </summary>
+/// <param name="Tool">The tool (<c>shell</c>, <c>edit</c>, …).</param>
+/// <param name="Target">What it ran on: the command, or the path.</param>
+public sealed record InFlightToolCall(string Tool, string Target)
+{
+    /// <summary>The one-line rendering every surface uses: <c>shell `dotnet test`</c>.</summary>
+    public override string ToString() => $"{Tool} `{Target}`";
 }
 
 /// <summary>
