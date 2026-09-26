@@ -155,10 +155,28 @@ public static class JournalTierSpend
         // A rung with tokens and no cost prints the volume ALONE — never "$0.00", a number the runner
         // never said. A RECORDED $0 is a reported fact and does print (§9.3's `easy: … / $0`), the same
         // distinction JournalCost.Total already draws between a null cost and a zero one.
-        string? tokens = rung.TotalTokens is { } total ? $"{Volume(total)} tok" : null;
+        // #782 review (corr N2): gateway tokens are LABELLED and kept out of the "tok / $" pair, so a mixed rung never
+        // reads as though the gateway's volume cost the paid runner's dollars.
+        long gatewayTokens = rung.GatewayTokens ?? 0;
+        long? paidTokens = rung.TotalTokens is { } total ? total - gatewayTokens : null;
+        string? gateway = gatewayTokens > 0 ? $"{Volume(gatewayTokens)} tok (gateway)" : null;
+        string? tokens = paidTokens is { } paid && (paid > 0 || gateway is null) ? $"{Volume(paid)} tok" : null;
         string? money = rung.CostUsd is { } cost
             ? "$" + cost.ToString("F4", CultureInfo.InvariantCulture)
             : null;
+
+        string? paidPart = (tokens, money) switch
+        {
+            ({ } t, { } m) => $"{t} / {m}",
+            ({ } t, null) => t,
+            (null, { } m) => m,
+            _ => null
+        };
+
+        if (gateway is not null)
+        {
+            return paidPart is null ? $"{rung.Tier}: {gateway}" : $"{rung.Tier}: {paidPart} + {gateway}";
+        }
 
         if (tokens is not null && money is not null)
         {
@@ -201,6 +219,7 @@ public static class JournalTierSpend
         private long inputTokens;
         private long outputTokens;
         private bool anyUsage;
+        private long gatewayTokens;
 
         internal void Add(AttemptRecord attempt)
         {
@@ -215,6 +234,11 @@ public static class JournalTierSpend
                 inputTokens += usage.InputTokens;
                 outputTokens += usage.OutputTokens;
                 anyUsage = true;
+
+                if (attempt.Provenance?.Gateway is not null)
+                {
+                    gatewayTokens += (long)usage.InputTokens + usage.OutputTokens;
+                }
             }
         }
 
@@ -223,7 +247,8 @@ public static class JournalTierSpend
             Tier = tier,
             CostUsd = anyCost ? costUsd : null,
             InputTokens = anyUsage ? inputTokens : null,
-            OutputTokens = anyUsage ? outputTokens : null
+            OutputTokens = anyUsage ? outputTokens : null,
+            GatewayTokens = gatewayTokens > 0 ? gatewayTokens : null
         };
     }
 }
@@ -264,4 +289,10 @@ public sealed record TierSpend
     /// </summary>
     public long? TotalTokens =>
         InputTokens is null && OutputTokens is null ? null : (InputTokens ?? 0L) + (OutputTokens ?? 0L);
+
+    /// <summary>
+    /// The part of <see cref="TotalTokens"/> moved by claude GATEWAY attempts (#782), or null when none — rendered with a
+    /// <c>(gateway)</c> label, apart from the paid runner's <c>tok / $</c> pair.
+    /// </summary>
+    public long? GatewayTokens { get; init; }
 }

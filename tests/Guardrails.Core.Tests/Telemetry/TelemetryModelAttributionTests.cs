@@ -206,8 +206,7 @@ public sealed class TelemetryModelAttributionTests : IDisposable
             string? token = StringOrNull(row, "modelAttribution");
             Assert.NotNull(token);
             Assert.Contains(token, ModelAttribution.AllTokens);
-            // 3 introduced modelAttribution (#577); later versions (#782: 4) keep writing it.
-            Assert.True(row.GetProperty("schemaVersion").GetInt32() >= 3);
+            Assert.Equal(TelemetryRow.CurrentSchemaVersion, row.GetProperty("schemaVersion").GetInt32());
         }
     }
 

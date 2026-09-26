@@ -188,6 +188,10 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 IsError = true,
                 FailureKind = PromptFailureKind.RunnerConfiguration,
                 RunnerConfigurationRemedy = reason,
+
+                // KNOWN zero, not "not reported" (#782 review, N14): nothing was sent, so this refusal consumed no tokens
+                // and must not be counted among the gateway dispatches whose usage went unmeasured.
+                Usage = new PromptUsage { InputTokens = 0, OutputTokens = 0 },
                 Summary = $"claude gateway dispatch refused before launch — {reason}{suffix}"
             },
             gateway,

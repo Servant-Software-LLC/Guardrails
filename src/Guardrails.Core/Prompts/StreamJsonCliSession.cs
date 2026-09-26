@@ -376,7 +376,7 @@ internal static class StreamJsonCliSession
             }
 
             bool completed = process.Succeeded && result.HasResult;
-            string summary = BuildSummary(process, result, dialect.Label);
+            string summary = BuildSummary(process, result, dialect.Label, dialect.CostIsFiction);
             PromptFailureKind failureKind = ClassifyFailure(process, result);
 
             // #767: the CLI's own configuration refused the run (Cursor: "your team administrator has disabled
@@ -666,7 +666,7 @@ internal static class StreamJsonCliSession
         return lines;
     }
 
-    private static string BuildSummary(ProcessResult process, ClaudeResult result, string label)
+    private static string BuildSummary(ProcessResult process, ClaudeResult result, string label, bool costIsFiction = false)
     {
         if (process.TimedOut)
         {
@@ -701,7 +701,13 @@ internal static class StreamJsonCliSession
             return $"{label} produced no terminal result message";
         }
 
-        string cost = result.CostUsd is { } c ? $", cost ${c:0.0000}" : string.Empty;
+        // #782 review (corr W1): a gateway dispatch has no cost to show, so its token usage stands in — every line that
+        // quotes this summary (a judge, a failed action, a needs-human or overhead line) then still shows its spend.
+        string cost = costIsFiction
+            ? result.Usage is { } usage
+                ? $", {Journal.SpendFormat.Tokens((long)usage.InputTokens + usage.OutputTokens)}"
+                : ", token usage not reported"
+            : result.CostUsd is { } c ? $", cost ${c:0.0000}" : string.Empty;
         string turns = result.NumTurns is { } t ? $", {t} turn(s)" : string.Empty;
         return result.IsError
             ? $"{label} reported is_error{cost}{turns}"

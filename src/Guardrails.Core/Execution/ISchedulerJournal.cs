@@ -62,7 +62,7 @@ public interface ISchedulerJournal
     /// identity and token usage, which a null cost would otherwise leave unrecorded. The default forwards the cost
     /// only, so fakes that do not model cost need not change.
     /// </summary>
-    /// <param name="source"><c>ai-merge</c>, <c>ai-triage</c> or <c>overwatch</c>.</param>
+    /// <param name="source"><c>ai-merge</c>, <c>ai-triage</c>, <c>overwatch</c> or <c>breakdown</c>.</param>
     /// <param name="result">The dispatch's result.</param>
     void AddOverheadDispatch(string source, Prompts.PromptResult result) => AddOverheadCost(result.CostUsd);
 

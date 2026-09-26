@@ -181,6 +181,8 @@ public sealed class ClaudeGatewayRunnerTests : IDisposable
         Assert.Equal(1000, result.Usage!.InputTokens);
         Assert.Equal(200, result.Usage.OutputTokens);
         Assert.DoesNotContain("cost $", result.Summary, StringComparison.Ordinal);
+        // #782 review (corr W1): the tokens stand in for the cost in the summary every surface quotes.
+        Assert.Contains("claude completed, 1.2k tok, 2 turn(s)", result.Summary, StringComparison.Ordinal);
         Assert.EndsWith($"(via gateway {Gateway})", result.Summary, StringComparison.Ordinal);
         Assert.Equal(Gateway, result.Gateway);
         Assert.Equal(ClaudeGatewayConfig.UnverifiedBackend, result.BackendModel);

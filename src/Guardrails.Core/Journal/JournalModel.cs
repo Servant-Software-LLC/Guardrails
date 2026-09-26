@@ -1426,14 +1426,14 @@ public sealed record AttemptJudge
 }
 
 /// <summary>
-/// One OVERHEAD prompt dispatch — ai-merge, ai-triage or the overwatcher — that went through a claude gateway (#782
+/// One OVERHEAD prompt dispatch — ai-merge, ai-triage, the overwatcher or a between-wave breakdown — that went through a claude gateway (#782
 /// §4). Overhead spend is otherwise recorded only as <see cref="JournalDocument.OverheadCostUsd"/>, and a gateway
 /// dispatch reports no cost, so without this record its gateway, backend and token usage would leave no trace in
 /// <c>run.json</c> at all.
 /// </summary>
 public sealed record OverheadGatewayDispatch
 {
-    /// <summary>What dispatched it: <c>ai-merge</c>, <c>ai-triage</c> or <c>overwatch</c>.</summary>
+    /// <summary>What dispatched it: <c>ai-merge</c>, <c>ai-triage</c>, <c>overwatch</c> or <c>breakdown</c> (a between-wave JIT breakdown).</summary>
     public required string Source { get; init; }
 
     /// <summary>The gateway's normalized <c>baseUrl</c>, without userinfo.</summary>
