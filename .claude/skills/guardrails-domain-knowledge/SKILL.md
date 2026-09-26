@@ -1211,6 +1211,30 @@ tiering as a working feature.
   `permissionMode`/`allowedTools`/`maxTurns`/`maxOutputTokens` key the block declares. Claude's
   `You've hit your individual spend limit` is now `Transient` in the SHARED classifier (a deliberate Claude
   behavior change). Manual live smoke: `scripts/smoke/cursor-live-smoke.ps1` (spends credit; not CI).
+- **claude GATEWAY blocks (#782, SSOT section 9.10) -- a local model behind Claude Code, not a new kind.** A
+  `kind: "claude"` block with `baseUrl` (plus optional `authTokenEnv`, `backendModel`, and `contextTokens` =
+  the backend's PER-SLOT window) runs Claude Code through an Anthropic-compatible gateway (LiteLLM in front of
+  `llama-server`); it replaces #570's `claude-local` wrapper. The operator starts the services; the harness
+  never does. **Gateway-ness lives on the runner INSTANCE (D3):** every dispatch to it is a gateway dispatch,
+  whatever produced it. **Authority over the child (D1):** scrub inherited `ANTHROPIC_*` / `CLAUDE_CODE_USE_*` /
+  OAuth / `CLAUDE_CONFIG_DIR`; set the OWNED values (base URL, token or the `guardrails-gateway-no-auth`
+  placeholder, every model alias + `CLAUDE_CODE_SUBAGENT_MODEL` pinned to `model`, the context cap,
+  nonessential traffic off, and an isolated per-run `CLAUDE_CONFIG_DIR` at `logs/<runId>/claude-config/`);
+  pass ONE composed `--settings` (owned env, `model` = `fallbackModel` = the block's model, the containment hook
+  merged in). Managed settings and project settings it cannot outrank are detected by the pre-DAG preflight,
+  which HALTS. **Backend identity (D2):** the preflight resolves LiteLLM `/model/info` → normalized `api_base`
+  → `llama-server /props`, halts on a `backendModel` mismatch, a `contextTokens` above per-slot `n_ctx`, or two
+  models on one loaded model (#760), and otherwise records `BackendModel: "unverified"` -- never a guess.
+  Point-in-time. **Cost is null at the source; tokens render in its place** (`48.2k tok (gateway)`, mixed
+  `$X + Nk tok (gateway)`), and `maxCostUsd` does not bind on gateway spend (a run-start `Note:` says how far
+  it binds). Provenance/judge/telemetry/events carry `gateway` + `backendModel`; overhead dispatches go to
+  `run.json` `overheadGatewayDispatches[]`. Disclosed residuals: not supported by Anthropic for non-Claude
+  models; some features may still call `api.anthropic.com`; agent shells can read the token; the fresh config
+  dir means no user CLAUDE.md/skills/MCP and less project config without recorded trust; managed settings are
+  read from JSON files only (no Windows registry / macOS MDM). Codes: GR2084 (malformed block, owned env,
+  `--settings` in `extraArgs`), GR2085 (Claude model name reaches a gateway; `action.model` pins warned but not
+  probed), GR2086 (two models, one gateway, `maxParallelism > 1`). `guardrails providers check <plan> <block>`
+  runs a `tool_use` round trip through the gateway.
 - **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
   `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
   past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
@@ -1763,7 +1787,9 @@ lands at that same path once drained.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2083**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2087**
+  (**GR2083** is RESERVED BY NAME for #544 native local-inference actions -- not free; #782 took GR2084-GR2086
+  around it)
   (**GR2071** = PromptInstructsUngrantedCommand #587 check A -- see the Prompt/grant contradiction bullet)
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2054**
@@ -1780,7 +1806,7 @@ lands at that same path once drained.
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
   BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
   IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
-  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9. **GR2081** = CursorApprovalModeInvalid and **GR2082** = CursorApprovalFlagInExtraArgs, both #767/SSOT section 9.9.
+  BreakdownIntentDeclaresNothing, both #402/doc 20. GR2078 = PostDeliveryWaveMissingEntryPreflight and GR2079 = DeliveringWaveMissingExitGate, both #525/doc 39. **GR2080** = CursorRunnerUngoverned (a cursor block runs with no tool allowlist or containment hook), #764/SSOT section 9.9. **GR2081** = CursorApprovalModeInvalid and **GR2082** = CursorApprovalFlagInExtraArgs, both #767/SSOT section 9.9. **GR2084** = ClaudeGatewayBlockInvalid (ERROR), **GR2085** = ClaudeModelNameToGateway (WARNING) and **GR2086** = ClaudeGatewayModelsShareEndpoint (WARNING), all #782/SSOT section 9.10.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are
