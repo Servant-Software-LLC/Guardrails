@@ -106,17 +106,33 @@ model_list:
 litellm --config litellm.yaml --host 127.0.0.1 --port 4000
 ```
 
-If your LiteLLM config sets a `master_key`, export it under a name you choose, and you'll give Guardrails that
-**name**, never the key:
+**Does your LiteLLM require a key?** If its config (or environment) sets a `master_key`, then **every** request
+must carry that key, including Guardrails' requests. **A `claude-local` setup does:** it keeps the key as
+`LITELLM_MASTER_KEY` in its `.env` file. Find out with a request that carries no key:
 
 ```bash
-export LITELLM_KEY='sk-...'
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4000/v1/models
 ```
+
+- `200` means no key is needed. Skip to the check below.
+- `400` (LiteLLM's `"No connected db."`), `401` or `403` means a key is required. Export it in the shell you'll run
+  Guardrails from. You'll give Guardrails the variable's **name**, never the key:
+
+  ```bash
+  # claude-local setup: load its .env (exports LITELLM_MASTER_KEY)
+  set -a; source <claude-local folder>/.env; set +a
+  # any other setup:
+  export LITELLM_MASTER_KEY='sk-...'
+  ```
+
+  Then add `"authTokenEnv": "LITELLM_MASTER_KEY"` to each gateway block in step 5. Without it, Guardrails sends a
+  placeholder token, LiteLLM rejects it, and the run stops before any task with **"the gateway refused the
+  credential"** (#791).
 
 **Check:**
 
 ```bash
-curl -s http://127.0.0.1:4000/v1/models ${LITELLM_KEY:+-H "Authorization: Bearer $LITELLM_KEY"} \
+curl -s http://127.0.0.1:4000/v1/models ${LITELLM_MASTER_KEY:+-H "Authorization: Bearer $LITELLM_MASTER_KEY"} \
   | python3 -c 'import sys,json; print([m["id"] for m in json.load(sys.stdin)["data"]])'
 ```
 
@@ -178,7 +194,8 @@ In the plan's `guardrails.json`, set `maxParallelism` and replace `promptRunners
 - **`backendModel`** is what the server must have *loaded*. Include the version (`qwen3.6-35b-a3b`, not `qwen`).
   A mismatch stops the run before any task.
 - **`contextTokens`** is the per-slot window from step 2. The run stops if it is larger than the slot.
-- If you exported `LITELLM_KEY`, add `"authTokenEnv": "LITELLM_KEY"` to each block.
+- If step 3 showed that LiteLLM requires a key, add `"authTokenEnv": "LITELLM_MASTER_KEY"` to each block. Run
+  every `guardrails` command below from the shell that exported it.
 - **Running one model only:** keep just its block and point `default` at it. To send one task to 3.8, set
   `"runner": "qwen38"` in that task's `action`.
 - **Timeouts:** local models are slower than Claude, especially Qwen 3.8. If attempts end as `timeout`, raise the
@@ -220,7 +237,7 @@ It needs PowerShell 7 and the Guardrails source checkout from step 1:
 cd <Guardrails checkout>
 pwsh scripts/smoke/claude-gateway-live-smoke.ps1 -GatewayUrl http://127.0.0.1:4000 \
   -Model Qwen -BackendModel qwen3.6-35b-a3b -ContextTokens 65536
-# add: -AuthTokenEnv LITELLM_KEY   if you use a master key
+# add: -AuthTokenEnv LITELLM_MASTER_KEY   if LiteLLM requires a key (step 3)
 ```
 
 Re-run it after every Claude Code upgrade.
@@ -262,7 +279,7 @@ here: plan-breakdown is the most demanding step in the pipeline.
 cd <your repo>
 env -u ANTHROPIC_API_KEY \
   ANTHROPIC_BASE_URL=http://127.0.0.1:4000 \
-  ANTHROPIC_AUTH_TOKEN="${LITELLM_KEY:-local-gateway}" \
+  ANTHROPIC_AUTH_TOKEN="${LITELLM_MASTER_KEY:-local-gateway}" \
   ANTHROPIC_DEFAULT_OPUS_MODEL=Qwen3.8 ANTHROPIC_DEFAULT_SONNET_MODEL=Qwen3.8 \
   ANTHROPIC_DEFAULT_HAIKU_MODEL=Qwen3.8 CLAUDE_CODE_SUBAGENT_MODEL=Qwen3.8 \
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 \
@@ -302,6 +319,7 @@ The per-attempt details live in `<plan>/state/run.json`: each attempt's provenan
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `providers check` UNMET, or the agent prints JSON-looking "tool calls" instead of acting | `llama-server` started without `--jinja` | Restart it with `--jinja` |
+| Preflight: "the gateway refused the credential" (often HTTP 400 `No connected db.` from LiteLLM) | LiteLLM has a `master_key`, and the block has no `authTokenEnv` (so a placeholder token was sent), or the variable holds the wrong key | Step 3: export the key and set `"authTokenEnv": "LITELLM_MASTER_KEY"` |
 | Preflight: gateway not answering | LiteLLM or `llama-server` isn't running, or the wrong port | Re-run the checks in steps 2 and 3 |
 | Preflight: `backendModel` mismatch | The server has a different model loaded, or `--alias` is wrong | Check `/props` (step 2); fix the launch line or the block |
 | Preflight: two model names share one loaded model | Both LiteLLM entries point at the same server | Give each `model_name` its own server and port |
