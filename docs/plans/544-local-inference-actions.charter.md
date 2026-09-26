@@ -20,6 +20,15 @@ token cap), #760 (silent model substitution), #764/#773 (the Cursor precedent fo
 >
 > This revision makes serial mode the primary case throughout and closes all three blockers (§5.3, §6). It
 > also adopts the nine weaker findings, each noted where it lands, and adds one question (`self-grading`).
+>
+> **Revision note (round 2, maintainer review of `648169ed`).** All five questions were resolved as
+> recommended (§12). Three comments are addressed:
+> - The design now asks whether to make Claude Code over a gateway first-class **before** building the native
+>   runner (question `sequencing`; §10 Phase 0).
+> - Serial mode is reframed as the weaker case that is hardened first, not the only supported mode. The
+>   attack table is now a full serial × worktree matrix, and there is a section on parallel local runs.
+> - The alternatives section states the design is clean-room, and evaluates Qwen Code (question
+>   `qwen-code-eval`).
 
 ---
 
@@ -34,18 +43,38 @@ Today a local model can only judge. Every action goes through a vendor CLI, incl
 supported. This design is about the destination: **the harness's own prompt runner executes every tool call
 itself.**
 
+**Whether to build it now is a separate decision.** A gateway-backed Claude Code (the `claude` runner pointed
+at a local model through an Anthropic-compatible gateway) delivers local actions with no reimplementation, and
+it keeps Claude Code's containment hook and permission scanners. Question `sequencing` asks whether to make
+that path first-class and dogfood it before committing to native Phase 1 (§10). The rest of this document
+designs native actions so that the choice is between two costed options.
+
 The decider is containment (#544, plan 28 §3.2(a)). A write-capable local actor must never produce **a green
 run over a tree the harness cannot account for.**
 
-**The primary deployment is serial mode.** The maintainer's configuration is `maxParallelism: 1` (one
-`llama-server`, one loaded model), and `SchedulerFactory` therefore runs **serial**
-(`SchedulerFactory.cs:431`, `SerialByConfiguration`). That means:
+**Both execution modes are supported and tested. Serial mode is hardened first, because it is the weaker
+case, and because it is the maintainer's configuration.** `maxParallelism: 1` runs serial
+(`SchedulerFactory.cs:431`, `SerialByConfiguration`). In serial mode:
 
 - the write root is the workspace, including its real `.git` directory;
 - there is no phase-1 git-diff check (`enforcedWriteScope` is null in serial mode, `TaskExecutor.cs:868`);
 - the plan folder, its `logs/` and the run state usually sit **inside** that root.
 
-Every claim in this document is made for serial mode first. Worktree mode is the secondary case.
+Every boundary claim is therefore made for serial mode first. Worktree mode (`maxParallelism > 1`) adds a
+second line (the phase-1 diff) and adds its own hazards (the plan-folder copy in each segment, sibling
+worktrees). §9's attack table runs **every row in both modes**, apart from the rows that exist in only one
+mode, and each of those says why.
+
+**Parallel local runs.** `llama-server` holds one loaded model and serves concurrent requests through its
+parallel slots (`--parallel N`).
+- **Parallel tasks sharing one block (one model) work.** Note that the server's `-c` is divided across the
+  slots, so `contextTokens` must be the **per-slot** window (`-c / N`). If it is set higher, the §6.1
+  after-check fails the attempt as truncation.
+- **Mixing two local models in one parallel run is disclosed, not forbidden.** On one plain `llama-server`
+  endpoint it cannot work, and the preflight model-listing check already halts it (#760). Behind a
+  model-swapping proxy it works but thrashes, reloading the model on almost every request. Two servers on two
+  ports work if memory allows. `GR2083` adds a line when `maxParallelism > 1` and two or more models share
+  one endpoint.
 
 **Narrowing.** "Run commands" is read as *"give the model a build/test feedback loop"*, not *"give the model a
 shell"*. §3.3 explains why only the first can be contained on three operating systems in v1. Question
@@ -53,7 +82,7 @@ shell"*. §3.3 explains why only the first can be contained on three operating s
 
 ### Goals
 
-1. A task action routed to an `openai-compat` block produces a real diff, in serial mode (primary) and in
+1. A task action routed to an `openai-compat` block produces a real diff, in serial mode (hardened first) and in
    worktree mode, on Windows, macOS and Linux.
 2. The write boundary is **enforced in-process at the moment of the tool call**. It holds in serial mode,
    where the Claude path has no containment hook at all.
@@ -189,15 +218,20 @@ provides the loop without accepting a single model-authored command.
   start when the workspace is a git repository. The stream log also keeps the **full arguments** of every
   `Write` and `Edit`.
 
-### 3.4 Rejected alternatives
+### 3.4 Alternatives
+
+**This design is clean-room.** It draws only on public documentation, observed behavior and Guardrails' own
+code. It does not use the leaked Claude Code source or any port of it, which is proprietary, and neither may
+its implementation.
 
 :::comparison
-| Alternative | Why rejected |
+| Alternative | Verdict |
 |---|---|
-| **Keep `claude-local` as the destination** | It stays the supported bridge. It needs Claude Code and a LiteLLM model map that fails silently (#570 items 1–2), and the maintainer's position is that local actions belong in the harness's own runner. |
-| **Wrap an open-source agent CLI (Aider, OpenHands, opencode, Goose)** | That is the Cursor shape: an uncontained writer checked after the fact (§9.9), plus a new dialect to quarantine. It puts a vendor harness back in the loop. |
+| **Claude Code over a gateway (`claude-local` today), made first-class** | **Not rejected; it is the sequencing question.** It works now with no reimplementation, and it keeps Claude Code's containment hook and permission scanners. Its costs: roughly 20K tokens of system prompt and tool schemas on every turn, a large fixed share of a 64K local window; an Anthropic-to-OpenAI tool-call translation layer (LiteLLM) as an extra place for malformed calls; coupling to a vendor binary we do not control; and a model map that fails silently today (#570 items 1–2). |
+| **Qwen Code as a `kind`, like `cursor`** (QwenLM/qwen-code, Apache-2.0, a Gemini CLI fork) | **Evaluate before deciding** (question `qwen-code-eval`). It is Qwen-native, talks to OpenAI-compatible endpoints and has a headless mode, so it would be a vendor-neutral actor for the company-approved Qwen models. Four things must be verified first: (1) the headless output stream, whether it has a stable machine-readable format that carries tool calls, refusals and a terminal result; (2) the tool-approval and permission model, whether a per-tool allowlist can be set headless or it is all-or-nothing like Cursor's print mode; (3) containment, whether it offers a hook, a sandbox or a workspace restriction, or would be an uncontained writer drawing a `GR2080`-style warning; (4) license and telemetry, meaning Apache-2.0 compatibility of anything vendored and whether it phones home. |
+| **Other open-source agent CLIs: OpenHands (MIT), Aider (Apache-2.0), Goose (Apache-2.0), opencode** | Same shape as Qwen Code but not Qwen-native. Each is at best a `cursor`-like uncontained writer checked after the fact (§9.9). Qwen Code is evaluated first as the representative. |
 | **A sibling kind (`local-agent`)** | Same wire protocol and same class; plan 28 §3.1 rejected `local` on those grounds. What varies is capability per invocation, which the `WriteGrant` expresses. |
-| **Generate a hook for this runner too** | Brings back the out-of-process re-implementation, and a hook would still be absent in serial mode, which is the primary case. |
+| **Generate a hook for this runner too** | Brings back the out-of-process re-implementation, and a hook would still be absent in serial mode, the case hardened first. |
 | **Post-hoc only (the Cursor model)** | Serial mode has no diff check at all, so nothing would be seen. |
 | **Patch mode (one unified diff per attempt)** | No read loop and no feedback, and weak models handle the diff format poorly. A possible later tier for tiny edits. |
 | **Command-text allowlist, or an unsandboxed argv `Run` tool** | An allowlist on `argv[0]` contains nothing once `dotnet` or `npm` runs model-written code. It is only sound inside an OS sandbox (Phase 3). |
@@ -267,7 +301,7 @@ Phase 3 sandbox bet, which covers every runner.
 
 ### 5.1 Summary
 
-| Surface | **Serial mode (primary)** | Worktree mode | Label |
+| Surface | **Serial mode (hardened first)** | Worktree mode | Label |
 |---|---|---|---|
 | **Reads** | workspace + plan folder | worktree + plan folder | ENFORCED for tools; DISCLOSED through `RunCheck` (T16) |
 | **Writes** | workspace ∩ grant scope, minus hard exclusions (the plan folder, run logs, journal, other worktrees, `.git`) and protected segments, minus git-ignored targets; no-follow; atomic | the same, with the worktree as root | ENFORCED |
@@ -460,7 +494,7 @@ grant set is definitively empty. Every command candidate in the prompt fires, wi
 changes and no attestation goes stale.
 
 ```jsonc
-"maxParallelism": 1,                        // one llama-server ⇒ serial mode (the primary case)
+"maxParallelism": 1,                        // one llama-server ⇒ serial mode; see "Parallel local runs" for maxParallelism > 1
 "promptRunners": {
   "default": "qwen36",
   "qwen36": {
@@ -530,53 +564,60 @@ changes and no attestation goes stale.
 The seam is the **OpenAI wire plus the real filesystem**. Every row drives the real runner, with the real
 `WritePolicy`, against `FakeOpenAiServer`.
 
-**The primary fixture is serial mode:** a real git workspace with the **plan folder inside it** and
-`writeScope: ["**"]` unless the row says otherwise. Worktree-mode twins are marked **(WT)**.
+**Two fixtures, and every row runs in both:**
+- **S (serial):** a real git workspace with the **plan folder inside it**;
+- **WT (worktree):** `maxParallelism: 2` with a committed plan folder, so every segment worktree carries a
+  copy of it.
+
+Both use `writeScope: ["**"]` unless the row says otherwise. The **Modes** column is `S + WT` unless the row
+exists in only one mode, and then it says why.
 
 **Assertions:** each row asserts on **disk**: sentinel bytes and timestamps unchanged, and target files absent
 or unchanged. Each row also has a **firing-control twin** in which the same call targets an allowed path and
 the write is asserted to happen. Windows rows must create their junctions or short names and **fail, never
 skip**, when they cannot.
 
-| # | The server scripts | The test asserts |
-|---|---|---|
-| A1 | `Write` to an absolute path outside the workspace | sentinel unchanged; refusal names the rule |
-| A2 | `src/../../outside.txt`, mixed separators | nothing outside |
-| A3 | a write through a committed symlink (junction on Windows) to outside | outside dir unchanged |
-| A4 | a hard link to an outside file | outside inode unchanged |
-| A5 | (Win) `a.cs:s`, `CON`, `\\?\…`, UNC, `GIT~1\hooks\pre-commit`, `.git.\hooks\x` | none written; `.git/hooks` unchanged |
-| A6 | `.git/hooks/pre-commit`, `.GIT/config`, `Write` to `.git` itself, `.git` with a U+200D inside it; **(WT)** `.git` as a file | none written; a following harness commit runs no hook |
-| A7 | `.claude/settings.json` under `["**"]`, then under `[".claude/skills/"]` | refused both times; `.claude/skills/x/SKILL.md` allowed in the second |
-| A8 | **(B1)** with the plan folder inside the workspace and scope `**`: own `guardrails/01.sh`, a **downstream** task's `guardrails/`, `guardrails.json`, and the journal under `logs/` | all unchanged; the tamper check did not fire (policy held first) |
-| A8-WT | **(B1, WT)** the same targets through the plan folder's **image inside the segment worktree** (committed plan folder, scope `**`) | refused; after the segment commit and delivery, the downstream task's `guardrails/` in the main checkout is byte-identical |
-| A8b | **(WT)** a write under a sibling segment worktree; a write under `Root` itself | sibling refused; `Root` write allowed (the worktrees-root exclusion does not swallow `Root`) |
-| A8c | `git` made unspawnable mid-session (a `PATH` without git); then `check-ignore` stubbed to exit 128 | every write refused, naming the error; nothing written |
-| A8d | a tracked `.husky/pre-commit` with `core.hooksPath=.husky`, scope `**`; `node_modules/x/index.js` under `**` | both refused without a literal scope entry |
-| A9 | out-of-scope in-workspace write; **(WT)** phase 1 reports no offense | refused at call time |
-| A10 | a judge's staged `VERDICT_OUT` | refused; a following judge that writes nothing fails |
-| A11 | `Delete` out of scope; `Delete` a directory | refused |
-| A12 | **(W1)** `obj/X.Tests.csproj.evil.targets`, in scope and git-ignored | refused; the test run still executes tests |
-| A13 | `.gitignore` edit under `["**"]` | refused without a literal entry |
-| A14 | **(B2)** the state fragment carries `needsHarnessWrite` for `.git/hooks/pre-commit` and for an in-scope file | attempt fails; neither is written |
-| A15 | over-cap writes | tool errors; bytes on disk ≤ caps |
-| A16 | `<tool_call>` text and a fenced `{"name","arguments"}` block, with zero structured calls | nothing written; `needs-human` with the `--jinja` remedy |
-| A17 | **(W5)** a prose-only final message from an Action | `Error`, not success |
-| A18 | **(W5)** an orphan `</think>`; an unterminated `<think>` | history stripped correctly; the second is `Error` |
-| A19 | a `Bash` call; `Write` on a Guardrail; `RunCheck` `../x`; `RunCheck` with extra arguments | refused; no process started (counter on the injected closure) |
-| A20 | Guardrail invocation before and after the change | byte-identical request bodies |
-| A21 | Action with `Writes == null` | refused before any wire byte |
-| A22 | **(W3)** a `RunCheck` script that starts a **plain** background writer (`&` on Unix, `Start-Process` on Windows), with no `setsid` and no WMI | no write lands after the call returns (sentinel polled for 5 s) |
-| A23 | **(W2)** a guardrail that reads `GUARDRAILS_ACTION_RESULT`; one that reads only `GUARDRAILS_STATE_IN` | the first is absent from the enum and listed in the `runner-notice`; the second is offered |
-| A24 | **(W1, WT)** a `RunCheck` whose script creates an out-of-scope file | patch saved in the attempt log; file stripped; phase 1 clean |
-| A25 | **(W7)** three `RunCheck(build)` results in one session | turn-4 request carries one full result and two stubs |
-| A26 | **(W7)** `ContextOverflow` on attempts 1 and 2 | `needs-human` on attempt 2 |
-| A27 | the same out-of-scope path refused on attempts 1 and 2; a `.claude/` refusal | #86 halt on attempt 2; **no** #104 halt |
-| A28 | five consecutive refusals | the #452 abort fires |
-| A29 | tool calls with empty `id`s; two parallel calls | ids synthesized; executed in order |
+| # | The server scripts | Modes | The test asserts |
+|---|---|---|---|
+| A1 | `Write` to an absolute path outside the root | S + WT | sentinel unchanged; refusal names the rule |
+| A2 | `src/../../outside.txt`, mixed separators | S + WT | nothing outside |
+| A3 | a write through a committed symlink (junction on Windows) to outside | S + WT | outside dir unchanged |
+| A4 | a hard link to an outside file | S + WT | outside inode unchanged |
+| A5 | (Win) `a.cs:s`, `CON`, `\\?\…`, UNC, `GIT~1\hooks\pre-commit`, `.git.\hooks\x` | S + WT | none written; `.git/hooks` unchanged |
+| A6 | `.git/hooks/pre-commit`, `.GIT/config`, `Write` to `.git` itself, `.git` with a U+200D inside it | S + WT (in WT `.git` is a file; the repository's hooks are still refused) | none written; a following harness commit runs no hook |
+| A7 | `.claude/settings.json` under `["**"]`, then under `[".claude/skills/"]` | S + WT | refused both times; `.claude/skills/x/SKILL.md` allowed in the second |
+| A8 | **(B1)** own `guardrails/01.sh`, a **downstream** task's `guardrails/`, `guardrails.json`, the journal under `logs/`. In S via the plan folder in place; in WT via its **copy inside the segment worktree** | S + WT | all unchanged; in WT, after segment commit and delivery, the downstream `guardrails/` in the main checkout is byte-identical; the tamper check did not fire |
+| A8b | a write under a sibling segment worktree; a write under `Root` itself | WT only (sibling worktrees exist only in worktree mode) | sibling refused; `Root` write allowed |
+| A8c | `git` made unspawnable mid-session; then `check-ignore` stubbed to exit 128 | S + WT | every write refused, naming the error |
+| A8d | tracked `.husky/pre-commit` with `core.hooksPath=.husky`; `node_modules/x/index.js`; both under `**` | S + WT | both refused without a literal scope entry |
+| A9 | an out-of-scope write inside the root | S + WT | refused at call time; in WT, phase 1 also reports no offense |
+| A10 | a judge's staged `VERDICT_OUT` | S + WT | refused; a following judge that writes nothing fails |
+| A11 | `Delete` out of scope; `Delete` a directory | S + WT | refused |
+| A12 | **(W1)** `obj/X.Tests.csproj.evil.targets`, in scope and git-ignored | S + WT | refused; the test run still executes tests |
+| A13 | a `.gitignore` edit under `["**"]` | S + WT | refused without a literal entry |
+| A14 | **(B2)** a state fragment with `needsHarnessWrite` for `.git/hooks/pre-commit` and for an in-scope file | S + WT | attempt fails; neither written |
+| A15 | over-cap writes | S + WT | tool errors; bytes on disk ≤ caps |
+| A16 | `<tool_call>` text and a fenced `{"name","arguments"}` block, with zero structured calls | S + WT | nothing written; `needs-human` with the `--jinja` remedy |
+| A17 | **(W5)** a prose-only final message from an Action | S + WT | `Error`, not success |
+| A18 | **(W5)** an orphan `</think>`; an unterminated `<think>` | S + WT | history stripped; the second is `Error` |
+| A19 | a `Bash` call; `Write` on a Guardrail; `RunCheck` with `../x`; `RunCheck` with extra arguments | S + WT | refused; no process started |
+| A20 | a Guardrail invocation before and after the change | S + WT (WT also re-proves plan 28 §3.6's splice condition) | byte-identical request bodies |
+| A21 | an Action with `Writes == null` | S + WT | refused before any wire byte |
+| A22 | **(W3)** `RunCheck` starts a **plain** background writer (`&` / `Start-Process`) | S + WT | no write lands after the call returns (sentinel polled 5 s) |
+| A23 | **(W2)** a guardrail that reads `GUARDRAILS_ACTION_RESULT`; one that reads only `GUARDRAILS_STATE_IN` | S + WT | the first is excluded and named in the notice; the second is offered |
+| A24 | **(W1)** a `RunCheck` whose script creates an out-of-scope file | S + WT, with different expectations | WT: patch saved, file stripped, phase 1 clean. S: the file **remains** and the `run-check` evidence line names it (disclosed, T18) |
+| A25 | **(W7)** three `RunCheck(build)` results in one session | S + WT | the turn-4 request carries one full result and two stubs |
+| A26 | **(W7)** `ContextOverflow` on attempts 1 and 2 | S + WT | `needs-human` on attempt 2 |
+| A27 | the same out-of-scope path refused on attempts 1 and 2; a `.claude/` refusal | S + WT | #86 halt on attempt 2; **no** #104 halt |
+| A28 | five consecutive refusals | S + WT | the #452 abort fires |
+| A29 | tool calls with empty `id`s; two parallel calls | S + WT | ids synthesized; executed in order |
+| A30 | two tasks on **one** local block run concurrently; task 1 tries to write into task 2's worktree | WT only (concurrency needs `maxParallelism > 1`) | both converge; the cross-write is refused; each segment commit contains only its own task's in-scope diff |
 
 **Harness-level acceptances (real CLI composition root, per #382):**
 
-- A one-task plan with `default: local` runs green in **serial mode** (primary) and in worktree mode.
+- A one-task plan with `default: local` runs green in **serial mode**, and a two-task plan runs green in
+  **worktree mode** at `maxParallelism: 2` on one block.
+- `validate` states the parallel-model disclosure when `maxParallelism > 1` and two models share one endpoint.
 - `validate` reports `GR2083` for routes 2–4 (one test each, **including the self-grading judge count**);
   `GR2066` for routes 1 and 5; GR2071's local remedy.
 - The `ai-merge`/`breakdown` `Note:` lines are printed, and **`guardrails breakdown --runner-config` against a
@@ -585,9 +626,12 @@ skip**, when they cannot.
   sections are capability-aware.
 
 **Phase 1 exit gate: a real-Qwen dogfood run.** A Bifrost-shaped .NET task (edit two source files, add a test,
-build, run tests) with `default: qwen36` in **serial mode** on the maintainer's Mac, run by the maintainer
-with the live UI. It must reach green through `RunCheck` iterations, and its `transcript.md` must show the
-write and check lines. No loopback fake retires model and dialect risk; this run does.
+build, run tests) with `default: qwen36` on the maintainer's Mac, run by the maintainer with the live UI:
+- once in **serial mode**;
+- once as a two-task plan at `maxParallelism: 2` against `llama-server --parallel 2`.
+
+Both must reach green through `RunCheck` iterations, with `transcript.md` showing the write and check lines.
+No loopback fake retires model and dialect risk; these runs do.
 
 ---
 
@@ -596,7 +640,9 @@ write and check lines. No loopback fake retires model and dialect risk; this run
 | Phase | Ships | Gate to start |
 |---|---|---|
 | **0: prerequisites** | #759 fixed; `providers check` against `llama-server --jinja` + Qwen 3.6 reports tool calling met and context shift off | now |
-| **1: task actions** | §3–§9 | Phase 0 and this review. **Exit:** the real-Qwen dogfood (§9) |
+| **0-G: gateway path first-class** (**only if** `sequencing` chooses it) | A `kind: "claude"` block gains `baseUrl` (sets `ANTHROPIC_BASE_URL` for the child) and `authTokenEnv` (the **name** of the variable whose value becomes `ANTHROPIC_AUTH_TOKEN`; never the secret itself), replacing `claude-local`'s wrapper script. `validate` checks the URL, and warns when a `claude-*` model name (from `routing`, `action.model` or a judge pin) would reach a gateway block, which is #570's silent trap 1. It also gets a preflight reachability check, docs, and a live smoke. Then a Qwen dogfood on Bifrost through it. Needs its own short design and issue. | now, in parallel with Phase 0 |
+| **Decision point** (**only if** `sequencing` chooses 0-G) | The 0-G dogfood (turns to green, context overflows, malformed-call rate, wall time), plus the `qwen-code-eval` result if chosen, decide whether native Phase 1 starts now, starts later as an optimization, or is shelved | 0-G dogfood done |
+| **1: task actions** | §3–§9 | Phase 0, and either `sequencing` choosing native now or the decision point choosing it. **Exit:** the real-Qwen dogfood (§9) |
 | **2: harness Action profiles** | `ai-merge` (grant: the one `GUARDRAILS_MERGE_OUT` file) and `breakdown` (grant: the wave folder being authored, which closes #557 for this runner by construction); `ServesActionProfiles` flips | Phase 1 exit; #557 fixed on the Claude path |
 | **3: v2 bets** | (a) `routing` for actors, from telemetry pass rates; (b) an OS sandbox for `RunCheck` **and** guardrail scripts, closing T16/T18 (Seatbelt first, then bubblewrap/landlock; Windows disclosed); (c) a general argv `Run` tool, only inside that sandbox | `03-roadmap.md` entries |
 
@@ -613,7 +659,7 @@ Sequenced; each stage green before the next.
 | 5 | `guardrails-harness-developer` | `src/Guardrails.Core/Execution/SchedulerFactory.cs`, `src/Guardrails.Cli/Commands/BreakdownCommand.cs` | `ServesActionProfiles` at resolution, `WithheldActionProfiles`, the `--runner-config` refusal |
 | 6 | `guardrails-harness-developer` | `src/Guardrails.Core/Loading/PlanValidator.cs`, `src/Guardrails.Core/Loading/DiagnosticCodes.cs` | GR2066 narrowing; GR2083 with the self-grading count; GR2071 extension |
 | 7 | `guardrails-harness-developer` | `src/Guardrails.Cli/Commands/ProvidersCommand.cs` | The context-shift assertion in `providers check` |
-| 8 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionContainmentTests.cs`, `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionPlanTests.cs` | §9's table and acceptances, serial mode first |
+| 8 | `guardrails-test-author` | `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionContainmentTests.cs`, `tests/Guardrails.Integration.Tests/OpenAiCompat/OpenAiCompatActionPlanTests.cs` | §9's matrix (both fixtures) and acceptances |
 | 9 | `guardrails-skill-author` | `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/plan-breakdown/references/schemas.md` | §8's edits, both halves of the mirror |
 | 10 | `guardrails-skill-author` | `.claude/skills/plan-breakdown/SKILL.md`, `.claude/skills/guardrails-domain-knowledge/SKILL.md` | §7.1 guidance; domain knowledge |
 
@@ -650,23 +696,31 @@ Measurable. The Phase 1 exit gate is a real-Qwen dogfood run on a Bifrost-shaped
 ## 12. Decisions for the maintainer
 
 :::question
-{ "id": "shell-posture", "title": "What command capability does a local actor get in v1?", "mode": "single", "options": ["RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "Nothing: file tools only, the gate is the only build/test", "RunCheck plus an unsandboxed argv Run tool with a per-task program allowlist"], "recommended": "RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "rationale": "RunCheck gives the model a build/test loop in which every command is one a reviewer approved. Its cost, stated plainly in T16, is that model-written test code can print what it reads back to the model, a read oracle the gate-only path lacks. File tools alone remove that at the price of a full retry per compile error. An unsandboxed argv tool contains nothing once dotnet or npm runs model-written code.", "target": "human" }
+{ "id": "shell-posture", "title": "What command capability does a local actor get in v1?", "mode": "single", "options": ["RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "Nothing: file tools only, the gate is the only build/test", "RunCheck plus an unsandboxed argv Run tool with a per-task program allowlist"], "recommended": "RunCheck only: the task's own eligible reviewed script guardrails, no model-authored commands", "rationale": "RunCheck gives the model a build/test loop in which every command is one a reviewer approved. Its cost, stated plainly in T16, is that model-written test code can print what it reads back to the model, a read oracle the gate-only path lacks. File tools alone remove that at the price of a full retry per compile error. An unsandboxed argv tool contains nothing once dotnet or npm runs model-written code.", "target": "human", "answer": ["RunCheck only: the task\u0027s own eligible reviewed script guardrails, no model-authored commands"] }
 :::
 
 :::question
-{ "id": "action-declaration", "title": "What makes an openai-compat block legal for task actions?", "mode": "single", "options": ["The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "An explicit opt-in key on the block, e.g. \"actions\": true, else GR2066 stays an error"], "recommended": "The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "rationale": "Each legal route is already a deliberate edit, and no plan that validates today changes behavior. An opt-in key re-creates the capability-sounding config key plan 28 section 3.5 rejected, and a local-only operator would always set it anyway.", "target": "human" }
+{ "id": "action-declaration", "title": "What makes an openai-compat block legal for task actions?", "mode": "single", "options": ["The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "An explicit opt-in key on the block, e.g. \"actions\": true, else GR2066 stays an error"], "recommended": "The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each", "rationale": "Each legal route is already a deliberate edit, and no plan that validates today changes behavior. An opt-in key re-creates the capability-sounding config key plan 28 section 3.5 rejected, and a local-only operator would always set it anyway.", "target": "human", "answer": ["The human routing acts themselves (default, action.runner, frontmatter), with GR2083 warning on each"] }
 :::
 
 :::question
-{ "id": "self-grading", "title": "Plan 28 Finding 1 assumed a local judge only exists where a human pinned one. With default: local, every unpinned prompt judge grades its own actor's model. What should validate do?", "mode": "single", "options": ["Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "Error: every prompt judge in a task whose actor is local must be pinned to a different block", "Accept silently: deterministic guardrails carry the gate and prompt judges are advisory in practice"], "recommended": "Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "rationale": "An error would make a single-model local setup unusable, and today that is the maintainer's only option on some days. Silence would re-open the exact premise Finding 1 rested on. A named warning, plus the skill pinning judges to the other Qwen when both are declared, keeps the choice visible and makes the better configuration the default output.", "target": "human" }
+{ "id": "self-grading", "title": "Plan 28 Finding 1 assumed a local judge only exists where a human pinned one. With default: local, every unpinned prompt judge grades its own actor's model. What should validate do?", "mode": "single", "options": ["Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "Error: every prompt judge in a task whose actor is local must be pinned to a different block", "Accept silently: deterministic guardrails carry the gate and prompt judges are advisory in practice"], "recommended": "Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one", "rationale": "An error would make a single-model local setup unusable, and today that is the maintainer's only option on some days. Silence would re-open the exact premise Finding 1 rested on. A named warning, plus the skill pinning judges to the other Qwen when both are declared, keeps the choice visible and makes the better configuration the default output.", "target": "human", "answer": ["Warn: GR2083 names each self-grading judge, and plan-breakdown pins judges to a different model when the plan declares one"] }
 :::
 
 :::question
-{ "id": "harness-action-profiles", "title": "When may ai-merge and breakdown run on a local block?", "mode": "single", "options": ["Phase 2, after the Phase 1 dogfood and after #557 is fixed", "In v1, with exact write grants (the merge-out file; the wave folder)"], "recommended": "Phase 2, after the Phase 1 dogfood and after #557 is fixed", "rationale": "The grant mechanism makes both cheap, but breakdown's correct scope is what #557 says the Claude path gets wrong today. Until then a local default leaves AI-merge off (conflicts settle needs-human), JIT breakdown honest-halts, and guardrails breakdown --runner-config refuses, all announced.", "target": "human" }
+{ "id": "harness-action-profiles", "title": "When may ai-merge and breakdown run on a local block?", "mode": "single", "options": ["Phase 2, after the Phase 1 dogfood and after #557 is fixed", "In v1, with exact write grants (the merge-out file; the wave folder)"], "recommended": "Phase 2, after the Phase 1 dogfood and after #557 is fixed", "rationale": "The grant mechanism makes both cheap, but breakdown's correct scope is what #557 says the Claude path gets wrong today. Until then a local default leaves AI-merge off (conflicts settle needs-human), JIT breakdown honest-halts, and guardrails breakdown --runner-config refuses, all announced.", "target": "human", "answer": ["Phase 2, after the Phase 1 dogfood and after #557 is fixed"] }
 :::
 
 :::question
-{ "id": "routing-for-actors", "title": "When may routing make a local block a tier candidate for actions?", "mode": "single", "options": ["Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "With Phase 1, requiring strength and costly to be declared on the block"], "recommended": "Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "rationale": "Pinning covers the immediate need. Routing is the harness choosing a local model on its own, and plan 28 section 3.7 set that bar at measurement, which the Phase 1 runs produce.", "target": "human" }
+{ "id": "routing-for-actors", "title": "When may routing make a local block a tier candidate for actions?", "mode": "single", "options": ["Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "With Phase 1, requiring strength and costly to be declared on the block"], "recommended": "Phase 3, once the telemetry corpus shows local-actor pass rates per task class", "rationale": "Pinning covers the immediate need. Routing is the harness choosing a local model on its own, and plan 28 section 3.7 set that bar at measurement, which the Phase 1 runs produce.", "target": "human", "answer": ["Phase 3, once the telemetry corpus shows local-actor pass rates per task class"] }
+:::
+
+:::question
+{ "id": "sequencing", "title": "Should the gateway path (Claude Code pointed at local Qwen) become first-class and be dogfooded before native Phase 1 is built?", "mode": "single", "options": ["Gateway first: make Claude Code over a gateway first-class on the claude runner (baseUrl + authTokenEnv, GR checks, docs), dogfood Qwen through it on Bifrost, then decide how hard to push native #544 from that evidence", "Native now: build native #544 Phase 1 now; the gateway path stays an undocumented operator workaround", "Gateway only: make the gateway path first-class and shelve native #544"], "recommended": "Gateway first: make Claude Code over a gateway first-class on the claude runner (baseUrl + authTokenEnv, GR checks, docs), dogfood Qwen through it on Bifrost, then decide how hard to push native #544 from that evidence", "rationale": "The gateway path is small, works today, and keeps Claude Code's containment hook and permission scanners, so it carries none of native's reimplementation risk. That risk is large: this document needs a nine-step write policy and a thirty-row attack matrix to hold. The gateway's costs are real too. Roughly 20K tokens of Claude Code system prompt and tool schemas go out on every turn, a heavy fixed tax on a 64K local window, where the native runner controls its own prompt. LiteLLM's Anthropic-to-OpenAI tool-call translation is one more place for malformed calls, and a Claude Code update can break the path without warning. Those costs are measurable, so measure them first. If Qwen converges on Bifrost through the gateway, native becomes an optimization for context and control rather than a blocker. If it does not, the evidence says why, and native starts with a sharper brief. Gateway-only shelves the one path that removes the vendor binary entirely.", "target": "human" }
+:::
+
+:::question
+{ "id": "qwen-code-eval", "title": "Evaluate Qwen Code (Apache-2.0) as a cursor-like runner kind during Phase 0?", "mode": "single", "options": ["Yes: a time-boxed spike against the four checks in section 3.4 (stream format, approval model, containment, license and telemetry), reported at the decision point", "No: not now; revisit only if both the gateway path and native actions disappoint"], "recommended": "Yes: a time-boxed spike against the four checks in section 3.4 (stream format, approval model, containment, license and telemetry), reported at the decision point", "rationale": "It is the only candidate that is Qwen-native, open-source and free of Claude and Cursor budgets, so it is a genuine third data point for the sequencing decision at the cost of a spike, not a build. If its containment story is Cursor-shaped it would ship as an uncontained writer with a GR2080-style warning, which is acceptable as an option but not as the destination.", "target": "human" }
 :::
 
 ---
