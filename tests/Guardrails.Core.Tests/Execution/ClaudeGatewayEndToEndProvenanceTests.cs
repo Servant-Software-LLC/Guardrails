@@ -13,7 +13,7 @@ namespace Guardrails.Core.Tests;
 /// #782 §4, closed END TO END: no fake <see cref="IPromptRunner"/> anywhere. The plan's gateway block is built by
 /// the production <see cref="PromptRunnerRegistry.FromConfig"/> into a real gateway <see cref="ClaudePromptRunner"/>
 /// instance, which launches <see cref="GatewayFakeClaude"/> through the real <see cref="ProcessRunner"/>. The fake's
-/// stream REPORTS a cost ($1.23) and tokens (1000 in / 200 out), so every assertion below that the cost is absent
+/// stream REPORTS a cost (GatewayFakeClaude.ReportedCost, a sentinel) and tokens (1000 in / 200 out), so every assertion below that the cost is absent
 /// and the tokens are present is a claim about the real parse → null-at-the-source → journal path, read from the
 /// BYTES each surface wrote:
 /// <list type="bullet">
@@ -84,7 +84,7 @@ public sealed class ClaudeGatewayEndToEndProvenanceTests : IDisposable
         Assert.Equal(GatewayFakeClaude.InputTokens, attempt.GetProperty("usage").GetProperty("inputTokens").GetInt32());
         Assert.Equal(GatewayFakeClaude.OutputTokens, attempt.GetProperty("usage").GetProperty("outputTokens").GetInt32());
 
-        // The JUDGE rode the same gateway instance — its own provenance says so, its reported $1.23 is gone, its
+        // The JUDGE rode the same gateway instance — its own provenance says so, its reported cost is gone, its
         // tokens are kept.
         JsonElement judge = provenance.GetProperty("judge");
         Assert.Equal(_gateway, judge.GetProperty("gateway").GetString());
@@ -93,7 +93,7 @@ public sealed class ClaudeGatewayEndToEndProvenanceTests : IDisposable
         Assert.Equal(GatewayFakeClaude.InputTokens, judge.GetProperty("usage").GetProperty("inputTokens").GetInt32());
 
         // Nothing anywhere in run.json is the fiction the CLI reported.
-        Assert.DoesNotContain("1.23", run.RootElement.GetRawText(), StringComparison.Ordinal);
+        Assert.DoesNotContain(GatewayFakeClaude.ReportedCost.ToString(System.Globalization.CultureInfo.InvariantCulture), run.RootElement.GetRawText(), StringComparison.Ordinal);
 
         // And the rendered spend is tokens (actor spend only — the judge stays out of the total, as for dollars).
         Assert.Equal("1.2k tok (gateway)", JournalCost.Render(JournalReader.Read(RunJournal.PathFor(plan.PlanDirectory))));
@@ -189,7 +189,7 @@ public sealed class ClaudeGatewayEndToEndProvenanceTests : IDisposable
         Assert.All(calls, c => Assert.Equal(_gateway, c.Read(ClaudeGatewayEnvironment.BaseUrl)));
 
         using JsonDocument run = JsonDocument.Parse(File.ReadAllText(RunJournal.PathFor(plan.PlanDirectory)));
-        Assert.False(run.RootElement.TryGetProperty("overheadCostUsd", out _), "a gateway merge must not charge the fake's $1.23");
+        Assert.False(run.RootElement.TryGetProperty("overheadCostUsd", out _), "a gateway merge must not charge the fake's reported cost");
         JsonElement[] dispatches = [.. run.RootElement.GetProperty("overheadGatewayDispatches").EnumerateArray()];
         Assert.Equal(calls.Count, dispatches.Length);
         Assert.All(dispatches, dispatch =>
