@@ -2742,8 +2742,9 @@ final move is RETRIED while another process holds the file open (issue #727).** 
 while any other handle has `run.json` open, even one that is only reading, and the Scheduler treats a failed
 journal write as fatal — so before #727 a reader could abort a healthy run. Every reader a run may have
 alongside it depends on this retry: `guardrails logs` re-reads the journal on every page load (§12.2),
-`guardrails attach` re-reads it every 250 ms while it replays a live run (§12.2), and `guardrails status`
-reads it on demand. The retry is bounded (about a third of a second); a handle that never lets go still
+`guardrails attach` re-reads it every 250 ms while it replays a live run (§12.2), `guardrails status`
+reads it on demand, and `guardrails bundle` reads it once, first, per bundle, as the snapshot's reference
+point (§17.2). The retry is bounded (about a third of a second); a handle that never lets go still
 fails the write, loudly, with a message naming the likely cause.
 
 ```jsonc
@@ -4658,6 +4659,9 @@ whole-plan hash entirely and the marker kept vouching for a waved plan whose gat
 ---
 
 ## 8. Per-attempt log layout, and the run's own streams
+
+`guardrails bundle` packages this layout under an allow-list of named artifact kinds, never a directory
+sweep (§17.3).
 
 ```
 logs/<runId>/<task-id>/attempt-N/
@@ -7843,6 +7847,9 @@ never as a retryable blip.
   inherited and does not scrub (it is an ordinary operator variable, not an `ANTHROPIC_*` name). The Bash tool's
   subprocesses get the child's environment. For a local gateway without authentication the token is the harmless
   placeholder. For a remote gateway with a real token, any command the model runs can read it under either name.
+- **Session transcripts can hold the token.** `guardrails bundle` scrubs the gateway token from session
+  transcripts, or refuses to bundle when the bundling shell cannot see it (unless `--without-agent-text`,
+  §17.6.5); the loopback log viewer (§12) does neither.
 
 #### 9.10.2 The preflight
 
@@ -10203,3 +10210,518 @@ Stated plainly, because a partial fix that reads as complete is the same defect 
   case; it does not catch a changed one.
 - **No version, tag, or `git describe` comparison.** The binary's version string is reported, never compared
   against the tree's — a version says nothing about which checks shipped in it, which is the question.
+
+---
+
+## 17. Run bundle (`guardrails bundle`) — design of record `799-run-bundle.charter.md`, issue #799
+
+*Implementation: `Guardrails.Core.Bundle` (the reader, the redactor, the zip writer) + `BundleCommand`.
+No diagnostic code: the verb reports through its exit code, stderr, and the bundle's own MANIFEST.md and
+REDACTIONS.md.*
+
+`guardrails bundle` packages one run's evidence **deterministically** into one zip that is **safe to attach
+to a public GitHub issue by default**, including while the run is still going. It exists because the agent
+filing a dogfood issue is often a local model, and it picks evidence badly (#791 left out the token that was
+actually sent; #797 left out the files that explained the journal's settle behavior). The harness knows
+which artifacts describe a run; this verb packages exactly those.
+
+"Safe by default" means two separate things, and this section keeps them apart:
+
+- **Credentials** are scrubbed (§17.6). Always, unless `--no-redact`.
+- **Proprietary content** (prompts, transcripts, stream logs, gateway sessions, patches) is **included by
+  default**, redacted, under a loud warning (§17.9). `--lean` withholds it. Redaction removes credentials,
+  not intellectual property (`CC5`, §17.6.7).
+
+**What the verb never does.** It opens **no network connection** (`providers check` output is included only
+if a file records it, and nothing records it today). It writes **nothing** under the plan folder, the logs,
+or any worktree. It takes **no lock**. No model runs: SUMMARY.md is computed from recorded facts
+(Invariant 1). It is a sibling of `attach`, `status` and `logs`; `diagnostics` is the GR-code glossary
+(#558), which is why the verb is `bundle`.
+
+### 17.1 Surface
+
+```text
+guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --dir <path>] [--force-path]
+                  [--max-size <MB>] [--lean] [--include-worktree-diff] [--without-agent-text]
+                  [--keep-paths] [--no-redact]
+```
+
+`[folder]` is the plan folder, defaulting to the working directory, exactly as for `status`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--run <id>` | the journal's run | Bundle an earlier `logs/<runId>/`. `state/run.json` describes only the current run, so an earlier run's SUMMARY.md is built **from its logs alone** and says so on its opening lines; `state/run.json` is then **not** included (MANIFEST.md row, reason `other-run-journal`). |
+| `--task <id>` | all tasks | Repeatable. Narrows **per-task** evidence (`tasks/<id>/`, `git/<id>.txt`, SUMMARY's per-task rows). Run-level files are always included. |
+| `--out <file.zip>` | `~/guardrails-bundles/<plan>-<runId>[-<task>].zip` | The zip to write. |
+| `--dir <path>` | none | Write the bundle **tree unzipped** into `<path>` instead of a zip. Mutually exclusive with `--out`. |
+| `--force-path` | off | Allows an `--out`/`--dir` destination (or the default) that lies inside a git working tree (§17.8). |
+| `--max-size <MB>` | `20` | Cap on the **finished zip**, in MiB (§17.7). GitHub accepts attachments up to 25 MB. |
+| `--lean` | off | Withholds every **full**-class entry (§17.3), leaving only the harness-written evidence set. For a public issue when the code is private. |
+| `--include-worktree-diff` | off | Adds the full `git diff` of the integration worktree and of each selected segment. It is source code, so it is **refused with `--lean`**. |
+| `--without-agent-text` | off | The only way past the D1 refusal (§17.6.5). Ships the bundle with **all agent-derived free text removed, run-wide**. |
+| `--keep-paths` | off | Disables path anonymization (§17.6.3). Anonymization is the default. |
+| `--no-redact` | off | Skips the credential passes (§17.6.8). Never for a public issue. |
+
+**The file name.** `<plan>` is the plan folder's name. `[-<task>]` is appended only when **exactly one**
+`--task` is given; with two or more, the suffix is `-tasks-<N>` (N = the number of distinct ids given).
+`--no-redact` appends `-UNREDACTED` before `.zip`. The default directory `~/guardrails-bundles/` is created
+when absent. An existing zip at the destination is **replaced** (the bundle is regenerable; the write is a
+temp file then a move, like every harness write). An existing `--dir` destination must be **absent or
+empty**, otherwise the verb refuses (exit `1`): it never merges into, or deletes from, a directory it did not
+create.
+
+**Argument refusals** (all exit `1`, all **before anything is read**): `--out` together with `--dir`;
+`--lean` together with `--include-worktree-diff`; a `--task` id the plan does not declare (named); a
+`--run` id with no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty existing `--dir`;
+and the path refusal of §17.8.
+
+**Exit codes.**
+
+| Code | Meaning |
+|---|---|
+| `0` | The bundle was written and fits the cap. |
+| `1` | Refused before writing (an argument refusal above, the path refusal §17.8, the D1 refusal §17.6.5); the plan or `run.json` could not be read (no journal and no `--run` is this case: there is no run to bundle); **or** the bundle was written but is still over `--max-size` after every trim tier (§17.7). In that last case the zip exists, and stderr says it is over the cap and names `--task`. |
+
+There is no exit `2`: no bundle outcome is a human decision the run is waiting on.
+
+**Output.** On a full bundle the warning of §17.9 goes to **stderr** before the write. A `--lean` bundle
+prints one line naming what was withheld instead. Then **stdout** gets one line with the destination's
+**absolute path** and its size, followed by the upload hint:
+
+```text
+`gh` cannot attach files to an issue. Drag this zip into the issue's comment box in the browser, or attach
+it to a gist or a release and paste the link.
+```
+
+### 17.2 Live-run safety — the read discipline
+
+A reader can hurt a live run (§7, #727): on Windows the atomic replace that `AtomicFile` performs fails while
+**any** handle has the target open. That covers `run.json` (`RunJournal`), `feedback.md`, provenance and
+route logs (`AttemptJournaler`, `AttemptArtifacts`) and gate results (`GateArtifacts`). `AtomicFile` retries
+for about a third of a second, then the write fails, and for `run.json` the Scheduler aborts. So the verb's
+reads obey this numbered contract:
+
+1. **One bounded read per file, then close.** Each file is opened with
+   `FileShare.ReadWrite | FileShare.Delete`, read into memory (the whole file, or a bounded tail, item 4),
+   and closed. **No handle is held** while hashing, redacting or zipping.
+2. **`run.json` is read first** and is the snapshot's reference point. Anything on disk newer than the
+   journal (an `attempt-N/` directory the journal does not list) is reported as such: MANIFEST.md reason
+   `newer-than-journal`, and SUMMARY's in-flight inference (§17.4 block 3). That is the #797 confusion, made
+   explicit.
+3. **Sharing errors** (Win32 error 32 or 33, or `UnauthorizedAccessException`) are retried **5 times** with a
+   10–50 ms backoff. After that the file is **excluded and named** (reason `sharing-violation`), never a
+   crash.
+4. **Tail reads.** A file over its tail cap (§17.7) is read as a **tail window**. The window's leading partial
+   line is dropped **before any scan**; if the window contains no newline, the file is excluded and named
+   (reason `no-newline-in-window`). Because only whole lines are kept, a UTF-8 sequence is never split. A
+   file that grows during the read keeps what was read, minus the trailing partial line (reason
+   `live-tail-cut`). `transcript.md` reads are capped like the stream logs.
+5. **Git takes no optional locks, anywhere in the process.** At startup the verb sets
+   `GIT_OPTIONAL_LOCKS=0` and adds `core.fsmonitor=false` and `core.untrackedCache=false` **process-wide** by
+   **appending** them: with `N` the existing `GIT_CONFIG_COUNT`, it sets `GIT_CONFIG_KEY_<N>=core.fsmonitor`,
+   `GIT_CONFIG_VALUE_<N>=false`, `GIT_CONFIG_KEY_<N+1>=core.untrackedCache`, `GIT_CONFIG_VALUE_<N+1>=false`,
+   and `GIT_CONFIG_COUNT=<N+2>`. An existing `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` (a `safe.directory`,
+   say) is **never overwritten**. An unparsable `GIT_CONFIG_COUNT` is treated as `0`, and MANIFEST.md notes
+   it. Every git child the process spawns (its own calls and the validate probes, item 6) inherits these. Its
+   own calls, each with a **30 s timeout**, are:
+   - `git status --porcelain=v1 -b`
+   - `git log -5 --format='%h %ad %s'` (no author name or email; `%h %ad` under `--without-agent-text`)
+   - `git diff --stat <taskBase>..HEAD`
+   - `git diff <taskBase>..HEAD`, only with `--include-worktree-diff`
+
+   **Residual, disclosed.** On Windows, a git reader briefly holds `.git/index` open while the harness's own
+   git renames `index.lock` over it. Git for Windows retries that rename, and this contract relies on that
+   retry being enough; the live integration test runs the bundle in a loop **specifically through commit and
+   merge phases** to prove it. This contract does not claim the bundle can never contend with a live run's
+   git.
+6. **Validate is re-run, and it is not read-only.** `PlanProbe` runs `InterpreterScriptSyntaxProbe`, which
+   writes a temp directory **outside the plan** and spawns `bash`/`pwsh`, plus `GitLsFilesProbe` and
+   `GitRevListDriftProbe`, which spawn `git`. The verb runs validate as-is, under item 5's process-wide git
+   settings, and `validate.txt`'s first line is the label:
+
+   ```text
+   re-run at bundle time; wrote only an OS temp directory; spawned bash/pwsh/git read-only
+   ```
+
+   SUMMARY.md reports definition drift against the journal's per-task `definitionHash` (§7).
+
+### 17.3 Contents — an allow-list, never a directory sweep
+
+Only **named artifact kinds** are included. An unknown file under `logs/<runId>/` is listed in MANIFEST.md by
+path and size and nothing more (reason `unknown-kind`). A directory sweep would have shipped
+`claude-config/.claude.json` and `shell-snapshots/` (which capture environment variables) the day they
+appeared.
+
+Each kind has a class. **Lean** entries are always included. **Full** entries are included by default and
+withheld by `--lean`; each withheld entry is a MANIFEST.md row (reason `lean`).
+
+```text
+<plan>-<runId>[-<task>].zip                                                            class
+├── SUMMARY.md  MANIFEST.md  REDACTIONS.md                                              lean
+├── plan/       guardrails.json (redacted), selected task.json, validate.txt            lean
+├── state/run.json                                                                      lean
+├── run/        events.jsonl, observer.jsonl, autonomy.jsonl, escalations/*.json (tails) lean
+├── gates/      preflights/** + guardrails/**: result.json, stdout/stderr tails         lean
+├── tasks/<id>/ feedback.md, overwatch.jsonl, triage.json, union-reverify-*.log         lean
+│   └── attempt-N/ feedback.md, attempt-provenance.json, attempt-route.log,
+│                  action-result.json, guardrail-*.verdict.json,
+│                  guardrail-*.std{out,err}.log (tails)                                 lean
+│                  composed-prompt*.md, transcript.md, guardrail-*.transcript.md,
+│                  claude-stream.jsonl + guardrail-*.stream.jsonl (tails), *.patch      full
+├── gateway/sessions/  claude-config/projects/**/*.jsonl ONLY (tails)                   full
+└── git/        integration.txt, <task>.txt: status, log -5, diff --stat                lean
+                integration.diff, <task>.diff (only with --include-worktree-diff)       full
+```
+
+Entries sit at the **zip root** in exactly this shape (no enclosing directory); `--dir` writes the same tree.
+
+- **Source mapping.** `run/` is the run-level files of `logs/<runId>/`. `gates/` is the §8 gate captures:
+  the plan-level `preflights/` and `guardrails/`, and each wave's `<wave-dir>/preflights/` and
+  `<wave-dir>/guardrails/`, keeping their relative paths. `tasks/<id>/` is `logs/<runId>/<id>/` (§8).
+  `gateway/sessions/` is `logs/<runId>/claude-config/projects/**/*.jsonl` (§9.10), keeping the relative path
+  under `projects/`.
+- **`claude-config/` beyond `projects/**/*.jsonl` is excluded by construction**, and the exclusion is a named
+  MANIFEST.md row (reason `claude-config-excluded`), under `--no-redact` too.
+- **`git/`** has one file for the integration worktree (in serial mode, the repository holding the plan) and
+  one per selected task's segment worktree that still exists. A `diff --stat` whose base is not recorded is
+  omitted, and the file says why.
+- **State fragments** (`state/*.json` other than `run.json`) are **Phase 2**: excluded, and named (reason
+  `state-fragments-phase-2`).
+- **File names are exposed even by `--lean`.** `git status` and `diff --stat` name files, and SUMMARY.md
+  says so.
+- **`*.patch`** (§8: `prior-attempt.patch`, `out-of-scope.patch`) is read **whole or not at all**: a patch
+  over the stream-class cap is excluded and named (reason `patch-over-cap`), because a tail of a patch
+  misleads.
+
+### 17.4 SUMMARY.md — facts only, in a fixed order
+
+SUMMARY.md is computed from the journal, provenance and route facts. **No model runs.** It opens with these
+lines, each only when it applies, in this order:
+
+1. `NOT REDACTED: do not post publicly` (under `--no-redact`);
+2. the **full-bundle warning block** of §17.9, verbatim (every full bundle), or the one-line lean note naming
+   what was withheld (`--lean`);
+3. the `--without-agent-text` statement: all agent-derived free text was removed run-wide, naming the
+   variables that forced it (the D1 set, §17.6.5), or `none: requested explicitly` when D1 would not have
+   fired;
+4. one line when anything was **trimmed** (§17.7), pointing at MANIFEST.md;
+5. the `--run` notice: this is an earlier run, and its SUMMARY is built from its logs alone.
+
+Then six numbered blocks, always in this order:
+
+1. **Bundled at** `<utc>`. This is **the one line the determinism check masks** (§17.10). Then versions:
+   Guardrails (this binary **and** the journal's `environment.harnessVersion`, flagged when they differ),
+   `claude`, `agent`, `dotnet` and `git` via `--version` with a **10 s timeout** each (printing `not on PATH`
+   or `timed out` instead), the OS, and whether the run used worktree mode.
+2. **Run:** the runId; liveness via `RunLiveness.Assess`, **injected** so tests stay deterministic, which can
+   render all six `RunLivenessState` values (`NotRecorded`, `Running`, `ExitedWithoutFinishing`, `Ended`,
+   `OnAnotherHost`, `CannotCheck`); the plan preflight and terminal gate results; then the line
+   **`Last halt or needs-human reason:`**, which is `run.json`'s `halt` headline and failed checks, else the
+   newest needs-human task's reason, else `none`.
+3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6); then one row per
+   **journaled** attempt: number, outcome, duration, exit code, provenance `summary`, and model requested vs
+   served. Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
+   (attempt number, `startedAt`, phase) when present; otherwise **inferred** from disk vs journal:
+   *"attempt-4/ exists on disk and is not in the journal: in flight, or the run died during it (liveness:
+   …)"*. Both paths are contract: the bundle must not require #798.
+4. **Gateway and endpoint blocks:** for each `claude` gateway block (§9.10) and each `openai-compat` block the
+   plan declares: `baseUrl`, model, backend identity (verified or unverified), and **Token in the run**,
+   from **recorded facts only**:
+   - a gateway attempt that **launched** proves the `authTokenEnv` variable was set (a gateway launch
+     refuses fail-closed when it is unset, §9.10), and a recorded refusal proves it was not;
+   - for `openai-compat`, a 401's recorded `ApiKeyDiagnosis` says whether the variable was set;
+   - no `authTokenEnv` at all means the placeholder `guardrails-gateway-no-auth` was sent, and it is printed
+     as such (this line alone would have closed #791 in its first message);
+   - anything else prints `unknown`.
+
+   Then a separate sub-block, **Redaction coverage**: the **bundling shell's** set/unset state (never a
+   value) for the same variables and for the fixed list of §17.6.1. It describes the scrub, not the run,
+   which is why it is printed apart from *Token in the run*.
+5. **Withheld:** what `--lean` left out, when it was given; under `--without-agent-text`, the removal
+   statement and the variables that forced it; and, always, that `git status` / `diff --stat` expose file
+   names.
+6. **Issue skeleton**, for the filer to paste:
+   - *Observed*: the halt headline when there is a halt. With no halt it is **left blank**, followed by
+     *Candidate facts*: the tasks not succeeded, each with its last outcome and summary, and in-flight
+     attempts;
+   - *Expected*: blank;
+   - *Evidence*: bundle-relative paths;
+   - *Environment*: block 1 on one line.
+
+Under `--without-agent-text`, every `reason`, `headline`, `summary` and needs-human text rendered in blocks 2,
+3 and 6 is `[withheld: agent text]`.
+
+### 17.5 MANIFEST.md and REDACTIONS.md
+
+**MANIFEST.md** has one row per file the verb **considered** (included, tailed, withheld, excluded, trimmed,
+or listed only), sorted ordinally by bundle path (by anonymized source path for a row with no bundle entry).
+Then a **Notes** list: an unparsable `GIT_CONFIG_COUNT`, a `--run` bundle's absent journal, and the trim
+tiers applied, in order.
+
+```markdown
+| Bundle path | Source (anonymized) | Bytes read | Status | Reason |
+|---|---|---|---|---|
+| tasks/03-x/attempt-2/claude-stream.jsonl | <workspace>/plan/logs/<runId>/03-x/attempt-2/claude-stream.jsonl | 2097152 | tail | tail-window |
+```
+
+`Status` is one of `included`, `tail`, `withheld`, `excluded`, `trimmed`, `listed-only`. `Reason` is one of
+the tokens this section names: `tail-window`, `live-tail-cut`, `no-newline-in-window`,
+`sharing-violation`, `not-utf8`, `scan-failed`, `scan-timeout`, `stream-scrubbed-less`, `patch-over-cap`,
+`lean`, `agent-text`, `unknown-kind`, `claude-config-excluded`, `state-fragments-phase-2`,
+`other-run-journal`, `newer-than-journal`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp (§17.10).
+
+**REDACTIONS.md** has one row per bundled file with a count per label or kind (**never a value, never a hash
+of a value**), then the fixed, enumerated **Cannot catch** list of §17.6.7, verbatim, each entry under its
+id. Under `--no-redact` the whole file is the single line `NOT REDACTED: do not post publicly`.
+
+```markdown
+| Bundle path | Label or kind | Count |
+|---|---|---|
+| tasks/03-x/attempt-2/transcript.md | ANTHROPIC_AUTH_TOKEN#1 | 3 |
+| tasks/03-x/attempt-2/transcript.md | high-entropy | 1 |
+```
+
+Over-redaction is the accepted cost, and it is **counted**: every pattern and entropy hit is in a row.
+
+### 17.6 Redaction — the load-bearing part
+
+Every text entry runs this pipeline, **after** its bounded read and before it becomes a zip entry:
+
+```text
+bounded read → UTF-8? ─no→ exclude + name
+                 └yes→ pass 1 known values → pass 2 patterns + entropy, minus non-secret exemptions
+                       (on the text AND its percent-decoded form) → pass 3 paths → zip entry
+                       → pass 4 stream consistency (stream log scrubbed less than its transcript? → exclude + name)
+a throw or timeout in any pass → exclude + name (pass 6)
+```
+
+Pass 5 (D1) is not per file: it is a run-wide refusal checked **before anything is written**.
+
+#### 17.6.1 Pass 1 — known values
+
+Every spelling of each collected value is replaced: **raw**; **JSON-escaped the way System.Text.Json writes
+it by default** (`+` as `+`, and likewise `<` `>` `&` `'`, hex matched case-insensitively);
+**JSON-escaped the way Node's `JSON.stringify` writes it** (only `"`, `\` and control characters); and
+**URL-encoded**. Values are collected **once, at bundle time**:
+
+- from the **bundling shell's environment**: `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_FOUNDRY_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GH_TOKEN`,
+  `GITHUB_TOKEN` (the **fixed list**); **every variable any runner block's `authTokenEnv` or `apiKeyEnv`
+  names**; and any variable whose **name** matches the **secret-name rule**:
+
+  ```text
+  (?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN)
+  ```
+
+  `PWD` and `OLDPWD` are excluded **by exact name**, because they hold paths;
+- as **literal values** in any `env` map (`guardrails.json`, `task.json`, `guardrailOverrides.env`) stored
+  under a key matching the secret-name rule **or under any key an `authTokenEnv`/`apiKeyEnv` names**. A
+  plan-literal value really is sent: `OpenAiCompatPromptRunner`'s bearer token reads the injected
+  environment first.
+
+Only values of **8 characters or more** are collected. Each value becomes a stable label
+`[REDACTED:<VARIABLE>#<n>]`, e.g. `[REDACTED:ANTHROPIC_AUTH_TOKEN#1]`. The same value carries the same label
+everywhere in the bundle, and `<n>` counts distinct values per variable name in collection order
+(environment variables first, ordinally by name, then `env` maps in the order `guardrails.json`, then each
+`task.json` by task id). **No hash of a secret is ever emitted**: a short hash is a confirmation oracle for a
+weak password.
+
+#### 17.6.2 Pass 2 — patterns and entropy, with non-secret exemptions
+
+Applied to the text **and again to its percent-decoded form**. Each hit is replaced by
+`[REDACTED:<kind>]`:
+
+| Kind | Shape |
+|---|---|
+| `sk-key` | `sk-[A-Za-z0-9_-]{16,}` |
+| `stripe-key` | `sk_live_…`, `rk_live_…` |
+| `github-token` | `gh[pousr]_…`, `github_pat_…` |
+| `gitlab-token` | `glpat-…` |
+| `npm-token` | `npm_…` |
+| `google-api-key` | `AIza…` |
+| `aws-access-key` | `AKIA[0-9A-Z]{16}` |
+| `slack-token` | `xox[abprs]-…`, `xapp-…` |
+| `jwt` | a JSON Web Token |
+| `bearer` | the value after `Bearer ` |
+| `auth-header` | the value of an `Authorization:`, `x-api-key:`, `api-key:`, `Ocp-Apim-Subscription-Key:`, `Cookie:` or `Set-Cookie:` header |
+| `url-credential` | the userinfo matched by `://[^/\s:@]+:[^/\s@]+@` |
+| `netrc` | the password of a `.netrc` `machine … login … password …` line |
+| `private-key` | a PEM `PRIVATE KEY` block |
+| `named-secret` | the value of a `NAME=value` or `"name": "value"` pair whose name matches the secret-name rule |
+| `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above 4.0** bits per character |
+
+The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
+into short pieces. Hex tops out at exactly 4.0 bits, so SHAs pass; the mixed-class requirement spares branch
+names and PascalCase test names.
+
+**Non-secret exemptions** apply **only to this pass, never to known values**: a known secret is scrubbed even
+if it equals a task id. They match **exact whole tokens, never substrings**: task ids, wave names, the plan
+name, branches recorded in the journal, path segments **enumerated from the plan and journal** (never from a
+disk walk), and the placeholder `guardrails-gateway-no-auth`. The placeholder is spared inside `Bearer …`
+too, because it is diagnostic (#791).
+
+#### 17.6.3 Pass 3 — paths (default on; `--keep-paths` disables it)
+
+Replace the home directory with `~`, the workspace (the repository root holding the plan) with
+`<workspace>`, the worktree root with `<worktrees>`, the OS user name inside paths with `<user>`, and
+`environment.host` / `owner.host` with `<host>`. It runs **after** the secret passes, so a label is never
+rewritten.
+
+#### 17.6.4 Pass 4 — stream consistency (default)
+
+Claude is launched with `stream-json --verbose` and **without** partial messages
+(`ClaudePromptRunner.BuildArguments`), so its tool results arrive whole. Other runners may stream `*_delta`
+events, which can split a value across lines. Two rules cover that:
+
+- a stream log containing delta events is **also** scanned as the concatenated delta text of each content
+  block;
+- if a label or kind was redacted in an attempt's `transcript.md` (or `guardrail-<name>.transcript.md`) but
+  **not** in its sibling stream log, that stream log is **excluded and named** (reason
+  `stream-scrubbed-less`).
+
+#### 17.6.5 Pass 5 — D1: refuse when this shell cannot see a run token (run-scoped)
+
+If **any** runner block the plan declares names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in
+the bundling shell**, `bundle` **exits `1` before writing anything**. It names each such variable and gives
+the remedy, e.g.:
+
+```text
+export LITELLM_MASTER_KEY in this shell and re-run `guardrails bundle`
+```
+
+The check is **run-scoped**, not per file, because attributing a token to individual files is unsound: a
+prompt judge picks its own block (`TierResolver.ResolveJudge` with the judge's frontmatter `runner`);
+preflight and terminal gates, the overwatcher, triage and union re-verify all run with no attempt route log;
+and a token-holding child's output can be quoted anywhere downstream.
+
+**`--without-agent-text`** is the explicit opt-out, and it applies whether or not D1 would have fired. It
+removes **all agent-derived free text, run-wide**: every file that can quote the output of a process that
+held the token. Removed (MANIFEST.md reason `agent-text`): transcripts, stream logs, gateway sessions,
+composed prompts, patches, worktree diffs, guardrail and gate stdout/stderr, `feedback.md`, `triage.json`,
+`overwatch.jsonl`, `escalations/*.json`, `union-reverify-*.log`, `events.jsonl`, `observer.jsonl`,
+`autonomy.jsonl`, `action-result.json`, `guardrail-*.verdict.json`, `task.json`, and `git log` subjects.
+What remains is structured facts only:
+
+- a **field allow-list projection** of `run.json` and `attempt-provenance.json`: ids, statuses, outcomes,
+  attempt numbers, timestamps, durations, exit codes, hashes, and runner and model names. Every `reason`,
+  `headline`, `summary` and needs-human text field becomes `[withheld: agent text]`;
+- `attempt-route.log` (route facts the harness writes);
+- gate `result.json` with `reason` withheld;
+- `git status`, `diff --stat`, and `git log` as `%h %ad`;
+- `validate.txt`, and `guardrails.json` (operator-authored configuration, still redacted by passes 1–3);
+- SUMMARY.md, MANIFEST.md, REDACTIONS.md.
+
+SUMMARY.md opens by stating the removal and naming the variables that forced it (§17.4). There is **no
+per-attempt attribution**: it is not needed for safety.
+
+#### 17.6.6 Pass 6 — fail closed
+
+A file that is not valid UTF-8, whose scan throws, or whose scan exceeds **1 s per started MiB**, is
+**excluded and named** (reasons `not-utf8`, `scan-failed`, `scan-timeout`). A file that cannot be read or
+scanned is never shipped raw.
+
+#### 17.6.7 Cannot catch — the enumerated disclosure
+
+REDACTIONS.md carries this list verbatim. The canary tests refer to these ids: a canary is either caught (its
+bytes absent from every raw zip entry) or tagged with one of these ids, and the test asserts that id appears
+in REDACTIONS.md.
+
+- **`CC1`**: a secret that no shape rule matches and that the entropy rule misses: **hex-only**, **under 24
+  characters**, or **lacking one of upper case, lower case or digit**.
+- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,
+  header, `NAME=value` and JSON-pair shapes.
+- **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.
+- **`CC4`**: a secret that reached the run from a variable **no block names** and **the bundling shell does
+  not have**.
+- **`CC5`**: proprietary content, which a default (full) bundle includes. Redaction removes credentials, not
+  intellectual property. `--lean` withholds it.
+- **`CC6`**: the bundling shell holds a **different value** of a variable than the run used (a rotated key,
+  another profile). D1 sees the variable as set, the known-value pass scrubs the wrong value, and the
+  difference cannot be detected without a fingerprint of the run's value, which this contract refuses to
+  emit.
+
+**Canary authorship is part of the contract.** The canary corpus is authored **independently of the
+patterns**, from a threat list, before the pattern code exists. The threat list **must name** base64url
+tokens (Python `secrets.token_urlsafe(16)` and `(32)`) and Azure client-secret shapes (with `~ . _ -`).
+Canaries are planted in every allow-listed artifact kind, in files written by **both** System.Text.Json and a
+Node-style serializer, and include `+ / = &`. A false negative (a leaked key on a public issue) is the
+failure that matters; over-redaction is the accepted, counted cost.
+
+#### 17.6.8 `--no-redact`
+
+Skips passes **1, 2, 4 and 5**, so there is **no D1 refusal**: nothing is claimed scrubbed. Path
+anonymization (pass 3) still runs unless `--keep-paths` is given, and `--without-agent-text`, when given,
+still removes what it removes. The rest of `claude-config/` stays excluded regardless. The file name gets the
+`-UNREDACTED` suffix, REDACTIONS.md becomes the single line `NOT REDACTED: do not post publicly`, and that
+warning is printed to stderr **before and after** the write.
+
+### 17.7 Size budget — tail caps, trim order, and the protected core
+
+**Initial tail caps.** Stream class: `claude-stream.jsonl`, `guardrail-*.stream.jsonl`, gateway session
+`*.jsonl`, `transcript.md`, `guardrail-*.transcript.md`, `composed-prompt*.md`, and the whole-or-nothing
+limit for `*.patch`: **2 MiB**. Log class, every other tailed entry (`guardrail-*.std{out,err}.log`, gate
+stdout/stderr, `union-reverify-*.log`, `events.jsonl`, `observer.jsonl`, `autonomy.jsonl`,
+`overwatch.jsonl`, `escalations/*.json`): **256 KiB**.
+
+`--max-size` caps the **finished zip**. The zip is built, measured, and then trimmed **one tier at a time, in
+this fixed order**, until it fits. Under `--dir` the same decisions are made against the zip the tree would
+make, so a tree and a zip of the same run always hold the same entries.
+
+1. The worktree diff falls back to `--stat`: the `*.diff` entries go, the `.txt` stat stays.
+2. Stream logs and gateway sessions go for every attempt except each task's **first and latest**.
+3. Transcripts and composed prompts go for the **middle** attempts, oldest first. The first and latest are
+   kept: the first shows the original approach, the latest shows the failure.
+4. Tail caps are halved, one step at a time: stream class 2 MiB → **1 MiB** → **512 KiB**; log class
+   256 KiB → **128 KiB**.
+5. Stream logs and transcripts of **first** attempts go, but **never** those of the latest attempt of a
+   failing or in-flight task.
+
+**Never trimmed (the protected core):** SUMMARY.md, MANIFEST.md, REDACTIONS.md, `run.json`,
+`guardrails.json`, and every attempt's `feedback.md`, `attempt-provenance.json` and `attempt-route.log`.
+Protected files are read whole. If the bundle is still over the cap after tier 5 (which includes the case
+where the protected core alone exceeds it), **the zip is still written**, the command **exits `1`**, and
+stderr names `--task` as the way to narrow it. Every trim is a MANIFEST.md row (reason `trim-tier-<n>`), and
+SUMMARY.md opens with one line when anything was trimmed.
+
+### 17.8 Output location and the path refusal
+
+The default destination is `~/guardrails-bundles/`: outside every repository and easy to find from a browser
+file picker. **Every destination (`--out`, `--dir`, and the default) is refused inside a git working tree**
+unless `--force-path` is given, checked with `git rev-parse --is-inside-work-tree` run in the **nearest
+existing ancestor** of the destination. That covers the plan folder, the run's worktrees, and a dotfiles
+repository at `~`, which is caught rather than silently committed. The refusal happens **before anything is
+read** and exits `1`. The absolute destination path is always printed.
+
+### 17.9 The full-bundle warning
+
+Every full bundle (no `--lean`) prints this to **stderr** and writes it as the **first block** of SUMMARY.md
+(after the `NOT REDACTED` line under `--no-redact`):
+
+```text
+WARNING: this bundle includes your code, your prompts and model output (transcripts, stream logs, gateway
+sessions, patches). Credentials were redacted, but redaction cannot catch everything (REDACTIONS.md, CC1-CC6).
+If your code is private, re-run with --lean before attaching this to a public issue.
+```
+
+### 17.10 Determinism
+
+Identical on-disk state plus injected probes (the tool versions, `RunLiveness`, and the clock) gives a
+**byte-identical zip**:
+
+- entries sorted **ordinally** by bundle path, with `/` separators;
+- every entry timestamp fixed at **1980-01-01 00:00:00**;
+- one **fixed compression level** (`CompressionLevel.Optimal`) for every entry;
+- generated files (SUMMARY.md, MANIFEST.md, REDACTIONS.md, `validate.txt`, `git/*`) are UTF-8 without a BOM,
+  with LF line endings;
+- label numbering (§17.6.1) and every table's row order are functions of the inputs, never of enumeration
+  order on disk;
+- the **only** time-varying line is SUMMARY.md's `Bundled at` line, which the determinism test masks.
+  MANIFEST.md and REDACTIONS.md carry no timestamps.
+
+### 17.11 What this does NOT cover
+
+- **State fragments** and **`providers check` output** (once something records it) are Phase 2.
+- **Redaction is best-effort against credentials** and makes no claim about proprietary content
+  (`CC1`–`CC6`).
+- **The Windows index-handle residual** (§17.2 item 5) is relied on, not eliminated.
+- **Validate is not read-only** (§17.2 item 6): it writes an OS temp directory and spawns read-only children.
