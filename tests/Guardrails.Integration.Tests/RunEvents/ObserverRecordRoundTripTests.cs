@@ -310,13 +310,13 @@ public sealed class ObserverRecordRoundTripTests
         Assert.Equal(ExitCodes.Success, exitCode);
         string combined = output + error;
 
-        Assert.Contains("attempt 7 ActionFailed", combined, StringComparison.Ordinal);
+        Assert.Contains("attempt-7 ActionFailed", combined, StringComparison.Ordinal);
 
         // A required member never reached the wire: attach must SKIP the whole event rather than render
         // it with a guessed/sentinel value standing in for the one field it could not read. Today it
         // does not — AttachCommand.Dispatch fills a sentinel LogDir instead of requiring one off the
         // wire — so attempt 13 (wrongly) still shows, and this assertion is what makes the test fail.
-        Assert.DoesNotContain("attempt 13 Timeout", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt-13 Timeout", combined, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -358,9 +358,9 @@ public sealed class ObserverRecordRoundTripTests
         // The values that came back are the values that went in — at minimum the attempt number and
         // the outcome, read off attach's rendered output (its only observable surface, which design 37
         // §4.4 #1 moved from an out-of-band line into the row's Detail cell).
-        Assert.Contains("attempt 9 GuardrailFailed", combined, StringComparison.Ordinal);
+        Assert.Contains("attempt-9 GuardrailFailed", combined, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("attempt 21 Timeout", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt-21 Timeout", combined, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

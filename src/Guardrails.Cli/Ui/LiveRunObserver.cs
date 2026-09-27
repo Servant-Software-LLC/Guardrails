@@ -107,7 +107,10 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private int _ticking;
 
     /// <summary>A task currently running: when it started and the status word to prefix the clock.</summary>
-    private readonly record struct RunningState(DateTimeOffset Since, string Prefix);
+    // AttemptPrefix is the prefix the CURRENT attempt runs under (#798: "running", or "attempt-4 · retry 2/3"), kept
+    // apart from Prefix so a transient pause can overwrite Prefix and the re-run can put the attempt's own back.
+    private readonly record struct RunningState(
+        DateTimeOffset Since, string Prefix, string AttemptPrefix = "running", string? AttemptTag = null, bool Paused = false);
 
     /// <summary>
     /// One in-flight wave phase. <see cref="Snapshot"/> and <see cref="LastProbe"/> are written by the
@@ -274,9 +277,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(task.Id, "[yellow]preparing worktree[/]", $"[yellow]{Markup.Escape(operation)}[/]");
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
-        if (attempt <= 1)
+        if (AttemptStatusPrefix(attempt, budget, attemptNumber) is not { } prefix)
         {
             return;
         }
@@ -285,7 +288,10 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         {
             if (_running.TryGetValue(task.Id, out RunningState state))
             {
-                _running[task.Id] = state with { Prefix = $"retry {attempt}/{budget}" };
+                _running[task.Id] = state with
+                {
+                    Prefix = prefix, AttemptPrefix = prefix, AttemptTag = $"attempt-{attemptNumber}", Paused = false
+                };
             }
         }
 
@@ -295,7 +301,32 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         // paraphrase of itself. AttemptFinished always precedes the next AttemptStarting (the executor's
         // retry loop journals the attempt before looping), and only a NON-succeeded attempt is retried, so
         // the cell is always populated by the time this fires.
-        Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", null);
+        Update(task.Id, $"[yellow]{Markup.Escape(prefix)}[/]", null);
+    }
+
+    /// <summary>
+    /// The Status cell's prefix for a starting attempt (#798) — the 1 Hz ticker appends the clock to it — or null
+    /// for a fresh task's first attempt, which keeps the plain <c>running</c> <see cref="TaskStarting"/> set.
+    /// <list type="bullet">
+    ///   <item>a retry: <c>attempt-4 · retry 2/3</c></item>
+    ///   <item>a resumed task's first attempt: <c>attempt-3 · running</c></item>
+    /// </list>
+    /// <c>attempt-N</c> is the JOURNAL's number, spelled exactly as the log directory the "view log" link opens;
+    /// <c>retry i/budget</c> is this run's position within its budget, which restarts at 1 on a resume. Before
+    /// #798 the cell carried only the per-run pair, so a resumed task's "retry 1/3" was writing <c>attempt-3</c>
+    /// and nothing on screen said so. The number leads so the clock still follows the phase word, as it always has.
+    /// Public for the same reason <see cref="AttemptDetailCell"/> is.
+    /// </summary>
+    public static string? AttemptStatusPrefix(int attempt, int budget, int attemptNumber)
+    {
+        if (attempt <= 1 && attemptNumber <= 1)
+        {
+            return null;
+        }
+
+        return attempt <= 1
+            ? $"attempt-{attemptNumber} · running"
+            : $"attempt-{attemptNumber} · retry {attempt}/{budget}";
     }
 
     public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
@@ -332,7 +363,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             return null;
         }
 
-        string cell = $"attempt {attempt} {Markup.Escape(outcome.ToString())}";
+        // #798: `attempt-N`, the journal's number spelled as its log directory is — the same token the Status
+        // cell's prefix and the --no-ui lines use.
+        string cell = $"attempt-{attempt} {Markup.Escape(outcome.ToString())}";
         return logLinkMarkup is null ? cell : $"{cell} · {logLinkMarkup}";
     }
 
@@ -622,10 +655,44 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     public static string PostMortemPagePath(string planDirectory, string runId, string taskId) =>
         Path.GetFullPath(Path.Combine(planDirectory, "logs", runId, taskId, "index.html"));
 
-    public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
+    public void GuardrailFinished(TaskNode task, GuardrailResult result)
+    {
+        RestoreAfterPause(task.Id);
         Update(task.Id, null, result.Passed
             ? $"[green]{Markup.Escape(result.Name)} ✓[/]"
             : $"[red]{Markup.Escape(result.Name)} ✗ {Markup.Escape(result.Reason ?? "")}[/]");
+    }
+
+    /// <summary>
+    /// #798: a transient pause re-runs the SAME attempt without a new <see cref="AttemptStarting"/>, so the
+    /// paused prefix used to stay on the row for the rest of the attempt and the attempt number with it was lost.
+    /// The first event the re-run raises (its route, its model, a guardrail) puts the attempt's own prefix back.
+    /// </summary>
+    private void RestoreAfterPause(string taskId)
+    {
+        string? restored = null;
+        lock (_gate)
+        {
+            if (_running.TryGetValue(taskId, out RunningState state) && state.Paused)
+            {
+                _running[taskId] = state with { Prefix = state.AttemptPrefix, Paused = false };
+                restored = state.AttemptPrefix;
+            }
+        }
+
+        if (restored is not null)
+        {
+            Update(taskId, $"[yellow]{Markup.Escape(restored)}[/]", null);
+        }
+    }
+
+    /// <summary>
+    /// The Status prefix while an attempt waits out a transient backoff (#798): <c>attempt-4 · paused 30s</c> when
+    /// the attempt carries a number worth naming (a retry, or a resumed task), else the shipped <c>paused 30s</c>.
+    /// Public for the same reason <see cref="AttemptStatusPrefix"/> is.
+    /// </summary>
+    public static string PausedStatusPrefix(string? attemptTag, int backoffSeconds) =>
+        attemptTag is null ? $"paused {backoffSeconds}s" : $"{attemptTag} · paused {backoffSeconds}s";
 
     public void TaskFinished(TaskResult result)
     {
@@ -651,16 +718,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         // Show the task as PAUSED (blue, distinct from yellow "running"/"retry" and red failure) and
         // freeze its clock prefix so an operator reads "healthy task waiting out a rate limit", not a
         // failing one (issue #115). The retry budget is untouched.
+        string paused = PausedStatusPrefix(null, (int)backoff.TotalSeconds);
         lock (_gate)
         {
             if (_running.TryGetValue(task.Id, out RunningState state))
             {
-                _running[task.Id] = state with { Prefix = $"paused {(int)backoff.TotalSeconds}s" };
+                paused = PausedStatusPrefix(state.AttemptTag, (int)backoff.TotalSeconds);
+                _running[task.Id] = state with { Prefix = paused, Paused = true };
             }
         }
 
         Update(task.Id,
-            $"[blue]paused {(int)backoff.TotalSeconds}s[/]",
+            $"[blue]{Markup.Escape(paused)}[/]",
             $"[blue]transient — {Markup.Escape(reason)} (pause {pauseCount}; no retry burn)[/]");
     }
 
@@ -949,13 +1018,14 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     public static string ModelMismatchLine(
         int count, string taskId, int attempt, string model, string? requestedModel) =>
         count <= 1
-            ? $"[yellow]model[/] [grey]{Markup.Escape(taskId)}[/] attempt {attempt}: "
+            ? $"[yellow]model[/] [grey]{Markup.Escape(taskId)}[/] attempt-{attempt}: "
               + $"[yellow]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]"
             : $"[yellow]model MISMATCH[/] — {count} attempt(s), latest [grey]{Markup.Escape(taskId)}[/]: "
               + $"[yellow]{Markup.Escape(AttemptModelSummary(model, requestedModel))}[/]";
 
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)
     {
+        RestoreAfterPause(task.Id);
         lock (_gate)
         {
             // Design 37 §4.4 #2, SPLIT on the presence of a requested model. The AGREEING case is CELL ONLY:
@@ -999,6 +1069,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     public void AttemptRouteResolved(
         TaskNode task, int attempt, string runner, string model, string? tier, string? requestedTier)
     {
+        RestoreAfterPause(task.Id);
         bool climbed = requestedTier is not null;
         string cell = ModelCellFromRoute(runner, tier, requestedTier);
 

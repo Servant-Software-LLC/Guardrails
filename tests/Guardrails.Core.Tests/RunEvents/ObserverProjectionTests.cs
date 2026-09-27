@@ -63,8 +63,8 @@ public sealed class ObserverProjectionTests
 
         public void TaskStarting(TaskNode task) => Calls.Add($"TaskStarting({task.Id})");
 
-        public void AttemptStarting(TaskNode task, int attempt, int budget) =>
-            Calls.Add($"AttemptStarting({task.Id},{attempt},{budget})");
+        public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) =>
+            Calls.Add($"AttemptStarting({task.Id},{attempt},{budget},{attemptNumber})");
 
         public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) =>
             Calls.Add($"AttemptModelResolved({task.Id},{attempt},{model},{requestedModel})");
@@ -128,7 +128,7 @@ public sealed class ObserverProjectionTests
     private static (string Member, Action<IRunObserver> Invoke)[] SampleCalls(TaskNode task, WaveNode wave) =>
     [
         ("TaskStarting", o => o.TaskStarting(task)),
-        ("AttemptStarting", o => o.AttemptStarting(task, 1, 3)),
+        ("AttemptStarting", o => o.AttemptStarting(task, 1, 3, 1)),
         ("AttemptModelResolved", o => o.AttemptModelResolved(task, 1, "claude-sonnet-5", requestedModel: null)),
         ("AttemptRouteResolved", o => o.AttemptRouteResolved(task, 1, "claude", "claude-sonnet-5", "standard", requestedTier: null)),
         ("AttemptFinished", o => o.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.MaxTurns))),
@@ -188,7 +188,7 @@ public sealed class ObserverProjectionTests
         var projection = new ObserverProjection(IRunObserver.Null, tree.Root);
 
         projection.TaskStarting(taskA);
-        projection.AttemptStarting(taskA, 1, 3);
+        projection.AttemptStarting(taskA, 1, 3, 1);
         projection.AttemptFinished(taskA, AttemptRecordFixture(1, AttemptOutcome.Succeeded));
         projection.TaskStarting(taskB);
         projection.PlanHashMismatch("sha256:bbbbbbbb");
@@ -253,7 +253,7 @@ public sealed class ObserverProjectionTests
         var projection = new ObserverProjection(IRunObserver.Null, tree.Root, () => stamped);
 
         projection.TaskStarting(task);
-        projection.AttemptStarting(task, attempt: 1, budget: 3);
+        projection.AttemptStarting(task, attempt: 1, budget: 3, attemptNumber: 1);
 
         string[] lines = File.ReadAllLines(Path.Combine(tree.Root, "observer.jsonl"));
         Assert.Equal(2, lines.Length);
@@ -343,7 +343,7 @@ public sealed class ObserverProjectionTests
         const int eventCount = 25;
         for (int i = 1; i <= eventCount; i++)
         {
-            projection.AttemptStarting(task, i, eventCount);
+            projection.AttemptStarting(task, i, eventCount, i);
         }
 
         string path = Path.Combine(tree.Root, "observer.jsonl");

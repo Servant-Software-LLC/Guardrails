@@ -200,7 +200,15 @@ public sealed class TaskExecutor : ITaskExecutor
         for (int attemptIndex = 1; attemptIndex <= budget; attemptIndex++)
         {
             bool isFinal = attemptIndex == budget;
-            _observer.AttemptStarting(task, attemptIndex, budget);
+
+            // #798: the JOURNAL's number for this attempt — the N of its attempt-N log dir and of the record it
+            // settles as — computed BEFORE anyone is told the attempt started, so the console, run.json's
+            // in-flight marker and the log folder all name the same attempt. It differs from attemptIndex on
+            // every resumed task (a resume grants a fresh per-run budget; attempt history survives it). The
+            // marker is written first, so an operator who reads the console line finds run.json already agreeing.
+            int journalAttempt = _journal.NextAttemptNumber(task.Id);
+            MarkInFlight(task.Id, journalAttempt, InFlightPhase.Action);
+            _observer.AttemptStarting(task, attemptIndex, budget, journalAttempt);
 
             // #269 overwatcher: fires AT MOST ONCE per attempt (Decision C). A short-circuit consult
             // (a floor boundary) takes precedence over the eager consult so both never fire the same attempt.
@@ -210,9 +218,18 @@ public sealed class TaskExecutor : ITaskExecutor
             // retry budget. attemptNumber is re-read each time (NextAttemptNumber is pure until an
             // attempt is actually recorded), so a paused retry reuses the same attempt-N log dir.
             AttemptResult attempt;
+            bool rerunAfterPause = false;
             while (true)
             {
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
+                if (rerunAfterPause)
+                {
+                    // #798: a transient pause re-runs the SAME attempt (NextAttemptNumber is pure until one is
+                    // recorded), so this re-marks the same number back into the action phase; the journal keeps
+                    // the marker's original startedAt because the number did not change.
+                    MarkInFlight(task.Id, attemptNumber, InFlightPhase.Action);
+                }
+
                 attempt = await RunAttemptAsync(
                     task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
                     guardrailFailedRetries, permissionWalls, pathsWrittenOutOfScope, cancellationToken)
@@ -286,8 +303,12 @@ public sealed class TaskExecutor : ITaskExecutor
                     ResetHint = attempt.TransientResetHint
                 });
 
+                // #798: the attempt is waiting, not running its action — say so in run.json. The re-run's re-mark
+                // (top of this loop) moves it back to the action phase under the same number and startedAt.
+                MarkInFlight(task.Id, attemptNumber, InFlightPhase.Paused);
                 _observer.PromptPaused(task, reason, delay, pauseOrdinal);
                 await backoff.PauseAsync(cancellationToken, attempt.TransientResetHint).ConfigureAwait(false);
+                rerunAfterPause = true;
             }
 
             last = attempt.Result;
@@ -899,7 +920,8 @@ public sealed class TaskExecutor : ITaskExecutor
         // local because every settle below reads its facts off this object.
         action = action with { ActionMs = actionClock.ElapsedMilliseconds };
 
-        AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
+        AttemptArtifacts.WriteActionLogs(
+            logDir, action.AsProcessResult(), ActionKindLabel(task), ActionResultSummary(task, action));
 
         // --- #349: fold the OBSERVED model onto this attempt's provenance ----------------
         // The runner only reports what it actually ran on once it has run, so the observed model cannot
@@ -1282,12 +1304,13 @@ public sealed class TaskExecutor : ITaskExecutor
                 _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
             };
 
+            string cause = ActionFailureCause(action);
             string summary = action.FailureKind switch
             {
-                PromptFailureKind.OutputCap => "response truncated at the output-token cap — reduce/split the task; guardrails skipped",
-                PromptFailureKind.MaxTurns => $"{action.FailureSummary} — ran out of turns mid-progress; turn budget auto-raised for retry; guardrails skipped",
-                PromptFailureKind.Timeout => $"{action.FailureSummary} — likely under-sized/under-budgeted; guardrails skipped",
-                _ => $"{action.FailureSummary}; guardrails skipped"
+                PromptFailureKind.OutputCap => $"{cause} — reduce/split the task; guardrails skipped",
+                PromptFailureKind.MaxTurns => $"{cause}; turn budget auto-raised for retry; guardrails skipped",
+                PromptFailureKind.Timeout => $"{cause} — likely under-sized/under-budgeted; guardrails skipped",
+                _ => $"{cause}; guardrails skipped"
             };
 
             return _journaler.FailedAttempt(
@@ -1700,8 +1723,17 @@ public sealed class TaskExecutor : ITaskExecutor
         // The SAME `route` local the action path was handed above (#201 / DoR §6.5 rule 2): a prompt
         // JUDGE is graded at the rung the actor actually ran at, and it reads that rung off the one
         // resolution this attempt made rather than resolving a second time.
+        MarkInFlight(task.Id, attemptNumber, InFlightPhase.Guardrails);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
             task, workspace, guardrailEnv, snapshotPath, logDir, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+        // #798: the guardrails have returned; everything from here is journaling, merging or queueing for
+        // integration. Only a real git segment has a window worth naming: worktree mode defers the success record
+        // to the Scheduler's settle (which clears this). In serial mode the record follows immediately, so the
+        // extra write would describe a state no reader could catch.
+        if (IsRealGitSegment(worktree))
+        {
+            MarkInFlight(task.Id, attemptNumber, InFlightPhase.Settling);
+        }
 
         // --- §12.4 / D32: fold the VERIFIER route onto this attempt's provenance ---------
         // A judge resolves DURING the guardrail pass, so it cannot be part of the launch-time provenance
@@ -2960,6 +2992,33 @@ public sealed class TaskExecutor : ITaskExecutor
 
     // --- log paths -----------------------------------------------------------------------
 
+    /// <summary>
+    /// Record the in-flight marker (#798) WITHOUT ever faulting the run: <see cref="RunJournal.MarkAttemptInFlight"/>
+    /// is best-effort, and when its write fails the reason is appended to the task-level
+    /// <c>inflight-marker.log</c> — beside the attempt folders the operator is already reading — rather than lost.
+    /// </summary>
+    private void MarkInFlight(string taskId, int attemptNumber, string phase)
+    {
+        if (_journal.MarkAttemptInFlight(taskId, attemptNumber, phase) is not { } failure)
+        {
+            return;
+        }
+
+        try
+        {
+            string dir = TaskLevelLogDir(taskId);
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(
+                Path.Combine(dir, "inflight-marker.log"),
+                $"{DateTimeOffset.UtcNow:O} attempt-{attemptNumber} {phase}: run.json marker not persisted ({failure}); " +
+                "the next journal write carries it. The run is unaffected." + Environment.NewLine);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort note about a best-effort marker: nothing further to do.
+        }
+    }
+
     private string TaskLevelLogDir(string taskId) =>
         Path.Combine(_plan.PlanDirectory, "logs", _journal.Document.RunId, taskId);
 
@@ -3264,6 +3323,39 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     internal static double TimeoutMultiplierFor(int priorTimeouts) =>
         Math.Min(Math.Pow(1.5, Math.Max(priorTimeouts, 0)), 4.0);
+
+    /// <summary>
+    /// WHY a failed action stopped, in the words the attempt summary uses (#798) — the head of that summary, and
+    /// the whole of <c>action-result.json</c>'s <c>summary</c> for a failed prompt action. A max-turns stop names
+    /// the turn budget and an output-cap stop names the cap, rather than leaving the reader a synthesized exit code.
+    /// </summary>
+    internal static string ActionFailureCause(ActionRun action) => action.FailureKind switch
+    {
+        PromptFailureKind.OutputCap => "response truncated at the output-token cap",
+        PromptFailureKind.MaxTurns => $"{action.FailureSummary} — ran out of turns mid-progress",
+        _ => action.FailureSummary
+    };
+
+    /// <summary>
+    /// <c>action-result.json</c>'s <c>summary</c> for this action (#798), or null to keep the process-shaped
+    /// default (<c>ok</c> / <c>exited N</c> / <c>timed out</c>). A PROMPT action's exit code is synthesized — 1 for
+    /// every failure — so <c>exited 1</c> said nothing about a max-turns stop the journal records as
+    /// <c>max-turns</c>; a failed prompt action therefore carries <see cref="ActionFailureCause"/>, with a timeout
+    /// named as one when the runner's own text does not. A script's exit code is real, so it keeps the default.
+    /// </summary>
+    internal static string? ActionResultSummary(TaskNode task, ActionRun action)
+    {
+        if (action.Succeeded || task.Action.Kind != ActionKind.Prompt)
+        {
+            return null;
+        }
+
+        string cause = ActionFailureCause(action);
+        return action.FailureKind == PromptFailureKind.Timeout
+            && !cause.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                ? $"timed out — {cause}"
+                : cause;
+    }
 
     /// <summary>
     /// The turn-budget-extension factor for the current attempt given how many prior attempts hit the

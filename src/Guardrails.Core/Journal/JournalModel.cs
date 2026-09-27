@@ -654,6 +654,69 @@ public sealed record TaskJournalEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<TransientPauseRecord>? TransientPauses { get; init; }
+
+    /// <summary>
+    /// OPTIONAL in-flight marker (SSOT §7 <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798): the attempt this
+    /// task is running RIGHT NOW — its journal attempt number (the same <c>N</c> as its <c>attempt-N</c> log
+    /// directory), when it started, and which phase it is in.
+    /// <para>
+    /// <see cref="Attempts"/> only learns of an attempt when it SETTLES, so without this a live transcript in
+    /// <c>logs/&lt;runId&gt;/&lt;task&gt;/attempt-4/</c> had nothing in <c>run.json</c> naming it, and the console's
+    /// per-run "retry 2/3" could not be matched to it either. Written when the attempt starts, updated at each
+    /// phase change, and REMOVED the moment the attempt settles into <see cref="Attempts"/> (or the task is
+    /// settled, reset, blocked, or the journal is reloaded for a resume — a marker from a previous process
+    /// describes an attempt no process is running).
+    /// </para>
+    /// <para>ABSENT (never <c>null</c> noise) whenever no attempt is in flight, and in every journal written
+    /// before this field existed; a reader that does not know it ignores it.</para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InFlightAttemptRecord? InFlightAttempt { get; init; }
+}
+
+/// <summary>
+/// The attempt a task is running right now (SSOT §7 <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798). See
+/// <see cref="TaskJournalEntry.InFlightAttempt"/>.
+/// </summary>
+public sealed record InFlightAttemptRecord
+{
+    /// <summary>
+    /// The JOURNAL attempt number — one past the highest recorded attempt, so it continues across resumes and
+    /// <c>guardrails reset</c> — and therefore the <c>N</c> of this attempt's <c>attempt-N</c> log directory and
+    /// of the <see cref="AttemptRecord.Attempt"/> it will settle as. Stable across a transient pause, which
+    /// re-runs the same attempt under the same number.
+    /// </summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>UTC time the attempt started (ISO-8601). Kept across a transient pause's re-run.</summary>
+    public required DateTimeOffset StartedAt { get; init; }
+
+    /// <summary>
+    /// Which phase the attempt is in: <see cref="InFlightPhase.Action"/> (<c>"action"</c>),
+    /// <see cref="InFlightPhase.Guardrails"/> (<c>"guardrails"</c>), <see cref="InFlightPhase.Settling"/>
+    /// (<c>"settling"</c> — the guardrails have returned and the attempt is being journaled, merged or queued
+    /// for integration) or <see cref="InFlightPhase.Paused"/> (<c>"paused"</c> — waiting out a transient backoff).
+    /// </summary>
+    public required string Phase { get; init; }
+}
+
+/// <summary>The SSOT §7 tokens for <see cref="InFlightAttemptRecord.Phase"/> (issue #798).</summary>
+public static class InFlightPhase
+{
+    /// <summary>The action (script or prompt) is running.</summary>
+    public const string Action = "action";
+
+    /// <summary>The task's guardrails are running against the action's work.</summary>
+    public const string Guardrails = "guardrails";
+
+    /// <summary>The guardrails have returned; the attempt is settling (journal, merge, integration queue).</summary>
+    public const string Settling = "settling";
+
+    /// <summary>
+    /// The attempt hit a transient provider condition and is waiting out its backoff (#115); it re-runs under the
+    /// SAME number, which moves the marker back to <see cref="Action"/>.
+    /// </summary>
+    public const string Paused = "paused";
 }
 
 /// <summary>

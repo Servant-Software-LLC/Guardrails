@@ -3829,7 +3829,7 @@ public static class RunCommand
                 }
             }
 
-            output.WriteLine($"  Inspect {taskLogDir}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
+            output.WriteLine(InspectLine(taskLogDir));
 
             IReadOnlyList<string> missingResourceLines = MissingResourceHaltLines(needsHuman, logsRoot);
             if (missingResourceLines.Count > 0)
@@ -3843,6 +3843,53 @@ public static class RunCommand
             {
                 output.WriteLine(NeedsHumanClosingLine(needsHuman.NeedsHumanKind));
             }
+        }
+    }
+
+    /// <summary>
+    /// The NEEDS HUMAN section's "Inspect" line (#798). Names the latest attempt by its directory —
+    /// <c>attempt-N</c>, the journal's number, which is what the console's retry lines now name too — so an
+    /// operator goes straight to the right folder rather than reconciling a per-run "retry 2/3" against a
+    /// directory listing. Falls back to the shipped wording when no <c>attempt-N</c> directory exists.
+    /// </summary>
+    public static string InspectLine(string taskLogDir)
+    {
+        char sep = Path.DirectorySeparatorChar;
+        return LatestAttemptNumber(taskLogDir) is { } latest
+            ? $"  Inspect {taskLogDir}{sep} (the latest attempt is attempt-{latest}; its feedback.md has the full failure detail),"
+            : $"  Inspect {taskLogDir}{sep} (latest attempt's feedback.md has the full failure detail),";
+    }
+
+    /// <summary>
+    /// The highest <c>N</c> among <paramref name="taskLogDir"/>'s <c>attempt-N</c> directories, or null when there
+    /// are none (or the directory cannot be read — display-only, so an IO fault costs the number, never the halt text).
+    /// </summary>
+    private static int? LatestAttemptNumber(string taskLogDir)
+    {
+        try
+        {
+            if (!Directory.Exists(taskLogDir))
+            {
+                return null;
+            }
+
+            int? latest = null;
+            foreach (string dir in Directory.EnumerateDirectories(taskLogDir, "attempt-*"))
+            {
+                if (int.TryParse(
+                        Path.GetFileName(dir).AsSpan("attempt-".Length), System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out int n)
+                    && n > (latest ?? 0))
+                {
+                    latest = n;
+                }
+            }
+
+            return latest;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 

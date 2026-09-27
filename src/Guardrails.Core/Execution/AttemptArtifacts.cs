@@ -19,23 +19,27 @@ internal static class AttemptArtifacts
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    /// <summary>Write <c>action-stdout.log</c>, <c>action-stderr.log</c>, and <c>action-result.json</c>.</summary>
-    public static void WriteActionLogs(string logDir, ProcessResult result, string kind)
+    /// <summary>
+    /// Write <c>action-stdout.log</c>, <c>action-stderr.log</c>, and <c>action-result.json</c>. A non-null
+    /// <paramref name="summary"/> replaces the process-shaped default (<c>ok</c> / <c>exited N</c> /
+    /// <c>timed out</c>) — the caller passes one when it knows the CAUSE, which a synthesized exit code hides (#798).
+    /// </summary>
+    public static void WriteActionLogs(string logDir, ProcessResult result, string kind, string? summary = null)
     {
         Directory.CreateDirectory(logDir);
 
         AtomicFile.WriteAllText(Path.Combine(logDir, "action-stdout.log"), result.StandardOutput);
         AtomicFile.WriteAllText(Path.Combine(logDir, "action-stderr.log"), result.StandardError);
 
-        var summary = new ActionResultDocument
+        var document = new ActionResultDocument
         {
             Kind = kind,
             ExitCode = result.ExitCode,
-            Summary = SummaryFor(result)
+            Summary = summary ?? SummaryFor(result)
         };
         AtomicFile.WriteAllText(
             Path.Combine(logDir, "action-result.json"),
-            JsonSerializer.Serialize(summary, ResultOptions));
+            JsonSerializer.Serialize(document, ResultOptions));
     }
 
     /// <summary>
