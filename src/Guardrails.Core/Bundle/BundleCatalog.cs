@@ -66,6 +66,10 @@ public static class BundleCatalog
                 return new BundleKind("transcript", BundleClass.Full, BundleCapClass.Stream, AgentText: true);
             case "claude-stream.jsonl":
                 return new BundleKind("stream", BundleClass.Full, BundleCapClass.Stream, AgentText: true);
+            case "action-stdout.log" or "action-stderr.log":
+                // Harness-captured process output, often the deciding evidence for a failing script action: lean.
+                // A script can echo agent-written code or output, so --without-agent-text removes it.
+                return new BundleKind("action-output", BundleClass.Lean, BundleCapClass.Log, AgentText: true);
         }
 
         if (fileName.EndsWith(".patch", StringComparison.Ordinal))

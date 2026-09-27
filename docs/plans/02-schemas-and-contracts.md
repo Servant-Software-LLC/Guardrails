@@ -10418,7 +10418,7 @@ withheld by `--lean`; each withheld entry is a MANIFEST.md row (reason `lean`).
 ├── tasks/<id>/ feedback.md, overwatch.jsonl, triage.json, union-reverify-*.log         lean
 │   └── attempt-N/ feedback.md, attempt-provenance.json, attempt-route.log,
 │                  action-result.json, guardrail-*.verdict.json,
-│                  guardrail-*.std{out,err}.log (tails)                                 lean
+│                  action-std{out,err}.log + guardrail-*.std{out,err}.log (tails)      lean
 │                  composed-prompt*.md, transcript.md, guardrail-*.transcript.md,
 │                  claude-stream.jsonl + guardrail-*.stream.jsonl (tails), *.patch      full
 ├── gateway/sessions/  claude-config/projects/**/*.jsonl ONLY (tails)                   full
@@ -10448,8 +10448,11 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
 - **A `claude-config/` beside an attempt's stream log** (§9.10's fallback when there is no run-level one) is
   treated the same way: excluded and named, with its `projects/**/*.jsonl` under
   `gateway/sessions/<task>/attempt-<n>/`.
-- **Files §8 names that this tree does not** (`action-stdout.log`, `action-stderr.log`, `state-in.json`,
-  `fragment.json`, `action-out-fragment.json`, `overwatch-guidance.md`, a wave's `breakdown/`, the log viewer's
+- **`action-stdout.log` / `action-stderr.log`** (a script action's captured output) are **lean**, in the log
+  tail class, and redacted by every pass: they are harness-captured process output, often the deciding evidence
+  for a stuck or failing script action, not model prose. `--without-agent-text` removes them, because a script
+  can echo agent-written code or output (§17.6.5).
+- **Files §8 names that this tree does not** (`state-in.json`, `fragment.json`, `action-out-fragment.json`, `overwatch-guidance.md`, a wave's `breakdown/`, the log viewer's
   HTML) are `listed-only` (`unknown-kind`) in Phase 1.
 
 ### 17.4 SUMMARY.md — facts only, in a fixed order
@@ -10690,7 +10693,7 @@ and a token-holding child's output can be quoted anywhere downstream.
 **`--without-agent-text`** is the explicit opt-out, and it applies whether or not D1 would have fired. It
 removes **all agent-derived free text, run-wide**: every file that can quote the output of a process that
 held the token. Removed (MANIFEST.md reason `agent-text`): transcripts, stream logs, gateway sessions,
-composed prompts, patches, worktree diffs, guardrail and gate stdout/stderr, `feedback.md`, `triage.json`,
+composed prompts, patches, worktree diffs, action, guardrail and gate stdout/stderr, `feedback.md`, `triage.json`,
 `overwatch.jsonl`, `escalations/*.json`, `union-reverify-*.log`, `events.jsonl`, `observer.jsonl`,
 `autonomy.jsonl`, `action-result.json`, `guardrail-*.verdict.json`, `task.json`, and `git log` subjects.
 What remains is structured facts only:
@@ -10752,7 +10755,8 @@ warning is printed to stderr **before and after** the write.
 
 **Initial tail caps.** Stream class: `claude-stream.jsonl`, `guardrail-*.stream.jsonl`, gateway session
 `*.jsonl`, `transcript.md`, `guardrail-*.transcript.md`, `composed-prompt*.md`, and the whole-or-nothing
-limit for `*.patch`: **2 MiB**. Log class, every other tailed entry (`guardrail-*.std{out,err}.log`, gate
+limit for `*.patch`: **2 MiB**. Log class, every other tailed entry (`action-std{out,err}.log`,
+`guardrail-*.std{out,err}.log`, gate
 stdout/stderr, `union-reverify-*.log`, `events.jsonl`, `observer.jsonl`, `autonomy.jsonl`,
 `overwatch.jsonl`, `escalations/*.json`): **256 KiB**.
 

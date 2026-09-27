@@ -76,6 +76,58 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.DoesNotContain("WARNING: this bundle includes", outcome.Text("SUMMARY.md"), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScriptActionOutputIsIncludedRedactedInBothFullAndLean(bool lean)
+    {
+        StandardRun();
+        _fixture.Log("01-first/attempt-1/action-stdout.log", $"building...\nexport QWEN_TOKEN={BundlePlanFixture.KnownToken}\ndone\n");
+        _fixture.Log("01-first/attempt-1/action-stderr.log", "warning: ghp_AbCdEfGhIjKlMnOpQrStUv1234 is deprecated\n");
+
+        BundleOutcome outcome = _fixture.Build(new BundleOptions { Lean = lean });
+
+        string stdout = outcome.Text("tasks/01-first/attempt-1/action-stdout.log")!;
+        string stderr = outcome.Text("tasks/01-first/attempt-1/action-stderr.log")!;
+        Assert.Contains("building...", stdout, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED:QWEN_TOKEN#1]", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain(BundlePlanFixture.KnownToken, stdout, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED:github-token]", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain(outcome.Manifest, r => r.Source.EndsWith("/action-stdout.log", StringComparison.Ordinal) && r.Status == "listed-only");
+    }
+
+    [Fact]
+    public void ScriptActionOutputIsTailCappedInTheLogClass()
+    {
+        StandardRun();
+        var big = new StringBuilder();
+        while (big.Length < BundleCatalog.LogCap + 10_000)
+        {
+            big.Append("line of script output\n");
+        }
+
+        _fixture.Log("01-first/attempt-1/action-stdout.log", big.ToString());
+        BundleOutcome outcome = _fixture.Build();
+
+        Assert.Equal(("tail", "tail-window"), Row(outcome, "tasks/01-first/attempt-1/action-stdout.log"));
+        Assert.True(outcome.Entries.Single(e => e.Key == "tasks/01-first/attempt-1/action-stdout.log").Value.Length <= BundleCatalog.LogCap);
+    }
+
+    [Fact]
+    public void ScriptActionOutputIsRemovedUnderWithoutAgentText()
+    {
+        StandardRun();
+        _fixture.Log("01-first/attempt-1/action-stdout.log", "script echoed free text canary marker\n");
+        _fixture.Log("01-first/attempt-1/action-stderr.log", "free text canary marker on stderr\n");
+
+        BundleOutcome outcome = _fixture.Build(new BundleOptions { WithoutAgentText = true });
+
+        Assert.False(outcome.Has("tasks/01-first/attempt-1/action-stdout.log"));
+        Assert.False(outcome.Has("tasks/01-first/attempt-1/action-stderr.log"));
+        Assert.Equal(("withheld", "agent-text"), Row(outcome, "tasks/01-first/attempt-1/action-stdout.log"));
+        Assert.All(outcome.AllText(), t => Assert.DoesNotContain("canary marker", t, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ClaudeConfigBeyondProjectSessionsIsExcludedByConstructionAndNamed()
     {
