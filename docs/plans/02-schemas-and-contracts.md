@@ -10364,8 +10364,9 @@ reads obey this numbered contract:
    10–50 ms backoff. After that the file is **excluded and named** (reason `sharing-violation`), never a
    crash.
 4. **Tail reads.** A file over its tail cap (§17.7) is read as a **tail window**. The window's leading partial
-   line is dropped **before any scan**; if the window contains no newline, the file is excluded and named
-   (reason `no-newline-in-window`). Because only whole lines are kept, a UTF-8 sequence is never split. A
+   line is dropped **before any scan**; if the window contains no newline, or its only newline is its last
+   byte (so it holds no whole line), the file is excluded and named (reason `no-newline-in-window`). Because
+   only whole lines are kept, a UTF-8 sequence is never split. A
    file that grows during the read keeps what was read, minus the trailing partial line (reason
    `live-tail-cut`). `transcript.md` reads are capped like the stream logs.
 5. **Git takes no optional locks, anywhere in the process.** At startup the verb sets
@@ -10444,6 +10445,12 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
 - **`*.patch`** (§8: `prior-attempt.patch`, `out-of-scope.patch`) is read **whole or not at all**: a patch
   over the stream-class cap is excluded and named (reason `patch-over-cap`), because a tail of a patch
   misleads.
+- **A `claude-config/` beside an attempt's stream log** (§9.10's fallback when there is no run-level one) is
+  treated the same way: excluded and named, with its `projects/**/*.jsonl` under
+  `gateway/sessions/<task>/attempt-<n>/`.
+- **Files §8 names that this tree does not** (`action-stdout.log`, `action-stderr.log`, `state-in.json`,
+  `fragment.json`, `action-out-fragment.json`, `overwatch-guidance.md`, a wave's `breakdown/`, the log viewer's
+  HTML) are `listed-only` (`unknown-kind`) in Phase 1.
 
 ### 17.4 SUMMARY.md — facts only, in a fixed order
 
@@ -10470,7 +10477,8 @@ Then six numbered blocks, always in this order:
    `OnAnotherHost`, `CannotCheck`); the plan preflight and terminal gate results; then the line
    **`Last halt or needs-human reason:`**, which is `run.json`'s `halt` headline and failed checks, else the
    newest needs-human task's reason, else `none`.
-3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6); then one row per
+3. **Per task** (the `--task` selection): status and definition drift (§17.2 item 6; the loaded task's
+   definition hash against the journal's `definitionHash`); then one row per
    **journaled** attempt: number, outcome, duration, exit code, provenance `summary`, and model requested vs
    served. Then the **in-flight attempt**: taken from #798's per-task in-flight marker in `run.json`
    (attempt number, `startedAt`, phase) when present; otherwise **inferred** from disk vs journal:
@@ -10482,6 +10490,9 @@ Then six numbered blocks, always in this order:
    - a gateway attempt that **launched** proves the `authTokenEnv` variable was set (a gateway launch
      refuses fail-closed when it is unset, §9.10), and a recorded refusal proves it was not;
    - for `openai-compat`, a 401's recorded `ApiKeyDiagnosis` says whether the variable was set;
+   - "recorded" means the text of the selected tasks' `action-result.json` summaries, the journal's failed-guardrail
+     reasons, and the `halt` record; the per-attempt row's `summary` is that attempt's `action-result.json`
+     `summary` (provenance carries no summary field);
    - no `authTokenEnv` at all means the placeholder `guardrails-gateway-no-auth` was sent, and it is printed
      as such (this line alone would have closed #791 in its first message);
    - anything else prints `unknown`.
@@ -10521,6 +10532,8 @@ the tokens this section names: `tail-window`, `live-tail-cut`, `no-newline-in-wi
 `sharing-violation`, `not-utf8`, `scan-failed`, `scan-timeout`, `stream-scrubbed-less`, `patch-over-cap`,
 `lean`, `agent-text`, `unknown-kind`, `claude-config-excluded`, `state-fragments-phase-2`,
 `other-run-journal`, `newer-than-journal`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp (§17.10).
+A row with no bundle entry, or with no reason (a whole read), renders `-` in that cell; a generated file's
+source reads `generated: …`.
 
 **REDACTIONS.md** has one row per bundled file with a count per label or kind (**never a value, never a hash
 of a value**), then the fixed, enumerated **Cannot catch** list of §17.6.7, verbatim, each entry under its
@@ -10533,7 +10546,10 @@ id. Under `--no-redact` the whole file is the single line `NOT REDACTED: do not 
 | tasks/03-x/attempt-2/transcript.md | high-entropy | 1 |
 ```
 
-Over-redaction is the accepted cost, and it is **counted**: every pattern and entropy hit is in a row.
+Over-redaction is the accepted cost, and it is **counted**: every pattern and entropy hit is in a row. A
+bundled file with nothing scrubbed gets one `(none) | 0` row, and SUMMARY.md gets a row too: its free-text fields
+(halt headlines, reasons, attempt summaries) are redacted one field at a time, and cut to length only after
+redaction, never inside a label.
 
 ### 17.6 Redaction — the load-bearing part
 
@@ -10562,16 +10578,19 @@ it by default** (`+` as `+`, and likewise `<` `>` `&` `'`, hex matched case-inse
   names**; and any variable whose **name** matches the **secret-name rule**:
 
   ```text
-  (?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN)
+  (?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN|_PASS$|^PASS$)
   ```
 
-  `PWD` and `OLDPWD` are excluded **by exact name**, because they hold paths;
+  `PWD` and `OLDPWD` are excluded **by exact name**, because they hold paths. `_PASS$|^PASS$` was added in
+  row 3, when the blind canary corpus's `SMTP_PASS` pair matched nothing else (`GIT_ASKPASS` does not match it);
 - as **literal values** in any `env` map (`guardrails.json`, `task.json`, `guardrailOverrides.env`) stored
   under a key matching the secret-name rule **or under any key an `authTokenEnv`/`apiKeyEnv` names**. A
   plan-literal value really is sent: `OpenAiCompatPromptRunner`'s bearer token reads the injected
   environment first.
 
-Only values of **8 characters or more** are collected. Each value becomes a stable label
+Only values of **8 characters or more** are collected, and the gateway placeholder `guardrails-gateway-no-auth`
+is **never** collected: it is a public constant, and the diagnostic that would have closed #791, even when the
+bundling shell exports it as `ANTHROPIC_AUTH_TOKEN`. Each value becomes a stable label
 `[REDACTED:<VARIABLE>#<n>]`, e.g. `[REDACTED:ANTHROPIC_AUTH_TOKEN#1]`. The same value carries the same label
 everywhere in the bundle, and `<n>` counts distinct values per variable name in collection order
 (environment variables first, ordinally by name, then `env` maps in the order `guardrails.json`, then each
@@ -10581,7 +10600,17 @@ weak password.
 #### 17.6.2 Pass 2 — patterns and entropy, with non-secret exemptions
 
 Applied to the text **and again to its percent-decoded form**. Each hit is replaced by
-`[REDACTED:<kind>]`:
+`[REDACTED:<kind>]`.
+
+**Where passes 1 and 2 look ("every spelling", as implemented).** They scan *views* of the text: the text
+itself, its JSON-unescaped form (the System.Text.Json and the Node spellings decode to the same characters),
+that form unescaped once more (JSON quoted inside a JSON string, as stream logs carry tool output), each of
+those percent-decoded (`%XX` in either hex case; a run of escapes decodes as UTF-8 or is left alone), and, for a
+stream log, the joined delta text of §17.6.4. Every view character remembers the original characters it came
+from, so a hit is replaced in the original bytes, **escape-aligned**: a JSON artifact stays well-formed, a label
+never lands inside a `\uXXXX` escape, and a value split across two delta events is replaced in each event with
+the JSON between them untouched. Overlapping hits merge; a merged span carries the known-value label when one
+took part, else the most specific kind.
 
 | Kind | Shape |
 |---|---|
@@ -10599,7 +10628,7 @@ Applied to the text **and again to its percent-decoded form**. Each hit is repla
 | `url-credential` | the userinfo matched by `://[^/\s:@]+:[^/\s@]+@` |
 | `netrc` | the password of a `.netrc` `machine … login … password …` line |
 | `private-key` | a PEM `PRIVATE KEY` block |
-| `named-secret` | the value of a `NAME=value` or `"name": "value"` pair whose name matches the secret-name rule |
+| `named-secret` | the value of a `NAME=value`, `NAME: value` (YAML) or `"name": "value"` pair whose name matches the secret-name rule. Whitespace around `=` / `:` and a quoted value are allowed (`var dbPassword = "…";`). The header names of `auth-header` are left to that rule, which keeps the `Bearer` scheme word readable; a value of `true` / `false` / `null` is not scrubbed; and the keys `authTokenEnv` / `apiKeyEnv` are not scrubbed, because by schema their values are variable **names** (#791) |
 | `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above 4.0** bits per character |
 
 The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
@@ -10611,6 +10640,18 @@ if it equals a task id. They match **exact whole tokens, never substrings**: tas
 name, branches recorded in the journal, path segments **enumerated from the plan and journal** (never from a
 disk walk), and the placeholder `guardrails-gateway-no-auth`. The placeholder is spared inside `Bearer …`
 too, because it is diagnostic (#791).
+
+- **Enumerated path segments** are the run id, `attempt-<n>`, gate and guardrail names, the file and directory
+  names of §8's layout, and every segment of the plan directory, the workspace, the home directory, the
+  worktree root and each journaled segment worktree path. A `/`-joined run is exempt only when **every**
+  segment is such a token, so a base64 secret that happens to contain `/` is never split into innocent-looking
+  pieces.
+- **The identifier exemption** (the entropy rule **only**; never known values, never shape patterns): a run
+  made entirely of dot-separated segments, each built of capitalized words (a capital and two or more
+  lower-case letters) and digit runs, with at least three such parts in all, e.g.
+  `Guardrails.Core.Tests.ResumeTests.Plan39ResumeRetriesWave2TaskAfterHalt`. A random token essentially never
+  has that shape; a PascalCase test name with digits otherwise qualifies (the corpus's
+  `t12-test-name-with-digits`).
 
 #### 17.6.3 Pass 3 — paths (default on; `--keep-paths` disables it)
 
@@ -10727,6 +10768,14 @@ make, so a tree and a zip of the same run always hold the same entries.
    256 KiB → **128 KiB**.
 5. Stream logs and transcripts of **first** attempts go, but **never** those of the latest attempt of a
    failing or in-flight task.
+
+How the tiers are applied: tier 3 removes one middle attempt per step (oldest by the journal's `startedAt`, then
+attempt number), re-measuring after each; tier 4 is two steps (stream 1 MiB with log 128 KiB, then stream
+512 KiB), each re-cutting the retained bytes on a line boundary and re-running the redaction and pass 4; a
+`*.patch` is never re-capped. A gateway session belongs to the attempt whose segment worktree it ran in (Claude
+names its project directory after the cwd with every non-alphanumeric character replaced by `-`); a session no
+attempt claims goes at tier 2. "Failing or in-flight" is every task the journal does not record as `succeeded`,
+or that carries an in-flight marker; for a `--run` bundle, every task.
 
 **Never trimmed (the protected core):** SUMMARY.md, MANIFEST.md, REDACTIONS.md, `run.json`,
 `guardrails.json`, and every attempt's `feedback.md`, `attempt-provenance.json` and `attempt-route.log`.
