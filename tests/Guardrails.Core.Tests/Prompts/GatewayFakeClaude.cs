@@ -5,7 +5,7 @@ namespace Guardrails.Core.Tests;
 /// invocation records, in its own numbered folder under <see cref="CallsDirectory"/>, the argv it received (one
 /// per line) and its WHOLE environment (<c>NAME=value</c> per line), writes a passing verdict when
 /// <c>GUARDRAILS_VERDICT_OUT</c> is set (so a judge dispatched through it reaches a verdict), drains stdin, and
-/// replays a canned stream whose result reports <c>total_cost_usd: 1.23</c> and 1000 input / 200 output tokens —
+/// replays a canned stream whose result reports <c>total_cost_usd: 424242.4242</c> (a sentinel no timestamp or duration can contain: a bare "1.23" matched a timestamp such as 13:51:31.233112 and failed the v1.27.0 release) and 1000 input / 200 output tokens —
 /// a cost the gateway path must null and tokens it must keep. OS-picked: a <c>.cmd</c> forwarding to PowerShell
 /// on Windows, an executable bash script elsewhere.
 /// <para>Calls are numbered by counting the folders already present, so the recording is ordered only for the
@@ -14,7 +14,7 @@ namespace Guardrails.Core.Tests;
 internal sealed class GatewayFakeClaude
 {
     /// <summary>The cost the fake's result line reports — fiction on a gateway dispatch.</summary>
-    public const decimal ReportedCost = 1.23m;
+    public const decimal ReportedCost = 424242.4242m;
 
     /// <summary>The input tokens the fake's result line reports.</summary>
     public const int InputTokens = 1_000;
@@ -24,7 +24,7 @@ internal sealed class GatewayFakeClaude
 
     private static readonly string Stream = string.Join("\n",
         """{"type":"system","subtype":"init","model":"Qwen"}""",
-        """{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":1.23,"num_turns":2,"usage":{"input_tokens":1000,"output_tokens":200}}""");
+        """{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":424242.4242,"num_turns":2,"usage":{"input_tokens":1000,"output_tokens":200}}""");
 
     public GatewayFakeClaude(string root)
     {
