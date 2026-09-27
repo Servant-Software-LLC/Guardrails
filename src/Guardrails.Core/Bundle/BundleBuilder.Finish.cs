@@ -44,6 +44,11 @@ public sealed partial class BundleBuilder
         foreach (Entry entry in added)
         {
             Add(entry);
+        }
+
+        SanitizeEntryNames();
+        foreach (Entry entry in added)
+        {
             ApplyFilters(entry);
             if (entry.Included)
             {

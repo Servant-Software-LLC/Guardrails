@@ -44,6 +44,12 @@ public sealed class BundleRedactionContext
 
     /// <summary>Pass 3. Null leaves paths as they are (<c>--keep-paths</c>, or a context built for one artifact).</summary>
     public BundlePathAnonymizer? Paths { get; init; }
+
+    /// <summary>
+    /// False for entry names and MANIFEST path cells: those get the known-value and pattern passes, not the entropy rule,
+    /// which would scrub ordinary file names under a run-id path (§17.5).
+    /// </summary>
+    internal bool Entropy { get; init; } = true;
 }
 
 /// <summary>A redacted artifact and one label per redaction applied (SSOT §17.6).</summary>
@@ -234,7 +240,7 @@ public static partial class BundleRedactor
             }
         }
 
-        foreach (Match match in EntropyRun().Matches(text))
+        foreach (Match match in context.Entropy ? EntropyRun().Matches(text) : Enumerable.Empty<Match>())
         {
             string run = match.Value;
             if (IsHighEntropy(run) && !IsExempt(run, context) && !IsIdentifier(run) && !IsExemptPath(run, context))

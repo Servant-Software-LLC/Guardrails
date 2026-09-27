@@ -100,6 +100,7 @@ public sealed partial class BundleBuilder
         CollectStateFragments();
         CollectLogs();
         CollectGit();
+        SanitizeEntryNames();
 
         foreach (Entry entry in _entries)
         {
@@ -251,11 +252,19 @@ public sealed partial class BundleBuilder
         tokens.UnionWith(branch.Split('/', StringSplitOptions.RemoveEmptyEntries));
     }
 
-    private BundleRedactionContext ContextFor(string bundlePath) => new(bundlePath, _probes.Environment)
+    private BundleRedactionContext ContextFor(string bundlePath, bool anonymize = true) => new(bundlePath, _probes.Environment)
     {
         Secrets = _secrets,
         ExemptTokens = _exempt,
-        Paths = _anonymizer,
+        Paths = anonymize ? _anonymizer : null,
+    };
+
+    // An entry name or a MANIFEST path cell: known values and patterns, no entropy rule, no anonymizer (already applied).
+    private BundleRedactionContext NameContext(string bundlePath) => new(bundlePath, _probes.Environment)
+    {
+        Secrets = _secrets,
+        ExemptTokens = _exempt,
+        Entropy = false,
     };
 
     // ------------------------------------------------------------------ collection (the allow-list, §17.3)
@@ -457,21 +466,76 @@ public sealed partial class BundleBuilder
             return;
         }
 
+        // Claude Code names each project directory after the cwd with every separator turned into '-'
+        // (C--Users-<user>-AppData-…), so the ORIGINAL name encodes a local path and must never ship: not in an entry
+        // name, not in MANIFEST. Each directory becomes project-<n>, numbered by the ordinal sort of its original name
+        // so the bytes stay deterministic. The original name is kept in memory only, for trim-tier attribution.
         string prefix = task is null ? "gateway/sessions/" : $"gateway/sessions/{task}/attempt-{attempt}/";
+        string configLabel = Relative(_plan.PlanDirectory, configDir) + "/projects/";
+        var projectNumbers = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (string dir in SortedDirectories(projects))
+        {
+            projectNumbers[Path.GetFileName(dir)] = projectNumbers.Count + 1;
+        }
+
         foreach (string file in Directory.EnumerateFiles(projects, "*.jsonl", SearchOption.AllDirectories)
                      .OrderBy(f => f, StringComparer.Ordinal))
         {
             string relative = Relative(projects, file);
+            int slash = relative.IndexOf('/', StringComparison.Ordinal);
+            string? original = slash < 0 ? null : relative[..slash];
+            string shipped = original is null ? relative : $"project-{projectNumbers[original]}{relative[slash..]}";
             Add(new Entry
             {
-                BundlePath = prefix + relative,
+                BundlePath = prefix + shipped,
                 SourcePath = file,
+                SourceLabel = configLabel + shipped + (original is null ? string.Empty : " (original name withheld: encodes a local path)"),
                 Kind = BundleCatalog.GatewaySession,
                 TaskId = task,
                 Attempt = attempt,
-                SessionProjectDir = relative.Split('/')[0],
+                SessionProjectDir = original,
             });
         }
+    }
+
+    // ------------------------------------------------------------------ entry names (§17.5, belt and braces)
+
+    /// <summary>
+    /// Every entry name passes the path anonymizer and the known-value and pattern passes before it is written. A name
+    /// the anonymizer changes ships anonymized; a name a secret pass changes is excluded, fail closed (<c>unsafe-name</c>),
+    /// and its MANIFEST row shows the redacted name. Runs before anything is read.
+    /// </summary>
+    private void SanitizeEntryNames()
+    {
+        foreach (Entry entry in _entries.Where(e => e.BundlePath is not null && !e.NameChecked))
+        {
+            entry.NameChecked = true;
+            string name = entry.BundlePath!;
+            if (_anonymizer is not null)
+            {
+                name = _anonymizer.Apply(name);
+            }
+
+            if (!_options.NoRedact)
+            {
+                BundleRedactionResult result = BundleRedactor.Redact(name, NameContext(name));
+                if (result.Labels.Count > 0)
+                {
+                    entry.BundlePath = result.Text;
+                    entry.Exclude("excluded", "unsafe-name", 0);
+                    continue;
+                }
+            }
+
+            entry.BundlePath = name;
+        }
+    }
+
+    // A MANIFEST source cell: anonymized, then through the secret passes (a known value in a directory name never ships).
+    private string SafeCell(string text)
+    {
+        string anonymized = _anonymizer is null ? text : _anonymizer.Apply(text);
+        return _options.NoRedact ? anonymized : BundleRedactor.Redact(anonymized, NameContext("MANIFEST.md")).Text;
     }
 
     private void CollectTask(string taskDir, string taskId)
@@ -767,7 +831,7 @@ public sealed partial class BundleBuilder
     {
         if (entry.SourceLabel is { } label)
         {
-            return label;
+            return SafeCell(label);
         }
 
         if (entry.SourcePath is not { } path)
@@ -775,14 +839,15 @@ public sealed partial class BundleBuilder
             return "generated";
         }
 
-        string forward = path.Replace('\\', '/');
-        return _anonymizer is null ? forward : _anonymizer.Apply(forward);
+        return SafeCell(path.Replace('\\', '/'));
     }
 
     /// <summary>One considered file: a bundle entry, or a MANIFEST.md row only.</summary>
     private sealed class Entry
     {
-        public string? BundlePath { get; init; }
+        public string? BundlePath { get; set; }
+
+        public bool NameChecked { get; set; }
 
         public string? SourcePath { get; init; }
 

@@ -535,6 +535,53 @@ public sealed class BundleCliTests
         Assert.Contains($"[REDACTED:{SyntheticRun.SecretVar}#1]", Encoding.UTF8.GetString(entries["state/run.json"]), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Entry names are canaries too (#799 review): Claude Code names a session directory after the cwd with every
+    /// separator turned into <c>-</c>, so the directory name alone carries the home path and the user name — and a
+    /// known secret, if one is in the cwd. None of it may reach an entry name (stored uncompressed, so visible in the
+    /// raw bytes) or the MANIFEST.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task SessionDirectoryNames_NeverReachAnEntryNameOrTheManifest()
+    {
+        using var run = new SyntheticRun();
+        string encodedHome = new([.. run.Home.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
+        string withHome = encodedHome + "-src-app";
+        string withSecret = "-work-" + SyntheticRun.Secret + "-repo";
+        foreach (string dir in new[] { withHome, withSecret })
+        {
+            string file = run.LogPath($"claude-config/projects/{dir}/entry-name-canary.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, "{\"text\":\"session\"}\n");
+        }
+
+        var host = new RecordingHost(run.Home, run.Environment);
+        string zip = Path.Combine(run.OutDir, "entry-names.zip");
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, "--out", zip);
+
+        Assert.True(exit == 0, io.ErrorText);
+        byte[] raw = File.ReadAllBytes(zip);
+        Dictionary<string, byte[]> entries = Entries(zip);
+        string manifest = EntryText(zip, "MANIFEST.md");
+        List<string> leaks = [withHome, withSecret, encodedHome, SyntheticRun.Secret];
+        if (System.Environment.UserName.Length >= 4)
+        {
+            leaks.Add(System.Environment.UserName);
+        }
+
+        foreach (string leak in leaks)
+        {
+            Assert.False(ContainsUtf8(raw, leak), $"'{leak}' is in the raw zip bytes (an entry name?)");
+            Assert.DoesNotContain(entries.Keys, name => name.Contains(leak, StringComparison.Ordinal));
+            Assert.DoesNotContain(leak, manifest, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(2, entries.Keys.Count(name => name.EndsWith("/entry-name-canary.jsonl", StringComparison.Ordinal)));
+        Assert.All(entries.Keys.Where(name => name.EndsWith("/entry-name-canary.jsonl", StringComparison.Ordinal)),
+            name => Assert.Matches("^gateway/sessions/project-[0-9]+/entry-name-canary\\.jsonl$", name));
+    }
+
     [Fact]
     [Trait("Category", "Bundle")]
     public async Task IdenticalStateAndInjectedProbes_GiveByteIdenticalZips()
@@ -918,8 +965,8 @@ public sealed class BundleCliTests
             "tasks/01-work/attempt-1/claude-stream.jsonl",
             "tasks/01-work/attempt-1/composed-prompt.md",
             "tasks/01-work/attempt-1/prior-attempt.patch",
-            "gateway/sessions/proj-a/session-1.jsonl",
-            "gateway/sessions/01-work/attempt-1/proj-b/session-2.jsonl",
+            "gateway/sessions/project-1/session-1.jsonl", // the only project dir, renumbered (its name encodes a path)
+            "gateway/sessions/01-work/attempt-1/project-1/session-2.jsonl",
         ];
 
         /// <summary>Agent-text files that ship in a default bundle and are withheld under <c>--without-agent-text</c>.</summary>

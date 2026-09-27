@@ -10432,7 +10432,13 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
   the plan-level `preflights/` and `guardrails/`, and each wave's `<wave-dir>/preflights/` and
   `<wave-dir>/guardrails/`, keeping their relative paths. `tasks/<id>/` is `logs/<runId>/<id>/` (§8).
   `gateway/sessions/` is `logs/<runId>/claude-config/projects/**/*.jsonl` (§9.10), keeping the relative path
-  under `projects/`.
+  under `projects/` **except the project directory's own name**. Claude Code names that directory after the cwd
+  with every separator turned into `-` (`C--Users-<user>-AppData-…`), so the name encodes the home path, the user
+  name, and anything else in the cwd. Each project directory is shipped as `project-<n>`, numbered by the ordinal
+  sort of the original names in its `projects/` (so the bytes stay deterministic). The original name is **never**
+  shipped: not in an entry name, and not in MANIFEST.md, whose source cell reads
+  `…/claude-config/projects/project-<n>/… (original name withheld: encodes a local path)`. It is kept in memory
+  only, to attribute a session to its attempt for trim tier 2 (§17.7).
 - **`claude-config/` beyond `projects/**/*.jsonl` is excluded by construction**, and the exclusion is a named
   MANIFEST.md row (reason `claude-config-excluded`), under `--no-redact` too.
 - **`git/`** has one file for the integration worktree (in serial mode, the repository holding the plan) and
@@ -10534,9 +10540,18 @@ tiers applied, in order.
 the tokens this section names: `tail-window`, `live-tail-cut`, `no-newline-in-window`,
 `sharing-violation`, `not-utf8`, `scan-failed`, `scan-timeout`, `stream-scrubbed-less`, `patch-over-cap`,
 `lean`, `agent-text`, `unknown-kind`, `claude-config-excluded`, `state-fragments-phase-2`,
-`other-run-journal`, `newer-than-journal`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp (§17.10).
+`other-run-journal`, `newer-than-journal`, `unsafe-name`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp
+(§17.10).
 A row with no bundle entry, or with no reason (a whole read), renders `-` in that cell; a generated file's
 source reads `generated: …`.
+
+**Names and path cells are scrubbed too (fail closed).** Every zip entry name, and every MANIFEST.md and
+REDACTIONS.md path cell, passes the path anonymizer (§17.6.3) and then the known-value and shape/pair passes
+(§17.6.1–§17.6.2, **without** the entropy rule, which would scrub ordinary file names under a run-id path) before
+it is written. Entry names are checked before anything is read: a name the secret passes change is **not
+shipped**; its row carries the redacted name, status `excluded`, reason `unsafe-name`. Entry names are stored
+uncompressed in a zip, so a secret in a NAME would otherwise be readable in the raw bytes even though every body
+is deflated.
 
 **REDACTIONS.md** has one row per bundled file with a count per label or kind (**never a value, never a hash
 of a value**), then the fixed, enumerated **Cannot catch** list of §17.6.7, verbatim, each entry under its
@@ -10660,7 +10675,10 @@ too, because it is diagnostic (#791).
 
 Replace the home directory with `~`, the workspace (the repository root holding the plan) with
 `<workspace>`, the worktree root with `<worktrees>`, the OS user name inside paths with `<user>`, and
-`environment.host` / `owner.host` with `<host>`. It runs **after** the secret passes, so a label is never
+`environment.host` / `owner.host` with `<host>`. Each root is matched in every spelling an artifact carries:
+native, forward-slash, back-slash, JSON-escaped, and the `-`-encoded form Claude Code names a project directory
+with (every character outside `[A-Za-z0-9]` turned into `-`); the user name is also replaced inside a
+`-`-encoded path (a token shaped like `C--…` or `-home-…`). It runs **after** the secret passes, so a label is never
 rewritten.
 
 #### 17.6.4 Pass 4 — stream consistency (default)

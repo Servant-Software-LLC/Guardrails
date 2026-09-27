@@ -24,7 +24,7 @@ public sealed class BundleBuilderTests : IDisposable
         "tasks/02-second/attempt-1/claude-stream.jsonl",
         "tasks/02-second/attempt-1/composed-prompt.md",
         "tasks/02-second/attempt-1/prior-attempt.patch",
-        "gateway/sessions/proj-a/session-1.jsonl",
+        "gateway/sessions/project-1/session-1.jsonl",
     ];
 
     private void StandardRun()
@@ -139,6 +139,73 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.Contains(outcome.Manifest, r => r is { Status: "excluded", Reason: "claude-config-excluded", BundlePath: null });
         Assert.DoesNotContain(outcome.Manifest, r => r.Source.Contains("shell-snapshots", StringComparison.Ordinal));
     }
+
+    // ------------------------------------------------------------------ session directory names never ship
+
+    private static string Encoded(string path) => new([.. path.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
+
+    [Fact]
+    public void SessionDirectoryNamesAreRenumberedAndNeverShipAnywhere()
+    {
+        StandardRun();
+        string encodedHome = Encoded(_fixture.Home) + "-src-app";
+        string secretDir = $"-work-{BundlePlanFixture.KnownToken}-repo";
+        _fixture.Log($"claude-config/projects/{encodedHome}/s-a.jsonl", "{\"text\":\"one\"}\n");
+        _fixture.Log($"claude-config/projects/{secretDir}/s-b.jsonl", "{\"text\":\"two\"}\n");
+        _fixture.Log($"02-second/attempt-1/claude-config/projects/{encodedHome}/s-c.jsonl", "{\"text\":\"three\"}\n");
+
+        BundleOutcome outcome = _fixture.Build();
+        byte[] raw = outcome.Zip;
+
+        foreach (string leak in new[] { encodedHome, secretDir, BundlePlanFixture.KnownToken, Encoded(_fixture.Home), "fixture-user" })
+        {
+            Assert.False(Contains(raw, leak), $"'{leak}' is in the raw zip bytes");
+            Assert.All(outcome.Entries, e => Assert.DoesNotContain(leak, e.Key, StringComparison.Ordinal));
+            Assert.All(outcome.Entries, e => Assert.DoesNotContain(leak, Encoding.UTF8.GetString(e.Value), StringComparison.Ordinal));
+            Assert.All(outcome.Manifest, r =>
+            {
+                Assert.DoesNotContain(leak, r.Source, StringComparison.Ordinal);
+                Assert.DoesNotContain(leak, r.BundlePath ?? string.Empty, StringComparison.Ordinal);
+            });
+        }
+
+        // Ordinal sort of the ORIGINAL names: "-work-…" < "…encoded home…" (a drive letter or a leading '-' path), so
+        // the numbering is a function of the inputs alone.
+        string[] originals = [.. new[] { encodedHome, secretDir, "proj-a" }.OrderBy(n => n, StringComparer.Ordinal)];
+        Assert.True(outcome.Has($"gateway/sessions/project-{Array.IndexOf(originals, encodedHome) + 1}/s-a.jsonl"));
+        Assert.True(outcome.Has($"gateway/sessions/project-{Array.IndexOf(originals, secretDir) + 1}/s-b.jsonl"));
+        Assert.True(outcome.Has($"gateway/sessions/project-{Array.IndexOf(originals, "proj-a") + 1}/session-1.jsonl"));
+        Assert.True(outcome.Has("gateway/sessions/02-second/attempt-1/project-1/s-c.jsonl"));
+        Assert.Contains(outcome.Manifest, r => r.Source.EndsWith("(original name withheld: encodes a local path)", StringComparison.Ordinal));
+        Assert.Equal(outcome.Zip, _fixture.Build().Zip);
+    }
+
+    [Fact]
+    public void AWindowsStyleEncodedCwdNeverLeaksTheUserName()
+    {
+        var anonymizer = new BundlePathAnonymizer(@"C:\Users\Dana", @"C:\Users\Dana\src\app", null, "Dana", [], caseInsensitive: true);
+
+        Assert.Equal("see <workspace>-plan", anonymizer.Apply(@"see C--Users-Dana-src-app-plan"));
+        Assert.Equal("see ~-AppData-Local-Temp", anonymizer.Apply(@"see C--Users-Dana-AppData-Local-Temp"));
+        Assert.Equal("see D--build-<user>-cache", anonymizer.Apply("see D--build-Dana-cache"));
+        Assert.Equal("task 03-dana-review", anonymizer.Apply("task 03-dana-review"));
+    }
+
+    [Fact]
+    public void AnEntryNameCarryingASecretIsExcludedFailClosed()
+    {
+        StandardRun();
+        _fixture.Log($"escalations/0001-{BundlePlanFixture.KnownToken}.json", "{\"status\":\"open\"}\n");
+
+        BundleOutcome outcome = _fixture.Build();
+
+        Assert.False(Contains(outcome.Zip, BundlePlanFixture.KnownToken));
+        BundleManifestRow row = outcome.Manifest.Single(r => r.Reason == "unsafe-name");
+        Assert.Equal(("excluded", "run/escalations/0001-[REDACTED:QWEN_TOKEN#1].json"), (row.Status, row.BundlePath));
+    }
+
+    private static bool Contains(byte[] haystack, string needle) =>
+        haystack.AsSpan().IndexOf(Encoding.UTF8.GetBytes(needle)) >= 0;
 
     [Fact]
     public void AnUnknownFileIsListedByPathAndSizeOnly()

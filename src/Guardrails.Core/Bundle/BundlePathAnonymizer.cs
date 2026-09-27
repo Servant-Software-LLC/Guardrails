@@ -17,6 +17,7 @@ public sealed partial class BundlePathAnonymizer
 {
     private readonly List<(string From, string To)> _roots = [];
     private readonly Regex? _user;
+    private readonly Regex? _encodedUser;
     private readonly Regex? _hosts;
     private readonly StringComparison _comparison;
 
@@ -48,7 +49,9 @@ public sealed partial class BundlePathAnonymizer
         {
             string forward = path.Replace('\\', '/');
             string backward = path.Replace('/', '\\');
-            foreach (string spelling in new[] { path, forward, backward, backward.Replace("\\", "\\\\", StringComparison.Ordinal) })
+            // The last spelling is the '-'-encoded form Claude Code names a project directory with (C--Users-dev-src).
+            string encoded = new([.. path.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
+            foreach (string spelling in new[] { path, forward, backward, backward.Replace("\\", "\\\\", StringComparison.Ordinal), encoded })
             {
                 if (seen.Add(spelling))
                 {
@@ -64,6 +67,11 @@ public sealed partial class BundlePathAnonymizer
         if (!string.IsNullOrWhiteSpace(userName) && userName.Length >= 2)
         {
             _user = new Regex(@"(?<=[\\/])" + Regex.Escape(userName) + @"(?=[\\/""'\s]|$)", options, TimeSpan.FromSeconds(10));
+
+            // Inside a '-'-encoded path only: a token that starts like one (`C--…`, `-home-…`) and reaches `-<user>-`.
+            _encodedUser = new Regex(
+                @"(?<=(?:^|[^A-Za-z0-9-])[A-Za-z]?-[A-Za-z0-9-]*)" + Regex.Escape(userName) + @"(?=-|$|[^A-Za-z0-9])",
+                options, TimeSpan.FromSeconds(10));
         }
 
         string[] hostNames = [.. hosts.Where(h => !string.IsNullOrWhiteSpace(h) && h!.Length >= 3).Select(h => h!)
@@ -106,6 +114,7 @@ public sealed partial class BundlePathAnonymizer
         if (_user is not null)
         {
             text = _user.Replace(text, "<user>");
+            text = _encodedUser!.Replace(text, "<user>");
         }
 
         if (_hosts is not null)
