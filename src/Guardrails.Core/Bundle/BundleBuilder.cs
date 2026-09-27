@@ -851,7 +851,7 @@ public sealed partial class BundleBuilder
 
     /// <summary>
     /// #805 N4: a window whose line exceeded the cap starts mid-token, and a secret cut there leaves a suffix no pattern
-    /// recognizes. The leading token (up to the first character outside <c>[A-Za-z0-9+/=_~.%-]</c>) is masked; when a
+    /// recognizes. The leading token (up to a quote, whitespace, <c>,</c> or <c>}</c>) is masked; when a
     /// known value's suffix of 8+ characters starts the window, exactly that suffix is scrubbed with its label.
     /// </summary>
     private string MaskPartialLineStart(string text, out string? label)
@@ -877,7 +877,9 @@ public sealed partial class BundleBuilder
         }
 
         int end = 0;
-        while (end < body.Length && (char.IsAsciiLetterOrDigit(body[end]) || "+/=_~.%-".Contains(body[end], StringComparison.Ordinal)))
+        // The mask runs to a quote, whitespace, ',' or '}' only: stopping at `&` or `\` would leak the tail of
+        // `Tr0ub4dor&3x…` or of a JSON-escaped base64 value holding `\/` (#805 N4).
+        while (end < body.Length && !char.IsWhiteSpace(body[end]) && body[end] is not ('"' or ',' or '}'))
         {
             end++;
         }

@@ -85,11 +85,14 @@ public static partial class BundleRedactor
         "  characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy\n" +
         "  threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the\n" +
         "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
-        "  token that happens to hold no digit.\n" +
+        "  token that happens to hold no digit. Also a purely numeric value (a PIN) in a pair or a flag, which is kept as a\n" +
+        "  setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its\n" +
+        "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
         "  header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,\n" +
         "  then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)\n" +
-        "  shapes: a positional argument, or a short flag of any other tool.\n" +
+        "  shapes: a positional argument, or a short flag of any other tool. POSIX `ps` strips quotes, so a quoted\n" +
+        "  multi-word value on a captured command line is scrubbed only up to its first space.\n" +
         "- **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.\n" +
         "- **`CC4`**: a secret that reached the run from a variable **no block names** and **the bundling shell does\n" +
         "  not have**.\n" +
@@ -241,7 +244,7 @@ public static partial class BundleRedactor
         {
             foreach (Match match in flag.Matches(text))
             {
-                if (!IsExempt(match.Groups["v"].Value, context))
+                if (!IsExempt(match.Groups["v"].Value, context) && !IsNumericSetting(match.Groups["v"].Value))
                 {
                     Add(match.Groups["v"], "named-secret", Priority.Pair);
                 }
@@ -423,7 +426,16 @@ public static partial class BundleRedactor
     private static bool NameIsAVariableName(string name) => name is "authTokenEnv" or "apiKeyEnv";
 
     private static bool IsInertValue(string value) =>
-        value.Trim() is "true" or "false" or "null" or "True" or "False" or "None" or "undefined";
+        value.Trim() is "true" or "false" or "null" or "True" or "False" or "None" or "undefined"
+        || IsNumericSetting(value);
+
+    /// <summary>
+    /// A purely numeric value, optionally a decimal or with a unit suffix (<c>4096</c>, <c>262144</c>, <c>0.7</c>,
+    /// <c>32k</c>, <c>500ms</c>), is a setting, never a secret: the flag and pair rules keep it (#805), so a model
+    /// server's <c>--ctx-size</c> / <c>--max-tokens</c> / <c>MAX_TOKENS=</c> survive in the process tree and logs. A known
+    /// value is still scrubbed wherever it appears.
+    /// </summary>
+    public static bool IsNumericSetting(string value) => NumericSetting().IsMatch(value.Trim());
 
     // ------------------------------------------------------------------ apply
 
@@ -557,16 +569,18 @@ public static partial class BundleRedactor
     [GeneratedRegex(@"(?i)\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+(?<v>[^\s""'\\]+)", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex NetrcPattern();
 
-    // `--api-token VALUE`, `--db-password VALUE`: a secret-named long flag, whitespace, and a value that is not the next flag.
+    // `--api-token VALUE`, `--db-password "V W"`: a secret-named long flag, whitespace or `=`, and a value (quoted, or bare
+    // and not the next flag).
     [GeneratedRegex(
-        @"(?i)(?<![\w-])--(?>[\w-]*?(?:token|key|password|passwd|pwd|secret|auth)[\w-]*)[ \t]+(?<v>[^\s""'`\\-][^\s""'`\\]{0,511})",
+        @"(?i)(?<![\w-])--(?>[\w-]*?(?:token|key|password|passwd|pwd|secret|auth)[\w-]*)(?:[ \t]+|=)(?:""(?<v>[^""\r\n]{1,512})""|'(?<v>[^'\r\n]{1,512})'|(?<v>[^\s""'`\\-][^\s""'`\\]{0,511}))",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex SecretFlagPattern();
 
     // `-p` only in tools where it is a password (never a port): mysql, mysqldump, sshpass (`-p VALUE` or `-pVALUE`); and
-    // curl's `-u` / `--user user:pass`. The distance from the tool to its flag is bounded, so the scan stays linear.
+    // curl's `-u` / `--user user:pass` (attached, `=`, or spaced; quoted or bare). `-p` and `-u` are case-sensitive, so
+    // `mysql -P 3306` (a port) is not a password. The distance from the tool to its flag is bounded: the scan stays linear.
     [GeneratedRegex(
-        @"(?i)\b(?:(?:mysql|mysqldump|sshpass)\b[^\r\n]{0,200}?[ \t]-p[ \t]*|curl\b[^\r\n]{0,200}?[ \t](?:-u|--user)[ \t]+)(?<v>[^\s""'`\\-][^\s""'`\\]{0,511})",
+        @"(?i)\b(?:(?:mysql|mysqldump|sshpass)\b[^\r\n]{0,200}?[ \t](?-i:-p)[ \t]*|curl\b[^\r\n]{0,200}?[ \t](?:(?-i:-u)[ \t]*|--user(?:[ \t]+|=)))(?:""(?<v>[^""\r\n]{1,512})""|'(?<v>[^'\r\n]{1,512})'|(?<v>[^\s""'`\\-][^\s""'`\\]{0,511}))",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex CredentialToolPattern();
 
@@ -595,6 +609,9 @@ public static partial class BundleRedactor
 
     [GeneratedRegex(@"[A-Z][a-z]{2,}|[0-9]+", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex IdentifierPart();
+
+    [GeneratedRegex(@"^[0-9]+(?:\.[0-9]+)?(?:[kKmMgGtT]|[kKmMgG][bB]|ms|s|m|h)?$", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex NumericSetting();
 
     [GeneratedRegex(@"\[REDACTED:(?<label>[^\]\s]+)\]", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex LabelToken();

@@ -10373,8 +10373,8 @@ reads obey this numbered contract:
    line is dropped **before any scan**, so a UTF-8 sequence is never split. A window with no whole line in it
    (its last line exceeds the cap) is **not** excluded: that line ships from its first character boundary under
    the marker line `[truncated: line exceeds window]` (status `tail`, reason `partial-line`). A secret that
-   began before the window would leave a suffix no pattern recognizes, so the window's **leading token** (up to the
-   first character outside `[A-Za-z0-9+/=_~.%-]`) is masked as `[REDACTED:partial-token]`, and when a known value's
+   began before the window would leave a suffix no pattern recognizes, so the window's **leading token** (up to a
+   quote, whitespace, `,` or `}`) is masked as `[REDACTED:partial-token]`, and when a known value's
    suffix of 8 or more characters starts the window, exactly that suffix is scrubbed with its label (#805 N4). Only
    an empty window is excluded (`no-newline-in-window`). A
    file that grows during the read keeps what was read, minus the trailing partial line (reason
@@ -10704,7 +10704,7 @@ took part, else the most specific kind.
 | `private-key` | a PEM `PRIVATE KEY` block |
 | `named-secret` | the value of a `NAME=value`, `NAME: value` (YAML) or `"name": "value"` pair whose name matches the secret-name rule. Whitespace around `=` / `:` and a quoted value are allowed (`var dbPassword = "…";`). The header names of `auth-header` are left to that rule, which keeps the `Bearer` scheme word readable; a value of `true` / `false` / `null` is not scrubbed; and the keys `authTokenEnv` / `apiKeyEnv` are not scrubbed, because by schema their values are variable **names** (#791) |
 | `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above a length-scaled threshold**: 3.6 bits per character for 24-31 characters (a 24-character string cannot exceed log2 24 ≈ 4.58), 4.0 from 32. A `/`-joined run whose leading segments are all enumerated (§ exemptions below) is judged on what follows them, so `/var/folders/<random>/T/<plan>/x` is not a hit while a secret after an enumerated prefix still is |
-| `named-secret` (flags) | a secret-named long flag and its space-separated value (`--api-token V`, `--db-password V`: a flag naming token, key, password, passwd, pwd, secret or auth); the `-p` value of `mysql`, `mysqldump` and `sshpass` (`-p V` or `-pV`, never another tool's `-p`, which is usually a port); curl's `-u` / `--user` value (#805 N2) |
+| `named-secret` (flags) | a secret-named long flag and its value after whitespace or `=`, quoted or bare (`--api-token V`, `--db-password "V W"`: a flag naming token, key, password, passwd, pwd, secret or auth); the `-p` value of `mysql`, `mysqldump` and `sshpass` (`-p V`, `-pV`, `-p'V W'`; case-sensitive, so `-P 3306` is a port; never another tool's `-p`); curl's `-u` / `--user` value (attached, `=` or spaced; quoted or bare) (#805 N2) |
 
 The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
 into short pieces. Hex lacks upper case, so SHAs pass; the mixed-class requirement spares branch names and
@@ -10716,7 +10716,10 @@ still scanned (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`, and the first key o
 keeps the scan linear on adversarial input. The uncaptured value is **bounded** to 512 characters: an unbounded
 lookahead rescans to the next delimiter from every `name=` and is quadratic on minified text (#805 N1); a longer
 value is still met by the shape and entropy rules. Every pattern's repetition is bounded or consuming for the same
-reason. `pwd` (any case) is a secret name in the pair pass, except when its
+reason. A **purely numeric value**, optionally a decimal or with a unit suffix (`4096`, `262144`, `0.7`, `32k`,
+`500ms`), is a setting and never a secret for the pair and flag rules, so a model server's `--ctx-size`,
+`--max-tokens` or `MAX_TOKENS=` survives in the process tree and logs (a known value is still scrubbed wherever it
+appears; the residual is in `CC1`). `pwd` (any case) is a secret name in the pair pass, except when its
 value is a path (`PWD=/home/…`, the shell's cwd); the exact-name `PWD`/`OLDPWD` exclusion of §17.6.1 still governs
 known-value collection.
 
@@ -10756,7 +10759,8 @@ git's name and email match case-insensitively, whole-word (`Author: … <email>`
 distinctive when it has 5 or more characters and is not a common account name or a harness word (`runner`, `root`,
 `node`, `user`, `admin`, `ubuntu`, `ec2-user`, `vagrant`, `guest` and similar CI defaults; `guardrails`, `claude`,
 `agent`, `model`, `plan`, `task` and similar): for those, only the path and encoded-path forms apply (#805 N6). A
-bare-word match never rewrites a JSON key (`"name":`) or a file name (`name.json`). It runs **after** the secret
+bare-word match never rewrites a JSON key (`"name":`) or a file name (`name.json`), so a distinctive user name used
+as a JSON key or a file name ships as it stands (a stated limit). It runs **after** the secret
 passes, so a label is never rewritten.
 
 #### 17.6.4 Pass 4 — stream consistency (default)
@@ -10826,11 +10830,14 @@ in REDACTIONS.md.
   characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy
   threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the
   miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a
-  token that happens to hold no digit.
+  token that happens to hold no digit. Also a purely numeric value (a PIN) in a pair or a flag, which is kept as a
+  setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its
+  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.
 - **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,
   header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,
   then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)
-  shapes: a positional argument, or a short flag of any other tool.
+  shapes: a positional argument, or a short flag of any other tool. POSIX `ps` strips quotes, so a quoted
+  multi-word value on a captured command line is scrubbed only up to its first space.
 - **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.
 - **`CC4`**: a secret that reached the run from a variable **no block names** and **the bundling shell does
   not have**.

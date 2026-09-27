@@ -527,12 +527,47 @@ public sealed class BundleRedactorTests
     }
 
     [Theory]
+    [InlineData("mysql -uroot -p'S3cret Pw' db", "S3cret Pw")]
+    [InlineData("mysql -u root -p\"S3cretPw\" db", "S3cretPw")]
+    [InlineData("tool --password \"Hunter2 xyz\" --verbose", "Hunter2 xyz")]
+    [InlineData("tool --client-secret 'Abc123secret'", "Abc123secret")]
+    [InlineData("curl -u \"admin:S3cretPw\" https://x.example.test", "admin:S3cretPw")]
+    [InlineData("curl -uadmin:S3cretPw https://x.example.test", "admin:S3cretPw")]
+    [InlineData("curl --user=admin:S3cretPw https://x.example.test", "admin:S3cretPw")]
+    public void N2_QuotedAndAttachedFlagValuesAreCaught(string commandLine, string secret)
+    {
+        BundleRedactionResult result = Redact(commandLine + "\n");
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("S3cret", result.Text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("mysql -P 3306 -h db app\n")]
+    [InlineData("sshpass -f pw.txt ssh deploy@host\n")]
+    [InlineData("ssh -p 22 deploy@host\n")]
     [InlineData("docker run -p 8080:80 image\n")]
     [InlineData("ssh -p 2222 deploy@host\n")]
     [InlineData("tool --api-token --verbose\n")]
     [InlineData("python -m http.server -p 9000\n")]
     public void N2_APortOrAFlagWithNoValueIsNotAPassword(string commandLine) =>
         Assert.Equal(commandLine, Redact(commandLine).Text);
+
+    [Theory]
+    [InlineData("llama-server --max-tokens 4096 --ctx-size 262144 --api-key-timeout 30s -np 4\n")]
+    [InlineData("MAX_TOKENS=4096\nSESSION_TTL: 0.5h\n")]
+    [InlineData("{\"max_tokens\": \"32k\", \"auth_retry\": \"500ms\"}")]
+    public void ANumericSettingIsNeverASecret(string text) => Assert.Equal(text, Redact(text).Text);
+
+    [Theory]
+    [InlineData("tool --api-token abc123XYZpqr", "abc123XYZpqr")]
+    [InlineData("tool --max-tokens-secret x9Kq2mLp7", "x9Kq2mLp7")]
+    [InlineData("MAX_TOKENS=4096abc\n", "4096abc")]
+    public void ANonNumericValueIsStillScrubbed(string text, string secret)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.Contains("named-secret", result.Labels);
+    }
 
     [Fact]
     public void N6_ACommonAccountNameIsReplacedOnlyInPathForms()

@@ -844,6 +844,20 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.DoesNotContain("dF5hJ7", autonomy, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("ub4dor&3xSecretTail\",\"next\":1", "&3xSecretTail")]
+    [InlineData("Q8\\/Zq7Kf9LmNpTail\",\"n\":2", "Zq7Kf9LmNpTail")]
+    public void Item4_TheLeadingTokenMaskRunsPastAmpersandAndBackslash(string windowStart, string tail)
+    {
+        StandardRun();
+        _fixture.Log("observer.jsonl", "prefix " + new string('y', 64) + windowStart + new string(' ', (int)BundleCatalog.LogCap - windowStart.Length - 3) + "end");
+        // The window (the last LogCap bytes) begins exactly at windowStart.
+        string text = _fixture.Build().Text("run/observer.jsonl")!;
+
+        Assert.StartsWith(BundleFileReader.PartialLineMarker + "[REDACTED:partial-token]\"", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(tail, text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Item6_UnderTaskTheNewestUnattributedSessionStillShips()
     {
