@@ -126,16 +126,19 @@ public sealed class ObserverProjection : IRunObserver
         _inner.TaskWaitingOnWorktree(task, operation);
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
         Append(new JsonObject
         {
             ["member"] = "AttemptStarting",
             ["taskId"] = task.Id,
             ["attempt"] = attempt,
-            ["budget"] = budget
+            ["budget"] = budget,
+            // #798: the journal's number (the attempt-N log dir). OPTIONAL on read — a file written before
+            // #798 lacks it, and the replay falls back to `attempt`, which is what those runs displayed.
+            ["attemptNumber"] = attemptNumber
         });
-        _inner.AttemptStarting(task, attempt, budget);
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
     }
 
     public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel)

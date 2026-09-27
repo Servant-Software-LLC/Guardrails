@@ -225,8 +225,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         RenderIndex();
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget) =>
-        _inner.AttemptStarting(task, attempt, budget);
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) =>
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
         _inner.GuardrailFinished(task, result);

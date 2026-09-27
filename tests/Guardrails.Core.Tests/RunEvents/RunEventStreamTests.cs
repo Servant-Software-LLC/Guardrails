@@ -52,7 +52,7 @@ public sealed class RunEventStreamTests
         public List<string> Calls { get; } = [];
 
         public void TaskStarting(TaskNode task) => Calls.Add(nameof(TaskStarting));
-        public void AttemptStarting(TaskNode task, int attempt, int budget) => Calls.Add(nameof(AttemptStarting));
+        public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) => Calls.Add(nameof(AttemptStarting));
         public void AttemptModelResolved(TaskNode task, int attempt, string model, string? requestedModel) =>
             Calls.Add(nameof(AttemptModelResolved));
         public void AttemptRouteResolved(
@@ -257,10 +257,10 @@ public sealed class RunEventStreamTests
             TaskNode task = FlatTask("01-first");
 
             stream.TaskStarting(task);
-            stream.AttemptStarting(task, 1, 3);
+            stream.AttemptStarting(task, 1, 3, 1);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = false, Reason = "no file" });
             stream.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.GuardrailFailed));
-            stream.AttemptStarting(task, 2, 3);
+            stream.AttemptStarting(task, 2, 3, 2);
             stream.GuardrailFinished(task, new GuardrailResult { Name = "01-check", Passed = true });
             stream.AttemptFinished(task, AttemptRecordFixture(2, AttemptOutcome.Succeeded));
             stream.TaskFinished(new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });
@@ -289,15 +289,20 @@ public sealed class RunEventStreamTests
 
     [Trait("Category", "RunEvents")]
     [Fact]
-    public void AttemptStarted_CarriesItsBudget()
+    public void AttemptStarted_CarriesTheJournalNumber_AndItsPositionInTheRunsBudget()
     {
         string dir = NewTempDirectory();
         try
         {
-            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).AttemptStarting(FlatTask("01-first"), 2, 5);
+            // A RESUMED task (#798): this run's 2nd attempt of 5, which the journal numbers 4.
+            ((IRunObserver)new RunEventStream(IRunObserver.Null, dir, Path.GetFileName(dir))).AttemptStarting(FlatTask("01-first"), 2, 5, 4);
 
             JsonElement root = JsonDocument.Parse(ReadEventLines(dir).Single()).RootElement;
-            Assert.Equal(2, root.GetProperty("attempt").GetInt32());
+
+            // `attempt` is the JOURNAL number — the attempt-4 log dir, and the same value this attempt's
+            // attempt-finished row will carry — never the per-run index, which is what it was before #798.
+            Assert.Equal(4, root.GetProperty("attempt").GetInt32());
+            Assert.Equal(2, root.GetProperty("runAttempt").GetInt32());
 
             // attempt 2 of 5 vs 2 of 2 are different situations: one has room to retry, one is the last
             // chance. #585 asked for `attemptsMax` for exactly this.
@@ -457,7 +462,7 @@ public sealed class RunEventStreamTests
             // so a decorator that inherits even ONE default (and therefore never reaches the inner) fails
             // right here rather than hiding behind a test that only ever tried AttemptFinished.
             decorator.TaskStarting(task);
-            decorator.AttemptStarting(task, 1, 3);
+            decorator.AttemptStarting(task, 1, 3, 1);
             decorator.AttemptModelResolved(task, 1, "claude-sonnet-5", requestedModel: null);
             decorator.AttemptRouteResolved(task, 1, "claude", "claude-sonnet-5", tier: null, requestedTier: null);
             decorator.AttemptFinished(task, AttemptRecordFixture(1, AttemptOutcome.Succeeded));

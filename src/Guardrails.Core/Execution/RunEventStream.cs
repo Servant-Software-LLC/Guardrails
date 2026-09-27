@@ -32,7 +32,9 @@ namespace Guardrails.Core.Execution;
 ///         paired "finished" row (the task's own <c>task-started</c> ends it) — never a verdict, because
 ///         the harness cannot tell a slow git from a hung one (issue #722).</item>
 ///   <item><c>task-started</c> — a task entered execution. The FIRST of these is a run's liveness proof.</item>
-///   <item><c>attempt-started</c> — an attempt began, carrying its <c>budget</c>.</item>
+///   <item><c>attempt-started</c> — an attempt began: <c>attempt</c> (the journal's number, the same as its
+///         <c>attempt-finished</c> row and its <c>attempt-N</c> log dir), plus <c>runAttempt</c>/<c>budget</c>, its
+///         position within this run's budget (#798).</item>
 ///   <item><c>guardrail-finished</c> — one guardrail settled: <c>guardrail</c>, <c>passed</c>, and on
 ///         failure the <c>detail</c> a supervisor would otherwise open <c>feedback.md</c> to read.</item>
 ///   <item><c>attempt-finished</c> — an attempt settled, carrying the journal's own attempt record
@@ -161,16 +163,20 @@ public sealed class RunEventStream : IRunObserver
     }
 
     /// <inheritdoc/>
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
-        _inner.AttemptStarting(task, attempt, budget);
+        _inner.AttemptStarting(task, attempt, budget, attemptNumber);
 
         AppendLine(new EventRow
         {
             Kind = "attempt-started",
             RunId = _runId,
             TaskId = task.Id,
-            Attempt = attempt,
+            // #798: `attempt` is the JOURNAL number — the same value the matching attempt-finished row carries
+            // and the N of the attempt-N log dir. Before #798 it was the per-run index, so on a resumed task the
+            // two rows of ONE attempt disagreed. The per-run position rides beside the budget it counts against.
+            Attempt = attemptNumber,
+            RunAttempt = attempt,
             Budget = budget
         });
     }
@@ -485,6 +491,12 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-started</c>: the attempt budget this attempt counts against.</summary>
         public int? Budget { get; init; }
+
+        /// <summary>
+        /// <c>attempt-started</c>: this attempt's 1-based position within THIS run's <see cref="Budget"/> (#798) —
+        /// restarts at 1 on a resume, unlike <see cref="Attempt"/>, which is the journal's number.
+        /// </summary>
+        public int? RunAttempt { get; init; }
 
         /// <summary><c>guardrail-finished</c>: the guardrail's name.</summary>
         public string? Guardrail { get; init; }
