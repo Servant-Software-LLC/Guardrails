@@ -321,6 +321,24 @@ Start small:
 The per-attempt details live in `<plan>/state/run.json`: each attempt's provenance carries `gateway` and
 `backendModel`. Transcripts are in `<plan>/logs/<runId>/`.
 
+**When something goes wrong, don't hand-pick files: run `guardrails bundle <plan>/` and attach the zip to the
+issue.** This applies to you and to an agent filing the issue on the Mac. The bundle is deterministic, so it
+includes the evidence a hand-picked set tends to miss (the token actually sent, the journal's settle
+behavior).
+
+- **Run it from the shell that exported `LITELLM_MASTER_KEY`.** The runner block names that variable in
+  `authTokenEnv`, and if this shell doesn't have it, `bundle` refuses and writes nothing (it can't scrub a
+  token it can't see). Export it and re-run, or pass `--without-agent-text` to drop all agent-derived text.
+- **Pass `--lean` if the code is private.** By default the bundle includes prompts, transcripts, gateway
+  sessions and patches (credentials scrubbed, under a loud warning). `--lean` withholds them.
+- **Don't kill a stuck run before bundling it.** `bundle` is read-only and safe on a live run: it takes no
+  lock and writes nothing under the plan folder. Bundle first, then stop the run.
+- The zip lands in `~/guardrails-bundles/`. `gh` can't attach files to an issue, so drag the zip into the
+  issue's comment box in the browser.
+
+See the README's [Filing an issue](../README.md#filing-an-issue-guardrails-bundle) section for the size cap and
+the other options.
+
 ## Worked example: an existing `claude-local` setup
 
 This is the setup verified on the maintainer's MacBook: an existing `claude-local` install, reused as is. It
@@ -463,6 +481,11 @@ guardrails run <plan>/
 
 ## Troubleshooting
 
+**Filing an issue about any of these?** Don't hand-pick files. From the shell that exported
+`LITELLM_MASTER_KEY` (otherwise it refuses), run `guardrails bundle <plan>/` and attach the zip from
+`~/guardrails-bundles/` to the issue by dragging it into the browser. Add `--lean` if the code is private. It
+works on a stuck run without stopping it, so bundle before you kill the run (step 10 has the details).
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `providers check` UNMET, or the agent prints JSON-looking "tool calls" instead of acting | `llama-server` started without `--jinja` | Restart it with `--jinja` |
@@ -476,6 +499,7 @@ guardrails run <plan>/
 | Attempts end as `timeout` | Local models are slow | Raise the task's `timeoutSeconds` |
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
+| `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=...` and re-run, or pass `--without-agent-text` |
 
 ## What still leaves the machine
 

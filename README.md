@@ -134,6 +134,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 | `guardrails attach [folder]` | Attach a **second terminal** to a run's live progress table, replaying its recorded events. Read-only — it never touches the run — and it works both while the run is in flight and after it has finished. This is how you watch an unattended run without being the terminal that launched it |
+| `guardrails bundle [folder] [--task <id>] [--lean]` | Package one run's evidence (live or finished) into a redacted zip under `~/guardrails-bundles/` to attach to a GitHub issue — see [Filing an issue](#filing-an-issue-guardrails-bundle). Credentials are scrubbed; prompts and transcripts are included unless `--lean` |
 | `guardrails samples verify [folder]` | Execute every committed `tasks/<id>/samples/` pair against its guardrail and report the findings. Worth knowing about *before* a run: the same check runs as a **pre-DAG gate**, so a broken pair halts the run before task one |
 | `guardrails mark-reviewed [folder] [--evidence <report>] [--source <kind>]` | Record that `/guardrails-review` ran, clearing the GR2025 "not reviewed" nudge. The marker is keyed on the plan's definition hash, so editing any guardrail body re-stales it. `--evidence` points at the written report and records a stronger attestation class than a bare stamp |
 | `guardrails plan-hash [folder]` | Print the plan's `PlanDefinitionHash` (or one wave's) — read-only. This is the hash the review flow embeds in its report |
@@ -580,6 +581,36 @@ often a model gets it right first time, how many attempts it needs, what that co
 makes "should this task run on a cheaper model?" a question with an answer instead of a guess.
 
 The contract is `docs/plans/02-schemas-and-contracts.md` §15.
+
+### Filing an issue: `guardrails bundle`
+
+**When a run goes wrong, don't hand-pick files for the issue. Run `guardrails bundle <plan>/` and attach
+the zip.** The harness knows which files describe a run, so it packages exactly those: the journal, each
+attempt's feedback, provenance and route log, the gate results, `guardrails.json`, `validate` output, tool
+versions, and a computed `SUMMARY.md`.
+
+- **Safe on a live run.** It is read-only: it writes nothing under the plan folder, the logs or any
+  worktree, takes no lock, and opens no network connection. Bundle a stuck run *before* you stop it.
+- **Full by default, with a loud warning.** The default bundle includes your prompts, transcripts, stream
+  logs, gateway sessions and patches. Credentials are scrubbed and paths are anonymized, but redaction
+  removes credentials, not your intellectual property, so every full bundle prints a warning.
+  **If the code is private and the issue is public, pass `--lean`**: it withholds all of that and keeps
+  only the harness-written evidence.
+- **It refuses when it can't see a token.** If a runner block in `guardrails.json` names an `authTokenEnv`
+  or `apiKeyEnv` that is unset in your shell, the scrub would be blind to that token, so `bundle` refuses
+  and writes nothing. Run it from the shell that exported the variable (`export LITELLM_MASTER_KEY=...`),
+  or pass `--without-agent-text` to ship the bundle with all agent-derived text removed, run-wide.
+- **Where it goes.** `~/guardrails-bundles/<plan>-<runId>.zip` by default (`--out` or `--dir` to change
+  it). Any destination inside a git working tree is refused, so a bundle can't be committed by accident.
+  The absolute path is printed.
+- **Size.** The zip is capped at 20 MiB (`--max-size`; GitHub accepts 25 MB). Over the cap, it trims older
+  attempts' streams and transcripts first. If it's still too big, it writes the zip anyway, exits `1`,
+  and tells you to narrow it with `--task <id>`.
+- **Attaching it.** `gh` can't attach files to an issue. Drag the zip into the issue's comment box in the
+  browser (or attach it to a gist or release and paste the link).
+
+The full contract, including the contents allow-list and every redaction pass, is
+`docs/plans/02-schemas-and-contracts.md` §17.
 
 ## The skills
 
