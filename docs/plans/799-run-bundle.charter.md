@@ -40,7 +40,8 @@ retries for). `diagnostics` is the GR-code glossary (#558), so the verb is `bund
 
 ```text
 guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --dir <path>] [--force-path]
-                  [--max-size <MB>] [--full] [--include-worktree-diff] [--keep-paths] [--no-redact]
+                  [--max-size <MB>] [--full] [--include-worktree-diff] [--without-agent-text]
+                  [--keep-paths] [--no-redact]
 ```
 
 | Option | Default | Meaning |
@@ -51,6 +52,7 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--max-size <MB>` | `20` | Cap on the **finished zip**. GitHub accepts file attachments up to 25 MB. |
 | `--full` | off | Adds the content classes marked *full* below. Gated by `content-default`. |
 | `--include-worktree-diff` | off | Full `git diff` of the integration worktree and the selected segments. It is source code, so it implies `--full`. |
+| `--without-agent-text` | off | The only way past the D1 refusal (*Redaction*, pass 5). Ships the bundle with **all** agent-derived free text removed, run-wide. |
 | `--keep-paths` | off | Disables path anonymization (the issue's `--anonymize-paths` is the default). |
 | `--no-redact` | off | See *`--no-redact`*. |
 
@@ -73,8 +75,10 @@ about a third of a second, then the write fails, and for `run.json` the Schedule
    lines are kept, a UTF-8 sequence is never split. A file that grows during the read keeps what was read, minus
    the trailing partial line (`live-tail-cut`). `transcript.md` reads are capped like the stream logs.
 5. **Git takes no optional locks, anywhere in the process.** At startup the verb sets `GIT_OPTIONAL_LOCKS=0`,
-   and `core.fsmonitor=false` and `core.untrackedCache=false` through `GIT_CONFIG_COUNT`, **process-wide**. So
-   its own calls and every git child it spawns (the validate probes below) inherit them. Its own calls are
+   and adds `core.fsmonitor=false` and `core.untrackedCache=false` **process-wide** by **appending** them at
+   indexes N and N+1, where N is the existing `GIT_CONFIG_COUNT`. An existing `GIT_CONFIG_KEY_*` or
+   `GIT_CONFIG_VALUE_*` (a `safe.directory`, say) is never overwritten. An unparsable count is treated as 0, and
+   MANIFEST.md notes it. So its own calls and every git child it spawns (the validate probes below) inherit them. Its own calls are
    `status --porcelain=v1 -b`, `log -5 --format='%h %ad %s'` (no author name or email), and
    `diff --stat <taskBase>..HEAD`, each with a 30 s timeout.
    **Residual (§17):** on Windows, a git reader briefly holds `.git/index` open while the harness's git renames
@@ -136,7 +140,8 @@ and `status` **expose file names**, and SUMMARY says so. State fragments are Pha
    No `authTokenEnv` at all means the placeholder `guardrails-gateway-no-auth` was sent, which would have closed
    #791 in the first message. The **bundling shell's** state for the same variables is printed separately, under
    *Redaction coverage*, because it describes the scrub and not the run.
-5. **Withheld:** what lean left out, and what D1 (below) excluded and why, with the remedy.
+5. **Withheld:** what lean left out, and, under `--without-agent-text`, the statement that all agent-derived
+   free text was removed run-wide, with the variables that forced it.
 6. **Issue skeleton:** *Observed* is the halt headline when there is a halt; with no halt it is **left blank**,
    followed by *Candidate facts*: tasks not succeeded, with their last outcome and summary, and in-flight
    attempts. Then *Expected* (blank), *Evidence* (bundle-relative paths), and *Environment* (item 1 on one line).
@@ -151,7 +156,7 @@ zip: entries sorted ordinally, entry timestamps fixed at 1980-01-01, fixed compr
 graph LR
   R[bounded read] --> T{UTF-8 text?}
   T -- no --> X[exclude + name]
-  T -- yes --> E[non-secret exemptions] --> K[known values] --> P[patterns, incl. percent-decoded] --> A[paths] --> Z[zip entry]
+  T -- yes --> K[known values] --> E[non-secret exemptions] --> P[patterns + entropy, incl. percent-decoded] --> A[paths] --> Z[zip entry]
   K -. throws .-> X
   P -. throws .-> X
   Z --> V{stream log: scrubbed less than its transcript?}
@@ -160,14 +165,15 @@ graph LR
 :::
 
 **1. Known values.** Every spelling is replaced: raw; JSON-escaped the way System.Text.Json writes it by default
-(`+` as `+`, and likewise `<` `>` `&` `'`, with the hex matched case-insensitively); JSON-escaped the way
+(`+` as `\u002B`, and likewise `<` `>` `&` `'`, with the hex matched case-insensitively); JSON-escaped the way
 Node's `JSON.stringify` writes it (only `"`, `\` and control characters); and URL-encoded. The values are
 collected once, at bundle time:
 - from the **bundling shell's environment**: `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_FOUNDRY_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GH_TOKEN`,
   `GITHUB_TOKEN`, **every variable any block's `authTokenEnv` or `apiKeyEnv` names**, and any variable whose name
   matches
-  `(?i)(TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN)`;
+  `(?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN)`.
+  `PWD` and `OLDPWD` are excluded by exact name, because they hold paths;
 - as **literal values** in any `env` map (`guardrails.json`, `task.json`, `guardrailOverrides.env`) stored
   under a key matching that rule, **or under any key an `authTokenEnv`/`apiKeyEnv` names**. This matters because
   `OpenAiCompatPromptRunner.BearerToken` reads the injected environment first (`:1188-1198`), so a plan-literal
@@ -179,17 +185,21 @@ hash works as a confirmation oracle for a weak password.
 
 **2. Patterns**, applied to the text and again to its percent-decoded form:
 - `sk-[A-Za-z0-9_-]{16,}`, `sk_live_`/`rk_live_`, `gh[pousr]_`/`github_pat_`, `glpat-`, `npm_`, `AIza…`, `AKIA[0-9A-Z]{16}`, `xox[abprs]-`, `xapp-`, and JWTs;
-- `Bearer <value>`, and the values of `Authorization:`, `Cookie:` and `Set-Cookie:` headers;
+- `Bearer <value>`, and the values of the `Authorization:`, `x-api-key:`, `api-key:`,
+  `Ocp-Apim-Subscription-Key:`, `Cookie:` and `Set-Cookie:` headers;
 - URL credentials (`://[^/\s:@]+:[^/\s@]+@`), `.netrc` `machine … login … password …` lines, and PEM `PRIVATE KEY` blocks;
 - `NAME=value` and `"name": "value"` pairs whose name matches the rule in step 1;
-- **high-entropy runs**: at least 20 characters of `[A-Za-z0-9+=]` containing **no `/ - _ .`**, with upper
-  case, lower case **and** a digit, and Shannon entropy above 4.0 bits per character. Hex tops out at exactly
-  4.0, so SHAs pass. Requiring mixed classes spares PascalCase test names.
+- **high-entropy runs**: at least 24 characters of the **broad** class `[A-Za-z0-9+/=_~.-]`, so base64url and
+  Azure client secrets (which contain `_ ~ . -`) are not split into short pieces. The whole run must contain
+  upper case, lower case **and** a digit, with Shannon entropy above 4.0 bits per character. Hex tops out at
+  exactly 4.0, so SHAs pass. The mixed-class requirement is what spares branch names and PascalCase test names;
+  whole-token exemptions cover task ids and branches that happen to qualify.
 
-**0. Non-secret exemptions run first**, as exact whole tokens and never as substrings: task ids, wave names, the
-plan name, branches recorded in the journal, path segments under the plan folder or workspace, and the
-placeholder `guardrails-gateway-no-auth`. The placeholder is spared inside `Bearer …` too; it is diagnostic
-(#791).
+**Non-secret exemptions** apply **only to the pattern and entropy passes, never to known values**. A known
+secret is scrubbed even if it happens to equal a task id. They match exact whole tokens, never substrings: task
+ids, wave names, the plan name, branches recorded in the journal, path segments **enumerated from the plan and
+journal** (never from a disk walk), and the placeholder `guardrails-gateway-no-auth`. The placeholder is spared
+inside `Bearer …` too, because it is diagnostic (#791).
 
 **3. Paths** (default on). Replace the home directory with `~`, the workspace with `<workspace>`, the worktree
 root with `<worktrees>`, the OS user name inside paths with `<user>`, and `environment.host`/`owner.host` with
@@ -201,34 +211,58 @@ stream `*_delta` events, which can split a value across lines. Two defaults cove
 events is also scanned as the concatenated delta text of each content block. And if a value or pattern was
 redacted in an attempt's `transcript.md` but **not** in its stream log, the stream log is excluded and named.
 
-**5. D1: fail closed on tokens this shell cannot see.** Some block may name an `authTokenEnv`/`apiKeyEnv` that
-is **unset or empty in the bundling shell**. Then the known-value pass cannot scrub that token, so for every
-attempt whose `attempt-route.log` says `runner block: <that block>` (or whose block cannot be determined), all
-free text is **excluded**: transcripts, stream logs, gateway sessions, guardrail stdout and stderr, and composed
-prompts. MANIFEST.md and SUMMARY name the reason and the remedy, *"export LITELLM_MASTER_KEY in this shell and
-re-run bundle"*. The verb does not exit, because the lean evidence still ships.
+**5. D1: refuse when this shell cannot see a run token (run-scoped).** Suppose **any** block the plan declares
+names an `authTokenEnv` or `apiKeyEnv` that is **unset or empty in the bundling shell**. Then `bundle` **exits 1
+before writing anything**. It names each such variable and gives the remedy: *"export LITELLM_MASTER_KEY in this
+shell and re-run `guardrails bundle`"*.
+
+The check is run-scoped because attributing a token to individual files is not sound. A prompt judge picks its
+own block (`GuardrailRunner.cs:173-182`, through `TierResolver.ResolveJudge` with the judge's frontmatter
+`runner`). Preflight and terminal gates, the overwatcher, triage and union re-verify all run with no attempt
+route log. And a token-holding child's output can be quoted anywhere downstream.
+
+**`--without-agent-text`** is the explicit opt-out. It ships the bundle with **all agent-derived free text
+removed, run-wide**: any file that can quote the output of a process that held the token. That means
+transcripts, streams, gateway sessions, composed prompts, guardrail and gate stdout/stderr, `feedback.md`,
+`triage.json`, `overwatch.jsonl`, `escalations/*.json`, `union-reverify-*.log`, `events.jsonl`,
+`observer.jsonl`, `autonomy.jsonl` and `git log` subjects. What remains is structured facts:
+- a **field allow-list projection** of `run.json` and `attempt-provenance.json`: ids, statuses, outcomes,
+  attempt numbers, timestamps, durations, exit codes, hashes, and runner and model names. Every `reason`,
+  `headline`, `summary` and needs-human text field becomes `[withheld: agent text]`;
+- `attempt-route.log` (route facts the harness writes);
+- gate `result.json` with `reason` withheld;
+- `git status` and `diff --stat`, and `validate.txt`.
+
+SUMMARY opens by stating the removal and naming the variables that forced it. The attribution to individual
+attempts from the previous revision is dropped: it is not needed for safety.
 
 **6. Fail closed.** A file that is not UTF-8, or whose scan throws or times out (1 s per MB), is excluded and
 named.
 
 **REDACTIONS.md** has one row per file with counts per label or kind (never values), then a fixed, enumerated
 *Cannot catch* list. Each entry has an id that the tests refer to:
-- `CC1`: a **hex-only** secret, or a mixed one under 20 characters, that no shape rule matches;
+- `CC1`: a secret that no shape rule matches and that the entropy rule misses: **hex-only**, **under 24
+  characters**, or **lacking one of upper case, lower case or digit**;
 - `CC2`: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc, header,
   `NAME=value` and JSON-pair shapes;
 - `CC3`: a known value **transformed** before it was written: base64, reversed, or partly echoed;
 - `CC4`: a secret that reached the run from a variable **no block names** and **the bundling shell does not
   have**;
-- `CC5`: proprietary content in `--full` material. Redaction removes credentials, not intellectual property.
+- `CC5`: proprietary content in `--full` material. Redaction removes credentials, not intellectual property;
+- `CC6`: the bundling shell holds a **different value** of a variable than the run used (a rotated key, another
+  profile). D1 sees the variable as set, the known-value pass scrubs the wrong value, and the difference cannot
+  be detected without a fingerprint of the run's value, which this design refuses to emit.
 
 :::warn
 **A false negative is the failure that matters: a leaked key on a public issue.** That is why the canaries are
 **authored independently of the patterns**, by a different agent working from a threat list before it has seen
-the pattern code. Each canary must be **caught, or disclosed**: tagged `CC1`–`CC5`, with the test asserting
-that id appears in REDACTIONS.md. Over-redaction is the accepted cost, and it is counted.
+the pattern code. The threat list **must name** base64url tokens (Python `secrets.token_urlsafe(16)` and
+`(32)`) and Azure client-secret shapes (with `~ . _ -`). Each canary must be **caught, or disclosed**: tagged
+`CC1`–`CC6`, with the test asserting that id appears in REDACTIONS.md. Over-redaction is the accepted cost, and
+it is counted.
 :::
 
-**`--no-redact`** skips passes 1, 2, 4 and 5, but keeps path anonymization unless `--keep-paths` is given. The
+**`--no-redact`** skips passes 1, 2, 4 and 5 (so no D1 refusal: nothing is claimed scrubbed), but keeps path anonymization unless `--keep-paths` is given. The
 rest of `claude-config/` stays excluded regardless. The zip name gets an `-UNREDACTED` suffix, REDACTIONS.md
 becomes a one-line *NOT REDACTED: do not post publicly*, and the warning is printed before and after the write.
 
@@ -281,7 +315,8 @@ task is at fault). Attach the zip it prints. Paste the issue skeleton from the e
 | **Independent canary corpus** | Core | Authored blind from a threat list, **before** the redactor exists (handoff row 2). Canaries are planted in every allow-listed artifact kind, in files written by **both** System.Text.Json and a Node-style serializer, and include `+ / = &`. Each canary is caught (its bytes absent from the raw zip entries) **or** its `CCn` tag appears in REDACTIONS.md. |
 | **Pattern unit tests** | Core | Every pattern in *Redaction*, including percent-decoded and delta-split forms. |
 | **No false scrub** | Core | A corpus of SHAs, `sha256:` hashes, GUIDs, branch names, PascalCase test names, task ids and the placeholder survives unchanged, including `Bearer guardrails-gateway-no-auth`. |
-| **D1 and stream consistency** | Core | An unset `authTokenEnv` excludes that block's attempts' free text, with the remedy named. A stream log scrubbed less than its transcript is excluded. |
+| **D1 and stream consistency** | Core, Integration | An unset `authTokenEnv` or `apiKeyEnv` on **any** block, including one used only by a judge, exits `1` before writing, naming the variable. With `--without-agent-text`, a canary planted in every agent-text file kind **and** in `run.json`'s reason fields is absent. A stream log scrubbed less than its transcript is excluded. |
+| **Git config append** | Core | A pre-set `GIT_CONFIG_COUNT=1` with a `safe.directory` survives, and the bundle's keys land at indexes 1 and 2. |
 | **Tail reads** | Core | Partial first line dropped before the scan; a newline-free window excluded; multi-byte UTF-8 never split. |
 | **Determinism** | Core | Identical bytes with versions, liveness and clock injected. All six liveness states render. |
 | **Size cap** | Core | Tiers apply in order, keeping first and latest attempts. A protected core over the cap exits `1`. |
@@ -300,7 +335,7 @@ contact.
 **Strongest objection:** *"Automatic redaction invites false confidence. An agent attaches the zip unread, and
 one miss is a leaked key."* **Response:** The manual process is strictly worse on the same axis. #791's reporter
 pasted excerpts by hand, and a weak model pasting a transcript scrubs nothing. This design withholds free text by
-default, fails closed whenever the scrub is blind (D1, unreadable files, a stream that disagrees with its
+default, fails closed whenever the scrub is blind (the D1 refusal, unreadable files, a stream that disagrees with its
 transcript), and states what it cannot catch. That statement is tested against canaries authored by someone
 other than the pattern author. Silent failure is this repo's recurring defect, and the corpus is what keeps
 redaction from regressing silently.
@@ -314,7 +349,7 @@ target the bundle reads, not just `run.json`.
 | # | Agent | filesTouched | Order |
 |---|---|---|---|
 | 1 | guardrails-architect | `docs/plans/02-schemas-and-contracts.md` | first; new §17 (this doc's contract, with the Windows index-handle residual) and the §7 readers sentence |
-| 2 | guardrails-test-author | `tests/Guardrails.Core.Tests/BundleCanaryCorpusTests.cs` | after 1; **blind**: from the threat list and the `CC1`–`CC5` ids only, before row 3 exists |
+| 2 | guardrails-test-author | `tests/Guardrails.Core.Tests/BundleCanaryCorpusTests.cs` | after 1; **blind**: from the threat list (which names base64url and Azure client-secret shapes) and the `CC1`–`CC6` ids only, before row 3 exists |
 | 3 | guardrails-harness-developer | `src/Guardrails.Core/Bundle/`, `tests/Guardrails.Core.Tests/BundleRedactorTests.cs` | after 2; the patterns and their unit tests; must not edit row 2's corpus |
 | 4 | guardrails-harness-developer | `src/Guardrails.Cli/Commands/BundleCommand.cs`, `src/Guardrails.Cli/CommandFactory.cs` | after 3 |
 | 5 | guardrails-test-author | `tests/Guardrails.Integration.Tests/BundleCliTests.cs` | after 4; live, Windows-sharing and path-refusal tests |
@@ -324,10 +359,10 @@ target the bundle reads, not just `run.json`.
 
 - **§17 (new), "Run evidence bundle (`guardrails bundle`), issue #799":** the surface; read-discipline items
   1–6, including the process-wide git settings, the fact that validate is not read-only, and the Windows
-  index-handle residual; the allow-list tree with its lean/full classes; SUMMARY's order; redaction passes 0–6
-  with labels and the `CC1`–`CC5` list; the trim order and protected core; path refusal; and exit codes (`0`
-  written, `1` refused, unreadable plan, or over the cap after trimming).
+  index-handle residual; the allow-list tree with its lean/full classes; SUMMARY's order; redaction passes 1–6 and the exemptions
+  with labels, the D1 refusal and the `--without-agent-text` set, and the `CC1`–`CC6` list; the trim order and protected core; path refusal; and exit codes (`0`
+  written, `1` refused (D1, path), unreadable plan, or over the cap after trimming).
 - **§7, journal-readers paragraph:** *"and `guardrails bundle` reads it once, first, per bundle (§17)"*.
 - **§8, intro:** `guardrails bundle` packages this layout under an allow-list (§17).
-- **§9.10 residuals:** *"`guardrails bundle` scrubs the gateway token from session transcripts, or excludes them
-  when the bundling shell cannot see it; the loopback viewer does neither"*.
+- **§9.10 residuals:** *"`guardrails bundle` scrubs the gateway token from session transcripts, or refuses to bundle
+  when the bundling shell cannot see it (unless `--without-agent-text`); the loopback viewer does neither"*.
