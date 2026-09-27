@@ -11,7 +11,9 @@ going, into one zip that is **safe to attach to a public GitHub issue by default
 
 **Narrowings** (annotate any you disagree with):
 - "Safe by default" covers two separate things: **credentials** are scrubbed (*Redaction*), and **proprietary
-  content** (prompts, transcripts, diffs) is withheld unless asked for (question `content-default`).
+  content** (prompts, transcripts, diffs) is **included by default**, redacted, under a loud warning. That was
+  resolved in review (`content-default`): someone asking for debug help is letting us investigate fully. `--lean`
+  withholds that content.
 - The bundle opens **no network connection**. `providers check` output is included only if a file records it,
   and nothing records it today.
 - Designed against **#798's described outcome**: a per-task in-flight marker in `run.json` (attempt number,
@@ -40,7 +42,7 @@ retries for). `diagnostics` is the GR-code glossary (#558), so the verb is `bund
 
 ```text
 guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --dir <path>] [--force-path]
-                  [--max-size <MB>] [--full] [--include-worktree-diff] [--without-agent-text]
+                  [--max-size <MB>] [--lean] [--include-worktree-diff] [--without-agent-text]
                   [--keep-paths] [--no-redact]
 ```
 
@@ -50,8 +52,8 @@ guardrails bundle [folder] [--run <id>] [--task <id>]... [--out <file.zip> | --d
 | `--task <id>` | all | Repeatable. Narrows per-task evidence; run-level files are always included. |
 | `--out` / `--dir` | `~/guardrails-bundles/<plan>-<runId>[-<task>].zip` | `--dir` writes the tree unzipped. Both are **refused inside any git working tree** (checked with `git rev-parse --is-inside-work-tree` on the nearest existing ancestor), including the plan folder and the run's worktrees, unless `--force-path` is given. The absolute path is always printed. |
 | `--max-size <MB>` | `20` | Cap on the **finished zip**. GitHub accepts file attachments up to 25 MB. |
-| `--full` | off | Adds the content classes marked *full* below. Gated by `content-default`. |
-| `--include-worktree-diff` | off | Full `git diff` of the integration worktree and the selected segments. It is source code, so it implies `--full`. |
+| `--lean` | off | Withholds the content classes marked *full* below (prompts, transcripts, streams, gateway sessions, patches), leaving only the harness-written evidence set. Use it for a public issue when the code is private. |
+| `--include-worktree-diff` | off | Full `git diff` of the integration worktree and the selected segments. It is source code, so it is refused with `--lean`. |
 | `--without-agent-text` | off | The only way past the D1 refusal (*Redaction*, pass 5). Ships the bundle with **all** agent-derived free text removed, run-wide. |
 | `--keep-paths` | off | Disables path anonymization (the issue's `--anonymize-paths` is the default). |
 | `--no-redact` | off | See *`--no-redact`*. |
@@ -98,7 +100,7 @@ nothing more. A directory sweep would have shipped `claude-config/.claude.json` 
 capture environment variables) the day they appeared.
 
 ```text
-guardrails-bundle-<plan>-<runId>[-<task>].zip          lean = default   full = only with --full
+guardrails-bundle-<plan>-<runId>[-<task>].zip          lean = always   full = default, withheld by --lean
 ├── SUMMARY.md  MANIFEST.md  REDACTIONS.md             lean
 ├── plan/       guardrails.json (redacted), selected task.json, validate.txt         lean
 ├── state/run.json                                                                    lean
@@ -114,8 +116,8 @@ guardrails-bundle-<plan>-<runId>[-<task>].zip          lean = default   full = o
 └── git/        integration.txt, <task>.txt: status, log -5, diff --stat              lean
 ```
 
-The rest of `claude-config/` is excluded **by construction**, and the exclusion is named. Lean's `diff --stat`
-and `status` **expose file names**, and SUMMARY says so. State fragments are Phase 2.
+The rest of `claude-config/` is excluded **by construction**, and the exclusion is named. Even a `--lean` bundle's
+`diff --stat` and `status` **expose file names**, and SUMMARY says so. State fragments are Phase 2.
 
 ### SUMMARY.md: facts only, in a fixed order
 
@@ -140,7 +142,7 @@ and `status` **expose file names**, and SUMMARY says so. State fragments are Pha
    No `authTokenEnv` at all means the placeholder `guardrails-gateway-no-auth` was sent, which would have closed
    #791 in the first message. The **bundling shell's** state for the same variables is printed separately, under
    *Redaction coverage*, because it describes the scrub and not the run.
-5. **Withheld:** what lean left out, and, under `--without-agent-text`, the statement that all agent-derived
+5. **Withheld:** what `--lean` left out, when it was given, and, under `--without-agent-text`, the statement that all agent-derived
    free text was removed run-wide, with the variables that forced it.
 6. **Issue skeleton:** *Observed* is the halt headline when there is a halt; with no halt it is **left blank**,
    followed by *Candidate facts*: tasks not succeeded, with their last outcome and summary, and in-flight
@@ -248,7 +250,8 @@ named.
 - `CC3`: a known value **transformed** before it was written: base64, reversed, or partly echoed;
 - `CC4`: a secret that reached the run from a variable **no block names** and **the bundling shell does not
   have**;
-- `CC5`: proprietary content in `--full` material. Redaction removes credentials, not intellectual property;
+- `CC5`: proprietary content, which a default (full) bundle includes. Redaction removes credentials, not
+  intellectual property. `--lean` withholds it;
 - `CC6`: the bundling shell holds a **different value** of a variable than the run used (a rotated key, another
   profile). D1 sees the variable as set, the known-value pass scrubs the wrong value, and the difference cannot
   be detected without a fingerprint of the run's value, which this design refuses to emit.
@@ -285,7 +288,17 @@ was trimmed.
 
 ## Output and upload
 
-A stdout line with the **absolute path** and size, what was withheld, and the upload hint: *"`gh` cannot attach
+**Every full bundle carries a loud warning.** It is printed to **stderr** and also as the **first block of
+SUMMARY.md**:
+
+```text
+WARNING: this bundle includes your code, your prompts and model output (transcripts, stream logs, gateway
+sessions, patches). Credentials were redacted, but redaction cannot catch everything (REDACTIONS.md, CC1-CC6).
+If your code is private, re-run with --lean before attaching this to a public issue.
+```
+
+`--lean` bundles print a one-line note of what was withheld instead. Then a stdout line with the **absolute
+path** and size, and the upload hint: *"`gh` cannot attach
 files to an issue. Drag this zip into the issue's comment box in the browser, or attach it to a gist or a
 release and paste the link."*
 
@@ -293,9 +306,13 @@ release and paste the link."*
 { "id": "content-default", "title": "What does a bundle include by default?", "mode": "single",
   "options": ["(a) Lean by default; --full opts in to prompts, transcripts, streams, gateway sessions and patches, confirmed y/N on a TTY or with --confirm-full when not a TTY", "(b) Full by default, with a loud warning and --lean to opt out"],
   "recommended": "(a) Lean by default; --full opts in to prompts, transcripts, streams, gateway sessions and patches, confirmed y/N on a TTY or with --confirm-full when not a TTY",
-  "rationale": "The deciding evidence in #791 (route log, provenance, refusal text, config) and in #797 (run.json, the attempt dirs, provenance summary) is all in the lean set. The filer is often a weak agent that will not heed a warning, and the #797 run was an employer's private plan, so (b) puts private code on a public issue by default. Under (a), SUMMARY lists exactly what was withheld, so a maintainer can ask for --full in one line. On a TTY, --full shows the withheld list and asks y/N. Off a TTY it is refused without --confirm-full: friction an agent can pass, but only by writing a flag that says what it is doing. (b) saves that one round trip when a transcript is decisive.",
-  "target": "human" }
+  "rationale": "RESOLVED (b) by the maintainer, overriding this lean: 'If someone is asking for debug help, assume they are letting us investigate fully.' The --full flag and its y/N / --confirm-full gating were removed. Original argument for (a): the deciding evidence in #791 (route log, provenance, refusal text, config) and in #797 (run.json, the attempt dirs, provenance summary) is all in the lean set. The filer is often a weak agent that will not heed a warning, and the #797 run was an employer's private plan, so (b) puts private code on a public issue by default. Under (a), SUMMARY lists exactly what was withheld, so a maintainer can ask for --full in one line. On a TTY, --full shows the withheld list and asks y/N. Off a TTY it is refused without --confirm-full: friction an agent can pass, but only by writing a flag that says what it is doing. (b) saves that one round trip when a transcript is decisive.",
+  "target": "human", "answer": ["(b) Full by default, with a loud warning and --lean to opt out"] }
 :::
+
+**Resolved: full by default.** Prompts, transcripts, streams, gateway sessions and patches ship by default,
+fully redacted, under the warning above. `--lean` is the opt-out. All the redaction passes, the D1 refusal,
+`--no-redact`, the output rules, the size cap and the trim order are unchanged.
 
 **Output location (reviewed, settled).** The default is `~/guardrails-bundles/`: outside every repo and easy to
 find from a browser file picker. Every destination, including that default, is refused inside a git working tree
@@ -303,8 +320,8 @@ without `--force-path`, so a dotfiles repo at `~` is caught rather than silently
 
 **Docs.** In the README CLI table, one row. In `docs/local-inference.md`, a first *Troubleshooting* row and a
 *Filing an issue* paragraph an agent can follow: *"Run `guardrails bundle <plan>/` (add `--task <id>` when one
-task is at fault). Attach the zip it prints. Paste the issue skeleton from the end of SUMMARY.md. Never pass
-`--no-redact`, `--keep-paths` or `--force-path` for a public issue."*
+task is at fault). Attach the zip it prints. Paste the issue skeleton from the end of SUMMARY.md. If the
+code is private, add `--lean`. Never pass `--no-redact`, `--keep-paths` or `--force-path` for a public issue."*
 
 ## Tests and acceptance
 
@@ -318,6 +335,7 @@ task is at fault). Attach the zip it prints. Paste the issue skeleton from the e
 | **D1 and stream consistency** | Core, Integration | An unset `authTokenEnv` or `apiKeyEnv` on **any** block, including one used only by a judge, exits `1` before writing, naming the variable. With `--without-agent-text`, a canary planted in every agent-text file kind **and** in `run.json`'s reason fields is absent. A stream log scrubbed less than its transcript is excluded. |
 | **Git config append** | Core | A pre-set `GIT_CONFIG_COUNT=1` with a `safe.directory` survives, and the bundle's keys land at indexes 1 and 2. |
 | **Tail reads** | Core | Partial first line dropped before the scan; a newline-free window excluded; multi-byte UTF-8 never split. |
+| **Content default** | Core | A default bundle includes transcripts, streams, gateway sessions, composed prompts and patches (redacted), and the full-bundle warning appears on stderr and as SUMMARY.md's first block. `--lean` excludes every *full*-class file and names each in MANIFEST.md, and `--lean --include-worktree-diff` is refused. |
 | **Determinism** | Core | Identical bytes with versions, liveness and clock injected. All six liveness states render. |
 | **Size cap** | Core | Tiers apply in order, keeping first and latest attempts. A protected core over the cap exits `1`. |
 | **#798 both ways** | Core | In-flight attempt from the marker, and from the disk-vs-journal inference. |
@@ -326,7 +344,7 @@ task is at fault). Attach the zip it prints. Paste the issue skeleton from the e
 ## Phasing
 
 **Phase 1:** everything above, including `--run` (the issue's own example, needed to bundle an earlier run after
-a re-run) and `--include-worktree-diff` (a single git call under `--full`). **Phase 2:** state fragments, and
+a re-run) and `--include-worktree-diff` (a single git call; refused with `--lean`). **Phase 2:** state fragments, and
 `providers check` output once something records it. Phase 1 alone would have closed #791 and #797 on first
 contact.
 
@@ -334,8 +352,8 @@ contact.
 
 **Strongest objection:** *"Automatic redaction invites false confidence. An agent attaches the zip unread, and
 one miss is a leaked key."* **Response:** The manual process is strictly worse on the same axis. #791's reporter
-pasted excerpts by hand, and a weak model pasting a transcript scrubs nothing. This design withholds free text by
-default, fails closed whenever the scrub is blind (the D1 refusal, unreadable files, a stream that disagrees with its
+pasted excerpts by hand, and a weak model pasting a transcript scrubs nothing. This design redacts every file,
+warns loudly on every full bundle and offers `--lean`, fails closed whenever the scrub is blind (the D1 refusal, unreadable files, a stream that disagrees with its
 transcript), and states what it cannot catch. That statement is tested against canaries authored by someone
 other than the pattern author. Silent failure is this repo's recurring defect, and the corpus is what keeps
 redaction from regressing silently.
@@ -359,7 +377,7 @@ target the bundle reads, not just `run.json`.
 
 - **§17 (new), "Run evidence bundle (`guardrails bundle`), issue #799":** the surface; read-discipline items
   1–6, including the process-wide git settings, the fact that validate is not read-only, and the Windows
-  index-handle residual; the allow-list tree with its lean/full classes; SUMMARY's order; redaction passes 1–6 and the exemptions
+  index-handle residual; the allow-list tree with its lean/full classes (full by default, `--lean` to opt out) and the full-bundle warning; SUMMARY's order; redaction passes 1–6 and the exemptions
   with labels, the D1 refusal and the `--without-agent-text` set, and the `CC1`–`CC6` list; the trim order and protected core; path refusal; and exit codes (`0`
   written, `1` refused (D1, path), unreadable plan, or over the cap after trimming).
 - **§7, journal-readers paragraph:** *"and `guardrails bundle` reads it once, first, per bundle (§17)"*.
