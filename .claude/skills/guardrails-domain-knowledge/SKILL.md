@@ -1570,6 +1570,32 @@ lands at that same path once drained.
   path verbatim and classify the halt `blocked-work`; never stub it, fetch it, or hand-copy it into your
   worktree.
 
+## Filing an issue: `guardrails bundle`
+
+**`guardrails bundle [folder]`** (SSOT section 17, design of record `docs/plans/799-run-bundle.charter.md`,
+issue #799) packages ONE run's evidence into one zip, deterministically. **When you file an issue about a run,
+run it and attach the zip -- never hand-pick files.** It exists because agents filing dogfood issues picked
+evidence badly (#791 omitted the token actually sent; #797 omitted what explained the journal's settle).
+
+- **Read-only, safe on a live run.** Writes nothing under the plan folder, logs or worktrees, takes no lock,
+  opens no network connection, runs no model (SUMMARY.md is computed from recorded facts). One bounded read
+  per file with a share-everything handle, `run.json` first (section 17.2). So bundle a stuck run BEFORE
+  killing it.
+- **Full by default; `--lean` withholds proprietary content.** Credentials are always scrubbed (unless
+  `--no-redact`, which names the file `-UNREDACTED`); prompts, transcripts, stream logs, gateway sessions and
+  patches are INCLUDED under a loud stderr warning. Redaction removes credentials, not IP: for private code
+  on a public issue, pass `--lean`. `--include-worktree-diff` adds source and is refused with `--lean`.
+- **D1 refusal, run-wide.** If ANY runner block names an `authTokenEnv`/`apiKeyEnv` unset or empty in the
+  bundling shell, it refuses (exit 1, nothing written) and names each variable. Remedy: export it and re-run,
+  or `--without-agent-text` (all agent-derived free text removed, run-wide). There is no per-file attribution.
+- **Destination.** Default `~/guardrails-bundles/<plan>-<runId>[-<task>].zip`; `--out`/`--dir` override
+  (mutually exclusive). EVERY destination inside a git working tree is refused unless `--force-path`.
+- **Size.** `--max-size` (default 20 MiB) caps the finished zip; fixed trim tiers never touch the protected
+  core (SUMMARY/MANIFEST/REDACTIONS, `run.json`, `guardrails.json`, every `feedback.md`, provenance, route
+  log). Still over after every tier: zip written anyway, exit 1, narrow with `--task <id>`.
+- **Exit codes:** `0` written and fits; `1` refused, unreadable, or over cap. No exit `2`.
+- **Upload:** `gh` cannot attach files to an issue -- drag the zip into the issue in the browser.
+
 ## Load-bearing invariants
 
 1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and
