@@ -480,6 +480,12 @@ public sealed class BundleRedactorTests
     /// a generous absolute cap: 2 MiB of each shape must redact within 60 s. Before the fix, `a=`×2 MiB was projected at
     /// about 25 minutes and the minified shapes at about 13, so the cap separates linear from quadratic by two orders of
     /// magnitude. The anonymizer's identity patterns are driven over the same input.
+    /// <para>
+    /// It also caught a linear-but-costly shape on a loaded macOS CI runner: the encoded-user LOOKBEHIND walked back up to
+    /// 256 characters at every `danaher` in one long `-danaher-…` run that never matched, so all ~67M steps landed in ONE
+    /// regex operation and tripped its 10 s timeout. That rule is now a consuming token scan plus an index search, and the
+    /// shape runs in about 0.5 s locally.
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData("a=")]

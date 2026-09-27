@@ -28,6 +28,7 @@ public sealed partial class BundlePathAnonymizer
     private readonly List<(string From, string To)> _roots = [];
     private readonly List<(Regex Regex, string To)> _patterns = [];
     private readonly StringComparison _comparison;
+    private readonly string[] _encodedUserNames = [];
 
     /// <summary>Build the anonymizer for paths and the OS user name alone.</summary>
     public BundlePathAnonymizer(
@@ -85,9 +86,11 @@ public sealed partial class BundlePathAnonymizer
             // Inside a path, any length; inside a '-'-encoded path (`C--…`, `-home-…`); and bare, word-bounded, from
             // 4 characters (a shorter bare name is too likely to be an ordinary word).
             _patterns.Add((new Regex(@"(?<=[\\/])(?:" + names + @")(?=[\\/""'\s]|$)", options, timeout), "<user>"));
-            // The encoded-path lookbehind is bounded (256), so a long dash run cannot make the scan quadratic (#805 N1).
-            _patterns.Add((new Regex(@"(?<=(?:^|[^A-Za-z0-9-])[A-Za-z]?-[A-Za-z0-9-]{0,256})(?:" + names + @")(?=-|$|[^A-Za-z0-9])",
-                options, timeout), "<user>"));
+            // Inside a '-'-encoded path: found by ONE consuming pass over encoded-path tokens plus an index search in each
+            // (see Apply), never a lookbehind. A lookbehind that walks back to find the token's start costs up to its bound at
+            // every candidate, and in one long dash run that never matches, all of it lands in a single regex operation: the
+            // #805 macOS CI timeout (2 MiB of `-danaher`, about 67M steps in one Match).
+            _encodedUserNames = [.. new[] { user, Encode(user) }.Distinct(StringComparer.Ordinal)];
 
             // Bare, anywhere as a whole word: only a DISTINCTIVE name (#805 N6). A common account name (`runner`,
             // `root`, `ubuntu`) or a short one is an ordinary word in logs and in the harness's own vocabulary; for those
@@ -160,6 +163,8 @@ public sealed partial class BundlePathAnonymizer
                     AddSpans(spans, view, match.Index, match.Index + match.Length, to, _roots.Count + index);
                 }
             }
+
+            AddEncodedUserSpans(spans, view);
         }
 
         if (spans.Count == 0)
@@ -187,6 +192,42 @@ public sealed partial class BundlePathAnonymizer
         output.Append(text, written, text.Length - written);
         return output.ToString();
     }
+
+    /// <summary>
+    /// The user name inside a '-'-encoded path token (<c>C--Users-dana-src</c>, <c>-home-dana-x</c>): a token that starts
+    /// like one (an optional letter, then '-') is found by a consuming, linear scan; the name is then located in it with
+    /// an index search, after the token's first character and followed by '-' or the token's end.
+    /// </summary>
+    private void AddEncodedUserSpans(List<(int, int, string, int)> spans, RedactionView view)
+    {
+        if (_encodedUserNames.Length == 0)
+        {
+            return;
+        }
+
+        int rank = _roots.Count + _patterns.Count;
+        foreach (Match token in EncodedPathToken().Matches(view.Text))
+        {
+            string text = token.Value;
+            foreach (string name in _encodedUserNames)
+            {
+                int at = text.IndexOf(name, 1, _comparison);
+                while (at > 0)
+                {
+                    int end = at + name.Length;
+                    if (end == text.Length || text[end] == '-')
+                    {
+                        AddSpans(spans, view, token.Index + at, token.Index + end, "<user>", rank);
+                    }
+
+                    at = end < text.Length ? text.IndexOf(name, end, _comparison) : -1;
+                }
+            }
+        }
+    }
+
+    [GeneratedRegex(@"(?<![A-Za-z0-9-])[A-Za-z]?-[A-Za-z0-9-]*", RegexOptions.CultureInvariant, 10_000)]
+    private static partial Regex EncodedPathToken();
 
     private static void AddSpans(List<(int, int, string, int)> spans, RedactionView view, int from, int to, string token, int rank)
     {
