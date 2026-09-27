@@ -10651,7 +10651,7 @@ it by default** (`+` as `+`, and likewise `<` `>` `&` `'`, hex matched case-inse
   names**; and any variable whose **name** matches the **secret-name rule**:
 
   ```text
-  (?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN|_PASS$|^PASS$)
+  (?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN|_PASS$|^PASS$|(?:^|[_-])PIN(?:$|[_-]))
   ```
 
   `PWD` and `OLDPWD` are excluded **by exact name**, because they hold paths. `_PASS$|^PASS$` was added in
@@ -10717,9 +10717,11 @@ keeps the scan linear on adversarial input. The uncaptured value is **bounded** 
 lookahead rescans to the next delimiter from every `name=` and is quadratic on minified text (#805 N1); a longer
 value is still met by the shape and entropy rules. Every pattern's repetition is bounded or consuming for the same
 reason. A **purely numeric value**, optionally a decimal or with a unit suffix (`4096`, `262144`, `0.7`, `32k`,
-`500ms`), is a setting and never a secret for the pair and flag rules, so a model server's `--ctx-size`,
-`--max-tokens` or `MAX_TOKENS=` survives in the process tree and logs (a known value is still scrubbed wherever it
-appears; the residual is in `CC1`). `pwd` (any case) is a secret name in the pair pass, except when its
+`500ms`), is a setting for the pair and flag rules **only under a name matched through `token` or `key`**, so a
+model server's `--max-tokens` or `MAX_TOKENS=` survives in the process tree and logs; under a password-like name
+(pass, pwd, pin, secret, credential) a number is still a secret (`PASSWORD=12345678`, `--db-pass 1234`,
+`PIN=0000`), and so is a credential tool's flag value (`--ctx-size` is not a secret name at all). A known value is
+still scrubbed wherever it appears; the residual is in `CC1`. `pwd` (any case) is a secret name in the pair pass, except when its
 value is a path (`PWD=/home/…`, the shell's cwd); the exact-name `PWD`/`OLDPWD` exclusion of §17.6.1 still governs
 known-value collection.
 
@@ -10830,7 +10832,7 @@ in REDACTIONS.md.
   characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy
   threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the
   miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a
-  token that happens to hold no digit. Also a purely numeric value (a PIN) in a pair or a flag, which is kept as a
+  token that happens to hold no digit. Also a numeric token or key value (`MAX_TOKENS=4096`), which is kept as a
   setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its
   first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.
 - **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,

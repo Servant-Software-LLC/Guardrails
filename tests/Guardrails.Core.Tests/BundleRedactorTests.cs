@@ -188,6 +188,9 @@ public sealed class BundleRedactorTests
 
     [Theory]
     [InlineData("PWD", false)]
+    [InlineData("PIN", true)]
+    [InlineData("CARD_PIN", true)]
+    [InlineData("SPINNER", false)]
     [InlineData("OLDPWD", false)]
     [InlineData("SQL_PWD", true)]
     [InlineData("PWD_FILE", true)]
@@ -562,7 +565,12 @@ public sealed class BundleRedactorTests
     [InlineData("tool --api-token abc123XYZpqr", "abc123XYZpqr")]
     [InlineData("tool --max-tokens-secret x9Kq2mLp7", "x9Kq2mLp7")]
     [InlineData("MAX_TOKENS=4096abc\n", "4096abc")]
-    public void ANonNumericValueIsStillScrubbed(string text, string secret)
+    [InlineData("PASSWORD=12345678\n", "12345678")] // a numeric value under a password-like name is a PIN, not a setting
+    [InlineData("deploy --db-pass 1234 --host db\n", "1234")]
+    [InlineData("PIN=0000\n", "0000")]
+    [InlineData("tool --api-secret 424242\n", "424242")]
+    [InlineData("mysql -u app -p 1234 db\n", "1234")]
+    public void ANonNumericValueOrANumericPinIsStillScrubbed(string text, string secret)
     {
         BundleRedactionResult result = Redact(text);
         Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);

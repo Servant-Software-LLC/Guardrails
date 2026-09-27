@@ -17,9 +17,9 @@ public static partial class SecretNameRule
     public static bool IsSecretName(string name) =>
         !string.IsNullOrEmpty(name) && name is not ("PWD" or "OLDPWD") && Rule().IsMatch(name);
 
-    // SSOT §17.6.1 verbatim, plus `_PASS$|^PASS$` (the #799 corpus's `SMTP_PASS`, recorded in §17.6.1).
+    // SSOT §17.6.1 verbatim: it includes `_PASS$|^PASS$` (the #799 corpus's `SMTP_PASS`) and a `PIN` segment (#805).
     [GeneratedRegex(
-        @"(?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN|_PASS$|^PASS$)",
+        @"(?i)(TOKEN|SECRET|PASSWORD|PASSWD|_PWD$|^PWD_|API_?KEY|_KEY|KEY\b|CREDENTIAL|AUTH|COOKIE|SESSION|CONN(ECTION)?_?STR|DSN|_PASS$|^PASS$|(?:^|[_-])PIN(?:$|[_-]))",
         RegexOptions.CultureInvariant)]
     private static partial Regex Rule();
 }

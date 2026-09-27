@@ -85,7 +85,7 @@ public static partial class BundleRedactor
         "  characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy\n" +
         "  threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the\n" +
         "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
-        "  token that happens to hold no digit. Also a purely numeric value (a PIN) in a pair or a flag, which is kept as a\n" +
+        "  token that happens to hold no digit. Also a numeric token or key value (`MAX_TOKENS=4096`), which is kept as a\n" +
         "  setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its\n" +
         "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
@@ -244,7 +244,8 @@ public static partial class BundleRedactor
         {
             foreach (Match match in flag.Matches(text))
             {
-                if (!IsExempt(match.Groups["v"].Value, context) && !IsNumericSetting(match.Groups["v"].Value))
+                string flagName = match.Groups["name"].Success ? match.Groups["name"].Value : "password";
+                if (!IsExempt(match.Groups["v"].Value, context) && !IsNumericSettingOf(flagName, match.Groups["v"].Value))
                 {
                     Add(match.Groups["v"], "named-secret", Priority.Pair);
                 }
@@ -258,7 +259,8 @@ public static partial class BundleRedactor
                 string name = match.Groups["name"].Value;
                 Group value = match.Groups["qv"].Success ? match.Groups["qv"] : match.Groups["v"];
                 if (!value.Success || value.Length == 0 || !IsSecretPairName(name, value.Value) || IsHeaderName(name)
-                    || NameIsAVariableName(name) || IsInertValue(value.Value) || IsExemptPairValue(value.Value, context))
+                    || NameIsAVariableName(name) || IsInertValue(value.Value) || IsNumericSettingOf(name, value.Value)
+                    || IsExemptPairValue(value.Value, context))
                 {
                     continue;
                 }
@@ -426,8 +428,15 @@ public static partial class BundleRedactor
     private static bool NameIsAVariableName(string name) => name is "authTokenEnv" or "apiKeyEnv";
 
     private static bool IsInertValue(string value) =>
-        value.Trim() is "true" or "false" or "null" or "True" or "False" or "None" or "undefined"
-        || IsNumericSetting(value);
+        value.Trim() is "true" or "false" or "null" or "True" or "False" or "None" or "undefined";
+
+    /// <summary>
+    /// A numeric value is a setting only under a name matched through <c>token</c> or <c>key</c> (<c>--max-tokens 4096</c>,
+    /// <c>MAX_TOKENS=4096</c>, a key size). Under a password-like name (pass, pwd, pin, secret, credential) a number is
+    /// still a secret (<c>PASSWORD=12345678</c>, <c>PIN=0000</c>), and so is any value of a credential tool's flag.
+    /// </summary>
+    private static bool IsNumericSettingOf(string name, string value) =>
+        IsNumericSetting(value) && !PasswordLikeName().IsMatch(name);
 
     /// <summary>
     /// A purely numeric value, optionally a decimal or with a unit suffix (<c>4096</c>, <c>262144</c>, <c>0.7</c>,
@@ -572,7 +581,7 @@ public static partial class BundleRedactor
     // `--api-token VALUE`, `--db-password "V W"`: a secret-named long flag, whitespace or `=`, and a value (quoted, or bare
     // and not the next flag).
     [GeneratedRegex(
-        @"(?i)(?<![\w-])--(?>[\w-]*?(?:token|key|password|passwd|pwd|secret|auth)[\w-]*)(?:[ \t]+|=)(?:""(?<v>[^""\r\n]{1,512})""|'(?<v>[^'\r\n]{1,512})'|(?<v>[^\s""'`\\-][^\s""'`\\]{0,511}))",
+        @"(?i)(?<![\w-])--(?<name>(?>[\w-]*?(?:token|key|pass|pwd|secret|auth)[\w-]*))(?:[ \t]+|=)(?:""(?<v>[^""\r\n]{1,512})""|'(?<v>[^'\r\n]{1,512})'|(?<v>[^\s""'`\\-][^\s""'`\\]{0,511}))",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex SecretFlagPattern();
 
@@ -612,6 +621,9 @@ public static partial class BundleRedactor
 
     [GeneratedRegex(@"^[0-9]+(?:\.[0-9]+)?(?:[kKmMgGtT]|[kKmMgG][bB]|ms|s|m|h)?$", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex NumericSetting();
+
+    [GeneratedRegex(@"(?i)pass|pwd|pin|secret|credential", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex PasswordLikeName();
 
     [GeneratedRegex(@"\[REDACTED:(?<label>[^\]\s]+)\]", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex LabelToken();
