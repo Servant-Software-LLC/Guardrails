@@ -13,6 +13,10 @@ and you shouldn't move on until that check passes.
 > supports. Guardrails checks as much of it as it can before any task runs. Progress and results are tracked in
 > epic [#786](https://github.com/Servant-Software-LLC/Guardrails/issues/786).
 
+**Already have a `claude-local` setup?** Skip to
+[Worked example: an existing `claude-local` setup](#worked-example-an-existing-claude-local-setup). It reuses what you
+have and gives the exact checks and runner block, all verified on a MacBook.
+
 ## How it fits together
 
 ```
@@ -66,8 +70,10 @@ Each flag matters:
 - **`--alias`** is the name the Guardrails preflight uses to confirm which model is loaded. **Keep it honest:** if
   you reuse a launch line with `--alias Qwen3.8-27B` over the 3.6 file, the check believes the alias. If in doubt,
   drop `--alias` and the file name is used instead.
-- **`-c 65536 -np 1`** gives one slot a 65,536-token window. With `-np N`, each slot gets `-c ÷ N`, and that
-  per-slot number is what goes in `contextTokens` (step 5).
+- **`-c 65536 -np 1`** gives one slot a 65,536-token window. `contextTokens` (step 5) must not exceed the window
+  **one slot** reports. Read it from `/props` (`default_generation_settings.n_ctx`) rather than computing it: older
+  `llama.cpp` builds split `-c` across `-np` slots, while newer ones share one KV cache, so each slot reports the
+  full window. The preflight compares against that reported number.
 - `--spec-type draft-mtp` is multi-token-prediction drafting for the 3.6 MoE build. It is a speedup, not a
   requirement.
 
@@ -193,7 +199,8 @@ In the plan's `guardrails.json`, set `maxParallelism` and replace `promptRunners
   background model and subagent model is pinned to it.
 - **`backendModel`** is what the server must have *loaded*. Include the version (`qwen3.6-35b-a3b`, not `qwen`).
   A mismatch stops the run before any task.
-- **`contextTokens`** is the per-slot window from step 2. The run stops if it is larger than the slot.
+- **`contextTokens`** must not exceed the per-slot window `/props` reports (step 2); the run stops if it does. It can
+  be smaller. Claude Code then compacts earlier, which keeps a local model's turns faster (64K is a good start).
 - If step 3 showed that LiteLLM requires a key, add `"authTokenEnv": "LITELLM_MASTER_KEY"` to each block. Run
   every `guardrails` command below from the shell that exported it.
 - **Running one model only:** keep just its block and point `default` at it. To send one task to 3.8, set
@@ -314,6 +321,136 @@ Start small:
 The per-attempt details live in `<plan>/state/run.json`: each attempt's provenance carries `gateway` and
 `backendModel`. Transcripts are in `<plan>/logs/<runId>/`.
 
+## Worked example: an existing `claude-local` setup
+
+This is the setup verified on the maintainer's MacBook: an existing `claude-local` install, reused as is. It
+differs from the generic steps above in four ways:
+- **one** model;
+- LiteLLM protected by a **master key**;
+- a **`*` catch-all** route;
+- `llama-server` started with its defaults (no `--alias`, no `-c`, no `--jinja`).
+
+Every value below comes from a check you can run yourself. Run everything in **one shell**, because the key is
+exported into it.
+
+**A. Find the `claude-local` folder and load its key.**
+
+```bash
+CL_DIR="$(dirname "$(readlink -f "$(command -v claude-local)")")"; echo "claude-local folder: $CL_DIR"
+set -a; source "$CL_DIR/.env"; set +a; echo "key loaded: ${LITELLM_MASTER_KEY:+yes}"
+```
+
+Expect a folder path and `key loaded: yes`. If the folder is empty, `claude-local` isn't on your `PATH`; set
+`CL_DIR` to the folder that holds `claude-local`, its `.env` and `litellm-config.yaml`.
+
+**B. Confirm LiteLLM needs that key, and accepts it.**
+
+```bash
+curl -s -o /dev/null -w "no key:   HTTP %{http_code}\n" http://127.0.0.1:4000/v1/models
+curl -s -w "\nwith key: HTTP %{http_code}\n" -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://127.0.0.1:4000/v1/models
+```
+
+Verified result:
+- **`no key: HTTP 500`**. LiteLLM gives a generic error when no key is sent at all. A *wrong* key, such as the
+  placeholder Guardrails sends when `authTokenEnv` is missing, gets `400 "No connected db."` instead.
+- **`with key: HTTP 200`** and a model list:
+
+```json
+{"data":[{"id":"qwen-3.6-35b-mtp", ...},{"id":"*", ...}],"object":"list"}
+```
+
+So the block needs `"authTokenEnv": "LITELLM_MASTER_KEY"`. Its `model` must be the **exact** listed name,
+`qwen-3.6-35b-mtp`, not `Qwen`.
+
+**C. Check where every LiteLLM route goes. The `*` route matters most.**
+
+```bash
+grep -n -B1 -A6 'model_name' "$CL_DIR/litellm-config.yaml"
+```
+
+Verified result: both routes point at the same local server.
+
+```yaml
+model_list:
+  - model_name: qwen-3.6-35b-mtp
+    litellm_params:
+      model: openai/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf
+      api_base: http://127.0.0.1:8080/v1
+      api_key: "sk-local-no-auth-needed"
+  - model_name: "*"            # catch-all: any unrecognized model name, e.g. claude-sonnet-...
+    litellm_params:
+      model: openai/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf
+      api_base: http://127.0.0.1:8080/v1
+      api_key: "sk-local-no-auth-needed"
+```
+
+- **Safe:** the `*` route forwards to the *local* `llama-server`, so a stray Claude model name is answered by local
+  Qwen and never leaves the machine.
+- **Not safe:** a `*` route that forwards to a paid provider (`openai/*`, `anthropic/*` with a real key). Any stray
+  model name would then spend money and send code off the machine.
+- Guardrails runs don't depend on the catch-all. They pin every Claude Code model alias to the block's `model`, and
+  the preflight insists on an exactly listed name. It is still a useful safety net for the interactive session
+  (step 9).
+
+**D. Check what `llama-server` has loaded, and its context window.**
+
+```bash
+curl -s http://127.0.0.1:8080/props | python3 -c 'import sys,json; p=json.load(sys.stdin); print("alias:", p.get("model_alias"), "| path:", p.get("model_path"), "| n_ctx:", p.get("default_generation_settings",{}).get("n_ctx"), "| slots:", p.get("total_slots"))'
+```
+
+Verified result (paths shortened):
+`alias: …/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf | path: …/models/Qwen3.6-35B-A3B-MXFP4_MOE.gguf | n_ctx: 262144 | slots: 4`
+
+- There is no `--alias`, so the alias *is* the file path. `"backendModel": "qwen3.6-35b-a3b"` matches the file name
+  `Qwen3.6-35B-A3B-MXFP4_MOE.gguf` (case-insensitive substring).
+- Each slot reports a 262,144-token window. Recent `llama.cpp` builds share one KV cache across all slots, so a single
+  session really can grow that large. Use **`"contextTokens": 65536`** anyway:
+  - Claude Code then compacts well before a 262K prompt, which on a Mac would be very slow to process and heavy on
+    memory;
+  - 64K is plenty for one plan task;
+  - 65536 passes the preflight's window check, which compares `contextTokens` to that reported `n_ctx`.
+
+**E. The plan's runner block.**
+
+```json
+"maxParallelism": 1,
+"promptRunners": {
+  "default": "claude",
+  "claude": {
+    "kind": "claude",
+    "command": "claude",
+    "baseUrl": "http://127.0.0.1:4000",
+    "model": "qwen-3.6-35b-mtp",
+    "authTokenEnv": "LITELLM_MASTER_KEY",
+    "backendModel": "qwen3.6-35b-a3b",
+    "contextTokens": 65536
+  }
+}
+```
+
+There is only one model here, so there is only one block. For a Qwen 3.8 block, LiteLLM first needs its own
+`model_name` pointing at a second `llama-server` (step 2 and step 3).
+
+**F. Validate, check tool calling, run.** Use the same shell, with Guardrails **1.26.0 or later**, so a rejected
+key is reported as one (#791):
+
+```bash
+brew update && brew upgrade guardrails && guardrails skills install --force
+guardrails validate <plan>/
+guardrails providers check <plan>/ claude
+guardrails run <plan>/
+```
+
+- **`providers check`:** if a step is UNMET, restart `llama-server` with `--jinja`. `claude-local` doesn't pass it,
+  although recent `llama.cpp` builds may enable it by default.
+- **The run header** should read like this:
+
+  ```
+  Gateway: block 'claude' → http://127.0.0.1:4000, model 'qwen-3.6-35b-mtp': backend http://127.0.0.1:8080 …Qwen3.6-35B-A3B-MXFP4_MOE.gguf (backendModel 'qwen3.6-35b-a3b' matched).
+  ```
+
+  If it says `backend identity unverified`, don't use that run's numbers for the dogfood (step 10) until it's fixed.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -327,7 +464,7 @@ The per-attempt details live in `<plan>/state/run.json`: each attempt's provenan
 | Header: `backend identity unverified` | LiteLLM isn't reporting `/model/info`, a `model_name` has several backends, or the backend is not on this machine or a private network | Fix the LiteLLM config (one `api_base` per name) |
 | `validate`: `GR2009` "command not found" for `qwen36` | `"command": "claude"` is missing | Add it (step 5) |
 | Attempts end as `timeout` | Local models are slow | Raise the task's `timeoutSeconds` |
-| Repeated context overflows or constant compaction | Task too large for a 64K window | Smaller tasks; check `contextTokens` matches `-c ÷ -np` |
+| Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
 
 ## What still leaves the machine
