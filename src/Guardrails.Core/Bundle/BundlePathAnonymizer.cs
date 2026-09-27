@@ -70,11 +70,11 @@ public sealed partial class BundlePathAnonymizer
             _patterns.Add((new Regex(Regex.Escape(email), RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, timeout), "<git-email>"));
         }
 
-        if (identity.GitUserName is { Length: >= 3 } gitUser && gitUser.Trim().Length >= 3)
+        if (identity.GitUserName is { } gitUser && IsDistinctiveName(gitUser.Trim()))
         {
             string words = string.Join(@"\s+", gitUser.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Regex.Escape));
-            _patterns.Add((new Regex(@"(?<![A-Za-z0-9_])" + words + @"(?![A-Za-z0-9_])",
-                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, timeout), "<git-user>"));
+            _patterns.Add((new Regex(@"(?<![A-Za-z0-9_])" + words + BareWordEnd, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, timeout),
+                "<git-user>"));
         }
 
         if (identity.UserName is { Length: >= 2 } user)
@@ -85,11 +85,16 @@ public sealed partial class BundlePathAnonymizer
             // Inside a path, any length; inside a '-'-encoded path (`C--…`, `-home-…`); and bare, word-bounded, from
             // 4 characters (a shorter bare name is too likely to be an ordinary word).
             _patterns.Add((new Regex(@"(?<=[\\/])(?:" + names + @")(?=[\\/""'\s]|$)", options, timeout), "<user>"));
-            _patterns.Add((new Regex(@"(?<=(?:^|[^A-Za-z0-9-])[A-Za-z]?-[A-Za-z0-9-]*)(?:" + names + @")(?=-|$|[^A-Za-z0-9])",
+            // The encoded-path lookbehind is bounded (256), so a long dash run cannot make the scan quadratic (#805 N1).
+            _patterns.Add((new Regex(@"(?<=(?:^|[^A-Za-z0-9-])[A-Za-z]?-[A-Za-z0-9-]{0,256})(?:" + names + @")(?=-|$|[^A-Za-z0-9])",
                 options, timeout), "<user>"));
-            if (user.Length >= 4)
+
+            // Bare, anywhere as a whole word: only a DISTINCTIVE name (#805 N6). A common account name (`runner`,
+            // `root`, `ubuntu`) or a short one is an ordinary word in logs and in the harness's own vocabulary; for those
+            // only the path and encoded-path forms above apply.
+            if (IsDistinctiveName(user))
             {
-                _patterns.Add((new Regex(@"(?<![A-Za-z0-9_])(?:" + names + @")(?![A-Za-z0-9_])",
+                _patterns.Add((new Regex(@"(?<![A-Za-z0-9_])(?:" + names + ")" + BareWordEnd,
                     RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, timeout), "<user>"));
             }
         }
@@ -103,6 +108,24 @@ public sealed partial class BundlePathAnonymizer
                 RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, timeout), "<host>"));
         }
     }
+
+    // A bare-word identity match never rewrites a JSON key (`"name":`) or a file name (`name.json`, `name.md`).
+    private const string BareWordEnd = @"(?![A-Za-z0-9_])(?!""\s*:)(?!\.[A-Za-z0-9])";
+
+    /// <summary>
+    /// Account names and harness words a bare-word identity match must never rewrite (#805 N6): CI and cloud defaults,
+    /// and tokens the bundle and the harness themselves emit.
+    /// </summary>
+    public static IReadOnlySet<string> CommonNames { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "runner", "root", "node", "user", "admin", "administrator", "ubuntu", "ec2-user", "vagrant", "guest", "docker",
+        "jenkins", "build", "builder", "circleci", "vsts", "azureuser", "codespace", "gitpod", "vscode",
+        "guardrails", "claude", "agent", "model", "plan", "task", "attempt", "gateway", "journal", "worktree", "workspace",
+        "default", "local", "test", "tests",
+    };
+
+    /// <summary>A name distinctive enough to replace wherever it appears as a whole word: 5+ characters, not common.</summary>
+    public static bool IsDistinctiveName(string name) => name.Length >= 5 && !CommonNames.Contains(name);
 
     /// <summary>A path with every character outside <c>[A-Za-z0-9]</c> turned into <c>-</c>, as Claude Code names a project directory.</summary>
     public static string Encode(string path) => new([.. path.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);

@@ -65,10 +65,11 @@ public static class BundleGitEnvironment
 }
 
 /// <summary>The outcome of one git (or tool) invocation. <see cref="NotFound"/>: the executable is not on PATH.</summary>
-public sealed record BundleProcessResult(int ExitCode, string StandardOutput, string StandardError, bool TimedOut, bool NotFound)
+public sealed record BundleProcessResult(
+    int ExitCode, string StandardOutput, string StandardError, bool TimedOut, bool NotFound, bool Cancelled = false)
 {
     /// <summary>Whether the call ran and exited 0.</summary>
-    public bool Succeeded => !TimedOut && !NotFound && ExitCode == 0;
+    public bool Succeeded => !TimedOut && !NotFound && !Cancelled && ExitCode == 0;
 }
 
 /// <summary>The git calls the bundle makes (§17.2 item 5). A seam so tests decide git's answer.</summary>
@@ -81,22 +82,47 @@ public interface IBundleGit
 /// <summary>Runs a command through <see cref="ProcessRunner"/> (argument list, never a concatenated string).</summary>
 public static class BundleProcess
 {
+    private static readonly AsyncLocal<CancellationToken> Ambient = new();
+
+    /// <summary>
+    /// #805 N-c: every child this flow starts (git, ps, pwsh, tool --version) is tied to <paramref name="token"/> until the
+    /// returned scope is disposed; Ctrl-C cancels it, and <see cref="ProcessRunner"/> kills the child's whole tree.
+    /// </summary>
+    public static IDisposable CancelWith(CancellationToken token)
+    {
+        CancellationToken previous = Ambient.Value;
+        Ambient.Value = token;
+        return new Scope(() => Ambient.Value = previous);
+    }
+
     /// <summary>Run <paramref name="executable"/>; a missing executable is <see cref="BundleProcessResult.NotFound"/>, not a throw.</summary>
     public static BundleProcessResult Run(string executable, IReadOnlyList<string> arguments, string workingDirectory, TimeSpan timeout)
     {
+        CancellationToken token = Ambient.Value;
+        if (token.IsCancellationRequested)
+        {
+            return new BundleProcessResult(-1, string.Empty, "cancelled", TimedOut: false, NotFound: false, Cancelled: true);
+        }
+
         try
         {
             ProcessResult result = new ProcessRunner()
                 .RunAsync(new ResolvedCommand { Executable = executable, Arguments = arguments }, workingDirectory,
-                    new Dictionary<string, string>(), timeout)
+                    new Dictionary<string, string>(), timeout, token)
                 .GetAwaiter().GetResult();
-            return new BundleProcessResult(result.ExitCode, result.StandardOutput, result.StandardError, result.TimedOut, NotFound: false);
+            return new BundleProcessResult(result.ExitCode, result.StandardOutput, result.StandardError, result.TimedOut,
+                NotFound: false, Cancelled: token.IsCancellationRequested && !result.TimedOut);
         }
         catch (Exception ex) when (ex is Win32Exception or FileNotFoundException or InvalidOperationException)
         {
             return new BundleProcessResult(-1, string.Empty, ex.Message, TimedOut: false, NotFound: true);
         }
     }
+}
+
+internal sealed class Scope(Action dispose) : IDisposable
+{
+    public void Dispose() => dispose();
 }
 
 /// <summary>The real git: <c>git</c> on PATH, 30 s per call.</summary>

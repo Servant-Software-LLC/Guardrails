@@ -10338,6 +10338,9 @@ existing `--dir`; a destination under the plan directory or the worktree root (�
 
 There is no exit `2`: no bundle outcome is a human decision the run is waiting on.
 
+**Ctrl-C** cancels every child the bundle started (git, `ps`, `pwsh`, a tool's `--version`: each is killed with
+its process tree) and writes nothing; the verb exits `1` (#805 N-c).
+
 **Output.** On a full bundle the warning of §17.9 goes to **stderr** before the write. A `--lean` bundle
 prints one line naming what was withheld instead. Then **stdout** gets one line with the destination's
 **absolute path** and its size, followed by the upload hint:
@@ -10369,9 +10372,11 @@ reads obey this numbered contract:
 4. **Tail reads.** A file over its tail cap (§17.7) is read as a **tail window**. The window's leading partial
    line is dropped **before any scan**, so a UTF-8 sequence is never split. A window with no whole line in it
    (its last line exceeds the cap) is **not** excluded: that line ships from its first character boundary under
-   the marker line `[truncated: line exceeds window]` (status `tail`, reason `partial-line`); a secret that
-   began before the window can leave an unmatched suffix there, which is `CC1`/`CC3` territory. Only an empty
-   window is excluded (`no-newline-in-window`). A
+   the marker line `[truncated: line exceeds window]` (status `tail`, reason `partial-line`). A secret that
+   began before the window would leave a suffix no pattern recognizes, so the window's **leading token** (up to the
+   first character outside `[A-Za-z0-9+/=_~.%-]`) is masked as `[REDACTED:partial-token]`, and when a known value's
+   suffix of 8 or more characters starts the window, exactly that suffix is scrubbed with its label (#805 N4). Only
+   an empty window is excluded (`no-newline-in-window`). A
    file that grows during the read keeps what was read, minus the trailing partial line (reason
    `live-tail-cut`). `transcript.md` reads are capped like the stream logs.
 5. **Git takes no optional locks, anywhere in the process.** At startup the verb sets
@@ -10390,7 +10395,10 @@ reads obey this numbered contract:
 
    Provenance may be on disk, so it is not trusted (#805 S5): a `<taskBase>` is used only when it matches
    `^[0-9a-f]{7,64}$`, and git runs in a recorded worktree path only when that path resolves (links followed)
-   under the worktree root. Otherwise the `git/<name>.txt` file says it was skipped, and why.
+   under a known worktree root: the bundling shell's (`GUARDRAILS_WORKTREE_ROOT`, else the plan's configured or
+   default root), or one the **journal** recorded (a segment worktree is `<root>/<runId>/<task>/attempt-N`; on-disk
+   provenance is never trusted to widen this). Otherwise the `git/<name>.txt` file says it was skipped, naming the
+   shell's root and the recorded roots (#805 N-b).
 
    **Residual, disclosed.** On Windows, a git reader briefly holds `.git/index` open while the harness's own
    git renames `index.lock` over it. Git for Windows retries that rename, and this contract relies on that
@@ -10474,10 +10482,15 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
 - **The overwatcher's and triage's model streams** (`overwatch-stream-attempt-N.jsonl`, `triage-stream.jsonl`,
   stream class; `overwatch-noverdict-*.txt`, log class) are model output: full class, agent text, redacted like
   every stream. `inflight-marker.log` is the harness's own log: lean, log class (#805 S8).
-- **Links are never followed.** A file or directory that is a symbolic link or any other reparse point is not
-  read and not recursed into; it is listed by its own path, status `excluded`, reason `symlink` (#805 S6).
+- **Links are never followed.** A file or directory that is a symbolic link, a Windows junction, or any other
+  reparse point is not read and not recursed into; it is listed by its own path, status `excluded`, reason
+  `symlink` (#805 S6). Every enumeration checks its **own root** as well as its children, so a linked
+  `claude-config/projects` or `state` directory is caught, not walked (a linked `projects` would otherwise ship
+  every Claude session on the machine).
 - **Under `--task`, a run-level gateway session is per-task evidence** once attributed to an attempt (§17.7): a
-  session of an unselected task, or one no attempt claims, is `listed-only` (reason `task-filter`) (#805 S2).
+  session of an unselected task, or one no attempt claims, is `listed-only` (reason `task-filter`) (#805 S2) —
+  except the **newest** session and one attributed to an in-flight attempt, which always ship: in serial mode the
+  live session is unattributed, and it is the most important stuck-run evidence (#805 N-a).
 - **Files §8 names that this tree does not** (`state-in.json`, `fragment.json`, `action-out-fragment.json`, `overwatch-guidance.md`, a wave's `breakdown/`, the log viewer's
   HTML) are `listed-only` (`unknown-kind`) in Phase 1.
 
@@ -10690,7 +10703,8 @@ took part, else the most specific kind.
 | `netrc` | the password of a `.netrc` `machine … login … password …` line |
 | `private-key` | a PEM `PRIVATE KEY` block |
 | `named-secret` | the value of a `NAME=value`, `NAME: value` (YAML) or `"name": "value"` pair whose name matches the secret-name rule. Whitespace around `=` / `:` and a quoted value are allowed (`var dbPassword = "…";`). The header names of `auth-header` are left to that rule, which keeps the `Bearer` scheme word readable; a value of `true` / `false` / `null` is not scrubbed; and the keys `authTokenEnv` / `apiKeyEnv` are not scrubbed, because by schema their values are variable **names** (#791) |
-| `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above a length-scaled threshold**: 3.6 bits per character for 24-31 characters (a 24-character string cannot exceed log2 24 ≈ 4.58), 4.0 from 32 |
+| `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above a length-scaled threshold**: 3.6 bits per character for 24-31 characters (a 24-character string cannot exceed log2 24 ≈ 4.58), 4.0 from 32. A `/`-joined run whose leading segments are all enumerated (§ exemptions below) is judged on what follows them, so `/var/folders/<random>/T/<plan>/x` is not a hit while a secret after an enumerated prefix still is |
+| `named-secret` (flags) | a secret-named long flag and its space-separated value (`--api-token V`, `--db-password V`: a flag naming token, key, password, passwd, pwd, secret or auth); the `-p` value of `mysql`, `mysqldump` and `sshpass` (`-p V` or `-pV`, never another tool's `-p`, which is usually a port); curl's `-u` / `--user` value (#805 N2) |
 
 The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
 into short pieces. Hex lacks upper case, so SHAs pass; the mixed-class requirement spares branch names and
@@ -10699,7 +10713,10 @@ PascalCase test names. The residual this leaves is stated in `CC1`.
 **Pairs, in detail.** A pair's value is captured without consuming it, so a pair inside another pair's value is
 still scanned (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`, and the first key of JSON quoted inside a JSON string,
 `"content":"{\"password\":\"…\"}"`). A name is matched whole and only where no name character precedes it, which
-keeps the scan linear on adversarial input. `pwd` (any case) is a secret name in the pair pass, except when its
+keeps the scan linear on adversarial input. The uncaptured value is **bounded** to 512 characters: an unbounded
+lookahead rescans to the next delimiter from every `name=` and is quadratic on minified text (#805 N1); a longer
+value is still met by the shape and entropy rules. Every pattern's repetition is bounded or consuming for the same
+reason. `pwd` (any case) is a secret name in the pair pass, except when its
 value is a path (`PWD=/home/…`, the shell's cwd); the exact-name `PWD`/`OLDPWD` exclusion of §17.6.1 still governs
 known-value collection.
 
@@ -10733,9 +10750,13 @@ characters, escape-aligned: `C:\\Users\\Jos\u00e9` written by System.Text.Json (
 non-ASCII and `' + & < >`), `O\u0027Brien`, and `file:///c%3A/Users/…` are all found. Each root is matched with
 native, forward and back slashes and in the `-`-encoded form Claude Code names a project directory with (every
 character outside `[A-Za-z0-9]` turned into `-`). The user name is replaced inside a path, inside a `-`-encoded
-path (a token shaped like `C--…` or `-home-…`), and, from 4 characters, anywhere as a whole word (`USER=`,
-`USERNAME=`, prose); a dotted name also matches its `-`-encoded form (`david.maltby` → `david-maltby`). git's name
-and email match case-insensitively, whole-word (`Author: … <email>` in agent output). It runs **after** the secret
+path (a token shaped like `C--…` or `-home-…`), and, for a **distinctive** name only, anywhere as a whole word
+(`USER=`, `USERNAME=`, prose); a dotted name also matches its `-`-encoded form (`david.maltby` → `david-maltby`).
+git's name and email match case-insensitively, whole-word (`Author: … <email>` in agent output). A name is
+distinctive when it has 5 or more characters and is not a common account name or a harness word (`runner`, `root`,
+`node`, `user`, `admin`, `ubuntu`, `ec2-user`, `vagrant`, `guest` and similar CI defaults; `guardrails`, `claude`,
+`agent`, `model`, `plan`, `task` and similar): for those, only the path and encoded-path forms apply (#805 N6). A
+bare-word match never rewrites a JSON key (`"name":`) or a file name (`name.json`). It runs **after** the secret
 passes, so a label is never rewritten.
 
 #### 17.6.4 Pass 4 — stream consistency (default)
@@ -10792,7 +10813,8 @@ A file that is not valid UTF-8, whose scan throws, or whose scan hits a pattern'
 `scan-timeout`). There is **no wall-clock budget** (#805 S7): a busy or suspended machine is not a reason to drop
 evidence. The latest attempt of a failing or in-flight task is never lost to timing alone: a timed-out scan of
 its file is retried on a halved tail, down to 64 KiB (status `tail`, reason `scan-timeout`), and only then
-excluded. A file that cannot be read or scanned is never shipped raw.
+excluded, still as `scan-timeout` (never `trim-tier-4`). A file that cannot be read or scanned is never shipped
+raw.
 
 #### 17.6.7 Cannot catch — the enumerated disclosure
 
@@ -10806,7 +10828,9 @@ in REDACTIONS.md.
   miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a
   token that happens to hold no digit.
 - **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,
-  header, `NAME=value` and JSON-pair shapes.
+  header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,
+  then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)
+  shapes: a positional argument, or a short flag of any other tool.
 - **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.
 - **`CC4`**: a secret that reached the run from a variable **no block names** and **the bundling shell does
   not have**.

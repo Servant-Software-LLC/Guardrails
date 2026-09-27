@@ -161,6 +161,9 @@ internal sealed class BundlePlanFixture : IDisposable
 
     public RunLivenessState Liveness { get; set; } = RunLivenessState.Ended;
 
+    /// <summary>The injected OS user name: never the host's own, so a CI runner's `runner` cannot change a result (#805).</summary>
+    public string UserName { get; set; } = "fixture-user";
+
     /// <summary>The process-tree probe: a fixed answer, so a Running bundle stays deterministic.</summary>
     public Func<int, BundleProcessTree> ProcessTree { get; set; } = pid => new BundleProcessTree(
         [new BundleProcessRow(pid, 1, "S", "00:05:00", "0.0", "guardrails run plan-x")], null);
@@ -179,7 +182,7 @@ internal sealed class BundlePlanFixture : IDisposable
         Git = new FakeGit(GitCalls),
         Validate = () => "OK: plan is valid.\n",
         Home = Home,
-        UserName = "fixture-user",
+        UserName = UserName,
         CaseInsensitivePaths = false,
     };
 
@@ -190,9 +193,16 @@ internal sealed class BundlePlanFixture : IDisposable
     {
         try
         {
+            // Unlink any directory link or junction first: a recursive delete must never walk into its target.
+            foreach (string dir in Directory.EnumerateDirectories(Root, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0 })
+                         .Where(d => new DirectoryInfo(d).Attributes.HasFlag(FileAttributes.ReparsePoint)).ToList())
+            {
+                Directory.Delete(dir);
+            }
+
             Directory.Delete(Root, recursive: true);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Best-effort cleanup of a temp directory.
         }

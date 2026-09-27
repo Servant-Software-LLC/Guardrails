@@ -649,7 +649,8 @@ public sealed class BundleCliTests
         string encodedHome = new([.. run.Home.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
         string withHome = encodedHome + "-src-app";
         string withSecret = "-work-" + SyntheticRun.Secret + "-repo";
-        foreach (string dir in new[] { withHome, withSecret })
+        string withUser = $"-home-{RecordingHost.UserName}-src";
+        foreach (string dir in new[] { withHome, withSecret, withUser })
         {
             string file = run.LogPath($"claude-config/projects/{dir}/entry-name-canary.jsonl");
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
@@ -664,11 +665,9 @@ public sealed class BundleCliTests
         byte[] raw = File.ReadAllBytes(zip);
         Dictionary<string, byte[]> entries = Entries(zip);
         string manifest = EntryText(zip, "MANIFEST.md");
-        List<string> leaks = [withHome, withSecret, encodedHome, SyntheticRun.Secret];
-        if (System.Environment.UserName.Length >= 4)
-        {
-            leaks.Add(System.Environment.UserName);
-        }
+        // The OS user is the injected one (RecordingHost.UserName), never the host's: a CI runner's `runner` must not
+        // change what this test proves (#805).
+        List<string> leaks = [withHome, withSecret, encodedHome, SyntheticRun.Secret, RecordingHost.UserName];
 
         foreach (string leak in leaks)
         {
@@ -677,7 +676,7 @@ public sealed class BundleCliTests
             Assert.DoesNotContain(leak, manifest, StringComparison.Ordinal);
         }
 
-        Assert.Equal(2, entries.Keys.Count(name => name.EndsWith("/entry-name-canary.jsonl", StringComparison.Ordinal)));
+        Assert.Equal(3, entries.Keys.Count(name => name.EndsWith("/entry-name-canary.jsonl", StringComparison.Ordinal)));
         Assert.All(entries.Keys.Where(name => name.EndsWith("/entry-name-canary.jsonl", StringComparison.Ordinal)),
             name => Assert.Matches("^gateway/sessions/project-[0-9]+/entry-name-canary\\.jsonl$", name));
     }
@@ -907,10 +906,16 @@ public sealed class BundleCliTests
                 // The fixed probe says the owner (4242) is Running, so SUMMARY asks for its process tree. The real table
                 // would differ bundle to bundle; a fixed answer keeps two bundles of one state byte-identical.
                 ProcessTree = pid => new BundleProcessTree([new BundleProcessRow(pid, 1, "S", "00:05:00", "0.0", "guardrails run plan-b")], null),
+
+                // The identity inputs are injected, never the host's (#805): the home above, and this OS user.
+                UserName = () => UserName,
             };
         }
 
         public BundleCommandHost Host { get; }
+
+        /// <summary>The injected OS user name: distinctive, so its bare-word form is anonymized too.</summary>
+        public const string UserName = "bundlehostuser";
 
         public List<string> WorkTreeChecks { get; } = [];
 

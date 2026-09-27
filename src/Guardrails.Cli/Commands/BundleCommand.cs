@@ -43,6 +43,9 @@ public sealed record BundleCommandHost
     /// <summary>The owner process's descendants for SUMMARY's Process tree block (#805 S1). Defaults to the real table.</summary>
     public Func<int, BundleProcessTree> ProcessTree { get; init; } = SystemBundleProcessTree.Capture;
 
+    /// <summary>The OS user name pass 3 anonymizes (#805). Defaults to the real one; a test injects its own.</summary>
+    public Func<string> UserName { get; init; } = () => System.Environment.UserName;
+
     /// <summary>A file's size and last-write time for SUMMARY's Live files block (#805 S1). Defaults to the real stat.</summary>
     public Func<string, BundleFileStat?> Stat { get; init; } = BundleFileStat.Of;
 
@@ -159,7 +162,7 @@ public static class BundleCommand
             command.Add(option);
         }
 
-        command.SetAction(parseResult => Run(
+        command.SetAction((parseResult, cancellationToken) => Task.FromResult(Run(
             new Arguments
             {
                 Folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Error),
@@ -176,7 +179,8 @@ public static class BundleCommand
                 NoRedact = parseResult.GetValue(noRedactOption),
             },
             io,
-            host ?? BundleCommandHost.Real));
+            host ?? BundleCommandHost.Real,
+            cancellationToken)));
         return command;
     }
 
@@ -202,8 +206,10 @@ public static class BundleCommand
         return ExitCodes.HarnessError;
     }
 
-    private static int Run(Arguments args, IConsoleIo io, BundleCommandHost host)
+    private static int Run(Arguments args, IConsoleIo io, BundleCommandHost host, CancellationToken cancellationToken)
     {
+        // #805 N-c: Ctrl-C kills every child the bundle started (git, ps, pwsh, tool --version) and writes nothing.
+        using IDisposable children = BundleProcess.CancelWith(cancellationToken);
         // Argument refusals: all exit 1, all before anything is read (§17.1).
         if (args.Out is not null && args.Dir is not null)
         {
@@ -343,6 +349,11 @@ public static class BundleCommand
             io.Error.WriteLine(BundleBuilder.LeanNote(outcome.LeanWithheld.Count));
         }
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Refuse(io, "cancelled; the child processes were stopped and nothing was written.");
+        }
+
         string destination;
         long size;
         if (args.Dir is not null)
@@ -459,7 +470,7 @@ public static class BundleCommand
                 return output.ToString();
             },
             Home = home,
-            UserName = System.Environment.UserName,
+            UserName = host.UserName(),
             CaseInsensitivePaths = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(),
             WorktreeRoot = worktreeRoot,
             Notes = gitPlan.CountWasUnparsable

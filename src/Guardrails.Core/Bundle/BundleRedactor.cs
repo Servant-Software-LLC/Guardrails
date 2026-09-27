@@ -87,7 +87,9 @@ public static partial class BundleRedactor
         "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
         "  token that happens to hold no digit.\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
-        "  header, `NAME=value` and JSON-pair shapes.\n" +
+        "  header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,\n" +
+        "  then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)\n" +
+        "  shapes: a positional argument, or a short flag of any other tool.\n" +
         "- **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.\n" +
         "- **`CC4`**: a secret that reached the run from a variable **no block names** and **the bundling shell does\n" +
         "  not have**.\n" +
@@ -234,6 +236,18 @@ public static partial class BundleRedactor
             Add(match.Groups["v"], "netrc", Priority.Header);
         }
 
+        // #805 N2: space-separated secret flags on command lines (the process tree, stream logs).
+        foreach (Regex flag in new[] { SecretFlagPattern(), CredentialToolPattern() })
+        {
+            foreach (Match match in flag.Matches(text))
+            {
+                if (!IsExempt(match.Groups["v"].Value, context))
+                {
+                    Add(match.Groups["v"], "named-secret", Priority.Pair);
+                }
+            }
+        }
+
         foreach (Regex pair in new[] { AssignmentPairPattern(), JsonPairPattern() })
         {
             foreach (Match match in pair.Matches(text))
@@ -252,10 +266,13 @@ public static partial class BundleRedactor
 
         foreach (Match match in context.Entropy ? EntropyRun().Matches(text) : Enumerable.Empty<Match>())
         {
-            string run = match.Value;
+            // A path run is judged on what follows its enumerated segments (`/var/folders/<random>/T/<plan>/x`): the
+            // enumerated prefix is diagnostic, and a secret after it is still judged on its own.
+            int skip = EnumeratedPrefixLength(match.Value, context);
+            string run = match.Value[skip..];
             if (IsHighEntropy(run) && !IsExempt(run, context) && !IsIdentifier(run) && !IsExemptPath(run, context))
             {
-                Add(match.Groups[0], "high-entropy", Priority.Entropy);
+                hits.Add(new Hit(view.OriginalRanges(match.Index + skip, match.Index + match.Length), "high-entropy", Priority.Entropy));
             }
         }
     }
@@ -324,6 +341,37 @@ public static partial class BundleRedactor
     // A `/`-joined run is exempt only when EVERY segment is itself an exact exempt token (an enumerated path, e.g.
     // logs/<runId>/<task>/attempt-2/claude-stream.jsonl). A segment that is not enumerated keeps the whole run in scope,
     // so a base64 secret that happens to contain `/` is never split into innocent-looking pieces.
+    // How many leading characters of a `/`-joined run are whole exempt segments (and their separators).
+    private static int EnumeratedPrefixLength(string run, BundleRedactionContext context)
+    {
+        if (!run.Contains('/', StringComparison.Ordinal) || context.ExemptTokens.Count == 0)
+        {
+            return 0;
+        }
+
+        int at = 0;
+        int kept = 0;
+        while (at < run.Length)
+        {
+            int slash = run.IndexOf('/', at);
+            if (slash < 0)
+            {
+                break; // the last segment is judged, never skipped
+            }
+
+            string segment = run[at..slash];
+            if (segment.Length > 0 && !context.ExemptTokens.Contains(segment))
+            {
+                break;
+            }
+
+            at = slash + 1;
+            kept = at;
+        }
+
+        return kept;
+    }
+
     private static bool IsExemptPath(string run, BundleRedactionContext context)
     {
         if (!run.Contains('/', StringComparison.Ordinal) || context.ExemptTokens.Count == 0)
@@ -509,11 +557,29 @@ public static partial class BundleRedactor
     [GeneratedRegex(@"(?i)\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+(?<v>[^\s""'\\]+)", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex NetrcPattern();
 
+    // `--api-token VALUE`, `--db-password VALUE`: a secret-named long flag, whitespace, and a value that is not the next flag.
+    [GeneratedRegex(
+        @"(?i)(?<![\w-])--(?>[\w-]*?(?:token|key|password|passwd|pwd|secret|auth)[\w-]*)[ \t]+(?<v>[^\s""'`\\-][^\s""'`\\]{0,511})",
+        RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex SecretFlagPattern();
+
+    // `-p` only in tools where it is a password (never a port): mysql, mysqldump, sshpass (`-p VALUE` or `-pVALUE`); and
+    // curl's `-u` / `--user user:pass`. The distance from the tool to its flag is bounded, so the scan stays linear.
+    [GeneratedRegex(
+        @"(?i)\b(?:(?:mysql|mysqldump|sshpass)\b[^\r\n]{0,200}?[ \t]-p[ \t]*|curl\b[^\r\n]{0,200}?[ \t](?:-u|--user)[ \t]+)(?<v>[^\s""'`\\-][^\s""'`\\]{0,511})",
+        RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex CredentialToolPattern();
+
+    // (NetrcPattern is declared above.)
+
+
     // NAME=value, NAME: value, NAME = "value" (shell, .env, YAML, code). The name is an identifier; a value is quoted,
     // or runs to whitespace, a quote, a backtick or a backslash. The value is captured in a LOOKAHEAD, so a pair inside
-    // another pair's value (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`) is still scanned (#805 W1).
+    // another pair's value (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`) is still scanned (#805 W1). The lookahead is BOUNDED
+    // (512 characters): an unbounded one rescans to the next delimiter from every `name=`, which is quadratic on minified
+    // text (#805 N1). A longer secret value is still met by the shape and entropy rules.
     [GeneratedRegex(
-        @"(?<![A-Za-z0-9_.-])-{0,2}(?<name>(?>[A-Za-z_][A-Za-z0-9_.-]*))[ \t]*[:=][ \t]*(?=""(?<qv>[^""\r\n]*)""|'(?<qv>[^'\r\n]*)'|(?<v>[^\s""'`\\]+))",
+        @"(?<![A-Za-z0-9_.-])-{0,2}(?<name>(?>[A-Za-z_][A-Za-z0-9_.-]*))[ \t]*[:=][ \t]*(?=""(?<qv>[^""\r\n]{0,512})""|'(?<qv>[^'\r\n]{0,512})'|(?<v>[^\s""'`\\]{1,512}))",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex AssignmentPairPattern();
 

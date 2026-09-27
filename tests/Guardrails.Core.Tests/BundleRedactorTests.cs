@@ -392,14 +392,23 @@ public sealed class BundleRedactorTests
     {
         string home = workspace[..workspace.IndexOf(@"\src", StringComparison.Ordinal)];
         var anonymizer = new BundlePathAnonymizer(home, workspace, null, user, [], caseInsensitive: true);
-        string stj = JsonSerializer.Serialize(new { path = workspace + @"\plan", other = home + @"\notes.txt", who = user });
+        // A bare `who` field is replaced only for a distinctive name (#805 N6), so only then is it in the fixture.
+        string stj = BundlePathAnonymizer.IsDistinctiveName(user)
+            ? JsonSerializer.Serialize(new { path = workspace + @"\plan", other = home + @"\notes.txt", who = user })
+            : JsonSerializer.Serialize(new { path = workspace + @"\plan", other = home + @"\notes.txt" });
         string percent = "file:///" + Uri.EscapeDataString(workspace.Replace('\\', '/')) + "/x " + Uri.EscapeDataString(home + @"\y");
 
         Assert.True(stj.Contains("\\u", StringComparison.Ordinal), "fixture: System.Text.Json must escape the user name");
         foreach (string text in new[] { stj, percent })
         {
             string result = anonymizer.Apply(text);
-            foreach (string leak in new[] { user, JsonSerializer.Serialize(user)[1..^1], Uri.EscapeDataString(user), "Users" })
+            IEnumerable<string> leaks = [JsonSerializer.Serialize(user)[1..^1], Uri.EscapeDataString(user), "Users"];
+            if (BundlePathAnonymizer.IsDistinctiveName(user))
+            {
+                leaks = leaks.Append(user);
+            }
+
+            foreach (string leak in leaks.Distinct())
             {
                 Assert.DoesNotContain(leak, result, StringComparison.Ordinal);
             }
@@ -408,7 +417,10 @@ public sealed class BundleRedactorTests
         using JsonDocument document = JsonDocument.Parse(anonymizer.Apply(stj));
         Assert.Equal(@"<workspace>\plan", document.RootElement.GetProperty("path").GetString());
         Assert.Equal(@"~\notes.txt", document.RootElement.GetProperty("other").GetString());
-        Assert.Equal("<user>", document.RootElement.GetProperty("who").GetString());
+        if (BundlePathAnonymizer.IsDistinctiveName(user))
+        {
+            Assert.Equal("<user>", document.RootElement.GetProperty("who").GetString());
+        }
     }
 
     [Fact]
@@ -459,17 +471,103 @@ public sealed class BundleRedactorTests
         Assert.Equal("USER=<user>\nUSERNAME=<user>\nAuthor: <git-user> <<git-email>>\ncwd C--Users-<user>-src\n", result);
     }
 
-    [Fact]
-    public void W5_AnAdversarialTwoMebibyteRunCompletesWithoutARegexTimeout()
+    /// <summary>
+    /// #805 N1: adversarial minified shapes must scan in linear time. .NET exposes no regex step counter, and the
+    /// per-match timeout cannot catch a scan that is quadratic across MANY cheap matches, so this is a SMOKE GUARD with
+    /// a generous absolute cap: 2 MiB of each shape must redact within 60 s. Before the fix, `a=`×2 MiB was projected at
+    /// about 25 minutes and the minified shapes at about 13, so the cap separates linear from quadratic by two orders of
+    /// magnitude. The anonymizer's identity patterns are driven over the same input.
+    /// </summary>
+    [Theory]
+    [InlineData("a=")]
+    [InlineData("a=b,c=d;e=f(g);")]
+    [InlineData("a:b,c:d,")]
+    [InlineData("?k=v&t=1&x=2")]
+    [InlineData("a-")]
+    [InlineData("a.")]
+    [InlineData("-danaher")]
+    [InlineData("--api-token x ")]
+    [InlineData("mysql -p")]
+    public void N1_TwoMebibytesOfAnAdversarialShapeRedactWithinTheSmokeCap(string shape)
     {
-        // "a-a-a-…=" made the assignment-pair scan quadratic: every '-' was a new start. The decision under test is that
-        // the scan finishes (a RegexMatchTimeoutException would exclude the file), not how long it takes.
-        string adversarial = string.Concat(Enumerable.Repeat("a-", 1024 * 1024)) + "\n";
-        Exception? thrown = Record.Exception(() => Redact(adversarial));
-        Assert.Null(thrown);
+        var text = new System.Text.StringBuilder(2 * 1024 * 1024 + shape.Length);
+        while (text.Length < 2 * 1024 * 1024)
+        {
+            text.Append(shape);
+        }
 
-        string dotted = string.Concat(Enumerable.Repeat("a.", 1024 * 1024)) + "=x\n";
-        Assert.Null(Record.Exception(() => Redact(dotted)));
+        text.Append('\n');
+        var anonymizer = new BundlePathAnonymizer("/home/danaher", null, null,
+            new BundleIdentity("danaher", "Dana Hersh", "dana@example.test"), [], caseInsensitive: false);
+        var context = new BundleRedactionContext("adversarial.txt", NoEnvironment) { Paths = anonymizer };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        Exception? thrown = Record.Exception(() => BundleRedactor.Redact(text.ToString(), context));
+
+        clock.Stop();
+        Assert.Null(thrown);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), $"2 MiB of '{shape}' took {clock.Elapsed.TotalSeconds:0.0} s: the scan is not linear");
+    }
+
+    // ------------------------------------------------------------------ #805 final batch
+
+    [Theory]
+    [InlineData("tool --api-token tokvalue4a8f2b9 --verbose", "tokvalue4a8f2b9")]
+    [InlineData("deploy --db-password hunter2hunter --host db", "hunter2hunter")]
+    [InlineData("svc --client-secret s3cretvalue01", "s3cretvalue01")]
+    [InlineData("mysql -h db -u app -p s3cretvalue02 app", "s3cretvalue02")]
+    [InlineData("mysqldump -u app -ps3cretvalue03 app", "s3cretvalue03")]
+    [InlineData("sshpass -p s3cretvalue04 ssh deploy@host", "s3cretvalue04")]
+    [InlineData("curl -sS -u bot:s3cretvalue05 https://api.example.test", "bot:s3cretvalue05")]
+    public void N2_SpaceSeparatedSecretFlagsAreCaught(string commandLine, string secret)
+    {
+        BundleRedactionResult result = Redact(commandLine + "\n");
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.Contains("named-secret", result.Labels);
+    }
+
+    [Theory]
+    [InlineData("docker run -p 8080:80 image\n")]
+    [InlineData("ssh -p 2222 deploy@host\n")]
+    [InlineData("tool --api-token --verbose\n")]
+    [InlineData("python -m http.server -p 9000\n")]
+    public void N2_APortOrAFlagWithNoValueIsNotAPassword(string commandLine) =>
+        Assert.Equal(commandLine, Redact(commandLine).Text);
+
+    [Fact]
+    public void N6_ACommonAccountNameIsReplacedOnlyInPathForms()
+    {
+        var anonymizer = new BundlePathAnonymizer("/home/runner", null, null, new BundleIdentity("runner", "guardrails", null), [],
+            caseInsensitive: false);
+        string journal = "{\"runner\":\"claude\",\"attempt\":1}";
+        string route = "runner: claude\nrunner block: default\n";
+        string names = "plan/guardrails.json and guardrails run\n";
+        string paths = "/home/runner/work/app and C--home-runner-src and /opt/runner/cache\n";
+
+        Assert.Equal(journal, anonymizer.Apply(journal));
+        Assert.Equal(route, anonymizer.Apply(route));
+        Assert.Equal(names, anonymizer.Apply(names));
+        // `C--home-runner-src` holds the '-'-encoded home itself, so the root rule takes it first.
+        Assert.Equal("~/work/app and C-~-src and /opt/<user>/cache\n", anonymizer.Apply(paths));
+    }
+
+    [Theory]
+    [InlineData("runner", false)]
+    [InlineData("root", false)]
+    [InlineData("ubuntu", false)]
+    [InlineData("ec2-user", false)]
+    [InlineData("dana", false)]
+    [InlineData("guardrails", false)]
+    [InlineData("danaher", true)]
+    [InlineData("david.maltby", true)]
+    public void N6_OnlyADistinctiveNameIsReplacedAsABareWord(string name, bool distinctive) =>
+        Assert.Equal(distinctive, BundlePathAnonymizer.IsDistinctiveName(name));
+
+    [Fact]
+    public void N6_ADistinctiveNameIsNeverRewrittenAsAJsonKeyOrAFileName()
+    {
+        var anonymizer = new BundlePathAnonymizer(null, null, null, new BundleIdentity("danaher"), [], caseInsensitive: false);
+        Assert.Equal("{\"danaher\": 1} danaher.json by <user>\n", anonymizer.Apply("{\"danaher\": 1} danaher.json by danaher\n"));
     }
 
     [Fact]

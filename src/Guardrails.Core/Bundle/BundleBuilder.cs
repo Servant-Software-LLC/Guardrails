@@ -101,6 +101,7 @@ public sealed partial class BundleBuilder
         CollectStateFragments();
         CollectLogs();
         CollectGit();
+        ApplySessionTaskFilter();
         SanitizeEntryNames();
 
         foreach (Entry entry in _entries)
@@ -362,7 +363,7 @@ public sealed partial class BundleBuilder
     private void CollectStateFragments()
     {
         string stateDir = Path.Combine(_plan.PlanDirectory, "state");
-        if (!Directory.Exists(stateDir))
+        if (!Directory.Exists(stateDir) || SkipLink(new DirectoryInfo(stateDir)))
         {
             return;
         }
@@ -493,7 +494,7 @@ public sealed partial class BundleBuilder
         });
 
         string projects = Path.Combine(configDir, "projects");
-        if (!Directory.Exists(projects))
+        if (!Directory.Exists(projects) || SkipLink(new DirectoryInfo(projects)))
         {
             return;
         }
@@ -527,15 +528,30 @@ public sealed partial class BundleBuilder
                 SessionProjectDir = original,
             };
 
-            // #805 S2: --task narrows per-task evidence, and a run-level session is per-task evidence once attributed. A
-            // session of an unselected task, or one no attempt claims, is listed only.
-            string? owner = task is null && _options.Tasks.Count > 0 ? AttributedAttempt(session).Task : task;
-            if (task is null && _options.Tasks.Count > 0 && (owner is null || !_selectedTasks.Contains(owner, StringComparer.Ordinal)))
-            {
-                session.Exclude("listed-only", "task-filter", BundleFileStat.Of(file)?.Length ?? 0);
-            }
-
             Add(session);
+        }
+    }
+
+    /// <summary>
+    /// #805 S2 / N-a: under <c>--task</c>, a run-level gateway session is per-task evidence once attributed; one of an
+    /// unselected task, or one no attempt claims, is listed only — except the newest session and one attributed to an
+    /// in-flight attempt, which always ship (in serial mode the live session is unattributed, and it is the most
+    /// important stuck-run evidence).
+    /// </summary>
+    private void ApplySessionTaskFilter()
+    {
+        if (_options.Tasks.Count == 0)
+        {
+            return;
+        }
+
+        foreach (Entry session in _entries.Where(e => e is { Included: true, TaskId: null, Kind.Kind: "gateway-session" }).ToList())
+        {
+            string? owner = AttributedAttempt(session).Task;
+            if ((owner is null || !_selectedTasks.Contains(owner, StringComparer.Ordinal)) && !IsProtectedSession(session))
+            {
+                session.Exclude("listed-only", "task-filter", _probes.Stat(session.SourcePath!)?.Length ?? 0);
+            }
         }
     }
 
@@ -759,7 +775,7 @@ public sealed partial class BundleBuilder
             }
             else if (entry.CapOverride is not null)
             {
-                entry.Exclude("trimmed", "trim-tier-4", entry.Bytes);
+                entry.Exclude(entry.RetryingScan ? "excluded" : "trimmed", entry.RetryingScan ? "scan-timeout" : "trim-tier-4", entry.Bytes);
                 return;
             }
 
@@ -767,6 +783,12 @@ public sealed partial class BundleBuilder
             {
                 entry.Exclude("excluded", "not-utf8", entry.Bytes);
                 return;
+            }
+
+            if (!_options.NoRedact)
+            {
+                text = MaskPartialLineStart(text, out string? partialLabel);
+                entry.PartialLabel = partialLabel;
             }
         }
 
@@ -802,6 +824,7 @@ public sealed partial class BundleBuilder
             if (next >= MinimumRetryTail)
             {
                 entry.CapOverride = next;
+                entry.RetryingScan = true;
                 Materialize(entry);
                 if (entry.Included)
                 {
@@ -821,10 +844,52 @@ public sealed partial class BundleBuilder
             return;
         }
 
-        entry.SetContent(result.Text, result.Labels);
+        entry.SetContent(result.Text, entry.PartialLabel is { } partial ? [partial, .. result.Labels] : result.Labels);
     }
 
     private const long MinimumRetryTail = 64L * 1024;
+
+    /// <summary>
+    /// #805 N4: a window whose line exceeded the cap starts mid-token, and a secret cut there leaves a suffix no pattern
+    /// recognizes. The leading token (up to the first character outside <c>[A-Za-z0-9+/=_~.%-]</c>) is masked; when a
+    /// known value's suffix of 8+ characters starts the window, exactly that suffix is scrubbed with its label.
+    /// </summary>
+    private string MaskPartialLineStart(string text, out string? label)
+    {
+        label = null;
+        if (!text.StartsWith(BundleFileReader.PartialLineMarker, StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        int start = BundleFileReader.PartialLineMarker.Length;
+        string body = text[start..];
+        foreach (KnownSecret secret in _secrets.Values.OrderByDescending(v => v.Value.Length))
+        {
+            for (int length = secret.Value.Length - 1; length >= BundleSecrets.MinimumLength; length--)
+            {
+                if (body.StartsWith(secret.Value[^length..], StringComparison.Ordinal))
+                {
+                    label = secret.Label;
+                    return text[..start] + BundleRedactor.Render(secret.Label) + body[length..];
+                }
+            }
+        }
+
+        int end = 0;
+        while (end < body.Length && (char.IsAsciiLetterOrDigit(body[end]) || "+/=_~.%-".Contains(body[end], StringComparison.Ordinal)))
+        {
+            end++;
+        }
+
+        if (end == 0)
+        {
+            return text;
+        }
+
+        label = "partial-token";
+        return text[..start] + BundleRedactor.Render(label) + body[end..];
+    }
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -896,6 +961,12 @@ public sealed partial class BundleBuilder
     /// <summary>Every non-link file under <paramref name="dir"/> matching <paramref name="pattern"/>, never through a link.</summary>
     private List<string> WalkFiles(string dir, Func<string, bool> pattern)
     {
+        // The root is checked too (#805): a linked `claude-config/projects` would otherwise ship every session on the machine.
+        if (!Directory.Exists(dir) || SkipLink(new DirectoryInfo(dir)))
+        {
+            return [];
+        }
+
         var files = new List<string>(SortedFiles(dir).Where(f => pattern(Path.GetFileName(f))));
         foreach (string inner in SortedDirectories(dir))
         {
@@ -982,6 +1053,10 @@ public sealed partial class BundleBuilder
         public string? ReadReason { get; set; }
 
         public long? CapOverride { get; set; }
+
+        public bool RetryingScan { get; set; }
+
+        public string? PartialLabel { get; set; }
 
         public byte[]? Content { get; private set; }
 

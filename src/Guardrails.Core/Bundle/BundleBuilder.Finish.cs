@@ -65,20 +65,53 @@ public sealed partial class BundleBuilder
     // directory that resolves under the worktree root; anything else is skipped, and the git file says why.
     private string? WorktreeRefusal(string directory)
     {
-        if (_probes.WorktreeRoot is not { } root)
+        // #805 N-b: the bundling shell's worktree root (GUARDRAILS_WORKTREE_ROOT, else the plan's configured or default
+        // root), and every root the JOURNAL recorded — a segment worktree is <root>/<runId>/<task>/attempt-N, so its root
+        // is three levels up. The journal is the harness's own record; on-disk provenance is not trusted to widen this.
+        List<string> recorded = [.. RecordedWorktreeRoots()];
+        List<string> roots = [.. new[] { _probes.WorktreeRoot }.OfType<string>().Concat(recorded).Distinct(StringComparer.Ordinal)];
+        if (roots.Count == 0)
         {
             return "no worktree root is known to confine the recorded worktree path";
         }
 
         try
         {
-            return Io.RealPath.IsUnder(Io.RealPath.Resolve(directory), Io.RealPath.Resolve(root))
-                ? null
-                : "the recorded worktree path does not resolve under the worktree root";
+            string resolved = Io.RealPath.Resolve(directory);
+            if (roots.Any(root => Io.RealPath.IsUnder(resolved, Io.RealPath.Resolve(root))))
+            {
+                return null;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
             return "the recorded worktree path could not be resolved";
+        }
+
+        string shell = _probes.WorktreeRoot is { } fromShell
+            ? $"the worktree root from the bundling shell is {fromShell}"
+            : "the bundling shell gives no worktree root";
+        string journal = recorded.Count > 0
+            ? $"the journal recorded {string.Join(", ", recorded)}"
+            : "the journal recorded no worktree root";
+        return $"the recorded worktree path does not resolve under a known worktree root ({shell}; {journal})";
+    }
+
+    private IEnumerable<string> RecordedWorktreeRoots()
+    {
+        if (RunJournalDoc is not { } journal)
+        {
+            yield break;
+        }
+
+        foreach (string path in journal.Tasks.Values.SelectMany(t => t.Attempts).Select(a => a.Provenance?.WorktreePath).OfType<string>()
+                     .Distinct(StringComparer.Ordinal).OrderBy(p => p, StringComparer.Ordinal))
+        {
+            string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path))));
+            if (!string.IsNullOrEmpty(root))
+            {
+                yield return root;
+            }
         }
     }
 
