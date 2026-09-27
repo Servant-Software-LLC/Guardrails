@@ -55,8 +55,8 @@ public sealed class LiveRunViewStatusTests
         Assert.Equal("pending", waiting.Status);
 
         // The attempt number is still on the page, as the detail beside the status rather than in its place.
-        Assert.Equal("attempt 1", done.Attempt);
-        Assert.Equal("attempt 1", going.Attempt);
+        Assert.Equal("attempt-1", done.Attempt);
+        Assert.Equal("attempt-1", going.Attempt);
         Assert.Equal("—", waiting.Attempt);
 
         // One map, so one answer: the live page and the during-run index say the same thing.
@@ -94,8 +94,8 @@ public sealed class LiveRunViewStatusTests
 
         Assert.Equal("running", running.Status);
         Assert.Equal("succeeded", done.Status);
-        Assert.Equal("attempt 2", running.Attempt);
-        Assert.Equal("attempt 2", done.Attempt);
+        Assert.Equal("attempt-2", running.Attempt);
+        Assert.Equal("attempt-2", done.Attempt);
 
         Assert.Equal(site.IndexStatus("02-retrying"), running.Status);
         Assert.Equal(site.IndexStatus("01-done"), done.Status);

@@ -207,7 +207,7 @@ public sealed class TaskExecutor : ITaskExecutor
             // every resumed task (a resume grants a fresh per-run budget; attempt history survives it). The
             // marker is written first, so an operator who reads the console line finds run.json already agreeing.
             int journalAttempt = _journal.NextAttemptNumber(task.Id);
-            _journal.MarkAttemptInFlight(task.Id, journalAttempt, InFlightPhase.Action);
+            MarkInFlight(task.Id, journalAttempt, InFlightPhase.Action);
             _observer.AttemptStarting(task, attemptIndex, budget, journalAttempt);
 
             // #269 overwatcher: fires AT MOST ONCE per attempt (Decision C). A short-circuit consult
@@ -227,7 +227,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     // #798: a transient pause re-runs the SAME attempt (NextAttemptNumber is pure until one is
                     // recorded), so this re-marks the same number back into the action phase; the journal keeps
                     // the marker's original startedAt because the number did not change.
-                    _journal.MarkAttemptInFlight(task.Id, attemptNumber, InFlightPhase.Action);
+                    MarkInFlight(task.Id, attemptNumber, InFlightPhase.Action);
                 }
 
                 attempt = await RunAttemptAsync(
@@ -303,6 +303,9 @@ public sealed class TaskExecutor : ITaskExecutor
                     ResetHint = attempt.TransientResetHint
                 });
 
+                // #798: the attempt is waiting, not running its action — say so in run.json. The re-run's re-mark
+                // (top of this loop) moves it back to the action phase under the same number and startedAt.
+                MarkInFlight(task.Id, attemptNumber, InFlightPhase.Paused);
                 _observer.PromptPaused(task, reason, delay, pauseOrdinal);
                 await backoff.PauseAsync(cancellationToken, attempt.TransientResetHint).ConfigureAwait(false);
                 rerunAfterPause = true;
@@ -1720,12 +1723,17 @@ public sealed class TaskExecutor : ITaskExecutor
         // The SAME `route` local the action path was handed above (#201 / DoR §6.5 rule 2): a prompt
         // JUDGE is graded at the rung the actor actually ran at, and it reads that rung off the one
         // resolution this attempt made rather than resolving a second time.
-        _journal.MarkAttemptInFlight(task.Id, attemptNumber, InFlightPhase.Guardrails);
+        MarkInFlight(task.Id, attemptNumber, InFlightPhase.Guardrails);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
             task, workspace, guardrailEnv, snapshotPath, logDir, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
         // #798: the guardrails have returned; everything from here is journaling, merging or queueing for
-        // integration (worktree mode defers the success record to the Scheduler's settle, which clears this).
-        _journal.MarkAttemptInFlight(task.Id, attemptNumber, InFlightPhase.Settling);
+        // integration. Only a real git segment has a window worth naming: worktree mode defers the success record
+        // to the Scheduler's settle (which clears this). In serial mode the record follows immediately, so the
+        // extra write would describe a state no reader could catch.
+        if (IsRealGitSegment(worktree))
+        {
+            MarkInFlight(task.Id, attemptNumber, InFlightPhase.Settling);
+        }
 
         // --- §12.4 / D32: fold the VERIFIER route onto this attempt's provenance ---------
         // A judge resolves DURING the guardrail pass, so it cannot be part of the launch-time provenance
@@ -2983,6 +2991,33 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     // --- log paths -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Record the in-flight marker (#798) WITHOUT ever faulting the run: <see cref="RunJournal.MarkAttemptInFlight"/>
+    /// is best-effort, and when its write fails the reason is appended to the task-level
+    /// <c>inflight-marker.log</c> — beside the attempt folders the operator is already reading — rather than lost.
+    /// </summary>
+    private void MarkInFlight(string taskId, int attemptNumber, string phase)
+    {
+        if (_journal.MarkAttemptInFlight(taskId, attemptNumber, phase) is not { } failure)
+        {
+            return;
+        }
+
+        try
+        {
+            string dir = TaskLevelLogDir(taskId);
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(
+                Path.Combine(dir, "inflight-marker.log"),
+                $"{DateTimeOffset.UtcNow:O} attempt-{attemptNumber} {phase}: run.json marker not persisted ({failure}); " +
+                "the next journal write carries it. The run is unaffected." + Environment.NewLine);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort note about a best-effort marker: nothing further to do.
+        }
+    }
 
     private string TaskLevelLogDir(string taskId) =>
         Path.Combine(_plan.PlanDirectory, "logs", _journal.Document.RunId, taskId);

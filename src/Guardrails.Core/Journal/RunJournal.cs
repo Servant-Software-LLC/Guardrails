@@ -253,7 +253,13 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// <param name="phase">An <see cref="InFlightPhase"/> token.</param>
     /// <param name="now">The start time to record if this is a NEW attempt; defaults to the current UTC time. A
     /// parameter so a test asserts the keep-or-replace DECISION against fixed values rather than a clock.</param>
-    public void MarkAttemptInFlight(string taskId, int attempt, string phase, DateTimeOffset? now = null)
+    /// <returns>
+    /// Null when the marker was persisted; otherwise the reason the write failed. <b>Best-effort by design:</b>
+    /// the marker is display state, and a run must never fault on it — a transient lock on <c>run.json</c> (the
+    /// #727 <c>AtomicFile</c> exhaustion) is caught, the in-memory update is KEPT (the journal's next persist
+    /// carries it), and the caller notes the failure where the operator will look.
+    /// </returns>
+    public string? MarkAttemptInFlight(string taskId, int attempt, string phase, DateTimeOffset? now = null)
     {
         lock (_gate)
         {
@@ -265,9 +271,25 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 InFlightAttempt = new InFlightAttemptRecord { Attempt = attempt, StartedAt = startedAt, Phase = phase }
             });
-            Persist();
+
+            try
+            {
+                BeforeMarkerPersist?.Invoke();
+                Persist();
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return ex.Message;
+            }
         }
     }
+
+    /// <summary>
+    /// Test seam (#798 W2): invoked just before <see cref="MarkAttemptInFlight"/> persists, so a test can make that
+    /// one write fail the way a held <c>run.json</c> does, without also breaking every other journal write.
+    /// </summary>
+    internal Action? BeforeMarkerPersist { get; set; }
 
     /// <summary>
     /// Set a task to <see cref="TaskStatus.Blocked"/> and persist. A blocked task never ran,

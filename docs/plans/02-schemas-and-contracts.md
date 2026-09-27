@@ -2937,8 +2937,13 @@ fails the write, loudly, with a message naming the likely cause.
                                     //   attempt-N log dir, the attempts[] record it will settle as, and the
                                     //   `attempt-N` the console names (§8.1). Stable across a transient pause
         "startedAt": "2026-06-10T16:31:02Z",  // when the attempt first launched; KEPT across a pause's re-run
-        "phase": "guardrails"       // action | guardrails | settling ("settling" = guardrails returned; the
-                                    //   attempt is being journaled, merged, or queued for integration)
+        "phase": "guardrails"       // action | guardrails | settling | paused ("settling" = guardrails
+                                    //   returned; the attempt is being journaled, merged, or queued for
+                                    //   integration — worktree mode only, serial mode records at once.
+                                    //   "paused" = waiting out a transient backoff; the re-run returns it to
+                                    //   "action" under the same number and startedAt). Best-effort: a failed
+                                    //   marker write never faults the run — it is noted in the task-level
+                                    //   inflight-marker.log and the next journal write carries it
       }
     }
   },
@@ -5019,7 +5024,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 |---|---|---|
 | `task-waiting-on-worktree` | `TaskWaitingOnWorktree` | `operation` |
 | `task-started` | `TaskStarting` | — |
-| `attempt-started` | `AttemptStarting` | `attempt` (the JOURNAL number — the same value as this attempt's `attempt-finished` row and its `attempt-N` log dir; before #798 it was the per-run index, so the two rows of one resumed attempt disagreed), `runAttempt` (#798: this attempt's 1-based position within this run's budget, which restarts at 1 on a resume), `budget` |
+| `attempt-started` | `AttemptStarting` | `attempt` (the JOURNAL number — the same value as this attempt's `attempt-finished` row and its `attempt-N` log dir; before #798 it was the per-run index, so the two rows of one resumed attempt disagreed), `runAttempt` (#798: this attempt's 1-based position within this run's budget, which restarts at 1 on a resume), `budget`. **A row WITHOUT `runAttempt` predates #798, and its `attempt` is the per-run index, not the journal number** — and because a resume appends a new bracket to the same file, one `runId` can hold both shapes after a cross-version resume, so a consumer keys the meaning of `attempt` on the presence of `runAttempt`, per row |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |

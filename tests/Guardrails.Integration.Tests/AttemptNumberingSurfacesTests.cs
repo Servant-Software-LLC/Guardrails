@@ -217,6 +217,48 @@ public sealed class AttemptNumberingSurfacesTests
 
     [Trait("Category", "Status")]
     [Fact]
+    public void Status_APausedAttempt_ReadsPaused()
+    {
+        var marker = new InFlightAttemptRecord
+        {
+            Attempt = 3,
+            StartedAt = new DateTimeOffset(2026, 9, 27, 14, 3, 9, TimeSpan.Zero),
+            Phase = InFlightPhase.Paused
+        };
+
+        Assert.Equal(
+            ["  01-a   attempt-3  paused  since 2026-09-27T14:03:09Z"],
+            StatusCommand.InFlightLines(["01-a"], DocumentWithMarker(marker), 6, RunLivenessState.Running));
+    }
+
+    /// <summary>An owner this command cannot check must not read as live, nor as dead.</summary>
+    [Trait("Category", "Status")]
+    [Theory]
+    [InlineData(RunLivenessState.CannotCheck)]
+    [InlineData(RunLivenessState.NotRecorded)]
+    [InlineData(RunLivenessState.OnAnotherHost)]
+    public void Status_AnUncheckableOwner_SaysOwnerUnknown(RunLivenessState liveness)
+    {
+        var marker = new InFlightAttemptRecord
+        {
+            Attempt = 4,
+            StartedAt = new DateTimeOffset(2026, 9, 27, 14, 3, 9, TimeSpan.Zero),
+            Phase = InFlightPhase.Action
+        };
+
+        Assert.Equal(
+            ["  01-a   attempt-4  action  since 2026-09-27T14:03:09Z — owner unknown: cannot tell whether this attempt is still running"],
+            StatusCommand.InFlightLines(["01-a"], DocumentWithMarker(marker), 6, liveness));
+    }
+
+    [Theory]
+    [InlineData(null, 30, "paused 30s")]
+    [InlineData("attempt-4", 30, "attempt-4 · paused 30s")]
+    public void LiveTable_PausedPrefix_KeepsTheAttemptNumber(string? tag, int seconds, string expected) =>
+        Assert.Equal(expected, LiveRunObserver.PausedStatusPrefix(tag, seconds));
+
+    [Trait("Category", "Status")]
+    [Fact]
     public void Status_WithNoMarker_ListsNothing() =>
         Assert.Empty(StatusCommand.InFlightLines(["01-a", "02-b"], DocumentWithMarker(null), 6, RunLivenessState.Running));
 }

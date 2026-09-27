@@ -693,9 +693,9 @@ public sealed record InFlightAttemptRecord
 
     /// <summary>
     /// Which phase the attempt is in: <see cref="InFlightPhase.Action"/> (<c>"action"</c>),
-    /// <see cref="InFlightPhase.Guardrails"/> (<c>"guardrails"</c>) or <see cref="InFlightPhase.Settling"/>
+    /// <see cref="InFlightPhase.Guardrails"/> (<c>"guardrails"</c>), <see cref="InFlightPhase.Settling"/>
     /// (<c>"settling"</c> — the guardrails have returned and the attempt is being journaled, merged or queued
-    /// for integration).
+    /// for integration) or <see cref="InFlightPhase.Paused"/> (<c>"paused"</c> — waiting out a transient backoff).
     /// </summary>
     public required string Phase { get; init; }
 }
@@ -711,6 +711,12 @@ public static class InFlightPhase
 
     /// <summary>The guardrails have returned; the attempt is settling (journal, merge, integration queue).</summary>
     public const string Settling = "settling";
+
+    /// <summary>
+    /// The attempt hit a transient provider condition and is waiting out its backoff (#115); it re-runs under the
+    /// SAME number, which moves the marker back to <see cref="Action"/>.
+    /// </summary>
+    public const string Paused = "paused";
 }
 
 /// <summary>

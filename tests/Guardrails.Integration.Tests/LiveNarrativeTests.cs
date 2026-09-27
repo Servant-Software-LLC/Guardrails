@@ -286,7 +286,7 @@ public sealed class LiveNarrativeTests
     public void ModelMismatchLine_SingularAndCounted_BothCarryTheSharedAttemptModelSummaryWording()
     {
         Assert.Equal(
-            "[yellow]model[/] [grey]02-implement[/] attempt 1: "
+            "[yellow]model[/] [grey]02-implement[/] attempt-1: "
             + "[yellow]claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1[/]",
             LiveRunObserver.ModelMismatchLine(1, "02-implement", 1, "claude-sonnet-4-5", "claude-opus-4-1"));
 

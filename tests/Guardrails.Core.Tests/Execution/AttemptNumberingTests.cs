@@ -99,18 +99,59 @@ public sealed class AttemptNumberingTests
             Assert.Equal([(1, 1, 3)], observer.Starts);
             Assert.Equal(1, observer.Pauses);
 
+            // While it waited, run.json said so: same attempt, `paused` phase.
+            InFlightAttemptRecord atPause = Assert.Single(observer.MarkersAtPause)!;
+            Assert.Equal(3, atPause.Attempt);
+            Assert.Equal(InFlightPhase.Paused, atPause.Phase);
+
             // Both launches — the one that paused and the re-run — ran under attempt 3, and the re-run kept the
             // FIRST launch's startedAt: the attempt started once, it was merely interrupted.
             Assert.Equal(2, runner.MarkersAtLaunch.Count);
             Assert.All(runner.MarkersAtLaunch, m => Assert.Equal(3, m!.Attempt));
             Assert.All(runner.MarkersAtLaunch, m => Assert.Equal(InFlightPhase.Action, m!.Phase));
             Assert.Equal(runner.MarkersAtLaunch[0]!.StartedAt, runner.MarkersAtLaunch[1]!.StartedAt);
+            Assert.Equal(runner.MarkersAtLaunch[0]!.StartedAt, atPause.StartedAt);
 
             TaskJournalEntry entry = NumberingFixture.ReadJournal(plan).Tasks[NumberingFixture.TaskId];
             Assert.Equal([1, 2, 3], entry.Attempts.Select(a => a.Attempt));
             TransientPauseRecord pause = Assert.Single(entry.TransientPauses!);
             Assert.Equal(3, pause.Attempt);
             Assert.Null(entry.InFlightAttempt);
+        }
+        finally { NumberingFixture.DeleteBestEffort(root); }
+    }
+
+    /// <summary>
+    /// #798 W2: the marker is display state, so a write of it that fails (the #727 held-<c>run.json</c> case) must
+    /// never fault the run. Every marker persist throws here; the attempts still run, settle and record exactly as
+    /// they would have, and the failure is noted in the task-level <c>inflight-marker.log</c>.
+    /// </summary>
+    [Trait("Category", "Journal")]
+    [Fact]
+    public async Task AFailingMarkerWrite_LeavesTheAttemptsOutcomeIntact_AndIsNoted()
+    {
+        string root = NumberingFixture.NewRoot();
+        try
+        {
+            PlanDefinition plan = NumberingFixture.WritePlan(
+                root, defaultRetries: 1, promptAction: false, guardrailBody: NumberingFixture.FailOnlyOnAttemptBody(1));
+
+            RunReport report = await NumberingFixture.RunSerialAsync(
+                plan, new NeverInvokedPromptRunner(), new SnapshottingObserver(plan), Ct,
+                configure: journal => journal.BeforeMarkerPersist = () => throw new IOException("run.json is held"));
+
+            JournalDocument after = NumberingFixture.ReadJournal(plan);
+            TaskJournalEntry entry = after.Tasks[NumberingFixture.TaskId];
+            Assert.True(entry.Status == JournalTaskStatus.Succeeded, string.Join(" | ", report.Tasks.Select(t => $"{t.TaskId} {t.Outcome} {t.Summary}")) + " abort=" + report.Abort);
+            Assert.Equal(
+                [(1, AttemptOutcome.GuardrailFailed), (2, AttemptOutcome.Succeeded)],
+                entry.Attempts.Select(a => (a.Attempt, a.Outcome)));
+            Assert.Null(entry.InFlightAttempt);
+
+            string note = File.ReadAllText(Path.Combine(
+                plan.PlanDirectory, "logs", after.RunId, NumberingFixture.TaskId, "inflight-marker.log"));
+            Assert.Contains("attempt-1 action: run.json marker not persisted (run.json is held)", note, StringComparison.Ordinal);
+            Assert.Contains("attempt-2 action", note, StringComparison.Ordinal);
         }
         finally { NumberingFixture.DeleteBestEffort(root); }
     }
@@ -187,6 +228,8 @@ public sealed class AttemptNumberingTests
 
         public int Pauses { get; private set; }
 
+        public List<InFlightAttemptRecord?> MarkersAtPause { get; } = [];
+
         public void TaskStarting(TaskNode task) { }
 
         public void TaskFinished(TaskResult result) { }
@@ -199,13 +242,18 @@ public sealed class AttemptNumberingTests
 
         public void GuardrailFinished(TaskNode task, GuardrailResult result)
         {
-            InFlightAttemptRecord marker = NumberingFixture.ReadJournal(plan).Tasks[task.Id].InFlightAttempt!;
-            MarkersAtGuardrail.Add((marker.Attempt, marker.Phase));
+            // Null only when a test made the marker writes fail (W2); recorded as "none" rather than faulting.
+            InFlightAttemptRecord? marker = NumberingFixture.ReadJournal(plan).Tasks[task.Id].InFlightAttempt;
+            MarkersAtGuardrail.Add(marker is null ? (0, "none") : (marker.Attempt, marker.Phase));
         }
 
         public void AttemptFinished(TaskNode task, AttemptRecord record) => Finished.Add(record.Attempt);
 
-        public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) => Pauses++;
+        public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount)
+        {
+            Pauses++;
+            MarkersAtPause.Add(NumberingFixture.ReadJournal(plan).Tasks[task.Id].InFlightAttempt);
+        }
     }
 
     private sealed class NeverInvokedPromptRunner : IPromptRunner
@@ -344,12 +392,14 @@ file static class NumberingFixture
     public static JournalDocument ReadJournal(PlanDefinition plan) =>
         JournalReader.Read(RunJournal.PathFor(plan.PlanDirectory));
 
-    public static async Task RunSerialAsync(
-        PlanDefinition plan, IPromptRunner runner, IRunObserver observer, CancellationToken ct)
+    public static async Task<RunReport> RunSerialAsync(
+        PlanDefinition plan, IPromptRunner runner, IRunObserver observer, CancellationToken ct,
+        Action<RunJournal>? configure = null)
     {
         var stateManager = new StateManager(plan.PlanDirectory);
         stateManager.Initialize();
         RunJournal journal = RunJournal.LoadOrCreate(plan);
+        configure?.Invoke(journal);
 
         var registry = PromptRunnerRegistry.Build(plan.Config, _ => runner);
         var interpreterMap = new InterpreterMap(new PathExecutableProbe(), plan.Config.Interpreters);
@@ -358,7 +408,7 @@ file static class NumberingFixture
             transientDelay: (_, _) => Task.CompletedTask);
 
         var scheduler = new Scheduler(plan, executor, journal, maxParallelism: 1);
-        await scheduler.RunAsync(plan, ct);
+        return await scheduler.RunAsync(plan, ct);
     }
 
     public static void DeleteBestEffort(string root)

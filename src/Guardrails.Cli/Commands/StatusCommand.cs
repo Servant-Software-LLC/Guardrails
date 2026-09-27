@@ -358,13 +358,21 @@ public static class StatusCommand
     public static IReadOnlyList<string> InFlightLines(
         IEnumerable<string> taskIds, JournalDocument document, int taskWidth, RunLivenessState liveness)
     {
-        bool dead = liveness is RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended;
+        // Only a live owner vouches for the marker. A disproved owner makes it a crashed attempt; an owner this
+        // command cannot check (none recorded, another host, the probe failed) makes it unknown — said so, rather
+        // than printed bare, which would read as live.
+        string suffix = liveness switch
+        {
+            RunLivenessState.Running => string.Empty,
+            RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended =>
+                " — interrupted: the run is no longer going",
+            _ => " — owner unknown: cannot tell whether this attempt is still running"
+        };
         var lines = new List<string>();
         foreach (string taskId in taskIds)
         {
             if (document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) && entry.InFlightAttempt is { } marker)
             {
-                string suffix = dead ? " — interrupted: the run is no longer going" : string.Empty;
                 lines.Add(
                     $"  {taskId.PadRight(taskWidth)} attempt-{marker.Attempt}  {marker.Phase}  since {Timestamp(marker.StartedAt)}{suffix}");
             }

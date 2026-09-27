@@ -129,7 +129,7 @@ public sealed class LogServerTests
         // column, and nowhere else in the row.
         Assert.Contains(
             "<tr><td><a href=\"/tasks/01-alpha\">01-alpha</a></td>"
-            + "<td class=\"status\" data-status=\"unknown\">unknown</td><td>attempt 1</td></tr>",
+            + "<td class=\"status\" data-status=\"unknown\">unknown</td><td>attempt-1</td></tr>",
             html,
             StringComparison.Ordinal);
     }

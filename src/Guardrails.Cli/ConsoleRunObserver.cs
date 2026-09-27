@@ -394,7 +394,7 @@ public sealed class ConsoleRunObserver : IRunObserver
             // surfaces cannot report the same attempt differently, and the attempt number is here because
             // a retry may well have escalated to another model.
             _output.WriteLine(
-                $"[model] {task.Id} attempt {attempt}: {LiveRunObserver.AttemptModelSummary(model, requestedModel)}");
+                $"[model] {task.Id} attempt-{attempt}: {LiveRunObserver.AttemptModelSummary(model, requestedModel)}");
         }
     }
 

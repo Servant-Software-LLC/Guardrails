@@ -677,6 +677,32 @@ public sealed class LiveNarrativeCompositeTests
         Assert.DoesNotContain(LastFrame(console), l => Regex.IsMatch(l, @"(?<!· )retry 2/3"));
     }
 
+    /// <summary>
+    /// #798 W1: a transient pause kept the attempt's number off the row for the rest of the attempt. PromptPaused
+    /// overwrote the prefix and the re-run (which raises no new AttemptStarting) never restored it. The paused row
+    /// now names the attempt, and the re-run's first event puts the attempt's own prefix back.
+    /// </summary>
+    [Fact]
+    public async Task APausedAttempt_KeepsItsNumber_AndTheReRunRestoresItsPrefix()
+    {
+        TestConsole console = Console(120);
+        TaskNode a = Task(null, "01-a");
+
+        await using (var observer = new LiveRunObserver([a], console: console))
+        {
+            observer.TaskStarting(a);
+            observer.AttemptStarting(a, 2, 3, 4);
+            observer.PromptPaused(a, "overloaded", TimeSpan.FromSeconds(30), 1);
+            Assert.Contains(LastFrame(console), l => l.Contains("attempt-4 · paused 30s", StringComparison.Ordinal));
+
+            observer.AttemptRouteResolved(a, 4, "primary", "claude-sonnet-4-5", null, null);
+        }
+
+        IReadOnlyList<string> last = LastFrame(console);
+        Assert.Contains(last, l => l.Contains("attempt-4 · retry 2/3", StringComparison.Ordinal));
+        Assert.DoesNotContain(last, l => l.Contains("paused 30s", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task AnAgreeingModelResolution_IsCellOnly_AMismatchKeepsItsCompanionLine()
     {
@@ -692,7 +718,7 @@ public sealed class LiveNarrativeCompositeTests
             observer.AttemptModelResolved(a, 2, "claude-sonnet-4-5", requestedModel: "claude-opus-4-1");
         }
 
-        const string Line = "model 01-a attempt 2: claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1";
+        const string Line = "model 01-a attempt-2: claude-sonnet-4-5 — MISMATCH: the route requested claude-opus-4-1";
         AssertRenderedInsideTheLiveRegion(console, Line);
         AssertInThePaneOfTheLastFrame(console, Line);
     }

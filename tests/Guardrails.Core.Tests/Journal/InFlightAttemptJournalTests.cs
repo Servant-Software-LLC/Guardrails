@@ -74,6 +74,26 @@ public sealed class InFlightAttemptJournalTests : IDisposable
         Assert.Equal(InFlightPhase.Action, replaced.Phase);
     }
 
+    /// <summary>
+    /// W2: a failed marker write returns its reason instead of throwing, and KEEPS the in-memory marker, so the
+    /// journal's next successful persist carries it to disk.
+    /// </summary>
+    [Fact]
+    public void AFailedMarkerPersist_ReturnsTheReason_AndTheNextPersistCarriesTheMarker()
+    {
+        RunJournal journal = Load();
+        journal.BeforeMarkerPersist = () => throw new UnauthorizedAccessException("denied");
+
+        string? failure = journal.MarkAttemptInFlight(TaskId, 2, InFlightPhase.Action);
+
+        Assert.Equal("denied", failure);
+        Assert.Null(ReadBack().Tasks[TaskId].InFlightAttempt);
+        Assert.Equal(2, journal.Document.Tasks[TaskId].InFlightAttempt!.Attempt);
+
+        journal.MarkRunning(TaskId);
+        Assert.Equal(2, ReadBack().Tasks[TaskId].InFlightAttempt!.Attempt);
+    }
+
     [Fact]
     public void SettlingTheAttempt_RemovesTheMarker_FromTheFile()
     {
