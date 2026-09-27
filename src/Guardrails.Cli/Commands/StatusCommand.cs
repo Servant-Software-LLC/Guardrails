@@ -100,6 +100,19 @@ public static class StatusCommand
             PrintRow(task.Id, taskWidth, entry, liveness, output);
         }
 
+        // #798: the attempt each running task is on RIGHT NOW, by the journal number its attempt-N log dir carries.
+        // The ATTEMPTS column counts only settled attempts, so without this a live transcript had no row naming it.
+        IReadOnlyList<string> inFlight = InFlightLines(probe.Plan.Tasks.Select(task => task.Id), document, taskWidth, liveness);
+        if (inFlight.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine("Attempts in flight (run.json inFlightAttempt; the number is the attempt-N log directory)");
+            foreach (string line in inFlight)
+            {
+                output.WriteLine(line);
+            }
+        }
+
         // #722: the one thing the journal cannot say. A task the run has DEQUEUED, whose worktree git is
         // still running, is `pending` in the journal with no attempt directory — indistinguishable from a
         // task the run has not reached. That is exactly how plan 40's 28-hour dead run read here. The fact
@@ -334,6 +347,31 @@ public static class StatusCommand
     /// </summary>
     public static int TaskColumnWidth(IEnumerable<string> taskIds) =>
         taskIds.Select(id => id.Length).Append("TASK".Length).Max();
+
+    /// <summary>
+    /// One line per task (in the order given) whose journal entry carries an in-flight marker (#798, SSOT §7
+    /// <c>tasks.&lt;id&gt;.inFlightAttempt</c>): <c>attempt-N</c>, its phase, and when it started. Where the process
+    /// table has disproved the run (the same rule as the STATUS column's <c>interrupted</c>), the marker is a
+    /// crashed attempt rather than a live one, and the line says so. Empty when nothing is in flight. Public for the
+    /// same reason <see cref="LastFailureText"/> is.
+    /// </summary>
+    public static IReadOnlyList<string> InFlightLines(
+        IEnumerable<string> taskIds, JournalDocument document, int taskWidth, RunLivenessState liveness)
+    {
+        bool dead = liveness is RunLivenessState.ExitedWithoutFinishing or RunLivenessState.Ended;
+        var lines = new List<string>();
+        foreach (string taskId in taskIds)
+        {
+            if (document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) && entry.InFlightAttempt is { } marker)
+            {
+                string suffix = dead ? " — interrupted: the run is no longer going" : string.Empty;
+                lines.Add(
+                    $"  {taskId.PadRight(taskWidth)} attempt-{marker.Attempt}  {marker.Phase}  since {Timestamp(marker.StartedAt)}{suffix}");
+            }
+        }
+
+        return lines;
+    }
 
     /// <summary>
     /// One line per task that took at least one class-(b) transient pause (issue #515, SSOT §7

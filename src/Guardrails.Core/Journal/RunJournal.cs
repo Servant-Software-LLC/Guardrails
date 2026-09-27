@@ -238,6 +238,38 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Record that attempt <paramref name="attempt"/> of <paramref name="taskId"/> is IN FLIGHT, in
+    /// <paramref name="phase"/> (an <see cref="InFlightPhase"/> token), and persist — SSOT §7
+    /// <c>tasks.&lt;id&gt;.inFlightAttempt</c>, issue #798. Called when the attempt starts and at each phase
+    /// change; the marker is removed when the attempt settles into <c>attempts[]</c>.
+    /// <para>
+    /// Re-marking the SAME attempt number keeps its original <c>startedAt</c>: a transient pause re-runs the same
+    /// attempt (same number, same log dir), so its start is the first launch, not the latest re-launch. A
+    /// different number replaces the marker outright. Neither touches <see cref="TaskJournalEntry.Status"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="taskId">The task.</param>
+    /// <param name="attempt">The JOURNAL attempt number (<see cref="NextAttemptNumber"/>).</param>
+    /// <param name="phase">An <see cref="InFlightPhase"/> token.</param>
+    /// <param name="now">The start time to record if this is a NEW attempt; defaults to the current UTC time. A
+    /// parameter so a test asserts the keep-or-replace DECISION against fixed values rather than a clock.</param>
+    public void MarkAttemptInFlight(string taskId, int attempt, string phase, DateTimeOffset? now = null)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            DateTimeOffset startedAt = entry.InFlightAttempt is { } current && current.Attempt == attempt
+                ? current.StartedAt
+                : now ?? DateTimeOffset.UtcNow;
+            UpdateTask(taskId, entry with
+            {
+                InFlightAttempt = new InFlightAttemptRecord { Attempt = attempt, StartedAt = startedAt, Phase = phase }
+            });
+            Persist();
+        }
+    }
+
+    /// <summary>
     /// Set a task to <see cref="TaskStatus.Blocked"/> and persist. A blocked task never ran,
     /// so no attempt is recorded (SSOT §7: <c>attempts</c> are real attempts).
     /// </summary>
@@ -246,7 +278,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Blocked, InFlightAttempt = null });
             Persist();
         }
     }
@@ -269,6 +301,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = newStatus,
                 Attempts = attempts,
+                // #798: the attempt has settled into attempts[], so it is no longer in flight.
+                InFlightAttempt = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
                 // failed attempt never clears a previously-recorded one.
@@ -351,6 +385,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             TaskJournalEntry updated = entry with
             {
                 Status = status,
+                // #798: a settled task has no attempt in flight.
+                InFlightAttempt = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
@@ -408,6 +444,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = status,
                 Attempts = attempts,
+                // #798: the attempt has settled into attempts[], so it is no longer in flight.
+                InFlightAttempt = null,
                 MergeSequence = mergeSequence ?? entry.MergeSequence,
                 DefinitionHash = definitionHash ?? entry.DefinitionHash,
                 DefinitionHashAtSettle = definitionHashAtSettle ?? entry.DefinitionHashAtSettle,
@@ -451,7 +489,7 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         lock (_gate)
         {
             TaskJournalEntry entry = GetOrCreate(taskId);
-            UpdateTask(taskId, entry with { Status = TaskStatus.Pending });
+            UpdateTask(taskId, entry with { Status = TaskStatus.Pending, InFlightAttempt = null });
             Persist();
         }
     }
@@ -999,7 +1037,10 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         // Carry over and normalize tasks the journal already knows.
         foreach (KeyValuePair<string, TaskJournalEntry> pair in existing)
         {
-            result[pair.Key] = pair.Value with { Status = ResumeStatus(pair.Value.Status) };
+            // #798: an in-flight marker loaded from disk belongs to a PREVIOUS process — no attempt is running
+            // in this one yet — so it is dropped here. (`guardrails status` reads the file directly, not through
+            // this path, which is how it can still show a crashed run's interrupted attempt.)
+            result[pair.Key] = pair.Value with { Status = ResumeStatus(pair.Value.Status), InFlightAttempt = null };
         }
 
         // Seed any plan task the journal has never seen.

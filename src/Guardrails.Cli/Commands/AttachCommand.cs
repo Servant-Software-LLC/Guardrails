@@ -267,8 +267,15 @@ public static class AttachCommand
                 break;
 
             case "AttemptStarting":
-                renderer.AttemptStarting(TaskFor(node, taskById), RequireInt(node, "attempt"), RequireInt(node, "budget"));
+            {
+                // #798: `attemptNumber` (the journal's number) is OPTIONAL on read — a file written before it
+                // existed replays with the per-run `attempt` in its place, which is exactly what that run showed.
+                int attempt = RequireInt(node, "attempt");
+                renderer.AttemptStarting(
+                    TaskFor(node, taskById), attempt, RequireInt(node, "budget"),
+                    node["attemptNumber"]?.GetValue<int>() ?? attempt);
                 break;
+            }
 
             case "AttemptModelResolved":
                 renderer.AttemptModelResolved(

@@ -2923,7 +2923,23 @@ fails the write, loudly, with a message naming the likely cause.
           "resetHint": "11:20am"    // OPTIONAL machine-readable half of `reason`'s prose, when the provider
                                     //   named a reset time. ABSENT when it did not
         }
-      ]
+      ],
+      // OPTIONAL in-flight marker (#798): the attempt this task is running RIGHT NOW. `attempts[]` learns of an
+      // attempt only when it SETTLES, so without this nothing in run.json named the live transcript in
+      // logs/<runId>/<task>/attempt-N/. Written when the attempt STARTS (before the observer hears of it),
+      // updated at each phase change, and REMOVED when the attempt settles into attempts[] (and on any settle,
+      // reset, block, or resume load — a marker from a previous process describes an attempt nobody runs).
+      // ABSENT (never null noise) whenever nothing is in flight — which is the shape of this example task,
+      // shown populated here only to document it — and in every journal written before the field existed.
+      "inFlightAttempt": {
+        "attempt": 4,               // the JOURNAL number: one past the highest recorded attempt, so it continues
+                                    //   across resumes and `guardrails reset`. The same N as this attempt's
+                                    //   attempt-N log dir, the attempts[] record it will settle as, and the
+                                    //   `attempt-N` the console names (§8.1). Stable across a transient pause
+        "startedAt": "2026-06-10T16:31:02Z",  // when the attempt first launched; KEPT across a pause's re-run
+        "phase": "guardrails"       // action | guardrails | settling ("settling" = guardrails returned; the
+                                    //   attempt is being journaled, merged, or queued for integration)
+      }
     }
   },
 
@@ -3446,6 +3462,28 @@ Three properties:
 Follows the `needsHumanKind` precedent one column over: a fragment-derived classification, canonicalized at
 the journal boundary and recorded on the attempt, because `guardrails status` and the static log-site export
 read ONLY the journal.
+
+**`tasks.<id>.inFlightAttempt` — the console, the journal and the log folder name the SAME attempt (#798).**
+Attempt numbering has two sources that differ on any resumed task: the executor's per-RUN position within its
+budget (`retry 2/3` — a resume grants a fresh budget, so it restarts at 1) and the journal's number (one past
+the highest recorded attempt — history survives resumes and `guardrails reset`), which names the `attempt-N`
+log folder. The console used to print only the first, so on a resumed task `retry 1/3` wrote `attempt-3` and
+nothing said so; and because `attempts[]` records an attempt only when it settles, `run.json` could not name the
+live attempt either. The harness now computes the journal number BEFORE announcing an attempt, writes this
+marker first, and hands both numbers to `IRunObserver.AttemptStarting`; every operator surface names the attempt
+as `attempt-N` (the live table `attempt-4 · retry 2/3`, `--no-ui` `[retry] <task>: attempt-4 (this run 2/3)`,
+the NEEDS HUMAN block's latest `attempt-N`, `guardrails status`'s in-flight list), and §8.1's `attempt-started`
+row carries the journal number as `attempt`. Four properties are load-bearing:
+
+* **Written before the observer is told.** An operator who reads the console line finds `run.json` already
+  agreeing, never the other way round.
+* **Stable across a transient pause.** A pause re-runs the SAME attempt (`transientPauses[].attempt`), so the
+  marker keeps its number AND its `startedAt`; it is not a new attempt.
+* **Removed at settle, not left stale.** Every path that settles the attempt into `attempts[]` (serial inline,
+  worktree deferred via the Scheduler's settle), settles the task without one, resets it, or blocks it clears
+  the marker. A resume load clears it too: `guardrails status` reads the file directly and so can still show a
+  crashed run's marker (labelled interrupted), but the resumed run itself starts clean.
+* **Additive.** Absent on every journal written before it; a reader that does not know the key ignores it.
 
 **`tasks.<id>.transientPauses[]` — a pause that RESOLVES is evidence too (#115/#515).** Until this field
 existed, only the transient that **exhausted** the per-task pause budget left a durable trace (an attempt
@@ -4672,7 +4710,13 @@ logs/<runId>/<task-id>/attempt-N/
                              #   the observed model is not known when the attempt launches. Absent when no route
                              #   resolved (a script action)
 ├── action-stdout.log / action-stderr.log
-├── action-result.json
+├── action-result.json       # { kind, exitCode, summary }. `summary` is `ok` / `exited N` / `timed out` for a
+                             #   SCRIPT (a real exit code). For a failed PROMPT action — whose exit code is
+                             #   synthesized, 1 for every failure — it names the CAUSE in the attempt summary's
+                             #   own words (#798): a max-turns stop reads "<runner summary> — ran out of turns
+                             #   mid-progress", an output-cap stop "response truncated at the output-token cap",
+                             #   a stall / timeout the runner's own text (a timeout prefixed "timed out — " when
+                             #   that text does not say so), never a bare "exited 1"
 ├── action-out-fragment.json # the harness-PROMOTED GUARDRAILS_STATE_OUT result (§9.5); a SCRIPT
                               #   action writes it directly, a PROMPT action writes a staging copy
                               #   the harness moves here immediately after the sub-agent exits
@@ -4975,7 +5019,7 @@ appears. A field the harness genuinely did not know (an unreported cost) is like
 |---|---|---|
 | `task-waiting-on-worktree` | `TaskWaitingOnWorktree` | `operation` |
 | `task-started` | `TaskStarting` | — |
-| `attempt-started` | `AttemptStarting` | `attempt`, `budget` |
+| `attempt-started` | `AttemptStarting` | `attempt` (the JOURNAL number — the same value as this attempt's `attempt-finished` row and its `attempt-N` log dir; before #798 it was the per-run index, so the two rows of one resumed attempt disagreed), `runAttempt` (#798: this attempt's 1-based position within this run's budget, which restarts at 1 on a resume), `budget` |
 | `guardrail-finished` | `GuardrailFinished` | `guardrail`, `passed`, and on failure `detail` |
 | `attempt-finished` | `AttemptFinished` | `attempt`, `outcome`, `costUsd`, `tokens` (#782: input + output, when usage was reported), `gateway` (#782: a claude gateway attempt only, §9.10), `turns`, `model`, `tier`, `runner`, `startedAt`, `endedAt`, `needsHumanKind` |
 | `task-settled` | `TaskFinished` | `outcome`, `detail`, and on a `needs-human` outcome `question` (#606) |
@@ -5161,6 +5205,9 @@ Consequences a reader needs:
   the shape-mismatch hazard: a run with a wave delivery replays cleanly, minus that one live-only line.
 - **`AttemptFinished` carries `inputTokens`, `outputTokens`, `gateway` and `backendModel`** (#782, §9.10.4),
   each null when absent. They are additive fields on a known member; the replay requires none of them.
+- **`AttemptStarting` carries `attempt`, `budget` and `attemptNumber`** (#798): the call's per-run position,
+  its budget, and the journal's number (§7 `inFlightAttempt.attempt`). `attemptNumber` is OPTIONAL on read — a
+  file written before #798 lacks it, and the replay falls back to `attempt`, which is what that run displayed.
 
 ### 8.3 Webhook delivery of the event stream (`--on-event <url>`) — issue #585 layer 3
 

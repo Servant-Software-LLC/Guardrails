@@ -317,18 +317,18 @@ public sealed class LiveNarrativeTests
     }
 
     [Theory]
-    [InlineData(AttemptOutcome.GuardrailFailed, "attempt 1 GuardrailFailed")]
-    [InlineData(AttemptOutcome.ActionFailed, "attempt 1 ActionFailed")]
-    [InlineData(AttemptOutcome.Timeout, "attempt 1 Timeout")]
+    [InlineData(AttemptOutcome.GuardrailFailed, "attempt-1 GuardrailFailed")]
+    [InlineData(AttemptOutcome.ActionFailed, "attempt-1 ActionFailed")]
+    [InlineData(AttemptOutcome.Timeout, "attempt-1 Timeout")]
     public void AttemptDetailCell_OnFailure_UsesAttemptOutcomesOwnWords(AttemptOutcome outcome, string expected) =>
         Assert.Equal(expected, LiveRunObserver.AttemptDetailCell(outcome, 1, null));
 
     [Fact]
     public void AttemptDetailCell_AppendsTheLiveLogLinkWhenOneIsWired()
     {
-        // §5.1's retry row: `retry 2/3 1:12 │ attempt 1 GuardrailFailed · view log`.
+        // §5.1's retry row: `attempt-2 · retry 2/3 1:12 │ attempt-1 GuardrailFailed · view log`.
         Assert.Equal(
-            "attempt 1 GuardrailFailed · [link=http://x/1]view log[/]",
+            "attempt-1 GuardrailFailed · [link=http://x/1]view log[/]",
             LiveRunObserver.AttemptDetailCell(
                 AttemptOutcome.GuardrailFailed, 1, "[link=http://x/1]view log[/]"));
     }

@@ -288,7 +288,7 @@ public sealed class OnTheFlyDiagramTests
         };
 
         observer.TaskStarting(a);
-        observer.AttemptStarting(a, 1, 1);
+        observer.AttemptStarting(a, 1, 1, 1);
         observer.GuardrailFinished(a, new GuardrailResult { Name = "01-check", Passed = true });
         observer.PromptPaused(a, "429", TimeSpan.FromSeconds(1), 1);
         observer.OutOfScopeStripped(a, []);
@@ -417,7 +417,7 @@ public sealed class OnTheFlyDiagramTests
         public List<string> Events { get; } = [];
 
         public void TaskStarting(TaskNode task) => Events.Add($"TaskStarting:{task.Id}");
-        public void AttemptStarting(TaskNode task, int attempt, int budget) => Events.Add($"AttemptStarting:{task.Id}");
+        public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) => Events.Add($"AttemptStarting:{task.Id}");
         public void TaskFinished(TaskResult result) => Events.Add($"TaskFinished:{result.TaskId}");
         public void GuardrailFinished(TaskNode task, GuardrailResult result) => Events.Add($"GuardrailFinished:{task.Id}");
         public void PlanHashMismatch(string previousPlanHash) => Events.Add($"PlanHashMismatch:{previousPlanHash}");

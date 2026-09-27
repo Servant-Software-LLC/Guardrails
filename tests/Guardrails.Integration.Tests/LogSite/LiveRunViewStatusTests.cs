@@ -83,10 +83,10 @@ public sealed class LiveRunViewStatusTests
         TaskNode retrying = site.Task("02-retrying");
         chain.TaskStarting(retrying);
         site.WriteAttempt("02-retrying", 1);
-        chain.AttemptStarting(retrying, 1, 2);
+        chain.AttemptStarting(retrying, 1, 2, 1);
         chain.AttemptFinished(retrying, Attempt(1, AttemptOutcome.GuardrailFailed));
         site.WriteAttempt("02-retrying", 2);
-        chain.AttemptStarting(retrying, 2, 2);
+        chain.AttemptStarting(retrying, 2, 2, 2);
 
         string html = await GetRootAsync(server);
         LiveRunViewRows.Row done = LiveRunViewRows.Find(html, "01-done");

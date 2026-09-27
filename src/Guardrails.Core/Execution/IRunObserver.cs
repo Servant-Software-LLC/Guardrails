@@ -15,9 +15,20 @@ public interface IRunObserver
 
     /// <summary>
     /// An attempt is starting: <paramref name="attempt"/> of <paramref name="budget"/>
-    /// for this run (1-based; budget = 1 + retries).
+    /// for this run (1-based; budget = 1 + retries), which the journal numbers
+    /// <paramref name="attemptNumber"/>.
+    ///
+    /// <para><b>Two numbers, on purpose (#798).</b> <paramref name="attempt"/>/<paramref name="budget"/> is the
+    /// executor's per-RUN position — it restarts at 1 on every resume, because a resume grants a fresh budget.
+    /// <paramref name="attemptNumber"/> is the JOURNAL's number (<c>RunJournal.NextAttemptNumber</c>: one past the
+    /// highest recorded attempt, surviving resumes and <c>guardrails reset</c>), and it is the <c>N</c> of this
+    /// attempt's <c>attempt-N</c> log directory, of its <c>run.json</c> <c>inFlightAttempt</c> marker, and of the
+    /// <see cref="Journal.AttemptRecord.Attempt"/> <see cref="AttemptFinished"/> will carry. A surface that names
+    /// the attempt to an operator names <paramref name="attemptNumber"/>; the per-run pair is only a budget
+    /// position. They differ on any resumed task — "retry 1/3" once wrote <c>attempt-3</c>, and nothing on the
+    /// console said so.</para>
     /// </summary>
-    void AttemptStarting(TaskNode task, int attempt, int budget) { }
+    void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber) { }
 
     /// <summary>
     /// This attempt's model is now KNOWN (#349). <paramref name="model"/> is the BEST-KNOWN-ACTUAL model —

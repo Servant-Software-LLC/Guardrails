@@ -52,17 +52,36 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
-        if (attempt == 1)
+        if (AttemptStartingLine(task.Id, attempt, budget, attemptNumber) is not { } line)
         {
-            return; // first attempts are implied by TaskStarting; only retries are news
+            return; // a fresh task's first attempt is implied by TaskStarting; only retries and resumes are news
         }
 
         lock (_gate)
         {
-            _output.WriteLine($"[retry] {task.Id}: attempt {attempt}/{budget}");
+            _output.WriteLine(line);
         }
+    }
+
+    /// <summary>
+    /// The <c>--no-ui</c> line for an attempt starting (#798), or null for a fresh task's first attempt (implied by
+    /// its <c>[task]</c> line). Names the attempt by its JOURNAL number — <c>attempt-N</c>, exactly its log
+    /// directory's name — with this run's budget position beside it: <c>[retry] t: attempt-4 (this run 2/3)</c>.
+    /// A resumed task's FIRST attempt is news too, because its number is not 1: <c>[resume] t: attempt-3 (this
+    /// run 1/3)</c>. Before #798 the retry line printed only the per-run pair, and on a resumed task "attempt 2/3"
+    /// wrote <c>attempt-4</c>. Public for the same reason <see cref="ClaimLine"/> is.
+    /// </summary>
+    public static string? AttemptStartingLine(string taskId, int attempt, int budget, int attemptNumber)
+    {
+        if (attempt <= 1 && attemptNumber <= 1)
+        {
+            return null;
+        }
+
+        string tag = attempt <= 1 ? "resume" : "retry";
+        return $"[{tag}] {taskId}: attempt-{attemptNumber} (this run {attempt}/{budget})";
     }
 
     public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
@@ -72,7 +91,8 @@ public sealed class ConsoleRunObserver : IRunObserver
             // The per-attempt WHY (the gap between [retry] above and the task's final [outcome] line,
             // which fires only after the WHOLE retry loop settles): under --no-ui the tailed log IS the
             // record, so the reason a single attempt ended must be IN it.
-            _output.WriteLine($"[attempt] {task.Id} attempt {record.Attempt}: {record.Outcome}");
+            // #798: `attempt-N` — the journal's number, spelled as its log directory is.
+            _output.WriteLine($"[attempt] {task.Id} attempt-{record.Attempt}: {record.Outcome}");
         }
     }
 

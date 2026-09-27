@@ -274,9 +274,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(task.Id, "[yellow]preparing worktree[/]", $"[yellow]{Markup.Escape(operation)}[/]");
     }
 
-    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    public void AttemptStarting(TaskNode task, int attempt, int budget, int attemptNumber)
     {
-        if (attempt <= 1)
+        if (AttemptStatusPrefix(attempt, budget, attemptNumber) is not { } prefix)
         {
             return;
         }
@@ -285,7 +285,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         {
             if (_running.TryGetValue(task.Id, out RunningState state))
             {
-                _running[task.Id] = state with { Prefix = $"retry {attempt}/{budget}" };
+                _running[task.Id] = state with { Prefix = prefix };
             }
         }
 
@@ -295,7 +295,32 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         // paraphrase of itself. AttemptFinished always precedes the next AttemptStarting (the executor's
         // retry loop journals the attempt before looping), and only a NON-succeeded attempt is retried, so
         // the cell is always populated by the time this fires.
-        Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", null);
+        Update(task.Id, $"[yellow]{Markup.Escape(prefix)}[/]", null);
+    }
+
+    /// <summary>
+    /// The Status cell's prefix for a starting attempt (#798) — the 1 Hz ticker appends the clock to it — or null
+    /// for a fresh task's first attempt, which keeps the plain <c>running</c> <see cref="TaskStarting"/> set.
+    /// <list type="bullet">
+    ///   <item>a retry: <c>attempt-4 · retry 2/3</c></item>
+    ///   <item>a resumed task's first attempt: <c>attempt-3 · running</c></item>
+    /// </list>
+    /// <c>attempt-N</c> is the JOURNAL's number, spelled exactly as the log directory the "view log" link opens;
+    /// <c>retry i/budget</c> is this run's position within its budget, which restarts at 1 on a resume. Before
+    /// #798 the cell carried only the per-run pair, so a resumed task's "retry 1/3" was writing <c>attempt-3</c>
+    /// and nothing on screen said so. The number leads so the clock still follows the phase word, as it always has.
+    /// Public for the same reason <see cref="AttemptDetailCell"/> is.
+    /// </summary>
+    public static string? AttemptStatusPrefix(int attempt, int budget, int attemptNumber)
+    {
+        if (attempt <= 1 && attemptNumber <= 1)
+        {
+            return null;
+        }
+
+        return attempt <= 1
+            ? $"attempt-{attemptNumber} · running"
+            : $"attempt-{attemptNumber} · retry {attempt}/{budget}";
     }
 
     public void AttemptFinished(TaskNode task, Core.Journal.AttemptRecord record)
@@ -332,7 +357,9 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             return null;
         }
 
-        string cell = $"attempt {attempt} {Markup.Escape(outcome.ToString())}";
+        // #798: `attempt-N`, the journal's number spelled as its log directory is — the same token the Status
+        // cell's prefix and the --no-ui lines use.
+        string cell = $"attempt-{attempt} {Markup.Escape(outcome.ToString())}";
         return logLinkMarkup is null ? cell : $"{cell} · {logLinkMarkup}";
     }
 

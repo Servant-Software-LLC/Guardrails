@@ -424,7 +424,7 @@ public sealed class LiveNarrativeCompositeTests
         await using (var observer = new LiveRunObserver([a, b], console: console))
         {
             observer.TaskStarting(a);
-            observer.AttemptStarting(a, 1, 3);
+            observer.AttemptStarting(a, 1, 3, 1);
             observer.AttemptFinished(a, Attempt(1, Core.Journal.AttemptOutcome.Succeeded));
             observer.AttemptModelResolved(a, 1, "claude-sonnet-4-5", requestedModel: null);
             observer.TaskFinished(new TaskResult { TaskId = a.Id, Outcome = TaskOutcome.Succeeded, Summary = "ok" });
@@ -635,21 +635,46 @@ public sealed class LiveNarrativeCompositeTests
         await using (var observer = new LiveRunObserver([a], console: console))
         {
             observer.TaskStarting(a);
-            observer.AttemptStarting(a, 1, 3);
+            observer.AttemptStarting(a, 1, 3, 1);
             observer.AttemptFinished(a, Attempt(1, Core.Journal.AttemptOutcome.GuardrailFailed));
-            observer.AttemptStarting(a, 2, 3);
+            observer.AttemptStarting(a, 2, 3, 2);
         }
 
         // The outcome is a CELL: it persists across every later repaint (a raw line would not), and its line
         // carries the table's own border glyphs.
-        AssertRenderedInsideTheLiveRegion(console, "attempt 1 GuardrailFailed");
+        AssertRenderedInsideTheLiveRegion(console, "attempt-1 GuardrailFailed");
         AssertRenderedInsideTheLiveRegion(console, "retry 2/3");
         Assert.Contains(
             LastFrame(console),
-            l => l.Contains("attempt 1 GuardrailFailed", StringComparison.Ordinal) && HasBorderGlyph(l));
+            l => l.Contains("attempt-1 GuardrailFailed", StringComparison.Ordinal) && HasBorderGlyph(l));
 
         // …and the vaguer sentence AttemptStarting used to overwrite it with is gone.
         Assert.DoesNotContain("previous attempt failed", console.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #798: a RESUMED task — two attempts already on record — whose retry used to render as "retry 2/3" while it
+    /// wrote <c>attempt-4</c>. The row now names the journal number beside the budget position, and the failed
+    /// attempt's Detail cell names its folder, so the console and the log viewer agree.
+    /// </summary>
+    [Fact]
+    public async Task AResumedTasksRetry_NamesItsJournalAttemptNumber_BesideTheBudgetPosition()
+    {
+        TestConsole console = Console(120);
+        TaskNode a = Task(null, "01-a");
+
+        await using (var observer = new LiveRunObserver([a], console: console))
+        {
+            observer.TaskStarting(a);
+            observer.AttemptStarting(a, 1, 3, 3);
+            observer.AttemptFinished(a, Attempt(3, Core.Journal.AttemptOutcome.GuardrailFailed));
+            observer.AttemptStarting(a, 2, 3, 4);
+        }
+
+        AssertRenderedInsideTheLiveRegion(console, "attempt-4 · retry 2/3");
+        AssertRenderedInsideTheLiveRegion(console, "attempt-3 GuardrailFailed");
+        // The per-run pair alone — the pre-#798 rendering — never appears without its number.
+        Assert.DoesNotContain(LastFrame(console), l => Regex.IsMatch(l, @"(?<!· )retry 2/3"));
     }
 
     [Fact]
