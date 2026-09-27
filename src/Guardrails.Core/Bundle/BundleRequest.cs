@@ -84,12 +84,11 @@ public sealed record BundleProbes
     /// <summary>The redactor; a test injects one that throws (pass 6).</summary>
     public Func<string, BundleRedactionContext, BundleRedactionResult> Redact { get; init; } = BundleRedactor.Redact;
 
-    /// <summary>Starts a scan timer; the returned function reads elapsed time. A test injects a slow one (pass 6).</summary>
-    public Func<Func<TimeSpan>> StartScanTimer { get; init; } = () =>
-    {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        return () => stopwatch.Elapsed;
-    };
+    /// <summary>A file's size and last-write time (the Live files block, and the newest gateway session; #805 S1/S3).</summary>
+    public Func<string, BundleFileStat?> Stat { get; init; } = BundleFileStat.Of;
+
+    /// <summary>The owner process's descendants (#805 S1), asked only while the run is Running.</summary>
+    public Func<int, BundleProcessTree> ProcessTree { get; init; } = SystemBundleProcessTree.Capture;
 
     /// <summary>Notes for MANIFEST.md's Notes list (an unparsable <c>GIT_CONFIG_COUNT</c>).</summary>
     public IReadOnlyList<string> Notes { get; init; } = [];

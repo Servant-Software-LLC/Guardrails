@@ -161,6 +161,10 @@ internal sealed class BundlePlanFixture : IDisposable
 
     public RunLivenessState Liveness { get; set; } = RunLivenessState.Ended;
 
+    /// <summary>The process-tree probe: a fixed answer, so a Running bundle stays deterministic.</summary>
+    public Func<int, BundleProcessTree> ProcessTree { get; set; } = pid => new BundleProcessTree(
+        [new BundleProcessRow(pid, 1, "S", "00:05:00", "0.0", "guardrails run plan-x")], null);
+
     public Dictionary<string, string> Environment { get; } = new(StringComparer.Ordinal) { ["QWEN_TOKEN"] = KnownToken };
 
     public BundleProbes Probes(Func<DateTimeOffset>? now = null) => new()
@@ -171,6 +175,7 @@ internal sealed class BundlePlanFixture : IDisposable
         BundlingOs = "FixtureOS 1",
         ToolVersions = () => [new("claude", "2.0.0 (Claude Code)"), new("agent", "not on PATH"), new("dotnet", "10.0.100"), new("git", "git version 2.50.0")],
         Liveness = _ => Liveness,
+        ProcessTree = pid => ProcessTree(pid),
         Git = new FakeGit(GitCalls),
         Validate = () => "OK: plan is valid.\n",
         Home = Home,

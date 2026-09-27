@@ -90,6 +90,9 @@ public sealed partial class BundleBuilder
             RenderTask(s, taskId, labels, inFlightLines);
         }
 
+        RenderLiveFiles(s);
+        RenderProcessTree(s, labels);
+
         // 4. Gateway and endpoint blocks.
         s.Append("\n## 4. Gateway and endpoint blocks\n\n");
         List<PromptRunnerConfig> blocks =
@@ -113,7 +116,8 @@ public sealed partial class BundleBuilder
                      .Distinct(StringComparer.Ordinal).OrderBy(v => v, StringComparer.Ordinal))
         {
             bool set = _probes.Environment.TryGetValue(variable, out string? value) && !string.IsNullOrEmpty(value);
-            s.Append("- ").Append(variable).Append(": ").Append(set ? "set" : "unset").Append('\n');
+            // "is set", not "NAME: set": the finished SUMMARY passes the pair rule, and `TOKEN: set` is a pair.
+            s.Append("- ").Append(variable).Append(set ? " is set" : " is unset").Append('\n');
         }
 
         // 5. Withheld.
@@ -342,7 +346,109 @@ public sealed partial class BundleBuilder
         if (inFlight is not null)
         {
             s.Append("\n- In flight: ").Append(inFlight).Append('\n');
+            s.Append(InFlightForLine(entry)).Append('\n');
             inFlightLines.Add($"{taskId}: {inFlight}");
+        }
+    }
+
+    // ------------------------------------------------------------------ stuck-run blocks (#805 S1; masked, §17.10)
+
+    /// <summary>The line prefixes that vary with the clock and the machine, which the determinism check masks (§17.10).</summary>
+    public static IReadOnlyList<string> MaskedLinePrefixes { get; } = ["Bundled at: ", "- live: ", "- In flight for ", "- proc: "];
+
+    private string InFlightForLine(TaskJournalEntry? entry)
+    {
+        if (entry?.InFlightAttempt is { } marker)
+        {
+            return $"- In flight for {Duration(_probes.Now() - marker.StartedAt)} (since the marker's startedAt)";
+        }
+
+        return "- In flight for an unknown time (no in-flight marker; see Live files for when its files last moved)";
+    }
+
+    private static readonly HashSet<string> LiveFileNames = new(StringComparer.Ordinal)
+    {
+        "claude-stream.jsonl", "transcript.md", "feedback.md", "action-stdout.log", "action-stderr.log",
+    };
+
+    private void RenderLiveFiles(StringBuilder s)
+    {
+        s.Append("\n### Live files\n\n");
+        s.Append("Size and last write of each file an in-flight attempt is writing, the run's event stream, and the newest ")
+            .Append("gateway session. Ages are relative to Bundled at; these lines vary run to run and are masked in the ")
+            .Append("determinism check.\n\n");
+
+        var live = new List<Entry>();
+        foreach (string taskId in _selectedTasks)
+        {
+            foreach (int attempt in InFlightAttempts(taskId))
+            {
+                live.AddRange(_entries.Where(e => e.TaskId == taskId && e.Attempt == attempt && e.SourcePath is not null
+                    && LiveFileNames.Contains(Path.GetFileName(e.SourcePath))));
+            }
+        }
+
+        live.AddRange(_entries.Where(e => e.BundlePath == "run/events.jsonl"));
+        if (NewestSession() is { } session)
+        {
+            live.Add(session);
+        }
+
+        int rendered = 0;
+        DateTimeOffset now = _probes.Now();
+        foreach (Entry entry in live.Distinct().OrderBy(e => e.BundlePath, StringComparer.Ordinal))
+        {
+            if (entry.SourcePath is not { } path || _probes.Stat(path) is not { } stat)
+            {
+                continue;
+            }
+
+            s.Append("- live: ").Append(entry.BundlePath ?? DisplaySource(entry)).Append(" — ")
+                .Append(stat.Length.ToString(CultureInfo.InvariantCulture)).Append(" bytes, last write ")
+                .Append(Timestamp(stat.LastWriteUtc)).Append(" (").Append(Duration(now - stat.LastWriteUtc))
+                .Append(" before Bundled at)\n");
+            rendered++;
+        }
+
+        if (rendered == 0)
+        {
+            s.Append("- none: no in-flight attempt, event stream or gateway session on disk\n");
+        }
+    }
+
+    private BundleProcessTree? _processTree;
+
+    private void RenderProcessTree(StringBuilder s, List<string> labels)
+    {
+        s.Append("\n### Process tree\n\n");
+        RunOwner? owner = RunJournalDoc?.Owner;
+        if (Liveness() != RunLivenessState.Running || owner is null)
+        {
+            s.Append("Not captured: the run's owner process is not running (liveness: ")
+                .Append(Liveness()?.ToString() ?? "not assessed").Append(").\n");
+            return;
+        }
+
+        _processTree ??= _probes.ProcessTree(owner.Pid);
+        s.Append("The owner process and its descendants: pid, parent, state, elapsed, %cpu, command line (anonymized and ")
+            .Append("redacted). These lines vary run to run and are masked in the determinism check.\n\n");
+        if (_processTree.Unavailable is { } reason)
+        {
+            s.Append("- proc: unavailable (").Append(reason).Append(")\n");
+            return;
+        }
+
+        if (_processTree.Rows.Count == 0)
+        {
+            s.Append("- proc: none found for owner process ").Append(owner.Pid.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        }
+
+        foreach (BundleProcessRow row in _processTree.Rows)
+        {
+            s.Append("- proc: ").Append(row.Pid.ToString(CultureInfo.InvariantCulture))
+                .Append(" (parent ").Append(row.ParentPid.ToString(CultureInfo.InvariantCulture)).Append(") ")
+                .Append(row.State).Append(' ').Append(row.Elapsed).Append(' ').Append(row.Cpu).Append(" — ")
+                .Append(Free(row.Command, labels)).Append('\n');
         }
     }
 

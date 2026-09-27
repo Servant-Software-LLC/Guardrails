@@ -82,7 +82,10 @@ public static partial class BundleRedactor
         "## Cannot catch\n" +
         "\n" +
         "- **`CC1`**: a secret that no shape rule matches and that the entropy rule misses: **hex-only**, **under 24\n" +
-        "  characters**, or **lacking one of upper case, lower case or digit**.\n" +
+        "  characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy\n" +
+        "  threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the\n" +
+        "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
+        "  token that happens to hold no digit.\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
         "  header, `NAME=value` and JSON-pair shapes.\n" +
         "- **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.\n" +
@@ -98,8 +101,14 @@ public static partial class BundleRedactor
     /// <summary>The high-entropy rule's minimum run length (§17.6.2).</summary>
     public const int EntropyMinimumLength = 24;
 
-    /// <summary>The high-entropy rule's threshold, bits per character, exclusive (§17.6.2).</summary>
+    /// <summary>The high-entropy threshold for runs of 32 characters or more, bits per character, exclusive (§17.6.2).</summary>
     public const double EntropyThreshold = 4.0;
+
+    /// <summary>The threshold for a 24-31 character run: a 24-character string cannot exceed log2(24) ≈ 4.58 bits.</summary>
+    public const double ShortRunEntropyThreshold = 3.6;
+
+    /// <summary>The length-scaled threshold of §17.6.2 (W2 of the #805 review).</summary>
+    public static double EntropyThresholdFor(int length) => length < 32 ? ShortRunEntropyThreshold : EntropyThreshold;
 
     /// <summary>Redact <paramref name="content"/> against <paramref name="context"/>. Pure; never touches the disk.</summary>
     public static BundleRedactionResult Redact(string content, BundleRedactionContext context)
@@ -131,7 +140,8 @@ public static partial class BundleRedactor
     public static IReadOnlySet<string> LabelsIn(string redacted) =>
         LabelToken().Matches(redacted).Select(m => m.Groups["label"].Value).ToHashSet(StringComparer.Ordinal);
 
-    private static IReadOnlyList<RedactionView> Views(string content)
+    /// <summary>The decoded views every pass scans, pass 3 included (§17.6.2).</summary>
+    internal static IReadOnlyList<RedactionView> Views(string content)
     {
         var views = new List<RedactionView>();
         void AddWithPercent(RedactionView? view)
@@ -230,7 +240,7 @@ public static partial class BundleRedactor
             {
                 string name = match.Groups["name"].Value;
                 Group value = match.Groups["qv"].Success ? match.Groups["qv"] : match.Groups["v"];
-                if (!value.Success || value.Length == 0 || !SecretNameRule.IsSecretName(name) || IsHeaderName(name)
+                if (!value.Success || value.Length == 0 || !IsSecretPairName(name, value.Value) || IsHeaderName(name)
                     || NameIsAVariableName(name) || IsInertValue(value.Value) || IsExemptPairValue(value.Value, context))
                 {
                     continue;
@@ -262,7 +272,7 @@ public static partial class BundleRedactor
             return false;
         }
 
-        return ShannonEntropy(run) > EntropyThreshold;
+        return ShannonEntropy(run) > EntropyThresholdFor(run.Length);
     }
 
     /// <summary>Shannon entropy of <paramref name="text"/>'s characters, in bits per character.</summary>
@@ -336,6 +346,17 @@ public static partial class BundleRedactor
         int space = trimmed.IndexOf(' ', StringComparison.Ordinal);
         return space > 0 && AuthSchemes.Contains(trimmed[..space]) && IsExempt(trimmed[(space + 1)..].Trim(), context);
     }
+
+    // The pair pass also treats `pwd` / `Pwd` / `PWD` as a secret name (`…;Uid=sa;Pwd=S3cr3tP4ss;`). The exact-name
+    // PWD / OLDPWD exclusion stays for known-value COLLECTION, and a PWD whose value is a path is the shell's cwd.
+    private static bool IsSecretPairName(string name, string value) =>
+        SecretNameRule.IsSecretName(name)
+        || (string.Equals(name, "pwd", StringComparison.OrdinalIgnoreCase) && !LooksLikePath(value));
+
+    private static bool LooksLikePath(string value) =>
+        value.StartsWith('/') || value.StartsWith('~') || value.StartsWith('\\')
+        // A drive: the unquoted value stops at the backslash, so `C:\src` arrives as `C:`.
+        || (value.Length >= 2 && char.IsAsciiLetter(value[0]) && value[1] == ':' && (value.Length == 2 || value[2] is '\\' or '/'));
 
     private static readonly HashSet<string> AuthSchemes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -434,6 +455,7 @@ public static partial class BundleRedactor
         (GooglePattern(), "google-api-key"),
         (AwsPattern(), "aws-access-key"),
         (SlackPattern(), "slack-token"),
+        (HuggingFacePattern(), "huggingface-token"),
     ];
 
     private const int Timeout = 10_000;
@@ -468,6 +490,9 @@ public static partial class BundleRedactor
     [GeneratedRegex(@"(?<![A-Za-z0-9])(?:xox[abprs]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,})", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex SlackPattern();
 
+    [GeneratedRegex(@"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex HuggingFacePattern();
+
     // The value of a credential-carrying header, raw (`Authorization: Bearer x`) or as a JSON pair
     // (`"x-api-key":"x"`). An auth scheme word is kept; the value runs to the end of the line or a quote.
     [GeneratedRegex(
@@ -478,21 +503,22 @@ public static partial class BundleRedactor
     [GeneratedRegex(@"(?i)(?<![A-Za-z0-9])bearer[ \t]+(?<v>[A-Za-z0-9._~+/=-]+)", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex BearerPattern();
 
-    [GeneratedRegex(@"://(?<v>[^/\s:@""'\\]+:[^/\s@""'\\]+)@", RegexOptions.CultureInvariant, Timeout)]
+    [GeneratedRegex(@"://(?<v>[^/\s:@""'\\]+:[^\s@""'\\]+|[^/\s:@""'\\]{8,})@", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex UrlCredentialPattern();
 
     [GeneratedRegex(@"(?i)\bmachine\s+\S+\s+(?:login\s+\S+\s+)?password\s+(?<v>[^\s""'\\]+)", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex NetrcPattern();
 
     // NAME=value, NAME: value, NAME = "value" (shell, .env, YAML, code). The name is an identifier; a value is quoted,
-    // or runs to whitespace, a quote, a backtick or a backslash.
+    // or runs to whitespace, a quote, a backtick or a backslash. The value is captured in a LOOKAHEAD, so a pair inside
+    // another pair's value (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`) is still scanned (#805 W1).
     [GeneratedRegex(
-        @"(?<![A-Za-z0-9_])(?<name>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*[:=][ \t]*(?:""(?<qv>[^""\r\n]*)""|'(?<qv>[^'\r\n]*)'|(?<v>[^\s""'`\\]+))",
+        @"(?<![A-Za-z0-9_.-])-{0,2}(?<name>(?>[A-Za-z_][A-Za-z0-9_.-]*))[ \t]*[:=][ \t]*(?=""(?<qv>[^""\r\n]*)""|'(?<qv>[^'\r\n]*)'|(?<v>[^\s""'`\\]+))",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex AssignmentPairPattern();
 
     // "name": "value" (JSON, including JSON quoted inside another string once a view has unescaped it).
-    [GeneratedRegex(@"""(?<name>[A-Za-z_][A-Za-z0-9_.-]*)""\s*:\s*""(?<v>(?:[^""\\\r\n]|\\.)*)""", RegexOptions.CultureInvariant, Timeout)]
+    [GeneratedRegex(@"""(?<name>(?>[A-Za-z_][A-Za-z0-9_.-]*))""\s*:\s*""(?<v>(?:[^""\\\r\n]|\\.)*)(?="")", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex JsonPairPattern();
 
     [GeneratedRegex(@"[A-Za-z0-9+/=_~.-]{24,}", RegexOptions.CultureInvariant, Timeout)]

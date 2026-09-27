@@ -116,6 +116,14 @@ public static class BundleCatalog
         "triage.json" => new BundleKind("triage", BundleClass.Lean, BundleCapClass.None, AgentText: true),
         _ when fileName.StartsWith("union-reverify-", StringComparison.Ordinal) && fileName.EndsWith(".log", StringComparison.Ordinal)
             => new BundleKind("union-reverify", BundleClass.Lean, BundleCapClass.Log, AgentText: true),
+
+        // #805 S8: the in-flight marker's harness log, and the overwatcher's and triage's own model streams.
+        "inflight-marker.log" => new BundleKind("inflight-marker", BundleClass.Lean, BundleCapClass.Log, AgentText: false),
+        "triage-stream.jsonl" => new BundleKind("task-stream", BundleClass.Full, BundleCapClass.Stream, AgentText: true),
+        _ when fileName.StartsWith("overwatch-stream-attempt-", StringComparison.Ordinal) && fileName.EndsWith(".jsonl", StringComparison.Ordinal)
+            => new BundleKind("task-stream", BundleClass.Full, BundleCapClass.Stream, AgentText: true),
+        _ when fileName.StartsWith("overwatch-noverdict-", StringComparison.Ordinal) && fileName.EndsWith(".txt", StringComparison.Ordinal)
+            => new BundleKind("overwatch-noverdict", BundleClass.Full, BundleCapClass.Log, AgentText: true),
         _ => null
     };
 

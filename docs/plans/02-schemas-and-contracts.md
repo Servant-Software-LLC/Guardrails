@@ -10324,8 +10324,10 @@ create.
 
 **Argument refusals** (all exit `1`, all **before anything is read**): `--out` together with `--dir`;
 `--lean` together with `--include-worktree-diff`; a `--task` id the plan does not declare (named); a
-`--run` id with no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty existing `--dir`;
-and the path refusal of §17.8.
+`--run` value that is not a single path segment (a separator, `.`/`..`, a rooted value, an invalid file-name
+character: #805 S4) or that names no `logs/<runId>/` (named); `--max-size` not a positive number; a non-empty
+existing `--dir`; a destination under the plan directory or the worktree root (§17.8, refused **even with
+`--force-path`**); and the path refusal of §17.8.
 
 **Exit codes.**
 
@@ -10360,13 +10362,16 @@ reads obey this numbered contract:
    journal (an `attempt-N/` directory the journal does not list) is reported as such: MANIFEST.md reason
    `newer-than-journal`, and SUMMARY's in-flight inference (§17.4 block 3). That is the #797 confusion, made
    explicit.
-3. **Sharing errors** (Win32 error 32 or 33, or `UnauthorizedAccessException`) are retried **5 times** with a
-   10–50 ms backoff. After that the file is **excluded and named** (reason `sharing-violation`), never a
-   crash.
+3. **Sharing errors** (Win32 error 32 or 33, or, on Windows only, `UnauthorizedAccessException`) are retried
+   **5 times** with a 10–50 ms backoff. After that the file is **excluded and named** (reason
+   `sharing-violation`), never a crash. On POSIX an access denial is a permission, not contention: it is excluded
+   at once, unretried (reason `permission-denied`).
 4. **Tail reads.** A file over its tail cap (§17.7) is read as a **tail window**. The window's leading partial
-   line is dropped **before any scan**; if the window contains no newline, or its only newline is its last
-   byte (so it holds no whole line), the file is excluded and named (reason `no-newline-in-window`). Because
-   only whole lines are kept, a UTF-8 sequence is never split. A
+   line is dropped **before any scan**, so a UTF-8 sequence is never split. A window with no whole line in it
+   (its last line exceeds the cap) is **not** excluded: that line ships from its first character boundary under
+   the marker line `[truncated: line exceeds window]` (status `tail`, reason `partial-line`); a secret that
+   began before the window can leave an unmatched suffix there, which is `CC1`/`CC3` territory. Only an empty
+   window is excluded (`no-newline-in-window`). A
    file that grows during the read keeps what was read, minus the trailing partial line (reason
    `live-tail-cut`). `transcript.md` reads are capped like the stream logs.
 5. **Git takes no optional locks, anywhere in the process.** At startup the verb sets
@@ -10379,8 +10384,13 @@ reads obey this numbered contract:
    own calls, each with a **30 s timeout**, are:
    - `git status --porcelain=v1 -b`
    - `git log -5 --format='%h %ad %s'` (no author name or email; `%h %ad` under `--without-agent-text`)
-   - `git diff --stat <taskBase>..HEAD`
-   - `git diff <taskBase>..HEAD`, only with `--include-worktree-diff`
+   - `git diff --stat --end-of-options <taskBase>..HEAD`
+   - `git diff --end-of-options <taskBase>..HEAD`, only with `--include-worktree-diff`
+   - `git config --get user.name` / `user.email`, for pass 3 (§17.6.3)
+
+   Provenance may be on disk, so it is not trusted (#805 S5): a `<taskBase>` is used only when it matches
+   `^[0-9a-f]{7,64}$`, and git runs in a recorded worktree path only when that path resolves (links followed)
+   under the worktree root. Otherwise the `git/<name>.txt` file says it was skipped, and why.
 
    **Residual, disclosed.** On Windows, a git reader briefly holds `.git/index` open while the harness's own
    git renames `index.lock` over it. Git for Windows retries that rename, and this contract relies on that
@@ -10415,7 +10425,10 @@ withheld by `--lean`; each withheld entry is a MANIFEST.md row (reason `lean`).
 ├── state/run.json                                                                      lean
 ├── run/        events.jsonl, observer.jsonl, autonomy.jsonl, escalations/*.json (tails) lean
 ├── gates/      preflights/** + guardrails/**: result.json, stdout/stderr tails         lean
-├── tasks/<id>/ feedback.md, overwatch.jsonl, triage.json, union-reverify-*.log         lean
+├── tasks/<id>/ feedback.md, overwatch.jsonl, triage.json, union-reverify-*.log,
+│               inflight-marker.log                                                     lean
+│               overwatch-stream-attempt-N.jsonl, triage-stream.jsonl (tails),
+│               overwatch-noverdict-*.txt (tails)                                       full
 │   └── attempt-N/ feedback.md, attempt-provenance.json, attempt-route.log,
 │                  action-result.json, guardrail-*.verdict.json,
 │                  action-std{out,err}.log + guardrail-*.std{out,err}.log (tails)      lean
@@ -10458,6 +10471,13 @@ Entries sit at the **zip root** in exactly this shape (no enclosing directory); 
   tail class, and redacted by every pass: they are harness-captured process output, often the deciding evidence
   for a stuck or failing script action, not model prose. `--without-agent-text` removes them, because a script
   can echo agent-written code or output (§17.6.5).
+- **The overwatcher's and triage's model streams** (`overwatch-stream-attempt-N.jsonl`, `triage-stream.jsonl`,
+  stream class; `overwatch-noverdict-*.txt`, log class) are model output: full class, agent text, redacted like
+  every stream. `inflight-marker.log` is the harness's own log: lean, log class (#805 S8).
+- **Links are never followed.** A file or directory that is a symbolic link or any other reparse point is not
+  read and not recursed into; it is listed by its own path, status `excluded`, reason `symlink` (#805 S6).
+- **Under `--task`, a run-level gateway session is per-task evidence** once attributed to an attempt (§17.7): a
+  session of an unselected task, or one no attempt claims, is `listed-only` (reason `task-filter`) (#805 S2).
 - **Files §8 names that this tree does not** (`state-in.json`, `fragment.json`, `action-out-fragment.json`, `overwatch-guidance.md`, a wave's `breakdown/`, the log viewer's
   HTML) are `listed-only` (`unknown-kind`) in Phase 1.
 
@@ -10520,6 +10540,21 @@ Then six numbered blocks, always in this order:
    - *Evidence*: bundle-relative paths;
    - *Environment*: block 1 on one line.
 
+Block 3 ends with two **stuck-run blocks** (#805 S1), whose lines vary run to run and are masked in the
+determinism check (§17.10):
+
+- **In flight for.** Each in-flight attempt gets a `- In flight for <duration>` line: from the #798 marker's
+  `startedAt` to *Bundled at*, or "an unknown time" when the attempt was inferred.
+- **Live files.** For every file an in-flight attempt is writing (`claude-stream.jsonl`, `transcript.md`,
+  `feedback.md`, `action-stdout.log`, `action-stderr.log`), the run's `events.jsonl`, and the newest gateway
+  session: `- live: <bundle path> — <bytes> bytes, last write <utc> (<age> before Bundled at)`.
+- **Process tree.** Only while liveness is `Running`: the owner process and its descendants (at most 100),
+  `- proc: <pid> (parent <ppid>) <state> <elapsed> <%cpu> — <command line>`, the command line anonymized and
+  redacted (withheld under `--without-agent-text`). POSIX reads `ps -A -o pid,ppid,stat,etime,pcpu,command`;
+  Windows reads the CIM `Win32_Process` table through `pwsh` (or Windows PowerShell), where state and %cpu are
+  `-`. Bounded (10 s) and fail-soft: a failure is one `- proc: unavailable (<reason>)` line. Both the file stat
+  and the process table are injected probes.
+
 Under `--without-agent-text`, every `reason`, `headline`, `summary` and needs-human text rendered in blocks 2,
 3 and 6 is `[withheld: agent text]`.
 
@@ -10537,10 +10572,10 @@ tiers applied, in order.
 ```
 
 `Status` is one of `included`, `tail`, `withheld`, `excluded`, `trimmed`, `listed-only`. `Reason` is one of
-the tokens this section names: `tail-window`, `live-tail-cut`, `no-newline-in-window`,
-`sharing-violation`, `not-utf8`, `scan-failed`, `scan-timeout`, `stream-scrubbed-less`, `patch-over-cap`,
-`lean`, `agent-text`, `unknown-kind`, `claude-config-excluded`, `state-fragments-phase-2`,
-`other-run-journal`, `newer-than-journal`, `unsafe-name`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp
+the tokens this section names: `tail-window`, `live-tail-cut`, `partial-line`, `no-newline-in-window`,
+`sharing-violation`, `permission-denied`, `not-utf8`, `scan-failed`, `scan-timeout`, `stream-scrubbed-less`,
+`patch-over-cap`, `lean`, `agent-text`, `unknown-kind`, `claude-config-excluded`, `state-fragments-phase-2`,
+`other-run-journal`, `newer-than-journal`, `unsafe-name`, `symlink`, `task-filter`, `trim-tier-<n>` (n = 1..5). A row carries no timestamp
 (§17.10).
 A row with no bundle entry, or with no reason (a whole read), renders `-` in that cell; a generated file's
 source reads `generated: …`.
@@ -10552,6 +10587,13 @@ it is written. Entry names are checked before anything is read: a name the secre
 shipped**; its row carries the redacted name, status `excluded`, reason `unsafe-name`. Entry names are stored
 uncompressed in a zip, so a secret in a NAME would otherwise be readable in the raw bytes even though every body
 is deflated.
+
+**The finished documents are scrubbed last.** As the last step before encoding, the whole of SUMMARY.md passes
+the anonymizer and every secret pass, and MANIFEST.md and REDACTIONS.md pass the anonymizer and every secret pass
+but the entropy rule, so a value SUMMARY renders from a recorded fact (a served or requested model, a backend
+identity, a tool's `--version` line, a block name or its model) cannot ship unscrubbed (#805 B3). Their labels are
+counted in REDACTIONS.md (rows for `SUMMARY.md` and `MANIFEST.md`). SUMMARY therefore never renders a `NAME: value`
+pair of its own for a secret-named variable: the Redaction coverage lines read `NAME is set` / `NAME is unset`.
 
 **REDACTIONS.md** has one row per bundled file with a count per label or kind (**never a value, never a hash
 of a value**), then the fixed, enumerated **Cannot catch** list of §17.6.7, verbatim, each entry under its
@@ -10640,18 +10682,26 @@ took part, else the most specific kind.
 | `google-api-key` | `AIza…` |
 | `aws-access-key` | `AKIA[0-9A-Z]{16}` |
 | `slack-token` | `xox[abprs]-…`, `xapp-…` |
+| `huggingface-token` | `hf_[A-Za-z0-9]{30,}` |
 | `jwt` | a JSON Web Token |
 | `bearer` | the value after `Bearer ` |
 | `auth-header` | the value of an `Authorization:`, `x-api-key:`, `api-key:`, `Ocp-Apim-Subscription-Key:`, `Cookie:` or `Set-Cookie:` header |
-| `url-credential` | the userinfo matched by `://[^/\s:@]+:[^/\s@]+@` |
+| `url-credential` | the userinfo of a URL: `user:password@` (the password may contain `/`), or a colon-less userinfo of 8 characters or more (`https://<token>@host`) |
 | `netrc` | the password of a `.netrc` `machine … login … password …` line |
 | `private-key` | a PEM `PRIVATE KEY` block |
 | `named-secret` | the value of a `NAME=value`, `NAME: value` (YAML) or `"name": "value"` pair whose name matches the secret-name rule. Whitespace around `=` / `:` and a quoted value are allowed (`var dbPassword = "…";`). The header names of `auth-header` are left to that rule, which keeps the `Bearer` scheme word readable; a value of `true` / `false` / `null` is not scrubbed; and the keys `authTokenEnv` / `apiKeyEnv` are not scrubbed, because by schema their values are variable **names** (#791) |
-| `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above 4.0** bits per character |
+| `high-entropy` | a run of **at least 24** characters of the **broad** class `[A-Za-z0-9+/=_~.-]` that contains upper case, lower case **and** a digit, with Shannon entropy **above a length-scaled threshold**: 3.6 bits per character for 24-31 characters (a 24-character string cannot exceed log2 24 ≈ 4.58), 4.0 from 32 |
 
 The broad class keeps base64url and Azure client secrets (which contain `_ ~ . -`) whole rather than split
-into short pieces. Hex tops out at exactly 4.0 bits, so SHAs pass; the mixed-class requirement spares branch
-names and PascalCase test names.
+into short pieces. Hex lacks upper case, so SHAs pass; the mixed-class requirement spares branch names and
+PascalCase test names. The residual this leaves is stated in `CC1`.
+
+**Pairs, in detail.** A pair's value is captured without consuming it, so a pair inside another pair's value is
+still scanned (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`, and the first key of JSON quoted inside a JSON string,
+`"content":"{\"password\":\"…\"}"`). A name is matched whole and only where no name character precedes it, which
+keeps the scan linear on adversarial input. `pwd` (any case) is a secret name in the pair pass, except when its
+value is a path (`PWD=/home/…`, the shell's cwd); the exact-name `PWD`/`OLDPWD` exclusion of §17.6.1 still governs
+known-value collection.
 
 **Non-secret exemptions** apply **only to this pass, never to known values**: a known secret is scrubbed even
 if it equals a task id. They match **exact whole tokens, never substrings**: task ids, wave names, the plan
@@ -10674,12 +10724,19 @@ too, because it is diagnostic (#791).
 #### 17.6.3 Pass 3 — paths (default on; `--keep-paths` disables it)
 
 Replace the home directory with `~`, the workspace (the repository root holding the plan) with
-`<workspace>`, the worktree root with `<worktrees>`, the OS user name inside paths with `<user>`, and
-`environment.host` / `owner.host` with `<host>`. Each root is matched in every spelling an artifact carries:
-native, forward-slash, back-slash, JSON-escaped, and the `-`-encoded form Claude Code names a project directory
-with (every character outside `[A-Za-z0-9]` turned into `-`); the user name is also replaced inside a
-`-`-encoded path (a token shaped like `C--…` or `-home-…`). It runs **after** the secret passes, so a label is never
-rewritten.
+`<workspace>`, the worktree root with `<worktrees>`, the OS user name with `<user>`, git's `user.name` and
+`user.email` (read at bundle time with `git config --get`, under §17.2 item 5's lock-free settings) with
+`<git-user>` and `<git-email>`, and `environment.host` / `owner.host` with `<host>`.
+
+Pass 3 scans **the same decoded views as passes 1 and 2** (§17.6.2) and replaces each hit in the original
+characters, escape-aligned: `C:\\Users\\Jos\u00e9` written by System.Text.Json (whose default encoder escapes
+non-ASCII and `' + & < >`), `O\u0027Brien`, and `file:///c%3A/Users/…` are all found. Each root is matched with
+native, forward and back slashes and in the `-`-encoded form Claude Code names a project directory with (every
+character outside `[A-Za-z0-9]` turned into `-`). The user name is replaced inside a path, inside a `-`-encoded
+path (a token shaped like `C--…` or `-home-…`), and, from 4 characters, anywhere as a whole word (`USER=`,
+`USERNAME=`, prose); a dotted name also matches its `-`-encoded form (`david.maltby` → `david-maltby`). git's name
+and email match case-insensitively, whole-word (`Author: … <email>` in agent output). It runs **after** the secret
+passes, so a label is never rewritten.
 
 #### 17.6.4 Pass 4 — stream consistency (default)
 
@@ -10730,9 +10787,12 @@ per-attempt attribution**: it is not needed for safety.
 
 #### 17.6.6 Pass 6 — fail closed
 
-A file that is not valid UTF-8, whose scan throws, or whose scan exceeds **1 s per started MiB**, is
-**excluded and named** (reasons `not-utf8`, `scan-failed`, `scan-timeout`). A file that cannot be read or
-scanned is never shipped raw.
+A file that is not valid UTF-8, whose scan throws, or whose scan hits a pattern's own match timeout
+(`RegexMatchTimeoutException`, 10 s per pattern), is **excluded and named** (reasons `not-utf8`, `scan-failed`,
+`scan-timeout`). There is **no wall-clock budget** (#805 S7): a busy or suspended machine is not a reason to drop
+evidence. The latest attempt of a failing or in-flight task is never lost to timing alone: a timed-out scan of
+its file is retried on a halved tail, down to 64 KiB (status `tail`, reason `scan-timeout`), and only then
+excluded. A file that cannot be read or scanned is never shipped raw.
 
 #### 17.6.7 Cannot catch — the enumerated disclosure
 
@@ -10741,7 +10801,10 @@ bytes absent from every raw zip entry) or tagged with one of these ids, and the 
 in REDACTIONS.md.
 
 - **`CC1`**: a secret that no shape rule matches and that the entropy rule misses: **hex-only**, **under 24
-  characters**, or **lacking one of upper case, lower case or digit**.
+  characters**, **lacking one of upper case, lower case or digit**, or at or below the length-scaled entropy
+  threshold (3.6 bits per character for 24-31 characters, 4.0 from 32). For a uniformly random base62 token the
+  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a
+  token that happens to hold no digit.
 - **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,
   header, `NAME=value` and JSON-pair shapes.
 - **`CC3`**: a known value **transformed** before it was written: base64, reversed, or partly echoed.
@@ -10783,7 +10846,10 @@ this fixed order**, until it fits. Under `--dir` the same decisions are made aga
 make, so a tree and a zip of the same run always hold the same entries.
 
 1. The worktree diff falls back to `--stat`: the `*.diff` entries go, the `.txt` stat stays.
-2. Stream logs and gateway sessions go for every attempt except each task's **first and latest**.
+2. Stream logs and gateway sessions go for every attempt except each task's **first and latest**, and never
+   the **newest** gateway session (by last-write time; in serial mode no session is attributable, and the live
+   one is the newest) or one attributable to an in-flight attempt (#805 S3). The overwatcher's and triage's
+   streams, which belong to no attempt, go here too.
 3. Transcripts and composed prompts go for the **middle** attempts, oldest first. The first and latest are
    kept: the first shows the original approach, the latest shows the failure.
 4. Tail caps are halved, one step at a time: stream class 2 MiB → **1 MiB** → **512 KiB**; log class
@@ -10815,6 +10881,9 @@ existing ancestor** of the destination. That covers the plan folder, the run's w
 repository at `~`, which is caught rather than silently committed. The refusal happens **before anything is
 read** and exits `1`. The absolute destination path is always printed.
 
+**Never where the run writes.** A destination under the plan directory or the worktree root is refused
+**even with `--force-path`** (#805 N4): `--force-path` admits a git working tree, never the run's own tree.
+
 ### 17.9 The full-bundle warning
 
 Every full bundle (no `--lean`) prints this to **stderr** and writes it as the **first block** of SUMMARY.md
@@ -10838,8 +10907,10 @@ Identical on-disk state plus injected probes (the tool versions, `RunLiveness`, 
   with LF line endings;
 - label numbering (§17.6.1) and every table's row order are functions of the inputs, never of enumeration
   order on disk;
-- the **only** time-varying line is SUMMARY.md's `Bundled at` line, which the determinism test masks.
-  MANIFEST.md and REDACTIONS.md carry no timestamps.
+- the time- and machine-varying lines are SUMMARY.md's `Bundled at` line and the stuck-run lines of §17.4
+  (prefixes `- live: `, `- In flight for `, `- proc: `), which the determinism test masks; relaxed from "only
+  `Bundled at`" for stuck-run diagnosis (#805 S1). With the clock, the file stat and the process table
+  injected, even those are identical. MANIFEST.md and REDACTIONS.md carry no timestamps.
 
 ### 17.11 What this does NOT cover
 

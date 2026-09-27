@@ -188,7 +188,9 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.Equal("see <workspace>-plan", anonymizer.Apply(@"see C--Users-Dana-src-app-plan"));
         Assert.Equal("see ~-AppData-Local-Temp", anonymizer.Apply(@"see C--Users-Dana-AppData-Local-Temp"));
         Assert.Equal("see D--build-<user>-cache", anonymizer.Apply("see D--build-Dana-cache"));
-        Assert.Equal("task 03-dana-review", anonymizer.Apply("task 03-dana-review"));
+        // W4 (#805): the bare user name (4+ characters, word-bounded) is an identifier wherever it appears.
+        Assert.Equal("task 03-<user>-review", anonymizer.Apply("task 03-dana-review"));
+        Assert.Equal("task 03-danaher-review", anonymizer.Apply("task 03-danaher-review"));
     }
 
     [Fact]
@@ -247,7 +249,10 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.NotEqual(early.Text("SUMMARY.md"), late.Text("SUMMARY.md"));
 
         static string Mask(string text) =>
-            string.Join('\n', text.Split('\n').Select(l => l.StartsWith("Bundled at: ", StringComparison.Ordinal) ? "Bundled at: <masked>" : l));
+            string.Join('\n', text.Split('\n').Select(l =>
+                BundleBuilder.MaskedLinePrefixes.FirstOrDefault(prefix => l.StartsWith(prefix, StringComparison.Ordinal)) is { } masked
+                    ? masked + "<masked>"
+                    : l));
     }
 
     [Fact]
@@ -511,9 +516,260 @@ public sealed class BundleBuilderTests : IDisposable
         Assert.Equal(("excluded", "scan-failed"), Row(failed, "tasks/02-second/attempt-1/transcript.md"));
         Assert.False(failed.Has("tasks/02-second/attempt-1/transcript.md"));
 
-        BundleOutcome slow = _fixture.Build(probes: _fixture.Probes() with { StartScanTimer = () => () => TimeSpan.FromMinutes(5) });
+        // #805 S7: the only timing exclusion is a Regex's own timeout (there is no wall-clock budget).
+        BundleProbes timingOut = _fixture.Probes() with
+        {
+            Redact = (text, context) => context.ArtifactPath.EndsWith("feedback.md", StringComparison.Ordinal)
+                ? throw new System.Text.RegularExpressions.RegexMatchTimeoutException("x", "y", TimeSpan.FromSeconds(10))
+                : BundleRedactor.Redact(text, context),
+        };
+        BundleOutcome slow = _fixture.Build(probes: timingOut);
         Assert.Equal(("excluded", "scan-timeout"), Row(slow, "tasks/02-second/attempt-1/feedback.md"));
-        Assert.DoesNotContain(slow.Entries, e => e.Key.StartsWith("tasks/", StringComparison.Ordinal));
+        Assert.False(slow.Has("tasks/02-second/attempt-1/feedback.md"));
+    }
+
+    // ------------------------------------------------------------------ #805 review: stuck-run evidence and safety
+
+    [Fact]
+    public void S1_ALiveRunGetsLiveFilesAnInFlightDurationAndItsProcessTree()
+    {
+        _fixture.WriteJournal(BundlePlanFixture.Journal(
+            secondStatus: JournalTaskStatus.Running,
+            inFlight: new InFlightAttemptRecord { Attempt = 2, StartedAt = BundlePlanFixture.Clock.AddMinutes(-7), Phase = "action" }));
+        _fixture.PromptAttempt("02-second", 1, "first");
+        _fixture.PromptAttempt("02-second", 2, "second");
+        _fixture.Log("02-second/attempt-2/action-stdout.log", "still going\n");
+        _fixture.Log("events.jsonl", "{\"kind\":\"attempt-started\"}\n");
+        _fixture.Liveness = RunLivenessState.Running;
+        _fixture.ProcessTree = pid => new BundleProcessTree(
+        [
+            new BundleProcessRow(pid, 1, "S", "00:10:00", "0.1", "guardrails run plan-x"),
+            new BundleProcessRow(5001, pid, "R", "00:07:00", "97.0", $"claude -p --settings {_fixture.Home}/x QWEN_TOKEN={BundlePlanFixture.KnownToken}"),
+        ], null);
+        DateTimeOffset written = BundlePlanFixture.Clock.AddMinutes(-2);
+        BundleProbes probes = _fixture.Probes() with
+        {
+            Stat = path => File.Exists(path) ? new BundleFileStat(new FileInfo(path).Length, written) : null,
+        };
+
+        string summary = _fixture.Build(probes: probes).Text("SUMMARY.md")!;
+
+        Assert.Contains("- In flight for 7m 00s (since the marker's startedAt)", summary, StringComparison.Ordinal);
+        Assert.Contains("- live: tasks/02-second/attempt-2/claude-stream.jsonl — ", summary, StringComparison.Ordinal);
+        Assert.Contains("- live: tasks/02-second/attempt-2/action-stdout.log — 12 bytes, last write 2026-09-27T11:58:00Z (2m 00s before Bundled at)", summary, StringComparison.Ordinal);
+        Assert.Contains("- live: run/events.jsonl — ", summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("- live: tasks/02-second/attempt-1/", summary, StringComparison.Ordinal);
+        string proc = summary.Split('\n').Single(l => l.StartsWith("- proc: 5001", StringComparison.Ordinal));
+        // The command line is anonymized and redacted (the entropy rule may take `NAME=value` as one run: over-redaction).
+        Assert.StartsWith("- proc: 5001 (parent 4242) R 00:07:00 97.0 — claude -p --settings ~/x ", proc, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED:QWEN_TOKEN#1]", proc, StringComparison.Ordinal);
+        Assert.DoesNotContain(BundlePlanFixture.KnownToken, summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void S1_AProcessTreeThatCannotBeReadIsNotedAndANotRunningOwnerIsNotProbed()
+    {
+        StandardRun();
+        _fixture.Liveness = RunLivenessState.Running;
+        _fixture.ProcessTree = _ => BundleProcessTree.Failed("ps is not on PATH");
+        Assert.Contains("- proc: unavailable (ps is not on PATH)", _fixture.Build().Text("SUMMARY.md"), StringComparison.Ordinal);
+
+        int probed = 0;
+        _fixture.Liveness = RunLivenessState.Ended;
+        _fixture.ProcessTree = _ => { probed++; return BundleProcessTree.Failed("unused"); };
+        Assert.Contains("Not captured: the run's owner process is not running (liveness: Ended).", _fixture.Build().Text("SUMMARY.md"), StringComparison.Ordinal);
+        Assert.Equal(0, probed);
+    }
+
+    [Fact]
+    public void S1_TheProcessTableParsersKeepOnlyTheOwnersDescendants()
+    {
+        IReadOnlyList<BundleProcessRow> ps = SystemBundleProcessTree.ParsePs(
+            "  1     0 Ss   10:00:00  0.0 /sbin/init\n 4242     1 S    05:00  0.1 dotnet guardrails run plan\n"
+            + " 5001  4242 R    04:00 97.0 claude -p --model x\n 6000     1 S    01:00  0.0 unrelated\n 5002  5001 S    03:00  1.0 node tool\n");
+        Assert.Equal([4242, 5001, 5002], BundleProcessTree.Descendants(4242, ps).Select(r => r.Pid));
+        Assert.Equal("claude -p --model x", ps.Single(r => r.Pid == 5001).Command);
+
+        IReadOnlyList<BundleProcessRow> cim = SystemBundleProcessTree.ParseCim(
+            "[{\"ProcessId\":4242,\"ParentProcessId\":1,\"Started\":\"2026-09-27T11:00:00Z\",\"CommandLine\":\"guardrails run\"},"
+            + "{\"ProcessId\":7,\"ParentProcessId\":4242,\"Started\":null,\"CommandLine\":null}]",
+            BundlePlanFixture.Clock);
+        Assert.Equal("01:00:00", cim.Single(r => r.Pid == 4242).Elapsed);
+        Assert.Equal([4242, 7], BundleProcessTree.Descendants(4242, cim).Select(r => r.Pid));
+    }
+
+    [Fact]
+    public void S2_UnderTaskARunLevelSessionOfAnotherTaskOrOfNoAttemptIsListedOnly()
+    {
+        StandardRun();
+        _fixture.PromptAttempt("01-first", 1, "one");
+        _fixture.Log($"claude-config/projects/-wt-run-{ClaudeName("01-first/attempt-1")}/s1.jsonl", "{\"t\":1}\n");
+        _fixture.Log($"claude-config/projects/-wt-run-{ClaudeName("02-second/attempt-1")}/s2.jsonl", "{\"t\":2}\n");
+
+        BundleOutcome outcome = _fixture.Build(new BundleOptions { Tasks = ["02-second"] });
+
+        List<BundleManifestRow> sessions = [.. outcome.Manifest.Where(r => r.BundlePath?.StartsWith("gateway/sessions/", StringComparison.Ordinal) == true)];
+        Assert.Contains(sessions, r => r.BundlePath!.EndsWith("/s2.jsonl", StringComparison.Ordinal) && r.Status == "included");
+        Assert.Contains(sessions, r => r.BundlePath!.EndsWith("/s1.jsonl", StringComparison.Ordinal) && (r.Status, r.Reason) == ("listed-only", "task-filter"));
+        Assert.Contains(sessions, r => r.BundlePath!.EndsWith("/session-1.jsonl", StringComparison.Ordinal) && (r.Status, r.Reason) == ("listed-only", "task-filter"));
+        Assert.DoesNotContain(outcome.Entries, e => e.Key.EndsWith("/s1.jsonl", StringComparison.Ordinal));
+    }
+
+    private static string ClaudeName(string path) => BundlePathAnonymizer.Encode(path);
+
+    [Fact]
+    public void S3_TierTwoKeepsTheNewestSessionEvenWhenNoAttemptClaimsIt()
+    {
+        // Serial mode: no session is attributable, so before #805 tier 2 dropped all of them, the live one included.
+        StandardRun();
+        var random = new Random(8053);
+        string older = _fixture.Log("claude-config/projects/p-old/old.jsonl", RandomHexLines(random, 300_000));
+        string newer = _fixture.Log("claude-config/projects/p-new/new.jsonl", RandomHexLines(random, 300_000));
+        BundleProbes probes = _fixture.Probes() with
+        {
+            Stat = path => new BundleFileStat(1, path == newer ? BundlePlanFixture.Clock : BundlePlanFixture.Clock.AddHours(-1)),
+        };
+        long baseline = _fixture.Build(probes: probes).Zip.LongLength;
+
+        BundleOutcome outcome = _fixture.Build(new BundleOptions { MaxSizeBytes = baseline - 1000 }, probes);
+
+        Assert.True(outcome.Entries.Any(e => e.Key.EndsWith("/new.jsonl", StringComparison.Ordinal)), "the newest session was trimmed");
+        Assert.Contains(outcome.Manifest, r => r.BundlePath?.EndsWith("/old.jsonl", StringComparison.Ordinal) == true && r.Reason == "trim-tier-2");
+        _ = older;
+    }
+
+    [Theory]
+    [InlineData("2026-09-27T10-00-00Z-ab12", true)]
+    [InlineData("../other", false)]
+    [InlineData("a/b", false)]
+    [InlineData("a\\b", false)]
+    [InlineData("..", false)]
+    [InlineData(".", false)]
+    [InlineData("C:x", false)]
+    [InlineData("/abs", false)]
+    [InlineData("", false)]
+    public void S4_ARunIdIsASinglePathSegment(string runId, bool safe) => Assert.Equal(safe, BundleBuilder.IsSafeRunId(runId));
+
+    [Fact]
+    public void S4_ThePathLikeRunIdIsRefusedBeforeAnythingIsRead()
+    {
+        StandardRun();
+        Assert.Throws<BundleRefusedException>(() => _fixture.Build(new BundleOptions { RunId = "../../x" }));
+    }
+
+    [Theory]
+    [InlineData("abc1234", true)]
+    [InlineData("e46f75a26a692180f0ff3d0b27d63a706aef939c", true)]
+    [InlineData("--output=/tmp/x", false)]
+    [InlineData("HEAD~3", false)]
+    [InlineData("ABC1234", false)]
+    [InlineData("abc12", false)]
+    [InlineData(null, false)]
+    public void S5_OnlyACommitIdIsUsedAsABase(string? value, bool ok) => Assert.Equal(ok, BundleBuilder.IsCommitId(value));
+
+    [Fact]
+    public void S5_ASegmentOutsideTheWorktreeRootIsSkippedAndAValidBaseUsesEndOfOptions()
+    {
+        string root = Path.Combine(_fixture.Root, "wt");
+        string inside = Path.Combine(root, BundlePlanFixture.RunId, "02-second", "attempt-1");
+        string outside = Path.Combine(_fixture.Root, "elsewhere");
+        Directory.CreateDirectory(inside);
+        Directory.CreateDirectory(outside);
+
+        _fixture.WriteJournal(BundlePlanFixture.Journal(secondAttempts: [BundlePlanFixture.Attempt(1, AttemptOutcome.GuardrailFailed, inside, "abc1234")]));
+        _fixture.PromptAttempt("02-second", 1, "x");
+        _fixture.Log("02-second/attempt-1/attempt-provenance.json", $"{{\"model\":\"m\",\"worktreePath\":{System.Text.Json.JsonSerializer.Serialize(inside)},\"baseCommit\":\"abc1234\"}}\n");
+        BundleOutcome confined = _fixture.Build(probes: _fixture.Probes() with { WorktreeRoot = root });
+        Assert.Contains(_fixture.GitCalls, c => c.SequenceEqual(["diff", "--stat", "--end-of-options", "abc1234..HEAD"]));
+        Assert.Contains("$ git status", confined.Text("git/02-second.txt"), StringComparison.Ordinal);
+
+        _fixture.GitCalls.Clear();
+        _fixture.Log("02-second/attempt-1/attempt-provenance.json", $"{{\"model\":\"m\",\"worktreePath\":{System.Text.Json.JsonSerializer.Serialize(outside)},\"baseCommit\":\"--output=x\"}}\n");
+        BundleOutcome escaped = _fixture.Build(probes: _fixture.Probes() with { WorktreeRoot = root });
+        Assert.Contains("(skipped: the recorded worktree path does not resolve under the worktree root)", escaped.Text("git/02-second.txt"), StringComparison.Ordinal);
+        Assert.DoesNotContain(_fixture.GitCalls, c => c.Contains("--output=x..HEAD"));
+    }
+
+    [Fact]
+    public void S6_ASymlinkIsListedButNeverReadOrRecursed()
+    {
+        StandardRun();
+        string outsideDir = Path.Combine(_fixture.Root, "outside");
+        Directory.CreateDirectory(outsideDir);
+        string outsideFile = Path.Combine(outsideDir, "private.txt");
+        File.WriteAllText(outsideFile, "outside-the-plan-secret-marker\n");
+        string fileLink = Path.Combine(_fixture.RunLogs, "02-second", "attempt-1", "transcript.md");
+        string dirLink = Path.Combine(_fixture.RunLogs, "linked-dir");
+        File.Delete(fileLink);
+        try
+        {
+            File.CreateSymbolicLink(fileLink, outsideFile);
+            Directory.CreateSymbolicLink(dirLink, outsideDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Assert.Skip($"this machine does not permit creating symbolic links ({ex.GetType().Name}: {ex.Message})");
+        }
+
+        BundleOutcome outcome = _fixture.Build();
+
+        Assert.All(outcome.AllText(), t => Assert.DoesNotContain("outside-the-plan-secret-marker", t, StringComparison.Ordinal));
+        Assert.Contains(outcome.Manifest, r => r.Source.EndsWith("/attempt-1/transcript.md", StringComparison.Ordinal) && (r.Status, r.Reason) == ("excluded", "symlink"));
+        Assert.Contains(outcome.Manifest, r => r.Source.EndsWith("/linked-dir", StringComparison.Ordinal) && (r.Status, r.Reason) == ("excluded", "symlink"));
+        Assert.DoesNotContain(outcome.Manifest, r => r.Source.EndsWith("/private.txt", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void S8_TheInFlightMarkerLogAndTheOverwatchAndTriageStreamsAreBundled()
+    {
+        StandardRun();
+        _fixture.Log("02-second/inflight-marker.log", "attempt 1 started\n");
+        _fixture.Log("02-second/overwatch-stream-attempt-1.jsonl", $"{{\"text\":\"{BundlePlanFixture.KnownToken}\"}}\n");
+        _fixture.Log("02-second/overwatch-noverdict-attempt-1.txt", "no verdict\n");
+        _fixture.Log("02-second/triage-stream.jsonl", "{\"text\":\"triage\"}\n");
+
+        BundleOutcome full = _fixture.Build();
+        foreach (string path in new[] { "inflight-marker.log", "overwatch-stream-attempt-1.jsonl", "overwatch-noverdict-attempt-1.txt", "triage-stream.jsonl" })
+        {
+            Assert.True(full.Has("tasks/02-second/" + path), path);
+        }
+
+        Assert.Contains("[REDACTED:QWEN_TOKEN#1]", full.Text("tasks/02-second/overwatch-stream-attempt-1.jsonl"), StringComparison.Ordinal);
+
+        BundleOutcome stripped = _fixture.Build(new BundleOptions { WithoutAgentText = true });
+        Assert.True(stripped.Has("tasks/02-second/inflight-marker.log"));
+        Assert.False(stripped.Has("tasks/02-second/overwatch-stream-attempt-1.jsonl"));
+        Assert.False(stripped.Has("tasks/02-second/triage-stream.jsonl"));
+    }
+
+    [Fact]
+    public void TheProtectedLatestStreamIsNeverLostToTimingAlone()
+    {
+        // 02-second is needs-human, so attempt 1 is the latest attempt of a failing task. A scan that times out on its
+        // stream is retried on a halved tail instead of excluding the file.
+        StandardRun();
+        var stream = new StringBuilder();
+        while (stream.Length < 400_000)
+        {
+            stream.Append("{\"type\":\"assistant\",\"text\":\"working on it\"}\n");
+        }
+
+        // The transcript carries the known token; so must the stream's tail, or pass 4 would exclude it for that instead.
+        stream.Append($"{{\"type\":\"assistant\",\"text\":\"token {BundlePlanFixture.KnownToken} here\"}}\n");
+
+        _fixture.Log("02-second/attempt-1/claude-stream.jsonl", stream.ToString());
+        BundleProbes timingOutOnLargeInput = _fixture.Probes() with
+        {
+            Redact = (text, context) => context.ArtifactPath.EndsWith("claude-stream.jsonl", StringComparison.Ordinal) && text.Length > 200_000
+                ? throw new System.Text.RegularExpressions.RegexMatchTimeoutException("x", "y", TimeSpan.FromSeconds(10))
+                : BundleRedactor.Redact(text, context),
+        };
+
+        BundleOutcome outcome = _fixture.Build(probes: timingOutOnLargeInput);
+
+        Assert.Equal(("tail", "scan-timeout"), Row(outcome, "tasks/02-second/attempt-1/claude-stream.jsonl"));
+        int kept = outcome.Entries.Single(e => e.Key == "tasks/02-second/attempt-1/claude-stream.jsonl").Value.Length;
+        Assert.InRange(kept, 64 * 1024, 200_000);
     }
 
     [Fact]

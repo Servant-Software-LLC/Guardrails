@@ -92,7 +92,8 @@ public sealed partial class BundleBuilder
         _anonymizer = _options.KeepPaths
             ? null
             : new BundlePathAnonymizer(
-                _probes.Home, _plan.Workspace, _probes.WorktreeRoot, _probes.UserName,
+                _probes.Home, _plan.Workspace, _probes.WorktreeRoot,
+                new BundleIdentity(_probes.UserName, GitConfig("user.name"), GitConfig("user.email")),
                 [_journal?.Environment?.Host, _journal?.Owner?.Host], _probes.CaseInsensitivePaths);
 
         CollectPlanFiles(validateOutput);
@@ -120,7 +121,17 @@ public sealed partial class BundleBuilder
 
     private void ReadJournalFirst()
     {
+        if (_options.RunId is { } requested && !IsSafeRunId(requested))
+        {
+            throw new BundleRefusedException($"--run must be a single run id, not a path ('{requested}').");
+        }
+
         string journalPath = RunJournal.PathFor(_plan.PlanDirectory);
+        if (File.Exists(journalPath) && IsLink(new FileInfo(journalPath)))
+        {
+            throw new BundleRefusedException("state/run.json is a symbolic link; the bundle never reads through a link.");
+        }
+
         if (File.Exists(journalPath))
         {
             BundleRead read = _probes.Reader.Read(journalPath);
@@ -154,6 +165,27 @@ public sealed partial class BundleBuilder
     }
 
     private BundleRead? _journalRead;
+
+    /// <summary>
+    /// #805 S4: a <c>--run</c> value is one path segment — no separator, no <c>.</c> or <c>..</c>, not rooted, no invalid
+    /// file-name character — so it can only name a directory directly under <c>logs/</c>.
+    /// </summary>
+    public static bool IsSafeRunId(string runId) =>
+        runId.Length > 0
+        && runId is not ("." or "..")
+        && !runId.Contains("..", StringComparison.Ordinal)
+        && runId.IndexOfAny(['/', '\\', ':']) < 0
+        && runId.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+        && !Path.IsPathRooted(runId);
+
+    // W4 (#805): git's identity, read at bundle time through the lock-free process-wide git settings (§17.2 item 5).
+    private string? GitConfig(string key)
+    {
+        string directory = Directory.Exists(_plan.Workspace) ? _plan.Workspace : _plan.PlanDirectory;
+        BundleProcessResult result = _probes.Git.Run(directory, ["config", "--get", key]);
+        string value = result.Succeeded ? result.StandardOutput.Trim() : string.Empty;
+        return value.Length > 0 ? value : null;
+    }
 
     /// <summary>The journal that describes the bundled run, or null for an earlier run (built from its logs alone).</summary>
     private JournalDocument? RunJournalDoc => _earlierRun ? null : _journal;
@@ -347,7 +379,7 @@ public sealed partial class BundleBuilder
 
     private void CollectLogs()
     {
-        if (!Directory.Exists(_runLogs))
+        if (!Directory.Exists(_runLogs) || SkipLink(new DirectoryInfo(_runLogs)))
         {
             return;
         }
@@ -478,14 +510,13 @@ public sealed partial class BundleBuilder
             projectNumbers[Path.GetFileName(dir)] = projectNumbers.Count + 1;
         }
 
-        foreach (string file in Directory.EnumerateFiles(projects, "*.jsonl", SearchOption.AllDirectories)
-                     .OrderBy(f => f, StringComparer.Ordinal))
+        foreach (string file in WalkFiles(projects, name => name.EndsWith(".jsonl", StringComparison.Ordinal)))
         {
             string relative = Relative(projects, file);
             int slash = relative.IndexOf('/', StringComparison.Ordinal);
             string? original = slash < 0 ? null : relative[..slash];
             string shipped = original is null ? relative : $"project-{projectNumbers[original]}{relative[slash..]}";
-            Add(new Entry
+            var session = new Entry
             {
                 BundlePath = prefix + shipped,
                 SourcePath = file,
@@ -494,7 +525,17 @@ public sealed partial class BundleBuilder
                 TaskId = task,
                 Attempt = attempt,
                 SessionProjectDir = original,
-            });
+            };
+
+            // #805 S2: --task narrows per-task evidence, and a run-level session is per-task evidence once attributed. A
+            // session of an unselected task, or one no attempt claims, is listed only.
+            string? owner = task is null && _options.Tasks.Count > 0 ? AttributedAttempt(session).Task : task;
+            if (task is null && _options.Tasks.Count > 0 && (owner is null || !_selectedTasks.Contains(owner, StringComparer.Ordinal)))
+            {
+                session.Exclude("listed-only", "task-filter", BundleFileStat.Of(file)?.Length ?? 0);
+            }
+
+            Add(session);
         }
     }
 
@@ -610,7 +651,7 @@ public sealed partial class BundleBuilder
 
     private void ListRecursively(string dir)
     {
-        foreach (string file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal))
+        foreach (string file in WalkFiles(dir, _ => true))
         {
             Add(Listed(file, "listed-only", "unknown-kind"));
         }
@@ -682,6 +723,12 @@ public sealed partial class BundleBuilder
         }
         else
         {
+            if (entry.Raw is null && entry.PreRead is null && IsLink(new FileInfo(entry.SourcePath!)))
+            {
+                entry.Exclude("excluded", "symlink", 0);
+                return;
+            }
+
             if (entry.Raw is null)
             {
                 BundleRead read = entry.PreRead ?? _probes.Reader.Read(
@@ -740,11 +787,33 @@ public sealed partial class BundleBuilder
             return;
         }
 
-        Func<TimeSpan> elapsed = _probes.StartScanTimer();
+        // #805 S7: no wall-clock budget. Each Regex carries its own timeout; a RegexMatchTimeoutException is the only
+        // timing exclusion, and it is never shipped raw.
         BundleRedactionResult result;
         try
         {
             result = _probes.Redact(text, ContextFor(entry.BundlePath!));
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException) when (entry.Raw is { } raw && IsProtectedLatest(entry))
+        {
+            // The latest attempt of a failing or in-flight task is the evidence that matters most: never lose it to timing
+            // alone. Retry on a halved tail, down to 64 KiB, before giving up (fail closed).
+            long next = Math.Min(entry.CapOverride ?? raw.LongLength, raw.LongLength) / 2;
+            if (next >= MinimumRetryTail)
+            {
+                entry.CapOverride = next;
+                Materialize(entry);
+                if (entry.Included)
+                {
+                    entry.Status = "tail";
+                    entry.Reason = "scan-timeout";
+                }
+
+                return;
+            }
+
+            entry.Exclude("excluded", "scan-timeout", entry.Bytes);
+            return;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -752,15 +821,10 @@ public sealed partial class BundleBuilder
             return;
         }
 
-        long startedMiB = Math.Max(1, (Encoding.UTF8.GetByteCount(text) + (1024L * 1024) - 1) / (1024L * 1024));
-        if (elapsed() > TimeSpan.FromSeconds(startedMiB))
-        {
-            entry.Exclude("excluded", "scan-timeout", entry.Bytes);
-            return;
-        }
-
         entry.SetContent(result.Text, result.Labels);
     }
+
+    private const long MinimumRetryTail = 64L * 1024;
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -821,11 +885,49 @@ public sealed partial class BundleBuilder
     private static string Relative(string root, string path) =>
         Path.GetRelativePath(root, path).Replace('\\', '/');
 
-    private static IEnumerable<string> SortedFiles(string dir) =>
-        Directory.EnumerateFiles(dir).OrderBy(f => f, StringComparer.Ordinal);
+    // #805 S6: a symbolic link or any other reparse point is never read and never recursed through. It is listed once,
+    // by its own path, as excluded (`symlink`): a link could point anywhere, outside the plan included.
+    private IEnumerable<string> SortedFiles(string dir) =>
+        Directory.EnumerateFiles(dir).OrderBy(f => f, StringComparer.Ordinal).Where(f => !SkipLink(new FileInfo(f))).ToList();
 
-    private static IEnumerable<string> SortedDirectories(string dir) =>
-        Directory.EnumerateDirectories(dir).OrderBy(d => d, StringComparer.Ordinal);
+    private IEnumerable<string> SortedDirectories(string dir) =>
+        Directory.EnumerateDirectories(dir).OrderBy(d => d, StringComparer.Ordinal).Where(d => !SkipLink(new DirectoryInfo(d))).ToList();
+
+    /// <summary>Every non-link file under <paramref name="dir"/> matching <paramref name="pattern"/>, never through a link.</summary>
+    private List<string> WalkFiles(string dir, Func<string, bool> pattern)
+    {
+        var files = new List<string>(SortedFiles(dir).Where(f => pattern(Path.GetFileName(f))));
+        foreach (string inner in SortedDirectories(dir))
+        {
+            files.AddRange(WalkFiles(inner, pattern));
+        }
+
+        files.Sort(StringComparer.Ordinal);
+        return files;
+    }
+
+    private readonly HashSet<string> _linksListed = new(StringComparer.Ordinal);
+
+    private bool SkipLink(FileSystemInfo info)
+    {
+        if (!IsLink(info))
+        {
+            return false;
+        }
+
+        if (_linksListed.Add(info.FullName))
+        {
+            var row = new Entry { SourcePath = info.FullName };
+            row.Exclude("excluded", "symlink", 0);
+            Add(row);
+        }
+
+        return true;
+    }
+
+    /// <summary>A symbolic link, junction or any other reparse point.</summary>
+    public static bool IsLink(FileSystemInfo info) =>
+        info.LinkTarget is not null || (info.Exists && info.Attributes.HasFlag(FileAttributes.ReparsePoint));
 
     private string DisplaySource(Entry entry)
     {

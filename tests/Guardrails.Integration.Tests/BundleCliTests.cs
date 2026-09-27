@@ -141,6 +141,57 @@ public sealed class BundleCliTests
         }
     }
 
+    /// <summary>
+    /// #805 W7: a prompt attempt caught mid-stream. The fake Claude emits <see cref="LiveRunFixture.HeldPromptLines"/>
+    /// stream lines and then blocks; the bundle taken while it is blocked must carry the stream's CURRENT tail cut on a
+    /// newline, and SUMMARY must name the in-flight prompt attempt, its stream (as evidence), and the Live files block.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Bundle")]
+    public async Task APromptHeldMidStream_BundlesTheCurrentStreamTail_AndSummaryNamesTheLiveAttempt()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using var live = new LiveRunFixture(holdPrompt: true);
+
+        using Process run = live.StartRun();
+        Task<string> runOut = run.StandardOutput.ReadToEndAsync(ct);
+        Task<string> runErr = run.StandardError.ReadToEndAsync(ct);
+        try
+        {
+            // Wait until the harness has teed every emitted line into the prompt attempt's stream log.
+            await WaitUntilAsync(() => live.PromptStreamLines() >= LiveRunFixture.HeldPromptLines, run,
+                async () => await runOut + await runErr, "the held prompt's stream lines to reach claude-stream.jsonl", ct);
+
+            string zip = Path.Combine(live.OutDir, "held-prompt.zip");
+            CliResult bundle = await RunCliAsync(["bundle", live.PlanDir, "--out", zip, "--force-path"], live.ChildEnvironment, ct);
+            Assert.True(bundle.ExitCode == 0, $"the held-prompt bundle exited {bundle.ExitCode}:\n{bundle.Error}");
+
+            const string stream = "tasks/02-prompt/attempt-1/claude-stream.jsonl";
+            string tail = EntryText(zip, stream);
+            Assert.Contains($"held line {LiveRunFixture.HeldPromptLines}", tail, StringComparison.Ordinal);
+            Assert.EndsWith("\n", tail, StringComparison.Ordinal);
+            Assert.All(tail.Split('\n', StringSplitOptions.RemoveEmptyEntries), line => JsonDocument.Parse(line).Dispose());
+
+            string summary = EntryText(zip, "SUMMARY.md");
+            Assert.Contains("### 02-prompt", summary, StringComparison.Ordinal);
+            Assert.Contains("- In flight: attempt-1 (phase ", summary, StringComparison.Ordinal);
+            Assert.Contains("- In flight for ", summary, StringComparison.Ordinal);
+            Assert.Contains("### Live files", summary, StringComparison.Ordinal);
+            Assert.Contains($"- live: {stream} — ", summary, StringComparison.Ordinal);
+            Assert.Contains($"- {stream}\n", summary.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+            Assert.Contains("### Process tree", summary, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.WriteAllText(live.ReleaseSignal, "go");
+            await run.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromMinutes(3), ct).ContinueWith(_ => { }, TaskScheduler.Default);
+            if (!run.HasExited)
+            {
+                try { run.Kill(entireProcessTree: true); } catch (InvalidOperationException) { /* already gone */ }
+            }
+        }
+    }
+
     // =====================================================================================================
     // 2. Windows sharing (#727)
     // =====================================================================================================
@@ -151,6 +202,15 @@ public sealed class BundleCliTests
     /// CLI bundles the plan repeatedly. No write may exhaust its retries. On Windows this is the #727 hazard itself; on
     /// POSIX a rename never collides with a reader, so the same loop proves the bundle still parses a journal that is
     /// being replaced under it.
+    /// <para>
+    /// <b>This is a SMOKE test, not a proof of contention (#805 W8).</b> Whether a bundle's read handle is open at the
+    /// instant a replace runs is a scheduling accident: nothing here can force the overlap, so the test cannot assert
+    /// that a retry happened (asserting it would be flaky, and asserting it on POSIX would be false). What it does
+    /// assert is that writes and bundles really ran concurrently (<c>writesDuring &gt; 0</c>) and that no write ever
+    /// exhausted its retries. The retry count is reported as a diagnostic so a run that did collide is visible. The
+    /// deterministic proof of the read discipline is in Core: <c>BundleFileReaderTests</c> drives the sharing-error
+    /// retry and backoff through an injected opener.
+    /// </para>
     /// </summary>
     [Fact]
     [Trait("Category", "Bundle")]
@@ -479,6 +539,46 @@ public sealed class BundleCliTests
         Assert.StartsWith(note, Encoding.UTF8.GetString(entries["SUMMARY.md"]), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [Trait("Category", "Bundle")]
+    [InlineData("../elsewhere")]
+    [InlineData("a/b")]
+    [InlineData("..")]
+    public async Task APathLikeRunId_IsRefusedBeforeAnythingIsRead(string runId)
+    {
+        using var run = new SyntheticRun();
+        var host = new RecordingHost(run.Home, run.Environment);
+        string zip = Path.Combine(run.OutDir, "refused", "b.zip");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, "--out", zip, "--run", runId);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("refused: --run must be a single run id", io.ErrorText, StringComparison.Ordinal);
+        host.AssertNothingWasRead();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(zip)));
+    }
+
+    [Theory]
+    [Trait("Category", "Bundle")]
+    [InlineData("--out")]
+    [InlineData("--dir")]
+    public async Task ADestinationUnderThePlanDirectory_IsRefusedEvenWithForcePath(string flag)
+    {
+        using var run = new SyntheticRun();
+        var host = new RecordingHost(run.Home, run.Environment);
+        string destination = flag == "--out"
+            ? Path.Combine(run.PlanDir, "evidence", "b.zip")
+            : Path.Combine(run.PlanDir, "evidence-tree");
+
+        (int exit, StringConsoleIo io) = await InvokeBundleAsync(host.Host, "bundle", run.PlanDir, flag, destination, "--force-path");
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("is under the plan directory", io.ErrorText, StringComparison.Ordinal);
+        host.AssertNothingWasRead();
+        Assert.False(File.Exists(destination));
+        Assert.False(Directory.Exists(Path.Combine(run.PlanDir, flag == "--out" ? "evidence" : "evidence-tree")));
+    }
+
     [Fact]
     [Trait("Category", "Bundle")]
     public async Task LeanWithIncludeWorktreeDiff_IsRefusedBeforeAnythingIsRead()
@@ -803,6 +903,10 @@ public sealed class BundleCliTests
                 },
                 // Never mutate the test process's environment: compute the plan, apply nothing.
                 ApplyGitEnvironment = () => BundleGitEnvironment.Compute(_ => null),
+
+                // The fixed probe says the owner (4242) is Running, so SUMMARY asks for its process tree. The real table
+                // would differ bundle to bundle; a fixed answer keeps two bundles of one state byte-identical.
+                ProcessTree = pid => new BundleProcessTree([new BundleProcessRow(pid, 1, "S", "00:05:00", "0.0", "guardrails run plan-b")], null),
             };
         }
 
@@ -1165,7 +1269,10 @@ public sealed class BundleCliTests
 
         private readonly string _root;
 
-        public LiveRunFixture()
+        /// <summary>How many stream lines the held fake Claude emits before it blocks (#805 W7).</summary>
+        public const int HeldPromptLines = 5;
+
+        public LiveRunFixture(bool holdPrompt = false)
         {
             _root = Path.Combine(Path.GetTempPath(), "gr-bundle-live-" + Guid.NewGuid().ToString("N"));
             RepoPath = Path.Combine(_root, "repo");
@@ -1187,7 +1294,7 @@ public sealed class BundleCliTests
             TempRepo.Git(RepoPath, "config", "user.name", "Guardrails Test");
             File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# bundle live test\n");
 
-            string fakeClaude = WriteFakeClaude(fake);
+            string fakeClaude = holdPrompt ? WriteHeldFakeClaude(fake, ReleaseSignal) : WriteFakeClaude(fake);
             Directory.CreateDirectory(PlanDir);
             File.WriteAllText(Path.Combine(PlanDir, PlanGitignore.FileName), PlanGitignore.Content);
             File.WriteAllText(Path.Combine(PlanDir, "guardrails.json"),
@@ -1211,7 +1318,7 @@ public sealed class BundleCliTests
                 }
                 """);
 
-            WriteScriptTask("01-held", [], HeldActionBody(StartedSignal, ReleaseSignal));
+            WriteScriptTask("01-held", [], holdPrompt ? WriteFileBody("01-held") : HeldActionBody(StartedSignal, ReleaseSignal));
             WritePromptTask("02-prompt", ["01-held"]);
             WriteScriptTask("03-third", ["02-prompt"], WriteFileBody("03-third"));
             WriteScriptTask("04-fourth", ["03-third"], WriteFileBody("04-fourth"));
@@ -1235,6 +1342,28 @@ public sealed class BundleCliTests
         /// <summary>The run and every bundle share one worktree root, so the bundle anonymizes and reads the run's own.</summary>
         public IReadOnlyDictionary<string, string> ChildEnvironment =>
             new Dictionary<string, string>(StringComparer.Ordinal) { [SchedulerFactory.WorktreeRootEnvVar] = WorktreeRoot };
+
+        /// <summary>The lines the harness has written so far to 02-prompt's first attempt's stream log (any run id).</summary>
+        public int PromptStreamLines()
+        {
+            string logs = Path.Combine(PlanDir, "logs");
+            if (!Directory.Exists(logs))
+            {
+                return 0;
+            }
+
+            foreach (string runDir in Directory.EnumerateDirectories(logs))
+            {
+                string stream = Path.Combine(runDir, "02-prompt", "attempt-1", "claude-stream.jsonl");
+                if (File.Exists(stream))
+                {
+                    using var reader = new StreamReader(new FileStream(stream, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+                    return reader.ReadToEnd().Split('\n').Count(l => l.Contains("held line", StringComparison.Ordinal));
+                }
+            }
+
+            return 0;
+        }
 
         public Process StartRun()
         {
@@ -1289,6 +1418,52 @@ public sealed class BundleCliTests
               + $"printf 'x' > '{started}'\n"
               + $"for i in $(seq 1 3600); do [ -e '{release}' ] && exit 0; sleep 0.05; done\n"
               + "exit 3\n";
+
+        /// <summary>
+        /// A fake Claude CLI that emits <see cref="HeldPromptLines"/> assistant lines, flushing each, then blocks until
+        /// <paramref name="release"/> exists (3-minute hang guard), then writes its file and a result line.
+        /// </summary>
+        private static string WriteHeldFakeClaude(string dir, string release)
+        {
+            if (Windows)
+            {
+                string ps1 = Path.Combine(dir, "held-claude.ps1");
+                File.WriteAllText(ps1,
+                    $$$"""
+                    $null = [Console]::In.ReadToEnd()
+                    for ($i = 1; $i -le {{{HeldPromptLines}}}; $i++) {
+                      [Console]::Out.WriteLine('{"type":"assistant","message":{"content":[{"type":"text","text":"held line ' + $i + '"}]}}')
+                      [Console]::Out.Flush()
+                    }
+                    $deadline = (Get-Date).AddMinutes(3)
+                    while (-not (Test-Path '{{{release}}}')) { if ((Get-Date) -gt $deadline) { exit 3 }; Start-Sleep -Milliseconds 50 }
+                    $ws = $env:GUARDRAILS_WORKSPACE; if (-not $ws) { $ws = (Get-Location).Path }
+                    New-Item -ItemType Directory -Force -Path (Join-Path $ws 'src') | Out-Null
+                    Set-Content -NoNewline -Path (Join-Path $ws 'src/02-prompt.txt') -Value 'prompt'
+                    [Console]::Out.WriteLine('{"type":"result","is_error":false,"result":"fake done","total_cost_usd":0.01,"num_turns":1}')
+                    [Console]::Out.Flush()
+                    """);
+                string cmd = Path.Combine(dir, "held-claude.cmd");
+                File.WriteAllText(cmd, $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"{ps1}\"\r\n");
+                return cmd;
+            }
+
+            string sh = Path.Combine(dir, "held-claude.sh");
+            WriteScript(sh,
+                $$$"""
+                #!/usr/bin/env bash
+                cat > /dev/null
+                for i in $(seq 1 {{{HeldPromptLines}}}); do
+                  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"held line %s"}]}}\n' "$i"
+                done
+                for i in $(seq 1 3600); do [ -e '{{{release}}}' ] && break; sleep 0.05; done
+                ws="${GUARDRAILS_WORKSPACE:-$PWD}"
+                mkdir -p "$ws/src"
+                printf 'prompt' > "$ws/src/02-prompt.txt"
+                printf '{"type":"result","is_error":false,"result":"fake done","total_cost_usd":0.01,"num_turns":1}\n'
+                """);
+            return sh;
+        }
 
         /// <summary>A fake Claude CLI: drain stdin, write its file, emit an assistant line and a result line.</summary>
         private static string WriteFakeClaude(string dir)

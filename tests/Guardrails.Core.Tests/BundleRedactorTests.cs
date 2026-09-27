@@ -371,6 +371,107 @@ public sealed class BundleRedactorTests
         Assert.Equal("a [REDACTED:DEV_TOKEN#1] b ~/x\n", result.Text);
     }
 
+    // ------------------------------------------------------------------ #805 review: redaction blockers and weak spots
+
+    [Theory]
+    [InlineData("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"{\\\"password\\\":\\\"Tr0ub4dor&3x\\\",\\\"user\\\":\\\"sa\\\"}\"}]}}", "Tr0ub4dor&3x")]
+    [InlineData("{\"out\":\"{\\\"api_key\\\":\\\"abcDEF123ghiJKL\\\"}\"}", "abcDEF123ghiJKL")]
+    public void B2_ASecretInTheFirstKeyOfJsonQuotedInAStringIsCaught(string line, string secret)
+    {
+        BundleRedactionResult result = Redact(line);
+
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.Contains("named-secret", result.Labels);
+        using JsonDocument _ = JsonDocument.Parse(result.Text);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Users\José\src\app", "José")]
+    [InlineData(@"C:\Users\O'Brien\src\app", "O'Brien")]
+    public void B1_AnEscapedOrEncodedHomeWithANonAsciiOrApostropheUserIsAnonymized(string workspace, string user)
+    {
+        string home = workspace[..workspace.IndexOf(@"\src", StringComparison.Ordinal)];
+        var anonymizer = new BundlePathAnonymizer(home, workspace, null, user, [], caseInsensitive: true);
+        string stj = JsonSerializer.Serialize(new { path = workspace + @"\plan", other = home + @"\notes.txt", who = user });
+        string percent = "file:///" + Uri.EscapeDataString(workspace.Replace('\\', '/')) + "/x " + Uri.EscapeDataString(home + @"\y");
+
+        Assert.True(stj.Contains("\\u", StringComparison.Ordinal), "fixture: System.Text.Json must escape the user name");
+        foreach (string text in new[] { stj, percent })
+        {
+            string result = anonymizer.Apply(text);
+            foreach (string leak in new[] { user, JsonSerializer.Serialize(user)[1..^1], Uri.EscapeDataString(user), "Users" })
+            {
+                Assert.DoesNotContain(leak, result, StringComparison.Ordinal);
+            }
+        }
+
+        using JsonDocument document = JsonDocument.Parse(anonymizer.Apply(stj));
+        Assert.Equal(@"<workspace>\plan", document.RootElement.GetProperty("path").GetString());
+        Assert.Equal(@"~\notes.txt", document.RootElement.GetProperty("other").GetString());
+        Assert.Equal("<user>", document.RootElement.GetProperty("who").GetString());
+    }
+
+    [Fact]
+    public void W1_APwdInAConnectionStringIsASecretButAShellCwdIsNot()
+    {
+        BundleRedactionResult result = Redact("Server=db;Database=app;Uid=sa;Pwd=S3cr3tP4ss;\n");
+        Assert.DoesNotContain("S3cr3tP4ss", result.Text, StringComparison.Ordinal);
+
+        Assert.Equal("PWD=/home/runner/work/app\n", Redact("PWD=/home/runner/work/app\n").Text);
+        Assert.Equal("pwd: C:\\src\\app\n", Redact("pwd: C:\\src\\app\n").Text);
+    }
+
+    [Fact]
+    public void W2_TheEntropyThresholdScalesWithLength()
+    {
+        Assert.Equal(3.6, BundleRedactor.EntropyThresholdFor(24));
+        Assert.Equal(3.6, BundleRedactor.EntropyThresholdFor(31));
+        Assert.Equal(4.0, BundleRedactor.EntropyThresholdFor(32));
+
+        // A 24-character random-looking token with repeats (entropy between 3.6 and 4.0) is now caught.
+        const string token = "aB3xY9kQ7mN5pRaB3xY9kQ7m"; // 14 distinct characters, 10 of them twice: 3.75 bits
+        double entropy = BundleRedactor.ShannonEntropy(token);
+        Assert.InRange(entropy, 3.6, 4.0);
+        Assert.Contains("high-entropy", Redact($"key {token} end\n").Labels);
+    }
+
+    [Theory]
+    [InlineData("hf token hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 end", "hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "huggingface-token")]
+    [InlineData("git clone https://tokvalue4a8f2b@github.test/x.git", "tokvalue4a8f2b", "url-credential")]
+    [InlineData("curl https://user:pa/ss9Xz@host.test/x", "pa/ss9Xz", "url-credential")]
+    public void W3_MoreShapesAreCaught(string text, string secret, string kind)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.Contains(kind, result.Labels);
+    }
+
+    [Fact]
+    public void W4_IdentityValuesAreAnonymizedWhereverTheyAppear()
+    {
+        var anonymizer = new BundlePathAnonymizer(null, null, null,
+            new BundleIdentity("david.maltby", "David Maltby", "dev@example.test"), [], caseInsensitive: false);
+
+        string text = "USER=david.maltby\nUSERNAME=david.maltby\nAuthor: David Maltby <dev@example.test>\n"
+                      + "cwd C--Users-david-maltby-src\n";
+        string result = anonymizer.Apply(text);
+
+        Assert.Equal("USER=<user>\nUSERNAME=<user>\nAuthor: <git-user> <<git-email>>\ncwd C--Users-<user>-src\n", result);
+    }
+
+    [Fact]
+    public void W5_AnAdversarialTwoMebibyteRunCompletesWithoutARegexTimeout()
+    {
+        // "a-a-a-…=" made the assignment-pair scan quadratic: every '-' was a new start. The decision under test is that
+        // the scan finishes (a RegexMatchTimeoutException would exclude the file), not how long it takes.
+        string adversarial = string.Concat(Enumerable.Repeat("a-", 1024 * 1024)) + "\n";
+        Exception? thrown = Record.Exception(() => Redact(adversarial));
+        Assert.Null(thrown);
+
+        string dotted = string.Concat(Enumerable.Repeat("a.", 1024 * 1024)) + "=x\n";
+        Assert.Null(Record.Exception(() => Redact(dotted)));
+    }
+
     [Fact]
     public void TheCannotCatchTextNamesEveryLimit()
     {

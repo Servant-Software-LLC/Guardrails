@@ -64,14 +64,26 @@ public sealed class BundleFileReaderTests : IDisposable
     }
 
     [Fact]
-    public void ANewlineFreeWindowIsExcludedAndNamed()
+    public void ANewlineFreeWindowShipsItsMarkedPartialLine()
     {
+        // #805 N2: the last line exceeds the window; it ships marked instead of the whole file being excluded.
         string path = Write("oneline.log", Encoding.UTF8.GetBytes(new string('x', 100)));
         BundleRead read = new BundleFileReader().Read(path, tailCap: 20);
 
-        Assert.Equal(BundleReadStatus.Excluded, read.Status);
-        Assert.Equal("no-newline-in-window", read.Reason);
-        Assert.Empty(read.Bytes);
+        Assert.Equal(BundleReadStatus.Tail, read.Status);
+        Assert.Equal("partial-line", read.Reason);
+        Assert.Equal(BundleFileReader.PartialLineMarker + new string('x', 20), Encoding.UTF8.GetString(read.Bytes));
+    }
+
+    [Fact]
+    public void APartialLineStartsAtACharacterBoundary()
+    {
+        // 3-byte characters; a 10-byte window starts inside one, whose continuation bytes are skipped.
+        string path = Write("wide.log", Encoding.UTF8.GetBytes(new string('€', 30)));
+        BundleRead read = new BundleFileReader().Read(path, tailCap: 10);
+
+        string text = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(read.Bytes);
+        Assert.Equal(BundleFileReader.PartialLineMarker + "€€€", text);
     }
 
     [Fact]
@@ -100,13 +112,33 @@ public sealed class BundleFileReaderTests : IDisposable
     }
 
     [Fact]
-    public void AWindowWhoseOnlyNewlineEndsItHoldsNoWholeLineAndIsExcluded()
+    public void AWindowWhoseOnlyNewlineEndsItShipsTheMarkedPartialLine()
     {
         string path = Write("long-line.log", Encoding.UTF8.GetBytes(new string('y', 50) + "\n"));
         BundleRead read = new BundleFileReader().Read(path, tailCap: 20);
 
-        Assert.Equal(BundleReadStatus.Excluded, read.Status);
-        Assert.Equal("no-newline-in-window", read.Reason);
+        Assert.Equal("partial-line", read.Reason);
+        Assert.Equal(BundleFileReader.PartialLineMarker + new string('y', 19) + "\n", Encoding.UTF8.GetString(read.Bytes));
+    }
+
+    [Fact]
+    public void OnPosixAnAccessDenialIsAPermissionNotASharingViolation()
+    {
+        int opens = 0;
+        var delays = new List<TimeSpan>();
+        var posix = new BundleFileReader(_ =>
+        {
+            opens++;
+            throw new UnauthorizedAccessException("denied");
+        }, delays.Add, windows: false);
+
+        BundleRead read = posix.Read("secret.log");
+
+        Assert.Equal(("permission-denied", 1), (read.Reason, opens));
+        Assert.Empty(delays);
+
+        var windows = new BundleFileReader(_ => throw new UnauthorizedAccessException("held"), _ => { }, windows: true);
+        Assert.Equal("sharing-violation", windows.Read("held.json").Reason);
     }
 
     [Fact]
@@ -117,7 +149,8 @@ public sealed class BundleFileReaderTests : IDisposable
 
         Assert.True(cut);
         Assert.Equal("charlie\n", Encoding.UTF8.GetString(kept));
-        Assert.Null(BundleFileReader.Retail("no-newline-at-all-here\n"u8.ToArray(), 5));
+        (byte[] partial, bool _) = BundleFileReader.Retail("no-newline-at-all-here\n"u8.ToArray(), 5)!.Value;
+        Assert.Equal(BundleFileReader.PartialLineMarker + "here\n", Encoding.UTF8.GetString(partial));
     }
 
     [Fact]
@@ -163,7 +196,7 @@ public sealed class BundleFileReaderTests : IDisposable
             }
 
             return File.OpenRead(p);
-        }, _ => { });
+        }, _ => { }, windows: true); // an access denial is a sharing error on Windows only
 
         BundleRead read = reader.Read(path);
 

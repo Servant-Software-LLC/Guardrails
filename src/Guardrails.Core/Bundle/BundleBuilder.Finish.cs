@@ -29,15 +29,19 @@ public sealed partial class BundleBuilder
         (string? integrationDir, bool worktreeMode) = IntegrationDirectory();
         if (integrationDir is not null && Directory.Exists(integrationDir))
         {
-            added.AddRange(GitEntries("integration", integrationDir, baseCommit: null,
-                worktreeMode ? "the integration base commit is not recorded" : "serial mode records no base commit"));
+            added.AddRange(worktreeMode && WorktreeRefusal(integrationDir) is { } refused
+                ? [SkippedGit("integration", refused)]
+                : GitEntries("integration", integrationDir, baseCommit: null,
+                    worktreeMode ? "the integration base commit is not recorded" : "serial mode records no base commit"));
         }
 
         foreach (string taskId in _selectedTasks)
         {
             if (LatestProvenance(taskId) is { WorktreePath: { } worktree } provenance && Directory.Exists(worktree))
             {
-                added.AddRange(GitEntries(taskId, worktree, provenance.BaseCommit, "the segment's base commit is not recorded"));
+                added.AddRange(WorktreeRefusal(worktree) is { } refused
+                    ? [SkippedGit(taskId, refused)]
+                    : GitEntries(taskId, worktree, provenance.BaseCommit, "the segment's base commit is not recorded"));
             }
         }
 
@@ -57,8 +61,47 @@ public sealed partial class BundleBuilder
         }
     }
 
+    // #805 S5: a worktree path comes from provenance, which may be on disk and so is not trusted. git runs only in a
+    // directory that resolves under the worktree root; anything else is skipped, and the git file says why.
+    private string? WorktreeRefusal(string directory)
+    {
+        if (_probes.WorktreeRoot is not { } root)
+        {
+            return "no worktree root is known to confine the recorded worktree path";
+        }
+
+        try
+        {
+            return Io.RealPath.IsUnder(Io.RealPath.Resolve(directory), Io.RealPath.Resolve(root))
+                ? null
+                : "the recorded worktree path does not resolve under the worktree root";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return "the recorded worktree path could not be resolved";
+        }
+    }
+
+    private Entry SkippedGit(string name, string reason) => new()
+    {
+        BundlePath = $"git/{name}.txt",
+        Kind = new BundleKind("git", BundleClass.Lean, BundleCapClass.None, AgentText: false),
+        Generated = $"# git evidence: {name}\n\n(skipped: {reason})\n",
+        SourceLabel = $"generated: git evidence skipped ({name})",
+    };
+
+    /// <summary>#805 S5: a base commit from provenance is used only when it is a commit id.</summary>
+    public static bool IsCommitId(string? value) =>
+        value is { Length: >= 7 and <= 64 } && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     private IEnumerable<Entry> GitEntries(string name, string directory, string? baseCommit, string noBaseReason)
     {
+        if (baseCommit is not null && !IsCommitId(baseCommit))
+        {
+            baseCommit = null;
+            noBaseReason = "the recorded base commit is not a commit id";
+        }
+
         var text = new StringBuilder();
         text.Append("# git evidence: ").Append(name).Append('\n');
         text.Append("# ").Append(directory.Replace('\\', '/')).Append("\n\n");
@@ -72,7 +115,7 @@ public sealed partial class BundleBuilder
         }
         else
         {
-            AppendGit(text, directory, ["diff", "--stat", $"{baseCommit}..HEAD"]);
+            AppendGit(text, directory, ["diff", "--stat", "--end-of-options", $"{baseCommit}..HEAD"]);
         }
 
         yield return new Entry
@@ -92,7 +135,7 @@ public sealed partial class BundleBuilder
             }
             else
             {
-                BundleProcessResult result = _probes.Git.Run(directory, ["diff", $"{baseCommit}..HEAD"]);
+                BundleProcessResult result = _probes.Git.Run(directory, ["diff", "--end-of-options", $"{baseCommit}..HEAD"]);
                 diff = GitOutput(result);
             }
 
@@ -311,7 +354,10 @@ public sealed partial class BundleBuilder
         var steps = new List<(int, Func<bool>)>
         {
             (1, () => Drop(e => e.Kind?.Kind == "worktree-diff", 1)),
-            (2, () => Drop(e => e.Kind?.Kind is "stream" or "gateway-session" && !IsFirstOrLatest(e), 2)),
+            // #805 S3: never the newest gateway session (in serial mode every session is unattributed, and the live
+            // one is the newest), nor a session attributable to an in-flight attempt.
+            (2, () => Drop(e => e.Kind?.Kind is "stream" or "gateway-session" or "task-stream" && !IsFirstOrLatest(e)
+                && !IsProtectedSession(e), 2)),
         };
 
         // Tier 3: the MIDDLE attempts' transcripts and composed prompts, oldest attempt first, one attempt per step.
@@ -416,7 +462,7 @@ public sealed partial class BundleBuilder
             return (entry.TaskId, entry.Attempt);
         }
 
-        foreach (string task in _selectedTasks)
+        foreach (string task in _plan.Tasks.Select(t => t.Id).OrderBy(t => t, StringComparer.Ordinal))
         {
             foreach (int attempt in AttemptsOnDisk(task))
             {
@@ -428,6 +474,62 @@ public sealed partial class BundleBuilder
         }
 
         return (null, null);
+    }
+
+    private bool IsProtectedSession(Entry entry)
+    {
+        if (entry.Kind?.Kind != "gateway-session")
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(entry, NewestSession()))
+        {
+            return true;
+        }
+
+        (string? task, int? attempt) = AttributedAttempt(entry);
+        return task is not null && attempt is { } n && InFlightAttempts(task).Contains(n);
+    }
+
+    private Entry? _newestSession;
+    private bool _newestSessionKnown;
+
+    /// <summary>The gateway session file written last (by last-write time, then path): the live one, when one is live.</summary>
+    private Entry? NewestSession()
+    {
+        if (!_newestSessionKnown)
+        {
+            _newestSessionKnown = true;
+            _newestSession = _entries
+                .Where(e => e.Kind?.Kind == "gateway-session" && e.SourcePath is not null)
+                .Select(e => (Entry: e, Stat: _probes.Stat(e.SourcePath!)))
+                .Where(x => x.Stat is not null)
+                .OrderByDescending(x => x.Stat!.LastWriteUtc)
+                .ThenBy(x => x.Entry.BundlePath, StringComparer.Ordinal)
+                .Select(x => x.Entry)
+                .FirstOrDefault();
+        }
+
+        return _newestSession;
+    }
+
+    /// <summary>The attempts of <paramref name="taskId"/> in flight: the #798 marker's, else those on disk the journal lacks.</summary>
+    private IReadOnlyList<int> InFlightAttempts(string taskId)
+    {
+        TaskJournalEntry? entry = RunJournalDoc?.Tasks.GetValueOrDefault(taskId);
+        if (entry?.InFlightAttempt is { } marker)
+        {
+            return [marker.Attempt];
+        }
+
+        if (RunJournalDoc is null)
+        {
+            return [];
+        }
+
+        var journaled = (entry?.Attempts ?? []).Select(a => a.Attempt).ToHashSet();
+        return [.. AttemptsOnDisk(taskId).Where(n => !journaled.Contains(n))];
     }
 
     private static string ClaudeProjectName(string path) =>
@@ -458,13 +560,32 @@ public sealed partial class BundleBuilder
 
     private Dictionary<string, byte[]> Documents(bool trimmed)
     {
-        (string summary, IReadOnlyList<string> summaryLabels) = RenderSummary(trimmed);
+        // B3 (#805): the finished documents pass the anonymizer and the secret passes as the LAST step, so a value
+        // rendered raw (a served model name, a tool's --version line, a block name) cannot ship unscrubbed. SUMMARY gets
+        // every pass; MANIFEST and REDACTIONS, which are path tables, get every pass but the entropy rule.
+        (string summaryRaw, IReadOnlyList<string> fieldLabels) = RenderSummary(trimmed);
+        (string summary, IReadOnlyList<string> summaryLabels) = ScrubDocument("SUMMARY.md", summaryRaw, entropy: true);
+        (string manifest, IReadOnlyList<string> manifestLabels) = ScrubDocument("MANIFEST.md", RenderManifest(), entropy: false);
+        string redactions = ScrubDocument("REDACTIONS.md",
+            RenderRedactions([.. fieldLabels, .. summaryLabels], manifestLabels), entropy: false).Text;
         return new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
             ["SUMMARY.md"] = Encoding.UTF8.GetBytes(summary),
-            ["MANIFEST.md"] = Encoding.UTF8.GetBytes(RenderManifest()),
-            ["REDACTIONS.md"] = Encoding.UTF8.GetBytes(RenderRedactions(summaryLabels)),
+            ["MANIFEST.md"] = Encoding.UTF8.GetBytes(manifest),
+            ["REDACTIONS.md"] = Encoding.UTF8.GetBytes(redactions),
         };
+    }
+
+    private (string Text, IReadOnlyList<string> Labels) ScrubDocument(string path, string text, bool entropy)
+    {
+        if (_options.NoRedact)
+        {
+            return (_anonymizer is null ? text : _anonymizer.Apply(text), []);
+        }
+
+        BundleRedactionResult result = BundleRedactor.Redact(text, entropy ? ContextFor(path) : NameContext(path));
+        string scrubbed = entropy || _anonymizer is null ? result.Text : _anonymizer.Apply(result.Text);
+        return (scrubbed, result.Labels);
     }
 
     private IReadOnlyList<BundleManifestRow> ManifestRows() =>
@@ -519,7 +640,7 @@ public sealed partial class BundleBuilder
         return text.ToString();
     }
 
-    private string RenderRedactions(IReadOnlyList<string> summaryLabels)
+    private string RenderRedactions(IReadOnlyList<string> summaryLabels, IReadOnlyList<string> manifestLabels)
     {
         if (_options.NoRedact)
         {
@@ -533,6 +654,7 @@ public sealed partial class BundleBuilder
         }
 
         AddCounts(rows, "SUMMARY.md", summaryLabels);
+        AddCounts(rows, "MANIFEST.md", manifestLabels);
         rows.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path) is var c && c != 0 ? c : string.CompareOrdinal(a.Label, b.Label));
 
         var text = new StringBuilder();

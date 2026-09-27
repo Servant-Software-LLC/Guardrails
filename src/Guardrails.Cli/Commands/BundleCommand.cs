@@ -40,6 +40,12 @@ public sealed record BundleCommandHost
     /// <summary>§17.2 item 5: set the process-wide git settings; returns what was applied.</summary>
     public required Func<BundleGitEnvironment.Plan> ApplyGitEnvironment { get; init; }
 
+    /// <summary>The owner process's descendants for SUMMARY's Process tree block (#805 S1). Defaults to the real table.</summary>
+    public Func<int, BundleProcessTree> ProcessTree { get; init; } = SystemBundleProcessTree.Capture;
+
+    /// <summary>A file's size and last-write time for SUMMARY's Live files block (#805 S1). Defaults to the real stat.</summary>
+    public Func<string, BundleFileStat?> Stat { get; init; } = BundleFileStat.Of;
+
     /// <summary>The real machine.</summary>
     public static BundleCommandHost Real { get; } = new()
     {
@@ -221,6 +227,12 @@ public static class BundleCommand
             maxSizeBytes = (long)Math.Floor(mib * 1024 * 1024);
         }
 
+        // #805 S4: --run names one directory directly under logs/, never a path.
+        if (args.RunId is { } requestedRun && !BundleBuilder.IsSafeRunId(requestedRun))
+        {
+            return Refuse(io, $"--run must be a single run id, not a path ('{requestedRun}').");
+        }
+
         // §17.2 item 5: before ANY git runs (the path refusal's rev-parse, validate's probes, the evidence calls).
         BundleGitEnvironment.Plan gitPlan = host.ApplyGitEnvironment();
 
@@ -257,6 +269,18 @@ public static class BundleCommand
         if (args.Dir is not null && Directory.Exists(destinationDirectory) && Directory.EnumerateFileSystemEntries(destinationDirectory).Any())
         {
             return Refuse(io, $"--dir {destinationDirectory} is not empty; the bundle never merges into, or deletes from, a directory it did not create.");
+        }
+
+        // #805 N4: never under the plan directory or the worktree root, even with --force-path: the bundle writes nothing
+        // where the run writes.
+        string destinationPath = args.Out is { } outFile ? Path.GetFullPath(outFile) : destinationDirectory;
+        foreach ((string root, string what) in RunRoots(plan))
+        {
+            if (Core.Io.RealPath.IsUnder(destinationPath, root))
+            {
+                return Refuse(io, $"{destinationPath} is under the {what} ({root}); the bundle never writes where the run writes, "
+                    + "and --force-path does not change that.");
+            }
         }
 
         // §17.8: every destination, the default included, is refused inside a git working tree.
@@ -371,6 +395,25 @@ public static class BundleCommand
         return name + (noRedact ? "-UNREDACTED" : string.Empty) + ".zip";
     }
 
+    private static IEnumerable<(string Root, string What)> RunRoots(PlanDefinition plan)
+    {
+        yield return (Path.GetFullPath(plan.PlanDirectory), "plan directory");
+        string? worktreeRoot = null;
+        try
+        {
+            worktreeRoot = SchedulerFactory.WorktreeRootFor(plan);
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            // No worktree root to refuse under.
+        }
+
+        if (worktreeRoot is not null)
+        {
+            yield return (Path.GetFullPath(worktreeRoot), "worktree root");
+        }
+    }
+
     /// <summary>The nearest existing ancestor of <paramref name="path"/> (itself when it exists), or null.</summary>
     public static string? NearestExistingAncestor(string path)
     {
@@ -405,6 +448,8 @@ public static class BundleCommand
             BundlingOs = RuntimeInformation.OSDescription,
             ToolVersions = host.ToolVersions,
             Liveness = owner => RunLiveness.Assess(owner, RunLiveness.ThisHost(), host.ProcessProbe),
+            ProcessTree = host.ProcessTree,
+            Stat = host.Stat,
             Git = host.Git,
             Validate = () =>
             {
