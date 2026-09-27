@@ -1,0 +1,1769 @@
+{
+  "schemaVersion": 1,
+  "issue": "#799",
+  "notes": [
+    "Blind canary corpus for `guardrails bundle` redaction, authored from the threat list and the CC1-CC6 ids only, before the redactor existed.",
+    "All values are synthetic. Non-survives values carry a marker (canary / yranac / c0ffee, or base64 of 'canary'); none is a real credential.",
+    "Scanner-sensitive prefixes (ghp\u005f, sk\u005flive_, xoxb\u002d, AKIA, PRIVATE\u0020KEY, ...) are written with one \\u escape so repository secret scanners do not flag the file; the parsed value is the real shape.",
+    "expect: 'caught' = no window of the secret (or its secretCore) survives in any raw / JSON-escaped / percent-encoded form; 'CCn' = may survive, REDACTIONS.md cannot-catch text must name CCn; 'survives' = diagnostic value that must NOT be scrubbed.",
+    "valueForm 'percent' = the artifact holds Uri.EscapeDataString(value). chunks = value split across placeholders {{chunk0}}.. in order; their concatenation is the value.",
+    "shellEnv = environment of the BUNDLING shell (name -> value)."
+  ],
+  "artifactPaths": {
+    "transcript.md": "logs/03-impl/attempt-1/transcript.md",
+    "stream-log jsonl": "logs/03-impl/attempt-1/claude-stream.jsonl",
+    "gateway-session jsonl": "logs/03-impl/attempt-1/gateway-session.jsonl",
+    "feedback.md": "logs/03-impl/attempt-2/feedback.md",
+    "guardrail-stdout": "logs/03-impl/attempt-1/guardrails/02-tests.stdout.log",
+    "guardrail-stderr": "logs/03-impl/attempt-1/guardrails/02-tests.stderr.log",
+    "composed-prompt.md": "logs/03-impl/attempt-1/composed-prompt.md",
+    "action-result.json": "logs/03-impl/attempt-1/action-result.json",
+    "attempt-provenance.json": "logs/03-impl/attempt-1/attempt-provenance.json",
+    "run.json reason field": "run.json",
+    "events.jsonl": "events.jsonl",
+    "observer.jsonl": "observer.jsonl",
+    "guardrails.json env map": "plan/guardrails.json",
+    "triage.json": "logs/03-impl/triage.json",
+    "overwatch.jsonl": "overwatch.jsonl",
+    "escalation json": "escalations/0001-03-impl.json",
+    "git log/status text": "git/status.txt",
+    "validate.txt": "validate.txt"
+  },
+  "entries": [
+    {
+      "id": "t1-printenv-known",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a01-my4alzbladx3wi5e08aayc",
+      "context": "$ printenv QWEN_TOKEN\n{{value}}\n$ echo done\ndone\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary1a01-my4alzbladx3wi5e08aayc"
+      },
+      "expect": "caught",
+      "note": "Shapeless and lowercase (no shape, entropy rule misses): only the known-value scan of the bundling shell can catch it."
+    },
+    {
+      "id": "t1-known-in-transcript",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a02-glxwv0bnxrayam9430",
+      "context": "I read the key from the environment. The value is `{{value}}`, so I will pass it to the client.\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "LITELLM_MASTER_KEY": "canary1a02-glxwv0bnxrayam9430"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t1-known-in-stream-tool-result",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a03.lw2cfravyot3jf0ibkx4",
+      "context": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01CANARYa03\",\"content\":\"{{value}}\\n\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "ANTHROPIC_AUTH_TOKEN": "canary1a03.lw2cfravyot3jf0ibkx4"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t1-known-in-run-reason",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a04-3ssny3txlhpuar2vk4lf",
+      "context": "{\"runId\":\"3d58336b-0799-4c1a-9e2f-000000000a04\",\"status\":\"halted\",\"reason\":\"guardrail 02-smoke failed: curl exited 22 using token {{value}}\"}",
+      "artifactKind": "run.json reason field",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "OPENROUTER_API_KEY": "canary1a04-3ssny3txlhpuar2vk4lf"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t1-known-short-16",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a05kkjyxz",
+      "context": "commit 1f0e3d7\n\n    temp: hardcode deploy secret {{value}} for smoke\n",
+      "artifactKind": "git log/status text",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "DEPLOY_SECRET": "canary1a05kkjyxz"
+      },
+      "expect": "caught",
+      "note": "16 chars: a known value is caught by identity, not by length or entropy."
+    },
+    {
+      "id": "t1-known-in-overwatch",
+      "threat": "bare-named-variable-value",
+      "value": "canary1a06-6q6kkhdn13mu1cre",
+      "context": "{\"ts\":\"2026-09-27T10:00:00Z\",\"task\":\"03-impl\",\"note\":\"agent echoed {{value}} into the build log\"}",
+      "artifactKind": "overwatch.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "GATEWAY_TOKEN": "canary1a06-6q6kkhdn13mu1cre"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t1-unknown-shapeless-printenv",
+      "threat": "bare-named-variable-value",
+      "value": "canary1c07-mellow-harbor-42",
+      "context": "$ printenv QWEN_TOKEN\n{{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC4",
+      "note": "QWEN_TOKEN is absent from the bundling shell and the bare value has no shape and fails the entropy rule."
+    },
+    {
+      "id": "t1-unknown-shapeless-gateway",
+      "threat": "bare-named-variable-value",
+      "value": "canary1c08-quiet-orchard-17",
+      "context": "{\"ts\":\"2026-09-27T10:00:01Z\",\"dir\":\"upstream\",\"note\":\"forwarded upstream key {{value}}\"}",
+      "artifactKind": "gateway-session jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "OTHER_TOKEN": "canary1c08-not-the-one"
+      },
+      "expect": "CC4"
+    },
+    {
+      "id": "t2-env-github-token",
+      "threat": "secret-named-pair",
+      "value": "canary2a01-gn0uyhz46zfo7c",
+      "context": "GITHUB_TOKEN={{value}}\nCI=true\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-export-quoted-api-key",
+      "threat": "secret-named-pair",
+      "value": "canary2a02-70ihzc3jsbsbrp",
+      "context": "Run this first:\n\n    export OPENAI_API_KEY=\"{{value}}\"\n",
+      "artifactKind": "composed-prompt.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-client-secret",
+      "threat": "secret-named-pair",
+      "value": "canary2a03-rx45ahgeamj5ei",
+      "context": "AZURE_CLIENT_SECRET={{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-password-bare-name",
+      "threat": "secret-named-pair",
+      "value": "canary2a04-83s8ti30h79p0t",
+      "context": "PASSWORD={{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-sql-pwd-suffix",
+      "threat": "secret-named-pair",
+      "value": "canary2a05-wxejnay267mwmd",
+      "context": "SQL_PWD={{value}}\nPWD=/home/runner/work/app\n",
+      "artifactKind": "validate.txt",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "*_PWD must be treated as a secret even though bare PWD (next line) is the shell cwd and must not be."
+    },
+    {
+      "id": "t2-smtp-pass-suffix",
+      "threat": "secret-named-pair",
+      "value": "canary2a06-pfl2r6ff82l61o",
+      "context": "SMTP_PASS={{value}}\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-cookie-name",
+      "threat": "secret-named-pair",
+      "value": "canary2a07-151fa8z9dg7rf2",
+      "context": "COOKIE={{value}}\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-session-name",
+      "threat": "secret-named-pair",
+      "value": "canary2a08-66xl2s14vedfun",
+      "context": "I exported SESSION={{value}} before retrying.\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-connection-string-password",
+      "threat": "secret-named-pair",
+      "value": "canary2a09-xsngly3zmpkuei",
+      "context": "DB_CONNECTION_STRING=Host=db.example.test;Username=app;Password={{value}};Database=app\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "The secret sits after the first '=' and after an inner 'Password=': both a whole-value and an inner-pair redaction pass; a redactor that stops at the first ';' does not."
+    },
+    {
+      "id": "t2-dsn",
+      "threat": "secret-named-pair",
+      "value": "canary2a10-zdv5qkywbwnjt3",
+      "context": "SENTRY_DSN=https://{{value}}@o0.ingest.example.test/0\n",
+      "artifactKind": "validate.txt",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-auth-prefix-name",
+      "threat": "secret-named-pair",
+      "value": "canary2a11-gx83nevm5ysabp",
+      "context": "AUTH_CODE={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-lowercase-name",
+      "threat": "secret-named-pair",
+      "value": "canary2a12-b9m2707syhydoz",
+      "context": "db_password={{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-camelcase-assignment",
+      "threat": "secret-named-pair",
+      "value": "canary2a13-8dgxwtc0cs9fml",
+      "context": "I will change the test to use `var dbPassword = \"{{value}}\";` instead.\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "camelCase name, spaces around '=' and a quoted value."
+    },
+    {
+      "id": "t2-camelcase-json-stj",
+      "threat": "secret-named-pair",
+      "value": "canary2a14-aevnefzyrgr13y",
+      "context": "{\"exitCode\":1,\"settings\":{\"clientSecret\":\"{{value}}\",\"tenant\":\"contoso\"}}",
+      "artifactKind": "action-result.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-json-api-key-in-partial-json",
+      "threat": "secret-named-pair",
+      "value": "canary2a15-jcu7ef8r634tk6",
+      "context": "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\": \\\"curl\\\", \\\"apiKey\\\": \\\"{{value}}\\\"}\"}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "The pair is itself JSON-escaped inside a string (\\\"apiKey\\\": \\\"...\\\"): the pair rule must see through one level of escaping."
+    },
+    {
+      "id": "t2-guardrails-json-env-map",
+      "threat": "secret-named-pair",
+      "value": "canary2a16-vp2b31c6uip8r2",
+      "context": "{\"runner\":{\"kind\":\"claude-local\",\"env\":{\"OPENAI_API_KEY\":\"{{value}}\",\"OPENAI_BASE_URL\":\"http://127.0.0.1:4000\"}}}",
+      "artifactKind": "guardrails.json env map",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-yaml-colon-api-key",
+      "threat": "secret-named-pair",
+      "value": "canary2a17-1pifoam5e2nifz",
+      "context": "The config now reads:\n\n    api_key: {{value}}\n    model: qwen3\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "PRESSURE ENTRY: YAML `name: value` is header-shaped; if the design treats it as CC2 instead, change expect and say so."
+    },
+    {
+      "id": "t2-triage-json-pair",
+      "threat": "secret-named-pair",
+      "value": "canary2a18-gtrafb581ixls0",
+      "context": "{\"verdict\":\"transient\",\"evidence\":\"stderr shows STRIPE_SECRET_KEY={{value}} then a 401\"}",
+      "artifactKind": "triage.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t2-pwd-shell-cwd-survives",
+      "threat": "secret-named-pair",
+      "value": "/home/runner/work/Guardrails/Guardrails",
+      "context": "$ env | sort\nHOME=/home/runner\nPWD={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/Guardrails/Guardrails"
+      },
+      "expect": "survives",
+      "note": "PWD is in the bundling shell with this exact value; it is the working directory, not a password. Scrubbing it destroys diagnostics."
+    },
+    {
+      "id": "t2-oldpwd-survives",
+      "threat": "secret-named-pair",
+      "value": "C:\\Users\\runner\\src\\app",
+      "context": "OLDPWD={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t2-pwd-json-survives",
+      "threat": "secret-named-pair",
+      "value": "/workspace/app",
+      "context": "{\"runner\":{\"env\":{\"PWD\":\"{{value}}\"}}}",
+      "artifactKind": "guardrails.json env map",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t3-openai-project-long",
+      "threat": "provider-token-shape",
+      "value": "sk\u002dproj-CANARY3a01CJU9KGmXMhNwBM3VeWR12u9Ve2ywDqn84OAI8cfmMrXMeTq5ZTyuPa-kLEo2qUXcwN6vqR0OF03FG5_G8KJFUN4vSq",
+      "context": "I found `{{value}}` hardcoded in appsettings.json and removed it.\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-openai-legacy-48",
+      "threat": "provider-token-shape",
+      "value": "sk-CANARY3a02pZSLS3yptp1m1MwypgHHNxPBLDAe19nsB2DHOS",
+      "context": "Error: invalid key {{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-litellm-virtual-short",
+      "threat": "provider-token-shape",
+      "value": "sk-CANARY3a036_6ExDL7BSnx",
+      "context": "{\"ts\":\"2026-09-27T10:00:02Z\",\"dir\":\"downstream\",\"note\":\"virtual key {{value}} accepted\"}",
+      "artifactKind": "gateway-session jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Short sk- key (25 chars) in the LiteLLM virtual-key shape."
+    },
+    {
+      "id": "t3-anthropic-api03",
+      "threat": "provider-token-shape",
+      "value": "sk\u002dant-api03-CANARY3a04q_FKZDDyVEiA0OgLqOXDuP9yNhKyoHouBTjIOrsd6L4D28XSObAbYEcFsaXy0cGwcQ1K2UIu4wQBdJLxAA",
+      "context": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The key {{value}} looks revoked.\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-github-ghp",
+      "threat": "provider-token-shape",
+      "value": "ghp\u005fCANARY3a05dhvL8rnC5jYkIs9Rrhk5okMkLS",
+      "context": "remote: Invalid username or token {{value}}\n",
+      "artifactKind": "git log/status text",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-github-gho",
+      "threat": "provider-token-shape",
+      "value": "gho\u005fCANARY3a06Z7gAcUV65ebY9LHBNRtyy4gD3k",
+      "context": "Using OAuth token {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-github-ghs",
+      "threat": "provider-token-shape",
+      "value": "ghs\u005fCANARY3a079TE3BeXLCLON50fbzGnYd969c2",
+      "context": "{\"step\":\"checkout\",\"token\":\"{{value}}\"}",
+      "artifactKind": "events.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Also a secret-named JSON pair; the ghs\u005f shape alone should suffice."
+    },
+    {
+      "id": "t3-github-fine-grained",
+      "threat": "provider-token-shape",
+      "value": "github\u005fpat_CANARY3a0833K6efGXhMDN_QaiYFTudbK87YEr58PKXjLU3AaUyu42oc3U5N70ShYE85qVCOYUHybng3R9",
+      "context": "The PAT {{value}} lacks contents:write.\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-gitlab-glpat",
+      "threat": "provider-token-shape",
+      "value": "glpat\u002dCANARY3a0927Imu63GXY",
+      "context": "glab auth status: token {{value}} expired\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-npm",
+      "threat": "provider-token-shape",
+      "value": "npm\u005fCANARY3a10s1kzLw1NPUMBtTVoBiKBr4tYK1",
+      "context": "//registry.npmjs.org/:_authToken={{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": ".npmrc line: the name is _authToken, the shape is npm_."
+    },
+    {
+      "id": "t3-slack-xoxb",
+      "threat": "provider-token-shape",
+      "value": "xoxb\u002d7990000001-7990000002-CANARY3a11Jwtj4Won5MRBSN",
+      "context": "posting with {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-slack-xapp",
+      "threat": "provider-token-shape",
+      "value": "xapp\u002d1-A0CANARY3A12-7990000003-8d720c41be0fd493b6fa21be4930479f85e1e39b409bd795f458a7cd80d80d94",
+      "context": "socket mode token {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-stripe-sk-live",
+      "threat": "provider-token-shape",
+      "value": "sk\u005flive_CANARY3a13GxFdrheJ4HmBncUZ5Q8iqMdd",
+      "context": "{\"reason\":\"stripe rejected {{value}}\"}",
+      "artifactKind": "escalation json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-stripe-rk-live",
+      "threat": "provider-token-shape",
+      "value": "rk\u005flive_CANARY3a14lgufORBIeFvbJyaIG9YzNv4L",
+      "context": "restricted key {{value}} lacks charges:write\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-google-aiza",
+      "threat": "provider-token-shape",
+      "value": "AI\u007aaSyCANARY3a15KzPQ7FW5s3Qz9POHPEYORBG",
+      "context": "maps call used {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-aws-akia",
+      "threat": "provider-token-shape",
+      "value": "AK\u0049ACANARY3A16U3WVL7",
+      "context": "aws sts get-caller-identity failed for access key {{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "20 chars, upper+digit only: entropy rule misses it, so only the AKIA shape catches it."
+    },
+    {
+      "id": "t3-aws-secret-pair",
+      "threat": "provider-token-shape",
+      "value": "CANARY3a17AaakJB1tF6Vdh3qFJ73p5xTP0s/Kq+",
+      "context": "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Access key id in the context is AWS's own documented EXAMPLE id."
+    },
+    {
+      "id": "t3-aws-secret-bare",
+      "threat": "provider-token-shape",
+      "value": "CANARY3a189ed7AxiYVBdACnwevgHLhypFwd+Zp/",
+      "context": "Access key ID     Secret access key\n(redacted)        {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Bare 40-char AWS secret: no name and no prefix, so only the entropy rule catches it."
+    },
+    {
+      "id": "t3-jwt-bare",
+      "threat": "provider-token-shape",
+      "value": "ey\u004ahbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.ey\u004azdWIiOiJjYW5hcnktM2ExOSIsIm5hbWUiOiJDYW5hcnkgQm90IiwiaWF0IjoxNzkwMDAwMDAwfQ.CANARY3a19SZrAsjyvIxqzl0p8cOJr2AfaBVI_r_8TG",
+      "context": "The request carried {{value}} and was rejected.\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-jwt-in-json-node",
+      "threat": "provider-token-shape",
+      "value": "ey\u004ahbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.ey\u004azdWIiOiJjYW5hcnktM2EyMCIsInNjb3BlIjoicmVwbyIsImV4cCI6MTc5MDAwMDk5OX0.CANARY3a20kkKVqunJ5teRe1Z3zzhEFdk8mEMIsqN9x",
+      "context": "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"token={{value}}\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t3-pem-rsa-raw",
+      "threat": "provider-token-shape",
+      "value": "-----BEGIN RSA PRIVATE\u0020KEY-----\nMIIEowIBAAKCAQEACANARY3a21dU/a81KkgRmlSyVg3E1xQ4L/2xelVQ24gVz9LO\nKeNHuYqiYi9hhGtIUx2nOW4xvqBqou1/EzEGIkZAApm/6a/ao1o4idjkv7X3jd+c\njHjNZHqCbKvYQSXL5qi7GUipmroMsv35PR2S6hH03fkEg2f7Pa6Drgq/bme96Wru\nwghIAGU7WKD1K6zBhwUYQqvT0xN3Otjjml0gD++NKlal+HEzUNum5+6Utb3GUGNy\no4ACCh+qCkgO0fuh1tzE/O4rBC+rwXUZNTCIvWme5H7F0MhUclGKa0Cnp6WTV6VM\nJ3k4ZzbQ3ngC7PgfdDv2==\n-----END RSA PRIVATE\u0020KEY-----",
+      "context": "$ cat deploy.pem\n{{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "secretCore": "MIIEowIBAAKCAQEACANARY3a21dU/a81KkgRmlSyVg3E1xQ4L/2xelVQ24gVz9LO\nKeNHuYqiYi9hhGtIUx2nOW4xvqBqou1/EzEGIkZAApm/6a/ao1o4idjkv7X3jd+c\njHjNZHqCbKvYQSXL5qi7GUipmroMsv35PR2S6hH03fkEg2f7Pa6Drgq/bme96Wru\nwghIAGU7WKD1K6zBhwUYQqvT0xN3Otjjml0gD++NKlal+HEzUNum5+6Utb3GUGNy\no4ACCh+qCkgO0fuh1tzE/O4rBC+rwXUZNTCIvWme5H7F0MhUclGKa0Cnp6WTV6VM\nJ3k4ZzbQ3ngC7PgfdDv2==",
+      "note": "secretCore is the base64 body: keeping the BEGIN/END armor lines is harmless."
+    },
+    {
+      "id": "t3-pem-openssh-in-json-stj",
+      "threat": "provider-token-shape",
+      "value": "-----BEGIN OPENSSH PRIVATE\u0020KEY-----\nMIIEowIBAAKCAQEACANARY3a22VJ3dqMCn993eUdOnIgPNXxyLqUImdQNKLs1Oym\ntuOnAa48GsGGUu+jHxAH7W+yC9Jzp06XgOCcgAm0LlZsf/qVqEIY6SjngiFlUf3R\nF3iQQZMQSUIzPg3f+6K6rEh7JfFvLwHSIt7ZK3AxyjQBkDzfEnqrWAdNUhfYd0V2\nBAlHipsAwBL/sIQNzU4XamdZXxAlzjR0JFpCYoMVXKyPoxOypbOKW+hcPV1wje/i\n7c2Ge1fY0aKkCJUBGypa8K1sSROZYIBlpjnnVmhK+mVWfjzmvFwzM3aw6bh/5knv\ndzW9CF/08wkR3zL9rXTg==\n-----END OPENSSH PRIVATE\u0020KEY-----",
+      "context": "{\"exitCode\":0,\"stdout\":\"{{value}}\\n\"}",
+      "artifactKind": "action-result.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "secretCore": "MIIEowIBAAKCAQEACANARY3a22VJ3dqMCn993eUdOnIgPNXxyLqUImdQNKLs1Oym\ntuOnAa48GsGGUu+jHxAH7W+yC9Jzp06XgOCcgAm0LlZsf/qVqEIY6SjngiFlUf3R\nF3iQQZMQSUIzPg3f+6K6rEh7JfFvLwHSIt7ZK3AxyjQBkDzfEnqrWAdNUhfYd0V2\nBAlHipsAwBL/sIQNzU4XamdZXxAlzjR0JFpCYoMVXKyPoxOypbOKW+hcPV1wje/i\n7c2Ge1fY0aKkCJUBGypa8K1sSROZYIBlpjnnVmhK+mVWfjzmvFwzM3aw6bh/5knv\ndzW9CF/08wkR3zL9rXTg==",
+      "note": "Inside JSON the newlines are the two-char escape \\n: a PEM matcher that needs real newlines misses it."
+    },
+    {
+      "id": "t3-pem-ec-in-composed-prompt",
+      "threat": "provider-token-shape",
+      "value": "-----BEGIN EC PRIVATE\u0020KEY-----\nMIIEowIBAAKCAQEACANARY3a23X/jScBJDXhkJs8/wrXnFU9swBnC2/zG/2UfahY\nCb9eGXKUIPJjm3sdfxnFV4AQTAfoT4rlNVQLpLEXMK7cR1hLgkCkKBUpQgt2Zn73\n7HjbW8lofAQK7KE+QzTKys2UhOWLX24/a3/mFqIrQ8QPionS7aMuW9/wXmbSbNUG\n56Q/0LsgW0t1qPTq7QYi+bbqXRDuMyjC/D8xvNwfLy/jpkd8m6x0rFrWvxSO1quI\nYQzJ7HK+6GuIZNF91lv54R/FUI3T4iaUCp4Hb+3wMOilF9M8MtJd212JLgY9z6KV\nr1x21lT3zokNE1wOkD4A==\n-----END EC PRIVATE\u0020KEY-----",
+      "context": "Context file keys/ec.pem:\n```\n{{value}}\n```\n",
+      "artifactKind": "composed-prompt.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "secretCore": "MIIEowIBAAKCAQEACANARY3a23X/jScBJDXhkJs8/wrXnFU9swBnC2/zG/2UfahY\nCb9eGXKUIPJjm3sdfxnFV4AQTAfoT4rlNVQLpLEXMK7cR1hLgkCkKBUpQgt2Zn73\n7HjbW8lofAQK7KE+QzTKys2UhOWLX24/a3/mFqIrQ8QPionS7aMuW9/wXmbSbNUG\n56Q/0LsgW0t1qPTq7QYi+bbqXRDuMyjC/D8xvNwfLy/jpkd8m6x0rFrWvxSO1quI\nYQzJ7HK+6GuIZNF91lv54R/FUI3T4iaUCp4Hb+3wMOilF9M8MtJd212JLgY9z6KV\nr1x21lT3zokNE1wOkD4A=="
+    },
+    {
+      "id": "t4-bearer-curl-verbose",
+      "threat": "http-credential-header",
+      "value": "canary4a01-e32vh8ugyoj5mb",
+      "context": "> GET /v1/models HTTP/1.1\n> Host: api.example.test\n> Authorization: Bearer {{value}}\n>\n< HTTP/1.1 401 Unauthorized\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Shapeless lowercase token: only the header rule catches it."
+    },
+    {
+      "id": "t4-bearer-json-stj",
+      "threat": "http-credential-header",
+      "value": "canary4a02-qt5pdlb3vpnwhq",
+      "context": "{\"ts\":\"2026-09-27T10:00:03Z\",\"dir\":\"upstream\",\"headers\":{\"Authorization\":\"Bearer {{value}}\"}}",
+      "artifactKind": "gateway-session jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t4-bearer-lowercase-node",
+      "threat": "http-credential-header",
+      "value": "canary4a03-9vfxo7h3yx73bv",
+      "context": "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"headers: {\\\"authorization\\\": \\\"bearer {{value}}\\\"}\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Lowercase header name and scheme, inside an escaped JSON string."
+    },
+    {
+      "id": "t4-basic",
+      "threat": "http-credential-header",
+      "value": "Y2FuYXJ5LTRhMDQtdXNlcjpwdDA2MDk4Z3N0N3QwMmc4Zjg=",
+      "context": "Authorization: Basic {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Value is base64(user:password), marker is base64 of 'canary'."
+    },
+    {
+      "id": "t4-x-api-key",
+      "threat": "http-credential-header",
+      "value": "canary4a05-8alnimpg0v4l8j",
+      "context": "curl -sS -H 'x-api-key: {{value}}' https://api.example.test/v1/messages\n",
+      "artifactKind": "composed-prompt.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t4-azure-api-key-hex",
+      "threat": "http-credential-header",
+      "value": "c0ffee4a06e8c010e697543bbbf91f5e",
+      "context": "POST /openai/deployments/gpt/chat/completions\napi-key: {{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Azure OpenAI keys are 32 hex chars: entropy rule misses hex, so only the api-key header rule catches it."
+    },
+    {
+      "id": "t4-apim-subscription-key",
+      "threat": "http-credential-header",
+      "value": "c0ffee4a072ec5efe30638adde284b09",
+      "context": "Ocp-Apim-Subscription-Key: {{value}}\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "32 hex chars: header rule only."
+    },
+    {
+      "id": "t4-cookie-session",
+      "threat": "http-credential-header",
+      "value": "canary4a08-5z44hnh7h2r44g",
+      "context": "Cookie: theme=dark; session={{value}}; lang=en\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t4-set-cookie",
+      "threat": "http-credential-header",
+      "value": "CANARY4a09X1B3OHPJ5e69jjxKA6kQ",
+      "context": "< Set-Cookie: __Host-sid={{value}}; Path=/; Secure; HttpOnly\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t4-x-api-key-stj-json",
+      "threat": "http-credential-header",
+      "value": "canary4a10-3qxjlk5chlcscz",
+      "context": "{\"request\":{\"headers\":{\"x-api-key\":\"{{value}}\",\"anthropic-version\":\"2023-06-01\"}}}",
+      "artifactKind": "observer.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t5-git-remote-x-access-token",
+      "threat": "url-embedded-credential",
+      "value": "canary5a01-0mkek45quctw70",
+      "context": "origin\thttps://x-access-token:{{value}}@github.com/example-org/app.git (fetch)\norigin\thttps://x-access-token:{{value}}@github.com/example-org/app.git (push)\n",
+      "artifactKind": "git log/status text",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Occurs twice: both must go."
+    },
+    {
+      "id": "t5-postgres-url",
+      "threat": "url-embedded-credential",
+      "value": "canary5a02-n332umeu21dtps",
+      "context": "Npgsql: failed to connect to postgres://app:{{value}}@db.example.test:5432/app\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t5-gitlab-oauth2-glpat",
+      "threat": "url-embedded-credential",
+      "value": "glpat\u002dCANARY5a03OfAePJi6Rp",
+      "context": "git clone https://oauth2:{{value}}@gitlab.example.test/group/proj.git\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t5-mongodb-srv",
+      "threat": "url-embedded-credential",
+      "value": "canary5a04-i9fcezs3q0cw54",
+      "context": "MongoServerError at mongodb+srv://app:{{value}}@cluster0.example.test/app\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t5-percent-encoded-password",
+      "threat": "url-embedded-credential",
+      "value": "canary5a05/7pydn2+323ti1=@x",
+      "context": "connecting to postgres://app:{{value}}@db.example.test/app\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "valueForm": "percent",
+      "note": "The artifact holds the percent-encoded password (%2F %2B %3D %40)."
+    },
+    {
+      "id": "t5-azure-sas-sig-raw",
+      "threat": "url-embedded-credential",
+      "value": "CANARY5a06qWzsIRajMNmKg4wK8dmVash/oAY5DJXz/+Q=",
+      "context": "azcopy copy https://canarystore.blob.core.windows.net/c/x?sv=2022-11-02&sr=b&sp=r&se=2026-10-01T00%3A00%3A00Z&sig={{value}} ./x\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "valueForm": "percent",
+      "note": "Azure SAS sig= is base64 with + / =, percent-encoded in the URL."
+    },
+    {
+      "id": "t5-azure-sas-sig-stj",
+      "threat": "url-embedded-credential",
+      "value": "CANARY5a07Y0A3ptCi01O3h2a4ERlNvkPnW/HWDCRq/+w=",
+      "context": "{\"exitCode\":1,\"url\":\"https://canarystore.blob.core.windows.net/c/x?sv=2022-11-02\\u0026sp=r\\u0026sig={{value}}\"}",
+      "artifactKind": "action-result.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "valueForm": "percent",
+      "note": "stj writes & as \\u0026, so the sig= parameter follows \\u0026, not a literal &."
+    },
+    {
+      "id": "t6-netrc-one-line",
+      "threat": "netrc-and-space-separated",
+      "value": "canary6a01-atehxeaqu0qcy6",
+      "context": "$ cat ~/.netrc\nmachine api.example.test login canary-bot password {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t6-netrc-multi-line",
+      "threat": "netrc-and-space-separated",
+      "value": "canary6a02-ht559zz8o28666",
+      "context": "machine git.example.test\n  login ci-bot\n  password {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t6-sshpass-positional",
+      "threat": "netrc-and-space-separated",
+      "value": "canary6c03-copper-kettle",
+      "context": "sshpass -p {{value}} ssh deploy@host.example.test\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC2"
+    },
+    {
+      "id": "t6-mysql-dash-p-space",
+      "threat": "netrc-and-space-separated",
+      "value": "canary6c04-velvet-signal",
+      "context": "mysql -h db.example.test -u app -p {{value}} app < seed.sql\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC2"
+    },
+    {
+      "id": "t6-free-text-user-pass",
+      "threat": "netrc-and-space-separated",
+      "value": "canary6c05-amber-meadow",
+      "context": "creds for staging: canary-admin {{value}}\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC2"
+    },
+    {
+      "id": "t7-base64-44",
+      "threat": "high-entropy-random",
+      "value": "CANARY7a01GdZmId+G2j9cQEbJtEPBSb13SFp0m8k+/=",
+      "context": "Here it is:\n\n    {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Standard base64 with + / =: the entropy tokenizer must include those characters."
+    },
+    {
+      "id": "t7-urlsafe-32",
+      "threat": "high-entropy-random",
+      "value": "CANARY7a024KWqDwkV4JfYDbYIFbXctSqEaUDlMQSyh",
+      "context": "generated {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "secrets.token_urlsafe(32) shape: 43 chars with - and _."
+    },
+    {
+      "id": "t7-urlsafe-16-bare",
+      "threat": "high-entropy-random",
+      "value": "CANARY7c03K5MQ5kqFqQE5",
+      "context": "generated {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC1",
+      "note": "secrets.token_urlsafe(16) is 22 chars: under the 24-char entropy floor with no shape."
+    },
+    {
+      "id": "t7-urlsafe-16-named",
+      "threat": "high-entropy-random",
+      "value": "CANARY7a041l-BeOlWEcQX",
+      "context": "SECRET_KEY={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "Same 22-char shape as t7-urlsafe-16-bare, but the name makes it a pair."
+    },
+    {
+      "id": "t7-azure-client-secret",
+      "threat": "high-entropy-random",
+      "value": "Qx8Q~CANARY7a05EVbfChK1DL7oYsJdWiHPdl-fy",
+      "context": "az login --service-principal -u app -p {{value}} --tenant contoso\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "~40 chars of [A-Za-z0-9~._-]; space-separated after -p, so the entropy rule (not a pair rule) must catch it."
+    },
+    {
+      "id": "t7-hex64-bare",
+      "threat": "high-entropy-random",
+      "value": "c0ffee7c06e6ad3240a90b5c03a7103760436a598e327e9d6c776e4207adfb26",
+      "context": "signing secret: {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC1",
+      "note": "Hex-only: the entropy rule deliberately misses hex (it would scrub every SHA-256)."
+    },
+    {
+      "id": "t7-hex64-named",
+      "threat": "high-entropy-random",
+      "value": "c0ffee7a07d5408287fd69c05c13e2c2de04fab94fc9faf380a5ac9b3c7c52d7",
+      "context": "WEBHOOK_SECRET={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t7-short16-mixed",
+      "threat": "high-entropy-random",
+      "value": "CANARY7c08wYWdR4",
+      "context": "pin {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC1",
+      "note": "16 chars: under the entropy floor."
+    },
+    {
+      "id": "t7-lower30-no-upper",
+      "threat": "high-entropy-random",
+      "value": "canary7c099ftxjj42li56u330fj6f",
+      "context": "token {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC1",
+      "note": "30 chars lowercase+digit: lacks uppercase."
+    },
+    {
+      "id": "t7-base64-in-stj",
+      "threat": "high-entropy-random",
+      "value": "CANARY7a102wnFWbGrZgWNUbjD2S8OTx0IC2an+x/+",
+      "context": "{\"task\":\"03-impl\",\"output\":\"key {{value}} rotated\"}",
+      "artifactKind": "events.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "note": "stj writes every + as \\u002B: the entropy scan must run on unescaped text or it sees fragments."
+    },
+    {
+      "id": "t8-base64-of-known",
+      "threat": "transformed-known-value",
+      "value": "Y2FuYXJ5OGMwMS0zNzFyMzM1bXFycG5uNzA3aXJ6Yg==",
+      "context": "encoded: {{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary8c01-371r335mqrpnn707irzb"
+      },
+      "expect": "CC3",
+      "note": "Known value, base64-encoded before being written."
+    },
+    {
+      "id": "t8-reversed-known",
+      "threat": "transformed-known-value",
+      "value": "dglfaxubgarj8lcxh4ia-20c8yranac",
+      "context": "rev: {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary8c02-ai4hxcl8jragbuxaflgd"
+      },
+      "expect": "CC3"
+    },
+    {
+      "id": "t8-second-half-known",
+      "threat": "transformed-known-value",
+      "value": "dla106wifufsnsreop-canary8c03h",
+      "context": "...{{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "LITELLM_MASTER_KEY": "canary8c03-yp1bmjdla106wifufsnsreop-canary8c03h"
+      },
+      "expect": "CC3",
+      "note": "Only the second half of the known value is echoed (value == shell value's tail)."
+    },
+    {
+      "id": "t8-uppercased-known",
+      "threat": "transformed-known-value",
+      "value": "CANARY8C04-DDS8Z4O2CSZAEUT2YVQD",
+      "context": "KEY IS {{value}}\n",
+      "artifactKind": "feedback.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "OPENROUTER_API_KEY": "canary8c04-dds8z4o2cszaeut2yvqd"
+      },
+      "expect": "CC3"
+    },
+    {
+      "id": "t9-rotated-shapeless",
+      "threat": "rotated-key",
+      "value": "canary9c01-new-9nj59gctwkbh8i",
+      "context": "{{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary9c01-old-vrom1c2rbs1c2d"
+      },
+      "expect": "CC6",
+      "note": "Shell holds the OLD value; the run used the new one; bare and shapeless."
+    },
+    {
+      "id": "t9-rotated-ghp-shape",
+      "threat": "rotated-key",
+      "value": "ghp\u005fCANARY9a02XgrSxsxQTlPNVb0fba3VabYUme",
+      "context": "{{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "GH_TOKEN": "ghp\u005fCANARY9a02oldZZ0XK0sBudBwsKlr8zEoLNS"
+      },
+      "expect": "caught",
+      "note": "Rotated, but the new value's ghp\u005f shape catches it regardless of the stale shell."
+    },
+    {
+      "id": "t9-rotated-high-entropy",
+      "threat": "rotated-key",
+      "value": "CANARY9a03IEzekijwZg138E7ETZE5KLhMlltG1f",
+      "context": "{{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary9a03-old-s39f7j3w3htmvf"
+      },
+      "expect": "caught",
+      "note": "Rotated, but 40 mixed chars: the entropy rule catches it."
+    },
+    {
+      "id": "t9-rotated-named-pair",
+      "threat": "rotated-key",
+      "value": "canary9a04-new-fxaovfdrdatccv",
+      "context": "QWEN_TOKEN={{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary9a04-old-a89tlcmkc0f72w"
+      },
+      "expect": "caught",
+      "note": "Rotated, but written as NAME=value: the pair rule catches it."
+    },
+    {
+      "id": "t10-known-plus-stj",
+      "threat": "serializer-escaping",
+      "value": "canary10a1+slate/river=moss&fern-3lb329",
+      "context": "{\"exitCode\":1,\"stderr\":\"auth failed for {{value}}\"}",
+      "artifactKind": "action-result.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary10a1+slate/river=moss&fern-3lb329"
+      },
+      "expect": "caught",
+      "note": "stj writes + as \\u002B and & as \\u0026: a byte-exact known-value match misses it."
+    },
+    {
+      "id": "t10-known-plus-node",
+      "threat": "serializer-escaping",
+      "value": "canary10a2+cedar/brook=fox&wren-cdhijb",
+      "context": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"using {{value}}\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary10a2+cedar/brook=fox&wren-cdhijb"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t10-known-html-chars-stj",
+      "threat": "serializer-escaping",
+      "value": "canary10a3<tag>'q'+h4cposlc",
+      "context": "{\"ts\":\"2026-09-27T10:00:04Z\",\"kind\":\"escalation\",\"detail\":\"token {{value}} rejected\"}",
+      "artifactKind": "escalation json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "API_TOKEN": "canary10a3<tag>'q'+h4cposlc"
+      },
+      "expect": "caught",
+      "note": "stj escapes < > ' as \\u003C \\u003E \\u0027."
+    },
+    {
+      "id": "t10-known-quote-backslash-node",
+      "threat": "serializer-escaping",
+      "value": "canary10a4\"quoted\"\\back+d86dokbw",
+      "context": "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"{{value}}\"}]}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "API_TOKEN": "canary10a4\"quoted\"\\back+d86dokbw"
+      },
+      "expect": "caught",
+      "note": "node escapes only \" and \\ here: \\\" and \\\\."
+    },
+    {
+      "id": "t10-known-plus-attempt-provenance",
+      "threat": "serializer-escaping",
+      "value": "canary10a5+plum/slate=1pracenv",
+      "context": "{\"attempt\":2,\"runner\":\"claude-local\",\"launchEnv\":{\"note\":\"{{value}}\"}}",
+      "artifactKind": "attempt-provenance.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "ANTHROPIC_API_KEY": "canary10a5+plum/slate=1pracenv"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t10-known-ampersand-triage",
+      "threat": "serializer-escaping",
+      "value": "canary10a6&amp=1+pl3g2narq6",
+      "context": "{\"verdict\":\"auth\",\"evidence\":\"{{value}}\"}",
+      "artifactKind": "triage.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary10a6&amp=1+pl3g2narq6"
+      },
+      "expect": "caught"
+    },
+    {
+      "id": "t11-known-split-halves",
+      "threat": "split-stream-chunks",
+      "value": "canary11a1-ry1qmo0g4c04pzgilyi68tne",
+      "context": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"the key is {{chunk0}}\"}}\n{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk1}} and it works\"}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary11a1-ry1qmo0g4c04pzgilyi68tne"
+      },
+      "expect": "caught",
+      "chunks": [
+        "canary11a1-ry1qmo",
+        "0g4c04pzgilyi68tne"
+      ],
+      "note": "Known value split across two deltas of one content block."
+    },
+    {
+      "id": "t11-ghp-split-after-prefix",
+      "threat": "split-stream-chunks",
+      "value": "ghp\u005fCANARY11a2jXXx2zOkha51NlmDddp3ZsORPU",
+      "context": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"token: {{chunk0}}\"}}\n{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk1}}\\n\"}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "chunks": [
+        "ghp\u005fCANARY11a2jX",
+        "Xx2zOkha51NlmDddp3ZsORPU"
+      ],
+      "note": "Second half is 24 chars of shapeless mixed text: only the joined-delta scan sees the ghp\u005f shape."
+    },
+    {
+      "id": "t11-known-split-three-with-escapes",
+      "threat": "split-stream-chunks",
+      "value": "canary11a3+wsu7qnoh3y/viqzknnwk9==",
+      "context": "{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk0}}\"}}\n{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk1}}\"}}\n{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk2}}\"}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "QWEN_TOKEN": "canary11a3+wsu7qnoh3y/viqzknnwk9=="
+      },
+      "expect": "caught",
+      "chunks": [
+        "canary11a",
+        "3+wsu7qnoh3",
+        "y/viqzknnwk9=="
+      ]
+    },
+    {
+      "id": "t11-pair-name-and-value-split",
+      "threat": "split-stream-chunks",
+      "value": "canary11a4-fv4pa9dk8l306jtidf",
+      "context": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"export OPENAI_API_KEY=\"}}\n{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"{{chunk0}}\\n\"}}\n",
+      "artifactKind": "stream-log jsonl",
+      "serializer": "node",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "caught",
+      "chunks": [
+        "canary11a4-fv4pa9dk8l306jtidf"
+      ],
+      "note": "NAME= in one delta, the (unknown, shapeless) value in the next: the pair rule must run on joined text."
+    },
+    {
+      "id": "t12-gateway-placeholder-pair",
+      "threat": "diagnostic-must-survive",
+      "value": "guardrails-gateway-no-auth",
+      "context": "ANTHROPIC_AUTH_TOKEN={{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives",
+      "note": "*_TOKEN pair whose value is the gateway's diagnostic placeholder: the pair rule must exempt it."
+    },
+    {
+      "id": "t12-gateway-placeholder-bearer",
+      "threat": "diagnostic-must-survive",
+      "value": "guardrails-gateway-no-auth",
+      "context": "> Authorization: Bearer {{value}}\n",
+      "artifactKind": "guardrail-stderr",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-gateway-placeholder-json",
+      "threat": "diagnostic-must-survive",
+      "value": "guardrails-gateway-no-auth",
+      "context": "{\"dir\":\"upstream\",\"headers\":{\"authorization\":\"Bearer {{value}}\"}}",
+      "artifactKind": "gateway-session jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-gateway-placeholder-shell",
+      "threat": "diagnostic-must-survive",
+      "value": "guardrails-gateway-no-auth",
+      "context": "$ printenv ANTHROPIC_AUTH_TOKEN\n{{value}}\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app",
+        "ANTHROPIC_AUTH_TOKEN": "guardrails-gateway-no-auth"
+      },
+      "expect": "survives",
+      "note": "Even as a KNOWN shell value it is diagnostic."
+    },
+    {
+      "id": "t12-git-sha",
+      "threat": "diagnostic-must-survive",
+      "value": "e46f75a26a692180f0ff3d0b27d63a706aef939c",
+      "context": "commit {{value}}\nAuthor: Example Dev <dev@example.test>\n",
+      "artifactKind": "git log/status text",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-sha256-hash",
+      "threat": "diagnostic-must-survive",
+      "value": "sha256:69d0b6b20cb4c9fc88a949a689342a2e518fe0ae4229ed9ff417db20e91aa43e",
+      "context": "{\"attempt\":1,\"definitionHash\":\"{{value}}\"}",
+      "artifactKind": "attempt-provenance.json",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-guid",
+      "threat": "diagnostic-must-survive",
+      "value": "3d58336b-0799-4c1a-9e2f-6b1d2c3e4f50",
+      "context": "{\"runId\":\"{{value}}\",\"status\":\"passed\"}",
+      "artifactKind": "run.json reason field",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-branch-name",
+      "threat": "diagnostic-must-survive",
+      "value": "guardrails/39-incremental-delivery-post-40-adjust",
+      "context": "On branch {{value}}\nnothing to commit, working tree clean\n",
+      "artifactKind": "git log/status text",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-test-name-pascal",
+      "threat": "diagnostic-must-survive",
+      "value": "LoadAndValidateTargetResolvesWaveThroughParent",
+      "context": "  Failed Guardrails.Core.Tests.WaveTests.{{value}} [12 ms]\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-test-name-with-digits",
+      "threat": "diagnostic-must-survive",
+      "value": "Plan39ResumeRetriesWave2TaskAfterHalt",
+      "context": "  Passed Guardrails.Core.Tests.ResumeTests.{{value}} [3 ms]\n",
+      "artifactKind": "guardrail-stdout",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives",
+      "note": "PRESSURE ENTRY: 37 chars with upper, lower and digit, so a bare entropy rule scrubs it. A test name is diagnostic."
+    },
+    {
+      "id": "t12-task-id",
+      "threat": "diagnostic-must-survive",
+      "value": "03-dor-section-6-contract-landed",
+      "context": "{\"task\":\"{{value}}\",\"event\":\"attempt-started\"}",
+      "artifactKind": "events.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-diagnostic-code-and-path",
+      "threat": "diagnostic-must-survive",
+      "value": "GR2060 tasks/04-wire-bundle/guardrails/02-tests.ps1",
+      "context": "{{value}}: script references no produced file\n",
+      "artifactKind": "validate.txt",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t12-observer-fqn",
+      "threat": "diagnostic-must-survive",
+      "value": "Guardrails.Core.Bundle.BundleRedactor",
+      "context": "{\"ts\":\"2026-09-27T10:00:05Z\",\"symbol\":\"{{value}}\"}",
+      "artifactKind": "observer.jsonl",
+      "serializer": "stj",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "survives"
+    },
+    {
+      "id": "t13-proprietary-source",
+      "threat": "proprietary-content",
+      "value": "CANARY-C5-01: margin = baseCost * 1.37m + regionalUplift; // Acme pricing rule, confidential",
+      "context": "The existing rule in PricingEngine.cs is:\n\n    {{value}}\n",
+      "artifactKind": "transcript.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC5",
+      "note": "Not a credential: the bundle cannot know what code is proprietary."
+    },
+    {
+      "id": "t13-proprietary-prompt",
+      "threat": "proprietary-content",
+      "value": "CANARY-C5-02 internal roadmap: ship the Contoso integration before the Q4 board review",
+      "context": "Plan context:\n{{value}}\n",
+      "artifactKind": "composed-prompt.md",
+      "serializer": "raw",
+      "shellEnv": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/runner",
+        "PWD": "/home/runner/work/app"
+      },
+      "expect": "CC5"
+    }
+  ]
+}
