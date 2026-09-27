@@ -415,8 +415,8 @@ Verified result (paths shortened):
 ```json
 "maxParallelism": 1,
 "promptRunners": {
-  "default": "claude",
-  "claude": {
+  "default": "qwen36",
+  "qwen36": {
     "kind": "claude",
     "command": "claude",
     "baseUrl": "http://127.0.0.1:4000",
@@ -428,8 +428,15 @@ Verified result (paths shortened):
 }
 ```
 
-There is only one model here, so there is only one block. For a Qwen 3.8 block, LiteLLM first needs its own
-`model_name` pointing at a second `llama-server` (step 2 and step 3).
+- **Name the block after the model** (`qwen36`), not `claude`. The live table's **Model** column shows the
+  *block's name*, never the model ID. A block named `claude` makes a run served by local Qwen read "claude" there.
+  `"kind": "claude"` and `"command": "claude"` stay as they are: they say *how* the prompt is run (the Claude Code
+  CLI), not which model answers.
+- There is only one model here, so there is only one block. For a Qwen 3.8 block, LiteLLM first needs its own
+  `model_name` pointing at a second `llama-server` (step 2 and step 3).
+- **Renaming an existing block** changes `guardrails.json`, and so the plan's hash. Do it between runs, not
+  during one. If `validate` then warns that the plan is not reviewed (`GR2025`), re-mark it with
+  `guardrails mark-reviewed <plan>/`.
 
 **F. Validate, check tool calling, run.** Use the same shell, with Guardrails **1.26.0 or later**, so a rejected
 key is reported as one (#791):
@@ -437,17 +444,20 @@ key is reported as one (#791):
 ```bash
 brew update && brew upgrade guardrails && guardrails skills install --force
 guardrails validate <plan>/
-guardrails providers check <plan>/ claude
+guardrails providers check <plan>/ qwen36
 guardrails run <plan>/
 ```
 
 - **`providers check`:** if a step is UNMET, restart `llama-server` with `--jinja`. `claude-local` doesn't pass it,
   although recent `llama.cpp` builds may enable it by default.
-- **The run header** should read like this:
+- **The run header** names the model that is actually serving, and should read like this:
 
   ```
-  Gateway: block 'claude' → http://127.0.0.1:4000, model 'qwen-3.6-35b-mtp': backend http://127.0.0.1:8080 …Qwen3.6-35B-A3B-MXFP4_MOE.gguf (backendModel 'qwen3.6-35b-a3b' matched).
+  Gateway: block 'qwen36' → http://127.0.0.1:4000, model 'qwen-3.6-35b-mtp': backend http://127.0.0.1:8080 …Qwen3.6-35B-A3B-MXFP4_MOE.gguf (backendModel 'qwen3.6-35b-a3b' matched).
   ```
+
+  The table's Model column shows `qwen36` (the block name). Each finished attempt's summary also says
+  `(via gateway http://127.0.0.1:4000)`, and each attempt in `state/run.json` records `gateway` and `backendModel`.
 
   If it says `backend identity unverified`, don't use that run's numbers for the dogfood (step 10) until it's fixed.
 
