@@ -429,8 +429,9 @@ llama-server -m /models/Qwen3.6-35B-A3B-Q4_K_M.gguf --alias Qwen3.6-35B-A3B --ji
 llama-server -m /models/Qwen3.8-27B-Q4_K_M.gguf     --alias Qwen3.8-27B     --jinja -c 65536 -np 1 --port 8081
 ```
 
-`-c 65536 -np 1` gives the single slot a 65,536-token window. With `-np N`, each slot gets `-c` divided by `N`,
-and that per-slot figure is what goes in `contextTokens` below.
+`-c 65536 -np 1` gives the single slot a 65,536-token window. `contextTokens` below must not exceed the window one
+slot reports in `llama-server`'s `/props` (`default_generation_settings.n_ctx`). Newer `llama.cpp` builds share one KV
+cache across slots, so read that number rather than dividing `-c` by `-np`.
 
 ```yaml
 # litellm.yaml
