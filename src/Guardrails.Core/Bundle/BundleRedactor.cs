@@ -477,11 +477,13 @@ public static partial class BundleRedactor
     public const string PseudonymKind = "pseudonymized-id";
 
     /// <summary>
-    /// #812: the value of an identifier key (<c>session_id</c>, <c>uuid</c>, <c>parentUuid</c>, <c>id</c> — so
-    /// <c>message.id</c> too — <c>tool_use_id</c>, <c>parent_tool_use_id</c>, <c>request_id</c>) that has an identifier
-    /// SHAPE (a UUID, <c>toolu_…</c>, <c>call_…</c>, <c>msg_…</c>, <c>req_…</c>) becomes a stable per-bundle token
-    /// <c>[id-N]</c>: nothing reversible ships, and a tool call still pairs with its result. Any other value under those
-    /// keys goes through every secret pass as before; a known value wins over a pseudonym.
+    /// #812: the value of an identifier key (<c>session_id</c>, <c>sessionId</c>, <c>uuid</c>, <c>parentUuid</c>,
+    /// <c>id</c> — so <c>message.id</c> too — <c>tool_use_id</c>, <c>parent_tool_use_id</c>, <c>request_id</c>) that has an
+    /// identifier SHAPE (a UUID, <c>toolu_…</c>, <c>call_…</c>, <c>msg_…</c>, <c>req_…</c>) becomes a stable per-bundle
+    /// token <c>[id-N]</c>, so a tool call still pairs with its result. Identifiers are not secrets and may appear raw
+    /// elsewhere (an unlisted key, a session file name, a command line), so a token is not a guarantee of
+    /// irreversibility. Any other value under those keys goes through every secret pass as before; a known value and a
+    /// token SHAPE (<c>toolu_sk-ant…</c>) both win over a pseudonym.
     /// </summary>
     private static void FindIdentifiers(RedactionView view, BundleRedactionContext context, List<Hit> hits)
     {
@@ -508,7 +510,7 @@ public static partial class BundleRedactor
             foreach (Match match in pattern.Matches(view.Text))
             {
                 Group value = match.Groups["v"];
-                if (ModelNameShape().IsMatch(value.Value))
+                if (IsModelName(value.Value))
                 {
                     allowed.AddRange(view.OriginalRanges(value.Index, value.Index + value.Length));
                 }
@@ -525,7 +527,7 @@ public static partial class BundleRedactor
 
         return
         [
-            .. hits.Where(hit => hit.Priority is not (Priority.Pair or Priority.Entropy)
+            .. hits.Where(hit => hit.Priority is not Priority.Entropy
                 || !hit.Ranges.All(r => allowed.Any(a => r.Start >= a.Start && r.End <= a.End)))
         ];
     }
@@ -534,11 +536,22 @@ public static partial class BundleRedactor
     private static int ModelFileBasenameLength(string run)
     {
         Match match = ModelFileBasename().Match(run);
-        return match.Success ? match.Groups["b"].Length : 0;
+        return match.Success && HasOnlyLowEntropySegments(match.Groups["stem"].Value) ? match.Groups["b"].Length : 0;
     }
 
+    /// <summary>
+    /// A model name (#812): the shape (letters, digits, <c>. _ -</c>, at most one <c>org/</c> prefix, a letter somewhere)
+    /// AND no alphanumeric segment that is itself a secret-shaped run. Real names are built of short, low-entropy
+    /// segments (<c>Qwen3</c>, <c>35B</c>, <c>A3B</c>, <c>MXFP4</c>, <c>MOE</c>); a random token is one long segment that
+    /// the entropy rule would catch, so it is never allowed through.
+    /// </summary>
+    internal static bool IsModelName(string value) => ModelNameShape().IsMatch(value) && HasOnlyLowEntropySegments(value);
+
+    private static bool HasOnlyLowEntropySegments(string value) =>
+        AlphanumericSegment().Matches(value).All(segment => segment.Length < EntropyMinimumLength || !IsHighEntropy(segment.Value));
+
     [GeneratedRegex(
-        @"""(?:session_id|uuid|parentUuid|id|tool_use_id|parent_tool_use_id|request_id)""\s*:\s*""(?<v>[^""\\\r\n]{1,200})(?="")",
+        @"""(?:session_id|sessionId|uuid|parentUuid|id|tool_use_id|parent_tool_use_id|request_id)""\s*:\s*""(?<v>[^""\\\r\n]{1,200})(?="")",
         RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex IdentifierPair();
 
@@ -554,10 +567,13 @@ public static partial class BundleRedactor
     private static partial Regex ModelLine();
 
     // A model name: a letter somewhere; letters, digits and . _ : @ + -; at most one `org/` prefix (`Qwen/Qwen3-8B`).
-    [GeneratedRegex(@"^(?=[^/]*[A-Za-z])(?:[A-Za-z0-9][A-Za-z0-9._:@+-]{0,63}/)?[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$", RegexOptions.CultureInvariant, Timeout)]
+    [GeneratedRegex(@"^(?=[^/]*[A-Za-z])(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant, Timeout)]
     private static partial Regex ModelNameShape();
 
-    [GeneratedRegex(@"(?:^|/)(?<b>[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.(?:gguf|safetensors))$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, Timeout)]
+    [GeneratedRegex(@"[A-Za-z0-9]+", RegexOptions.CultureInvariant, Timeout)]
+    private static partial Regex AlphanumericSegment();
+
+    [GeneratedRegex(@"(?:^|/)(?<b>(?<stem>[A-Za-z0-9][A-Za-z0-9._-]{0,200})\.(?:gguf|safetensors))$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, Timeout)]
     private static partial Regex ModelFileBasename();
 
     private static (string Text, List<string> Labels) Apply(string content, List<Hit> hits)
@@ -614,8 +630,8 @@ public static partial class BundleRedactor
     private enum Priority
     {
         KnownValue = 0,
-        Pseudonym = 1,
-        Shape = 2,
+        Shape = 1,
+        Pseudonym = 2,
         Header = 3,
         Pair = 4,
         Entropy = 5,

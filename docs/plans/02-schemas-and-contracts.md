@@ -10713,24 +10713,30 @@ PascalCase test names. The residual this leaves is stated in `CC1`.
 
 **Identifiers are pseudonymized, not erased (#812).** An agent stream is read by its identifiers: a `tool_use` is
 paired with its `tool_result` by id, and sessions are told apart by `session_id`. So the value of an identifier key
-(`session_id`, `uuid`, `parentUuid`, `id` (which covers `message.id`), `tool_use_id`, `parent_tool_use_id`,
-`request_id`) that has an **identifier shape** (a UUID, or `toolu_…`, `call_…`, `msg_…`, `req_…`) is replaced by a
-stable per-bundle token `[id-N]`. Each distinct value gets one token, the same in every file of the bundle, numbered
-in the order the bundle first meets it. The table stays in memory, so nothing reversible ships. A known value (§17.6.1)
-wins over a pseudonym. Any other value under those keys goes through every pass as before, so a key-shaped secret
-under `id` is still scrubbed. REDACTIONS.md counts these under their own kind, `pseudonymized-id`.
+(`session_id`, `sessionId`, `uuid`, `parentUuid`, `id` (which covers `message.id`), `tool_use_id`,
+`parent_tool_use_id`, `request_id`) that has an **identifier shape** (a UUID, or `toolu_…`, `call_…`, `msg_…`, `req_…`)
+is replaced by a stable per-bundle token `[id-N]`. Each distinct value gets one token, the same in every file of the
+bundle, numbered in the order the bundle first meets it; the table stays in memory and is never written.
+Identifiers are pseudonymized **where keyed**: they are not secrets, and the same value may still appear raw
+elsewhere (an unlisted key such as `conversation_id`, a session file name, `--resume <uuid>` on a captured command
+line), so a token can be mapped back and is a readability aid, not an irreversibility guarantee. A known value
+(§17.6.1) and a token shape (`toolu_sk-ant…` keeps its `sk-key` label) both win over a pseudonym. Any other value
+under those keys goes through every pass as before, so a key-shaped secret under `id` is still scrubbed. REDACTIONS.md counts these under their own kind, `pseudonymized-id`.
 
 **Model names are allowed through (#812).** The served model is the key fact of a gateway run (§9.10.3), and it is
 not a secret:
 
 - The value of a `model`, `requestedModel` or `backendModel` JSON key, or of a `model:`, `requested model:`,
-  `served model:` or `backend model:` line, that has a model-name shape is exempt from the entropy and pair rules.
-  The shape is letters, digits and `. _ : @ + -` with at least one letter, optionally after one `org/` prefix, for
-  example `qwen-3.6-35b-mtp`, `claude-…`, `Qwen/Qwen3-8B` or `Qwen3.6-35B-A3B-MXFP4_MOE.gguf`. Known values and token
-  shapes still apply, so a secret placed under `model` is still scrubbed.
-- A trailing model-file basename (`…/name.gguf`, `name.safetensors`) is never judged by the entropy rule, wherever
-  it appears: SUMMARY's backend identity, `attempt-route.log`, `run.json`, `observer.jsonl`, provenance, and streams.
-  The path before it is still judged, and still anonymized by pass 3.
+  `served model:` or `backend model:` line, that is a **model name** is exempt from the entropy rule only; every
+  other rule (known values, token shapes, pairs) still applies. A model name has the shape letters, digits and
+  `. _ -` with at least one letter, optionally after one `org/` prefix, **and** no alphanumeric segment of 24 or more
+  characters that the entropy rule would catch. Real names are short, low-entropy segments (`Qwen3`, `35B`, `A3B`,
+  `MXFP4`, `MOE`): `qwen-3.6-35b-mtp`, `claude-opus-5-5`, `Qwen/Qwen3.6-35B-A3B`, `Qwen3.6-35B-A3B-MXFP4_MOE.gguf`. A
+  random token under `model` is one long high-entropy segment, so it is never allowed through.
+- A trailing model-file basename (`…/name.gguf`, `name.safetensors`) whose stem passes the same segment test is
+  never judged by the entropy rule, wherever it appears: SUMMARY's backend identity, `attempt-route.log`, `run.json`,
+  `observer.jsonl`, provenance, and streams. The path before it is still judged, and still anonymized by pass 3. A
+  random stem (`/models/<random>.gguf`) is judged whole.
 
 **Pairs, in detail.** A pair's value is captured without consuming it, so a pair inside another pair's value is
 still scanned (`Server=db;Uid=sa;Pwd=…`, `?a=1&token=…`, and the first key of JSON quoted inside a JSON string,

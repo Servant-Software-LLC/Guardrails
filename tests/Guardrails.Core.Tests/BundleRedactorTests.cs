@@ -717,6 +717,62 @@ public sealed class BundleRedactorTests
         using JsonDocument _ = JsonDocument.Parse(judged.Text);
     }
 
+    // ------------------------------------------------------------------ #813 DA review: the model allow never lets a secret through
+
+    private const string RandomToken = "Xk3mP9qR2vL7nB4tW8yZ1cF5hJ6";
+
+    [Theory]
+    [InlineData("{\"model\":\"" + RandomToken + "\"}", RandomToken)]
+    [InlineData("{\"backendModel\":\"Qwen/" + RandomToken + "\"}", RandomToken)]
+    [InlineData("{\"requestedModel\":\"" + RandomToken + "\"}", RandomToken)]
+    [InlineData("model: " + RandomToken + "\n", RandomToken)]
+    [InlineData("backend model: " + RandomToken + "\n", RandomToken)]
+    [InlineData("{\"cfg\":{\"model\":\"" + RandomToken + "\"}}", RandomToken)]
+    [InlineData("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"{\\\"model\\\":\\\"" + RandomToken + "\\\"}\"}]}}", RandomToken)]
+    [InlineData("loaded /models/" + RandomToken + ".gguf\n", RandomToken)]
+    [InlineData("loaded " + RandomToken + ".safetensors\n", RandomToken)]
+    [InlineData("{\"model\":\"password:Hunter2xyzLong\"}", "Hunter2xyzLong")]
+    public void DaRepro_ARandomTokenOrPairUnderAModelKeyIsStillScrubbed(string text, string secret)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(secret, result.Text, StringComparison.Ordinal);
+        Assert.NotEmpty(result.Labels);
+    }
+
+    [Theory]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE.gguf")]
+    [InlineData("qwen-3.6-35b-mtp")]
+    [InlineData("claude-opus-5-5")]
+    [InlineData("qwen3.6-35b-a3b")]
+    [InlineData("Qwen/Qwen3.6-35B-A3B")]
+    public void RealModelNamesStillSurvive(string name)
+    {
+        foreach (string text in new[] { $"{{\"model\":\"{name}\"}}", $"{{\"backendModel\":\"{name}\"}}", $"model: {name}\n" })
+        {
+            Assert.Equal(text, Redact(text).Text);
+        }
+
+        Assert.True(BundleRedactor.IsModelName(name));
+    }
+
+    [Fact]
+    public void ATokenShapeInsideAnIdentifierKeepsTheSecretLabel()
+    {
+        BundleRedactionResult result = Redact("{\"id\":\"toolu_sk-ant-api03-AbCdEfGhIjKlMnOpQrSt\"}");
+
+        Assert.DoesNotContain("AbCdEfGhIjKlMnOpQrSt", result.Text, StringComparison.Ordinal);
+        Assert.Contains("sk-key", result.Labels);
+        Assert.DoesNotContain(BundleRedactor.PseudonymKind, result.Labels);
+    }
+
+    [Fact]
+    public void SessionIdCamelCaseIsAnIdentifierKeyToo()
+    {
+        const string session = "5649d0ff-7dee-435f-b28e-452624770dcb";
+        BundleRedactionResult result = Redact($"{{\"sessionId\":\"{session}\",\"session_id\":\"{session}\"}}");
+        Assert.Equal("{\"sessionId\":\"[id-1]\",\"session_id\":\"[id-1]\"}", result.Text);
+    }
+
     [Fact]
     public void PseudonymsAreStableWithinOneTableAndNumberedInFirstSeenOrder()
     {
