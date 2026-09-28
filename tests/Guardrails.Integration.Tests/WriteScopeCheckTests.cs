@@ -800,4 +800,67 @@ public sealed class WriteScopeCheckTests
 
         Assert.Empty(changed);
     }
+
+    // -------------------------------------------------------------------------
+    // Issue #719: non-ASCII paths. Without -z git C-quotes them ("cafÃ©.txt"), which the old parser
+    // turned into a path that exists nowhere.
+    // -------------------------------------------------------------------------
+
+    private const string NonAsciiName = "café.txt";
+
+    [Fact]
+    public void NonAsciiPath_OutOfScope_IsNamedExactly_Reverted_AndKeptInThePatch()
+    {
+        using var repo = new TempGitRepo();
+        TempGitRepo.Git(repo.RepoPath, "config", "core.autocrlf", "false"); // byte-exact apply on every OS
+        string taskBase = repo.HeadSha();
+
+        File.WriteAllText(Path.Combine(repo.RepoPath, NonAsciiName), "out-of-scope bytes");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.False(result.Passed);
+        WriteScopeOffense offense = Assert.Single(result.OffendingPaths);
+        Assert.Equal(NonAsciiName.Normalize(), offense.Path.Normalize());
+        Assert.Equal('A', offense.Status);
+
+        string patch = WriteScopeCheck.CaptureOffendingPatch(repo.RepoPath, taskBase, result.OffendingPaths);
+        Assert.Contains("out-of-scope bytes", patch, StringComparison.Ordinal);
+
+        // Used to throw "pathspec '"caf/303/251.txt"' did not match any files".
+        WriteScopeCheck.ScopedRevert(repo.RepoPath, taskBase, result.OffendingPaths);
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, NonAsciiName)));
+
+        string patchFile = Path.Combine(repo.RepoPath, ".git", "out-of-scope.patch");
+        File.WriteAllText(patchFile, patch);
+        TempGitRepo.Git(repo.RepoPath, "apply", patchFile);
+        Assert.Equal("out-of-scope bytes", repo.ReadFile(NonAsciiName));
+    }
+
+    [Fact]
+    public void NonAsciiPath_InScope_Passes_AndIsReportedAsChanged()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "src"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "src", NonAsciiName), "in-scope bytes");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(repo.RepoPath, taskBase, ["src/**"]);
+
+        Assert.True(result.Passed, string.Join(", ", result.OffendingPaths.Select(o => o.Path)));
+        Assert.Equal(("src/" + NonAsciiName).Normalize(), Assert.Single(result.InScopePaths).Normalize());
+        Assert.Contains(
+            WriteScopeCheck.ChangedPaths(repo.RepoPath, taskBase),
+            p => p.Normalize() == ("src/" + NonAsciiName).Normalize());
+    }
+
+    [Fact]
+    public void ParseNameStatus_ReadsNulSeparatedPairs_Verbatim()
+    {
+        var parsed = WriteScopeCheck.ParseNameStatus("M src/a b.cs A café.txt D  lead.txt ").ToList();
+
+        Assert.Equal([('M', "src/a b.cs"), ('A', "café.txt"), ('D', " lead.txt")], parsed);
+        Assert.Empty(WriteScopeCheck.ParseNameStatus(""));
+    }
 }

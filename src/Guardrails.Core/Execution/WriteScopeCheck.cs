@@ -50,7 +50,7 @@ public static class WriteScopeCheck
             // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
             // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
             SegmentStaging.StageAll(repoPath);
-            diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", "-z", taskBase);
         }
         catch (InvalidOperationException ex)
         {
@@ -68,20 +68,8 @@ public static class WriteScopeCheck
 
         var offending = new List<WriteScopeOffense>();
         var inScope = new List<string>();
-        foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach ((char status, string path) in ParseNameStatus(diffOutput))
         {
-            string line = rawLine.Trim();
-            int tabIdx = line.IndexOf('\t');
-            if (tabIdx < 0) continue;
-
-            // git diff --name-status prints a single status letter (A/M/D — renames are disabled via
-            // --no-renames, so no multi-char "R100"-style scores appear here) before the tab.
-            string statusField = line[..tabIdx].Trim();
-            char status = statusField.Length > 0 ? statusField[0] : '?';
-
-            string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-            if (string.IsNullOrEmpty(path)) continue;
-
             if (!WriteScope.IsInScope(path, scope))
             {
                 offending.Add(new WriteScopeOffense
@@ -221,8 +209,8 @@ public static class WriteScopeCheck
             // node_modules must not be read as an "observable change" that keeps the no-op
             // short-circuit (#174) from firing.
             SegmentStaging.StageAll(repoPath);
-            string diff = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
-            return diff.Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(l => l.Trim().Length > 0);
+            string diff = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", "-z", taskBase);
+            return ParseNameStatus(diff).Any();
         }
         catch (InvalidOperationException)
         {
@@ -260,18 +248,10 @@ public static class WriteScopeCheck
         try
         {
             SegmentStaging.StageAll(repoPath);
-            string diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
-            foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            string diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", "-z", taskBase);
+            foreach ((_, string path) in ParseNameStatus(diffOutput))
             {
-                string line = rawLine.Trim();
-                int tabIdx = line.IndexOf('\t');
-                if (tabIdx < 0) continue;
-
-                string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
-                if (path.Length > 0)
-                {
-                    changed.Add(path);
-                }
+                changed.Add(path);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException
@@ -316,6 +296,9 @@ public static class WriteScopeCheck
                 // reads back which paths a kept copy touches (#707 review W4).
                 var args = new List<string>
                 {
+                    // core.quotePath=false (#719): the headers name a non-ASCII path in UTF-8, as it is on
+                    // disk, rather than C-quoted, so the reader of this patch sees the real name.
+                    "-c", "core.quotePath=false",
                     "--literal-pathspecs", "diff", "--cached", "--binary", "--no-color", "--no-renames", taskBase, "--"
                 };
                 args.AddRange(paths.Skip(i).Take(PatchPathBatchSize));
@@ -328,6 +311,31 @@ public static class WriteScopeCheck
         }
 
         return string.Concat(batches);
+    }
+
+    /// <summary>
+    /// Parse <c>git diff --name-status --no-renames -z</c> output (#719): NUL-separated
+    /// <c>status NUL path NUL</c> pairs. Without <c>-z</c>, git C-QUOTES any path holding a byte outside ASCII
+    /// (<c>core.quotePath</c> defaults to true), so <c>café.txt</c> arrived as <c>"caf\303\251.txt"</c>, which
+    /// the old line parser turned into <c>"caf/303/251.txt"</c>: a path that exists nowhere, so the scoped
+    /// revert threw and the out-of-scope patch silently left the file out. With <c>-z</c> a path is never quoted
+    /// and is taken verbatim, including leading or trailing spaces. The status is a single letter (A/M/D), since
+    /// renames are disabled.
+    /// </summary>
+    internal static IEnumerable<(char Status, string Path)> ParseNameStatus(string output)
+    {
+        string[] fields = output.Split('\0');
+        for (int i = 0; i + 1 < fields.Length; i += 2)
+        {
+            string status = fields[i].Trim();
+            string path = fields[i + 1];
+            if (status.Length == 0 || path.Length == 0)
+            {
+                continue;
+            }
+
+            yield return (status[0], path.Replace('\\', '/'));
+        }
     }
 
     /// <summary>How many paths one <see cref="CaptureOffendingPatch"/> git child is handed.</summary>
@@ -368,7 +376,9 @@ public static class WriteScopeCheck
         // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
         if (existedAtBase.Count > 0)
         {
-            var args = new List<string> { "checkout", taskBase, "--" };
+            // --literal-pathspecs (#719): an offending path is a NAME, never a glob, so a file called
+            // `a[1].txt` or `*.log` restores exactly that file.
+            var args = new List<string> { "--literal-pathspecs", "checkout", taskBase, "--" };
             args.AddRange(existedAtBase);
             RunGit(repoPath, [.. args]);
         }
@@ -377,7 +387,7 @@ public static class WriteScopeCheck
         // remove them from the index and the working tree instead.
         if (addedSinceBase.Count > 0)
         {
-            var args = new List<string> { "rm", "-f", "--" };
+            var args = new List<string> { "--literal-pathspecs", "rm", "-f", "--" };
             args.AddRange(addedSinceBase);
             RunGit(repoPath, [.. args]);
         }
