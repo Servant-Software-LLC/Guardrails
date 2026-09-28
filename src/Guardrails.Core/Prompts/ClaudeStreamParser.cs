@@ -61,6 +61,12 @@ public sealed record ClaudeResult
     /// did. Its <see cref="ContextManagementFailure.Detail"/> is the LAST failure's <c>compact_error</c>.
     /// </summary>
     public ContextManagementFailure? CompactionFailure { get; init; }
+
+    /// <summary>
+    /// Claude Code's "Autocompact is thrashing" give-up (#800), or null. Takes precedence over
+    /// <see cref="CompactionFailure"/> wherever one context-management failure is reported: it is the terminal one.
+    /// </summary>
+    public ContextManagementFailure? Thrashing { get; init; }
 }
 
 /// <summary>
@@ -113,6 +119,17 @@ public sealed class ClaudeStreamParser
     // #811: failed compactions, counted, with the last one's error text.
     private int _compactionFailures;
     private string? _compactionError;
+
+    // #800: Claude Code's "Autocompact is thrashing" give-up. Volatile because the session's tee reads it on the
+    // reader thread right after Feed to end the session at once; Build reads it after the process has returned.
+    private volatile bool _thrashing;
+    private string? _thrashText;
+
+    /// <summary>
+    /// True once the stream has reported that autocompact is thrashing (#800). Read by the session straight after
+    /// <see cref="Feed"/>, so it can end a session that can no longer make progress.
+    /// </summary>
+    public bool ContextExhausted => _thrashing;
 
     /// <summary>
     /// Feed one raw output line (newline excluded). Non-JSON lines are ignored, as is every event
@@ -173,9 +190,28 @@ public sealed class ClaudeStreamParser
                 return;
             }
 
+            // #800: the give-up arrives as a synthetic assistant message with a structured api_error, then (when the
+            // CLI exits on its own) a result carrying terminal_reason "rapid_refill_breaker". Either one is enough.
+            if (type == "assistant")
+            {
+                if (TryGetNonEmptyString(root, "api_error") == "autocompact_thrashing")
+                {
+                    MarkThrashing(AssistantText(root));
+                }
+
+                return;
+            }
+
             if (type != "result")
             {
                 return;
+            }
+
+            if (TryGetNonEmptyString(root, "terminal_reason") == "rapid_refill_breaker"
+                || TryGetNonEmptyString(root, "result") is { } resultText
+                    && resultText.StartsWith(ThrashingPhrase, StringComparison.Ordinal))
+            {
+                MarkThrashing(TryGetNonEmptyString(root, "result"));
             }
 
             // Terminal result message — capture it (last one wins).
@@ -211,6 +247,10 @@ public sealed class ClaudeStreamParser
         // on. Both null stays null: absent, never "".
         Model = _initModel ?? _resultModel,
 
+        Thrashing = _thrashing
+            ? new ContextManagementFailure(ContextManagementFailureKind.AutocompactThrashing, _thrashText, 1)
+            : null,
+
         CompactionFailure = _compactionFailures > 0
             ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
             : null
@@ -240,6 +280,36 @@ public sealed class ClaudeStreamParser
     /// reported this and it was empty", a claim about the attempt, where null is the truthful "the
     /// runner reported none". Same absent-not-zero rule <see cref="TryGetUsage"/> follows.
     /// </summary>
+    /// <summary>The opening of Claude Code's give-up message, the fallback when neither structured field is present.</summary>
+    internal const string ThrashingPhrase = "Autocompact is thrashing";
+
+    private void MarkThrashing(string? text)
+    {
+        _thrashText ??= text;
+        _thrashing = true;
+    }
+
+    private static string? AssistantText(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out JsonElement message) || message.ValueKind != JsonValueKind.Object
+            || !message.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (JsonElement block in content.EnumerateArray())
+        {
+            if (block.ValueKind == JsonValueKind.Object
+                && TryGetNonEmptyString(block, "type") == "text"
+                && TryGetNonEmptyString(block, "text") is { } text)
+            {
+                return text;
+            }
+        }
+
+        return null;
+    }
+
     private static string? TryGetNonEmptyString(JsonElement root, string name) =>
         root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String &&
         !string.IsNullOrWhiteSpace(element.GetString())

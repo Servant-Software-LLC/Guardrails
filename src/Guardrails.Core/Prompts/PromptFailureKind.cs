@@ -78,6 +78,15 @@ public enum PromptFailureKind
     Stalled,
 
     /// <summary>
+    /// The session's context is exhausted and it has given up (#800): Claude Code reported that autocompact is
+    /// thrashing (<see cref="ContextManagementFailureKind.AutocompactThrashing"/>). No further turn can make progress,
+    /// so the harness ends the session the moment the signal arrives instead of waiting out the timeout or the stall
+    /// bound. Distinct from <see cref="Error"/> so the retry is told how to stay inside the window (bounded reads, no
+    /// whole-file <c>cat</c>), and so two in a row settle needs-human with the operator's levers.
+    /// </summary>
+    ContextExhausted,
+
+    /// <summary>
     /// The RUNNER'S OWN CONFIGURATION cannot do this work, and no retry under the same configuration can
     /// change that (#767 / #773, SSOT §9.9). Two shapes today, both Cursor's and both detected inside its
     /// quarantine: the CLI refused to start because the team administrator disabled "Run Everything", which

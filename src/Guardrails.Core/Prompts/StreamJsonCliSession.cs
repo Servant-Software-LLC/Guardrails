@@ -191,6 +191,10 @@ internal static class StreamJsonCliSession
         // returns (its state is final by then), so no cross-thread read of this flag is load-bearing.
         bool denialAbortFired = false;
 
+        // #800: the same spawn-guard shape for Claude Code's "Autocompact is thrashing" give-up. A session in that state
+        // cannot make progress, so it is ended the moment the signal is parsed rather than left to the timeout.
+        bool thrashAbortFired = false;
+
         // #504 stall watchdog / #517 suspend discrimination. Bounds SILENCE, not duration: the caller's
         // Timeout stays a backstop while this kills a session that has stopped producing. The clock, the
         // cadence and the verdict all live on the shared StallWatch — OpenAiCompatPromptRunner drives the
@@ -214,6 +218,12 @@ internal static class StreamJsonCliSession
                 streamWriter?.WriteLine(line);
                 transcript?.Feed(line);
 
+                if (!thrashAbortFired && parser.ContextExhausted)
+                {
+                    thrashAbortFired = true;
+                    RequestAbort();
+                }
+
                 if (denialAbortThreshold is not { } threshold
                     || denialAbortFired
                     || permissionScanner!.ConsecutiveDenials < threshold)
@@ -222,10 +232,13 @@ internal static class StreamJsonCliSession
                 }
 
                 denialAbortFired = true;
+                RequestAbort();
+            }
 
-                // OFF this thread on purpose. Tee runs on the stdout reader callback; cancelling inline
-                // can resume WaitForExitAsync's continuation here, which then awaits the very reader
-                // drain this thread owes — a self-deadlock. Task.Run hands the cancel to the pool.
+            // OFF this thread on purpose. Tee runs on the stdout reader callback; cancelling inline can resume
+            // WaitForExitAsync's continuation here, which then awaits the very reader drain this thread owes — a
+            // self-deadlock. Task.Run hands the cancel to the pool.
+            void RequestAbort() =>
                 _ = Task.Run(() =>
                 {
                     try
@@ -237,7 +250,6 @@ internal static class StreamJsonCliSession
                         // The run already finished and the source was disposed — nothing left to abort.
                     }
                 });
-            }
 
             // The watchdog itself: poll staleness on a cadence well under the bound, and abort through the
             // SAME linked source the #452 fail-fast uses, so a stall lands as an ordinary ProcessResult
@@ -315,6 +327,29 @@ internal static class StreamJsonCliSession
             if (dialect.CostIsFiction)
             {
                 result = result with { CostUsd = null };
+            }
+
+            // #800: the context is exhausted and Claude Code has given up. Checked FIRST: it is the cause of whatever came
+            // after it (a stall, a timeout, an error result), and its remedy is specific. Whether or not the CLI also
+            // wrote its own is_error result, the attempt is classified by the give-up, never as a generic error.
+            if (result.Thrashing is { } thrashing)
+            {
+                return new PromptResult
+                {
+                    Completed = false,
+                    IsError = true,
+                    ResultText = result.ResultText,
+                    CostUsd = result.CostUsd,
+                    NumTurns = result.NumTurns,
+                    Usage = ToPromptUsage(result.Usage),
+                    ObservedModel = result.Model,
+                    FailureKind = PromptFailureKind.ContextExhausted,
+                    ContextManagement = thrashing,
+                    Summary =
+                        "context exhausted — Claude Code reported that autocompact is thrashing: the context refilled to " +
+                        "the limit right after each compaction, so no further turn could make progress" +
+                        (thrashAbortFired ? "; the harness ended the session at once" : string.Empty)
+                };
             }
 
             // #504: a stall abort, re-derived AFTER the process returned (the flag's write is final by

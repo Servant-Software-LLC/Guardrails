@@ -27,6 +27,9 @@ public static class BreakdownFailureTokens
     /// </summary>
     public const string Stalled = "stalled";
 
+    /// <summary>The session's context was exhausted: Claude Code reported that autocompact is thrashing (#800).</summary>
+    public const string ContextExhausted = "context-exhausted";
+
     /// <summary>The session hit the runner's output-token cap.</summary>
     public const string OutputCap = "output-cap";
 

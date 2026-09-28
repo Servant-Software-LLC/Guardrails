@@ -201,6 +201,12 @@ In the plan's `guardrails.json`, set `maxParallelism` and replace `promptRunners
   A mismatch stops the run before any task.
 - **`contextTokens`** must not exceed the per-slot window `/props` reports (step 2); the run stops if it does. It can
   be smaller. Claude Code then compacts earlier, which keeps a local model's turns faster (64K is a good start).
+  If attempts end with `context exhausted` (Claude Code's "Autocompact is thrashing"), the window is too small for
+  the task: raise `contextTokens` toward that per-slot window before anything else.
+- **Narrow the Bash grant.** Claude Code's system prompt already takes about 20K tokens, and a model that reads files
+  with `Bash(cat …)` bypasses `Read`'s truncation and its "file unchanged" dedup. Give the block an `allowedTools`
+  whose Bash entries cover only what the tasks run, for example `"Bash(dotnet *)"` and `"Bash(git status)"`, so file
+  reads go through `Read`.
 - If step 3 showed that LiteLLM requires a key, add `"authTokenEnv": "LITELLM_MASTER_KEY"` to each block. Run
   every `guardrails` command below from the shell that exported it.
 - **Running one model only:** keep just its block and point `default` at it. To send one task to 3.8, set
@@ -510,6 +516,7 @@ works on a stuck run without stopping it, so bundle before you kill the run (ste
 | Attempts end as `timeout` | Local models are slow | Raise the task's `timeoutSeconds` |
 | Attempts end as `stalled`, often with `context compaction failed` in the summary | Reading the prompt, or a compaction, took longer than the stall bound (step 5) | Set `stallTimeoutSeconds` on the block to about twice `contextTokens` divided by the prompt speed, or lower `contextTokens` |
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
+| An attempt ends `context exhausted` (Claude Code: "Autocompact is thrashing"); two in a row settle the task needs-human | The context refilled right after each compaction, often from whole files printed through Bash | Raise `contextTokens` toward the per-slot `n_ctx`, split the task, or narrow the block's Bash grant (step 5) |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
 | `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=...` and re-run, or pass `--without-agent-text` |
 

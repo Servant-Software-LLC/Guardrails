@@ -146,6 +146,9 @@ public sealed class StallWatch
     /// <summary>How many PROGRESS beats the session produced (#815 review W4): zero means the runner or its backend never produced anything.</summary>
     internal int Beats => Volatile.Read(ref _beats);
 
+    /// <summary>Test seam: runs between the credit's read of the last activity and its write, where a beat can race it.</summary>
+    internal Action? BeforeCreditWrite { get; set; }
+
     /// <summary>The total partial-suspend time credited back to the silence window (W2), for tests and reports.</summary>
     internal TimeSpan Credited => TimeSpan.FromTicks(Interlocked.Read(ref _creditedTicks));
 
@@ -192,9 +195,14 @@ public sealed class StallWatch
             long credit = (sincePreviousPoll - PollInterval).Ticks;
             long last = Volatile.Read(ref _lastActivityTicks);
             long credited = Math.Min(pollAt, last + credit) - last;
-            if (credited > 0)
+            BeforeCreditWrite?.Invoke();
+
+            // A compare-exchange, not a write: the stream reader may Beat() between the read above and here (a child
+            // flushing on wake is exactly when this runs). That beat is newer than anything credited, so it must win;
+            // a plain write would put the older value back and could kill the session early (#815 review).
+            if (credited > 0
+                && Interlocked.CompareExchange(ref _lastActivityTicks, last + credited, last) == last)
             {
-                Volatile.Write(ref _lastActivityTicks, last + credited);
                 Interlocked.Add(ref _creditedTicks, credited);
             }
         }

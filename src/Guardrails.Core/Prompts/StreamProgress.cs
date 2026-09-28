@@ -22,9 +22,10 @@ internal static class StreamProgress
     ///         the model's reasoning. The model is generating; the most common line in real captures (11,778 in 58
     ///         captured sessions);</item>
     ///   <item><c>tool_progress</c> — Claude Code's heartbeat for a running tool call, about every 30 s with an
-    ///         <c>elapsed_time_seconds</c>. A long build or test is therefore NOT silent on the stream. A tool that
-    ///         hangs forever is bounded by Claude Code's own per-call timeout and by the attempt timeout, not by
-    ///         this watchdog;</item>
+    ///         <c>elapsed_time_seconds</c>. A long build or test is therefore NOT silent on the stream. A Bash call has
+    ///         Claude Code's own per-call timeout, but other tools (an MCP server's) may wait far longer, so a heartbeat
+    ///         stops counting once its tool has run past <c>heartbeatLimit</c> (the session passes twice its stall
+    ///         bound); the attempt timeout backstops either;</item>
     ///   <item><c>system/compact_boundary</c> — a compaction that SUCCEEDED, which is progress (the status lines
     ///         around it are not);</item>
     ///   <item><c>tool_call</c> and <c>thinking</c> — Cursor's tool-call and reasoning events;</item>
@@ -37,7 +38,7 @@ internal static class StreamProgress
     /// closes, and the cost of the other direction is bounded, because the session still has to emit real output
     /// within the bound.
     /// </summary>
-    internal static bool IsStreamJsonProgress(string line)
+    internal static bool IsStreamJsonProgress(string line, TimeSpan? heartbeatLimit = null)
     {
         if (string.IsNullOrWhiteSpace(line) || line.AsSpan().TrimStart()[0] != '{')
         {
@@ -57,7 +58,8 @@ internal static class StreamProgress
 
             return type.GetString() switch
             {
-                "assistant" or "result" or "tool_progress" or "tool_call" or "thinking" or "stream_event" => true,
+                "assistant" or "result" or "tool_call" or "thinking" or "stream_event" => true,
+                "tool_progress" => !HeartbeatIsStale(root, heartbeatLimit),
                 "user" => CarriesToolResult(root),
                 "system" => IsProgressSystemLine(root),
                 _ => false
@@ -95,11 +97,18 @@ internal static class StreamProgress
     /// <summary>Beat <paramref name="watch"/> when <paramref name="line"/> is stream-json progress. The one call the session makes.</summary>
     internal static void BeatOnStreamJsonProgress(StallWatch? watch, string line)
     {
-        if (watch is not null && IsStreamJsonProgress(line))
+        if (watch is not null && IsStreamJsonProgress(line, watch.Bound * 2))
         {
             watch.Beat();
         }
     }
+
+    private static bool HeartbeatIsStale(JsonElement root, TimeSpan? limit) =>
+        limit is { } bound
+        && root.TryGetProperty("elapsed_time_seconds", out JsonElement elapsed)
+        && elapsed.ValueKind == JsonValueKind.Number
+        && elapsed.TryGetDouble(out double seconds)
+        && seconds > bound.TotalSeconds;
 
     private static bool IsProgressSystemLine(JsonElement root)
     {

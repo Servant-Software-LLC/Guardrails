@@ -281,7 +281,7 @@ failed.** The authority is `guardrails samples verify <folder>` (§12.4) — one
       "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat | cursor. "claude", "openai-compat" (#223) AND "cursor" (#764, §9.9 — Cursor's Agent CLI; `command` defaults to "agent"; runs with no per-tool allowlist, its approval flag chosen by `approvalMode`, so every cursor block draws the GR2080 warning) are IMPLEMENTED; codex | openrouter | local remain reserved names with no runner class. An unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
       "endpoint": null,               // OPTIONAL, openai-compat ONLY (§9.8, issue #223). REQUIRED when kind is "openai-compat": an absolute http/https base URL for the chat-completions endpoint, e.g. "http://127.0.0.1:11434/v1" (GR2065) — declaring it on a block of another kind is GR2065 too. `command` is IGNORED for kind "openai-compat": there is no local executable to launch, so GR2009's PATH probe is skipped for it (§9)
       "contextTokens": null,          // OPTIONAL, openai-compat AND claude gateway blocks (#782). REQUIRED when kind is "openai-compat": the model's context window in tokens, integer >= 1 (GR2065) — the runner's own before/after context-overflow check (§9.8) is its only reader. On a claude GATEWAY block (one with `baseUrl`, §9.10) it is the backend's PER-SLOT window (llama-server -c C -np N gives each slot C/N), set as CLAUDE_CODE_MAX_CONTEXT_TOKENS and checked by the preflight against the backend's per-slot n_ctx; < 1 there is GR2084. On a claude block WITHOUT `baseUrl` it is still GR2065
-      "stallTimeoutSeconds": null,    // OPTIONAL, any kind (§9, issue #811). How long a task ACTION's session on this block may produce no PROGRESS (model output, a tool call or result, the terminal result; never a status line) before it is killed as `stalled`. Absent = derived from the action's timeout after the #119 extension: clamp(timeout / 3, 15 min, 20 min) on a cloud block, clamp(timeout / 2, 30 min, 60 min) on a local backend (a claude gateway block with `baseUrl`, or kind "openai-compat"), and no bound when that is not shorter than the timeout. 0 = no stall bound. A positive integer = that many seconds, used as given (still no bound when not shorter than the timeout). Negative = GR2088. Block-level only (under guardrailOverrides it is GR2089, a warning): judges do not read it, and breakdowns keep their own 20-minute bound
+      "stallTimeoutSeconds": null,    // OPTIONAL, any kind (§9, issue #811). How long a task ACTION's session on this block may produce no PROGRESS (model output, reasoning (`thinking_tokens`), a tool call, a tool heartbeat (`tool_progress`) or result, a successful compaction (`compact_boundary`), the terminal result; never a status line) before it is killed as `stalled`. Absent = derived from the action's timeout after the #119 extension: clamp(timeout / 3, 15 min, 20 min) on a cloud block, clamp(timeout / 2, 30 min, 60 min) on a local backend (a claude gateway block with `baseUrl`, or kind "openai-compat"), and no bound when that is not shorter than the timeout. 0 = no stall bound. A positive integer = that many seconds, used as given (still no bound when not shorter than the timeout). Negative = GR2088. Block-level only (under guardrailOverrides it is GR2089, a warning): judges do not read it, and breakdowns keep their own 20-minute bound
       "apiKeyEnv": null,               // OPTIONAL, openai-compat ONLY. The NAME of an env var holding a bearer token — NEVER the token itself, since this file is committed and hashed into PlanDefinitionHash. Absent = no Authorization header is sent
       "wire": null,                    // OPTIONAL, openai-compat ONLY. A verbatim request-body passthrough map merged into the outgoing JSON, e.g. { "options": { "num_ctx": 32768 } } — the HTTP sibling of `env`. A key that shadows a harness-owned request field (model/messages/stream/stream_options/tools/max_tokens) is GR2065, never a runtime throw
       "approvalMode": null,            // OPTIONAL, cursor ONLY (§9.9, issue #767). "force" | "auto-review" | "none"; absent = "force". How Cursor approves tool calls in print mode: "force" → --force (Run Everything; refused at launch where a team admin disabled it — a runner-configuration halt), "auto-review" → --auto-review (Cursor's classifier may refuse individual commands), "none" → no approval flag (shell refused unless extraArgs carries "--sandbox", "enabled"). Block-level only. Unknown or non-string value, the key on a non-cursor block, or guardrailOverrides.approvalMode = GR2081; an approval flag (--force/-f/--yolo/--auto-review) in extraArgs of a cursor block = GR2082
@@ -6001,7 +6001,8 @@ DISPATCHED block (the block whose CLI actually runs, the same `DispatchNameFor` 
 
 **Only PROGRESS restarts the silence window (`StreamProgress`).** On a `stream-json` session (claude, cursor) a
 line is progress when it is `assistant`, `result`, `user` carrying a `tool_result` block, `tool_progress` (Claude
-Code's tool heartbeat), `system/thinking_tokens` with `estimated_tokens_delta > 0`, `system/compact_boundary` (a
+Code's tool heartbeat, until its tool has run twice the stall bound: a Bash call has Claude Code's own per-call
+timeout, an MCP tool may not), `system/thinking_tokens` with `estimated_tokens_delta > 0`, `system/compact_boundary` (a
 compaction that SUCCEEDED), Cursor's `tool_call` or `thinking`, or `stream_event` (Claude partial messages, which do
 not arrive today because the harness does not pass `--include-partial-messages`). Every other `system` line
 (`init`, `status` including `compacting`, hooks, task bookkeeping), `rate_limit_event`, a `user` line without a tool
@@ -6018,7 +6019,8 @@ counting as progress). This applies to breakdowns too, which share the session c
 data frames). When it is ZERO the runner or its backend never answered, so the summary says to check the gateway or
 backend and the feedback says the approach needs no change. **Two consecutive zero-progress stalls on one task
 settle it `needs-human`** with that reason instead of burning the rest of the budget; any attempt that produced
-output resets the count, and a stall that followed some progress keeps the ordinary retry path.
+output resets the count, and a stall that followed some progress keeps the ordinary retry path. The count lives in
+memory, per task, for one `guardrails run` invocation: a resume or a `guardrails reset` starts it again at zero.
 
 **A failed compaction is classified: context management failed.** The Claude stream parser records
 `{"type":"system","subtype":"status","compact_result":"failed","compact_error":"…"}` as a
@@ -6026,10 +6028,24 @@ output resets the count, and a stall that followed some progress keeps the ordin
 `PromptResult.ContextManagement`, whatever the outcome. On a FAILED attempt the harness appends it to the attempt
 summary (and `action-result.json`'s `summary`) as `— context compaction failed (Request timed out)`, and appends a
 `## Context management failed` section to `feedback.md` telling the retry to carry less. A session that recovered
-and succeeded is not reported. **#800 seam:** Claude Code's "Autocompact is thrashing" is the second member of this
-same classification. It lands as a new `ContextManagementFailureKind` value detected in the same parser, and the
-summary, feedback and `attempt-stalled` row pick it up unchanged; #800's own routing (ending the attempt at once,
-escalating on repeat) is a separate decision this classification does not make.
+and succeeded is not reported.
+
+**Autocompact thrashing ends the attempt at once (issue #800).** The second member of the same classification
+(`autocompact-thrashing`). Claude Code gives up with "Autocompact is thrashing: the context refilled to the limit
+within 3 turns of the previous compact, 3 times in a row", as a synthetic assistant message carrying
+`"api_error":"autocompact_thrashing"` and, when the CLI exits on its own, a result carrying
+`"terminal_reason":"rapid_refill_breaker"` (a result whose text opens with that sentence is the fallback). Any of the
+three is enough. A session in that state cannot make progress, so the session ends it the moment the line is parsed
+(the #452 abort path, not the timeout or the stall bound) and reports `PromptFailureKind.ContextExhausted`, checked
+before every other classification because it is the cause of whatever follows. The attempt is journalled
+`action-failed` with a `context exhausted` summary that names the operator's levers: the block's `contextTokens`
+(with its value) raised toward the backend's per-slot window, splitting the task, and narrowing the Bash grant so file
+reads go through `Read`. `feedback.md` gets `## The session ran out of context`: read files with `Read` using an
+offset and a limit, never print a whole file through Bash, treat a "Wasted call — file unchanged" reply as a cache
+hit rather than an error, and filter build and test output. It is rollback-aware and carries the salvage section, like
+a timeout. **Two consecutive thrashes on one task settle it `needs-human`** with the same levers (the #174
+short-circuit shape); any other attempt outcome resets the count, which lives in memory for one run invocation. A
+breakdown session reports it as `context-exhausted`.
 
 **The stall verdict is persisted.** A stalled action raises `IRunObserver.AttemptStalled` the moment the action
 returns, before its attempt settles, which writes the §8.1 `attempt-stalled` row (and an `AttemptStalled` line in

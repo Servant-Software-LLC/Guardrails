@@ -994,4 +994,5 @@ internal sealed record AttemptResult(
     string? GuardrailFailureFingerprint = null,
     string? ActionOutputFingerprint = null,
     string? TransientResetHint = null,
-    bool SilentStall = false);
+    bool SilentStall = false,
+    bool ContextExhausted = false);

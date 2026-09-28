@@ -514,6 +514,7 @@ public sealed record WaveBreakdownOutcome
         PromptFailureKind.OutputCap => BreakdownFailureTokens.OutputCap,
         PromptFailureKind.Transient => BreakdownFailureTokens.Transient,
         PromptFailureKind.Stalled => BreakdownFailureTokens.Stalled,
+        PromptFailureKind.ContextExhausted => BreakdownFailureTokens.ContextExhausted,
         _ => BreakdownFailureTokens.Error
     };
 
@@ -529,6 +530,7 @@ public sealed record WaveBreakdownOutcome
             ? $"ran out of TURNS (cap {cap})"
             : "ran out of TURNS",
         PromptFailureKind.OutputCap => "hit the runner's OUTPUT-TOKEN cap",
+        PromptFailureKind.ContextExhausted => "ran out of CONTEXT: Claude Code reported that autocompact is thrashing, so the session was ended",
         PromptFailureKind.Transient => "stopped on a transient runner condition (rate limit / overload)",
         PromptFailureKind.RunnerConfiguration => Summary is { Length: > 0 } refusal
             ? $"was refused by the runner's own configuration (#767): {refusal}"

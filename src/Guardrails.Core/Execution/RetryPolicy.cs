@@ -1666,6 +1666,63 @@ public static class RetryPolicy
         return text.ToString();
     }
 
+    /// <summary>
+    /// #800: what an attempt whose context ran out is told. Claude Code reported that autocompact is thrashing: the
+    /// context refilled to the limit right after each compaction. The observed cause (a local Qwen session) was whole
+    /// files read through <c>Bash(cat …)</c>, after the model mistook Claude Code's "Wasted call" dedup reply for a fault,
+    /// so the advice names exactly that. Routed like <see cref="ForTimeout"/>: rollback-aware, with the salvage section.
+    /// </summary>
+    public static string ForContextExhausted(
+        TaskNode task, int attempt, bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        text.AppendLine(ContextExhaustedHeading);
+        text.AppendLine();
+        text.AppendLine("The previous attempt filled the model's context faster than it could be compacted, so it was");
+        text.AppendLine("stopped. On this attempt, keep what you read small:");
+        text.AppendLine();
+        text.AppendLine("- Read files with the Read tool, and pass an offset and a limit for anything long. Do NOT print whole");
+        text.AppendLine("  files through Bash (`cat`, `type`, `Get-Content`).");
+        text.AppendLine("- A \"Wasted call — file unchanged since your last Read\" reply is a cache hit, not an error: use the");
+        text.AppendLine("  earlier result instead of reading the file again another way.");
+        text.AppendLine("- Filter build and test output to the errors (for example with a filtered test run) instead of printing");
+        text.AppendLine("  all of it, and do not re-read files you have already read.");
+        text.AppendLine();
+        if (fileWritesRolledBack && salvageRef is not null)
+        {
+            text.AppendLine("Its partial work was reverted from your working tree, but it was NOT discarded — see");
+            text.AppendLine("'## Prior attempt work is salvageable' below to recover it.");
+        }
+        else if (fileWritesRolledBack)
+        {
+            text.AppendLine("Its partial work was reverted (see the rollback note below), so re-author the files.");
+        }
+        else
+        {
+            text.AppendLine("Its PARTIAL WORK is preserved in your workspace: continue from it rather than starting over.");
+        }
+
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForContextExhausted"/> uses (pinned by tests).</summary>
+    internal const string ContextExhaustedHeading = "## The session ran out of context";
+
+    /// <summary>
+    /// #800: the operator's levers when a task's context runs out, in one sentence: the block's <c>contextTokens</c>
+    /// (named with its value when known), splitting the task, and narrowing the Bash grant so file reads go through
+    /// <c>Read</c>, whose truncation and dedup keep them small.
+    /// </summary>
+    public static string ContextLevers(int? contextTokens) =>
+        (contextTokens is { } tokens
+            ? $"Raise the runner block's contextTokens (now {tokens:N0}) toward the backend's per-slot window"
+            : "Give the model a larger context window (a gateway block's contextTokens, up to the backend's per-slot window)")
+        + ", split the task into smaller ones, or narrow the block's Bash grant (for example Bash(dotnet *)) so file " +
+        "reads go through the Read tool.";
+
     /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
     internal const string StallHeading = "## The session went silent and was stopped";
 
