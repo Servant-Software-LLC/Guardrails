@@ -2113,13 +2113,18 @@ composed prompt* (agents read instructions, not env vars).
 **Exit, timeout and output drain (#723).** The harness waits on the child PROCESS, not on its pipes.
 A child that exits on its own is reported with its **real exit code** and is never a timeout, even
 when a background process it started still holds the inherited `stdout`/`stderr`. A child still
-running at `timeoutSeconds` has its process tree killed and is reported as timed out (exit `-1`).
-Either way the remaining output is then drained for a **bounded grace (10 s)**, not until EOF: a
-grandchild that escaped the tree kill, or outlived a child that exited, cannot hold the harness past
-its bound. When the grace runs out, the capture is truncated, the result says so
-(`ProcessResult.OutputDrainIncomplete`), and the captured `stderr` ends with a line beginning
-`[guardrails] output truncated:` so every reader of it (retry feedback, attempt logs, a halt) sees
-why the output stops short.
+running at `timeoutSeconds` has its process tree killed and is reported as timed out (exit `-1`); a
+child still running when the caller cancels (Ctrl-C, an abort) is killed the same way. Either way the
+remaining output is then drained until both pipes close, **bounded by idleness, not by a fixed
+grace**: the drain gives up after **30 s with no new line**, never later than **120 s** in total, and
+within **2 s** once the caller has cancelled. Output still arriving keeps it waiting, because a loaded
+machine can take seconds to deliver a fast child's output; a grandchild that escaped the tree kill, or
+outlived a child that exited, cannot hold the harness past those bounds. When the drain gives up, the
+capture is truncated, the result says so (`ProcessResult.OutputDrainIncomplete`), and the captured
+`stderr` ends with a line that states the fact and claims no cause: `[guardrails] output truncated:
+the process <exited | timed out | was killed on cancellation>, and its output pipes were not closed
+within Ns. A process it started may still hold them. An unterminated last line and any later output
+were not captured.
 
 **On Windows, a script launched THROUGH BASH sees `GUARDRAILS_*` path values in forward-slash form**
 (issue #263) — `C:/Users/...`, a straight backslash→forward-slash swap of the same absolute path, not

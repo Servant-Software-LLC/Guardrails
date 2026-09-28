@@ -96,8 +96,8 @@ public sealed class ProcessRunner
 
         using var process = new Process { StartInfo = startInfo };
 
-        var stdout = new OutputCapture(stdoutLineSink);
-        var stderr = new OutputCapture(lineSink: null);
+        var stdout = new OutputCapture(stdoutLineSink, _drain.Clock);
+        var stderr = new OutputCapture(lineSink: null, _drain.Clock);
 
         process.OutputDataReceived += (_, e) => stdout.Collect(e.Data);
         process.ErrorDataReceived += (_, e) => stderr.Collect(e.Data);
@@ -125,6 +125,7 @@ public sealed class ProcessRunner
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         bool timedOut = false;
+        bool killedOnCancellation = false;
         try
         {
             await exited.Task.WaitAsync(linkedCts.Token).ConfigureAwait(false);
@@ -133,6 +134,7 @@ public sealed class ProcessRunner
         {
             // Still running at the deadline (or on cancellation): the kill path.
             timedOut = timeoutCts.IsCancellationRequested;
+            killedOnCancellation = !timedOut;
             KillTree(process);
         }
         catch (OperationCanceledException)
@@ -144,14 +146,17 @@ public sealed class ProcessRunner
         // Drain the readers so captured output is complete — but BOUNDED (#723). A process the child
         // started that escaped the tree kill, or a background job of a child that exited on its own,
         // can hold the inherited pipes open indefinitely; an unbounded wait here defeated the timeout.
-        bool drained = await DrainAsync(stdout, stderr, _drainGrace).ConfigureAwait(false);
+        DrainOutcome drain = await DrainAsync(stdout, stderr, _drain, cancellationToken).ConfigureAwait(false);
         stopwatch.Stop();
 
         int exitCode = timedOut ? TimeoutExitCode : SafeExitCode(process);
         string standardError = stderr.Seal();
-        if (!drained)
+        if (!drain.Drained)
         {
-            standardError += DrainIncompleteNote(_drainGrace, timedOut);
+            ProcessEnd end = timedOut ? ProcessEnd.TimedOut
+                : killedOnCancellation ? ProcessEnd.KilledOnCancellation
+                : ProcessEnd.Exited;
+            standardError += DrainIncompleteNote(end, drain.Waited);
         }
 
         return new ProcessResult
@@ -160,58 +165,115 @@ public sealed class ProcessRunner
             StandardOutput = stdout.Seal(),
             StandardError = standardError,
             TimedOut = timedOut,
-            OutputDrainIncomplete = !drained,
+            OutputDrainIncomplete = !drain.Drained,
             Duration = stopwatch.Elapsed
         };
     }
 
-    /// <summary>
-    /// How long the output drain may run once the child has exited or been killed (#723). Normally the
-    /// pipes reach EOF at once; they stay open only while some OTHER process — a grandchild that
-    /// inherited them — is still alive, and what that process writes later is not the child's result.
-    /// </summary>
-    public static readonly TimeSpan DefaultDrainGrace = TimeSpan.FromSeconds(10);
+    private readonly DrainPolicy _drain;
 
-    private readonly TimeSpan _drainGrace;
-
-    /// <summary>Creates a runner with the <see cref="DefaultDrainGrace"/> output-drain bound.</summary>
+    /// <summary>Creates a runner with the default output-drain bounds (<see cref="DrainPolicy.Default"/>).</summary>
     public ProcessRunner()
-        : this(DefaultDrainGrace)
+        : this(DrainPolicy.Default)
     {
     }
 
-    /// <summary>Creates a runner with an explicit output-drain bound (tests shorten it).</summary>
-    internal ProcessRunner(TimeSpan drainGrace)
+    /// <summary>Creates a runner with explicit output-drain bounds (tests shorten them).</summary>
+    internal ProcessRunner(DrainPolicy drain)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(drainGrace, TimeSpan.Zero);
-        _drainGrace = drainGrace;
+        _drain = drain;
+    }
+
+    /// <summary>How a process ended, for the truncation note (#723).</summary>
+    internal enum ProcessEnd
+    {
+        /// <summary>It exited on its own.</summary>
+        Exited,
+
+        /// <summary>It was killed at its timeout.</summary>
+        TimedOut,
+
+        /// <summary>It was killed because the caller cancelled (Ctrl-C, an abort).</summary>
+        KilledOnCancellation
     }
 
     /// <summary>
-    /// The text appended to <see cref="ProcessResult.StandardError"/> when the drain gave up, so every
-    /// reader of the result — retry feedback, the attempt logs, a halt — sees plainly that the capture
-    /// is truncated and why, instead of silently getting a short log (#723).
+    /// The text appended to <see cref="ProcessResult.StandardError"/> when the drain gave up, so every reader of the
+    /// result — retry feedback, the attempt logs, a halt — sees that the capture is truncated (#723). It states the
+    /// FACT and leaves the cause open: the harness cannot tell a grandchild holding the pipes from a reader that was
+    /// slow to run, so it names the likelier cause as a possibility, not a finding.
     /// </summary>
-    internal static string DrainIncompleteNote(TimeSpan grace, bool timedOut) =>
-        Environment.NewLine +
-        $"[guardrails] output truncated: the process {(timedOut ? "was killed at its timeout" : "exited")}, " +
-        $"but its stdout/stderr pipes were still held open {grace.TotalSeconds:0.###}s later, most likely by a " +
-        "background process it started. Output written after that point was not captured." +
-        Environment.NewLine;
-
-    /// <summary>Waits for both readers to reach EOF, for at most <paramref name="grace"/>. True = fully drained.</summary>
-    private static async Task<bool> DrainAsync(OutputCapture stdout, OutputCapture stderr, TimeSpan grace)
+    internal static string DrainIncompleteNote(ProcessEnd end, TimeSpan waited)
     {
-        try
+        string how = end switch
         {
-            await Task.WhenAll(stdout.Completed, stderr.Completed).WaitAsync(grace).ConfigureAwait(false);
-            return true;
-        }
-        catch (TimeoutException)
+            ProcessEnd.TimedOut => "timed out",
+            ProcessEnd.KilledOnCancellation => "was killed on cancellation",
+            _ => "exited"
+        };
+
+        return Environment.NewLine +
+            $"[guardrails] output truncated: the process {how}, and its output pipes were not closed within " +
+            $"{Math.Ceiling(waited.TotalSeconds):0}s. A process it started may still hold them. An unterminated last " +
+            "line and any later output were not captured." +
+            Environment.NewLine;
+    }
+
+    /// <summary>What the drain decided: whether both pipes reached EOF, and how long it waited.</summary>
+    internal readonly record struct DrainOutcome(bool Drained, TimeSpan Waited);
+
+    /// <summary>
+    /// Waits for both readers to reach EOF under <paramref name="policy"/>: until the pipes close, or until
+    /// <see cref="DrainPolicy.Deadline"/> says to stop. Re-evaluated whenever the wait ends, so a line that arrives
+    /// pushes the deadline out (the idle reset) and a cancellation pulls it in.
+    /// </summary>
+    private static async Task<DrainOutcome> DrainAsync(
+        OutputCapture stdout, OutputCapture stderr, DrainPolicy policy, CancellationToken cancellationToken)
+    {
+        Task both = Task.WhenAll(stdout.Completed, stderr.Completed);
+        TimeSpan start = policy.Clock();
+        TimeSpan? cancelledAt = null;
+
+        // One registration, not one per wait: signals the loop when cancellation moves the deadline in.
+        var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = cancellationToken.Register(() => cancelSignal.TrySetResult());
+
+        while (true)
         {
-            return false;
+            if (both.IsCompleted)
+            {
+                return new DrainOutcome(true, policy.Clock() - start);
+            }
+
+            TimeSpan now = policy.Clock();
+            if (cancelledAt is null && cancellationToken.IsCancellationRequested)
+            {
+                cancelledAt = now;
+            }
+
+            TimeSpan lastActivity = Max(start, Max(stdout.LastActivity, stderr.LastActivity));
+            TimeSpan deadline = policy.Deadline(start, lastActivity, cancelledAt);
+            if (now >= deadline)
+            {
+                return new DrainOutcome(false, now - start);
+            }
+
+            // Wake on EOF, on the deadline, or on cancellation (which moves the deadline in). A line arriving
+            // does not wake the wait; the deadline is simply re-read against it when this wait ends.
+            // Once cancellation has been observed its signal is spent, so it is left out of later waits.
+            Task delay = Task.Delay(deadline - now, CancellationToken.None);
+            if (cancelledAt is null)
+            {
+                await Task.WhenAny(both, delay, cancelSignal.Task).ConfigureAwait(false);
+            }
+            else
+            {
+                await Task.WhenAny(both, delay).ConfigureAwait(false);
+            }
         }
     }
+
+    private static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
     private static bool HasExited(Process process)
     {
@@ -231,15 +293,19 @@ public sealed class ProcessRunner
     /// the buffer being read nor reach a line sink whose owner has moved on — a disposed log writer
     /// throwing on the reader thread would take the whole harness process down.
     /// </summary>
-    private sealed class OutputCapture(Action<string>? lineSink)
+    private sealed class OutputCapture(Action<string>? lineSink, Func<TimeSpan> clock)
     {
         private readonly StringBuilder _buffer = new();
         private readonly TaskCompletionSource _completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock _gate = new();
         private bool _sealed;
+        private long _lastActivityTicks;
 
         /// <summary>Completes when the stream reaches EOF.</summary>
         public Task Completed => _completed.Task;
+
+        /// <summary>When the last line arrived, on the drain policy's clock (zero before any line).</summary>
+        public TimeSpan LastActivity => TimeSpan.FromTicks(Interlocked.Read(ref _lastActivityTicks));
 
         public void Collect(string? data)
         {
@@ -250,6 +316,7 @@ public sealed class ProcessRunner
                 return;
             }
 
+            Interlocked.Exchange(ref _lastActivityTicks, clock().Ticks);
             lock (_gate)
             {
                 if (_sealed)
@@ -478,5 +545,53 @@ public sealed class ProcessRunner
         {
             return TimeoutExitCode;
         }
+    }
+}
+
+/// <summary>
+/// How long <see cref="ProcessRunner"/> keeps draining a child's output once the child has exited or been killed
+/// (#723). The pipes normally reach EOF at once; they stay open only while another process that inherited them is
+/// alive, or while the readers are slow to run on a loaded machine.
+/// <list type="bullet">
+/// <item><see cref="IdleGrace"/>: give up after this long with NO new line. Idle-based rather than fixed, because a
+/// loaded machine can take seconds to deliver a fast child's output, and a fixed grace measured from exit dropped
+/// ALL of it (the DA measured <c>lines=0</c> at 64–400 concurrent runs). Output still arriving is output worth
+/// waiting for.</item>
+/// <item><see cref="AbsoluteCap"/>: never wait longer than this in total, so a grandchild that keeps writing cannot
+/// hold the harness indefinitely.</item>
+/// <item><see cref="CancelledBound"/>: once the caller has cancelled (Ctrl-C, an abort), stop within this.</item>
+/// </list>
+/// </summary>
+/// <param name="IdleGrace">Longest wait with no new line.</param>
+/// <param name="AbsoluteCap">Longest wait in total.</param>
+/// <param name="CancelledBound">Longest wait after cancellation is observed.</param>
+/// <param name="Clock">A monotonic clock, injectable so the deadline decision is testable without a real clock.</param>
+internal sealed record DrainPolicy(
+    TimeSpan IdleGrace, TimeSpan AbsoluteCap, TimeSpan CancelledBound, Func<TimeSpan> Clock)
+{
+    /// <summary>The production bounds: 30 s idle, 120 s in total, 2 s after cancellation.</summary>
+    public static DrainPolicy Default { get; } = new(
+        TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(2), MonotonicClock);
+
+    /// <summary>Elapsed time on a monotonic clock.</summary>
+    public static TimeSpan MonotonicClock() => Stopwatch.GetElapsedTime(0);
+
+    /// <summary>
+    /// The instant the drain stops waiting: <see cref="IdleGrace"/> after the last activity (the drain's start, or
+    /// the latest line), never later than <see cref="AbsoluteCap"/> after the start, and never later than
+    /// <see cref="CancelledBound"/> after a cancellation. A pure function of its inputs: this is the decision the
+    /// tests assert.
+    /// </summary>
+    public TimeSpan Deadline(TimeSpan start, TimeSpan lastActivity, TimeSpan? cancelledAt)
+    {
+        TimeSpan idle = (lastActivity > start ? lastActivity : start) + IdleGrace;
+        TimeSpan cap = start + AbsoluteCap;
+        TimeSpan deadline = idle < cap ? idle : cap;
+        if (cancelledAt is { } c && c + CancelledBound < deadline)
+        {
+            deadline = c + CancelledBound;
+        }
+
+        return deadline;
     }
 }
