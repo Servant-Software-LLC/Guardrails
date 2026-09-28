@@ -46,7 +46,8 @@ public static class SchedulerFactory
         IOverwatchInteraction? overwatchInteraction = null)
     {
         Overwatch? overwatch = BuildOverwatch(plan, processRunner, overwatchInteraction);
-        return CreateExecutor(plan, processRunner, probe, observer, overwatch);
+        (TaskExecutor executor, RunJournal journal, _) = CreateExecutor(plan, processRunner, probe, observer, overwatch);
+        return (executor, journal);
     }
 
     /// <summary>
@@ -56,7 +57,10 @@ public static class SchedulerFactory
     /// overload above builds its own (for the re-validate-only caller, which has no Scheduler to share it
     /// with) and delegates here so both paths share one construction.
     /// </summary>
-    internal static (TaskExecutor Executor, RunJournal Journal) CreateExecutor(
+    /// <para>Returns the observer as every run component must use it: behind a <see cref="FaultIsolatingObserver"/>
+    /// (#803) whose faults go to the run's <c>observer-faults.log</c>, so an observer's exception can never abort
+    /// the run. An observer the caller already isolated (the CLI's chain head) is used as it is.</para>
+    internal static (TaskExecutor Executor, RunJournal Journal, IRunObserver Observer) CreateExecutor(
         PlanDefinition plan,
         ProcessRunner processRunner,
         IExecutableProbe probe,
@@ -67,6 +71,8 @@ public static class SchedulerFactory
         stateManager.Initialize();
 
         RunJournal journal = RunJournal.LoadOrCreate(plan);
+        var faultLog = new ObserverFaultLog(Path.Combine(plan.PlanDirectory, "logs", journal.RunId));
+        observer = FaultIsolatingObserver.Wrap(observer, "run-observer", faultLog.Record);
         if (journal.PlanHashMismatch)
         {
             observer.PlanHashMismatch(journal.PreviousPlanHash ?? "(unknown)");
@@ -76,7 +82,7 @@ public static class SchedulerFactory
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
         var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch);
-        return (executor, journal);
+        return (executor, journal, observer);
     }
 
     /// <summary>
@@ -150,7 +156,9 @@ public static class SchedulerFactory
         // Design 41 §4/§7: build the ONE Overwatch here and hand it to both CreateExecutor (which wires it
         // into the TaskExecutor, unchanged) and the Scheduler (below) — never a second instance.
         Overwatch? overwatch = BuildOverwatch(plan, processRunner, overwatchInteraction);
-        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatch);
+        (TaskExecutor executor, RunJournal journal, IRunObserver isolatedObserver) =
+            CreateExecutor(plan, processRunner, probe, observer, overwatch);
+        observer = isolatedObserver;
 
         // The re-verifier (attempt-decoupled guardrail runner) is wired UNCONDITIONALLY — non-null in
         // BOTH serial and worktree mode. Its only caller today (the per-union re-verify) fires only in

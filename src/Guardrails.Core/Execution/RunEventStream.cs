@@ -47,7 +47,9 @@ namespace Guardrails.Core.Execution;
 ///         error text in <c>detail</c>. Written before the attempt's own <c>attempt-finished</c> row.</item>
 ///   <item><c>task-settled</c> — a task reached a terminal outcome.</item>
 ///   <item><c>run-finished</c> — the run itself reached a terminal outcome, carrying <c>exitCode</c> and
-///         <c>faultKind</c>. It is the only kind with no <c>taskId</c>: it is run-scoped, not task-scoped.</item>
+///         <c>faultKind</c>. It is run-scoped, not task-scoped, so it carries no <c>taskId</c>.</item>
+///   <item><c>observer-fault</c> — an observer threw and was isolated (#803); see <see cref="ObserverFaulted"/>.
+///         Run-scoped, no <c>taskId</c>.</item>
 /// </list></para>
 ///
 /// <para><b>Row shape.</b> The row is the telemetry corpus row (<see cref="Telemetry.TelemetryRow"/>)
@@ -383,6 +385,30 @@ public sealed class RunEventStream : IRunObserver
         });
     }
 
+    /// <summary>The wire token for an observer fault (#803).</summary>
+    public const string ObserverFaultKind = "observer-fault";
+
+    /// <summary>
+    /// Record that an observer threw (#803): an <c>observer-fault</c> row, run-scoped (no <c>taskId</c>), carrying
+    /// the observer's name, the callback, the exception's TYPE NAME only (never its message, for the reason
+    /// <c>run-finished</c>'s <c>faultKind</c> gives), and whether this fault disabled the observer. Not an
+    /// <see cref="IRunObserver"/> member: it is raised by <see cref="FaultIsolatingObserver"/>'s sink, beside the
+    /// chain rather than through it, so a fault is recorded even when the link that faulted is this one.
+    /// </summary>
+    public void ObserverFaulted(ObserverFault fault)
+    {
+        AppendLine(new EventRow
+        {
+            Kind = ObserverFaultKind,
+            RunId = _runId,
+            TaskId = null,
+            Observer = fault.Observer,
+            Callback = fault.Callback,
+            FaultKind = fault.Error.GetType().Name,
+            Disabled = fault.Disabled
+        });
+    }
+
     /// <summary>
     /// Appends <paramref name="row"/> as one complete JSON line to <c>events.jsonl</c>, flushed
     /// immediately so a consumer tailing the file sees it without waiting for the run to end. Guarded by
@@ -555,7 +581,7 @@ public sealed class RunEventStream : IRunObserver
         /// <summary><c>run-finished</c>: the process exit code, when the run reached one.</summary>
         public int? ExitCode { get; init; }
 
-        /// <summary><c>run-finished</c>: the fault's TYPE NAME only — never its message (see <see cref="RunFinished"/>).</summary>
+        /// <summary><c>run-finished</c> and <c>observer-fault</c>: the fault's TYPE NAME only — never its message (see <see cref="RunFinished"/>).</summary>
         public string? FaultKind { get; init; }
 
         /// <summary><c>attempt-finished</c>: <see cref="Journal.AttemptRecord.CostUsd"/>.</summary>
@@ -615,6 +641,15 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>attempt-stalled</c>: a context-management failure seen in the session (<c>compaction-failed</c>), when one was.</summary>
         public string? ContextManagement { get; init; }
+
+        /// <summary><c>observer-fault</c>: the name of the observer that threw (#803).</summary>
+        public string? Observer { get; init; }
+
+        /// <summary><c>observer-fault</c>: the <see cref="IRunObserver"/> member it threw from.</summary>
+        public string? Callback { get; init; }
+
+        /// <summary><c>observer-fault</c>: true when this fault disabled the observer for the rest of the run.</summary>
+        public bool? Disabled { get; init; }
 
         /// <summary><c>supplied-resources-committed</c>: the supplier (design 41 §6) — <c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c>.</summary>
         public string? By { get; init; }

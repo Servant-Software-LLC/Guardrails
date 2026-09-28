@@ -768,6 +768,10 @@ public static class RunCommand
             // finally can report on them regardless of which path was taken, including a throw before the
             // chain even exists (diagramObserver stays null, so `?.` below correctly raises nothing).
             OnTheFlyDiagramObserver? diagramObserver = null;
+
+            // #803: the same chain behind its fault-isolated head. Every IRunObserver event the run reports goes
+            // through THIS, so an observer's exception is logged and never becomes the run's outcome.
+            IRunObserver? runObserver = null;
             int? resolvedExitCode = null;
             string? faultKind = null;
             try
@@ -780,9 +784,10 @@ public static class RunCommand
                     live, logsRoot, runId, probe.Plan, diagramSeed, logServer, onRow, onEventDetail, allTasks, io)
                     .ConfigureAwait(false);
                 diagramObserver = surfaces.Chain;
+                runObserver = surfaces.Observer;
                 await using (surfaces.LiveTable)
                 {
-                    (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
+                    (report, scheduler) = await ExecuteAsync(probe.Plan, runObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, worktreeResolution, cancellationToken).ConfigureAwait(false);
                 }
 
                 // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -834,7 +839,7 @@ public static class RunCommand
                               // just the diagram, which already had its own spinner signal (#219). Without it
                               // the site's last write is the final task going green, and the page sits on
                               // all-green for the whole gate window looking exactly like a finished run.
-                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution, diagramObserver)
+                              .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun, worktreeResolution, runObserver)
                               .ConfigureAwait(false);
 
                     if (willEvaluateTerminalGate)
@@ -1004,9 +1009,9 @@ public static class RunCommand
             }
             finally
             {
-                // diagramObserver is null only if the throw happened before the chain was built (BuildObserverChain
+                // runObserver is null only if the throw happened before the chain was built (BuildObserverChain
                 // never ran) — `?.` makes that correctly raise nothing rather than a NullReferenceException.
-                diagramObserver?.RunFinished(resolvedExitCode, faultKind);
+                runObserver?.RunFinished(resolvedExitCode, faultKind);
 
                 // Issue #704 — the run's end, recorded the moment its verdict is settled rather than at method exit.
                 // Nothing after this point writes run.json (the webhook sink's drain, the log server's shutdown and the
@@ -3345,7 +3350,7 @@ public static class RunCommand
     {
         return ComposeObserverChain(
             inner, logsRoot, runId, plan, diagramSeed, onRow: null, includeDetail: false,
-            logUrlForTask, liveRunUrl: null, liveDiagramUrl: null, statusTarget: null);
+            logUrlForTask, liveRunUrl: null, liveDiagramUrl: null, statusTarget: null).Diagram;
     }
 
     /// <summary>
@@ -3373,6 +3378,23 @@ public static class RunCommand
         LogServer? logServer,
         JournalDocument? diagramSeed,
         Action<EventDelivery>? onRow,
+        bool includeDetail) =>
+        BuildIsolatedObserverChain(inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail).Diagram;
+
+    /// <summary>
+    /// The production chain with its fault-isolated head (#803): <see cref="ObserverChain.Diagram"/> for the
+    /// diagram-specific calls the run makes directly, and <see cref="ObserverChain.Head"/>, the same chain behind
+    /// its own <see cref="FaultIsolatingObserver"/>, for everything that reports events through
+    /// <see cref="IRunObserver"/>.
+    /// </summary>
+    public static ObserverChain BuildIsolatedObserverChain(
+        IRunObserver inner,
+        string logsRoot,
+        string runId,
+        Core.Model.PlanDefinition plan,
+        LogServer? logServer,
+        JournalDocument? diagramSeed,
+        Action<EventDelivery>? onRow,
         bool includeDetail)
     {
         return ComposeObserverChain(
@@ -3381,11 +3403,23 @@ public static class RunCommand
     }
 
     /// <summary>
+    /// A composed observer chain (#803). <paramref name="Diagram"/> is the outermost decorator, for the calls the
+    /// run makes on it directly; <paramref name="Head"/> is that same decorator behind its own
+    /// <see cref="FaultIsolatingObserver"/>, and is what the run reports <see cref="IRunObserver"/> events to.
+    /// </summary>
+    public sealed record ObserverChain(OnTheFlyDiagramObserver Diagram, IRunObserver Head);
+
+    /// <summary>
     /// The chain itself, built from explicit pieces. Both public overloads come here, the production one with every
     /// piece taken from its one server. <paramref name="statusTarget"/> is started serving from the log-site
     /// observer's status map, the map the during-run index is rendered from (issue #713).
+    ///
+    /// <para><b>Every link is fault-isolated (#803).</b> Each observer sits behind its own
+    /// <see cref="FaultIsolatingObserver"/>, so an exception from one is logged to <c>observer-faults.log</c> and
+    /// the event stream and never reaches the run, and the links after it still hear the event. A link disabled
+    /// after repeated faults hands its calls straight to the link after it, so no fault can cut the chain.</para>
     /// </summary>
-    private static OnTheFlyDiagramObserver ComposeObserverChain(
+    private static ObserverChain ComposeObserverChain(
         IRunObserver inner,
         string logsRoot,
         string runId,
@@ -3398,22 +3432,52 @@ public static class RunCommand
         string? liveDiagramUrl,
         LogServer? statusTarget)
     {
-        var eventsProjection = new RunEventStream(inner, logsRoot, runId, onRow, includeDetail);
-        var observerProjection = new ObserverProjection(eventsProjection, logsRoot);
+        var faultLog = new ObserverFaultLog(logsRoot);
+        RunEventStream? eventsProjection = null;
+        void OnFault(ObserverFault fault)
+        {
+            faultLog.Record(fault);
+            try
+            {
+                eventsProjection?.ObserverFaulted(fault);
+            }
+            catch (Exception)
+            {
+                // The event stream may be the link that is failing; the fault log above already has it.
+            }
+        }
+
+        IRunObserver renderer = new FaultIsolatingObserver(inner, RendererName(inner), OnFault);
+        eventsProjection = new RunEventStream(renderer, logsRoot, runId, onRow, includeDetail);
+        IRunObserver events = new FaultIsolatingObserver(eventsProjection, "event-stream", OnFault, whenDisabled: renderer);
+        IRunObserver projection = new FaultIsolatingObserver(
+            new ObserverProjection(events, logsRoot), "observer-projection", OnFault, whenDisabled: events);
         var siteObserver = new OnTheFlyLogSiteObserver(
-            observerProjection, logsRoot, runId, plan.Tasks, taskUrl, liveRunUrl, plan.Waves);
+            projection, logsRoot, runId, plan.Tasks, taskUrl, liveRunUrl, plan.Waves);
         statusTarget?.StartServing(siteObserver.StatusSnapshot);
-        return new OnTheFlyDiagramObserver(siteObserver, logsRoot, plan, diagramSeed, liveDiagramUrl);
+        IRunObserver site = new FaultIsolatingObserver(siteObserver, "log-site", OnFault, whenDisabled: projection);
+        var diagram = new OnTheFlyDiagramObserver(site, logsRoot, plan, diagramSeed, liveDiagramUrl);
+        return new ObserverChain(diagram, new FaultIsolatingObserver(diagram, "diagram", OnFault, whenDisabled: site));
     }
+
+    /// <summary>The fault-report name of the innermost observer: the live table or the plain console.</summary>
+    private static string RendererName(IRunObserver inner) => inner switch
+    {
+        LiveRunObserver => "live-table",
+        ConsoleRunObserver => "console",
+        _ => inner.GetType().Name
+    };
 
     /// <summary>
     /// What a run shows while it goes (#714 review, W1): the observer chain every event passes through, and the live
     /// progress table when the console can show one.
     /// </summary>
-    /// <param name="Chain">The observer chain; its head is what the run reports every event to.</param>
+    /// <param name="Chain">The observer chain's outermost decorator, for the diagram-specific calls the run makes.</param>
     /// <param name="LiveTable">The live progress table, or null under <c>--no-ui</c> or a console that cannot show
     /// one. The caller disposes it once the DAG has drained, before anything else writes to the console.</param>
-    public sealed record RunSurfaces(OnTheFlyDiagramObserver Chain, LiveRunObserver? LiveTable);
+    /// <param name="Observer">The chain behind its fault-isolated head (#803): what the run reports every
+    /// <see cref="IRunObserver"/> event to.</param>
+    public sealed record RunSurfaces(OnTheFlyDiagramObserver Chain, LiveRunObserver? LiveTable, IRunObserver Observer);
 
     /// <summary>
     /// Open everything a run shows while it goes, through the ONE path the live table and <c>--no-ui</c> both take
@@ -3457,8 +3521,9 @@ public static class RunCommand
         try
         {
             IRunObserver inner = table is null ? new ConsoleRunObserver(io.Out) : table;
-            return new RunSurfaces(
-                BuildObserverChain(inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail), table);
+            ObserverChain chain = BuildIsolatedObserverChain(
+                inner, logsRoot, runId, plan, logServer, diagramSeed, onRow, includeDetail);
+            return new RunSurfaces(chain.Diagram, table, chain.Head);
         }
         catch
         {
