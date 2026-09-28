@@ -755,6 +755,68 @@ public sealed class BundleRedactorTests
         Assert.True(BundleRedactor.IsModelName(name));
     }
 
+    // A random token split into short pieces must not pass piece by piece (#813 DA re-check).
+    private const string SplitToken = "Xk3mP9qR2vL7nB4tW8yZ-1cF5hJ6aQ2wS3eD4rF5tG";
+
+    [Theory]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4tW8yZ-1cF5hJ6aQ2wS3eD4rF5tG-6yH7uJ8iK9oL0pZ1xC2\"}", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4tW8yZ.1cF5hJ6aQ2wS3eD4rF5tG.6yH7uJ8iK9oL0pZ1xC2\"}", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("model: " + SplitToken + "\n", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    [InlineData("{\"model\":\"Xk3mP9qR2vL7nB4t/W8yZ1cF5hJ6aQ2wS3e\"}", "W8yZ1cF5hJ6aQ2wS3e")]
+    [InlineData("loaded /m/" + SplitToken + ".gguf\n", "1cF5hJ6aQ2wS3eD4rF5tG")]
+    public void DaRecheck_ARandomTokenSplitIntoShortPiecesIsStillScrubbed(string text, string piece)
+    {
+        BundleRedactionResult result = Redact(text);
+        Assert.DoesNotContain(piece, result.Text, StringComparison.Ordinal);
+        Assert.Contains("high-entropy", result.Labels);
+    }
+
+    [Theory]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE")]
+    [InlineData("Qwen3.6-35B-A3B-MXFP4_MOE.gguf")]
+    [InlineData("meta-llama/Llama-3.3-70B-Instruct-Turbo")]
+    [InlineData("claude-sonnet-4-5-20250929")]
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-GGUF")]
+    [InlineData("DeepSeek-R1-Distill-Qwen-32B")]
+    [InlineData("text-embedding-3-large")]
+    [InlineData("Meta-Llama-3.1-8B-Instruct-Q4_K_M")]
+    [InlineData("mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")]
+    [InlineData("gemini-2.5-flash-preview-05-20")]
+    [InlineData("qwen-3.6-35b-mtp")]
+    [InlineData("claude-opus-5-5")]
+    public void RealModelNamesFromTheWildSurvive(string name)
+    {
+        foreach (string text in new[] { $"{{\"model\":\"{name}\"}}", $"model: {name}\n" })
+        {
+            Assert.Equal(text, Redact(text).Text);
+        }
+    }
+
+    /// <summary>
+    /// A property check, deterministic by its fixed seed: 1,000 random base64url tokens of 64 characters, each under
+    /// <c>"model"</c>. The segment rule makes a token pass only when every piece between separators is at most 12
+    /// characters (or all digits or all lower case) — for a 64-character random token that is practically never.
+    /// </summary>
+    [Fact]
+    public void RandomLongTokensUnderAModelKeyPracticallyNeverPass()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var random = new Random(813);
+        int passed = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            string token = new([.. Enumerable.Range(0, 64).Select(_ => alphabet[random.Next(alphabet.Length)])]);
+            string text = $"{{\"model\":\"{token}\"}}";
+            if (Redact(text).Text.Contains(token, StringComparison.Ordinal))
+            {
+                passed++;
+            }
+        }
+
+        // Documented ceiling: at most 2 of 1,000 (the measured count under this seed is 1, matching CC1's 0.1%).
+        Assert.True(passed <= 2, $"{passed} of 1,000 random 64-character tokens passed as model names");
+    }
+
     [Fact]
     public void ATokenShapeInsideAnIdentifierKeepsTheSecretLabel()
     {

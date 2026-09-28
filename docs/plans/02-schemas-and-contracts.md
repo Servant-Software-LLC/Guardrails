@@ -10729,8 +10729,10 @@ not a secret:
 - The value of a `model`, `requestedModel` or `backendModel` JSON key, or of a `model:`, `requested model:`,
   `served model:` or `backend model:` line, that is a **model name** is exempt from the entropy rule only; every
   other rule (known values, token shapes, pairs) still applies. A model name has the shape letters, digits and
-  `. _ -` with at least one letter, optionally after one `org/` prefix, **and** no alphanumeric segment of 24 or more
-  characters that the entropy rule would catch. Real names are short, low-entropy segments (`Qwen3`, `35B`, `A3B`,
+  `. _ -` with at least one letter, optionally after one `org/` prefix, **and** every alphanumeric segment passes
+  two tests: it is not a run of 24 or more characters the entropy rule would catch, and it is at most 12 characters
+  unless it is all digits or all lower case. The second test stops a random token split by `-`, `_`, `.` or `/` into
+  short pieces from passing piece by piece. Real names are short, low-entropy segments (`Qwen3`, `35B`, `A3B`,
   `MXFP4`, `MOE`): `qwen-3.6-35b-mtp`, `claude-opus-5-5`, `Qwen/Qwen3.6-35B-A3B`, `Qwen3.6-35B-A3B-MXFP4_MOE.gguf`. A
   random token under `model` is one long high-entropy segment, so it is never allowed through.
 - A trailing model-file basename (`…/name.gguf`, `name.safetensors`) whose stem passes the same segment test is
@@ -10862,7 +10864,9 @@ in REDACTIONS.md.
   miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a
   token that happens to hold no digit. Also a numeric token or key value (`MAX_TOKENS=4096`), which is kept as a
   setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its
-  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.
+  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule. And a short
+  random value under a model key can pass as a model name (measured on random base64url values, 2.4% at 32
+  characters, 0.6% at 43, 0.1% at 64).
 - **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,
   header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,
   then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)

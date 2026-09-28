@@ -93,7 +93,9 @@ public static partial class BundleRedactor
         "  miss rate is about 1.5% at 24 characters, 0.7% at 28, 0.4% at 32 and under 0.1% from 40, almost all of it a\n" +
         "  token that happens to hold no digit. Also a numeric token or key value (`MAX_TOKENS=4096`), which is kept as a\n" +
         "  setting, unless it is a known value; and a pair value longer than 512 characters, whose pair hit covers only its\n" +
-        "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule.\n" +
+        "  first 512 (a quoted one longer than 512 gets no pair hit), leaving the rest to the entropy rule. And a short\n" +
+        "  random value under a model key can pass as a model name (measured on random base64url values, 2.4% at 32\n" +
+        "  characters, 0.6% at 43, 0.1% at 64).\n" +
         "- **`CC2`**: **space-separated** credentials (`password hunter2`, `login alice secret`) outside the netrc,\n" +
         "  header, `NAME=value`, JSON-pair, secret-named long flag (a flag naming a token, key, password or secret,\n" +
         "  then its value) and credential-tool (the password flag of mysql, mysqldump and sshpass; the user flag of curl)\n" +
@@ -547,8 +549,17 @@ public static partial class BundleRedactor
     /// </summary>
     internal static bool IsModelName(string value) => ModelNameShape().IsMatch(value) && HasOnlyLowEntropySegments(value);
 
+    // Every alphanumeric segment must be (a) not itself a secret-shaped run AND (b) at most 12 characters unless it is
+    // all digits or all lower case. (b) is what stops a random token split by `-`, `_`, `.` or one `/` into pieces
+    // under 24: each piece would pass (a) alone, while the suppressed entropy hit spans the whole joined run (#813 DA).
+    // Real names keep short mixed-case segments (`MXFP4`, `Instruct`, `DeepSeek`) and long ones only as dates or
+    // lower-case words (`20250929`, `community`).
     private static bool HasOnlyLowEntropySegments(string value) =>
-        AlphanumericSegment().Matches(value).All(segment => segment.Length < EntropyMinimumLength || !IsHighEntropy(segment.Value));
+        AlphanumericSegment().Matches(value).All(segment =>
+            (segment.Length < EntropyMinimumLength || !IsHighEntropy(segment.Value))
+            && (segment.Length <= MaxMixedModelSegment || segment.Value.All(char.IsAsciiDigit) || segment.Value.All(char.IsAsciiLetterLower)));
+
+    private const int MaxMixedModelSegment = 12;
 
     [GeneratedRegex(
         @"""(?:session_id|sessionId|uuid|parentUuid|id|tool_use_id|parent_tool_use_id|request_id)""\s*:\s*""(?<v>[^""\\\r\n]{1,200})(?="")",
