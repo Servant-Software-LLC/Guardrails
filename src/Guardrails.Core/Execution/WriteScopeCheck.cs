@@ -52,10 +52,15 @@ public static class WriteScopeCheck
             SegmentStaging.StageAll(repoPath);
             diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or System.ComponentModel.Win32Exception
+                                      or IOException)
         {
             // WS_2: a git failure (bad repo, bad/unknown sha) must FAIL CLOSED — never read an
-            // empty stdout as "no changes". An empty diff would otherwise find zero offending
+            // empty stdout as "no changes". #738: "a git failure" includes git failing to SPAWN
+            // (Win32Exception: git off PATH, a bad working directory) and an IO fault, not only the
+            // non-zero exit RunGit reports as InvalidOperationException; those used to escape and take
+            // out the attempt instead of failing the check. An empty diff would otherwise find zero offending
             // paths and silently pass the check, a green standing over an undiffable tree.
             return new WriteScopeCheckResult
             {
@@ -224,11 +229,15 @@ public static class WriteScopeCheck
             string diff = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
             return diff.Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(l => l.Trim().Length > 0);
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or System.ComponentModel.Win32Exception
+                                      or IOException)
         {
             // Fail OPEN: an undiffable tree must not be read as "no changes" — that would let the
             // no-op short-circuit fire on a task that may genuinely have written files. Preserve the
-            // full retry budget instead.
+            // full retry budget instead. #738: the same three failures ChangedPaths catches — a
+            // non-zero git exit, a spawn failure, an IO fault — but the OPPOSITE answer, on purpose.
+            // Do not share the catch body with ChangedPaths: the asymmetry is load-bearing both ways.
             return true;
         }
     }

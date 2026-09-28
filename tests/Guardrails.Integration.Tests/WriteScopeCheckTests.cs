@@ -800,4 +800,44 @@ public sealed class WriteScopeCheckTests
 
         Assert.Empty(changed);
     }
+
+    /// <summary>
+    /// #738, the mirror image of the row above: <see cref="WriteScopeCheck.HasFileChanges"/> promises to fail
+    /// OPEN (answer "the action changed something") so #174's no-op short-circuit never fires on an unknown. A
+    /// spawn failure used to escape as a <see cref="System.ComponentModel.Win32Exception"/> instead, taking out
+    /// the attempt. Same failures as <see cref="WriteScopeCheck.ChangedPaths"/>, opposite answer.
+    /// </summary>
+    [Fact]
+    public void HasFileChanges_WhenGitCannotBeSpawned_FailsOpen_SoTheShortCircuitDoesNotFire()
+    {
+        string absent = Path.Combine(Path.GetTempPath(), "gr-wsc-absent-" + Guid.NewGuid().ToString("N"));
+        Assert.False(Directory.Exists(absent), "the working directory must not exist for this row to mean anything");
+
+        Assert.True(WriteScopeCheck.HasFileChanges(absent, new string('b', 40)));
+    }
+
+    /// <summary>#738: the non-zero-exit half of the same fail-open guarantee (a taskBase that is not in the repo).</summary>
+    [Fact]
+    public void HasFileChanges_WhenGitExitsNonZero_FailsOpen()
+    {
+        using var repo = new TempGitRepo();
+
+        Assert.True(WriteScopeCheck.HasFileChanges(repo.RepoPath, new string('b', 40)));
+    }
+
+    /// <summary>
+    /// #738, the same gap in <see cref="WriteScopeCheck.Check"/>: its documented posture is fail CLOSED on a git
+    /// failure, but a spawn failure escaped instead of failing the check.
+    /// </summary>
+    [Fact]
+    public void Check_WhenGitCannotBeSpawned_FailsClosed_WithoutThrowing()
+    {
+        string absent = Path.Combine(Path.GetTempPath(), "gr-wsc-absent-" + Guid.NewGuid().ToString("N"));
+        Assert.False(Directory.Exists(absent), "the working directory must not exist for this row to mean anything");
+
+        WriteScopeCheckResult result = WriteScopeCheck.Check(absent, new string('b', 40), ["src/**"]);
+
+        Assert.False(result.Passed);
+        Assert.Contains(result.OffendingPaths, o => o.Path.StartsWith("<git-error:", StringComparison.Ordinal));
+    }
 }
