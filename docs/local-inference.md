@@ -207,6 +207,15 @@ In the plan's `guardrails.json`, set `maxParallelism` and replace `promptRunners
   `"runner": "qwen38"` in that task's `action`.
 - **Timeouts:** local models are slower than Claude, especially Qwen 3.8. If attempts end as `timeout`, raise the
   task's `timeoutSeconds` rather than retrying blindly.
+- **Stall bound:** an attempt is also stopped as `stalled` when the session produces no model output, tool call or
+  tool result for too long. The default is a third of the attempt's timeout, kept between 15 and 20 minutes (15
+  minutes at the default 30-minute timeout). A local model can be silent that long for a legitimate reason. Claude
+  Code prints nothing while the server reads the prompt, or while it writes one whole reply. A compaction re-reads
+  the whole context before it prints anything. Allow about `contextTokens` divided by the server's prompt speed: at
+  about 150 tokens per second, 65,536 tokens takes about 7 minutes, so the default is enough. For a larger
+  `contextTokens`, set `"stallTimeoutSeconds"` on the block to about twice that. For example, 262,144 tokens takes
+  about 30 minutes, so use `"stallTimeoutSeconds": 3600`. Also raise `timeoutSeconds` above it, because the bound
+  applies only when it is shorter than the timeout.
 - **Don't** add `ANTHROPIC_*`, `CLAUDE_CODE_*` or `CLAUDE_CONFIG_DIR` to a block's `env`, or `--settings`,
   `--model` or `--fallback-model` to its `extraArgs`. Guardrails owns them, and `validate` rejects them (`GR2084`).
 
@@ -497,6 +506,7 @@ works on a stuck run without stopping it, so bundle before you kill the run (ste
 | Header: `backend identity unverified` | LiteLLM isn't reporting `/model/info`, a `model_name` has several backends, or the backend is not on this machine or a private network | Fix the LiteLLM config (one `api_base` per name) |
 | `validate`: `GR2009` "command not found" for `qwen36` | `"command": "claude"` is missing | Add it (step 5) |
 | Attempts end as `timeout` | Local models are slow | Raise the task's `timeoutSeconds` |
+| Attempts end as `stalled`, often with `context compaction failed` in the summary | Reading the prompt, or a compaction, took longer than the stall bound (step 5) | Set `stallTimeoutSeconds` on the block to about twice `contextTokens` divided by the prompt speed, or lower `contextTokens` |
 | Repeated context overflows or constant compaction | Task too large for the window | Smaller tasks; raise `contextTokens` toward the per-slot `n_ctx` that `/props` reports |
 | The target repo's build guardrails fail with "A compatible .NET SDK was not found" | The repo's `global.json` needs an SDK you don't have | Install it (step 1) |
 | `guardrails bundle` prints `refused (D1)` and writes nothing | This shell doesn't have `LITELLM_MASTER_KEY` (or another variable a runner block names), so the scrub couldn't find that token | `export LITELLM_MASTER_KEY=...` and re-run, or pass `--without-agent-text` |

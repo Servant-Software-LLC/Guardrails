@@ -41,6 +41,10 @@ namespace Guardrails.Core.Execution;
 ///         (<see cref="Journal.AttemptRecord"/>): <c>outcome</c>, <c>costUsd</c>, <c>turns</c>,
 ///         <c>model</c>/<c>tier</c>/<c>runner</c>, <c>startedAt</c>/<c>endedAt</c>, and
 ///         <c>needsHumanKind</c>.</item>
+///   <item><c>attempt-stalled</c> — the stall watchdog killed an attempt's session (#811): <c>attempt</c>,
+///         <c>boundSeconds</c>, <c>silentSeconds</c>, <c>suspends</c> (host suspends it discounted), and, when the
+///         session's context management failed, <c>contextManagement</c> (<c>compaction-failed</c>) with the runner's
+///         error text in <c>detail</c>. Written before the attempt's own <c>attempt-finished</c> row.</item>
 ///   <item><c>task-settled</c> — a task reached a terminal outcome.</item>
 ///   <item><c>run-finished</c> — the run itself reached a terminal outcome, carrying <c>exitCode</c> and
 ///         <c>faultKind</c>. It is the only kind with no <c>taskId</c>: it is run-scoped, not task-scoped.</item>
@@ -216,6 +220,32 @@ public sealed class RunEventStream : IRunObserver
             NeedsHumanKind = record.NeedsHumanKind
         });
     }
+
+    /// <inheritdoc/>
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail)
+    {
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
+
+        AppendLine(new EventRow
+        {
+            Kind = AttemptStalledKind,
+            RunId = _runId,
+            TaskId = task.Id,
+            Attempt = attempt,
+            BoundSeconds = (long)Math.Round(bound.TotalSeconds),
+            SilentSeconds = (long)Math.Round(silentFor.TotalSeconds),
+            Suspends = suspendsObserved,
+            ContextManagement = contextManagement,
+
+            // The runner's own error text rides in `detail`, which the webhook copy withholds by default (§8.3).
+            Detail = contextManagementDetail
+        });
+    }
+
+    /// <summary>The wire token for the #811 stall-verdict row.</summary>
+    public const string AttemptStalledKind = "attempt-stalled";
 
     /// <inheritdoc/>
     public void RunFinished(int? exitCode, string? faultKind)
@@ -573,6 +603,18 @@ public sealed class RunEventStream : IRunObserver
 
         /// <summary><c>supplied-resources-committed</c>: the SHA the drain committed them in.</summary>
         public string? Commit { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: the silence bound the watchdog enforced, in whole seconds (#811).</summary>
+        public long? BoundSeconds { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: how long the session had produced no progress when it was killed, in whole seconds.</summary>
+        public long? SilentSeconds { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: host suspends the watchdog discounted (#517); 0 when none.</summary>
+        public int? Suspends { get; init; }
+
+        /// <summary><c>attempt-stalled</c>: a context-management failure seen in the session (<c>compaction-failed</c>), when one was.</summary>
+        public string? ContextManagement { get; init; }
 
         /// <summary><c>supplied-resources-committed</c>: the supplier (design 41 §6) — <c>operator</c>, <c>overwatcher</c>, or <c>task:&lt;folder&gt;</c>.</summary>
         public string? By { get; init; }

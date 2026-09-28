@@ -1610,6 +1610,54 @@ public static class RetryPolicy
         "## Calls still running when the session was stopped (not refused — they may simply need more time)";
 
     /// <summary>
+    /// #811: what a STALLED attempt's retry is told. The session was alive and emitted no progress (no model output,
+    /// no tool call, no tool result) for the whole bound. The usual causes are a tool call that sat silent past it or
+    /// a context compaction that never returned; <see cref="ForContextManagement"/> names the second when it was seen.
+    /// </summary>
+    public static string ForStall(Prompts.StallReport? stall)
+    {
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine(StallHeading);
+        text.AppendLine();
+        text.AppendLine(stall is { } report
+            ? $"The session produced no progress for {report.SilentFor.TotalMinutes:F1} minutes (the bound is {report.Bound.TotalMinutes:F0}) and was killed."
+            : "The session produced no progress for longer than its silence bound and was killed.");
+        text.AppendLine("Progress means model output, a tool call, or a tool result; status lines do not count. If a command");
+        text.AppendLine("you ran can take that long without printing, narrow it (for example, a filtered test run) or run it");
+        text.AppendLine("once rather than repeatedly. Keep your working context small: read only the files you need.");
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForStall"/> opens with (pinned by tests).</summary>
+    internal const string StallHeading = "## The session went silent and was stopped";
+
+    /// <summary>
+    /// #811: a context-management failure the runner saw (a failed compaction; #800's thrash will join it), for a
+    /// failed attempt's feedback. Empty when there was none. The remedy is the same whatever the cause: the attempt
+    /// ran out of room, so the retry must carry less.
+    /// </summary>
+    public static string ForContextManagement(Prompts.ContextManagementFailure? failure)
+    {
+        if (failure is null)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine(ContextManagementHeading);
+        text.AppendLine();
+        text.AppendLine($"The previous attempt's {failure.Describe()}. Its context filled up and could not be reduced.");
+        text.AppendLine("Read less on this attempt: open only the files the task names, read large files in ranges, and");
+        text.AppendLine("avoid printing whole build or test logs (filter them). Finish in fewer, more direct steps.");
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForContextManagement"/> opens with (pinned by tests).</summary>
+    internal const string ContextManagementHeading = "## Context management failed";
+
+    /// <summary>
     /// #329: feedback for the OUTCOME-AWARE structural <c>.claude/</c>-wall halt (needs-human). #326
     /// settles a NON-converged attempt that carries a structural <c>.claude/</c> wall to
     /// <c>needs-human</c> on ONE attempt (the #104 fast-halt). When the non-convergence has a

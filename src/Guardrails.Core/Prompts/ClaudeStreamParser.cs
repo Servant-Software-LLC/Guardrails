@@ -54,6 +54,13 @@ public sealed record ClaudeResult
     /// </para>
     /// </summary>
     public string? Model { get; init; }
+
+    /// <summary>
+    /// A compaction that FAILED during the session (#811), read from
+    /// <c>{"type":"system","subtype":"status","compact_result":"failed","compact_error":"…"}</c>, or null when none
+    /// did. Its <see cref="ContextManagementFailure.Detail"/> is the LAST failure's <c>compact_error</c>.
+    /// </summary>
+    public ContextManagementFailure? CompactionFailure { get; init; }
 }
 
 /// <summary>
@@ -103,6 +110,10 @@ public sealed class ClaudeStreamParser
     private string? _initModel;
     private string? _resultModel;
 
+    // #811: failed compactions, counted, with the last one's error text.
+    private int _compactionFailures;
+    private string? _compactionError;
+
     /// <summary>
     /// Feed one raw output line (newline excluded). Non-JSON lines are ignored, as is every event
     /// other than the terminal <c>result</c> and the opening <c>system</c>/<c>init</c> (whose only
@@ -146,9 +157,17 @@ public sealed class ClaudeStreamParser
             // still ignored, and any other system event still falls through untouched.
             if (type == "system")
             {
-                if (TryGetNonEmptyString(root, "subtype") == "init")
+                string? systemSubtype = TryGetNonEmptyString(root, "subtype");
+                if (systemSubtype == "init")
                 {
                     _initModel = TryGetNonEmptyString(root, "model") ?? _initModel;
+                }
+                else if (systemSubtype == "status" && TryGetNonEmptyString(root, "compact_result") == "failed")
+                {
+                    // #811: a compaction that failed. The session may carry on (and later succeed), so this is a
+                    // FACT recorded for the summary, not an outcome decided here.
+                    _compactionFailures++;
+                    _compactionError = TryGetNonEmptyString(root, "compact_error") ?? _compactionError;
                 }
 
                 return;
@@ -190,7 +209,11 @@ public sealed class ClaudeStreamParser
         // Init WINS over a differing result-line model (#349) — the two can only disagree when a
         // session switched models mid-run, and the opening echo is the model the session was created
         // on. Both null stays null: absent, never "".
-        Model = _initModel ?? _resultModel
+        Model = _initModel ?? _resultModel,
+
+        CompactionFailure = _compactionFailures > 0
+            ? new ContextManagementFailure(ContextManagementFailureKind.CompactionFailed, _compactionError, _compactionFailures)
+            : null
     };
 
     /// <summary>Parse a whole stream (e.g. a canned transcript) into its terminal result.</summary>

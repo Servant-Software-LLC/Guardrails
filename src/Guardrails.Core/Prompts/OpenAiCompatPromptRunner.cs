@@ -859,7 +859,12 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
 
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                heartbeat?.Beat();
+                // #811: only a data frame (or a line of a non-streamed body) is progress. A proxy's `: keep-alive`
+                // comments or blank separators arriving forever while the model produces nothing must not beat.
+                if (heartbeat is not null && StreamProgress.IsSseProgress(line))
+                {
+                    heartbeat.Beat();
+                }
 
                 if (!line.StartsWith(SseDataPrefix, StringComparison.Ordinal))
                 {
@@ -1289,6 +1294,7 @@ public sealed class OpenAiCompatPromptRunner : IPromptRunner
                 Completed = false,
                 IsError = true,
                 FailureKind = PromptFailureKind.Stalled,
+                Stall = new StallReport(heartbeat.Bound, heartbeat.SilentFor(), heartbeat.SuspendsObserved),
                 Summary =
                     $"STALLED — {_config.Endpoint} produced no stream frame for {heartbeat.SilentFor().TotalMinutes:F1}m " +
                     $"(bound {(invocation.StallBound ?? TimeSpan.Zero).TotalMinutes:F0}m) while generating with '{model}'; " +

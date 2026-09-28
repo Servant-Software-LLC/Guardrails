@@ -517,6 +517,38 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.StartsWith("STALLED", result.Summary, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #811, through the real shared session and a real process: a session whose only output after init is status
+    /// lines (a compaction, then its failure) is killed as STALLED, and the result carries the watchdog's verdict and
+    /// the classified compaction failure. Asserts the decision and the carried facts, never a duration.
+    /// </summary>
+    [Fact]
+    public async Task StatusOnlySession_IsStalled_AndCarriesTheVerdictAndTheCompactionFailure()
+    {
+        Canned(
+            [
+                InitLine,
+                """{"type":"system","subtype":"status","status":"compacting"}""",
+                """{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Request timed out"}"""
+            ],
+            exitCode: 0, hang: true);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
+        {
+            StallBound = TimeSpan.FromSeconds(2),
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+
+        PromptResult result = await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
+        StallReport stall = Assert.IsType<StallReport>(result.Stall);
+        Assert.Equal(TimeSpan.FromSeconds(2), stall.Bound);
+        Assert.True(stall.SilentFor >= stall.Bound);
+        ContextManagementFailure context = Assert.IsType<ContextManagementFailure>(result.ContextManagement);
+        Assert.Equal(ContextManagementFailureKind.CompactionFailed, context.Kind);
+        Assert.Equal("Request timed out", context.Detail);
+    }
+
     [Fact]
     public async Task ClaudeContainmentSettingsFlag_IsRefused_NotPassedOrDropped()
     {

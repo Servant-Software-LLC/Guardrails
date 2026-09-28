@@ -923,6 +923,15 @@ public sealed class TaskExecutor : ITaskExecutor
         AttemptArtifacts.WriteActionLogs(
             logDir, action.AsProcessResult(), ActionKindLabel(task), ActionResultSummary(task, action));
 
+        // #811 (#806's cheap half): the stall watchdog's verdict, persisted as its own events.jsonl row the moment
+        // the action returns, before any settle path below can take the attempt somewhere else.
+        if (action.FailureKind == PromptFailureKind.Stalled && action.Stall is { } stall)
+        {
+            _observer.AttemptStalled(
+                task, attemptNumber, stall.Bound, stall.SilentFor, stall.SuspendsObserved,
+                action.ContextManagement?.Token, action.ContextManagement?.Detail);
+        }
+
         // --- #349: fold the OBSERVED model onto this attempt's provenance ----------------
         // The runner only reports what it actually ran on once it has run, so the observed model cannot
         // be part of the launch-time provenance built above; it is folded onto that SAME object the
@@ -1295,6 +1304,10 @@ public sealed class TaskExecutor : ITaskExecutor
                     + RetryPolicy.ForInFlightCalls(action.InFlightToolCalls),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
+
+            // #811: a context-management failure (a compaction that failed) is named whatever the failure kind:
+            // it explains a stall, a timeout or an error alike, and the remedy (carry less) is the same.
+            feedback += RetryPolicy.ForContextManagement(action.ContextManagement);
 
             AttemptOutcome attemptOutcome = action.FailureKind switch
             {
@@ -3329,12 +3342,18 @@ public sealed class TaskExecutor : ITaskExecutor
     /// the whole of <c>action-result.json</c>'s <c>summary</c> for a failed prompt action. A max-turns stop names
     /// the turn budget and an output-cap stop names the cap, rather than leaving the reader a synthesized exit code.
     /// </summary>
-    internal static string ActionFailureCause(ActionRun action) => action.FailureKind switch
+    internal static string ActionFailureCause(ActionRun action)
     {
-        PromptFailureKind.OutputCap => "response truncated at the output-token cap",
-        PromptFailureKind.MaxTurns => $"{action.FailureSummary} — ran out of turns mid-progress",
-        _ => action.FailureSummary
-    };
+        string cause = action.FailureKind switch
+        {
+            PromptFailureKind.OutputCap => "response truncated at the output-token cap",
+            PromptFailureKind.MaxTurns => $"{action.FailureSummary} — ran out of turns mid-progress",
+            _ => action.FailureSummary
+        };
+
+        // #811: a failed compaction is named on the attempt summary (and action-result.json), whatever the kind.
+        return action.ContextManagement is { } context ? $"{cause} — {context.Describe()}" : cause;
+    }
 
     /// <summary>
     /// <c>action-result.json</c>'s <c>summary</c> for this action (#798), or null to keep the process-shaped

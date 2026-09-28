@@ -203,6 +203,25 @@ public sealed class ObserverProjection : IRunObserver
         _inner.AttemptFinished(task, record);
     }
 
+    /// <summary>#811: the stall watchdog's verdict, recorded like every other call (seconds, not TimeSpan strings).</summary>
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail)
+    {
+        Append(new JsonObject
+        {
+            ["member"] = "AttemptStalled",
+            ["taskId"] = task.Id,
+            ["attempt"] = attempt,
+            ["boundSeconds"] = JsonValue.Create((long)Math.Round(bound.TotalSeconds)),
+            ["silentSeconds"] = JsonValue.Create((long)Math.Round(silentFor.TotalSeconds)),
+            ["suspends"] = suspendsObserved,
+            ["contextManagement"] = contextManagement,
+            ["contextManagementDetail"] = contextManagementDetail
+        });
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
+    }
+
     /// <summary>
     /// Recorded as its OWN line, not merely forwarded: this class's documented contract above is "every
     /// call is appended … and forwarded" — a run-scoped member that only forwarded would make that "every"

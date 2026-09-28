@@ -479,6 +479,7 @@ public sealed class PlanLoader
             // not the loader's.
             Endpoint = raw.Endpoint,
             ContextTokens = raw.ContextTokens,
+            StallTimeoutSeconds = raw.StallTimeoutSeconds,
             ApiKeyEnv = raw.ApiKeyEnv,
             Wire = raw.Wire is null
                 ? null

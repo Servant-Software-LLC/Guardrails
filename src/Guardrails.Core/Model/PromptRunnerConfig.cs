@@ -143,6 +143,13 @@ public sealed record PromptRunnerConfig
     public string? ApiKeyEnv { get; init; }
 
     /// <summary>
+    /// #811: how long a task ACTION's session on this block may go without a PROGRESS line (assistant content, a tool
+    /// call or result, the terminal result) before it is killed as stalled. Null = derived from the action's timeout
+    /// (<see cref="Execution.ActionStallBound"/>); 0 = disabled; a negative value is GR2088. Any runner kind.
+    /// </summary>
+    public int? StallTimeoutSeconds { get; init; }
+
+    /// <summary>
     /// A verbatim request-body passthrough map for the openai-compat wire protocol (plan 28 §4) — the
     /// HTTP sibling of <see cref="PromptRunnerSettings.Env"/>. Merged into the outgoing JSON body by
     /// the runner; a top-level key that shadows a harness-owned field (<c>model</c>, <c>messages</c>,

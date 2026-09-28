@@ -1385,7 +1385,14 @@ public static class DiagnosticCodes
     /// </summary>
     public const string GuardrailOverridesKeyIgnored = "GR2087";
 
-    // CURRENT next-free code: GR2088. GR2087 (GuardrailOverridesKeyIgnored) is the last taken code
+    /// <summary>
+    /// GR2088 (ERROR) — a prompt runner block's <c>stallTimeoutSeconds</c> is negative (#811). It bounds how long a
+    /// task action's session may produce no progress; <c>0</c> disables the bound and an absent key derives it from the
+    /// action timeout (SSOT §9), but a negative bound has no meaning.
+    /// </summary>
+    public const string StallTimeoutNegative = "GR2088";
+
+    // CURRENT next-free code: GR2089. GR2088 (StallTimeoutNegative) is the last taken code
     // above; GR2083 is RESERVED BY NAME above (#544) and GR2077 is RESERVED BY NAME below (issue #587
     // check B) — neither is free.
     // GR2072 (CheckSetPredatesSourceTree) remains the only code on this ladder that is NOT about the

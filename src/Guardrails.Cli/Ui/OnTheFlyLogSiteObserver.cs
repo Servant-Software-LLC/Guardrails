@@ -333,6 +333,13 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
         _inner.TaskWaitingOnWorktree(task, operation);
 
+    // #811: forwarded EXPLICITLY, verbatim — an unforwarded call would swallow the stall verdict in every mode. The
+    // site does not ACT on it: the durable record is the attempt-stalled row in events.jsonl, which the log server serves.
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) =>
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
+
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
     // lesson again). This observer does not ACT on it: a wave's delivery is not a log-site artifact, so it

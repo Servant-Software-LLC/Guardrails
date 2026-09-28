@@ -284,6 +284,14 @@ public sealed class PlanValidator
                     "but it must be a positive integer."));
             }
 
+            // #811: a negative stall bound has no meaning (0 disables it; absent derives it from the timeout).
+            if (runner.StallTimeoutSeconds is < 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.StallTimeoutNegative, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.stallTimeoutSeconds is {runner.StallTimeoutSeconds}, but it must be 0 " +
+                    "(no stall bound) or a positive number of seconds; omit it to derive the bound from the action timeout."));
+            }
+
             // The guardrail profile (base + guardrailOverrides) is checked too: an override could drive
             // the effective cap non-positive even when the base is fine.
             if (runner.GuardrailOverrides is not null &&

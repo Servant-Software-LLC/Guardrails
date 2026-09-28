@@ -155,6 +155,10 @@ internal sealed class RawPromptRunner
     // The model's context window in tokens. REQUIRED for kind openai-compat, must be >= 1.
     public int? ContextTokens { get; set; }
 
+    // #811: how long a task ACTION's session may be SILENT (no progress line) before it is killed. Any kind.
+    // null = derived from the action timeout (SSOT §9); 0 = disabled; negative = GR2088.
+    public int? StallTimeoutSeconds { get; set; }
+
     // The NAME of an env var holding a bearer token — never the token itself (SSOT §4: this file is
     // committed and hashed into PlanDefinitionHash).
     public string? ApiKeyEnv { get; set; }
