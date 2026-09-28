@@ -2247,6 +2247,13 @@ CLI renders the one-liner + remedy, writes the full fault to `logs/<runId>/abort
 non-zero (harness error) — never a raw stack trace as the headline. An aborted report is failed
 regardless of per-task outcomes.
 
+**A git failure names git's own words (#750).** When an integration merge fails WITHOUT leaving a
+`MERGE_HEAD` (so it is not a conflict), the fault's message carries git's exit code and its trimmed
+`stderr`/`stdout`, plus the exit code and output of the `MERGE_HEAD` probe and of the `--ff-only` attempt
+before it, each stream capped at 4000 characters. That message is the abort headline and part of
+`abort.log`'s detail, so the operator reads why git refused instead of reconstructing the merge by hand.
+The trial-delivery merge (§14.12) reports the same way.
+
 **Retry preserves upstream work:** a failed attempt is `git reset --hard <taskBase> + git clean -fd`
 in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a
 discard-and-recreate.
