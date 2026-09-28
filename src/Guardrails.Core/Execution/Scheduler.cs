@@ -5941,7 +5941,7 @@ public sealed class Scheduler
             {
                 AtomicFile.WriteAllText(statePath, preMergeState);
                 provider.RollbackMerge(integ, ct);
-                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+                RecordFailedSettle(task, result, Journal.AttemptOutcome.MergeConflict, failedGuardrails: []);
                 return new TaskResult
                 {
                     TaskId = task.Id,
@@ -5987,7 +5987,7 @@ public sealed class Scheduler
             string aiFeedbackPath = PersistUnionReVerifyFailure(task, result, integ, aiReVerify, aiMerge: true);
             AtomicFile.WriteAllText(statePath, preMergeState);
             provider.RollbackMerge(integ, ct);
-            _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+            RecordFailedSettle(task, result, Journal.AttemptOutcome.IntegrationFailed, aiReVerify.FailedGuardrails);
             return new TaskResult
             {
                 TaskId = task.Id,
@@ -6028,8 +6028,8 @@ public sealed class Scheduler
         AtomicFile.WriteAllText(statePath, preMergeState);
         // 2. Reset integration worktree to pre-merge HEAD.
         provider.RollbackMerge(integ, ct);
-        // 3. Journal NeedsHuman — mergeSequence NOT consumed.
-        _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+        // 3. Journal NeedsHuman WITH the attempt (#802) — mergeSequence NOT consumed.
+        RecordFailedSettle(task, result, Journal.AttemptOutcome.IntegrationFailed, reVerify.FailedGuardrails);
 
         return new TaskResult
         {
@@ -6166,10 +6166,58 @@ public sealed class Scheduler
         _journal.RecordSettleWithAttempt(
             task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash,
             bucket: pending.Bucket);
-        // SSOT §15.2a: this is the worktree SUCCESS path's only route to this event. A worktree settle
-        // that ends needs-human instead (a failed union re-verify, an unresolvable AI-merge, a non-FF
-        // integration failure) calls RecordSettle(..., NeedsHuman, null) above and builds no AttemptRecord
-        // at all, so it still raises nothing here — a separate, deliberately unfixed gap.
+        // SSOT §15.2a: the worktree SUCCESS path's route to this event; RecordFailedSettle below is the
+        // needs-human path's (#802).
+        _observer.AttemptFinished(task, record);
+    }
+
+    /// <summary>
+    /// Record a worktree-mode settle that ends <c>needs-human</c> AFTER the attempt itself passed (#802): an
+    /// unresolvable merge conflict (<see cref="Journal.AttemptOutcome.MergeConflict"/>) or a failed integration
+    /// re-verify (<see cref="Journal.AttemptOutcome.IntegrationFailed"/>). The attempt is journaled into
+    /// <c>attempts[]</c> exactly as <see cref="RecordSucceededSettle"/> journals a green one, so the attempt
+    /// number advances: before this, <c>attempts[]</c> stopped at N-1 while <c>attempt-N</c>'s folder existed,
+    /// and a re-drive reused N — the same folder, and a second <c>attempt-started</c> row for
+    /// <c>(taskId, N)</c>. No merge sequence is consumed. A result without a
+    /// <see cref="TaskResult.PendingAttempt"/> (a fake-provider path) keeps the attempt-less settle.
+    /// </summary>
+    private void RecordFailedSettle(
+        TaskNode task, TaskResult result, Journal.AttemptOutcome outcome, IReadOnlyList<GuardrailResult> failedGuardrails)
+    {
+        if (result.PendingAttempt is not { } pending)
+        {
+            _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+            return;
+        }
+
+        var record = new Journal.AttemptRecord
+        {
+            Attempt = pending.Attempt,
+            StartedAt = pending.StartedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = pending.ActionExitCode,
+            Outcome = outcome,
+            FailedGuardrails =
+            [
+                .. failedGuardrails.Select(g => new Journal.FailedGuardrail
+                {
+                    Name = g.Name,
+                    Reason = g.Reason ?? "failed the integration re-verify"
+                })
+            ],
+            CostUsd = pending.CostUsd,
+            Usage = pending.Usage,
+            Turns = pending.Turns,
+            Segments = pending.Segments,
+            LogDir = pending.LogDir,
+            Provenance = pending.Provenance,
+            HarnessWrite = pending.HarnessWrite
+        };
+
+        // NAMED bucket, for the reason RecordSucceededSettle gives.
+        _journal.RecordSettleWithAttempt(
+            task.Id, record, JournalTaskStatus.NeedsHuman, mergeSequence: null, definitionHash: null,
+            bucket: pending.Bucket);
         _observer.AttemptFinished(task, record);
     }
 

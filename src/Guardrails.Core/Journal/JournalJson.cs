@@ -36,6 +36,8 @@ public static class JournalJson
         AttemptOutcome.PermissionDenied => "permission-denied",
         AttemptOutcome.TaskPreflightFailed => "task-preflight-failed",
         AttemptOutcome.NoRoute => "no-route",
+        AttemptOutcome.MergeConflict => "merge-conflict",
+        AttemptOutcome.IntegrationFailed => "integration-failed",
         _ => throw new JsonException($"Unhandled attempt outcome '{outcome}'.")
     };
 
@@ -359,6 +361,8 @@ public static class JournalJson
                 "permission-denied" => AttemptOutcome.PermissionDenied,
                 "task-preflight-failed" => AttemptOutcome.TaskPreflightFailed,
                 "no-route" => AttemptOutcome.NoRoute,
+                "merge-conflict" => AttemptOutcome.MergeConflict,
+                "integration-failed" => AttemptOutcome.IntegrationFailed,
                 _ => throw new JsonException($"Unknown attempt outcome '{value}'.")
             };
         }

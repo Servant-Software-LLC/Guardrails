@@ -128,5 +128,22 @@ public enum AttemptOutcome
     /// The post-action staging move failed (an empty source, or an IO error) before the write-scope check
     /// and before any guardrail ran (#538).
     /// </summary>
-    StagingFailed
+    StagingFailed,
+
+    /// <summary>
+    /// Worktree mode only (#802): the attempt passed its own guardrails, but merging its segment into the
+    /// integration branch conflicted and the conflict could not be resolved (no AI-merge worker, the worker
+    /// gave up, or it left unmerged paths). The merge was rolled back and the task settled <c>needs-human</c>.
+    /// Recorded so the attempt is in <c>attempts[]</c>: without it the next attempt reused this attempt's
+    /// number and its <c>attempt-N</c> folder.
+    /// </summary>
+    MergeConflict,
+
+    /// <summary>
+    /// Worktree mode only (#802): the attempt passed its own guardrails and merged, but the merged bytes failed
+    /// the integration re-verify (after a clean non-fast-forward union or an AI-resolved conflict). The merge
+    /// was rolled back and the task settled <c>needs-human</c>; <see cref="AttemptRecord.FailedGuardrails"/>
+    /// names the integration guardrails that failed.
+    /// </summary>
+    IntegrationFailed
 }

@@ -2801,6 +2801,14 @@ fails the write, loudly, with a message naming the likely cause.
                                     // `failedGuardrails` — a combination that is internally inconsistent and
                                     // points a reader at the guardrail set, which was never the cause.
                                     // INVARIANT: `guardrail-failed` always names at least one guardrail.
+                                    //   | merge-conflict | integration-failed   (#802, worktree mode only)
+                                    // The attempt passed, then its settle failed: the union conflicted and
+                                    // could not be resolved, or the merged bytes failed the integration
+                                    // re-verify. The task settles `needs-human` and no merge sequence is
+                                    // consumed, but the attempt IS recorded, so the next attempt number
+                                    // advances and a re-drive never reuses `attempt-N`'s folder. An
+                                    // `integration-failed` attempt's `failedGuardrails` names the
+                                    // integration guardrails that failed.
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "usage": {                // OPTIONAL tokens-only volume (#201): the accounting surface a COSTLESS

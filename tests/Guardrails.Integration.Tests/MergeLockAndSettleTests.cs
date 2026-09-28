@@ -265,7 +265,7 @@ public sealed class MergeLockAndSettleTests
     /// (no dependsOn), each producing a state fragment.
     /// <c>maxParallelism: 2</c> enables worktree mode so both tasks run in segments.
     /// </summary>
-    private static string CreateSiblingPlan(string repoPath)
+    private static string CreateSiblingPlan(string repoPath, bool writeSharedFile = false)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
@@ -284,8 +284,8 @@ public sealed class MergeLockAndSettleTests
             """);
 
         Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
-        WriteTaskInRepo(planDir, "01-task-a", []);
-        WriteTaskInRepo(planDir, "02-task-b", []);
+        WriteTaskInRepo(planDir, "01-task-a", [], writeSharedFile);
+        WriteTaskInRepo(planDir, "02-task-b", [], writeSharedFile);
         return planDir;
     }
 
@@ -523,8 +523,10 @@ public sealed class MergeLockAndSettleTests
         }
     }
 
-    private static void WriteTaskInRepo(string planDir, string taskId, string[] dependsOn)
+    private static void WriteTaskInRepo(string planDir, string taskId, string[] dependsOn, bool writeSharedFile = false)
     {
+        // #802: sibling tasks that both CREATE src/shared.cs with different bytes collide at the union (add/add).
+        string fileName = writeSharedFile ? "shared" : taskId;
         string taskDir = Path.Combine(planDir, "tasks", taskId);
         Directory.CreateDirectory(taskDir);
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
@@ -549,7 +551,7 @@ public sealed class MergeLockAndSettleTests
         {
             File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
                 $"Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{fragmentJson}'\n" +
-                $"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\src\\{taskId}.cs\" -Force" +
+                $"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\src\\{fileName}.cs\" -Force" +
                 $" -Value 'class {safeName} {{}}' | Out-Null\n" +
                 "exit 0\n");
             File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
@@ -561,7 +563,7 @@ public sealed class MergeLockAndSettleTests
                 "#!/usr/bin/env bash\n" +
                 $"printf '%s' '{fragmentJson}' > \"$GUARDRAILS_STATE_OUT\"\n" +
                 "mkdir -p \"$GUARDRAILS_WORKSPACE/src\"\n" +
-                $"printf 'class {safeName} {{}}' > \"$GUARDRAILS_WORKSPACE/src/{taskId}.cs\"\n" +
+                $"printf 'class {safeName} {{}}' > \"$GUARDRAILS_WORKSPACE/src/{fileName}.cs\"\n" +
                 "exit 0\n");
             File.SetUnixFileMode(actionPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
@@ -1196,6 +1198,76 @@ public sealed class MergeLockAndSettleTests
 
         // ── The needs-human summary points at the feedback.md that now EXISTS.
         Assert.Contains("feedback.md", nhTask.Summary, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #802: a worktree settle that ends needs-human after the attempt itself passed used to record NO attempt,
+    /// so <c>attempts[]</c> stopped at N-1 while <c>attempt-N</c>'s folder existed, and a re-drive reused N (the
+    /// same folder, a second <c>attempt-started</c> row). The failed union re-verify now journals the attempt
+    /// as <c>integration-failed</c>, naming the integration guardrail that failed, and a re-drive gets N+1.
+    /// </summary>
+    [Fact]
+    public async Task FailedUnionReVerify_JournalsTheAttempt_SoAReDriveGetsTheNextNumberAndAFreshFolder()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateSiblingPlan(repo.RepoPath);
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            new SpyReVerifier { AlwaysPass = false }, TestContext.Current.CancellationToken);
+
+        string nhId = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman).TaskId;
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));
+
+        AttemptRecord first = Assert.Single(doc.Tasks[nhId].Attempts);
+        Assert.Equal(1, first.Attempt);
+        Assert.Equal(AttemptOutcome.IntegrationFailed, first.Outcome);
+        Assert.Equal("spy-re-verify", Assert.Single(first.FailedGuardrails).Name);
+        Assert.Null(doc.Tasks[nhId].MergeSequence);
+
+        // The decision a re-drive makes: the next attempt is 2, never 1 again.
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        Assert.Equal(2, journal.NextAttemptNumber(nhId));
+
+        // And the re-drive itself: reset the task and run again with a passing re-verify.
+        journal.ResetTask(nhId);
+        var (redrive, _) = await RunWithProviderAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            new SpyReVerifier { AlwaysPass = true }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(redrive.Tasks, t => t.TaskId == nhId).Outcome);
+        doc = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal([1, 2], doc.Tasks[nhId].Attempts.Select(a => a.Attempt));
+        Assert.Equal(AttemptOutcome.Succeeded, doc.Tasks[nhId].Attempts[1].Outcome);
+        Assert.NotEqual(doc.Tasks[nhId].Attempts[0].LogDir, doc.Tasks[nhId].Attempts[1].LogDir);
+    }
+
+    /// <summary>
+    /// #802, the conflict half: two siblings create the same file with different bytes, so the second union
+    /// conflicts, and with no AI-merge worker wired the task settles needs-human. The attempt is journaled as
+    /// <c>merge-conflict</c> instead of being dropped.
+    /// </summary>
+    [Fact]
+    public async Task UnresolvableMergeConflict_JournalsTheAttempt_AsMergeConflict()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateSiblingPlan(repo.RepoPath, writeSharedFile: true);
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            new SpyReVerifier { AlwaysPass = true }, TestContext.Current.CancellationToken);
+
+        TaskResult nh = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        Assert.Contains("merge conflict", nh.Summary, StringComparison.Ordinal);
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));
+        AttemptRecord attempt = Assert.Single(doc.Tasks[nh.TaskId].Attempts);
+        Assert.Equal(1, attempt.Attempt);
+        Assert.Equal(AttemptOutcome.MergeConflict, attempt.Outcome);
+        Assert.Empty(attempt.FailedGuardrails);
+        Assert.Null(doc.Tasks[nh.TaskId].MergeSequence);
+        Assert.Equal(2, RunJournal.LoadOrCreate(new PlanLoader().Load(planDir).Plan!).NextAttemptNumber(nh.TaskId));
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

@@ -594,6 +594,8 @@ public static class StatusCommand
             AttemptOutcome.Timeout => "timed out",
             AttemptOutcome.InvalidFragment => "invalid state fragment",
             AttemptOutcome.Cancelled => "cancelled",
+            AttemptOutcome.MergeConflict => "merge conflict with the integration branch",
+            AttemptOutcome.IntegrationFailed => "integration re-verify failed",
             AttemptOutcome.NeedsHuman => NeedsHumanKinds.Parse(attempt.NeedsHumanKind) is { } kind
                 ? $"agent escalated [{kind}]"
                 : "agent escalated",
