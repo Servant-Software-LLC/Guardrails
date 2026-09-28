@@ -134,7 +134,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails telemetry ingest [folder]` · `report` · `purge` | Read, summarize or erase the **local** record of what your runs cost and which model ran them — see [Local telemetry](#local-telemetry). `ingest` backfills from runs already on disk; a run ingests itself automatically at the end |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 | `guardrails attach [folder]` | Attach a **second terminal** to a run's live progress table, replaying its recorded events. Read-only — it never touches the run — and it works both while the run is in flight and after it has finished. This is how you watch an unattended run without being the terminal that launched it |
-| `guardrails bundle [folder] [--task <id>] [--lean]` | Package one run's evidence (live or finished) into a redacted zip under `~/guardrails-bundles/` to attach to a GitHub issue — see [Filing an issue](#filing-an-issue-guardrails-bundle). Credentials are scrubbed; prompts and transcripts are included unless `--lean` |
+| `guardrails bundle [folder] [--task <id>] [--lean] [--without-agent-text] [--out <zip>]` | Package one run's evidence (live or finished) into a redacted zip under `~/guardrails-bundles/` to attach to a GitHub issue — see [Filing an issue](#filing-an-issue-guardrails-bundle). Credentials are scrubbed; prompts and transcripts are included unless `--lean` |
 | `guardrails samples verify [folder]` | Execute every committed `tasks/<id>/samples/` pair against its guardrail and report the findings. Worth knowing about *before* a run: the same check runs as a **pre-DAG gate**, so a broken pair halts the run before task one |
 | `guardrails mark-reviewed [folder] [--evidence <report>] [--source <kind>]` | Record that `/guardrails-review` ran, clearing the GR2025 "not reviewed" nudge. The marker is keyed on the plan's definition hash, so editing any guardrail body re-stales it. `--evidence` points at the written report and records a stronger attestation class than a bare stamp |
 | `guardrails plan-hash [folder]` | Print the plan's `PlanDefinitionHash` (or one wave's) — read-only. This is the hash the review flow embeds in its report |
@@ -606,6 +606,19 @@ versions, and a computed `SUMMARY.md`.
 - **Size.** The zip is capped at 20 MiB (`--max-size`; GitHub accepts 25 MB). Over the cap, it trims older
   attempts' streams and transcripts first. If it's still too big, it writes the zip anyway, exits `1`,
   and tells you to narrow it with `--task <id>`.
+- **A stuck run.** For a run that is still going, `SUMMARY.md` also says how long the in-flight attempt has
+  been running, which files are still being written, and the harness's process tree (with each process's
+  state, elapsed time and CPU), so you can tell whether the model, the agent CLI or the harness is waiting.
+- **Other options.**
+
+  | Option | What it does |
+  |---|---|
+  | `--run <runId>` | Bundle an earlier run's logs instead of the journal's current run |
+  | `--task <id>` | Only this task's evidence (repeatable) |
+  | `--include-worktree-diff` | Add the full git diff of the integration worktree and each selected task. Refused with `--lean` |
+  | `--keep-paths` | Don't anonymize paths |
+  | `--no-redact` | Skip the credential passes. Never use it for a public issue |
+  | `--force-path` | Allow a destination inside a git working tree |
 - **Attaching it.** `gh` can't attach files to an issue. Drag the zip into the issue's comment box in the
   browser (or attach it to a gist or release and paste the link).
 
