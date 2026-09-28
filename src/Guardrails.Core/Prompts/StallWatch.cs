@@ -66,6 +66,14 @@ public sealed class StallWatch
     /// </summary>
     internal const int SuspendFactor = 4;
 
+    /// <summary>
+    /// A poll gap above this multiple of the interval, but not above <see cref="SuspendFactor"/>, is a PARTIAL
+    /// suspend (#815 review W2): the part of the gap beyond one interval is credited back to the silence window rather
+    /// than counted as silence. A Mac cycling through DarkWake (30 s awake, 2.5 min asleep) never reaches the 4x
+    /// reset, and without this credit its sleep would add up to a stall the session had no chance to prevent.
+    /// </summary>
+    internal const double PartialSuspendFactor = 1.5;
+
     private readonly Func<long> _nowTicks;
 
     /// <summary>Written by the stream-reader thread, read by the watchdog — via <see cref="Volatile"/>.</summary>
@@ -77,6 +85,8 @@ public sealed class StallWatch
     private int _stalled;
     private int _suspends;
     private int _lastVerdict;
+    private int _beats;
+    private long _creditedTicks;
 
     /// <summary>A watch on the real wall clock — the production constructor.</summary>
     /// <param name="bound">How long a session may be SILENT before it is killed.</param>
@@ -133,8 +143,24 @@ public sealed class StallWatch
     /// </summary>
     internal int SuspendsObserved => Volatile.Read(ref _suspends);
 
+    /// <summary>How many PROGRESS beats the session produced (#815 review W4): zero means the runner or its backend never produced anything.</summary>
+    internal int Beats => Volatile.Read(ref _beats);
+
+    /// <summary>The total partial-suspend time credited back to the silence window (W2), for tests and reports.</summary>
+    internal TimeSpan Credited => TimeSpan.FromTicks(Interlocked.Read(ref _creditedTicks));
+
     /// <summary>The session produced output — restart the silence window. Called on every teed line / streamed frame.</summary>
-    public void Beat() => Volatile.Write(ref _lastActivityTicks, _nowTicks());
+    public void Beat()
+    {
+        Volatile.Write(ref _lastActivityTicks, _nowTicks());
+        Interlocked.Increment(ref _beats);
+    }
+
+    /// <summary>
+    /// Restart the silence window WITHOUT counting progress: a transport event (response headers arrived) that shows the
+    /// connection is alive but is not output from the model.
+    /// </summary>
+    internal void ResetWindow() => Volatile.Write(ref _lastActivityTicks, _nowTicks());
 
     /// <summary>
     /// How long the session has been silent, for the operator-facing summary. NOT the kill decision —
@@ -155,8 +181,25 @@ public sealed class StallWatch
     {
         long pollAt = _nowTicks();
         var sincePreviousPoll = TimeSpan.FromTicks(pollAt - _previousPollTicks);
-        var silent = TimeSpan.FromTicks(pollAt - Volatile.Read(ref _lastActivityTicks));
         _previousPollTicks = pollAt;
+
+        // W2: a partial suspend. The machine was away for part of this poll, too briefly for the 4x reset below; the
+        // excess over one interval is time the session could not use, so it is credited back rather than counted.
+        if (PollInterval > TimeSpan.Zero
+            && sincePreviousPoll > PollInterval * PartialSuspendFactor
+            && sincePreviousPoll <= PollInterval * SuspendFactor)
+        {
+            long credit = (sincePreviousPoll - PollInterval).Ticks;
+            long last = Volatile.Read(ref _lastActivityTicks);
+            long credited = Math.Min(pollAt, last + credit) - last;
+            if (credited > 0)
+            {
+                Volatile.Write(ref _lastActivityTicks, last + credited);
+                Interlocked.Add(ref _creditedTicks, credited);
+            }
+        }
+
+        var silent = TimeSpan.FromTicks(pollAt - Volatile.Read(ref _lastActivityTicks));
 
         StallVerdict verdict = Classify(silent, sincePreviousPoll, PollInterval, Bound);
         Volatile.Write(ref _lastVerdict, (int)verdict);

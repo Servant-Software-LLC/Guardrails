@@ -517,6 +517,63 @@ public sealed class CursorPromptRunnerTests : IDisposable
         Assert.StartsWith("STALLED", result.Summary, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #811, through the real shared session and a real process: a session whose only output after init is status
+    /// lines (a compaction, then its failure) is killed as STALLED, and the result carries the watchdog's verdict and
+    /// the classified compaction failure. Asserts the decision and the carried facts, never a duration.
+    /// </summary>
+    [Fact]
+    public async Task StatusOnlySession_IsStalled_AndCarriesTheVerdictAndTheCompactionFailure()
+    {
+        Canned(
+            [
+                InitLine,
+                """{"type":"system","subtype":"status","status":"compacting"}""",
+                """{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Request timed out"}"""
+            ],
+            exitCode: 0, hang: true);
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
+        {
+            StallBound = TimeSpan.FromSeconds(2),
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+
+        PromptResult result = await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
+        StallReport stall = Assert.IsType<StallReport>(result.Stall);
+        Assert.Equal(TimeSpan.FromSeconds(2), stall.Bound);
+        Assert.True(stall.SilentFor >= stall.Bound);
+        ContextManagementFailure context = Assert.IsType<ContextManagementFailure>(result.ContextManagement);
+        Assert.Equal(ContextManagementFailureKind.CompactionFailed, context.Kind);
+        Assert.Equal("Request timed out", context.Detail);
+    }
+
+    /// <summary>
+    /// #815 review W3: the WIRING, not the rule. After one progress line the fake keeps printing a
+    /// <c>compacting</c> status line every 0.5 s. If the session's tee ever went back to beating on every line, those
+    /// lines would keep the session alive until the drip ends and this would come back as a plain error; beating
+    /// only on progress, it is killed as STALLED once the 3 s bound passes.
+    /// </summary>
+    [Fact]
+    public async Task ADripOfStatusLines_DoesNotKeepTheSessionAlive()
+    {
+        Canned(
+            [InitLine, """{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"""],
+            exitCode: 0,
+            drip: """{"type":"system","subtype":"status","status":"compacting"}""");
+        PromptInvocation invocation = Invocation(new PromptRunnerSettings()) with
+        {
+            StallBound = TimeSpan.FromSeconds(3),
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+
+        PromptResult result = await Runner().RunAsync(invocation, TestContext.Current.CancellationToken);
+
+        Assert.Equal(PromptFailureKind.Stalled, result.FailureKind);
+        Assert.False(Assert.IsType<StallReport>(result.Stall).NoProgressAtAll);
+    }
+
     [Fact]
     public async Task ClaudeContainmentSettingsFlag_IsRefused_NotPassedOrDropped()
     {
@@ -1334,9 +1391,16 @@ public sealed class CursorPromptRunnerTests : IDisposable
     /// The fake emits <paramref name="streamLines"/>, injecting its prompt echo after the FIRST line (the init)
     /// unless <paramref name="echo"/> is false.
     /// </summary>
-    private void Canned(string[] streamLines, int exitCode, bool hang = false, bool echo = true, string? stderr = null)
+    private void Canned(
+        string[] streamLines, int exitCode, bool hang = false, bool echo = true, string? stderr = null, string? drip = null)
     {
         File.WriteAllText(Path.Combine(_root, "stream.jsonl"), string.Join("\n", streamLines) + "\n");
+        if (drip is not null)
+        {
+            // #815 review W3: after the stream, print this line every 0.5 s for up to 2 minutes.
+            File.WriteAllText(Path.Combine(_root, "drip.txt"), drip);
+        }
+
         if (stderr is not null)
         {
             File.WriteAllText(Path.Combine(_root, "stderr.txt"), stderr);
@@ -1399,6 +1463,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
                 "  if ($i -eq 0 -and $echo) { $j = ConvertTo-Json -Compress -InputObject ([string]$prompt); [Console]::Out.WriteLine('{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":' + $j + '}]}}') }\r\n" +
                 "}\r\n" +
                 "[Console]::Out.Flush()\r\n" +
+                "if (Test-Path \"$d\\drip.txt\") { $drip = [IO.File]::ReadAllText(\"$d\\drip.txt\").Trim(); for ($k = 0; $k -lt 240; $k++) { [Console]::Out.WriteLine($drip); [Console]::Out.Flush(); Start-Sleep -Milliseconds 500 } }\r\n" +
                 "if (Test-Path \"$d\\hang.txt\") { Start-Sleep -Seconds 120 }\r\n" +
                 "exit [int]([IO.File]::ReadAllText(\"$d\\exit.txt\"))\r\n");
             File.WriteAllText(cmdPath,
@@ -1426,6 +1491,7 @@ public sealed class CursorPromptRunnerTests : IDisposable
             "  if [ \"$n\" = 0 ] && [ ! -f \"$d/noecho.txt\" ]; then printf '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"%s\"}]}}\\n' \"$esc\"; fi\n" +
             "  n=$((n+1))\n" +
             "done < \"$d/stream.jsonl\"\n" +
+            "if [ -f \"$d/drip.txt\" ]; then drip=$(cat \"$d/drip.txt\"); k=0; while [ $k -lt 240 ]; do printf '%s\\n' \"$drip\"; sleep 0.5; k=$((k+1)); done; fi\n" +
             "if [ -f \"$d/hang.txt\" ]; then sleep 120; fi\n" +
             "exit \"$(cat \"$d/exit.txt\")\"\n");
         File.SetUnixFileMode(shPath,

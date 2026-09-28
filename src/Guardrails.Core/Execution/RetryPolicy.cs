@@ -1610,6 +1610,91 @@ public static class RetryPolicy
         "## Calls still running when the session was stopped (not refused — they may simply need more time)";
 
     /// <summary>
+    /// #811: what a STALLED attempt's retry is told — routed like <see cref="ForTimeout"/> (#815 review B2), with the
+    /// same #167 rollback-aware header and #306 salvage section: in worktree mode the attempt's writes are reverted,
+    /// so it must never be told its partial work is on disk.
+    /// <para>A stall where the session produced NO progress at all (<see cref="Prompts.StallReport.NoProgressAtAll"/>,
+    /// W4) is told the truth instead: the runner or its backend produced nothing, which is most likely not the task's
+    /// fault, so there is nothing to change in the approach.</para>
+    /// </summary>
+    public static string ForStalled(
+        TaskNode task, int attempt, Prompts.StallReport? stall, bool fileWritesRolledBack = false,
+        SalvageRef? salvageRef = null)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        text.AppendLine(StallHeading);
+        text.AppendLine();
+        text.AppendLine(stall is { } report
+            ? $"The session produced no progress for {report.SilentFor.TotalMinutes:F1} minutes (the bound is {report.Bound.TotalMinutes:F0}) and was stopped."
+            : "The session produced no progress for longer than its silence bound and was stopped.");
+        text.AppendLine("Progress means model output, reasoning, a tool call, a tool heartbeat or a tool result; status lines");
+        text.AppendLine("do not count.");
+        text.AppendLine();
+
+        if (stall is { NoProgressAtAll: true })
+        {
+            text.AppendLine("It produced NOTHING before it went silent: no reply, no reasoning, no tool call. That points at the");
+            text.AppendLine("runner or its backend (a gateway or model server that is not answering), not at this task. Nothing");
+            text.AppendLine("about your approach needs to change; carry on with the task as written.");
+        }
+        else if (fileWritesRolledBack && salvageRef is not null)
+        {
+            text.AppendLine("Its partial work was reverted from your working tree, but it was NOT discarded — see");
+            text.AppendLine("'## Prior attempt work is salvageable' below to recover it, then go straight to the deliverable.");
+        }
+        else if (fileWritesRolledBack)
+        {
+            text.AppendLine("Its partial work was reverted (see the rollback note below), so re-author the files, carrying");
+            text.AppendLine("forward what you LEARNED rather than re-reading the whole codebase.");
+        }
+        else
+        {
+            text.AppendLine("Its PARTIAL WORK is preserved in your workspace: continue from it rather than starting over.");
+        }
+
+        if (stall is not { NoProgressAtAll: true })
+        {
+            text.AppendLine();
+            text.AppendLine("- If a command you ran can go quiet for that long, narrow it (for example, a filtered test run) or");
+            text.AppendLine("  run it once rather than repeatedly.");
+            text.AppendLine("- Keep your working context small: read only the files you need, and large files in ranges.");
+        }
+
+        AppendRollbackDisclosure(text, fileWritesRolledBack, RollbackCause.AttemptDidNotSettle);
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForStalled"/> uses (pinned by tests).</summary>
+    internal const string StallHeading = "## The session went silent and was stopped";
+
+    /// <summary>
+    /// #811: a context-management failure the runner saw (a failed compaction; #800's thrash will join it), for a
+    /// failed attempt's feedback. Empty when there was none. The remedy is the same whatever the cause: the attempt
+    /// ran out of room, so the retry must carry less.
+    /// </summary>
+    public static string ForContextManagement(Prompts.ContextManagementFailure? failure)
+    {
+        if (failure is null)
+        {
+            return string.Empty;
+        }
+
+        var text = new StringBuilder();
+        text.AppendLine();
+        text.AppendLine(ContextManagementHeading);
+        text.AppendLine();
+        text.AppendLine($"The previous attempt's {failure.Describe()}. Its context filled up and could not be reduced.");
+        text.AppendLine("Read less on this attempt: open only the files the task names, read large files in ranges, and");
+        text.AppendLine("avoid printing whole build or test logs (filter them). Finish in fewer, more direct steps.");
+        return text.ToString();
+    }
+
+    /// <summary>The heading <see cref="ForContextManagement"/> opens with (pinned by tests).</summary>
+    internal const string ContextManagementHeading = "## Context management failed";
+
+    /// <summary>
     /// #329: feedback for the OUTCOME-AWARE structural <c>.claude/</c>-wall halt (needs-human). #326
     /// settles a NON-converged attempt that carries a structural <c>.claude/</c> wall to
     /// <c>needs-human</c> on ONE attempt (the #104 fast-halt). When the non-convergence has a

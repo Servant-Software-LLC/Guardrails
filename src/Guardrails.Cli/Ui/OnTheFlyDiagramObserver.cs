@@ -302,6 +302,14 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     public void TaskWaitingOnWorktree(TaskNode task, string operation) =>
         _inner.TaskWaitingOnWorktree(task, operation);
 
+    // #811: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting this would swallow
+    // the stall verdict before it reached events.jsonl. This observer does not ACT on it: the attempt's own
+    // AttemptFinished still follows and moves the node.
+    public void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) =>
+        _inner.AttemptStalled(task, attempt, bound, silentFor, suspendsObserved, contextManagement, contextManagementDetail);
+
     // Design 39 §5: forwarded EXPLICITLY, verbatim — the interface default is an empty body, so omitting
     // this compiles cleanly and drops the delivery announcement in every mode (the VerifierAdvisoryFound
     // lesson again). This observer does not ACT on it: a wave's delivery is not a shape of the DAG, so it

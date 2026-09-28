@@ -204,6 +204,12 @@ internal sealed class ActionRunner
             ["GUARDRAILS_STATE_OUT"] = stagingStateOutPath
         };
 
+        TimeSpan actionTimeout = Extend(
+            _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+            timeoutMultiplier);
+        string? dispatchName = PromptRunnerRegistry.DispatchNameFor(
+            _plan.Config, route, task.Action.Runner, promptFile.Frontmatter.Runner);
+
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
@@ -212,9 +218,11 @@ internal sealed class ActionRunner
             PlanDirectory = _plan.PlanDirectory,
             Environment = actionEnv,
             Settings = settings,
-            Timeout = Extend(
-                _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
-                timeoutMultiplier),
+            Timeout = actionTimeout,
+
+            // #811: a silence bound for every prompt action, from the DISPATCHED block's stallTimeoutSeconds (the block
+            // whose CLI actually runs), else derived from the extended timeout. See ActionStallBound for the numbers.
+            StallBound = ActionStallBound.Resolve(registry.ResolveConfig(dispatchName), actionTimeout),
             StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl"),
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
@@ -235,9 +243,7 @@ internal sealed class ActionRunner
         // The whole order now lives ONCE, on the registry (PromptRunnerRegistry.DispatchNameFor), because
         // `--dry-run` must preview the block this line dispatches to and a second spelling of it is how
         // #549 happened one rule further up: the preview re-derived precedence instead of asking.
-        PromptResult result = await registry.Resolve(
-                PromptRunnerRegistry.DispatchNameFor(
-                    _plan.Config, route, task.Action.Runner, promptFile.Frontmatter.Runner))
+        PromptResult result = await registry.Resolve(dispatchName)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
         // Promote the staged fragment to its documented final location THE INSTANT the sub-agent
@@ -567,6 +573,15 @@ internal sealed record ActionRun
     /// <summary>The runner's remedy text for <see cref="AllShellRefused"/> (#773), or null.</summary>
     public string? RunnerConfigurationRemedy { get; init; }
 
+    /// <summary>
+    /// A context-management failure the runner saw (#811), a straight carry of <see cref="PromptResult.ContextManagement"/>.
+    /// Named in a FAILED attempt's summary and feedback; ignored on success, where the session recovered from it.
+    /// </summary>
+    public ContextManagementFailure? ContextManagement { get; init; }
+
+    /// <summary>The stall watchdog's verdict (#811), a straight carry of <see cref="PromptResult.Stall"/>; null unless stalled.</summary>
+    public StallReport? Stall { get; init; }
+
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
     // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
@@ -668,6 +683,8 @@ internal sealed record ActionRun
             InFlightToolCalls = result.InFlightToolCalls,
             AllShellRefused = result.AllShellRefused,
             RunnerConfigurationRemedy = result.RunnerConfigurationRemedy,
+            ContextManagement = result.ContextManagement,
+            Stall = succeeded ? null : result.Stall,
             FailureSummary = result.Summary
         };
     }

@@ -155,6 +155,10 @@ internal sealed class RawPromptRunner
     // The model's context window in tokens. REQUIRED for kind openai-compat, must be >= 1.
     public int? ContextTokens { get; set; }
 
+    // #811: how long a task ACTION's session may be SILENT (no progress line) before it is killed. Any kind.
+    // null = derived from the action timeout (SSOT §9); 0 = disabled; negative = GR2088.
+    public int? StallTimeoutSeconds { get; set; }
+
     // The NAME of an env var holding a bearer token — never the token itself (SSOT §4: this file is
     // committed and hashed into PlanDefinitionHash).
     public string? ApiKeyEnv { get; set; }
@@ -235,6 +239,10 @@ internal sealed class RawPromptRunnerOverrides
     public JsonElement? AuthTokenEnv { get; set; }
     public JsonElement? BackendModel { get; set; }
     public JsonElement? ContextTokens { get; set; }
+
+    // NOT an override (#811): the stall bound is block-level only and bounds task ACTIONS, which never use this
+    // profile. Bound RAW so the loader can SEE it and warn (GR2089) instead of ignoring it without a word.
+    public JsonElement? StallTimeoutSeconds { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>

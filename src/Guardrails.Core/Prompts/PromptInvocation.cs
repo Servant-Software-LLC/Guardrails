@@ -43,9 +43,10 @@ public sealed record PromptInvocation
     public required TimeSpan Timeout { get; init; }
 
     /// <summary>
-    /// Kill the session when it has produced NO stream output for this long (issue #504). Null disables
-    /// stall detection, which is the default for ordinary task attempts — they already have a meaningful
-    /// wall clock, and their retry semantics differ.
+    /// Kill the session when it has produced NO PROGRESS for this long (issue #504; #811 narrowed "output" to
+    /// progress lines, see <see cref="StreamProgress"/>). Null disables stall detection. Breakdowns set it
+    /// (<c>WaveBreakdownInvoker.BreakdownStallBound</c>), and since #811 so do task actions
+    /// (<c>ActionStallBound</c>, SSOT §9); guardrail judges and the harness's advisory prompts leave it null.
     ///
     /// <para>This bounds SILENCE where <see cref="Timeout"/> bounds DURATION, and the two are not
     /// interchangeable. A caller that sets a stall bound should set <see cref="Timeout"/> to a generous
@@ -98,6 +99,16 @@ public sealed record PromptResult
 
     /// <summary>The terminal result's <c>is_error</c> flag (true = the agent reported an error).</summary>
     public required bool IsError { get; init; }
+
+    /// <summary>
+    /// A context-management failure the runner saw in its own stream (#811), such as a compaction that failed, or
+    /// null. Reported whatever the outcome; the harness surfaces it on a FAILED attempt, in the summary and in
+    /// <c>feedback.md</c>.
+    /// </summary>
+    public ContextManagementFailure? ContextManagement { get; init; }
+
+    /// <summary>What the stall watchdog concluded, set only when <see cref="FailureKind"/> is <see cref="PromptFailureKind.Stalled"/> (#811).</summary>
+    public StallReport? Stall { get; init; }
 
     /// <summary>The terminal result text (the agent's final message), if any.</summary>
     public string? ResultText { get; init; }

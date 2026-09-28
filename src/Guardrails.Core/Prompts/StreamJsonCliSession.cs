@@ -205,7 +205,9 @@ internal static class StreamJsonCliSession
         {
             void Tee(string line)
             {
-                stall?.Beat();
+                // #811: only a PROGRESS line restarts the silence window. A session stuck in a compaction that
+                // never returns emits `system/status: compacting` indefinitely, and beating on those kept it alive.
+                StreamProgress.BeatOnStreamJsonProgress(stall, line);
                 parser.Feed(line);
                 permissionScanner?.Feed(line);
                 lineObserver?.Invoke(line);
@@ -322,6 +324,7 @@ internal static class StreamJsonCliSession
             if (stall is { Stalled: true } && !result.HasResult)
             {
                 TimeSpan silentFor = stall.SilentFor();
+
                 return new PromptResult
                 {
                     Completed = false,
@@ -330,10 +333,13 @@ internal static class StreamJsonCliSession
                     CostUsd = result.CostUsd,
                     NumTurns = result.NumTurns,
                     Usage = ToPromptUsage(result.Usage),
+                    ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Stalled,
+                    ContextManagement = result.CompactionFailure,
+                    Stall = new StallReport(stall.Bound, silentFor, stall.SuspendsObserved, stall.Beats),
                     Summary =
-                        $"STALLED — no stream output for {silentFor.TotalMinutes:F1}m " +
-                        $"(bound {(invocation.StallBound ?? TimeSpan.Zero).TotalMinutes:F0}m); the session was killed. " +
+                        $"STALLED — no progress (model output, reasoning, a tool call, heartbeat or result) for {silentFor.TotalMinutes:F1}m " +
+                        $"(bound {stall.Bound.TotalMinutes:F0}m); the session was killed. " +
                         "The process was alive and producing nothing, which is not the same as slow: a session " +
                         "that keeps emitting is never stopped by this bound."
                 };
@@ -367,6 +373,7 @@ internal static class StreamJsonCliSession
                     // which model was refused every route, and that is a fact about the attempt.
                     ObservedModel = result.Model,
                     FailureKind = PromptFailureKind.Error,
+                    ContextManagement = result.CompactionFailure,
                     BlockedWritePaths = permissionScanner.BlockedWritePaths,
                     RefusedCommands = permissionScanner.RefusedCommands,
                     Summary =
@@ -416,6 +423,9 @@ internal static class StreamJsonCliSession
                 // where the quarantine (SSOT §9) ends.
                 ObservedModel = result.Model,
                 FailureKind = failureKind,
+
+                // #811: a failed compaction, carried whatever the outcome; the harness names it on a failed attempt.
+                ContextManagement = result.CompactionFailure,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner?.BlockedWritePaths ?? [],
                 RefusedCommands = permissionScanner?.RefusedCommands ?? [],

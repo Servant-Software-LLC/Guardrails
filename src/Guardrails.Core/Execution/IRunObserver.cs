@@ -98,6 +98,23 @@ public interface IRunObserver
     void AttemptFinished(TaskNode task, Journal.AttemptRecord record) { }
 
     /// <summary>
+    /// Attempt <paramref name="attempt"/> (the journal's number) of <paramref name="task"/> was killed by the stall
+    /// watchdog (#811, the cheap half of #806): it produced no progress for <paramref name="silentFor"/> against a
+    /// bound of <paramref name="bound"/>, after discounting <paramref name="suspendsObserved"/> host suspends (#517).
+    /// <paramref name="contextManagement"/> is the wire token of a context-management failure seen in the same
+    /// session (<c>compaction-failed</c>), with the runner's own <paramref name="contextManagementDetail"/>, or null.
+    /// Raised before the attempt settles, so the verdict is on record even if the settle is interrupted; the matching
+    /// <see cref="AttemptFinished"/> still follows.
+    ///
+    /// <para>Primitives beside <see cref="TaskNode"/> for the CS0051 reason <see cref="AttemptModelResolved"/> gives.
+    /// Default no-op, but a transparent DECORATOR must forward it EXPLICITLY (the <c>ObserverForwardingSweepTests</c>
+    /// contract), or the verdict is swallowed before it reaches <c>events.jsonl</c>.</para>
+    /// </summary>
+    void AttemptStalled(
+        TaskNode task, int attempt, TimeSpan bound, TimeSpan silentFor, int suspendsObserved,
+        string? contextManagement, string? contextManagementDetail) { }
+
+    /// <summary>
     /// The run is about to terminate, on every exit path — green, a gate failure, an unhandled fault
     /// during unwind, everything. <paramref name="exitCode"/> is the <c>Guardrails.Cli.ExitCodes</c>
     /// vocabulary: 0 green, 1 harness error, 2 needs-human/gate failure, 3 cancelled, 4 escalations
